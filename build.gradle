@@ -1,0 +1,185 @@
+import net.darkhax.curseforgegradle.TaskPublishCurseForge
+
+plugins {
+    id 'java'
+    id 'idea'
+    id 'com.github.johnrengelman.shadow' version '8.1.+'
+    id 'com.google.osdetector' version '1.7.+'
+    id 'com.modrinth.minotaur' version '2.+'
+    id 'net.darkhax.curseforgegradle' version '1.1.+'
+}
+
+def MT_TOKEN = System.getenv("MODRINTH_TOKEN")
+def CF_TOKEN = System.getenv("CURSEFORGE_TOKEN")
+
+base {
+    archivesName = id
+    libsDirectory = new File("builtJars/")
+}
+
+test {
+    useJUnitPlatform()
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = targetCompatibility = JavaVersion.VERSION_17
+}
+
+sourcesJar {
+    exclude("videolan/**.zip")
+    exclude("videolan/**.7z")
+}
+
+println("Gradle Java: ${JavaVersion.current()}")
+println("Building project: ${properties.simplename}")
+println("Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}, Encoding: ${System.getProperty "file.encoding"}")
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+    maven { url "https://repo.spongepowered.org/maven" }
+}
+
+configurations {
+    shadow.extendsFrom(implementation)
+    library
+}
+
+sourceSets {
+    // SHADOW
+    test.compileClasspath += configurations.shadow
+    test.runtimeClasspath += configurations.shadow
+
+    // LIBRARY
+    main.compileClasspath += configurations.library
+    test.compileClasspath += configurations.library
+    test.runtimeClasspath += configurations.library
+}
+
+dependencies {
+    // MODLOADERS
+    compileOnly "com.github.WaterMediaTeam:modloaders:$modloaders_version"
+
+    // DEPENDENCIES
+    shadow "com.github.MinecraftOmega:omegaconfig:$omegaconfig_version"
+    shadow "com.github.WaterMediaTeam:videolan-natives:$vlcj_natives_version"
+    shadow "com.github.WaterMediaTeam:ffmpeg4j:$ffmpeg4j_version"
+
+    // DEPENDENCIES INCLUDED IN MINECRAFT
+    library "net.java.dev.jna:jna:$jna_version"
+    library "net.java.dev.jna:jna-platform:$jnaplatform_version"
+    library "org.apache.logging.log4j:log4j-api:$log4j_version"
+    library "org.apache.logging.log4j:log4j-core:$log4jcore_version"
+    library "com.google.code.gson:gson:$gson_version"
+    library "org.lwjgl:lwjgl-opengl:$opengl_version"
+    library "org.lwjgl:lwjgl-glfw:$opengl_version"
+    library "org.lwjgl:lwjgl-openal:$openal_version"
+
+    // TEST DEPENDENCIES
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+    testRuntimeOnly "org.lwjgl:lwjgl:$opengl_version:natives-$osdetector.os"
+    testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:natives-$osdetector.os"
+    testRuntimeOnly "org.lwjgl:lwjgl-glfw:$opengl_version:natives-$osdetector.os"
+}
+
+// Process target resources with mod info
+processResources {
+    outputs.upToDateWhen { false }
+    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json', "watermedia/version.cfg"]) {
+        expand(project.properties)
+    }
+}
+
+// ShadowJar task (run this task to make a built JAR.
+shadowJar {
+    dependsOn jar
+    configurations = [project.configurations.shadow]
+
+    // Add relocation rules for each dependency
+    relocate 'com.github', 'me.lib720'
+    relocate 'com.alibaba', 'me.lib720.alibaba'
+
+    exclude "META-INF/versions/**"
+    exclude "META-INF/proguard/**"
+    exclude "META-INF/maven/**"
+    exclude "META-INF/LICENSE.*"
+    exclude "META-INF/LICENSE"
+    exclude "META-INF/NOTICE.**"
+    exclude "META-INF/NOTICE"
+
+    mergeServiceFiles()
+    archiveClassifier = ""
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.WARN
+
+    manifest {
+        attributes "id"                         : id
+        attributes "version"                    : version
+        attributes "Specification-Title"        : id
+        attributes "Specification-Vendor"       : authors
+        attributes "Specification-Version"      : version
+        attributes "Implementation-Title"       : id
+        attributes "Implementation-Version"     : version
+        attributes "Implementation-Vendor"      : authors
+        attributes "Implementation-Timestamp"   : new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        attributes "Main-Class": "org.watermedia.app.Main"
+    }
+
+    finalizedBy shadowJar
+}
+
+tasks.register('releaseJar', GradleBuild) {
+    dependsOn build
+
+    group 'publishing'
+    description 'Uploads new version to modrinth and curseforge.'
+    setTasks(['curseforge', 'modrinth'])
+}
+
+tasks.register('curseforge', TaskPublishCurseForge) {
+    disableVersionDetection()
+    apiToken = CF_TOKEN
+
+    // MAIN FILE
+    def mainFile = upload(curseforgeid, shadowJar)
+    mainFile.displayName = brandname + "/" + version
+    mainFile.changelog = getChangelogText()
+    mainFile.changelogType = "markdown"
+    mainFile.releaseType = versiontype
+    mainFile.addModLoader("Forge", "NeoForge", "Fabric")
+    mainFile.addJavaVersion("Java 21", "Java 17")
+    mainFile.addGameVersion("1.18.2", "1.19.2", "1.20.1", "1.21.1", "client")
+    def sourcesFile = mainFile.withAdditionalFile(sourcesJar)
+    sourcesFile.displayName = "$brandname/$version-sources"
+    sourcesFile.changelog = ""
+    sourcesFile.releaseType = versiontype
+}
+
+modrinth {
+    token = MT_TOKEN
+    projectId = modrinthid
+    versionName = libname + "/" + version
+    changelog = getChangelogText()
+    versionNumber = version.toString()
+    versionType = versiontype
+    uploadFile = shadowJar
+    loaders = [ "forge", "neoforge", "fabric" ]
+    gameVersions = [ "1.16.5", "1.18.2", "1.19.2", "1.20.1", "1.21.1" ]
+    additionalFiles = [ sourcesJar ]
+
+    group = 'publishing'
+}
+
+def getChangelogText() {
+    def result = ""
+    for (String line: file('CHANGELOG.md').readLines('UTF-8')) {
+        if (line.isEmpty()) return result
+        result += line + '\n'
+    }
+    return result
+}

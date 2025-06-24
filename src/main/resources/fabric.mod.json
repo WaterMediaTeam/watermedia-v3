@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "$id",
+  "version": "$version",
+  "name": "$libname",
+  "description": "$description",
+  "authors": $authors_list,
+  "contact": {
+    "homepage": "https://www.curseforge.com/minecraft/mc-mods/watermedia/",
+    "sources": "https://github.com/$github",
+    "issues": "https://github.com/$github/issues",
+    "email": "SrRapero720@hotmail.com"
+  },
+
+  "license": "$license",
+  "icon": "pack.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.watermedia.loader.FabricLoader"
+    ]
+  },
+  "depends": {
+    "java": "$javarange"
+  }
+}
