@@ -13,6 +13,7 @@ import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.discovery.NativeDiscovery;
 import org.watermedia.videolan4j.tools.Chroma;
 
+import java.io.File;
 import java.net.URI;
 import java.nio.IntBuffer;
 import java.util.Arrays;
@@ -40,8 +41,8 @@ public class VLPlayerTest implements Executor {
         NativeDiscovery.start();
 
         this.init();
-        this.player = new VLVideoPlayer(URI.create("https://files.catbox.moe/3nhndw.mp4"), Chroma.RGBA, Thread.currentThread(), this);
-        System.out.println("Using VideoLan4J version: " + VideoLan4J.getVideoLanVersion());
+        this.player = new VLVideoPlayer(new File("C:\\Users\\J-RAP\\Downloads\\Choose Your Seeds.mp4").toURI(), Chroma.RGBA, Thread.currentThread(), this);
+        System.out.println("Using VideoLan4J version: " + VideoLan4J.getLibVersion());
         this.player.start();
         this.loop();
 
@@ -79,8 +80,16 @@ public class VLPlayerTest implements Executor {
         glfwSetKeyCallback(this.window, (window, key, scancode, action, mods) -> {
             if ( key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE )
                 glfwSetWindowShouldClose(window, true); // We will detect this in the rendering loop
+            System.out.println("Key is" + key);
             if (key == GLFW_KEY_P) {
 //                player.start(URI.create("https://www.youtube.com/watch?v=LlNCDSz5BeE"));
+            }
+            if (key == GLFW_KEY_LEFT) {
+                player.rewind();
+            }
+
+            if (key == GLFW_KEY_RIGHT) {
+                player.foward();
             }
         });
 

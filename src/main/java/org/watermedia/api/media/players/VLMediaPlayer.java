@@ -19,10 +19,6 @@ public abstract class VLMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker("VLMediaPlayer");
     protected static final libvlc_instance_t MEDIA_INSTANCE = VideoLan4J.createInstance("--no-quiet", "--verbose", "--file-logging", "--logfile=/logs/vlc.log");
 
-    // MEDIA DETAILS
-    private IntByReference width;
-    private IntByReference height;
-
     // STATUS
     protected libvlc_media_player_t rawPlayer;
     protected libvlc_media_t rawMedia;
@@ -30,14 +26,13 @@ public abstract class VLMediaPlayer extends MediaPlayer {
 
     public VLMediaPlayer(final URI mrl, final Executor renderThread) {
         super(mrl, renderThread);
-        this.rawPlayer = LibVlc.libvlc_media_player_new(MEDIA_INSTANCE);
-        final libvlc_media_t media = VideoLan4J.getMediaInstance(MEDIA_INSTANCE, this.mrl);
+        this.rawPlayer = VideoLan4J.createMediaPlayer(MEDIA_INSTANCE);
+        final libvlc_media_t media = VideoLan4J.createMediaInstance(MEDIA_INSTANCE, this.mrl);
         LibVlc.libvlc_media_player_set_media(this.rawPlayer, media);
     }
 
     @Override
     public void start() {
-
         LibVlc.libvlc_media_player_play(this.rawPlayer);
     }
 
@@ -100,17 +95,19 @@ public abstract class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean seekQuick(long time) {
-        return false;
+        return this.seek(time);
     }
 
     @Override
     public boolean foward() {
-        return false;
+        this.seek(this.time() + 5000);
+        return true;
     }
 
     @Override
     public boolean rewind() {
-        return false;
+        this.seek(this.time() - 5000);
+        return true;
     }
 
     @Override

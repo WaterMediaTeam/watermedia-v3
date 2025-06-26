@@ -6,8 +6,10 @@ import com.sun.jna.Pointer;
 import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.ptr.PointerByReference;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL12;
+import org.lwjgl.opengl.GL14;
+import org.lwjgl.opengl.GL32;
 import org.watermedia.api.render.RenderAPI;
-import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
 import org.watermedia.videolan4j.binding.lib.Kernel32;
 import org.watermedia.videolan4j.binding.lib.LibC;
@@ -16,13 +18,18 @@ import org.watermedia.videolan4j.binding.lib.size_t;
 import org.watermedia.videolan4j.tools.Buffers;
 import org.watermedia.videolan4j.tools.Chroma;
 
+import java.awt.*;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
-public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_cb, libvlc_video_cleanup_cb, libvlc_display_callback_t, libvlc_unlock_callback_t, libvlc_lock_callback_t {
+public class VLVideoPlayer extends VLMediaPlayer {
     private ByteBuffer[] buffers = new ByteBuffer[0];
     private Pointer[] pointers = new Pointer[0];
     private final int texture;
@@ -35,8 +42,9 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
     private boolean firstFrame = true;
     private boolean callbacks= false;
     
-    private final IntByReference width = new IntByReference();
-    private final IntByReference height = new IntByReference();
+    private int width = NO_SIZE;
+    private int height = NO_SIZE;
+    private List<Object> events = new ArrayList<>();
     private VideoFormatCallback videoFormatCB;
     private VideoCleanupCallback cleanupCB;
     private LockCallback lockCallback;
@@ -57,6 +65,14 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
 //                this.callbacks = true; // CALLBACKS SET
 //            });
 //        }, null);
+    }
+
+    public int getWidth() {
+        return this.width;
+    }
+
+    public int getHeight() {
+        return this.height;
     }
 
     @Override
@@ -83,14 +99,25 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
 
         // UPDATE TEXTURE
         if (this.uploadFrame) {
-            RenderAPI.updateTexture(this.texture, this.buffers, this.width(), this.height(), GL11.GL_RGBA, this.firstFrame);
+            final int GL_FORMAT = switch (this.chroma) {
+                case RGBA -> GL11.GL_RGBA;
+                case RV32 -> GL12.GL_BGRA;
+                case Rv24 -> GL12.GL_BGR;
+                case GRAW -> GL12.GL_LUMINANCE; // TODO: ensure is just luminance
+                case I420 -> throw new UnsupportedOperationException("I420 is unsupported for OpenGL");
+                case YUYV -> throw new UnsupportedOperationException("YUYV is unsupported for OpenGL");
+                case NV12 -> throw new UnsupportedOperationException("NV12 is unsupported for OpenGL");
+                case UYVY -> throw new UnsupportedOperationException("UYVY is unsupported for OpenGL");
+                default -> -1;
+            };
+            RenderAPI.updateTexture(this.texture, this.buffers, this.width(), this.height(), GL_FORMAT, this.firstFrame);
             this.uploadFrame = false;
         }
 
 
         // RELEASE RENDER THREAD
         this.semaphore.release();
-        return this.buffers.length;
+        return this.texture;
     }
 
     @Override
@@ -100,12 +127,12 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
 
     @Override
     public int width() {
-        return this.width.getValue();
+        return this.width;
     }
 
     @Override
     public int height() {
-        return this.height.getValue();
+        return this.height;
     }
 
     @Override
@@ -115,48 +142,26 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
     }
 
     private record VideoFormatCallback(VLVideoPlayer player) implements libvlc_video_format_cb {
-        @Override
-        public int format(final PointerByReference opaque, final PointerByReference chromaPointer, final IntByReference widthPointer, final IntByReference heightPointer, final PointerByReference pitchesPointer, final PointerByReference linesPointer) {
-            return this.player.format(opaque, chromaPointer, widthPointer, heightPointer, pitchesPointer, linesPointer);
-        }
+        @Override public int format(final PointerByReference op, final PointerByReference chroma, final IntByReference w, final IntByReference h, final PointerByReference pitch, final PointerByReference lines) { return this.player.displayFormat(op, chroma, w, h, pitch, lines); }
     }
 
     private record VideoCleanupCallback(VLVideoPlayer player) implements libvlc_video_cleanup_cb {
-        @Override
-        public void cleanup(final Pointer opaque) {
-            this.player.cleanup(opaque);
-        }
+        @Override public void cleanup(final Pointer opaque) { this.player.cleanup(opaque); }
     }
 
     private record DisplayCallback(VLVideoPlayer player) implements libvlc_display_callback_t {
-        @Override
-        public void display(final Pointer opaque, final Pointer picture) {
-            this.player.display(opaque, picture);
-        }
+        @Override public void display(final Pointer opaque, final Pointer picture) { this.player.display(opaque, picture); }
     }
 
     private record LockCallback(VLVideoPlayer player) implements libvlc_lock_callback_t {
-        @Override
-        public Pointer lock(final Pointer opaque, final PointerByReference planes) {
-            return this.player.lock(opaque, planes);
-        }
+        @Override public Pointer lock(final Pointer opaque, final PointerByReference planes) { return this.player.preDisplay(opaque, planes); }
     }
 
     private record UnlockCallback(VLVideoPlayer player) implements libvlc_unlock_callback_t {
-        @Override
-        public void unlock(final Pointer opaque, final Pointer picture, final Pointer plane) {
-            this.player.unlock(opaque, picture, plane);
-        }
+        @Override public void unlock(final Pointer opaque, final Pointer picture, final Pointer plane) { this.player.postDisplay(opaque, picture, plane); }
     }
 
-
-    @Override
-    public void display(final Pointer opaque, final Pointer picture) {
-        this.uploadFrame = true;
-    }
-
-    @Override
-    public Pointer lock(final Pointer opaque, final PointerByReference planes) {
+    private Pointer preDisplay(final Pointer opaque, final PointerByReference planes) {
         try {
             if (this.semaphore.tryAcquire(5, TimeUnit.SECONDS)) { // WAIT FOR RENDER THREAD TO RELEASE
                 planes.getPointer().write(0, this.pointers, 0, this.pointers.length);
@@ -168,25 +173,27 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
         return null;
     }
 
-    @Override
-    public void unlock(final Pointer opaque, final Pointer picture, final Pointer plane) {
+    private void display(final Pointer opaque, final Pointer picture) {
+        this.uploadFrame = true;
+    }
+
+    private void postDisplay(final Pointer opaque, final Pointer picture, final Pointer plane) {
 
     }
 
-    @Override
-    public int format(final PointerByReference opaque, final PointerByReference chromaPointer, final IntByReference widthPointer, final IntByReference heightPointer, final PointerByReference pitchesPointer, final PointerByReference linesPointer) {
+    public int displayFormat(final PointerByReference opaque, final PointerByReference chromaPointer, final IntByReference widthPointer, final IntByReference heightPointer, final PointerByReference pitchesPointer, final PointerByReference linesPointer) {
         // APPLY CHROMF
-        final byte[] chromaBytes = this.chroma.canonical().intern().getBytes();
+        final byte[] chromaBytes = this.chroma.chroma();
         chromaPointer.getPointer().write(0, chromaBytes, 0, Math.min(chromaBytes.length, 4));
         // TODO: PERFORM FUTHER INVESTIGATION OF SET CUSTOM WIDTH AND HEIGHT VALUES PURPOSE.
         // width.setValue(chroma.getWidth());
         // height.setValue(chroma.getHeight());|
-        this.width.setValue(widthPointer.getValue());
-        this.height.setValue(heightPointer.getValue());
-        widthPointer.setValue(this.width.getValue());
-        heightPointer.setValue(this.height.getValue());
-        final int[] pitchValues = this.chroma.getPitches(this.width.getValue());
-        final int[] lineValues = this.chroma.getLines(this.height.getValue());
+        this.width = widthPointer.getValue();
+        this.height = heightPointer.getValue();
+        widthPointer.setValue(this.width);
+        heightPointer.setValue(this.height);
+        final int[] pitchValues = this.chroma.getPitches(this.width);
+        final int[] lineValues = this.chroma.getLines(this.height);
         final int planeCount = pitchValues.length;
 
         pitchesPointer.getPointer().write(0, pitchValues, 0, pitchValues.length);
@@ -212,7 +219,6 @@ public class VLVideoPlayer extends VLMediaPlayer implements libvlc_video_format_
         return this.buffers.length;
     }
 
-    @Override
     public void cleanup(final Pointer opaque) {
         if (this.buffers.length == 0) return;
 
