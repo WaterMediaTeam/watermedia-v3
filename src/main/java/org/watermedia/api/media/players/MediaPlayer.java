@@ -31,6 +31,7 @@ public abstract class MediaPlayer {
         return NO_SIZE;
     }
 
+    // CONTROL
     public abstract void start();
 
     public abstract void startPaused();
@@ -71,7 +72,20 @@ public abstract class MediaPlayer {
 
     public abstract boolean repeat(boolean repeat);
 
-    // status
+    public abstract void volume(int volume);
+
+    public abstract int volume();
+
+    public abstract void mute(boolean mute);
+
+    public abstract boolean mute();
+
+    public abstract int texture();
+
+    // STATE
+    public abstract Status status();
+
+    @Deprecated
     public abstract boolean usable();
 
     public abstract boolean loading();
@@ -104,21 +118,9 @@ public abstract class MediaPlayer {
 
     public abstract void release();
 
-    public abstract void volume(int volume);
-
-    public abstract float volume();
-
-    public abstract void mute(boolean mute);
-
-    public abstract boolean mute();
-
-    public abstract int texture();
-
-    public abstract Status status();
-
     public enum Status {
         WAITING,
-        OPENING,
+        LOADING,
         BUFFERING,
         PLAYING,
         PAUSED,

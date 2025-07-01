@@ -29,60 +29,47 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
-public class VLVideoPlayer extends VLMediaPlayer {
+public final class VLVideoPlayer extends VLMediaPlayer {
     private ByteBuffer[] buffers = new ByteBuffer[0];
     private Pointer[] pointers = new Pointer[0];
     private final int texture;
-    private final Chroma chroma;
     private final boolean lockBuffers = true; // TODO: Make this configurable
     private final Semaphore semaphore = new Semaphore(1);
     private final Thread renderThread;
 
     private boolean uploadFrame = false;
     private boolean firstFrame = true;
-    private boolean callbacks= false;
+    private boolean callbacks = false;
     
     private int width = NO_SIZE;
     private int height = NO_SIZE;
-    private List<Object> events = new ArrayList<>();
-    private VideoFormatCallback videoFormatCB;
-    private VideoCleanupCallback cleanupCB;
-    private LockCallback lockCallback;
-    private UnlockCallback unlockCallback;
-    private DisplayCallback displayCallback;
 
-    public VLVideoPlayer(final URI mrl, final Chroma chroma, final Thread renderThread, final Executor renderThreadEx) {
+    private final libvlc_video_format_cb videoFormatCB = this::displayFormat;
+    private final libvlc_video_cleanup_cb cleanupCB = this::cleanup;
+    private final libvlc_lock_callback_t lockCallback = this::preDisplay;
+    private final libvlc_unlock_callback_t unlockCallback = this::postDisplay;
+    private final libvlc_display_callback_t displayCallback = this::display;
+
+    public VLVideoPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx) {
         super(mrl, renderThreadEx);
-        this.chroma = chroma;
         this.renderThread = renderThread;
         this.texture = RenderAPI.createTexture();
-        libvlc_event_manager_t eventManager = LibVlc.libvlc_media_player_event_manager(this.rawPlayer);
-
-//        LibVlc.libvlc_event_attach(eventManager, libvlc_event_e.libvlc_MediaPlayerOpening.intValue(), (event, userData) -> {
-//            executor.execute(() -> {
-//                if (this.callbacks) return; // CALLBACKS ALREADY SET
-//
-//                this.callbacks = true; // CALLBACKS SET
-//            });
-//        }, null);
     }
 
-    public int getWidth() {
+    @Override
+    public int width() {
         return this.width;
     }
 
-    public int getHeight() {
+    @Override
+    public int height() {
         return this.height;
     }
 
     @Override
     public void start() {
-        LibVlc.libvlc_video_set_format_callbacks(this.rawPlayer, this.videoFormatCB = new VideoFormatCallback(this), this.cleanupCB = new VideoCleanupCallback(this));
-        LibVlc.libvlc_video_set_callbacks(this.rawPlayer,
-                this.lockCallback = new LockCallback(this),
-                this.unlockCallback = new UnlockCallback(this),
-                this.displayCallback = new DisplayCallback(this),
-                Pointer.NULL);
+        LibVlc.libvlc_video_set_format_callbacks(this.rawPlayer, this.videoFormatCB, this.cleanupCB);
+        LibVlc.libvlc_video_set_callbacks(this.rawPlayer, this.lockCallback, this.unlockCallback, this.displayCallback, Pointer.NULL);
         super.start();
     }
 
@@ -99,21 +86,9 @@ public class VLVideoPlayer extends VLMediaPlayer {
 
         // UPDATE TEXTURE
         if (this.uploadFrame) {
-            final int GL_FORMAT = switch (this.chroma) {
-                case RGBA -> GL11.GL_RGBA;
-                case RV32 -> GL12.GL_BGRA;
-                case Rv24 -> GL12.GL_BGR;
-                case GRAW -> GL12.GL_LUMINANCE; // TODO: ensure is just luminance
-                case I420 -> throw new UnsupportedOperationException("I420 is unsupported for OpenGL");
-                case YUYV -> throw new UnsupportedOperationException("YUYV is unsupported for OpenGL");
-                case NV12 -> throw new UnsupportedOperationException("NV12 is unsupported for OpenGL");
-                case UYVY -> throw new UnsupportedOperationException("UYVY is unsupported for OpenGL");
-                default -> -1;
-            };
-            RenderAPI.updateTexture(this.texture, this.buffers, this.width(), this.height(), GL_FORMAT, this.firstFrame);
+            RenderAPI.updateTexture(this.texture, this.buffers, this.width, this.height, GL12.GL_BGRA, this.firstFrame);
             this.uploadFrame = false;
         }
-
 
         // RELEASE RENDER THREAD
         this.semaphore.release();
@@ -126,39 +101,9 @@ public class VLVideoPlayer extends VLMediaPlayer {
     }
 
     @Override
-    public int width() {
-        return this.width;
-    }
-
-    @Override
-    public int height() {
-        return this.height;
-    }
-
-    @Override
     public void release() {
         RenderAPI.releaseTexture(this.texture);
         super.release();
-    }
-
-    private record VideoFormatCallback(VLVideoPlayer player) implements libvlc_video_format_cb {
-        @Override public int format(final PointerByReference op, final PointerByReference chroma, final IntByReference w, final IntByReference h, final PointerByReference pitch, final PointerByReference lines) { return this.player.displayFormat(op, chroma, w, h, pitch, lines); }
-    }
-
-    private record VideoCleanupCallback(VLVideoPlayer player) implements libvlc_video_cleanup_cb {
-        @Override public void cleanup(final Pointer opaque) { this.player.cleanup(opaque); }
-    }
-
-    private record DisplayCallback(VLVideoPlayer player) implements libvlc_display_callback_t {
-        @Override public void display(final Pointer opaque, final Pointer picture) { this.player.display(opaque, picture); }
-    }
-
-    private record LockCallback(VLVideoPlayer player) implements libvlc_lock_callback_t {
-        @Override public Pointer lock(final Pointer opaque, final PointerByReference planes) { return this.player.preDisplay(opaque, planes); }
-    }
-
-    private record UnlockCallback(VLVideoPlayer player) implements libvlc_unlock_callback_t {
-        @Override public void unlock(final Pointer opaque, final Pointer picture, final Pointer plane) { this.player.postDisplay(opaque, picture, plane); }
     }
 
     private Pointer preDisplay(final Pointer opaque, final PointerByReference planes) {
@@ -181,9 +126,9 @@ public class VLVideoPlayer extends VLMediaPlayer {
 
     }
 
-    public int displayFormat(final PointerByReference opaque, final PointerByReference chromaPointer, final IntByReference widthPointer, final IntByReference heightPointer, final PointerByReference pitchesPointer, final PointerByReference linesPointer) {
-        // APPLY CHROMF
-        final byte[] chromaBytes = this.chroma.chroma();
+    private int displayFormat(final PointerByReference opaque, final PointerByReference chromaPointer, final IntByReference widthPointer, final IntByReference heightPointer, final PointerByReference pitchesPointer, final PointerByReference linesPointer) {
+        // APPLY CHROMA
+        final byte[] chromaBytes = Chroma.RV32.chroma();
         chromaPointer.getPointer().write(0, chromaBytes, 0, Math.min(chromaBytes.length, 4));
         // TODO: PERFORM FUTHER INVESTIGATION OF SET CUSTOM WIDTH AND HEIGHT VALUES PURPOSE.
         // width.setValue(chroma.getWidth());
@@ -192,8 +137,8 @@ public class VLVideoPlayer extends VLMediaPlayer {
         this.height = heightPointer.getValue();
         widthPointer.setValue(this.width);
         heightPointer.setValue(this.height);
-        final int[] pitchValues = this.chroma.getPitches(this.width);
-        final int[] lineValues = this.chroma.getLines(this.height);
+        final int[] pitchValues = Chroma.RV32.getPitches(this.width);
+        final int[] lineValues = Chroma.RV32.getLines(this.height);
         final int planeCount = pitchValues.length;
 
         pitchesPointer.getPointer().write(0, pitchValues, 0, pitchValues.length);
@@ -219,7 +164,7 @@ public class VLVideoPlayer extends VLMediaPlayer {
         return this.buffers.length;
     }
 
-    public void cleanup(final Pointer opaque) {
+    private void cleanup(final Pointer opaque) {
         if (this.buffers.length == 0) return;
 
         if (this.lockBuffers) {

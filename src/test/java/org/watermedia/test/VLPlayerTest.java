@@ -1,5 +1,6 @@
 package org.watermedia.test;
 
+import org.lwjgl.openal.*;
 import org.watermedia.WaterMedia;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
@@ -15,6 +16,7 @@ import org.watermedia.videolan4j.tools.Chroma;
 
 import java.io.File;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.Arrays;
 import java.util.LinkedList;
@@ -23,6 +25,7 @@ import java.util.concurrent.Executor;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
+import static org.lwjgl.openal.ALC10.*;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
@@ -33,6 +36,7 @@ public class VLPlayerTest implements Executor {
     // The window handle
     private long window;
     private VLVideoPlayer player;
+    private int volume = 100; // Default volume
 
     // The media loader
     private static final String NAME = "WATERMeDIA: Multimedia API";
@@ -41,7 +45,7 @@ public class VLPlayerTest implements Executor {
         NativeDiscovery.start();
 
         this.init();
-        this.player = new VLVideoPlayer(new File("C:\\Users\\J-RAP\\Downloads\\Choose Your Seeds.mp4").toURI(), Chroma.RGBA, Thread.currentThread(), this);
+        this.player = new VLVideoPlayer(URI.create("https://files.catbox.moe/3nhndw.mp4"), Thread.currentThread(), this);
         System.out.println("Using VideoLan4J version: " + VideoLan4J.getLibVersion());
         this.player.start();
         this.loop();
@@ -60,6 +64,8 @@ public class VLPlayerTest implements Executor {
         // Setup an error callback. The default implementation
         // will print the error message in System.err.
         GLFWErrorCallback.createPrint(System.err).set();
+
+
 
         // Initialize GLFW. Most GLFW functions will not work before doing this.
         if (!glfwInit())
@@ -91,6 +97,14 @@ public class VLPlayerTest implements Executor {
             if (key == GLFW_KEY_RIGHT) {
                 player.foward();
             }
+
+            if (key == GLFW_KEY_UP) {
+                player.volume(Math.min(volume += 10, 120));
+            }
+
+            if (key == GLFW_KEY_DOWN) {
+                player.volume(Math.max(volume -= 10, 0));
+            }
         });
 
         // Get the thread stack and push a new frame
@@ -120,6 +134,20 @@ public class VLPlayerTest implements Executor {
         // Make the window visible
         glfwShowWindow(this.window);
         GL.createCapabilities();
+
+        // Abrir dispositivo
+        long device = ALC10.alcOpenDevice((ByteBuffer) null);
+        if (device == 0L) throw new IllegalStateException("No se pudo abrir dispositivo de audio");
+
+        // Crear contexto
+        long context = ALC10.alcCreateContext(device, (IntBuffer) null);
+        ALC10.alcMakeContextCurrent(context);
+
+        // Crear capabilities ALC (dispositivo)
+        ALCCapabilities alcCaps = ALC.createCapabilities(device);
+
+        // Crear capabilities AL (contexto)
+        ALCapabilities alCaps = AL.createCapabilities(alcCaps);
     }
 
     private void loop() {

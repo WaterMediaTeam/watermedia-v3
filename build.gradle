@@ -81,6 +81,7 @@ dependencies {
     testRuntimeOnly "org.lwjgl:lwjgl:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-glfw:$opengl_version:natives-$osdetector.os"
+    testRuntimeOnly "org.lwjgl:lwjgl-openal:$openal_version:natives-$osdetector.os"
 }
 
 // Process target resources with mod info
