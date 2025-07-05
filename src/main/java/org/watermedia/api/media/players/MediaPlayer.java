@@ -13,14 +13,14 @@ public abstract class MediaPlayer {
 
     // MEDIA DATA
     protected final URI mrl;
-    protected final Executor executor;
+    protected final Executor renderThreadEx;
 
     // STATE
     protected boolean repeat;
 
-    public MediaPlayer(final URI mrl, final Executor executor) {
+    public MediaPlayer(final URI mrl, final Executor renderThreadEx) {
         this.mrl = mrl;
-        this.executor = executor;
+        this.renderThreadEx = renderThreadEx;
     }
 
     public int width() {
