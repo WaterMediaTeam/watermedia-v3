@@ -1,20 +1,18 @@
 package org.watermedia.test;
 
 import org.lwjgl.openal.*;
-import org.watermedia.WaterMedia;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.ARBDebugOutput;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
-import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.media.player.FFMediaPlayer;
+import org.watermedia.api.media.player.MediaPlayer;
 import org.watermedia.api.media.players.VLVideoPlayer;
 import org.watermedia.videolan4j.VideoLan4J;
-import org.watermedia.videolan4j.discovery.NativeDiscovery;
-import org.watermedia.videolan4j.tools.Chroma;
 
-import java.io.File;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -25,7 +23,6 @@ import java.util.concurrent.Executor;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.openal.ALC10.*;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
@@ -35,17 +32,18 @@ public class VLPlayerTest implements Executor {
 
     // The window handle
     private long window;
-    private VLVideoPlayer player;
+    private MediaPlayer player;
     private int volume = 100; // Default volume
 
     // The media loader
     private static final String NAME = "WATERMeDIA: Multimedia API";
 
     public void run(final URI url) {
-        NativeDiscovery.start();
+
+        MediaAPI.initAllMediaStuffAsAWorkarroudnWhileWeHaveNoBootstrap();
 
         this.init();
-        this.player = new VLVideoPlayer(URI.create("https://files.catbox.moe/3nhndw.mp4"), Thread.currentThread(), this);
+        this.player = new FFMediaPlayer(URI.create("https://files.catbox.moe/3nhndw.mp4"), Thread.currentThread(), this, true, true);
         System.out.println("Using VideoLan4J version: " + VideoLan4J.getLibVersion());
         this.player.start();
         this.loop();
@@ -168,10 +166,9 @@ public class VLPlayerTest implements Executor {
 
         // Run the rendering loop until the user has attempted to close
         // the window or has pressed the ESCAPE key.
-        while (!glfwWindowShouldClose(this.window)) {
+        while (!glfwWindowShouldClose(this.window) && !this.player.ended()) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the framebuffer
 
-            this.player.preRender();
             glBindTexture(GL_TEXTURE_2D, this.player.texture());
 
 
