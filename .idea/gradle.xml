@@ -4,11 +4,23 @@
   <component name="GradleSettings">
     <option name="linkedExternalProjectsSettings">
       <GradleProjectSettings>
+        <compositeConfiguration>
+          <compositeBuild compositeDefinitionSource="SCRIPT">
+            <builds>
+              <build path="$PROJECT_DIR$/../../videolan-natives" name="videolan-natives">
+                <projects>
+                  <project path="$PROJECT_DIR$/../../videolan-natives" />
+                </projects>
+              </build>
+            </builds>
+          </compositeBuild>
+        </compositeConfiguration>
         <option name="distributionType" value="LOCAL" />
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
         <option name="gradleHome" value="$PROJECT_DIR$/../../../../installs/gradle/gradle-8.11.1" />
         <option name="modules">
           <set>
+            <option value="$PROJECT_DIR$/../../videolan-natives" />
             <option value="$PROJECT_DIR$" />
           </set>
         </option>
