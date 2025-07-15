@@ -8,6 +8,36 @@ import org.watermedia.videolan4j.binding.internal.libvlc_instance_t;
 import org.watermedia.videolan4j.discovery.NativeDiscovery;
 
 public class MediaAPI extends WaterMediaAPI {
+    private static final String[] SUPPORTED_MYMETYPES = {
+            "application/x-mpegurl",
+            "application/vnd.apple.mpegurl",
+            "video/mp4",
+            "video/x-matroska",
+            "video/avi",
+            "video/webm",
+            "video/mpeg",
+            "video/quicktime",
+            "video/x-msvideo",
+            "video/x-flv",
+            "video/x-ms-wmv",
+            "video/x-mpeg",
+            "video/x-matroska-3d",
+            "audio/mpeg",
+            "audio/wav",
+            "audio/ogg",
+            "audio/flac",
+            "audio/aac",
+            "audio/x-ms-wma",
+            "audio/x-wav",
+            "audio/x-matroska",
+            "audio/x-flac",
+            "audio/x-aac",
+            "audio/x-ms-wax",
+            "audio/x-mpegurl",
+            "audio/x-scpls",
+            "audio/x-mpeg",
+    };
+
     protected static libvlc_instance_t VLC_INSTANCE;
     protected static AVFormatContext FFMPEG_INSTANCE;
 

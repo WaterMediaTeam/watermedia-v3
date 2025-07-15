@@ -1,34 +1,58 @@
 package org.watermedia.api.media.player;
 
+import org.watermedia.tools.ThreadTool;
+
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 public final class PicturePlayer extends MediaPlayer {
+    // OFF-THREAD TASKS
+    private static final Thread PLAYER_THREAD = ThreadTool.create("PicturePlayerThread", PicturePlayer::tick);
+    private static final Executor FETCH_EXECUTOR = Executors.newScheduledThreadPool(ThreadTool.minThreads());
 
-    public final int width;
-    public final int height;
-    public final int[] textures;
-    public final long[] delay;
-    public final long duration;
+    // REGISTRY
+    private static final Set<PicturePlayer> ACTIVE_PLAYERS = new HashSet<>();
+
+    // TICKING
+    private static long lastTick = System.currentTimeMillis();
+
+    // INITIALIZE THE PLAYER THREAD
+    static {
+        PLAYER_THREAD.start();
+    }
+
+    // MEDIA DATA
+    private final long duration = 12;
+    private final long[] delay = null;
     private ByteBuffer[] images;
 
+    // PLAYER STATE
+    private long time = 0;
+    private int lastFrameIndex = -1; // Last frame index to avoid unnecessary updates
+    private boolean repeat = false;
+    private Status status = Status.WAITING;
+
+
     public boolean flushed;
-    public int remaining;
 
-    public PicturePlayer(URI mrl, Thread renderThread, Executor renderThreadEx, boolean video, boolean audio) {
-        super(mrl, renderThread, renderThreadEx, video, audio);
-
-    }
-
-    @Override
-    public void previousFrame() {
+    public PicturePlayer(URI mrl, Thread renderThread, Executor renderThreadEx, boolean video) {
+        super(mrl, renderThread, renderThreadEx, video, false);
+        ACTIVE_PLAYERS.add(this);
 
     }
 
     @Override
-    public void nextFrame() {
+    public boolean previousFrame() {
+        return false;
+    }
 
+    @Override
+    public boolean nextFrame() {
+        return false;
     }
 
     @Override
@@ -39,16 +63,6 @@ public final class PicturePlayer extends MediaPlayer {
     @Override
     public void startPaused() {
 
-    }
-
-    @Override
-    public boolean startSync() {
-        return false;
-    }
-
-    @Override
-    public boolean startSyncPaused() {
-        return false;
     }
 
     @Override
@@ -113,12 +127,7 @@ public final class PicturePlayer extends MediaPlayer {
 
     @Override
     public Status status() {
-        return null;
-    }
-
-    @Override
-    public boolean usable() {
-        return false;
+        return this.status;
     }
 
     @Override
@@ -128,11 +137,6 @@ public final class PicturePlayer extends MediaPlayer {
 
     @Override
     public boolean buffering() {
-        return false;
-    }
-
-    @Override
-    public boolean ready() {
         return false;
     }
 
@@ -153,7 +157,7 @@ public final class PicturePlayer extends MediaPlayer {
 
     @Override
     public boolean ended() {
-        return false;
+        return this.time >= this.duration;
     }
 
     @Override
@@ -163,36 +167,79 @@ public final class PicturePlayer extends MediaPlayer {
 
     @Override
     public boolean liveSource() {
-        return false;
+        return false; // always false for picture players
     }
 
     @Override
     public boolean canSeek() {
-        return false;
+        return true;
     }
 
     @Override
     public boolean canPause() {
-        return false;
+        return true;
     }
 
     @Override
     public boolean canPlay() {
-        return false;
+        return true;
     }
 
     @Override
     public long duration() {
-        return 0;
+        return this.duration;
     }
 
     @Override
     public long time() {
-        return 0;
+        return this.time;
     }
 
     @Override
     public void release() {
+        ACTIVE_PLAYERS.remove(this);
         super.release();
+    }
+
+    private static void tick() {
+        while (!Thread.currentThread().isInterrupted()) {
+            ThreadTool.handBreak(1000 / 60); // 60 FPS CAP
+
+            for (final PicturePlayer player: ACTIVE_PLAYERS) {
+                if (!player.flushed)
+                    continue;
+
+                // PREPARE TICK
+                final long now = System.currentTimeMillis();
+                final long delta = now - lastTick;
+                final long deltaPlayer = player.time + delta;
+
+                // PLAYER TIME
+                if (deltaPlayer >= player.duration) {
+                    if (player.repeat()) {
+                        player.time = 0; // reset time
+                    } else {
+                        player.time = player.duration; // set to end
+                        continue; // skip tick
+                    }
+                }
+
+                // UPDATE TEXTURE
+                long frameTime = deltaPlayer;
+                for (int i = 0; i < player.delay.length; i++) {
+                    frameTime -= player.delay[i];
+                    if (frameTime <= 0) {
+                        if (player.lastFrameIndex != i) { // only update if the frame has changed
+                            player.lastFrameIndex = i;
+                            player.time = deltaPlayer; // update time
+                            player.uploadVideoFrame(new ByteBuffer[]{ player.images[i] });
+                            break;
+                        }
+                    }
+                }
+            }
+
+            lastTick = System.currentTimeMillis();
+        }
     }
 }

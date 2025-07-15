@@ -10,7 +10,7 @@ import org.lwjgl.system.MemoryUtil;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.player.FFMediaPlayer;
 import org.watermedia.api.media.player.MediaPlayer;
-import org.watermedia.api.media.players.VLVideoPlayer;
+import org.watermedia.api.media.player.VLMediaPlayer;
 import org.watermedia.videolan4j.VideoLan4J;
 
 import java.net.URI;
@@ -26,24 +26,28 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
+import static org.watermedia.WaterMedia.LOGGER;
 
 public class VLPlayerTest implements Executor {
-    private final Queue<Runnable> executor = new LinkedList<>();
+    private static final String NAME = "WATERMeDIA: Multimedia API";
 
     // The window handle
     private long window;
     private MediaPlayer player;
-    private int volume = 100; // Default volume
+    private final Queue<Runnable> executor = new LinkedList<>();
+
+    public static void main(final String[] args) {
+        final String url = args.length == 0 ? "https://www.mediafire.com/file/f23l3csbeeap9jo/TU_QLO.mp4/file" : args[0];
+        new VLPlayerTest().run(URI.create(url));
+    }
 
     // The media loader
-    private static final String NAME = "WATERMeDIA: Multimedia API";
-
     public void run(final URI url) {
 
         MediaAPI.initAllMediaStuffAsAWorkarroudnWhileWeHaveNoBootstrap();
 
         this.init();
-        this.player = new FFMediaPlayer(URI.create("https://files.catbox.moe/3nhndw.mp4"), Thread.currentThread(), this, true, true);
+        this.player = new VLMediaPlayer(URI.create("https://litter.catbox.moe/tqgd5xvqvrjz3naa.mp4"), Thread.currentThread(), this, true, true);
         System.out.println("Using VideoLan4J version: " + VideoLan4J.getLibVersion());
         this.player.start();
         this.loop();
@@ -82,12 +86,14 @@ public class VLPlayerTest implements Executor {
 
         // Setup a key callback. It will be called every time a key is pressed, repeated or released.
         glfwSetKeyCallback(this.window, (window, key, scancode, action, mods) -> {
-            if ( key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE )
-                glfwSetWindowShouldClose(window, true); // We will detect this in the rendering loop
-            System.out.println("Key is" + key);
-            if (key == GLFW_KEY_P) {
-//                player.start(URI.create("https://www.youtube.com/watch?v=LlNCDSz5BeE"));
+            if (action != GLFW_RELEASE) {
+                return;
             }
+
+            if (key == GLFW_KEY_ESCAPE)
+                glfwSetWindowShouldClose(window, true); // We will detect this in the rendering loop
+
+
             if (key == GLFW_KEY_LEFT) {
                 player.rewind();
             }
@@ -96,12 +102,18 @@ public class VLPlayerTest implements Executor {
                 player.foward();
             }
 
+            if (key == GLFW_KEY_SPACE) {
+                this.player.togglePlay();
+            }
+
             if (key == GLFW_KEY_UP) {
-                player.volume(Math.min(volume += 10, 120));
+                player.volume(player.volume() + 5);
+                LOGGER.info("UP VOLUME");
             }
 
             if (key == GLFW_KEY_DOWN) {
-                player.volume(Math.max(volume -= 10, 0));
+                player.volume(player.volume() - 5);
+                LOGGER.info("DOWN VOLUME");
             }
         });
 
@@ -160,9 +172,8 @@ public class VLPlayerTest implements Executor {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        glfwSetWindowSizeCallback(this.window, (window, width, height) -> {
-            glViewport(0, 0, width, height);
-        });
+        glfwSetWindowSizeCallback(this.window, (window, width, height) ->
+                glViewport(0, 0, width, height));
 
         // Run the rendering loop until the user has attempted to close
         // the window or has pressed the ESCAPE key.
@@ -200,18 +211,13 @@ public class VLPlayerTest implements Executor {
             // invoked during this call.
             glfwPollEvents();
             if (!this.executor.isEmpty()) this.executor.remove().run();
+            LOGGER.info("Duration: {}, Time: {}, Playing: {}, Volume: {}, Status: {}",
+                    this.player.duration(), this.player.time(), this.player.playing(), this.player.volume(), this.player.status());
         }
     }
 
-    public static void main(final String[] args) {
-        Arrays.asList("", "");
-        final String url = args.length == 0 ? "https://www.mediafire.com/file/f23l3csbeeap9jo/TU_QLO.mp4/file" : args[0];
-        new VLPlayerTest().run(URI.create(url));
-    }
-
     @Override
-    public void execute(final Runnable command)
-    {
+    public void execute(final Runnable command) {
         this.executor.add(command);
     }
 }

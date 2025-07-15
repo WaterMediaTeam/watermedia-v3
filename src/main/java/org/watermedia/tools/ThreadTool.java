@@ -15,6 +15,14 @@ public class ThreadTool {
         return false;
     }
 
+    public static void handBreak(long timeoutMillis) {
+        try {
+            Thread.sleep(timeoutMillis);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt(); // Restore interrupted status
+        }
+    }
+
     public static Thread create(String name, Runnable runnable) {
         final int c = THREADS.computeIfAbsent(name, k -> 0);
         final Thread t = new Thread(runnable, name + "-" + c);
@@ -24,4 +32,16 @@ public class ThreadTool {
         t.start(); // Start the thread immediately
         return t;
     }
+
+    public static int maxThreads() { return Runtime.getRuntime().availableProcessors(); }
+    public static int minThreads() {
+        final int count = maxThreads();
+        if (count <= 2) return 1;
+        if (count <= 8) return 2;
+        if (count <= 16) return 3;
+        if (count <= 32) return 4;
+        if (count <= 64) return 6;
+        return 8;
+    }
+
 }

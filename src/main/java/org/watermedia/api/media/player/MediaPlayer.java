@@ -9,6 +9,8 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 
+import static org.watermedia.WaterMedia.LOGGER;
+
 public abstract class MediaPlayer {
     public static final int NO_SIZE = -1;
     public static final int NO_TEXTURE = -1;
@@ -30,7 +32,7 @@ public abstract class MediaPlayer {
 
     // Audio Properties
     protected final int alSources;
-    private final int[] alBuffers = new int[3];
+    private final int[] alBuffers = new int[4];
     private int alBufferIndex = 0;
     private boolean repeat;
     private float volume = 1f; // Default volume
@@ -179,17 +181,17 @@ public abstract class MediaPlayer {
     /**
      * Moves to the previous frame of the video.
      */
-    public abstract void previousFrame();
+    public abstract boolean previousFrame();
 
     /**
      * Moves to the next frame of the video.
      */
-    public abstract void nextFrame();
+    public abstract boolean nextFrame();
 
     // AUDIO
     public void volume(int volume) {
         if (volume < 0 || volume > 120) {
-            throw new IllegalArgumentException("Volume must be between 0 and 120.");
+            LOGGER.info("Ignored invalid volume value");
         }
         this.volume = volume / 100f; // Convert to float between 0.0 and 1.0
         AL10.alSourcef(this.alSources, AL10.AL_GAIN, this.volume);
@@ -217,10 +219,6 @@ public abstract class MediaPlayer {
     public abstract void start();
 
     public abstract void startPaused();
-
-    public abstract boolean startSync();
-
-    public abstract boolean startSyncPaused();
 
     public abstract boolean resume();
 
@@ -257,22 +255,37 @@ public abstract class MediaPlayer {
     // STATE
     public abstract Status status();
 
-    @Deprecated
-    public abstract boolean usable();
+    public boolean waiting() {
+        return this.status() == Status.WAITING;
+    }
 
-    public abstract boolean loading();
+    public boolean loading() {
+        return this.status() == Status.LOADING;
+    }
 
-    public abstract boolean buffering();
+    public boolean buffering() {
+        return this.status() == Status.BUFFERING;
+    }
 
-    public abstract boolean ready();
+    public boolean paused() {
+        return this.status() == Status.PAUSED;
+    }
 
-    public abstract boolean paused();
+    public boolean playing() {
+        return this.status() == Status.PLAYING;
+    }
 
-    public abstract boolean playing();
+    public boolean stopped() {
+        return this.status() == Status.STOPPED;
+    }
 
-    public abstract boolean stopped();
+    public boolean ended() {
+        return this.status() == Status.ENDED;
+    }
 
-    public abstract boolean ended();
+    public boolean error() {
+        return this.status() == Status.ERROR;
+    }
 
     public abstract boolean validSource();
 

@@ -3,11 +3,14 @@ package org.watermedia.api.media.player;
 import com.sun.jna.NativeLong;
 import com.sun.jna.Platform;
 import com.sun.jna.Pointer;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.tools.ThreadTool;
+import org.watermedia.tools.TimeTool;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
 import org.watermedia.videolan4j.binding.lib.Kernel32;
@@ -23,7 +26,10 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
+import static org.watermedia.WaterMedia.LOGGER;
+
 public final class VLMediaPlayer extends MediaPlayer {
+    private static final Marker IT = MarkerManager.getMarker(VLMediaPlayer.class.getSimpleName());
     private static final Chroma CHROMA = Chroma.RV32; // Use RV32 aka BGRA format for video buffers
     private static final AudioFormat AUDIO_FORMAT = AudioFormat.S16N_STEREO_96;
 
@@ -146,13 +152,16 @@ public final class VLMediaPlayer extends MediaPlayer {
         AL10.alSourcef(this.alSources, AL10.AL_GAIN, volume);
 
     @Override
-    public void previousFrame() {
-//        LOGGER.warn(IT, "Prev frame is not supported by VLC Media Player");
+    public boolean previousFrame() {
+//        LibVlc.libvlc_media_player_previous_frame(this.rawPlayer);
+        LOGGER.warn(IT, "Prev frame is not supported by VLC Media Player");
+        return false;
     }
 
     @Override
-    public void nextFrame() {
+    public boolean nextFrame() {
         LibVlc.libvlc_media_player_next_frame(this.rawPlayer);
+        return true;
     }
 
     @Override
@@ -162,17 +171,8 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public void startPaused() {
-
-    }
-
-    @Override
-    public boolean startSync() {
-        return false;
-    }
-
-    @Override
-    public boolean startSyncPaused() {
-        return false;
+        LibVlc.libvlc_media_add_option(this.rawMedia, "start-paused");
+        this.start();
     }
 
     @Override
@@ -199,6 +199,14 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean togglePlay() {
+        if (this.status() == Status.PLAYING) {
+            return this.pause();
+        } else if (this.status() == Status.PAUSED) {
+            return this.resume();
+        } else if (this.status() == Status.STOPPED) {
+            this.start();
+            return true;
+        }
         return false;
     }
 
@@ -250,43 +258,9 @@ public final class VLMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean usable() {
-        return false;
-    }
-
-    @Override
-    public boolean loading() {
-        return this.status() == Status.LOADING;
-    }
-
-    @Override
-    public boolean buffering() {
-        return this.status() == Status.BUFFERING;
-    }
-
-    @Override
-    public boolean ready() {
-        return LibVlc.libvlc_media_player_will_play(this.rawPlayer) == 1;
-    }
-
-    @Override
-    public boolean paused() {
-        return this.status() == Status.PAUSED;
-    }
-
-    @Override
     public boolean playing() {
+        // OVERRWRITE STATUS JUST FOR PLAYING
         return LibVlc.libvlc_media_player_is_playing(this.rawPlayer) == 1;
-    }
-
-    @Override
-    public boolean stopped() {
-        return this.status() == Status.STOPPED;
-    }
-
-    @Override
-    public boolean ended() {
-        return this.status() == Status.ENDED;
     }
 
     @Override
@@ -311,7 +285,7 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean canPlay() {
-        return true;
+        return LibVlc.libvlc_media_player_will_play(this.rawPlayer) == 1;
     }
 
     @Override
@@ -321,7 +295,6 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public long time() {
-        // LibVlc.libvlc_media_player_get_time(mediaPlayerInstance)
         return LibVlc.libvlc_media_player_get_time(this.rawPlayer);
     }
 
