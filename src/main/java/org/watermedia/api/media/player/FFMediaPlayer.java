@@ -403,7 +403,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public long time() {
         if (this.status == Status.PLAYING || this.status == Status.PAUSED) {
             return System.currentTimeMillis() - this.playbackStartTime;
-        } else if (this.status == Status.STOPPED) {
+        } else if (this.status == Status.STOPPED || this.status == Status.ENDED) {
             return this.duration();
         } else {
             return this.virtualTime.get();
@@ -416,11 +416,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         if (this.playerThread != null && this.playerThread.isAlive()) {
             this.playerThread.interrupt();
-            try {
-                this.playerThread.join(1000); // Wait up to 1 second
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
         }
 
         // Log frame drop statistics
@@ -470,7 +465,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (this.status == Status.PLAYING) {
                 if (avformat.av_read_frame(this.ffmpegInstance, this.packet) >= 0) {
                     try {
-                        if (this.packet.stream_index() == this.videoStreamIndex) {
+                        if (this.packet.stream_index() == this.audioStreamIndex) {
+                            this.processAudioFrame();
+                        } else if (this.packet.stream_index() == this.videoStreamIndex) {
                             // Check if we need to skip this frame for sync
                             if (this.shouldSkipFrame()) {
                                 this.droppedFrames++;
@@ -485,8 +482,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                                 this.processVideoFrame();
                                 consecutiveSkips = 0;
                             }
-                        } else if (this.packet.stream_index() == this.audioStreamIndex) {
-                            this.processAudioFrame();
                         }
                     } finally {
                         avcodec.av_packet_unref(this.packet);
@@ -496,10 +491,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (this.repeat) {
                         if (avformat.av_seek_frame(this.ffmpegInstance, -1, 0, avformat.AVSEEK_FLAG_BACKWARD) < 0) {
                             LOGGER.error(IT, "Failed to seek to the beginning of the stream");
-                            this.status = Status.STOPPED;
+                            this.status = Status.ENDED;
                         }
                     } else {
-                        this.status = Status.STOPPED;
+                        this.status = Status.ENDED;
                     }
                 }
             } else {
