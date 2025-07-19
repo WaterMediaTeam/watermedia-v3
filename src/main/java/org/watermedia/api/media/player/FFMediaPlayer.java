@@ -584,6 +584,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 frameBuffer = this.rgbaFrame.data(0).limit((long) this.height() * lineSize).asBuffer();
             } else {
                 // Handle padding by copying line by line
+                // todo; use lwjgl malloc, this sucks
                 frameBuffer = ByteBuffer.allocateDirect(this.height() * expectedLineSize);
                 final BytePointer sourceData = this.rgbaFrame.data(0);
 
@@ -596,6 +597,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // Create a copy for thread safety
+            // todo; use lwjgl malloc, this sucks
+            //  and remove the frameBuffer copy
             final ByteBuffer frameBufferCopy = ByteBuffer.allocateDirect(frameBuffer.remaining());
             frameBuffer.rewind();
             frameBufferCopy.put(frameBuffer);

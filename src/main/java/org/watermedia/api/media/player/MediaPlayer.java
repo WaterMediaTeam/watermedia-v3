@@ -76,18 +76,22 @@ public abstract class MediaPlayer {
     }
 
     protected void uploadAudioBuffer(final ByteBuffer data, final int alFormat, final int sampleRate, final int channels) {
+        if (!this.audio) {
+            throw new IllegalStateException("MediaPlayer was built with no audio support");
+        }
+
         if (alFormat != AL10.AL_FORMAT_MONO8 && alFormat != AL10.AL_FORMAT_MONO16 && alFormat != AL10.AL_FORMAT_STEREO8 && alFormat != AL10.AL_FORMAT_STEREO16) {
             throw new IllegalArgumentException("Unsupported audio format: " + alFormat);
         }
 
         if (channels < 1 || channels > 2) {
-            throw new IllegalArgumentException("Unsupported number of channels: " + channels);
+            throw new IllegalArgumentException("Unsupported channel count: " + channels);
         }
 
         if (channels == 1 && (alFormat != AL10.AL_FORMAT_MONO8 && alFormat != AL10.AL_FORMAT_MONO16)) {
-            throw new IllegalArgumentException("Mono audio format expected for single channel audio.");
+            throw new IllegalArgumentException("Mono format expected for single channel audio.");
         } else if (channels == 2 && (alFormat != AL10.AL_FORMAT_STEREO8 && alFormat != AL10.AL_FORMAT_STEREO16)) {
-            throw new IllegalArgumentException("Stereo audio format expected for dual channel audio.");
+            throw new IllegalArgumentException("Stereo format expected for dual channel audio.");
         }
 
         // PREPARE
@@ -112,6 +116,10 @@ public abstract class MediaPlayer {
     }
 
     protected void uploadVideoFrame(final ByteBuffer[] nativeBuffers) {
+        if (!this.video) {
+            throw new IllegalStateException("MediaPlayer was built with no video support");
+        }
+
         if (this.glChroma != GL12.GL_RGBA && this.glChroma != GL12.GL_BGRA) {
             throw new IllegalArgumentException("Unsupported chroma format: " + this.glChroma);
         }
@@ -121,7 +129,8 @@ public abstract class MediaPlayer {
         }
 
         if (this.renderThread != Thread.currentThread()) {
-            throw new IllegalStateException("This method must be called from the render thread!");
+            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffers));
+            return;
         }
 
         // LOCK RENDER THREAD

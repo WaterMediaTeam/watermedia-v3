@@ -95,11 +95,11 @@ public class VLPlayerTest implements Executor {
 
 
             if (key == GLFW_KEY_LEFT) {
-                player.rewind();
+                this.player.rewind();
             }
 
             if (key == GLFW_KEY_RIGHT) {
-                player.foward();
+                this.player.foward();
             }
 
             if (key == GLFW_KEY_SPACE) {
@@ -107,12 +107,12 @@ public class VLPlayerTest implements Executor {
             }
 
             if (key == GLFW_KEY_UP) {
-                player.volume(player.volume() + 5);
+                this.player.volume(this.player.volume() + 5);
                 LOGGER.info("UP VOLUME");
             }
 
             if (key == GLFW_KEY_DOWN) {
-                player.volume(player.volume() - 5);
+                this.player.volume(this.player.volume() - 5);
                 LOGGER.info("DOWN VOLUME");
             }
         });
@@ -146,18 +146,18 @@ public class VLPlayerTest implements Executor {
         GL.createCapabilities();
 
         // Abrir dispositivo
-        long device = ALC10.alcOpenDevice((ByteBuffer) null);
+        final long device = ALC10.alcOpenDevice((ByteBuffer) null);
         if (device == 0L) throw new IllegalStateException("No se pudo abrir dispositivo de audio");
 
         // Crear contexto
-        long context = ALC10.alcCreateContext(device, (IntBuffer) null);
+        final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
         ALC10.alcMakeContextCurrent(context);
 
         // Crear capabilities ALC (dispositivo)
-        ALCCapabilities alcCaps = ALC.createCapabilities(device);
+        final ALCCapabilities alcCaps = ALC.createCapabilities(device);
 
         // Crear capabilities AL (contexto)
-        ALCapabilities alCaps = AL.createCapabilities(alcCaps);
+        final ALCapabilities alCaps = AL.createCapabilities(alcCaps);
     }
 
     private void loop() {
@@ -194,7 +194,7 @@ public class VLPlayerTest implements Executor {
             }
             glEnd();
 
-            if (player != null && (!player.playing())) {
+            if (this.player != null && (!this.player.playing())) {
                 glBegin(GL_QUADS);
                 {
                     glTexCoord2f(0, 1); glVertex2f(-1, -1);

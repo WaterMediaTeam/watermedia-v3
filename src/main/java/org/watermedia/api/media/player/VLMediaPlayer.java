@@ -116,12 +116,11 @@ public final class VLMediaPlayer extends MediaPlayer {
         }
         return null;
     };
+    private final libvlc_display_callback_t displayCallback = (opaque, picture) -> this.uploadVideoFrame(this.nativeBuffers);
+
     private final libvlc_unlock_callback_t unlockCallback = (opaque, picture, plane) -> {
 
     };
-    private final libvlc_display_callback_t displayCallback = (opaque, picture) ->
-            this.renderThreadEx.execute(() ->
-                    this.uploadVideoFrame(this.nativeBuffers));
 
     private final libvlc_audio_play_cb vlcPlayCb = (pointer, samples, count, pts) -> {
         final ByteBuffer data = samples.getByteBuffer(0L, AUDIO_FORMAT.calculateBufferSize(count));

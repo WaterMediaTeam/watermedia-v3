@@ -1,3 +1,23 @@
+# BUFFER AND ITS ALIGMENT
+My knoledge of memory aligment is not rich as I want to, investigating
+I discovered that ARM doesn't like disaligment, causing segmentation fault errors.
+
+Well, thats one of many concerns i have with the buffers.
+Context: In (way) older watermedia versions (when it was based on LittleFrames VLCJ implementation),
+watermedia by default copies the output buffer from VLC into another buffer to be "safely" uploaded on render thread.
+Whoever, I hate that, is not scalable, each mediaplayer consumes the memory of one frame * 3 (native  buffer, 
+implementation buffer and opengl buffer), and multiplying it in at least 10 players at 1080p makes in total:
+1920 (width) x 1080 (height) x 4 (bytes per pixel) x 3 (buffers) x 10 (media players) = 240MB of RAM, if you
+watched the QSMP, the threadshold is at least 300 (The whole server was full of frames)... SCABILITY IS NOT OPTIONAL.
+
+challenge: synchronization, keep the code simple, sanitized, and thread-safe is something hard to make, and just
+to not use more than 2 buffers reusing watermedia buffers (MediaPlayer buffer and OpenGL buffers), 
+so watermedia can just theoretically eat with 300 media players 165mb instead with 2 buffers instead of 248mb having 3.
+(I said theoretically because VLC and FFMPEG of course will do other internal buffers and not always are video buffers).
+
+Well after that big chunk of text, lets finish the FFMPEG MediaPlayer, I am exiting to built the API arround both
+
+
 # CAPRICA, NO MUCH IDEA OF WHAT VLC DOES
 After all the years I was working with VLCJ on WaterMedia, I was way more convinced
 that caprica (creator of VLCJ) has no much idea of how VLC works or how to translate the
