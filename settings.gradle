@@ -5,4 +5,4 @@ pluginManagement {
     }
 }
 
-includeBuild('../../videolan-natives')
+includeBuild('../videolan-natives')
