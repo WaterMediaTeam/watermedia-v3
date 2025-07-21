@@ -47,7 +47,7 @@ public class VLPlayerTest implements Executor {
         MediaAPI.initAllMediaStuffAsAWorkarroudnWhileWeHaveNoBootstrap();
 
         this.init();
-        this.player = new FFMediaPlayer(URI.create("https://files.catbox.moe/so3njj.mp4"), Thread.currentThread(), this, true, true);
+        this.player = new VLMediaPlayer(URI.create("https://files.catbox.moe/so3njj.mp4"), Thread.currentThread(), this, true, true);
         System.out.println("Using VideoLan4J version: " + VideoLan4J.getLibVersion());
         this.player.start();
         this.loop();

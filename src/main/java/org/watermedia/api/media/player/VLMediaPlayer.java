@@ -1,6 +1,5 @@
 package org.watermedia.api.media.player;
 
-import com.sun.jna.Platform;
 import com.sun.jna.Pointer;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
@@ -8,7 +7,6 @@ import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.tools.ThreadTool;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
 import org.watermedia.videolan4j.binding.lib.LibC;
@@ -18,7 +16,6 @@ import org.watermedia.videolan4j.tools.*;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -28,8 +25,8 @@ public final class VLMediaPlayer extends MediaPlayer {
     private static final AudioFormat AUDIO_FORMAT = AudioFormat.S16N_STEREO_96;
 
     // VIDEO BUFFERS
-    private ByteBuffer[] nativeBuffers = new ByteBuffer[0];
-    private Pointer[] nativePointers = new Pointer[0];
+    private ByteBuffer nativeBuffer = null;
+    private Pointer nativePointers = null;
 
     // VIDEOLAN
     private final libvlc_media_player_t rawPlayer;
@@ -66,47 +63,38 @@ public final class VLMediaPlayer extends MediaPlayer {
         this.setVideoFormat(GL12.GL_BGRA, widthPointer.getValue(), heightPointer.getValue());
         widthPointer.setValue(this.width());
         heightPointer.setValue(this.height());
-        final int[] pitchValues = Chroma.RV32.getPitches(this.width());
-        final int[] lineValues = Chroma.RV32.getLines(this.height());
+        final int[] pitchValues = CHROMA.getPitches(this.width());
+        final int[] lineValues = CHROMA.getLines(this.height());
         final int planeCount = pitchValues.length;
 
         pitchesPointer.getPointer().write(0, pitchValues, 0, pitchValues.length);
         linesPointer.getPointer().write(0, lineValues, 0, lineValues.length);
 
-        // ALLOCATE NATIVE BUFFERS
-        this.nativeBuffers = new ByteBuffer[planeCount];
-        this.nativePointers = new Pointer[planeCount];
-        for (int i = 0; i < planeCount; i++) {
-            final ByteBuffer buffer = Buffers.alloc(pitchValues[i] * lineValues[i]);
-            this.nativeBuffers[i] = buffer;
-            this.nativePointers[i] = Pointer.createConstant(Buffers.address(buffer));
-            // LOCK NATIVE BUFFER - OPTIONAL
-            LibC.memoryLock(this.nativePointers[i], buffer.capacity());
-        }
+        // ALLOCATE NATIVE BUFFERS - I AM ASSUMING THAT ITS ONLY ONE PLANE (AS IT IS FOR RV32)
+        this.nativeBuffer = Buffers.alloc(pitchValues[0] * lineValues[0]);
+        this.nativePointers = Pointer.createConstant(Buffers.address(this.nativeBuffer));
+        LibC.memoryLock(this.nativePointers, this.nativeBuffer.capacity());
 
-        return this.nativeBuffers.length;
+        return planeCount;
     };
     private final libvlc_video_cleanup_cb cleanupCB = opaque -> {
-        if (this.nativeBuffers.length == 0) return;
+        if (this.nativeBuffer == null) return;
 
-        for (int i = 0; i < this.nativeBuffers.length; i++) {
-            if (!Platform.isWindows()) {
-                LibC.memoryUnlock(this.nativePointers[i], this.nativeBuffers[i].capacity());
-            }
-        }
-        this.nativeBuffers = new ByteBuffer[0];
-        this.nativePointers = new Pointer[0];
+        LibC.memoryUnlock(this.nativePointers, this.nativeBuffer.capacity());
+        this.nativeBuffer = null;
+        this.nativePointers = null;
     };
 
     private final libvlc_lock_callback_t lockCB = (opaque, planes) -> {
-        if (ThreadTool.tryAdquireLock(this.glSemaphore, 5, TimeUnit.SECONDS)) {
-            planes.getPointer().write(0, this.nativePointers, 0, this.nativePointers.length);
-            this.glSemaphore.release();
+        if (this.nativeBuffer == null) return null; // nativePointers are never null when nativeBuffers is not null.
+
+        synchronized (this.nativeBuffer) { // Doesn't matter if is not synchronized a constant buffer.
+            planes.getPointer().setPointer(0, this.nativePointers);
         }
         return null;
     };
 
-    private final libvlc_display_callback_t displayCB = (opaque, picture) -> this.uploadVideoFrame(this.nativeBuffers);
+    private final libvlc_display_callback_t displayCB = (opaque, picture) -> this.uploadVideoFrame(this.nativeBuffer);
     private final libvlc_unlock_callback_t unlockCB = (opaque, picture, plane) -> {};
     private final libvlc_audio_play_cb playCB = (pointer, samples, count, pts) ->
             this.uploadAudioBuffer(samples.getByteBuffer(0L, AUDIO_FORMAT.calculateBufferSize(count)), AL11.AL_FORMAT_STEREO16, AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());
@@ -283,8 +271,8 @@ public final class VLMediaPlayer extends MediaPlayer {
 //        }
         LibVlc.libvlc_media_release(this.rawMedia);
         LibVlc.libvlc_media_player_release(this.rawPlayer);
-        this.nativeBuffers = new ByteBuffer[0];
-        this.nativePointers = new Pointer[0];
+        this.nativeBuffer = null;
+        this.nativePointers = null;
         super.release();
     }
 

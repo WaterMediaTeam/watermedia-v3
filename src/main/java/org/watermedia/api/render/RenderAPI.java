@@ -28,7 +28,7 @@ public class RenderAPI {
         return tex;
     }
 
-    public static int[] createTextures(int count) {
+    public static int[] createTextures(final int count) {
         final int[] tex = new int[count];
         GL11.glGenTextures(tex);
 
@@ -59,13 +59,13 @@ public class RenderAPI {
         GL11.glDeleteTextures(texture);
     }
 
-    public static void updateTexture(int texture, ByteBuffer[] buffers, int width, int height, int format, boolean firstFrame) {
+    public static void updateTexture(final int texture, final ByteBuffer buffers, final int width, final int height, final int format, final boolean firstFrame) {
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
 
         if (firstFrame) {
-            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL11.GL_UNSIGNED_BYTE, buffers[0]);
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL11.GL_UNSIGNED_BYTE, buffers);
         } else {
-            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL11.GL_UNSIGNED_BYTE, buffers[0]);
+            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL11.GL_UNSIGNED_BYTE, buffers);
         }
 
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, NONE);

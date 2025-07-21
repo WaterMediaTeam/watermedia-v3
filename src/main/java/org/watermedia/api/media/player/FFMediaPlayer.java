@@ -605,7 +605,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             frameBufferCopy.rewind();
 
             // Upload frame to OpenGL
-            this.renderThreadEx.execute(() -> this.uploadVideoFrame(new ByteBuffer[] { frameBufferCopy }));
+            this.renderThreadEx.execute(() -> this.uploadVideoFrame(frameBufferCopy));
         }
     }
 

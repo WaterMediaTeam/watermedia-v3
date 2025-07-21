@@ -115,7 +115,12 @@ public abstract class MediaPlayer {
         }
     }
 
-    protected void uploadVideoFrame(final ByteBuffer[] nativeBuffers) {
+    protected void uploadVideoFrame(final ByteBuffer nativeBuffers) {
+        if (this.renderThread != Thread.currentThread()) {
+            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffers));
+            return;
+        }
+
         if (!this.video) {
             throw new IllegalStateException("MediaPlayer was built with no video support");
         }
@@ -124,22 +129,14 @@ public abstract class MediaPlayer {
             throw new IllegalArgumentException("Unsupported chroma format: " + this.glChroma);
         }
 
-        if (nativeBuffers == null || nativeBuffers.length == 0) {
+        if (nativeBuffers == null) {
             throw new IllegalArgumentException("Native buffers cannot be null or empty.");
         }
 
-        if (this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffers));
-            return;
-        }
-
         // LOCK RENDER THREAD
-        if (this.glSemaphore.tryAcquire()) {
-            // UPDATE TEXTURE
+        synchronized(nativeBuffers) {
             RenderAPI.updateTexture(this.glTexture, nativeBuffers, this.width, this.height, this.glChroma, this.firstFrame);
             this.firstFrame = false;
-            // RELEASE RENDER THREAD
-            this.glSemaphore.release();
         }
     }
 

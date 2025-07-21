@@ -232,7 +232,7 @@ public final class PicturePlayer extends MediaPlayer {
                         if (player.lastFrameIndex != i) { // only update if the frame has changed
                             player.lastFrameIndex = i;
                             player.time = deltaPlayer; // update time
-                            player.uploadVideoFrame(new ByteBuffer[]{ player.images[i] });
+                            player.uploadVideoFrame(player.images[i]);
                             break;
                         }
                     }
