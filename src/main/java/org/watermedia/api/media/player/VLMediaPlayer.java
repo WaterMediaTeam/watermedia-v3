@@ -1,6 +1,5 @@
 package org.watermedia.api.media.player;
 
-import com.sun.jna.NativeLong;
 import com.sun.jna.Platform;
 import com.sun.jna.Pointer;
 import org.apache.logging.log4j.Marker;
@@ -10,16 +9,11 @@ import org.lwjgl.openal.AL11;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.tools.ThreadTool;
-import org.watermedia.tools.TimeTool;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
-import org.watermedia.videolan4j.binding.lib.Kernel32;
 import org.watermedia.videolan4j.binding.lib.LibC;
 import org.watermedia.videolan4j.binding.lib.LibVlc;
-import org.watermedia.videolan4j.binding.lib.size_t;
-import org.watermedia.videolan4j.tools.AudioFormat;
-import org.watermedia.videolan4j.tools.Buffers;
-import org.watermedia.videolan4j.tools.Chroma;
+import org.watermedia.videolan4j.tools.*;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -50,22 +44,22 @@ public final class VLMediaPlayer extends MediaPlayer {
 
         // SETUP AUDIO
         if (this.isAudio()) {
-            LibVlc.libvlc_audio_set_callbacks(this.rawPlayer, this.vlcPlayCb, this.vlcPauseCb, this.vlcResumeCb, this.vlcFlushCb, this.vlcDrainCb, Pointer.NULL);
-            LibVlc.libvlc_audio_set_volume_callback(this.rawPlayer, this.vlcVolumeSetCb);
+            LibVlc.libvlc_audio_set_callbacks(this.rawPlayer, this.playCB, this.pauseCB, this.resumeCB, this.flushCB, this.drainCB, Pointer.NULL);
+            LibVlc.libvlc_audio_set_volume_callback(this.rawPlayer, this.volumeCB);
             LibVlc.libvlc_audio_set_format(this.rawPlayer, AUDIO_FORMAT.getFormatName(), AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());
         }
 
         // SETUP VIDEO
         if (this.isVideo()) {
-            LibVlc.libvlc_video_set_format_callbacks(this.rawPlayer, this.videoFormatCB, this.cleanupCB);
-            LibVlc.libvlc_video_set_callbacks(this.rawPlayer, this.lockCallback, this.unlockCallback, this.displayCallback, Pointer.NULL);
+            LibVlc.libvlc_video_set_format_callbacks(this.rawPlayer, this.formatCB, this.cleanupCB);
+            LibVlc.libvlc_video_set_callbacks(this.rawPlayer, this.lockCB, this.unlockCB, this.displayCB, Pointer.NULL);
         }
 
         // REGISTER EVENTS
         final libvlc_event_manager_t eventManager = LibVlc.libvlc_media_player_event_manager(this.rawPlayer);
     }
 
-    private final libvlc_video_format_cb videoFormatCB = (opaque, chromaPointer, widthPointer, heightPointer, pitchesPointer, linesPointer) -> {
+    private final libvlc_video_format_cb formatCB = (opaque, chromaPointer, widthPointer, heightPointer, pitchesPointer, linesPointer) -> {
         // APPLY CHROMA
         final byte[] chromaBytes = CHROMA.chroma();
         chromaPointer.getPointer().write(0, chromaBytes, 0, Math.min(chromaBytes.length, 4));
@@ -87,11 +81,7 @@ public final class VLMediaPlayer extends MediaPlayer {
             this.nativeBuffers[i] = buffer;
             this.nativePointers[i] = Pointer.createConstant(Buffers.address(buffer));
             // LOCK NATIVE BUFFER - OPTIONAL
-            if (!Platform.isWindows()) {
-                LibC.INSTANCE.mlock(this.nativePointers[i], new NativeLong(buffer.capacity()));
-            } else {
-                Kernel32.INSTANCE.VirtualLock(this.nativePointers[i], new size_t(buffer.capacity()));
-            }
+            LibC.memoryLock(this.nativePointers[i], buffer.capacity());
         }
 
         return this.nativeBuffers.length;
@@ -101,58 +91,44 @@ public final class VLMediaPlayer extends MediaPlayer {
 
         for (int i = 0; i < this.nativeBuffers.length; i++) {
             if (!Platform.isWindows()) {
-                LibC.INSTANCE.munlock(this.nativePointers[i], new NativeLong(this.nativeBuffers[i].capacity()));
-            } else {
-                Kernel32.INSTANCE.VirtualUnlock(this.nativePointers[i], new size_t(this.nativeBuffers[i].capacity()));
+                LibC.memoryUnlock(this.nativePointers[i], this.nativeBuffers[i].capacity());
             }
         }
         this.nativeBuffers = new ByteBuffer[0];
         this.nativePointers = new Pointer[0];
     };
-    private final libvlc_lock_callback_t lockCallback = (opaque, planes) -> {
+
+    private final libvlc_lock_callback_t lockCB = (opaque, planes) -> {
         if (ThreadTool.tryAdquireLock(this.glSemaphore, 5, TimeUnit.SECONDS)) {
             planes.getPointer().write(0, this.nativePointers, 0, this.nativePointers.length);
             this.glSemaphore.release();
         }
         return null;
     };
-    private final libvlc_display_callback_t displayCallback = (opaque, picture) -> this.uploadVideoFrame(this.nativeBuffers);
 
-    private final libvlc_unlock_callback_t unlockCallback = (opaque, picture, plane) -> {
+    private final libvlc_display_callback_t displayCB = (opaque, picture) -> this.uploadVideoFrame(this.nativeBuffers);
+    private final libvlc_unlock_callback_t unlockCB = (opaque, picture, plane) -> {};
+    private final libvlc_audio_play_cb playCB = (pointer, samples, count, pts) ->
+            this.uploadAudioBuffer(samples.getByteBuffer(0L, AUDIO_FORMAT.calculateBufferSize(count)), AL11.AL_FORMAT_STEREO16, AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());
 
-    };
-
-    private final libvlc_audio_play_cb vlcPlayCb = (pointer, samples, count, pts) -> {
-        final ByteBuffer data = samples.getByteBuffer(0L, AUDIO_FORMAT.calculateBufferSize(count));
-        this.uploadAudioBuffer(data, AL11.AL_FORMAT_STEREO16, AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());
-    };
-
-    private final libvlc_audio_pause_cb vlcPauseCb = (data, pts) -> {
+    private final libvlc_audio_pause_cb pauseCB = (data, pts) -> {
         if (AL10.alGetSourcei(this.alSources, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) {
             AL10.alSourcePause(this.alSources);
         }
     };
 
-    private final libvlc_audio_resume_cb vlcResumeCb = (data, pts) -> {
+    private final libvlc_audio_resume_cb resumeCB = (data, pts) -> {
         if (AL10.alGetSourcei(this.alSources, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) {
             AL10.alSourcePlay(this.alSources);
         }
     };
-
-    private final libvlc_audio_flush_cb vlcFlushCb = (data, pts) -> {
-        // Handle audio flush
-    };
-
-    private final libvlc_audio_drain_cb vlcDrainCb = data -> {
-        // Handle audio drain
-    };
-
-    private final libvlc_audio_set_volume_cb vlcVolumeSetCb = (data, volume, mute) ->
-        AL10.alSourcef(this.alSources, AL10.AL_GAIN, volume);
+    private final libvlc_audio_flush_cb flushCB = (data, pts) -> {};
+    private final libvlc_audio_drain_cb drainCB = data -> {};
+    private final libvlc_audio_set_volume_cb volumeCB = (data, volume, mute) -> AL10.alSourcef(this.alSources, AL10.AL_GAIN, volume);
 
     @Override
     public boolean previousFrame() {
-//        LibVlc.libvlc_media_player_previous_frame(this.rawPlayer);
+        // LibVlc.libvlc_media_player_previous_frame(this.rawPlayer);
         LOGGER.warn(IT, "Prev frame is not supported by VLC Media Player");
         return false;
     }
