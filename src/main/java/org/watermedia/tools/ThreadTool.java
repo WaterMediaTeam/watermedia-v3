@@ -23,7 +23,7 @@ public class ThreadTool {
         }
     }
 
-    public static Thread create(String name, Runnable runnable) {
+    public static Thread createStarted(String name, Runnable runnable) {
         final int c = THREADS.computeIfAbsent(name, k -> 0);
         final Thread t = new Thread(runnable, name + "-" + c);
         THREADS.put(name, c + 1);

@@ -11,7 +11,7 @@ import java.util.concurrent.Executors;
 
 public final class PicturePlayer extends MediaPlayer {
     // OFF-THREAD TASKS
-    private static final Thread PLAYER_THREAD = ThreadTool.create("PicturePlayerThread", PicturePlayer::tick);
+    private static final Thread PLAYER_THREAD = ThreadTool.createStarted("PicturePlayerThread", PicturePlayer::tick);
     private static final Executor FETCH_EXECUTOR = Executors.newScheduledThreadPool(ThreadTool.minThreads());
 
     // REGISTRY
