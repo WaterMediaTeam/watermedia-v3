@@ -23,13 +23,25 @@ public class ThreadTool {
         }
     }
 
-    public static Thread createStarted(String name, Runnable runnable) {
+    /**
+     * Creates a new thread, already started with a while loop.
+     * Thread checks for the interruped status on the loop, which will stop the loop
+     * if the thread got interrumped
+     * @param name
+     * @param runnable
+     * @return
+     */
+    public static Thread createStartedLoop(String name, Runnable runnable) {
         final int c = THREADS.computeIfAbsent(name, k -> 0);
-        final Thread t = new Thread(runnable, name + "-" + c);
+        final Thread t = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                runnable.run();
+            }
+        }, name + "-" + c);
         THREADS.put(name, c + 1);
-        t.setDaemon(true); // Set the thread as a daemon thread
-        t.setPriority(Thread.NORM_PRIORITY); // Set the thread priority to normal
-        t.start(); // Start the thread immediately
+        t.setDaemon(true); // PLEASE KILL YOURSELF WHEN THE MAIN THREAD DO IT TOO
+        t.setPriority(Thread.NORM_PRIORITY);
+        t.start();
         return t;
     }
 

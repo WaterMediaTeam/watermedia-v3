@@ -79,7 +79,7 @@ public final class FFMediaPlayerOld extends MediaPlayer {
     public FFMediaPlayerOld(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video, final boolean audio) {
         super(mrl, renderThread, renderThreadEx, video, audio);
         this.ffmpegInstance = avformat.avformat_alloc_context();
-        this.playerThread = ThreadTool.createStarted("FFMediaPlayer-Thread", this::tick);
+        this.playerThread = ThreadTool.createStartedLoop("FFMediaPlayer-Thread", this::tick);
     }
 
     @Override
