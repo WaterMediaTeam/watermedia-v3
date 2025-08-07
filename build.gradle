@@ -63,7 +63,8 @@ dependencies {
     shadow "com.github.MinecraftOmega:omegaconfig:$omegaconfig_version"
     // shadow "com.github.WaterMediaTeam:videolan-natives:$videolan4j_version"
     shadow "org.watermedia:videolan-natives"
-    shadow "com.github.WaterMediaTeam:ffmpeg4j:$ffmpeg4j_version"
+    implementation("org.bytedeco:ffmpeg:7.1.1-1.5.12")
+    implementation("org.bytedeco:ffmpeg-platform:7.1.1-1.5.12")
 
     // DEPENDENCIES INCLUDED IN MINECRAFT
     library "com.google.code.gson:gson:$gson_version"

@@ -7,7 +7,6 @@ import org.watermedia.api.render.RenderAPI;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Semaphore;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -28,7 +27,6 @@ public abstract class MediaPlayer {
     private int height = NO_SIZE;
     private final int glTexture;
     private boolean firstFrame = true;
-    protected final Semaphore glSemaphore = new Semaphore(1);
 
     // Audio Properties
     protected final int alSources;

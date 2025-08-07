@@ -8,6 +8,7 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.media.player.FFMediaPlayer;
 import org.watermedia.api.media.player.MediaPlayer;
 import org.watermedia.api.media.player.VLMediaPlayer;
 import org.watermedia.videolan4j.VideoLan4J;
@@ -45,7 +46,7 @@ public class VLPlayerTest implements Executor {
         MediaAPI.initAllMediaStuffAsAWorkarroudnWhileWeHaveNoBootstrap();
 
         this.init();
-        this.player = new VLMediaPlayer(URI.create("https://files.catbox.moe/so3njj.mp4"), Thread.currentThread(), this, true, true);
+        this.player = new FFMediaPlayer(URI.create("https://files.catbox.moe/so3njj.mp4"), Thread.currentThread(), this, true, true);
         System.out.println("Using VideoLan4J version: " + VideoLan4J.getLibVersion());
         this.player.start();
         this.loop();
@@ -93,11 +94,15 @@ public class VLPlayerTest implements Executor {
 
 
             if (key == GLFW_KEY_LEFT) {
+                LOGGER.info("Time: {} - Duration: {}", this.player.time(), this.player.duration());
                 this.player.rewind();
+                LOGGER.info("KEY LEFT");
             }
 
             if (key == GLFW_KEY_RIGHT) {
+                LOGGER.info("Time: {} - Duration: {}", this.player.time(), this.player.duration());
                 this.player.foward();
+                LOGGER.info("KEY RIGHT");
             }
 
             if (key == GLFW_KEY_SPACE) {
@@ -209,13 +214,15 @@ public class VLPlayerTest implements Executor {
             // invoked during this call.
             glfwPollEvents();
             if (!this.executor.isEmpty()) this.executor.remove().run();
-            LOGGER.info("Duration: {}, Time: {}, Playing: {}, Volume: {}, Status: {}",
-                    this.player.duration(), this.player.time(), this.player.playing(), this.player.volume(), this.player.status());
+//            LOGGER.info("Duration: {}, Time: {}, Playing: {}, Volume: {}, Status: {}",
+//                    this.player.duration(), this.player.time(), this.player.playing(), this.player.volume(), this.player.status());
         }
     }
 
     @Override
     public void execute(final Runnable command) {
+        if (command == null)
+            throw new IllegalArgumentException("Command cannot be null");
         this.executor.add(command);
     }
 }
