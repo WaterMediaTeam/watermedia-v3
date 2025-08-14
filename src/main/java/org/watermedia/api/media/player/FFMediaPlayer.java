@@ -76,6 +76,8 @@ public class FFMediaPlayer extends MediaPlayer {
     private volatile boolean isPaused = false;
     private long pausedAt = 0;
     private long totalPauseTime = 0;
+    private final Object playbackLock = new Object();
+    private final AtomicBoolean throttleNotified = new AtomicBoolean(false);
 
     // Memory management - reusable buffers
     private AVPacket packet;
@@ -147,6 +149,7 @@ public class FFMediaPlayer extends MediaPlayer {
             this.isPaused = false;
             this.pauseRequested.set(false);
             this.currentStatus.set(Status.PLAYING);
+
             this.pauseLock.notifyAll();
 
             return true;
@@ -254,8 +257,7 @@ public class FFMediaPlayer extends MediaPlayer {
         final long currentTime = this.time();
         final long targetTime = Math.max(0, currentTime - frameTimeMs);
 
-        LOGGER.debug(IT, "Previous frame: {}ms -> {}ms (frame time: {}ms)",
-                currentTime, targetTime, frameTimeMs);
+        LOGGER.debug(IT, "Previous frame: {}ms -> {}ms (frame time: {}ms)", currentTime, targetTime, frameTimeMs);
         return this.seek(targetTime);
     }
 
@@ -267,8 +269,7 @@ public class FFMediaPlayer extends MediaPlayer {
         final long currentTime = this.time();
         final long targetTime = this.clampSeekTime(currentTime + frameTimeMs);
 
-        LOGGER.debug(IT, "Next frame: {}ms -> {}ms (frame time: {}ms)",
-                currentTime, targetTime, frameTimeMs);
+        LOGGER.debug(IT, "Next frame: {}ms -> {}ms (frame time: {}ms)", currentTime, targetTime, frameTimeMs);
         return this.seek(targetTime);
     }
 
@@ -374,12 +375,12 @@ public class FFMediaPlayer extends MediaPlayer {
                 this.handleStateRequests();
 
                 if (this.isPaused) {
-                    Thread.sleep(50);
+                    this.waitForResume();
                     continue;
                 }
 
                 if (this.shouldThrottleReading()) {
-                    Thread.sleep(10);
+                    this.waitForQueueSpace();
                     continue;
                 }
 
@@ -555,6 +556,33 @@ public class FFMediaPlayer extends MediaPlayer {
         this.videoThread.start();
     }
 
+    private void waitForResume() throws InterruptedException {
+        synchronized (this.pauseLock) {
+            while (this.isPaused && this.running.get() && !this.stopRequested.get()) {
+                // Usar wait() en lugar de Thread.sleep()
+                // Será despertado por resume() via notify()
+                this.pauseLock.wait();
+            }
+        }
+    }
+
+    private void waitForQueueSpace() throws InterruptedException {
+        // Estrategia híbrida: wait con timeout
+        final long startTime = System.currentTimeMillis();
+
+        while (this.shouldThrottleReading() && this.running.get() && !this.stopRequested.get()) {
+            synchronized (this.playbackLock) {
+                // Esperar máximo 10ms o hasta que se libere espacio
+                this.playbackLock.wait(10);
+
+                // Si llevamos más de 50ms esperando, verificar estado
+                if (System.currentTimeMillis() - startTime > 50) {
+                    break;
+                }
+            }
+        }
+    }
+
     private void startAudioThread() {
         if (!this.audio || this.audioStreamIndex < 0) return;
 
@@ -574,8 +602,30 @@ public class FFMediaPlayer extends MediaPlayer {
         this.audioThread.start();
     }
 
+    private void notifyQueueSpaceAvailable() {
+        if (this.shouldThrottleReading()) {
+            return; // Aún no hay suficiente espacio
+        }
+
+        synchronized (this.playbackLock) {
+            this.playbackLock.notifyAll();
+        }
+    }
+
     private boolean shouldThrottleReading() {
-        return this.videoQueue.size() > 20 || this.audioQueue.size() > 80;
+        final int videoSize = this.videoQueue.size();
+        final int audioSize = this.audioQueue.size();
+
+        // Usar histéresis para evitar oscilaciones
+        if (this.throttleNotified.get()) {
+            // Ya estamos en throttling, usar umbrales más bajos para salir
+            return videoSize > 15 || audioSize > 60;
+        } else {
+            // No estamos en throttling, usar umbrales normales para entrar
+            final boolean shouldThrottle = videoSize > 20 || audioSize > 80;
+            this.throttleNotified.set(shouldThrottle);
+            return shouldThrottle;
+        }
     }
 
     private boolean readAndQueueFrame() {
@@ -638,6 +688,7 @@ public class FFMediaPlayer extends MediaPlayer {
             if (frameData.frame != null) {
                 avutil.av_frame_free(frameData.frame);
             }
+            this.notifyQueueSpaceAvailable();
         }
     }
 
@@ -664,6 +715,7 @@ public class FFMediaPlayer extends MediaPlayer {
             if (frameData.frame != null) {
                 avutil.av_frame_free(frameData.frame);
             }
+            this.notifyQueueSpaceAvailable();
         }
     }
 

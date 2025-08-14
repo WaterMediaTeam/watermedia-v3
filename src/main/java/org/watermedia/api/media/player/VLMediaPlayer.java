@@ -33,7 +33,7 @@ public final class VLMediaPlayer extends MediaPlayer {
     private final libvlc_media_t rawMedia;
     private final libvlc_media_stats_t rawStats = null;
 
-    public VLMediaPlayer(URI mrl, Thread renderThread, Executor renderThreadEx, boolean video, boolean audio) {
+    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video, final boolean audio) {
         super(mrl, renderThread, renderThreadEx, video, audio);
         this.rawPlayer = VideoLan4J.createMediaPlayer(MediaAPI.getVlcInstance());
         this.rawMedia = VideoLan4J.createMediaInstance(MediaAPI.getVlcInstance(), this.mrl);
