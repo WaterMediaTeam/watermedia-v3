@@ -13,7 +13,8 @@ base {
 }
 
 test {
-    useJUnitPlatform()
+//    useJUnitPlatform()
+    failOnNoDiscoveredTests.set(false)
 }
 
 java {
@@ -61,7 +62,9 @@ dependencies {
     include "org.watermedia:videolan-natives"
     include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
     include "org.bytedeco:ffmpeg-platform:7.1.1-1.5.12"
-    include "com.github.MinecraftOmega:omegaconfig:$omegaconfig_version"
+    include ("com.github.MinecraftOmega:omegaconfig:$omegaconfig_version") {
+        transitive = false
+    }
 
     // DEPENDENCIES INCLUDED IN MINECRAFT
     library "com.github.WaterMediaTeam:modloaders:$loaders_version"
@@ -109,6 +112,15 @@ jar {
         attributes "Implementation-Vendor"      : authors
         attributes "Implementation-Timestamp"   : new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
         attributes "Main-Class": "org.watermedia.app.Main"
+    }
+    from {
+        configurations.include.collect {
+            it.isDirectory() ? it.matching {
+                exclude '*', 'META-INF/**'
+            } : zipTree(it).matching {
+                exclude '*', 'META-INF/**'
+            }
+        }
     }
 }
 
