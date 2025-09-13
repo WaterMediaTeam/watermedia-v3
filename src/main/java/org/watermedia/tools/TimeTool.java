@@ -30,7 +30,7 @@ public class TimeTool {
         }
 
         final long elapsed = getElapsedTime();
-        LOGGER.info(IT, "Elapsed time: " + elapsed + " ms");
+        LOGGER.info(IT, "Elapsed time: {}ms", elapsed);
         START_TIME = -1; // Reset the timer
     }
 }

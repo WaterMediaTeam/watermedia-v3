@@ -15,7 +15,7 @@ public class ThreadTool {
         return false;
     }
 
-    public static void handBreak(long timeoutMillis) {
+    public static void sleep(long timeoutMillis) {
         try {
             Thread.sleep(timeoutMillis);
         } catch (final InterruptedException e) {

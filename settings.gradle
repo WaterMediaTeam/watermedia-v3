@@ -5,4 +5,6 @@ pluginManagement {
     }
 }
 
-includeBuild('../videolan-natives')
+rootProject.name = 'watermedia'
+
+includeBuild("../videolan-natives")

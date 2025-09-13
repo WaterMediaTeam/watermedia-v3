@@ -5,10 +5,15 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.omegaconfig.OmegaConfig;
+import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.render.RenderAPI;
 import org.watermedia.tools.IOTool;
 
 import java.io.File;
+import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.util.Objects;
+import java.util.ServiceLoader;
 
 public class WaterMedia {
     private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
@@ -18,78 +23,64 @@ public class WaterMedia {
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
     public static final Logger LOGGER = LogManager.getLogger(ID);
 
+    // DEFAULT OP
     private static final Path DEFAULT_TEMP = new File(System.getProperty("java.io.tmpdir")).toPath().toAbsolutePath().resolve("watermedia");
     private static final Path DEFAULT_CWD = new File("run").toPath().toAbsolutePath();
 
-    private static Loader loader;
     private static WaterMedia instance;
-    private WaterMedia() {}
+    private static ServiceLoader<WaterMediaAPI> apis;
+    public final String name;
+    public final Path tmp, cwd;
+    public final boolean clientSide;
+
+    private WaterMedia(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
+        if (instance != null) throw new IllegalStateException("Instance was already created");
+        this.name = name;
+        this.tmp = tmp == null ? DEFAULT_TEMP : tmp;
+        this.cwd = cwd == null ? DEFAULT_CWD : cwd;
+        this.clientSide = clientSide;
+    }
 
     /**
-     * Prepares the WaterMedia instance with the specified loader.
-     * NOTE: Each environment MUST have its own loader.
-     * @param boot the loader to use for preparation
-     * @return the prepared WaterMedia instance
-     * @throws NullPointerException if the boot loader is null
-     * @throws IllegalStateException if WaterMedia is already prepared
+     * Starts the WaterMedia API and all its internals
+     * @param name Name of the environment, in minecraft context we use the name of the mod loader such as "FORGE"
+     *             or "FABRIC", cannot be null or empty
+     * @param tmp the TMP folder path, in case the environment has a custom path,
+     *            when null it takes the path defined in the system properties
+     * @param cwd the CWD folder path, the path where the process is running.
+     *            when null it takes the result of make a new instance of {@link File}
+     * @param clientSide Determines if the current environment its a client-side environment, when it its false, turns
+     *                   off all the client side features and locks the class loading of them
      */
-    public static WaterMedia prepare(Loader boot) {
-        if (boot == null) throw new NullPointerException("Bootstrap is null");
-        if (instance != null) throw new IllegalStateException(NAME + " is already prepared");
+    public static synchronized void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
+         Objects.requireNonNull(name, "Name of the environment cannot be null");
+         WaterMedia.instance = new WaterMedia(name, tmp, cwd, clientSide);
 
-        LOGGER.info(IT, "Preparing '{}' for '{}'", NAME, boot.name());
-        LOGGER.info(IT, "Loading {} version '{}'", NAME, VERSION);
-        LOGGER.info(IT, "Detected OS: {} ({})", System.getProperty("os.name"), System.getProperty("os.arch"));
+        LOGGER.info(IT, "Preparing '{}v{}' for '{}'", NAME, VERSION, name);
+        LOGGER.info(IT, "OS Detected: {} ({})", System.getProperty("os.name"), System.getProperty("os.arch"));
 
-        LOGGER.info(IT, "Registering config file");
+        LOGGER.info(IT, "Registering {} config spec into OmegaConfig", NAME);
         OmegaConfig.register(WaterMediaConfig.class);
-        LOGGER.info(IT, "Successfully registered config file");
+        LOGGER.info(IT, "Successfully registered config spec");
 
-        loader = boot;
-        return instance = new WaterMedia();
+        apis = ServiceLoader.load(WaterMediaAPI.class);
+        for (final WaterMediaAPI api: apis) {
+            LOGGER.info(IT, "Loading {}", api.name());
+            try {
+                if (!api.start(instance)) {
+                    LOGGER.warn(IT, "The {} module refuses to load", api.name());
+                }
+            } catch (Exception e) {
+                LOGGER.fatal(IT, "Unexpected exception handled loading API module {}, we cannot recover back!", api.name());
+                throw new UnsupportedOperationException("Failed to start WATERMeDIA: Multimedia API", e);
+            }
+            LOGGER.info(IT, "Loaded {} successfully", api.name());
+        }
     }
 
-    /**
-     * Returns the current WaterMedia instance.
-     * @return the current WaterMedia instance, or throws an exception if not prepared
-     */
-    public static Loader getLoader() {
-        if (loader == null) throw new IllegalStateException("WaterMedia is not prepared, call WaterMedia.prepare() first");
-        return loader;
-    }
+    public static String toId(final String path) { return WaterMedia.ID + ":" + path; }
 
-    public static String createId(String path) { return WaterMedia.ID + ":" + path; }
-
-
-    /**
-     * Prepares the WaterMedia instance with the specified loader.
-     * NOTE: Each environment MUST have its own loader.
-     */
-    public static abstract class Loader {
-        /**
-         * Name of the loader.
-         */
-        public abstract String name();
-
-        /**
-         * Returns the temporary directory for the loader.
-         */
-        public Path tmp() {
-            return DEFAULT_TEMP;
-        }
-
-        /**
-         * Returns the current working directory for the loader.
-         */
-        public Path cwd() {
-            return DEFAULT_CWD;
-        }
-
-        /**
-         * Indicates if the loader is for a client environment.
-         * ITs is used to determine if the loader is intended for server-side operations, such as the static server API.
-         * @return true if the loader is for a client, false otherwise
-         */
-        public abstract boolean client();
+    public static void throwIllegalEnvironment(Class<?> clazz) {
+        throw new IllegalStateException("Called a " + clazz.getSimpleName() + " method on a server-side environment");
     }
 }

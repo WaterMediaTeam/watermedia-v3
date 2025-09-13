@@ -1,9 +1,7 @@
 plugins {
     id 'java'
-    id 'idea'
-    id 'com.github.johnrengelman.shadow' version '8.1.+'
     id 'com.google.osdetector' version '1.7.+'
-    id "me.modmuss50.mod-publish-plugin" version "0.8.3"
+    id "me.modmuss50.mod-publish-plugin" version "0.8.+"
 }
 
 def MT_TOKEN = System.getenv("MODRINTH_TOKEN")
@@ -40,14 +38,17 @@ repositories {
 }
 
 configurations {
-    shadow.extendsFrom(implementation)
+    include
+    include.extendsFrom(implementation)
     library
 }
 
 sourceSets {
     // SHADOW
-    test.compileClasspath += configurations.shadow
-    test.runtimeClasspath += configurations.shadow
+    main.compileClasspath += configurations.include
+    main.runtimeClasspath += configurations.include
+    test.compileClasspath += configurations.include
+    test.runtimeClasspath += configurations.include
 
     // LIBRARY
     main.compileClasspath += configurations.library
@@ -56,22 +57,22 @@ sourceSets {
 }
 
 dependencies {
-    // MODLOADERS
-    compileOnly "com.github.WaterMediaTeam:modloaders:$loaders_version"
-
     // DEPENDENCIES
-    shadow "com.github.MinecraftOmega:omegaconfig:$omegaconfig_version"
-    // shadow "com.github.WaterMediaTeam:videolan-natives:$videolan4j_version"
-    shadow "org.watermedia:videolan-natives"
-    implementation("org.bytedeco:ffmpeg:7.1.1-1.5.12")
-    implementation("org.bytedeco:ffmpeg-platform:7.1.1-1.5.12")
+    include "org.watermedia:videolan-natives"
+    include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
+    include "org.bytedeco:ffmpeg-platform:7.1.1-1.5.12"
+    include "com.github.MinecraftOmega:omegaconfig:$omegaconfig_version"
 
     // DEPENDENCIES INCLUDED IN MINECRAFT
+    library "com.github.WaterMediaTeam:modloaders:$loaders_version"
     library "com.google.code.gson:gson:$gson_version"
+
     library "net.java.dev.jna:jna:$jna_version"
     library "net.java.dev.jna:jna-platform:$jna_version"
+
     library "org.apache.logging.log4j:log4j-api:$log4j_version"
     library "org.apache.logging.log4j:log4j-core:$log4j_version"
+
     library "org.lwjgl:lwjgl-opengl:$opengl_version"
     library "org.lwjgl:lwjgl-glfw:$opengl_version"
     library "org.lwjgl:lwjgl-openal:$openal_version"
@@ -79,6 +80,7 @@ dependencies {
     // TEST DEPENDENCIES
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+
     testRuntimeOnly "org.lwjgl:lwjgl:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-glfw:$opengl_version:natives-$osdetector.os"
@@ -91,23 +93,6 @@ processResources {
     filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json', "watermedia/version.cfg"]) {
         expand(project.properties)
     }
-}
-
-// ShadowJar task (run this task to make a built JAR.
-shadowJar {
-    dependsOn jar
-    configurations = [project.configurations.shadow]
-
-    exclude "META-INF/versions/**"
-    exclude "META-INF/proguard/**"
-    exclude "META-INF/maven/**"
-    exclude "META-INF/LICENSE.*"
-    exclude "META-INF/LICENSE"
-    exclude "META-INF/NOTICE.**"
-    exclude "META-INF/NOTICE"
-
-    mergeServiceFiles()
-    archiveClassifier = ""
 }
 
 jar {
@@ -125,29 +110,10 @@ jar {
         attributes "Implementation-Timestamp"   : new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
         attributes "Main-Class": "org.watermedia.app.Main"
     }
-
-    finalizedBy shadowJar
-}
-
-jar {
-    duplicatesStrategy = DuplicatesStrategy.WARN
-
-    manifest {
-        attributes "Specification-Title"        : id
-        attributes "Specification-Vendor"       : authors
-        attributes "Specification-Version"      : version
-        attributes "Implementation-Title"       : libname
-        attributes "Implementation-Version"     : version
-        attributes "Implementation-Vendor"      : authors
-        attributes "Implementation-Timestamp"   : new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
-        attributes "Main-Class": "me.srrapero720.watermedia.Main"
-    }
-
-    finalizedBy shadowJar
 }
 
 publishMods {
-    file = shadowJar.archiveFile
+    file = jar.archiveFile
     changelog = getChangelogText()
     type = ALPHA
     displayName = "WM/${project.properties.version}"
