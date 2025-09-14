@@ -16,8 +16,8 @@
   "icon": "pack.png",
   "environment": "client",
   "entrypoints": {
-    "client": [
-      "org.watermedia.loader.FabricLoader"
+    "main": [
+      "org.watermedia.bootstrap.FabricBootstrap"
     ]
   },
   "depends": {
