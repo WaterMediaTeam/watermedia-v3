@@ -9,13 +9,14 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaPlayer;
-import org.watermedia.api.media.PicturePlayer;
+import org.watermedia.api.media.VLMediaPlayer;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.LinkedList;
 import java.util.Queue;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -27,17 +28,19 @@ public class MediaPlayerWindowTest {
     private static final String NAME = "WATERMeDIA: Multimedia API";
     private static final URI MEDIA_GIF = URI.create("https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif");
     private static final URI MEDIA_VIDEO = URI.create("https://www.mediafire.com/file/f23l3csbeeap9jo/TU_QLO.mp4/file");
+    private static final URI MEDIA_VIDEO_STATIC = URI.create("https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4");
 
     // The window handle
     private static long window;
     private static MediaPlayer player;
     private static final Queue<Runnable> executor = new LinkedList<>();
+    private static Thread thread;
 
     public static void main(final String... args) {
         init();
         WaterMedia.start("Java Test", null, null, true);
-        player = new PicturePlayer(MEDIA_GIF, Thread.currentThread(), MediaPlayerWindowTest::execute, true);
-        player.start();
+        player = new VLMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
+        player.startPaused();
         loop();
 
         // Free the window callbacks and destroy the window
@@ -120,6 +123,8 @@ public class MediaPlayerWindowTest {
 
         // Crear capabilities AL (contexto)
         final ALCapabilities alCaps = AL.createCapabilities(alcCaps);
+
+        thread = Thread.currentThread();
     }
 
     private static void loop() {
@@ -181,5 +186,6 @@ public class MediaPlayerWindowTest {
         if (command == null)
             throw new IllegalArgumentException("Command cannot be null");
         executor.add(command);
+        LockSupport.unpark(thread);
     }
 }

@@ -1,16 +1,15 @@
 package org.watermedia;
 
+import com.sun.jna.Platform;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.omegaconfig.OmegaConfig;
 import org.watermedia.api.WaterMediaAPI;
-import org.watermedia.api.render.RenderAPI;
 import org.watermedia.tools.IOTool;
 
 import java.io.File;
-import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.ServiceLoader;
@@ -70,7 +69,7 @@ public class WaterMedia {
                 if (!api.start(instance)) {
                     LOGGER.warn(IT, "The {} module refuses to load", api.name());
                 }
-            } catch (Exception e) {
+            } catch (final Exception e) {
                 LOGGER.fatal(IT, "Unexpected exception handled loading API module {}, we cannot recover back!", api.name());
                 throw new UnsupportedOperationException("Failed to start WATERMeDIA: Multimedia API", e);
             }

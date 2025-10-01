@@ -118,9 +118,13 @@ public abstract class MediaPlayer {
         }
     }
 
-    protected void uploadVideoFrame(final ByteBuffer nativeBuffers) {
+    protected void uploadVideoFrame(final ByteBuffer nativeBuffer) {
+        if (this.width == NO_SIZE || this.height == NO_SIZE) {
+            return; // Video format not set yet, skip uploading
+        }
+
         if (this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffers));
+            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffer));
             return;
         }
 
@@ -132,13 +136,14 @@ public abstract class MediaPlayer {
             throw new IllegalArgumentException("Unsupported chroma format: " + this.glChroma);
         }
 
-        if (nativeBuffers == null) {
+        if (nativeBuffer == null) {
             throw new IllegalArgumentException("Native buffers cannot be null or empty.");
         }
 
         // LOCK RENDER THREAD
-        synchronized(nativeBuffers) {
-            RenderAPI.uploadTexture(this.glTexture, nativeBuffers, this.width, this.height, this.glChroma, this.firstFrame);
+        synchronized(nativeBuffer) {
+            nativeBuffer.flip();
+            RenderAPI.uploadTexture(this.glTexture, nativeBuffer, this.width, this.height, this.glChroma, this.firstFrame);
             this.firstFrame = false;
         }
     }

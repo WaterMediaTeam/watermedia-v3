@@ -96,10 +96,8 @@ public class FFMediaPlayer extends MediaPlayer {
     private double videoTimeBase;
     private double audioTimeBase;
 
-    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx,
-                         final boolean video, final boolean audio) {
+    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video, final boolean audio) {
         super(mrl, renderThread, renderThreadEx, video, audio);
-        avformat.avformat_network_init();
     }
 
     // ===========================================

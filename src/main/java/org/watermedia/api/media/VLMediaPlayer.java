@@ -65,8 +65,6 @@ public final class VLMediaPlayer extends MediaPlayer {
         final byte[] chromaBytes = CHROMA.chroma();
         chromaPointer.getPointer().write(0, chromaBytes, 0, Math.min(chromaBytes.length, 4));
         this.setVideoFormat(GL12.GL_BGRA, widthPointer.getValue(), heightPointer.getValue());
-        widthPointer.setValue(this.width());
-        heightPointer.setValue(this.height());
         final int[] pitchValues = CHROMA.getPitches(this.width());
         final int[] lineValues = CHROMA.getLines(this.height());
         final int planeCount = pitchValues.length;
@@ -98,7 +96,9 @@ public final class VLMediaPlayer extends MediaPlayer {
         return null;
     };
 
-    private final libvlc_display_callback_t displayCB = (opaque, picture) -> this.uploadVideoFrame(this.nativeBuffer);
+    private final libvlc_display_callback_t displayCB = (opaque, picture) -> {
+        this.uploadVideoFrame(this.nativeBuffer);
+    };
     private final libvlc_unlock_callback_t unlockCB = (opaque, picture, plane) -> {};
     private final libvlc_audio_play_cb playCB = (pointer, samples, count, pts) ->
             this.uploadAudioBuffer(samples.getByteBuffer(0L, AUDIO_FORMAT.calculateBufferSize(count)), AL11.AL_FORMAT_STEREO16, AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());

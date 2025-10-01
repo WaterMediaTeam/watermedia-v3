@@ -4,10 +4,13 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
+import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.videolan4j.VideoLan4J;
 
 import java.nio.ByteBuffer;
+import java.util.function.Function;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -60,19 +63,17 @@ public class RenderAPI extends WaterMediaAPI {
         }
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
 
-        if (!GL11.glIsTexture(texture)) {
-            LOGGER.warn(IT, "Attempted to update a texture that is not valid: {}", texture);
-            return;
-        }
+//        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, linesize / 4); // TODO: accept the stride for ffmpeg
+        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, GL11.GL_ZERO);
+        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, GL11.GL_ZERO);
+        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, GL11.GL_ZERO);
+
 
         if (firstFrame) {
-            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL11.GL_UNSIGNED_BYTE, buffers);
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
         } else {
-            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL11.GL_UNSIGNED_BYTE, buffers);
+            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
         }
-
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, NONE);
-
     }
 
     @Override
@@ -83,6 +84,22 @@ public class RenderAPI extends WaterMediaAPI {
             LOGGER.warn(IT, "Detected server-side environment, lockdown mode enabled");
             return false;
         }
+
+        // SET ALLOCATORS
+        VideoLan4J.setBufferAllocator(size -> {
+            MemoryUtil.MemoryAllocator allocator = MemoryUtil.getAllocator(false);
+            final long address = allocator.malloc(size);
+            if (address == NULL)
+                throw new OutOfMemoryError("Insufficient memory to allocate " + size + " bytes");
+
+            return MemoryUtil.memByteBuffer(address, size);
+        });
+
+        VideoLan4J.setBufferDeallocator(buffer -> {
+            if (buffer == null) return;
+            MemoryUtil.MemoryAllocator allocator = MemoryUtil.getAllocator(false);
+            allocator.free(MemoryUtil.memAddress(buffer));
+        });
 
         // GL CAPABILITIES TEST
 

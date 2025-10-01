@@ -61,8 +61,10 @@ dependencies {
     // DEPENDENCIES
     include "org.watermedia:videolan-natives"
     include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
-    include "org.bytedeco:ffmpeg-platform:7.1.1-1.5.12"
-    include ("com.github.MinecraftOmega:omegaconfig:$omegaconfig_version") {
+
+    // EXTERNAL DEPENDENCIES
+    library "org.watermedia:binaries"
+    include ("com.github.MinecraftOmega:omegaconfig:$omegaconfig_version") { // TODO: do not shade
         transitive = false
     }
 
@@ -116,11 +118,18 @@ jar {
     from {
         configurations.include.collect {
             it.isDirectory() ? it.matching {
-                exclude '*', 'META-INF/**'
+                exclude '*'
+//                include 'META-INF/services/**'  // Incluir servicios
             } : zipTree(it).matching {
-                exclude '*', 'META-INF/**'
+                exclude '*'
+//                include 'META-INF/services/**'  // Incluir servicios
             }
         }
+    }
+    // Configurar estrategia para combinar archivos de servicios duplicados
+    filesMatching('META-INF/services/*') {
+        // Combinar contenido de archivos de servicio con el mismo nombre
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
     }
 }
 

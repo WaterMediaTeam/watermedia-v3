@@ -8,3 +8,4 @@ pluginManagement {
 rootProject.name = 'watermedia'
 
 includeBuild("../videolan-natives")
+includeBuild("../binaries")
