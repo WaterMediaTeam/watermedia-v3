@@ -19,11 +19,23 @@ import org.lwjgl.opengl.GL12;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadFactory;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
+    private static final ThreadFactory DEFAULT_THREAD_FACTORY = new ThreadFactory() {
+        private int counter = 0;
+
+        @Override
+        public Thread newThread(final Runnable r) {
+            final Thread t = new Thread(r, "FFMediaPlayer-Thread-" + (this.counter++));
+            t.setPriority(7);
+            t.setDaemon(true);
+            return t;
+        }
+    };
 
     // Constants
     private static final int AUDIO_SAMPLE_RATE = 44100;
@@ -84,7 +96,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.stop();
         }
 
-        this.playerThread = new Thread(this::playerLoop, "FFmpeg-Player");
+        this.playerThread = DEFAULT_THREAD_FACTORY.newThread(this::playerLoop);
         this.playerThread.setDaemon(true);
         this.playerThread.start();
     }
