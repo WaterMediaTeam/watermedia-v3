@@ -16,8 +16,6 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public class MediaAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
-    private static boolean CLIENT_SIDE;
-
     protected static libvlc_instance_t VLC_INSTANCE;
     protected static boolean FFMPEG_LOADED;
 

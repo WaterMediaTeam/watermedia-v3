@@ -36,10 +36,12 @@ public class MediaPlayerWindowTest {
     private static Thread thread;
 
     public static void main(final String... args) {
-        init();
         WaterMedia.start("Java Test", null, null, true);
+        init();
         player = new FFMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
         player.startPaused();
+        // Make the window visible
+        glfwShowWindow(window);
         loop();
 
         // Free the window callbacks and destroy the window
@@ -105,8 +107,6 @@ public class MediaPlayerWindowTest {
         // Enable v-sync
         glfwSwapInterval(1);
 
-        // Make the window visible
-        glfwShowWindow(window);
         GL.createCapabilities();
 
         // Open Audio Device

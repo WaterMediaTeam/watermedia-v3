@@ -14,7 +14,7 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public abstract class MediaPlayer {
+public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, VLMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
     public static final int NO_SIZE = -1;
     public static final int NO_TEXTURE = -1;
@@ -78,7 +78,7 @@ public abstract class MediaPlayer {
         }
     }
 
-    protected void uploadAudioBuffer(final ByteBuffer data, final int alFormat, final int sampleRate, final int channels) {
+    protected void upload(final ByteBuffer data, final int alFormat, final int sampleRate, final int channels) {
         if (!this.audio) {
             throw new IllegalStateException("MediaPlayer was built with no audio support");
         }
@@ -118,13 +118,13 @@ public abstract class MediaPlayer {
         }
     }
 
-    protected void uploadVideoFrame(final ByteBuffer nativeBuffer, final int stride) {
+    protected void upload(final ByteBuffer nativeBuffer, final int stride) {
         if (this.width == NO_SIZE || this.height == NO_SIZE) {
             return; // Video format not set yet, skip uploading
         }
 
         if (this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffer, stride));
+            this.renderThreadEx.execute(() -> this.upload(nativeBuffer, stride));
             return;
         }
 

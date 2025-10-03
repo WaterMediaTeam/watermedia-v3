@@ -18,25 +18,17 @@ import org.lwjgl.opengl.GL12;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class FFMediaPlayer extends MediaPlayer {
+public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
 
     // Constants
-    private static final int MAX_VIDEO_QUEUE_SIZE = 30;
-    private static final int MAX_AUDIO_QUEUE_SIZE = 100;
     private static final int AUDIO_SAMPLE_RATE = 44100;
     private static final int AUDIO_CHANNELS = 2;
     private static final int AUDIO_SAMPLES = 1024;
-    private static final FrameData POISON_PILL = new FrameData(-1, null);
 
     // FFmpeg components
     private AVFormatContext formatContext;
@@ -51,30 +43,20 @@ public class FFMediaPlayer extends MediaPlayer {
 
     // Threading
     private Thread playerThread;
-    private Thread videoThread;
-    private Thread audioThread;
-    private final AtomicBoolean running = new AtomicBoolean(false);
+    private volatile boolean running = false;
 
-    // State management
-    private final AtomicReference<Status> currentStatus = new AtomicReference<>(Status.WAITING);
-    private final AtomicBoolean pauseRequested = new AtomicBoolean(false);
-    private final AtomicBoolean stopRequested = new AtomicBoolean(false);
-    private final BlockingQueue<Long> seekQueue = new LinkedBlockingQueue<>();
-    private volatile boolean seekInProgress = false;
-    private final AtomicReference<Float> speedFactor = new AtomicReference<>(1.0f);
+    // State management - all volatile for thread visibility
+    private volatile Status currentStatus = Status.WAITING;
+    private volatile boolean pauseRequested = false;
+    private volatile boolean stopRequested = false;
+    private volatile long seekTarget = -1;
+    private volatile float speedFactor = 1.0f;
 
-    // Timing control
-    private final AtomicLong currentPts = new AtomicLong(0);
-    private final AtomicBoolean isSearching = new AtomicBoolean(false);
-    private final Object seekLock = new Object();
-    private final Object pauseLock = new Object();
-    private long playbackStartTime = -1;
-    private volatile double audioClock = 0.0;
-    private volatile boolean isPaused = false;
-    private long pausedAt = 0;
-    private long totalPauseTime = 0;
-    private final Object playbackLock = new Object();
-    private final AtomicBoolean throttleNotified = new AtomicBoolean(false);
+    // Clock system - single source of truth for playback position
+    private volatile double masterClock = 0.0;
+    private volatile long clockBaseTime = -1;
+    private volatile boolean clockPaused = false;
+    private volatile long pausedTime = 0;
 
     // Memory management - reusable buffers
     private AVPacket packet;
@@ -83,10 +65,6 @@ public class FFMediaPlayer extends MediaPlayer {
     private AVFrame scaledFrame;
     private AVFrame resampledFrame;
     private ByteBuffer videoBuffer;
-
-    // Frame queues
-    private final BlockingQueue<FrameData> videoQueue = new LinkedBlockingQueue<>(MAX_VIDEO_QUEUE_SIZE);
-    private final BlockingQueue<FrameData> audioQueue = new LinkedBlockingQueue<>(MAX_AUDIO_QUEUE_SIZE);
 
     // Time bases
     private double videoTimeBase;
@@ -102,10 +80,9 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public void start() {
-        if (this.running.get()) return;
-
-        this.currentStatus.set(Status.LOADING);
-        this.running.set(true);
+        if (this.running) {
+            this.stop();
+        }
 
         this.playerThread = new Thread(this::playerLoop, "FFmpeg-Player");
         this.playerThread.setDaemon(true);
@@ -114,14 +91,13 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public void startPaused() {
+        this.pauseRequested = true;
         this.start();
-        this.pause(true);
     }
 
     @Override
     public void release() {
         this.stop();
-        this.cleanup();
         super.release();
     }
 
@@ -130,60 +106,45 @@ public class FFMediaPlayer extends MediaPlayer {
     // ===========================================
 
     @Override
-    public boolean resume() {
-        synchronized (this.pauseLock) {
-            if (!this.isPaused) return false;
-
-            final long pauseDuration = System.nanoTime() - this.pausedAt;
-            this.totalPauseTime += pauseDuration;
-
-            LOGGER.debug(IT, "Resuming after {}ms pause. Total pause time: {}ms",
-                    pauseDuration / 1_000_000, this.totalPauseTime / 1_000_000);
-
-            this.isPaused = false;
-            this.pauseRequested.set(false);
-            this.currentStatus.set(Status.PLAYING);
-
-            this.pauseLock.notifyAll();
-
-            return true;
-        }
-    }
-
-    @Override
     public boolean pause() {
         return this.pause(true);
     }
 
     @Override
     public boolean pause(final boolean paused) {
-        synchronized (this.pauseLock) {
-            if (paused && !this.isPaused) {
-                this.isPaused = true;
-                this.pauseRequested.set(true);
-                this.pausedAt = System.nanoTime();
-                this.currentStatus.set(Status.PAUSED);
-                LOGGER.debug(IT, "Paused at {}ms", this.time());
-                return true;
-            } else if (!paused && this.isPaused) {
-                return this.resume();
-            }
-            return false;
+        if (paused && !this.pauseRequested) {
+            this.pauseRequested = true;
+            this.clockPaused = true;
+            this.pausedTime = this.time(); // Guardar el tiempo actual
+            return true;
+        } else if (!paused && this.pauseRequested) {
+            return this.resume();
         }
+        return false;
+    }
+
+    @Override
+    public boolean resume() {
+        if (!this.pauseRequested) return false;
+
+        this.pauseRequested = false;
+        this.clockPaused = false;
+        // Restaurar el clock desde el tiempo pausado
+        this.masterClock = secondsFromMs(this.pausedTime);
+        this.clockBaseTime = System.nanoTime();
+
+        return true;
     }
 
     @Override
     public boolean stop() {
-        this.seekQueue.clear();
-        this.stopRequested.set(true);
-        this.running.set(false);
-        this.currentStatus.set(Status.STOPPED);
+        this.stopRequested = true;
         return true;
     }
 
     @Override
     public boolean togglePlay() {
-        return this.pause(!this.pauseRequested.get());
+        return this.pause(!this.pauseRequested);
     }
 
     // ===========================================
@@ -192,77 +153,53 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean seek(long timeMs) {
-        if (!this.canSeek()) {
-            LOGGER.warn(IT, "Cannot seek - either invalid source or live stream");
-            return false;
-        }
+        if (!this.canSeek()) return false;
 
-
-        timeMs = this.clampSeekTime(timeMs);
-
-        if (this.seekQueue.size() > 5) {
-            this.seekQueue.clear();
-            LOGGER.debug(IT, "Cleared seek queue due to multiple pending seeks");
-        }
-
-        this.seekQueue.offer(timeMs * 1000); // Convertir a microsegundos
-        LOGGER.debug(IT, "Seek queued to {}ms. Queue size: {}", timeMs, this.seekQueue.size());
-
+        timeMs = Math.max(0, Math.min(timeMs, this.duration()));
+        this.seekTarget = timeMs;
         return true;
     }
 
     @Override
     public boolean seekQuick(final long timeMs) {
-        if (!this.canSeek()) return false;
-
-        synchronized (this.seekLock) {
-            final long timeUs = timeMs * 1000;
-            final long ffmpegTimestamp = (timeUs / 1_000_000L) * avutil.AV_TIME_BASE;
-
-            final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp,
-                    avformat.AVSEEK_FLAG_BACKWARD);
-
-            if (result >= 0) {
-                this.clearQueues();
-                this.flushCodecs();
-                this.resetTiming(timeUs);
-                return true;
-            }
-        }
-        return false;
+        return this.seek(timeMs);
     }
 
     @Override
     public boolean skipTime(final long timeMs) {
-        final long currentTime = this.time();
-        final long targetTime = this.clampSeekTime(currentTime + timeMs);
-
-        LOGGER.debug(IT, "Skip time: {}ms -> {}ms (delta: {}ms)", currentTime, targetTime, timeMs);
-        return this.seek(targetTime);
+        return this.seek(this.time() + timeMs);
     }
 
     @Override
     public boolean previousFrame() {
         if (!this.canSeek()) return false;
 
-        final long frameTimeMs = this.calculateFrameTime();
-        final long currentTime = this.time();
-        final long targetTime = Math.max(0, currentTime - frameTimeMs);
+        long frameTimeMs = 33; // Default ~30fps
+        if (this.videoStreamIndex >= 0 && this.formatContext != null) {
+            final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
+            final AVRational frameRate = videoStream.avg_frame_rate();
+            if (frameRate.num() > 0 && frameRate.den() > 0) {
+                frameTimeMs = (long)(1000.0 * frameRate.den() / frameRate.num());
+            }
+        }
 
-        LOGGER.debug(IT, "Previous frame: {}ms -> {}ms (frame time: {}ms)", currentTime, targetTime, frameTimeMs);
-        return this.seek(targetTime);
+        return this.seek(Math.max(0, this.time() - frameTimeMs));
     }
 
     @Override
     public boolean nextFrame() {
         if (!this.canSeek()) return false;
 
-        final long frameTimeMs = this.calculateFrameTime();
-        final long currentTime = this.time();
-        final long targetTime = this.clampSeekTime(currentTime + frameTimeMs);
+        long frameTimeMs = 33; // Default ~30fps
+        if (this.videoStreamIndex >= 0 && this.formatContext != null) {
+            final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
+            final AVRational frameRate = videoStream.avg_frame_rate();
+            if (frameRate.num() > 0 && frameRate.den() > 0) {
+                frameTimeMs = (long)(1000.0 * frameRate.den() / frameRate.num());
+            }
+        }
 
-        LOGGER.debug(IT, "Next frame: {}ms -> {}ms (frame time: {}ms)", currentTime, targetTime, frameTimeMs);
-        return this.seek(targetTime);
+        return this.seek(this.time() + frameTimeMs);
     }
 
     @Override
@@ -281,13 +218,13 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public float speed() {
-        return this.speedFactor.get();
+        return this.speedFactor;
     }
 
     @Override
     public boolean speed(final float speed) {
         if (speed <= 0 || speed > 4.0f) return false;
-        this.speedFactor.set(speed);
+        this.speedFactor = speed;
         return true;
     }
 
@@ -297,7 +234,7 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public Status status() {
-        return this.currentStatus.get();
+        return this.currentStatus;
     }
 
     @Override
@@ -332,131 +269,162 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public long time() {
-        // During seek, return a stable value
-        if (this.seekInProgress || this.isSearching.get()) {
-            return this.currentPts.get() / 1000;
+        if (this.clockPaused) {
+            return msFromSeconds(this.masterClock);
         }
 
-        // Use audio clock if available and valid
-        if (this.audio && this.audioClock > 0) {
-            return (long)(this.audioClock * 1000);
+        if (this.clockBaseTime <= 0) {
+            return msFromSeconds(this.masterClock);
         }
 
-        // Video-only or fallback
-        if (this.playbackStartTime <= 0) {
-            return this.currentPts.get() / 1000;
-        }
-
-        synchronized (this.pauseLock) {
-            if (this.isPaused) {
-                return (this.pausedAt - this.playbackStartTime - this.totalPauseTime) / 1_000_000;
-            } else {
-                // Calculate elapsed time but never go backwards
-                final long elapsed = (System.nanoTime() - this.playbackStartTime - this.totalPauseTime) / 1_000_000;
-                final long lastKnown = this.currentPts.get() / 1000;
-
-                // Return the maximum to prevent time regression
-                return Math.max(elapsed, lastKnown);
-            }
-        }
+        final double elapsed = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0;
+        return msFromSeconds(this.masterClock + (elapsed * this.speedFactor));
     }
+
     // ===========================================
-    // PRIVATE IMPLEMENTATION
+    // MAIN PLAYER LOOP
     // ===========================================
 
     private void playerLoop() {
         try {
-            if (!this.initializeFFmpeg()) {
-                this.currentStatus.set(Status.ERROR);
+            // Wait until previous loop fully stopped
+            while (this.running) {
+                Thread.sleep(100);
+            }
+            this.running = true;
+
+            // Set initial loading state
+            this.currentStatus = Status.LOADING;
+
+            // Initialize FFmpeg components
+            if (!this.init()) {
+                this.currentStatus = Status.ERROR;
                 return;
             }
 
-            this.startVideoThread();
-            this.startAudioThread();
-            this.currentStatus.set(Status.PLAYING);
-            this.playbackStartTime = System.nanoTime();
+            // Set initial playing or paused state
+            if (this.pauseRequested) {
+                this.currentStatus = Status.PAUSED;
+            } else {
+                this.currentStatus = Status.PLAYING;
+                this.clockBaseTime = System.nanoTime();
+            }
 
-            while (this.running.get() && !this.stopRequested.get()) {
-                if (!this.seekInProgress && !this.seekQueue.isEmpty()) {
-                    Long targetTimeUs = null;
+            // Main playback loop
+            while (this.running && !this.stopRequested) {
+                // Handle seek requests
+                if (this.seekTarget >= 0) {
+                    final long targetMs = this.seekTarget;
+                    this.seekTarget = -1;
 
-                    // Get all pending seeks but only execute the last one
-                    while (!this.seekQueue.isEmpty()) {
-                        targetTimeUs = this.seekQueue.poll();
-                    }
+                    if (this.formatContext != null && this.canSeek()) {
+                        final long currentMs = msFromSeconds(this.masterClock);
+                        LOGGER.info(IT, "Seeking to {}ms - current time {}ms", targetMs, currentMs);
 
-                    if (targetTimeUs != null) {
-                        LOGGER.info(IT, "Processing seek to {}ms", targetTimeUs / 1000);
-                        this.performSeek(targetTimeUs);
+                        // Flush codecs
+                        if (this.videoCodecContext != null) {
+                            avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                        }
+                        if (this.audioCodecContext != null) {
+                            avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                        }
+
+                        // Perform the seek with appropriate flag
+                        final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
+
+                        // Use BACKWARD flag for seeking backwards, no flag for forward
+                        int seekFlags = 0;
+                        if (targetMs < currentMs) {
+                            seekFlags = avformat.AVSEEK_FLAG_BACKWARD;
+                        }
+
+                        final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
+
+                        if (result >= 0) {// Reset clock to seek position
+                            this.masterClock = secondsFromMs(targetMs);
+                            this.clockBaseTime = System.nanoTime();
+
+                            LOGGER.info(IT, "Seek completed to {}ms", targetMs);
+                            continue;
+                        } else {
+                            LOGGER.error(IT, "av_seek_frame failed with error: {}", result);
+                        }
+
+                    } else {
+                        LOGGER.warn(IT, "Cannot seek - invalid format context or live stream");
                     }
                 }
 
-                if (this.isPaused) {
-                    synchronized (this.pauseLock) {
-                        while (this.isPaused && this.running.get() && !this.stopRequested.get()) {
-                            // Usar wait() en lugar de Thread.sleep()
-                            // Será despertado por resume() via notify()
-                            this.pauseLock.wait();
-                        }
-                    }
+                // Update status based on pause state
+                if (this.pauseRequested && this.currentStatus != Status.PAUSED) {
+                    this.currentStatus = Status.PAUSED;
+                } else if (!this.pauseRequested && this.currentStatus == Status.PAUSED) {
+                    this.currentStatus = Status.PLAYING;
+                }
+
+                // Handle pause state
+                if (this.pauseRequested) {
+                    Thread.sleep(10);
                     continue;
                 }
 
-                if (this.shouldThrottleReading()) {
-                    // Estrategia híbrida: wait con timeout
-                    final long startTime = System.currentTimeMillis();
-
-                    while (this.shouldThrottleReading() && this.running.get() && !this.stopRequested.get()) {
-                        synchronized (this.playbackLock) {
-                            // Esperar máximo 10ms o hasta que se libere espacio
-                            this.playbackLock.wait(10);
-
-                            // Si llevamos más de 50ms esperando, verificar estado
-                            if (System.currentTimeMillis() - startTime > 50) {
-                                break;
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                if (!this.readAndQueueFrame()) {
+                // Read and process frame
+                final int result = avformat.av_read_frame(this.formatContext, this.packet);
+                if (result < 0) {
+                    // End of stream
                     try {
-                        LOGGER.info(IT, "Handling end of stream...");
+                        LOGGER.info(IT, "End of stream reached");
 
-                        final long startWait = System.currentTimeMillis();
-                        while ((!this.videoQueue.isEmpty() || !this.audioQueue.isEmpty()) &&
-                                (System.currentTimeMillis() - startWait) < 5000) {
-                            Thread.sleep(100);
-                        }
+                        // Wait a bit for final frames to play
+                        Thread.sleep(500);
 
                         if (this.repeat()) {
-                            LOGGER.info(IT, "Repeating playback...");
-                            synchronized (this.pauseLock) {
-                                this.totalPauseTime = 0;
-                                this.playbackStartTime = -1;
-                                this.audioClock = 0.0;
-                            }
-                            this.seek(0);
+                            LOGGER.info(IT, "Repeating playback");
+                            this.seekTarget = 0;
+                            // Status stays PLAYING for repeat
                         } else {
-                            LOGGER.info(IT, "Setting ENDED status");
-                            this.currentStatus.set(Status.ENDED);
+                            LOGGER.info(IT, "Playback ended naturally");
+                            this.currentStatus = Status.ENDED;
                         }
                     } catch (final InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
-                    break;
+                    if (this.currentStatus != Status.PLAYING) {
+                        // Either ended or repeating
+                        break;
+                    }
+                    continue;
+                }
+
+                // Process packet immediately based on stream type
+                try {
+                    if (this.packet.stream_index() == this.videoStreamIndex && this.video) {
+                        this.processVideoPacket();
+                    } else if (this.packet.stream_index() == this.audioStreamIndex && this.audio) {
+                        this.processAudioPacket();
+                    }
+                } finally {
+                    avcodec.av_packet_unref(this.packet);
                 }
             }
+
+            // Set final status
+            if (this.stopRequested) {
+                this.currentStatus = Status.STOPPED;
+            } else if (this.currentStatus == Status.PLAYING) {
+                // Natural end without repeat
+                this.currentStatus = Status.ENDED;
+            }
+
         } catch (final Exception e) {
             LOGGER.error(IT, "Error in player loop", e);
-            this.currentStatus.set(Status.ERROR);
+            this.currentStatus = Status.ERROR;
         } finally {
             this.cleanup();
         }
     }
 
-    private boolean initializeFFmpeg() {
+    private boolean init() {
         try {
             // Allocate structures
             this.packet = avcodec.av_packet_alloc();
@@ -479,468 +447,186 @@ public class FFMediaPlayer extends MediaPlayer {
                 return false;
             }
 
-            this.findStreams();
+            // Find streams
+            for (int i = 0; i < this.formatContext.nb_streams(); i++) {
+                final AVStream stream = this.formatContext.streams(i);
+                final int codecType = stream.codecpar().codec_type();
 
-            if (this.video && this.videoStreamIndex >= 0 && !this.initializeVideoDecoder()) {
-                return false;
+                if (codecType == avutil.AVMEDIA_TYPE_VIDEO && this.videoStreamIndex < 0 && this.video) {
+                    this.videoStreamIndex = i;
+                    this.videoTimeBase = av_q2d(stream.time_base());
+                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audio) {
+                    this.audioStreamIndex = i;
+                    this.audioTimeBase = av_q2d(stream.time_base());
+                }
             }
 
-            return !this.audio || this.audioStreamIndex < 0 || this.initializeAudioDecoder();
+            // Initialize video decoder
+            if (this.video && this.videoStreamIndex >= 0) {
+                final AVCodec videoCodec = avcodec.avcodec_find_decoder(
+                        this.formatContext.streams(this.videoStreamIndex).codecpar().codec_id());
+
+                if (videoCodec == null) return false;
+
+                this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
+                if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
+                        this.formatContext.streams(this.videoStreamIndex).codecpar()) < 0) {
+                    return false;
+                }
+
+                if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
+                    return false;
+                }
+
+                this.setVideoFormat(GL12.GL_BGRA, this.videoCodecContext.width(), this.videoCodecContext.height());
+
+                this.swsContext = swscale.sws_getContext(
+                        this.width(), this.height(), this.videoCodecContext.pix_fmt(),
+                        this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
+                        swscale.SWS_BILINEAR, null, null, (double[]) null);
+
+                if (this.swsContext == null) return false;
+
+                this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
+                this.scaledFrame.width(this.width());
+                this.scaledFrame.height(this.height());
+
+                if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) return false;
+            }
+
+            // Initialize audio decoder
+            if (this.audio && this.audioStreamIndex >= 0) {
+                final AVStream audioStream = this.formatContext.streams(this.audioStreamIndex);
+                final AVCodecParameters codecParams = audioStream.codecpar();
+                final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecParams.codec_id());
+
+                if (audioCodec == null) return false;
+
+                this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
+                if (this.audioCodecContext == null) return false;
+
+                if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
+                    return false;
+                }
+
+                if (avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null) < 0) {
+                    return false;
+                }
+
+                // Initialize resampler
+                this.swrContext = swresample.swr_alloc();
+                if (this.swrContext == null) return false;
+
+                final AVChannelLayout inputLayout = new AVChannelLayout();
+                final AVChannelLayout outputLayout = new AVChannelLayout();
+
+                if (codecParams.ch_layout().nb_channels() > 0) {
+                    avutil.av_channel_layout_copy(inputLayout, codecParams.ch_layout());
+                } else {
+                    avutil.av_channel_layout_default(inputLayout, codecParams.ch_layout().nb_channels());
+                }
+
+                avutil.av_channel_layout_default(outputLayout, AUDIO_CHANNELS);
+
+                avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
+                avutil.av_opt_set_int(this.swrContext, "in_sample_rate", codecParams.sample_rate(), 0);
+                avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", codecParams.format(), 0);
+                avutil.av_opt_set_chlayout(this.swrContext, "out_chlayout", outputLayout, 0);
+                avutil.av_opt_set_int(this.swrContext, "out_sample_rate", AUDIO_SAMPLE_RATE, 0);
+                avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
+
+                if (swresample.swr_init(this.swrContext) < 0) return false;
+
+                this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
+                this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
+                avutil.av_channel_layout_default(this.resampledFrame.ch_layout(), AUDIO_CHANNELS);
+                this.resampledFrame.sample_rate(AUDIO_SAMPLE_RATE);
+                this.resampledFrame.nb_samples(AUDIO_SAMPLES);
+
+                return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
+            }
+
+            return true;
         } catch (final Exception e) {
             LOGGER.error(IT, "Failed to initialize FFmpeg", e);
             return false;
         }
     }
 
-    private void findStreams() {
-        for (int i = 0; i < this.formatContext.nb_streams(); i++) {
-            final AVStream stream = this.formatContext.streams(i);
-            final int codecType = stream.codecpar().codec_type();
+    private void processVideoPacket() {
+        if (avcodec.avcodec_send_packet(this.videoCodecContext, this.packet) < 0) return;
 
-            if (codecType == avutil.AVMEDIA_TYPE_VIDEO && this.videoStreamIndex < 0 && this.video) {
-                this.videoStreamIndex = i;
-                this.videoTimeBase = av_q2d(stream.time_base());
-            } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audio) {
-                this.audioStreamIndex = i;
-                this.audioTimeBase = av_q2d(stream.time_base());
-            }
-        }
-    }
+        while (avcodec.avcodec_receive_frame(this.videoCodecContext, this.videoFrame) >= 0) {
+            final double ptsInSeconds = this.videoFrame.pts() * this.videoTimeBase;
 
-    private boolean initializeVideoDecoder() {
-        final AVCodec videoCodec = avcodec.avcodec_find_decoder(
-                this.formatContext.streams(this.videoStreamIndex).codecpar().codec_id());
+            // Update master clock
+            this.updateClock(ptsInSeconds);
 
-        if (videoCodec == null) return false;
+            // Wait for proper display time
+            if (!this.audio && !this.pauseRequested) {
+                final double currentTime = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0 * this.speedFactor;
+                final double delay = ptsInSeconds - currentTime;
 
-        this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
-        if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
-                this.formatContext.streams(this.videoStreamIndex).codecpar()) < 0) {
-            return false;
-        }
-
-        if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
-            return false;
-        }
-
-        this.setVideoFormat(GL12.GL_BGRA, this.videoCodecContext.width(), this.videoCodecContext.height());
-
-        this.swsContext = swscale.sws_getContext(
-                this.width(), this.height(), this.videoCodecContext.pix_fmt(),
-                this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
-                swscale.SWS_BILINEAR, null, null, (double[]) null);
-
-        if (this.swsContext == null) return false;
-
-        this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
-        this.scaledFrame.width(this.width());
-        this.scaledFrame.height(this.height());
-
-        if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) return false;
-
-        return true;
-    }
-
-    private boolean initializeAudioDecoder() {
-        final AVStream audioStream = this.formatContext.streams(this.audioStreamIndex);
-        final AVCodecParameters codecParams = audioStream.codecpar();
-        final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecParams.codec_id());
-
-        if (audioCodec == null) return false;
-
-        this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
-        if (this.audioCodecContext == null) return false;
-
-        if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
-            return false;
-        }
-
-        if (avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null) < 0) {
-            return false;
-        }
-
-        // Initialize resampler
-        this.swrContext = swresample.swr_alloc();
-        if (this.swrContext == null) return false;
-
-        final AVChannelLayout inputLayout = new AVChannelLayout();
-        final AVChannelLayout outputLayout = new AVChannelLayout();
-
-        if (codecParams.ch_layout().nb_channels() > 0) {
-            avutil.av_channel_layout_copy(inputLayout, codecParams.ch_layout());
-        } else {
-            avutil.av_channel_layout_default(inputLayout, codecParams.ch_layout().nb_channels());
-        }
-
-        avutil.av_channel_layout_default(outputLayout, AUDIO_CHANNELS);
-
-        avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
-        avutil.av_opt_set_int(this.swrContext, "in_sample_rate", codecParams.sample_rate(), 0);
-        avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", codecParams.format(), 0);
-        avutil.av_opt_set_chlayout(this.swrContext, "out_chlayout", outputLayout, 0);
-        avutil.av_opt_set_int(this.swrContext, "out_sample_rate", AUDIO_SAMPLE_RATE, 0);
-        avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
-
-        if (swresample.swr_init(this.swrContext) < 0) return false;
-        this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
-        this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
-        avutil.av_channel_layout_default(this.resampledFrame.ch_layout(), AUDIO_CHANNELS);
-        this.resampledFrame.sample_rate(AUDIO_SAMPLE_RATE);
-        this.resampledFrame.nb_samples(AUDIO_SAMPLES);
-
-        return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
-    }
-
-    private void startVideoThread() {
-        if (!this.video || this.videoStreamIndex < 0) return;
-
-        this.videoThread = new Thread(() -> {
-            try {
-                while (this.running.get() && !this.stopRequested.get()) {
-                    final FrameData frameData = this.videoQueue.take();
-                    if (frameData == POISON_PILL) break;
-                    this.processVideoFrame(frameData);
-                }
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }, "FFmpeg-Video");
-
-        this.videoThread.setDaemon(true);
-        this.videoThread.start();
-    }
-
-    private void startAudioThread() {
-        if (!this.audio || this.audioStreamIndex < 0) return;
-
-        this.audioThread = new Thread(() -> {
-            try {
-                while (this.running.get() && !this.stopRequested.get()) {
-                    final FrameData frameData = this.audioQueue.take();
-                    if (frameData == POISON_PILL) break;
-                    this.processAudioFrame(frameData);
-                }
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }, "FFmpeg-Audio");
-
-        this.audioThread.setDaemon(true);
-        this.audioThread.start();
-    }
-
-    private void notifyQueueSpaceAvailable() {
-        if (this.shouldThrottleReading()) {
-            return; // Aún no hay suficiente espacio
-        }
-
-        synchronized (this.playbackLock) {
-            this.playbackLock.notifyAll();
-        }
-    }
-
-    private boolean shouldThrottleReading() {
-        final int videoSize = this.videoQueue.size();
-        final int audioSize = this.audioQueue.size();
-
-        // Usar histéresis para evitar oscilaciones
-        if (this.throttleNotified.get()) {
-            // Ya estamos en throttling, usar umbrales más bajos para salir
-            return videoSize > 15 || audioSize > 60;
-        } else {
-            // No estamos en throttling, usar umbrales normales para entrar
-            final boolean shouldThrottle = videoSize > 20 || audioSize > 80;
-            this.throttleNotified.set(shouldThrottle);
-            return shouldThrottle;
-        }
-    }
-
-    private boolean readAndQueueFrame() {
-        final int result = avformat.av_read_frame(this.formatContext, this.packet);
-        if (result < 0) {
-            LOGGER.info(IT, "End of stream detected");
-            return false;
-        }
-
-        try {
-            if (this.packet.stream_index() == this.videoStreamIndex && this.video) {
-                this.decodeAndQueue(this.packet, this.videoCodecContext, this.videoQueue);
-            } else if (this.packet.stream_index() == this.audioStreamIndex && this.audio) {
-                this.decodeAndQueue(this.packet, this.audioCodecContext, this.audioQueue);
-            }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        } finally {
-            avcodec.av_packet_unref(this.packet);
-        }
-        return true;
-    }
-
-    private void decodeAndQueue(final AVPacket packet, final AVCodecContext context,
-                                final BlockingQueue<FrameData> queue) throws InterruptedException {
-        final AVFrame targetFrame = (context == this.videoCodecContext) ? this.videoFrame : this.audioFrame;
-
-        if (avcodec.avcodec_send_packet(context, packet) >= 0) {
-            while (avcodec.avcodec_receive_frame(context, targetFrame) >= 0) {
-                final AVFrame frameCopy = avutil.av_frame_alloc();
-                if (frameCopy != null && avutil.av_frame_ref(frameCopy, targetFrame) >= 0) {
-                    queue.put(new FrameData(targetFrame.pts(), frameCopy));
+                // Only sleep if we're ahead and delay is reasonable
+                if (delay > 0 && delay < 0.5) {
+                    try {
+                        Thread.sleep((long)(delay * 1000));
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
                 }
             }
-        }
-    }
 
-    private void processVideoFrame(final FrameData frameData) {
-        try {
-            if (this.isSearching.get()) return;
-
-            this.waitForPlaybackResume();
-            if (!this.running.get() || this.stopRequested.get() || this.isSearching.get()) return;
-
-            final double ptsInSeconds = frameData.pts * this.videoTimeBase;
-
-            // Initialize playback timer on very first frame only
-            if (this.playbackStartTime <= 0) {
-                this.playbackStartTime = System.nanoTime() - (long)(ptsInSeconds * 1_000_000_000L);
-            }
-
-            this.handleVideoFrameTiming(ptsInSeconds);
-
-            swscale.sws_scale(this.swsContext, frameData.frame.data(), frameData.frame.linesize(),
+            // Scale and upload frame
+            swscale.sws_scale(this.swsContext, this.videoFrame.data(), this.videoFrame.linesize(),
                     0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
 
             final int stride = this.scaledFrame.linesize(0);
             if (this.videoBuffer == null) {
                 this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
             }
-            this.uploadVideoFrame(this.videoBuffer, stride / 4);
-
-            // Update PTS only if it's ahead of current
-            if (frameData.pts > this.currentPts.get() / 1000) {
-                this.currentPts.set(frameData.pts);
-            }
-
-        } finally {
-            if (frameData.frame != null) {
-                avutil.av_frame_free(frameData.frame);
-            }
-            this.notifyQueueSpaceAvailable();
+            this.upload(this.videoBuffer, stride / 4);
         }
     }
 
-    private void processAudioFrame(final FrameData frameData) {
-        try {
-            if (this.isSearching.get()) return;
+    private void processAudioPacket() {
+        if (avcodec.avcodec_send_packet(this.audioCodecContext, this.packet) < 0) return;
 
-            this.waitForPlaybackResume();
-            if (!this.running.get() || this.stopRequested.get() || this.isSearching.get()) return;
+        while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0) {
+            final double ptsInSeconds = this.audioFrame.pts() * this.audioTimeBase;
+
+            // Update master clock from audio (more reliable)
+            this.updateClock(ptsInSeconds);
 
             final int samplesConverted = swresample.swr_convert(this.swrContext, this.resampledFrame.data(),
-                    this.resampledFrame.nb_samples(), frameData.frame.data(), frameData.frame.nb_samples());
+                    this.resampledFrame.nb_samples(), this.audioFrame.data(), this.audioFrame.nb_samples());
 
             if (samplesConverted > 0) {
                 final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
-                this.uploadAudioBuffer(this.resampledFrame.data(0).limit(dataSize).asBuffer().clear(),
+                this.upload(this.resampledFrame.data(0).limit(dataSize).asBuffer().clear(),
                         AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
-
-                // Update audio clock naturally
-                this.audioClock = (frameData.pts * this.audioTimeBase) +
-                        ((double)samplesConverted / AUDIO_SAMPLE_RATE);
-            }
-        } finally {
-            if (frameData.frame != null) {
-                avutil.av_frame_free(frameData.frame);
-            }
-            this.notifyQueueSpaceAvailable();
-        }
-    }
-
-
-    private void waitForPlaybackResume() {
-        synchronized (this.pauseLock) {
-            while (this.isPaused && this.running.get() && !this.stopRequested.get()) {
-                try {
-                    this.pauseLock.wait();
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
             }
         }
     }
 
-    private void handleVideoFrameTiming(final double ptsInSeconds) {
-        if (this.audio) {
-            // Audio-video synchronization
-            final double timeDiff = ptsInSeconds - this.audioClock;
-
-            // Larger tolerance window (80ms) to prevent constant corrections
-            if (Math.abs(timeDiff) < 0.08) {
-                return; // Close enough, no correction needed
+    private void updateClock(final double ptsInSeconds) {
+        // Always prefer audio clock when available
+        if (this.audio && this.audioStreamIndex >= 0) {
+            this.masterClock = ptsInSeconds;
+            if (!this.clockPaused && this.clockBaseTime <= 0) {
+                this.clockBaseTime = System.nanoTime() - (long)(ptsInSeconds * 1_000_000_000L);
             }
-
-            // Video is ahead of audio - wait
-            if (timeDiff > 0) {
-                // Gradual sync: don't wait the full difference at once
-                final long sleepMs = Math.min(20, (long)(timeDiff * 500)); // Max 20ms wait
-                if (sleepMs > 0) {
-                    try {
-                        Thread.sleep(sleepMs);
-                    } catch (final InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
+        } else if (!this.audio && this.video) {
+            this.masterClock = ptsInSeconds;
+            if (!this.clockPaused && this.clockBaseTime <= 0) {
+                this.clockBaseTime = System.nanoTime() - (long)(ptsInSeconds * 1_000_000_000L);
             }
-            // If video is behind by more than 150ms, skip timing
-            else if (timeDiff < -0.15) {
-                // Video is too far behind, let it catch up
-                return;
-            }
-
-        } else {
-            // Video-only timing
-            if (this.playbackStartTime <= 0) {
-                this.playbackStartTime = System.nanoTime();
-            }
-
-            final long currentTime = System.nanoTime();
-            final long elapsedTime = currentTime - this.playbackStartTime - this.totalPauseTime;
-            final long targetTime = (long)(ptsInSeconds * 1_000_000_000L / this.speedFactor.get());
-
-            final long sleepTime = targetTime - elapsedTime;
-            if (sleepTime > 0 && sleepTime < 500_000_000L) {
-                try {
-                    Thread.sleep(sleepTime / 1_000_000L);
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        }
-    }
-
-    private void performSeek(final long timeUs) {
-        if (this.formatContext == null || !this.canSeek()) {
-            LOGGER.warn(IT, "Cannot seek - invalid format context or live stream");
-            return;
-        }
-
-        synchronized (this.seekLock) {
-            this.seekInProgress = true;
-            this.isSearching.set(true);
-
-            try {
-                LOGGER.info(IT, "Starting seek to {}ms", timeUs / 1000);
-
-                final boolean wasPlaying = !this.isPaused;
-                if (wasPlaying) {
-                    synchronized (this.pauseLock) {
-                        this.isPaused = true;
-                    }
-                }
-
-                // Clear queues and flush codecs
-                this.clearQueues();
-                this.flushCodecs();
-
-                // Perform the seek
-                final long ffmpegTimestamp = (timeUs / 1_000_000L) * avutil.AV_TIME_BASE;
-                final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp,
-                        avformat.AVSEEK_FLAG_BACKWARD);
-
-                if (result < 0) {
-                    LOGGER.error(IT, "av_seek_frame failed with error: {}", result);
-                    return;
-                }
-
-                // Set timing to the TARGET time, not the actual frame time
-                // This prevents time regression
-                synchronized (this.pauseLock) {
-                    // Set clocks to the seek target
-                    this.audioClock = timeUs / 1_000_000.0;
-                    this.currentPts.set(timeUs / 1000);
-
-                    // Calculate playback start so time() returns the seek target
-                    this.playbackStartTime = System.nanoTime() - (timeUs * 1000L);
-                    this.totalPauseTime = 0;
-                    this.pausedAt = 0;
-
-                    LOGGER.debug(IT, "Timing set to seek target: {}ms", timeUs / 1000);
-                }
-
-                if (wasPlaying) {
-                    synchronized (this.pauseLock) {
-                        this.isPaused = false;
-                        this.pauseLock.notifyAll();
-                    }
-                }
-
-                LOGGER.info(IT, "Seek completed successfully to {}ms", timeUs / 1000);
-
-            } catch (final Exception e) {
-                LOGGER.error(IT, "Error during seek operation", e);
-            } finally {
-                this.seekInProgress = false;
-                this.isSearching.set(false);
-            }
-        }
-    }
-
-    private void clearQueues() {
-        LOGGER.debug(IT, "Clearing queues - Video: {}, Audio: {}", this.videoQueue.size(), this.audioQueue.size());
-
-        FrameData frame;
-        while ((frame = this.videoQueue.poll()) != null && frame.frame() != null) {
-            avutil.av_frame_free(frame.frame());
-        }
-
-        while ((frame = this.audioQueue.poll()) != null && frame.frame() != null) {
-            avutil.av_frame_free(frame.frame());
-        }
-
-        LOGGER.debug(IT, "Queues cleared");
-    }
-
-    private void flushCodecs() {
-        try {
-            if (this.videoCodecContext != null) {
-                avcodec.avcodec_flush_buffers(this.videoCodecContext);
-                LOGGER.debug(IT, "Video codec buffers flushed");
-            }
-
-            if (this.audioCodecContext != null) {
-                avcodec.avcodec_flush_buffers(this.audioCodecContext);
-                LOGGER.debug(IT, "Audio codec buffers flushed");
-            }
-        } catch (final Exception e) {
-            LOGGER.error(IT, "Error flushing codec buffers", e);
-        }
-    }
-
-    private void resetTiming(final long seekTimeUs) {
-        synchronized (this.pauseLock) {
-            this.playbackStartTime = System.nanoTime();
-            this.totalPauseTime = 0;
-            this.pausedAt = 0;
-            this.audioClock = seekTimeUs / 1_000_000.0;
-            this.currentPts.set(seekTimeUs / 1000);
-
-            LOGGER.debug(IT, "Timing reset - playbackStartTime: {}, audioClock: {}s",
-                    this.playbackStartTime, this.audioClock);
         }
     }
 
     private void cleanup() {
-        this.running.set(false);
-        this.stopRequested.set(true);
-
-        // Interrupt threads
-        if (this.playerThread != null) this.playerThread.interrupt();
-        if (this.videoThread != null) this.videoThread.interrupt();
-        if (this.audioThread != null) this.audioThread.interrupt();
-
-        // Clear queues and free frames
-        this.clearQueues();
+        this.running = false;
 
         // Free FFmpeg resources
         if (this.swsContext != null) {
@@ -990,7 +676,6 @@ public class FFMediaPlayer extends MediaPlayer {
             this.packet = null;
         }
 
-        this.currentStatus.set(Status.STOPPED);
         LOGGER.info(IT, "Cleanup completed");
     }
 
@@ -998,42 +683,15 @@ public class FFMediaPlayer extends MediaPlayer {
     // UTILITY METHODS
     // ===========================================
 
-    private long clampSeekTime(final long timeMs) {
-        final long durationMs = this.duration();
-
-        if (timeMs < 0) {
-            return 0;
-        }
-
-        if (durationMs > 0 && timeMs > durationMs) {
-            LOGGER.warn(IT, "Seek time {}ms exceeds duration {}ms", timeMs, durationMs);
-            return durationMs;
-        }
-
-        return timeMs;
-    }
-
-    private long calculateFrameTime() {
-        long frameTimeMs = 33; // Default ~30fps
-
-        if (this.videoStreamIndex >= 0) {
-            final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
-            final AVRational frameRate = videoStream.avg_frame_rate();
-            if (frameRate.num() > 0 && frameRate.den() > 0) {
-                frameTimeMs = (long)(1000.0 * frameRate.den() / frameRate.num());
-            }
-        }
-
-        return frameTimeMs;
-    }
-
     private static double av_q2d(final AVRational a) {
         return (double) a.num() / a.den();
     }
 
-    // ===========================================
-    // INNER CLASSES
-    // ===========================================
+    private static long msFromSeconds(final double seconds) {
+        return (long)(seconds * 1000);
+    }
 
-    private record FrameData(long pts, AVFrame frame) {}
+    private static double secondsFromMs(final long ms) {
+        return ms / 1000.0;
+    }
 }
