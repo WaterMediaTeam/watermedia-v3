@@ -36,7 +36,6 @@ public class FFMediaPlayer extends MediaPlayer {
     private static final int AUDIO_SAMPLE_RATE = 44100;
     private static final int AUDIO_CHANNELS = 2;
     private static final int AUDIO_SAMPLES = 1024;
-    private static final long SEEK_COOLDOWN_MS = 100;
     private static final FrameData POISON_PILL = new FrameData(-1, null);
 
     // FFmpeg components
@@ -60,8 +59,8 @@ public class FFMediaPlayer extends MediaPlayer {
     private final AtomicReference<Status> currentStatus = new AtomicReference<>(Status.WAITING);
     private final AtomicBoolean pauseRequested = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
-    private final AtomicBoolean seekRequested = new AtomicBoolean(false);
-    private final AtomicLong seekTarget = new AtomicLong(0);
+    private final BlockingQueue<Long> seekQueue = new LinkedBlockingQueue<>();
+    private volatile boolean seekInProgress = false;
     private final AtomicReference<Float> speedFactor = new AtomicReference<>(1.0f);
 
     // Timing control
@@ -69,7 +68,6 @@ public class FFMediaPlayer extends MediaPlayer {
     private final AtomicBoolean isSearching = new AtomicBoolean(false);
     private final Object seekLock = new Object();
     private final Object pauseLock = new Object();
-    private volatile long lastSeekTime = 0;
     private long playbackStartTime = -1;
     private volatile double audioClock = 0.0;
     private volatile boolean isPaused = false;
@@ -176,6 +174,7 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
+        this.seekQueue.clear();
         this.stopRequested.set(true);
         this.running.set(false);
         this.currentStatus.set(Status.STOPPED);
@@ -198,20 +197,17 @@ public class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        // Validate and clamp time
+
         timeMs = this.clampSeekTime(timeMs);
 
-        // Prevent too frequent seeks
-        final long currentTime = System.currentTimeMillis();
-        if (currentTime - this.lastSeekTime < SEEK_COOLDOWN_MS) {
-            LOGGER.debug(IT, "Ignoring seek - too frequent");
-            return false;
+        if (this.seekQueue.size() > 5) {
+            this.seekQueue.clear();
+            LOGGER.debug(IT, "Cleared seek queue due to multiple pending seeks");
         }
 
-        this.seekTarget.set(timeMs * 1000); // Convert to microseconds
-        this.seekRequested.set(true);
+        this.seekQueue.offer(timeMs * 1000); // Convertir a microsegundos
+        LOGGER.debug(IT, "Seek queued to {}ms. Queue size: {}", timeMs, this.seekQueue.size());
 
-        LOGGER.debug(IT, "Seek queued to {}ms", timeMs);
         return true;
     }
 
@@ -336,21 +332,34 @@ public class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public long time() {
+        // During seek, return a stable value
+        if (this.seekInProgress || this.isSearching.get()) {
+            return this.currentPts.get() / 1000;
+        }
+
+        // Use audio clock if available and valid
         if (this.audio && this.audioClock > 0) {
             return (long)(this.audioClock * 1000);
         }
 
-        if (this.playbackStartTime <= 0) return 0;
+        // Video-only or fallback
+        if (this.playbackStartTime <= 0) {
+            return this.currentPts.get() / 1000;
+        }
 
         synchronized (this.pauseLock) {
             if (this.isPaused) {
                 return (this.pausedAt - this.playbackStartTime - this.totalPauseTime) / 1_000_000;
             } else {
-                return (System.nanoTime() - this.playbackStartTime - this.totalPauseTime) / 1_000_000;
+                // Calculate elapsed time but never go backwards
+                final long elapsed = (System.nanoTime() - this.playbackStartTime - this.totalPauseTime) / 1_000_000;
+                final long lastKnown = this.currentPts.get() / 1000;
+
+                // Return the maximum to prevent time regression
+                return Math.max(elapsed, lastKnown);
             }
         }
     }
-
     // ===========================================
     // PRIVATE IMPLEMENTATION
     // ===========================================
@@ -368,20 +377,74 @@ public class FFMediaPlayer extends MediaPlayer {
             this.playbackStartTime = System.nanoTime();
 
             while (this.running.get() && !this.stopRequested.get()) {
-                this.handleStateRequests();
+                if (!this.seekInProgress && !this.seekQueue.isEmpty()) {
+                    Long targetTimeUs = null;
+
+                    // Get all pending seeks but only execute the last one
+                    while (!this.seekQueue.isEmpty()) {
+                        targetTimeUs = this.seekQueue.poll();
+                    }
+
+                    if (targetTimeUs != null) {
+                        LOGGER.info(IT, "Processing seek to {}ms", targetTimeUs / 1000);
+                        this.performSeek(targetTimeUs);
+                    }
+                }
 
                 if (this.isPaused) {
-                    this.waitForResume();
+                    synchronized (this.pauseLock) {
+                        while (this.isPaused && this.running.get() && !this.stopRequested.get()) {
+                            // Usar wait() en lugar de Thread.sleep()
+                            // Será despertado por resume() via notify()
+                            this.pauseLock.wait();
+                        }
+                    }
                     continue;
                 }
 
                 if (this.shouldThrottleReading()) {
-                    this.waitForQueueSpace();
+                    // Estrategia híbrida: wait con timeout
+                    final long startTime = System.currentTimeMillis();
+
+                    while (this.shouldThrottleReading() && this.running.get() && !this.stopRequested.get()) {
+                        synchronized (this.playbackLock) {
+                            // Esperar máximo 10ms o hasta que se libere espacio
+                            this.playbackLock.wait(10);
+
+                            // Si llevamos más de 50ms esperando, verificar estado
+                            if (System.currentTimeMillis() - startTime > 50) {
+                                break;
+                            }
+                        }
+                    }
                     continue;
                 }
 
                 if (!this.readAndQueueFrame()) {
-                    this.handleEndOfStream();
+                    try {
+                        LOGGER.info(IT, "Handling end of stream...");
+
+                        final long startWait = System.currentTimeMillis();
+                        while ((!this.videoQueue.isEmpty() || !this.audioQueue.isEmpty()) &&
+                                (System.currentTimeMillis() - startWait) < 5000) {
+                            Thread.sleep(100);
+                        }
+
+                        if (this.repeat()) {
+                            LOGGER.info(IT, "Repeating playback...");
+                            synchronized (this.pauseLock) {
+                                this.totalPauseTime = 0;
+                                this.playbackStartTime = -1;
+                                this.audioClock = 0.0;
+                            }
+                            this.seek(0);
+                        } else {
+                            LOGGER.info(IT, "Setting ENDED status");
+                            this.currentStatus.set(Status.ENDED);
+                        }
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                     break;
                 }
             }
@@ -547,33 +610,6 @@ public class FFMediaPlayer extends MediaPlayer {
         this.videoThread.start();
     }
 
-    private void waitForResume() throws InterruptedException {
-        synchronized (this.pauseLock) {
-            while (this.isPaused && this.running.get() && !this.stopRequested.get()) {
-                // Usar wait() en lugar de Thread.sleep()
-                // Será despertado por resume() via notify()
-                this.pauseLock.wait();
-            }
-        }
-    }
-
-    private void waitForQueueSpace() throws InterruptedException {
-        // Estrategia híbrida: wait con timeout
-        final long startTime = System.currentTimeMillis();
-
-        while (this.shouldThrottleReading() && this.running.get() && !this.stopRequested.get()) {
-            synchronized (this.playbackLock) {
-                // Esperar máximo 10ms o hasta que se libere espacio
-                this.playbackLock.wait(10);
-
-                // Si llevamos más de 50ms esperando, verificar estado
-                if (System.currentTimeMillis() - startTime > 50) {
-                    break;
-                }
-            }
-        }
-    }
-
     private void startAudioThread() {
         if (!this.audio || this.audioStreamIndex < 0) return;
 
@@ -663,19 +699,27 @@ public class FFMediaPlayer extends MediaPlayer {
             if (!this.running.get() || this.stopRequested.get() || this.isSearching.get()) return;
 
             final double ptsInSeconds = frameData.pts * this.videoTimeBase;
+
+            // Initialize playback timer on very first frame only
+            if (this.playbackStartTime <= 0) {
+                this.playbackStartTime = System.nanoTime() - (long)(ptsInSeconds * 1_000_000_000L);
+            }
+
             this.handleVideoFrameTiming(ptsInSeconds);
 
-            swscale.sws_scale(this.swsContext, frameData.frame.data(), frameData.frame.linesize(), 0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
+            swscale.sws_scale(this.swsContext, frameData.frame.data(), frameData.frame.linesize(),
+                    0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
 
-            // get stride (line size) for the first plane (BGRA)
             final int stride = this.scaledFrame.linesize(0);
-
-            // Pasar el stride a OpenGL para que maneje el padding
             if (this.videoBuffer == null) {
                 this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
             }
-            this.uploadVideoFrame(this.videoBuffer, stride / 4); // stride en pixels, no en bytes
-            this.currentPts.set(frameData.pts);
+            this.uploadVideoFrame(this.videoBuffer, stride / 4);
+
+            // Update PTS only if it's ahead of current
+            if (frameData.pts > this.currentPts.get() / 1000) {
+                this.currentPts.set(frameData.pts);
+            }
 
         } finally {
             if (frameData.frame != null) {
@@ -697,9 +741,12 @@ public class FFMediaPlayer extends MediaPlayer {
 
             if (samplesConverted > 0) {
                 final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
-                this.uploadAudioBuffer(this.resampledFrame.data(0).limit(dataSize).asBuffer().clear(), AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+                this.uploadAudioBuffer(this.resampledFrame.data(0).limit(dataSize).asBuffer().clear(),
+                        AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
 
-                this.audioClock = (frameData.pts * this.audioTimeBase) + ((double)samplesConverted / AUDIO_SAMPLE_RATE);
+                // Update audio clock naturally
+                this.audioClock = (frameData.pts * this.audioTimeBase) +
+                        ((double)samplesConverted / AUDIO_SAMPLE_RATE);
             }
         } finally {
             if (frameData.frame != null) {
@@ -708,6 +755,7 @@ public class FFMediaPlayer extends MediaPlayer {
             this.notifyQueueSpaceAvailable();
         }
     }
+
 
     private void waitForPlaybackResume() {
         synchronized (this.pauseLock) {
@@ -724,10 +772,19 @@ public class FFMediaPlayer extends MediaPlayer {
 
     private void handleVideoFrameTiming(final double ptsInSeconds) {
         if (this.audio) {
+            // Audio-video synchronization
             final double timeDiff = ptsInSeconds - this.audioClock;
-            if (timeDiff > 0.001) {
-                final long sleepMs = (long)(timeDiff * 1000);
-                if (sleepMs > 0 && sleepMs < 1000) {
+
+            // Larger tolerance window (80ms) to prevent constant corrections
+            if (Math.abs(timeDiff) < 0.08) {
+                return; // Close enough, no correction needed
+            }
+
+            // Video is ahead of audio - wait
+            if (timeDiff > 0) {
+                // Gradual sync: don't wait the full difference at once
+                final long sleepMs = Math.min(20, (long)(timeDiff * 500)); // Max 20ms wait
+                if (sleepMs > 0) {
                     try {
                         Thread.sleep(sleepMs);
                     } catch (final InterruptedException e) {
@@ -735,7 +792,14 @@ public class FFMediaPlayer extends MediaPlayer {
                     }
                 }
             }
+            // If video is behind by more than 150ms, skip timing
+            else if (timeDiff < -0.15) {
+                // Video is too far behind, let it catch up
+                return;
+            }
+
         } else {
+            // Video-only timing
             if (this.playbackStartTime <= 0) {
                 this.playbackStartTime = System.nanoTime();
             }
@@ -755,14 +819,6 @@ public class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    private void handleStateRequests() {
-        if (this.seekRequested.getAndSet(false)) {
-            final long targetTimeUs = this.seekTarget.get();
-            LOGGER.info(IT, "Seek requested to {}ms", targetTimeUs / 1000);
-            this.performSeek(targetTimeUs);
-        }
-    }
-
     private void performSeek(final long timeUs) {
         if (this.formatContext == null || !this.canSeek()) {
             LOGGER.warn(IT, "Cannot seek - invalid format context or live stream");
@@ -770,6 +826,7 @@ public class FFMediaPlayer extends MediaPlayer {
         }
 
         synchronized (this.seekLock) {
+            this.seekInProgress = true;
             this.isSearching.set(true);
 
             try {
@@ -782,8 +839,11 @@ public class FFMediaPlayer extends MediaPlayer {
                     }
                 }
 
+                // Clear queues and flush codecs
                 this.clearQueues();
+                this.flushCodecs();
 
+                // Perform the seek
                 final long ffmpegTimestamp = (timeUs / 1_000_000L) * avutil.AV_TIME_BASE;
                 final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp,
                         avformat.AVSEEK_FLAG_BACKWARD);
@@ -793,9 +853,20 @@ public class FFMediaPlayer extends MediaPlayer {
                     return;
                 }
 
-                this.flushCodecs();
-                this.resetTiming(timeUs);
-                this.preloadFramesAfterSeek();
+                // Set timing to the TARGET time, not the actual frame time
+                // This prevents time regression
+                synchronized (this.pauseLock) {
+                    // Set clocks to the seek target
+                    this.audioClock = timeUs / 1_000_000.0;
+                    this.currentPts.set(timeUs / 1000);
+
+                    // Calculate playback start so time() returns the seek target
+                    this.playbackStartTime = System.nanoTime() - (timeUs * 1000L);
+                    this.totalPauseTime = 0;
+                    this.pausedAt = 0;
+
+                    LOGGER.debug(IT, "Timing set to seek target: {}ms", timeUs / 1000);
+                }
 
                 if (wasPlaying) {
                     synchronized (this.pauseLock) {
@@ -809,8 +880,8 @@ public class FFMediaPlayer extends MediaPlayer {
             } catch (final Exception e) {
                 LOGGER.error(IT, "Error during seek operation", e);
             } finally {
+                this.seekInProgress = false;
                 this.isSearching.set(false);
-                this.lastSeekTime = System.currentTimeMillis();
             }
         }
     }
@@ -856,75 +927,6 @@ public class FFMediaPlayer extends MediaPlayer {
 
             LOGGER.debug(IT, "Timing reset - playbackStartTime: {}, audioClock: {}s",
                     this.playbackStartTime, this.audioClock);
-        }
-    }
-
-    private void preloadFramesAfterSeek() {
-        try {
-            LOGGER.debug(IT, "Preloading frames after seek...");
-
-            int framesLoaded = 0;
-            final int maxFramesToLoad = 5;
-
-            while (framesLoaded < maxFramesToLoad && this.running.get()) {
-                final int result = avformat.av_read_frame(this.formatContext, this.packet);
-                if (result < 0) {
-                    LOGGER.debug(IT, "No more frames to preload");
-                    break;
-                }
-
-                try {
-                    boolean frameProcessed = false;
-
-                    if (this.packet.stream_index() == this.videoStreamIndex && this.video) {
-                        this.decodeAndQueue(this.packet, this.videoCodecContext, this.videoQueue);
-                        frameProcessed = true;
-                    } else if (this.packet.stream_index() == this.audioStreamIndex && this.audio) {
-                        this.decodeAndQueue(this.packet, this.audioCodecContext, this.audioQueue);
-                        frameProcessed = true;
-                    }
-
-                    if (frameProcessed) framesLoaded++;
-
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } finally {
-                    avcodec.av_packet_unref(this.packet);
-                }
-            }
-
-            LOGGER.debug(IT, "Preloaded {} frames after seek", framesLoaded);
-
-        } catch (final Exception e) {
-            LOGGER.error(IT, "Error preloading frames after seek", e);
-        }
-    }
-
-    private void handleEndOfStream() {
-        try {
-            LOGGER.info(IT, "Handling end of stream...");
-
-            final long startWait = System.currentTimeMillis();
-            while ((!this.videoQueue.isEmpty() || !this.audioQueue.isEmpty()) &&
-                    (System.currentTimeMillis() - startWait) < 5000) {
-                Thread.sleep(100);
-            }
-
-            if (this.repeat()) {
-                LOGGER.info(IT, "Repeating playback...");
-                synchronized (this.pauseLock) {
-                    this.totalPauseTime = 0;
-                    this.playbackStartTime = -1;
-                    this.audioClock = 0.0;
-                }
-                this.seek(0);
-            } else {
-                LOGGER.info(IT, "Setting ENDED status");
-                this.currentStatus.set(Status.ENDED);
-            }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
         }
     }
 
