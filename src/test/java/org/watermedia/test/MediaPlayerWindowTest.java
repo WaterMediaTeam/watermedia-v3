@@ -10,14 +10,12 @@ import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.FFMediaPlayer;
 import org.watermedia.api.media.MediaPlayer;
-import org.watermedia.api.media.VLMediaPlayer;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
-import java.util.LinkedList;
 import java.util.Queue;
-import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -34,7 +32,7 @@ public class MediaPlayerWindowTest {
     // The window handle
     private static long window;
     private static MediaPlayer player;
-    private static final Queue<Runnable> executor = new LinkedList<>();
+    private static final Queue<Runnable> executor = new ConcurrentLinkedQueue<>();
     private static Thread thread;
 
     public static void main(final String... args) {
@@ -177,7 +175,9 @@ public class MediaPlayerWindowTest {
             // Poll for window events. The key callback above will only be
             // invoked during this call.
             glfwPollEvents();
-            if (!executor.isEmpty()) executor.remove().run();
+            while (!executor.isEmpty()) {
+                executor.poll().run();
+            }
 //            LOGGER.info("Duration: {}, Time: {}, Playing: {}, Volume: {}, Status: {}",
 //                    this.player.duration(), this.player.time(), this.player.playing(), this.player.volume(), this.player.status());
         }
@@ -187,6 +187,5 @@ public class MediaPlayerWindowTest {
         if (command == null)
             throw new IllegalArgumentException("Command cannot be null");
         executor.add(command);
-        LockSupport.unpark(thread);
     }
 }
