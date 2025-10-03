@@ -22,16 +22,13 @@ public class MediaAPI extends WaterMediaAPI {
     protected static boolean FFMPEG_LOADED;
 
     static libvlc_instance_t getVlcInstance() {
-        if (!CLIENT_SIDE) {
-            WaterMedia.throwIllegalEnvironment(MediaAPI.class);
-        }
+        WaterMedia.checkIsClientSideOrThrow(MediaAPI.class);
         return VLC_INSTANCE;
     }
 
     @Override
     public boolean start(final WaterMedia instance) throws Exception {
-        CLIENT_SIDE = instance.clientSide;
-        if (!CLIENT_SIDE) {
+        if (!instance.clientSide) {
             LOGGER.warn(IT, "Detected server-side environment, lockdown mode enabled");
             return false;
         }
@@ -91,6 +88,11 @@ public class MediaAPI extends WaterMediaAPI {
             return false;
         }
 
+        return true;
+    }
+
+    @Override
+    public boolean onlyClient() {
         return true;
     }
 

@@ -59,6 +59,12 @@ public class DecoderAPI extends WaterMediaAPI {
     }
 
     @Override
+    public boolean onlyClient() {
+        LOGGER.warn(IT, "DecoderAPI is not client-side only, but is recommended to be used only in client-side");
+        return false;
+    }
+
+    @Override
     public void test() {
 
     }

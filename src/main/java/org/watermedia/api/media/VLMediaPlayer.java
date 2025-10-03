@@ -97,7 +97,7 @@ public final class VLMediaPlayer extends MediaPlayer {
     };
 
     private final libvlc_display_callback_t displayCB = (opaque, picture) -> {
-        this.uploadVideoFrame(this.nativeBuffer);
+        this.uploadVideoFrame(this.nativeBuffer, 0);
     };
     private final libvlc_unlock_callback_t unlockCB = (opaque, picture, plane) -> {};
     private final libvlc_audio_play_cb playCB = (pointer, samples, count, pts) ->

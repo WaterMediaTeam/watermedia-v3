@@ -1,6 +1,5 @@
 package org.watermedia;
 
-import com.sun.jna.Platform;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
@@ -79,7 +78,9 @@ public class WaterMedia {
 
     public static String toId(final String path) { return WaterMedia.ID + ":" + path; }
 
-    public static void throwIllegalEnvironment(Class<?> clazz) {
-        throw new IllegalStateException("Called a " + clazz.getSimpleName() + " method on a server-side environment");
+    public static void checkIsClientSideOrThrow(Class<?> clazz) {
+        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
+        if (!instance.clientSide)
+            throw new IllegalStateException("Called a " + clazz.getSimpleName() + " method on a server-side environment");
     }
 }

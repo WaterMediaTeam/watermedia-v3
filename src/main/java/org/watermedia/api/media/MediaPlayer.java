@@ -64,7 +64,7 @@ public abstract class MediaPlayer {
 
         // Initialize video (if applicable)
         if (video) {
-            this.glTexture = RenderAPI.createTexture();
+            this.glTexture = RenderAPI.genTexture();
         } else {
             this.glTexture = NO_TEXTURE; // No texture if video is not supported
         }
@@ -118,13 +118,13 @@ public abstract class MediaPlayer {
         }
     }
 
-    protected void uploadVideoFrame(final ByteBuffer nativeBuffer) {
+    protected void uploadVideoFrame(final ByteBuffer nativeBuffer, final int stride) {
         if (this.width == NO_SIZE || this.height == NO_SIZE) {
             return; // Video format not set yet, skip uploading
         }
 
         if (this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffer));
+            this.renderThreadEx.execute(() -> this.uploadVideoFrame(nativeBuffer, stride));
             return;
         }
 
@@ -143,7 +143,7 @@ public abstract class MediaPlayer {
         // LOCK RENDER THREAD
         synchronized(nativeBuffer) {
             nativeBuffer.flip();
-            RenderAPI.uploadTexture(this.glTexture, nativeBuffer, this.width, this.height, this.glChroma, this.firstFrame);
+            RenderAPI.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
             this.firstFrame = false;
         }
     }
@@ -317,7 +317,7 @@ public abstract class MediaPlayer {
 
     public void release() {
         if (this.video && this.glTexture != NO_TEXTURE) {
-            RenderAPI.releaseTexture(this.glTexture);
+            RenderAPI.delTexture(this.glTexture);
         }
 
         if (this.audio && this.alSources != NO_TEXTURE) {

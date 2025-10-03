@@ -12,7 +12,6 @@ import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
-import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
@@ -86,7 +85,6 @@ public class FFMediaPlayer extends MediaPlayer {
     private AVFrame scaledFrame;
     private AVFrame resampledFrame;
     private ByteBuffer videoBuffer;
-    private ByteBuffer audioBuffer;
 
     // Frame queues
     private final BlockingQueue<FrameData> videoQueue = new LinkedBlockingQueue<>(MAX_VIDEO_QUEUE_SIZE);
@@ -404,8 +402,7 @@ public class FFMediaPlayer extends MediaPlayer {
             this.scaledFrame = avutil.av_frame_alloc();
             this.resampledFrame = avutil.av_frame_alloc();
 
-            if (this.packet == null || this.videoFrame == null || this.audioFrame == null ||
-                    this.scaledFrame == null || this.resampledFrame == null) {
+            if (this.packet == null || this.videoFrame == null || this.audioFrame == null || this.scaledFrame == null || this.resampledFrame == null) {
                 return false;
             }
 
@@ -478,7 +475,6 @@ public class FFMediaPlayer extends MediaPlayer {
 
         if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) return false;
 
-        this.videoBuffer = ByteBuffer.allocateDirect(this.width() * this.height() * 4);
         return true;
     }
 
@@ -523,9 +519,6 @@ public class FFMediaPlayer extends MediaPlayer {
         avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
 
         if (swresample.swr_init(this.swrContext) < 0) return false;
-
-        this.audioBuffer = ByteBuffer.allocateDirect(AUDIO_SAMPLES * AUDIO_CHANNELS * 2);
-
         this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
         this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
         avutil.av_channel_layout_default(this.resampledFrame.ch_layout(), AUDIO_CHANNELS);
@@ -672,14 +665,16 @@ public class FFMediaPlayer extends MediaPlayer {
             final double ptsInSeconds = frameData.pts * this.videoTimeBase;
             this.handleVideoFrameTiming(ptsInSeconds);
 
-            swscale.sws_scale(this.swsContext, frameData.frame.data(), frameData.frame.linesize(),
-                    0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
+            swscale.sws_scale(this.swsContext, frameData.frame.data(), frameData.frame.linesize(), 0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
 
-            synchronized(this.videoBuffer) {
-                this.copyFrameDataWithoutPadding();
+            // get stride (line size) for the first plane (BGRA)
+            final int stride = this.scaledFrame.linesize(0);
+
+            // Pasar el stride a OpenGL para que maneje el padding
+            if (this.videoBuffer == null) {
+                this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
             }
-
-            this.uploadVideoFrame(this.videoBuffer);
+            this.uploadVideoFrame(this.videoBuffer, stride / 4); // stride en pixels, no en bytes
             this.currentPts.set(frameData.pts);
 
         } finally {
@@ -702,10 +697,7 @@ public class FFMediaPlayer extends MediaPlayer {
 
             if (samplesConverted > 0) {
                 final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
-                final BytePointer audioData = new BytePointer(this.resampledFrame.data(0)).limit(dataSize);
-                this.audioBuffer.clear().limit(dataSize);
-                this.audioBuffer.put(audioData.asBuffer()).flip();
-                this.uploadAudioBuffer(this.audioBuffer, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+                this.uploadAudioBuffer(this.resampledFrame.data(0).limit(dataSize).asBuffer().clear(), AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
 
                 this.audioClock = (frameData.pts * this.audioTimeBase) + ((double)samplesConverted / AUDIO_SAMPLE_RATE);
             }
@@ -761,25 +753,6 @@ public class FFMediaPlayer extends MediaPlayer {
                 }
             }
         }
-    }
-
-    private void copyFrameDataWithoutPadding() {
-        final BytePointer srcData = new BytePointer(this.scaledFrame.data(0));
-        final int srcLineSize = this.scaledFrame.linesize(0);
-        final int dstLineSize = this.width() * 4;
-        this.videoBuffer.clear();
-
-        if (srcLineSize == dstLineSize) {
-            srcData.limit((long) dstLineSize * this.height());
-            this.videoBuffer.put(srcData.asBuffer());
-        } else {
-            for (int y = 0; y < this.height(); y++) {
-                srcData.position((long) y * srcLineSize);
-                srcData.limit(srcData.position() + dstLineSize);
-                this.videoBuffer.put(srcData.asBuffer());
-            }
-        }
-        this.videoBuffer.flip();
     }
 
     private void handleStateRequests() {

@@ -7,104 +7,88 @@ import org.lwjgl.opengl.GL12;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.render.support.DefaultGlManager;
+import org.watermedia.api.render.support.GlManager;
 import org.watermedia.videolan4j.VideoLan4J;
 
 import java.nio.ByteBuffer;
-import java.util.function.Function;
-
-import static org.watermedia.WaterMedia.LOGGER;
 
 public class RenderAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(RenderAPI.class.getSimpleName());
-    private static boolean CLIENT_SIDE;
-    public static final int NONE = 0;
-    public static final long NULL = 0L;
+    private static GlManager GL_MANAGER;
+    private static final int NONE = 0;
+    private static final long NULL = 0L;
 
+    /**
+     * Override the default GL Manager implementation
+     * This is useful for environments with custom GL context management, like Minecraft
+     * @param manager the custom GL manager
+     */
+    public static void setCustomGlManager(final GlManager manager) {
+        WaterMedia.checkIsClientSideOrThrow(RenderAPI.class);
+        GL_MANAGER = manager;
+    }
 
-    public static int createTexture() {
-        if (!CLIENT_SIDE) {
-            WaterMedia.throwIllegalEnvironment(RenderAPI.class);
-        }
+    public static int genTexture() {
+        WaterMedia.checkIsClientSideOrThrow(RenderAPI.class);
         final int tex = GL11.glGenTextures();
+
         // Bind
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
+        GL_MANAGER.bindTexture(GL11.GL_TEXTURE_2D, tex);
 
-        //Setup wrap mode
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        // Setup wrap mode
+        GL_MANAGER.texParameter(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL_MANAGER.texParameter(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
 
-        //Setup texture scaling filtering (no dark textures)
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+        // Setup texture scaling filtering (no dark textures)
+        GL_MANAGER.texParameter(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+        GL_MANAGER.texParameter(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
 
         // Unbind
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, NONE);
+        GL_MANAGER.bindTexture(GL11.GL_TEXTURE_2D, NONE);
 
         return tex;
     }
 
-    public static void releaseTexture(final int texture) {
-        if (!CLIENT_SIDE) {
-            WaterMedia.throwIllegalEnvironment(RenderAPI.class);
-        }
-        GL11.glDeleteTextures(texture);
+    public static void delTexture(final int texture) {
+        WaterMedia.checkIsClientSideOrThrow(RenderAPI.class);
+        GL_MANAGER.delTexture(texture);
     }
 
-    public static void releaseTexture(final int... textures) {
-        if (!CLIENT_SIDE) {
-            WaterMedia.throwIllegalEnvironment(RenderAPI.class);
-        }
-        GL11.glDeleteTextures(textures);
+    public static void delTexture(final int... textures) {
+        WaterMedia.checkIsClientSideOrThrow(RenderAPI.class);
+        GL_MANAGER.delTexture(textures);
     }
 
-    public static void uploadTexture(final int texture, final ByteBuffer buffers, final int width, final int height, final int format, final boolean firstFrame) {
-        if (!CLIENT_SIDE) {
-            WaterMedia.throwIllegalEnvironment(RenderAPI.class);
-        }
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+    public static void uploadTexture(final int texture, final ByteBuffer buffers, final int stride, final int width, final int height, final int format, final boolean firstFrame) {
+        WaterMedia.checkIsClientSideOrThrow(RenderAPI.class);
+        GL_MANAGER.bindTexture(GL11.GL_TEXTURE_2D, texture);
 
-//        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, linesize / 4); // TODO: accept the stride for ffmpeg
-        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, GL11.GL_ZERO);
-        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, GL11.GL_ZERO);
-        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, GL11.GL_ZERO);
-
+        GL_MANAGER.pixelStore(GL11.GL_UNPACK_ROW_LENGTH, stride);
+        GL_MANAGER.pixelStore(GL11.GL_UNPACK_SKIP_PIXELS, GL11.GL_ZERO);
+        GL_MANAGER.pixelStore(GL11.GL_UNPACK_SKIP_ROWS, GL11.GL_ZERO);
 
         if (firstFrame) {
-            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
+            GL_MANAGER.texImage2D(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
         } else {
-            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
+            GL_MANAGER.texSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
         }
     }
 
     @Override
-    public boolean start(WaterMedia instance) throws Exception {
-        // CLIENT-SIDE CHECK
-        CLIENT_SIDE = instance.clientSide;
-        if (!CLIENT_SIDE) {
-            LOGGER.warn(IT, "Detected server-side environment, lockdown mode enabled");
-            return false;
-        }
+    public boolean start(final WaterMedia instance) throws Exception {
+        // GL MANAGER
+        GL_MANAGER = new DefaultGlManager();
 
         // SET ALLOCATORS
-        VideoLan4J.setBufferAllocator(size -> {
-            MemoryUtil.MemoryAllocator allocator = MemoryUtil.getAllocator(false);
-            final long address = allocator.malloc(size);
-            if (address == NULL)
-                throw new OutOfMemoryError("Insufficient memory to allocate " + size + " bytes");
+        VideoLan4J.setBufferAllocator(MemoryUtil::memAlignedAlloc);
+        VideoLan4J.setBufferDeallocator(MemoryUtil::memAlignedFree);
 
-            return MemoryUtil.memByteBuffer(address, size);
-        });
+        return true;
+    }
 
-        VideoLan4J.setBufferDeallocator(buffer -> {
-            if (buffer == null) return;
-            MemoryUtil.MemoryAllocator allocator = MemoryUtil.getAllocator(false);
-            allocator.free(MemoryUtil.memAddress(buffer));
-        });
-
-        // GL CAPABILITIES TEST
-
-        // VULKAN CAPABILITY TESTS (v3.1)
-
+    @Override
+    public boolean onlyClient() {
         return true;
     }
 
@@ -119,7 +103,7 @@ public class RenderAPI extends WaterMediaAPI {
     }
 
     @Override
-    public void release(WaterMedia instance) {
+    public void release(final WaterMedia instance) {
 
     }
 }

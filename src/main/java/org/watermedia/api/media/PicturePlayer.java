@@ -304,7 +304,7 @@ public final class PicturePlayer extends MediaPlayer {
                         // FRAME UPDATER
                         if (player.lastFrameIndex != i) { // only update if the frame has changed
                             player.lastFrameIndex = i;
-                            player.uploadVideoFrame(player.images.frames()[i]);
+                            player.uploadVideoFrame(player.images.frames()[i], 0);
                         }
                         player.time = currentTime; // update time
                         break;

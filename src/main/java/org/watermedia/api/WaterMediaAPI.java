@@ -10,6 +10,8 @@ public abstract class WaterMediaAPI {
 
     public abstract boolean start(WaterMedia instance) throws Exception;
 
+    public abstract boolean onlyClient();
+
     public abstract void test();
 
     public abstract Priority priority();

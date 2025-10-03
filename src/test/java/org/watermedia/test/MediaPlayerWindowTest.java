@@ -8,6 +8,7 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.media.FFMediaPlayer;
 import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.media.VLMediaPlayer;
 
@@ -28,7 +29,7 @@ public class MediaPlayerWindowTest {
     private static final String NAME = "WATERMeDIA: Multimedia API";
     private static final URI MEDIA_GIF = URI.create("https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif");
     private static final URI MEDIA_VIDEO = URI.create("https://www.mediafire.com/file/f23l3csbeeap9jo/TU_QLO.mp4/file");
-    private static final URI MEDIA_VIDEO_STATIC = URI.create("https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4");
+    private static final URI MEDIA_VIDEO_STATIC = URI.create("https://cdn-cf-east.streamable.com/video/mp4/6yszde.mp4?Expires=1759724603795&Key-Pair-Id=APKAIEYUVEN4EVB2OKEQ&Signature=XQf9-YLrvJNaipIPfiWIscrCfimWBx4FDQk-84IN37zvqpiswcrL3ODtsHgmV2KIRbXdllaq7SWXr580~t1eF3EKwLLIRNvW4Zg4scBqaWykjF2eymLqrDdiRQ7wh95zcIGmL-yyB4mUFD7dZz-mSKaQ3YFmTiSNfClYNbkHVzce2QVUqeFnRARdrzHT~LYNRZSKDhKglq014cW2nLj22pDFVQdv1uVmjmyxVaxnJNqV-59ssq01wMYeYhScALLTOgYQTHqz84~WU1WOwlizHYjrX4ptq--konfQWTJCmuSby4yYZEc-c0~uKzRRHxqQxp07vFH~b5-oLTD3jwGCJw__");
 
     // The window handle
     private static long window;
@@ -39,7 +40,7 @@ public class MediaPlayerWindowTest {
     public static void main(final String... args) {
         init();
         WaterMedia.start("Java Test", null, null, true);
-        player = new VLMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
+        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
         player.startPaused();
         loop();
 
