@@ -39,6 +39,43 @@ public void create() {
 }
 ```
 
+## RENDERING
+To render the texture, you need to run your own vertex logic,
+blit or fill, you can get the texture id using ``player.texture()``.
+
+For modern versions of Minecraft (1.20.1 and 1.21.1) you should make a ``TextureWrapper``
+```java
+package me.example.modder;
+
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.server.packs.resources.ResourceManager;
+import org.jetbrains.annotations.NotNull;
+
+public class TextureWrapper extends AbstractTexture {
+    public TextureWrapper(int id) {
+        this.id = id;
+    }
+
+    @Override public int getId() {
+        return this.id;
+    }
+
+    @Override public void load(@NotNull ResourceManager manager) { /* NO OP */ }
+    @Override public void releaseId() { /* NO OP */ }
+    @Override public void close() { /* NO OP */}
+}
+```
+and register it to the texture manager
+```java
+var texture = new TextureWrapper(player.texture());
+Minecraft.getInstance().getTextureManager().register("modid:myvideo", texture);
+```
+
+## CUSTOM GLSTATE
+When your environment (minecraft 1.20.1+) is using a custom GLState,
+it may be required to override watermedia's internal glstate (none) and set it before rendering the video texture.
+You can do this by using the ``RenderAPI.setCustomGlManager(org.watermedia.api.render.support.GLManager)`` method, which will be called before rendering the video texture.
+
 # PURPOSE OF THIS ALPHA
 Purpose its found any potential bug/edge case on the players implementation and fix it, receive feedback of the
 current `MediaPlayer.class` methods and if some should be added, removed or renamed, specially for the `FFMediaPlayer.class`.
