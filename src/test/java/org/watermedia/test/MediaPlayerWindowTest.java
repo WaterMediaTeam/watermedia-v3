@@ -9,6 +9,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.FFMediaPlayer;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MediaPlayer;
 
 import java.net.URI;
@@ -36,9 +37,10 @@ public class MediaPlayerWindowTest {
     private static Thread thread;
 
     public static void main(final String... args) {
+        Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
         WaterMedia.start("Java Test", null, null, true);
         init();
-        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
+        player = MediaAPI.getMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
         player.startPaused();
         // Make the window visible
         glfwShowWindow(window);

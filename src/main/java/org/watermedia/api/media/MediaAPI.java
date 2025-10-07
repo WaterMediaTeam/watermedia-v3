@@ -6,11 +6,18 @@ import org.bytedeco.ffmpeg.global.avformat;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.tools.NetTool;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.libvlc_instance_t;
 
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
+import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -18,6 +25,34 @@ public class MediaAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
     protected static libvlc_instance_t VLC_INSTANCE;
     protected static boolean FFMPEG_LOADED;
+
+    public static MediaPlayer getMediaPlayer(URI uri, Thread thread, Executor renderThreadEx, boolean video, boolean audio) {
+        WaterMedia.checkIsClientSideOrThrow(MediaAPI.class);
+
+        try {
+            final URLConnection conn = uri.toURL().openConnection();
+            if (conn instanceof HttpURLConnection http) {
+                NetTool.validateHTTP200(http.getResponseCode(), uri);
+            }
+            String[] type = conn.getContentType().split("/");
+            if (type[0].equals("image")) {
+                return new PicturePlayer(uri, thread, renderThreadEx, video);
+            } else {
+                if (VLC_INSTANCE != null) {
+                    LOGGER.debug(IT, "Creating LibVLC MediaPlayer for URI: {}", uri);
+                    return new VLMediaPlayer(uri, thread, renderThreadEx, video, audio);
+                } else if (FFMPEG_LOADED) {
+                    LOGGER.debug(IT, "Creating FFMPEG MediaPlayer for URI: {}", uri);
+                    return new FFMediaPlayer(uri, thread, renderThreadEx, video, audio);
+                } else {
+                    LOGGER.error(IT, "Neither LibVLC nor FFMPEG are loaded, cannot create MediaPlayer for URI: {}", uri);
+                }
+            }
+        } catch (final Throwable t) {
+            LOGGER.error(IT, "Failed to create MediaPlayer for URI: {}", uri, t);
+        }
+        return null;
+    }
 
     static libvlc_instance_t getVlcInstance() {
         WaterMedia.checkIsClientSideOrThrow(MediaAPI.class);
