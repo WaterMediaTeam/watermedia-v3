@@ -27,15 +27,14 @@ Current available implementations are
 - ``PicturePlayer`` (this one skips boolean (2) argument)
 - ``VLMediaPlayer``
 
-Next alphas will have a API method inside ``MediaAPI.class`` to provide you the right player for the provided
-MRL (Media resource location, aka the URL or the File Path), but for now you have to call the right media player
-for the right media type.
+If you don't want or mind to figure out which player to use,
+you can use the ``MediaAPI.createPlayer(URI, Thread, Executor, boolean, boolean)`` method 
 
 Example:
 ```java
 public void create() {
     var uri = Uri.create("https://files.catbox.moe/uxypnp.mp4");
-    var mediaPlayer = new FFMediaPlayer(uri, Thread.currentThread(), Minecraft.getInstance(), true, true);
+    var mediaPlayer = MediaAPI.createPlayer(uri, Thread.currentThread(), Minecraft.getInstance(), true, true);
     mediaPlayer.start();    
 }
 ```
