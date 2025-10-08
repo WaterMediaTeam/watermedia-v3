@@ -1,11 +1,12 @@
-package org.watermedia.api.media;
+package org.watermedia.api.media.players;
 
 import com.sun.jna.Pointer;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.opengl.GL12;
+import org.watermedia.api.media.engine.ALManager;
+import org.watermedia.api.media.engine.GLManager;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
 import org.watermedia.videolan4j.binding.lib.LibC;
@@ -33,15 +34,15 @@ public final class VLMediaPlayer extends MediaPlayer {
     private final libvlc_media_stats_t rawStats = null;
     private final libvlc_event_manager_t rawEvents;
 
-    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video, final boolean audio) {
-        super(mrl, renderThread, renderThreadEx, video, audio);
-        this.rawPlayer = VideoLan4J.createMediaPlayer(MediaAPI.getVlcInstance());
-        this.rawMedia = VideoLan4J.createMediaInstance(MediaAPI.getVlcInstance(), this.mrl);
+    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, ALManager alManager, final boolean video, final boolean audio) {
+        super(mrl, renderThread, renderThreadEx, glManager, alManager, video, audio);
+        this.rawPlayer = VideoLan4J.createMediaPlayer();
+        this.rawMedia = VideoLan4J.createMediaInstance(this.mrl);
         LibVlc.libvlc_media_player_set_media(this.rawPlayer, this.rawMedia);
 
         // SETUP AUDIO
         if (this.isAudio()) {
-            LibVlc.libvlc_audio_set_callbacks(this.rawPlayer, this.playCB, this.pauseCB, this.resumeCB, this.flushCB, this.drainCB, Pointer.NULL);
+            LibVlc.libvlc_audio_set_callbacks(this.rawPlayer, this.playCB, null, null, null, null, Pointer.NULL);
             LibVlc.libvlc_audio_set_volume_callback(this.rawPlayer, this.volumeCB);
             LibVlc.libvlc_audio_set_format(this.rawPlayer, AUDIO_FORMAT.getFormatName(), AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());
         }
@@ -96,27 +97,12 @@ public final class VLMediaPlayer extends MediaPlayer {
         return null;
     };
 
-    private final libvlc_display_callback_t displayCB = (opaque, picture) -> {
-        this.upload(this.nativeBuffer, 0);
-    };
+    private final libvlc_display_callback_t displayCB = (opaque, picture) -> this.upload(this.nativeBuffer, 0);
     private final libvlc_unlock_callback_t unlockCB = (opaque, picture, plane) -> {};
     private final libvlc_audio_play_cb playCB = (pointer, samples, count, pts) ->
             this.upload(samples.getByteBuffer(0L, AUDIO_FORMAT.calculateBufferSize(count)), AL11.AL_FORMAT_STEREO16, AUDIO_FORMAT.getSampleRate(), AUDIO_FORMAT.getChannelCount());
 
-    private final libvlc_audio_pause_cb pauseCB = (data, pts) -> {
-        if (AL10.alGetSourcei(this.alSources, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) {
-            AL10.alSourcePause(this.alSources);
-        }
-    };
-
-    private final libvlc_audio_resume_cb resumeCB = (data, pts) -> {
-        if (AL10.alGetSourcei(this.alSources, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) {
-            AL10.alSourcePlay(this.alSources);
-        }
-    };
-    private final libvlc_audio_flush_cb flushCB = (data, pts) -> {};
-    private final libvlc_audio_drain_cb drainCB = data -> {};
-    private final libvlc_audio_set_volume_cb volumeCB = (data, volume, mute) -> AL10.alSourcef(this.alSources, AL10.AL_GAIN, volume);
+    private final libvlc_audio_set_volume_cb volumeCB = (data, volume, mute) -> {};
 
     @Override
     public boolean previousFrame() {
@@ -155,6 +141,7 @@ public final class VLMediaPlayer extends MediaPlayer {
     @Override
     public boolean pause(final boolean paused) {
         LibVlc.libvlc_media_player_set_pause(this.rawPlayer, paused ? 1 : 0);
+        super.pause(paused);
         return false;
     }
 

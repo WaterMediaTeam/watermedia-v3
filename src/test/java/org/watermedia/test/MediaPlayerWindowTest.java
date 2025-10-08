@@ -8,9 +8,8 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.FFMediaPlayer;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.media.players.MediaPlayer;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -40,7 +39,7 @@ public class MediaPlayerWindowTest {
         Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
         WaterMedia.start("Java Test", null, null, true);
         init();
-        player = MediaAPI.getMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, true, true);
+        player = MediaAPI.getMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
         player.startPaused();
         // Make the window visible
         glfwShowWindow(window);

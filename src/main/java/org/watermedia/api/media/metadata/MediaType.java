@@ -1,4 +1,4 @@
-package org.watermedia.api.media.data;
+package org.watermedia.api.media.metadata;
 
 public enum MediaType {
     IMAGE,

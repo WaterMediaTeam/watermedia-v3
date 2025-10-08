@@ -3,30 +3,34 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.global.avformat;
+import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.media.engine.ALManager;
+import org.watermedia.api.media.engine.GLManager;
+import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.players.TxMediaPlayer;
+import org.watermedia.api.media.players.VLMediaPlayer;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.NetTool;
 import org.watermedia.videolan4j.VideoLan4J;
-import org.watermedia.videolan4j.binding.internal.libvlc_instance_t;
 
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URL;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.Connection;
 import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class MediaAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
-    protected static libvlc_instance_t VLC_INSTANCE;
+
     protected static boolean FFMPEG_LOADED;
 
-    public static MediaPlayer getMediaPlayer(URI uri, Thread thread, Executor renderThreadEx, boolean video, boolean audio) {
+    public static MediaPlayer getMediaPlayer(URI uri, Thread thread, Executor renderThreadEx, GLManager glManager, ALManager alManager, boolean video, boolean audio) {
         WaterMedia.checkIsClientSideOrThrow(MediaAPI.class);
 
         try {
@@ -34,16 +38,16 @@ public class MediaAPI extends WaterMediaAPI {
             if (conn instanceof HttpURLConnection http) {
                 NetTool.validateHTTP200(http.getResponseCode(), uri);
             }
-            String[] type = conn.getContentType().split("/");
+            final String[] type = conn.getContentType().split("/");
             if (type[0].equals("image")) {
-                return new PicturePlayer(uri, thread, renderThreadEx, video);
+                return new TxMediaPlayer(uri, thread, renderThreadEx, glManager, video);
             } else {
-                if (VLC_INSTANCE != null) {
+                if (VideoLan4J.isDiscovered()) {
                     LOGGER.debug(IT, "Creating LibVLC MediaPlayer for URI: {}", uri);
-                    return new VLMediaPlayer(uri, thread, renderThreadEx, video, audio);
+                    return new VLMediaPlayer(uri, thread, renderThreadEx, glManager, alManager, video, audio);
                 } else if (FFMPEG_LOADED) {
                     LOGGER.debug(IT, "Creating FFMPEG MediaPlayer for URI: {}", uri);
-                    return new FFMediaPlayer(uri, thread, renderThreadEx, video, audio);
+                    return new FFMediaPlayer(uri, thread, renderThreadEx, glManager, alManager, video, audio);
                 } else {
                     LOGGER.error(IT, "Neither LibVLC nor FFMPEG are loaded, cannot create MediaPlayer for URI: {}", uri);
                 }
@@ -52,11 +56,6 @@ public class MediaAPI extends WaterMediaAPI {
             LOGGER.error(IT, "Failed to create MediaPlayer for URI: {}", uri, t);
         }
         return null;
-    }
-
-    static libvlc_instance_t getVlcInstance() {
-        WaterMedia.checkIsClientSideOrThrow(MediaAPI.class);
-        return VLC_INSTANCE;
     }
 
     @Override
@@ -72,9 +71,12 @@ public class MediaAPI extends WaterMediaAPI {
 
         // START LibVLC
         LOGGER.info(IT, "Starting LibVLC...");
-        if (VideoLan4J.load()) {
-            VLC_INSTANCE = VideoLan4J.createInstance("--no-quiet", "--verbose", "--file-logging", "--logfile=/logs/vlc.log", "--vout=direct3d11");
+        if (VideoLan4J.load("--no-quiet", "--verbose", "--file-logging", "--logfile=/logs/vlc.log")) {
             LOGGER.info(IT, "Created new LibVLC instance");
+            VideoLan4J.setBufferAllocator(MemoryUtil::memAlignedAlloc);
+            VideoLan4J.setBufferDeallocator(MemoryUtil::memAlignedFree);
+            LOGGER.info(IT, "Overrided LibVLC buffer allocator/deallocator");
+            LOGGER.info(IT, "LibVLC started, running version {} under {}", VideoLan4J.getLibVersion(), null);
         } else {
             LOGGER.error(IT, "Failed to load LibVLC");
         }
@@ -116,7 +118,7 @@ public class MediaAPI extends WaterMediaAPI {
         }
 
         // CHECK IF NEITHER OF THEM ARE LOADED
-        if (VLC_INSTANCE == null && !FFMPEG_LOADED) {
+        if (VideoLan4J.isDiscovered() && !FFMPEG_LOADED) {
             LOGGER.fatal(IT, "LibVLC and FFMPEG are unable to be started in your environment, please report this issue to the WaterMedia's authors");
             return false;
         }
@@ -148,9 +150,6 @@ public class MediaAPI extends WaterMediaAPI {
 
     @Override
     public void release(final WaterMedia instance) {
-        if (VLC_INSTANCE != null) {
-            VideoLan4J.releaseInstance(VLC_INSTANCE);
-        }
         if (FFMPEG_LOADED) {
             avformat.avformat_network_deinit();
         }

@@ -1,4 +1,4 @@
-package org.watermedia.api.network.platforms;
+package org.watermedia.api.media.sources;
 
 public interface IPlatform {
 

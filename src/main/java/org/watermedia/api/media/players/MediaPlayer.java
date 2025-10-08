@@ -1,13 +1,12 @@
-package org.watermedia.api.media;
+package org.watermedia.api.media.players;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
-import org.watermedia.api.audio.AudioAPI;
-import org.watermedia.api.math.MathAPI;
-import org.watermedia.api.render.RenderAPI;
-import org.watermedia.tools.ThreadTool;
+import org.watermedia.api.util.MathUtil;
+import org.watermedia.api.media.engine.ALManager;
+import org.watermedia.api.media.engine.GLManager;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -16,20 +15,24 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, VLMediaPlayer {
+public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, VLMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
-    public static final int NO_SIZE = -1;
-    public static final int NO_TEXTURE = -1;
+    private static final GLManager DEFAULT_GLMANAGER = new GLManager.Builder().build();
+    private static final ALManager DEFAULT_ALMANAGER = new ALManager.Builder().build();
+    protected static final int NO_SIZE = -1;
+    protected static final int NO_TEXTURE = -1;
 
     // Basic Properties
     protected final URI mrl;
     protected final Thread renderThread;
     protected final Executor renderThreadEx;
+    protected final GLManager glManager;
+    protected final ALManager alManager;
     protected boolean video;
     protected boolean audio;
 
     // Video Properties
-    private int glChroma = GL12.GL_BGRA; // Default to BGRA
+    private int glChroma; // Default to BGRA
     private int width = NO_SIZE;
     private int height = NO_SIZE;
     private final int glTexture;
@@ -43,26 +46,28 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, V
     private float volume = 1f; // Default volume
     private boolean muted = false;
 
-    public MediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video, final boolean audio) {
+    public MediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, ALManager alManager, final boolean video, final boolean audio) {
         // Validate the media player configuration
         if (!video && !audio) throw new IllegalArgumentException("media player must support at least one media playback.");
 
-        Objects.requireNonNull(mrl, "media player must have a valid media resource locator. (mrl)");
-        Objects.requireNonNull(renderThread, "media player must have a valid render thread.");
-        Objects.requireNonNull(renderThreadEx, "media player must have a valid render thread executor.");
+        Objects.requireNonNull(mrl, "MediaPlayer must have a valid media resource locator. (mrl)");
+        Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
+        Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
 
         // Initialize properties
         this.mrl = mrl;
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
+        this.glManager = glManager == null ? DEFAULT_GLMANAGER : glManager;
+        this.alManager = alManager == null ? DEFAULT_ALMANAGER : alManager;
         this.video = video;
         this.audio = audio;
 
         // Initialize video (if applicable)
-        this.glTexture = video ? RenderAPI.genTexture() : NO_TEXTURE;
+        this.glTexture = video ? this.glManager.createTexture() : NO_TEXTURE;
 
         // Initialize audio (if applicable)
-        this.alSources = audio ? AudioAPI.genSource(this.alBuffers) : NO_TEXTURE;
+        this.alSources = audio ? this.alManager.genSource(this.alBuffers) : NO_TEXTURE;
     }
 
     /**
@@ -81,6 +86,30 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, V
         this.height = height;
         this.firstFrame = true;
         LOGGER.debug(IT,"Set video format: chroma={}, width={}, height={}", chroma, width, height);
+    }
+
+    protected void upload(final ByteBuffer nativeBuffer, final int stride) {
+        // Video format not set yet, skip uploading
+        if (this.width == NO_SIZE || this.height == NO_SIZE) { return; }
+
+        if (this.renderThread != Thread.currentThread()) {
+            this.renderThreadEx.execute(() -> this.upload(nativeBuffer, stride));
+            return;
+        }
+
+        if (!this.video)
+            throw new IllegalStateException("MediaPlayer was built with no video support");
+
+        if (this.glChroma != GL12.GL_RGBA && this.glChroma != GL12.GL_BGRA)
+            throw new IllegalArgumentException("Unsupported chroma format: " + this.glChroma);
+
+        if (nativeBuffer == null)
+            throw new IllegalArgumentException("Native buffers cannot be null or empty.");
+
+        synchronized(nativeBuffer) {
+            this.glManager.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
+            this.firstFrame = false;
+        }
     }
 
     protected void upload(final ByteBuffer data, final int alFormat, final int sampleRate, final int channels) {
@@ -107,44 +136,14 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, V
         if (this.alBufferIndex < this.alBuffers.length) {
             buffer = this.alBuffers[this.alBufferIndex++];
         } else {
-            while (AL10.alGetSourcei(this.alSources, AL10.AL_BUFFERS_PROCESSED) <= 0) {
-                ThreadTool.sleep(1);
-            }
-            buffer = AL10.alSourceUnqueueBuffers(this.alSources);
+            buffer = this.alManager.dequeueBuffers(this.alSources);
         }
         // UPLOAD
-        AL10.alBufferData(buffer, alFormat, data, sampleRate);
-        AL10.alSourceQueueBuffers(this.alSources, buffer);
+        this.alManager.queueBuffer(this.alSources, buffer, data, alFormat, sampleRate);
 
         // PLAY IF NOT ALREADY PLAYING
         // TODO: move this to a event system
-        if (AL10.alGetSourcei(this.alSources, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) {
-            AL10.alSourcePlay(this.alSources);
-        }
-    }
-
-    protected void upload(final ByteBuffer nativeBuffer, final int stride) {
-        // Video format not set yet, skip uploading
-        if (this.width == NO_SIZE || this.height == NO_SIZE) { return; }
-
-        if (this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.upload(nativeBuffer, stride));
-            return;
-        }
-
-        if (!this.video)
-            throw new IllegalStateException("MediaPlayer was built with no video support");
-
-        if (this.glChroma != GL12.GL_RGBA && this.glChroma != GL12.GL_BGRA)
-            throw new IllegalArgumentException("Unsupported chroma format: " + this.glChroma);
-
-        if (nativeBuffer == null)
-            throw new IllegalArgumentException("Native buffers cannot be null or empty.");
-
-        synchronized(nativeBuffer) {
-            RenderAPI.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
-            this.firstFrame = false;
-        }
+        this.alManager.play(this.alSources);
     }
 
     /**
@@ -197,7 +196,7 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, V
      *               but will not be set mute to true if volume is set to 0
      */
     public void volume(int volume) {
-        this.volume = MathAPI.clamp(0, 100, volume) / 100f; // Convert to float between 0.0 and 1.0
+        this.volume = MathUtil.clamp(0, 100, volume) / 100f; // Convert to float between 0.0 and 1.0
         this.muted = this.volume < 1;
         AL10.alSourcef(this.alSources, AL10.AL_GAIN, this.muted ? 0 : this.volume);
     }
@@ -276,7 +275,16 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, V
      * @param paused true to pause the media playback, false to resume
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean pause(boolean paused);
+    public boolean pause(boolean paused) {
+        if (this.audio) {
+            if (paused) {
+                this.alManager.pause(this.alSources);
+            } else {
+                this.alManager.play(this.alSources);
+            }
+        }
+        return true;
+    }
 
     /**
      * Stops media playback and resets the position to the beginning.
@@ -478,7 +486,7 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, PicturePlayer, V
      */
     public void release() {
         if (this.video && this.glTexture != NO_TEXTURE) {
-            RenderAPI.delTexture(this.glTexture);
+            this.glManager.deleteTexture(this.glTexture);
         }
 
         if (this.audio && this.alSources != NO_TEXTURE) {

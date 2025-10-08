@@ -1,10 +1,11 @@
-package org.watermedia.api.media;
+package org.watermedia.api.media.players;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.decode.DecoderAPI;
 import org.watermedia.api.decode.Image;
+import org.watermedia.api.media.engine.GLManager;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.NetTool;
 import org.watermedia.tools.ThreadTool;
@@ -18,11 +19,11 @@ import java.util.concurrent.ScheduledExecutorService;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class PicturePlayer extends MediaPlayer {
-    private static final Marker IT = MarkerManager.getMarker(PicturePlayer.class.getSimpleName());
-    private static final Thread PLAYER_THREAD = ThreadTool.createStartedLoop("PicturePlayerThread", PicturePlayer::playerLoop);
+public final class TxMediaPlayer extends MediaPlayer {
+    private static final Marker IT = MarkerManager.getMarker(TxMediaPlayer.class.getSimpleName());
+    private static final Thread PLAYER_THREAD = ThreadTool.createStartedLoop("PicturePlayerThread", TxMediaPlayer::playerLoop);
     private static final ScheduledExecutorService FETCH_EXECUTOR = Executors.newScheduledThreadPool(ThreadTool.minThreads());
-    private static final ConcurrentLinkedQueue<PicturePlayer> ACTIVE_PLAYERS = new ConcurrentLinkedQueue<>();
+    private static final ConcurrentLinkedQueue<TxMediaPlayer> ACTIVE_PLAYERS = new ConcurrentLinkedQueue<>();
 
     // PLAYER STATE
     private volatile Image images = null;
@@ -40,8 +41,8 @@ public final class PicturePlayer extends MediaPlayer {
     private int lastFrameIndex = -1; // Last frame index to avoid unnecessary updates
     private static long lastTick = System.currentTimeMillis();
 
-    public PicturePlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video) {
-        super(mrl, renderThread, renderThreadEx, video, false);
+    public TxMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, final boolean video) {
+        super(mrl, renderThread, renderThreadEx, glManager, null, video, false);
     }
 
     @Override
@@ -234,7 +235,7 @@ public final class PicturePlayer extends MediaPlayer {
             ThreadTool.sleep(10); // 100 FPS CAP
 
 
-            for (final PicturePlayer player: ACTIVE_PLAYERS) {
+            for (final TxMediaPlayer player: ACTIVE_PLAYERS) {
                 if (player.triggerPause && !player.paused) {
                     player.paused = true;
                     player.triggerPause = false;

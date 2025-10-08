@@ -1,4 +1,4 @@
-package org.watermedia.api.media;
+package org.watermedia.api.media.players;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
@@ -15,6 +15,8 @@ import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
+import org.watermedia.api.media.engine.ALManager;
+import org.watermedia.api.media.engine.GLManager;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -82,8 +84,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     private double videoTimeBase;
     private double audioTimeBase;
 
-    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, final boolean video, final boolean audio) {
-        super(mrl, renderThread, renderThreadEx, video, audio);
+    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, ALManager alManager, final boolean video, final boolean audio) {
+        super(mrl, renderThread, renderThreadEx, glManager, alManager, video, audio);
     }
 
     // ===========================================
@@ -124,28 +126,28 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean pause(final boolean paused) {
+        super.pause(paused);
         if (paused && !this.pauseRequested) {
             this.pauseRequested = true;
             this.clockPaused = true;
             this.pausedTime = this.time(); // Guardar el tiempo actual
             return true;
         } else if (!paused && this.pauseRequested) {
-            return this.resume();
+            if (!this.pauseRequested) return false;
+
+            this.pauseRequested = false;
+            this.clockPaused = false;
+            // Restaurar el clock desde el tiempo pausado
+            this.masterClock = secondsFromMs(this.pausedTime);
+            this.clockBaseTime = System.nanoTime();
+            return true;
         }
         return false;
     }
 
     @Override
     public boolean resume() {
-        if (!this.pauseRequested) return false;
-
-        this.pauseRequested = false;
-        this.clockPaused = false;
-        // Restaurar el clock desde el tiempo pausado
-        this.masterClock = secondsFromMs(this.pausedTime);
-        this.clockBaseTime = System.nanoTime();
-
-        return true;
+        return this.pause(false);
     }
 
     @Override
