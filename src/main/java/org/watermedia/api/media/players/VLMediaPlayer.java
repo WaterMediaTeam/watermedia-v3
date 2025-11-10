@@ -5,8 +5,10 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.opengl.GL12;
-import org.watermedia.api.media.engine.ALManager;
-import org.watermedia.api.media.engine.GLManager;
+import org.lwjgl.system.MemoryUtil;
+import org.watermedia.WaterMedia;
+import org.watermedia.api.media.platforms.ALEngine;
+import org.watermedia.api.media.platforms.GLEngine;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
 import org.watermedia.videolan4j.binding.lib.LibC;
@@ -30,15 +32,16 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     // VIDEOLAN
     private final libvlc_media_player_t rawPlayer;
-    private final libvlc_media_t rawMedia;
     private final libvlc_media_stats_t rawStats = null;
     private final libvlc_event_manager_t rawEvents;
+    private libvlc_media_t rawMedia;
 
-    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, ALManager alManager, final boolean video, final boolean audio) {
-        super(mrl, renderThread, renderThreadEx, glManager, alManager, video, audio);
+    // EXTRA
+    private boolean loadingSources = false;
+
+    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {
+        super(mrl, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
         this.rawPlayer = VideoLan4J.createMediaPlayer();
-        this.rawMedia = VideoLan4J.createMediaInstance(this.mrl);
-        LibVlc.libvlc_media_player_set_media(this.rawPlayer, this.rawMedia);
 
         // SETUP AUDIO
         if (this.isAudio()) {
@@ -58,8 +61,17 @@ public final class VLMediaPlayer extends MediaPlayer {
         LibVlc.libvlc_event_attach(this.rawEvents, libvlc_event_e.libvlc_MediaPlayerEndReached.intValue(), this.endReachedCallback, null);
     }
 
-    private final libvlc_callback_t endReachedCallback = (event, userData) ->
+    @Override
+    protected void updateMedia() {
+        this.stop();
+        this.start();
+    }
+
+    private final libvlc_callback_t endReachedCallback = (event, userData) -> {
+        if (this.repeat()) {
             this.renderThreadEx.execute(this::start);
+        }
+    };
 
     private final libvlc_video_format_cb formatCB = (opaque, chromaPointer, widthPointer, heightPointer, pitchesPointer, linesPointer) -> {
         // APPLY CHROMA
@@ -119,7 +131,16 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public void start() {
-        LibVlc.libvlc_media_player_play(this.rawPlayer);
+        if (this.loadingSources) return;
+
+        this.loadingSources = true;
+        this.openSources(() -> {
+            final URI uri = this.sources[this.sourceIndex].getURI(this.selectedQuality);
+            this.rawMedia = VideoLan4J.createMediaInstance(uri);
+            LibVlc.libvlc_media_player_set_media(this.rawPlayer, this.rawMedia);
+            LibVlc.libvlc_media_player_play(this.rawPlayer);
+            this.loadingSources = false;
+        });
     }
 
     @Override
@@ -208,7 +229,7 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public Status status() {
-        return Status.of(LibVlc.libvlc_media_player_get_state(this.rawPlayer));
+        return this.loadingSources ? Status.LOADING : Status.of(LibVlc.libvlc_media_player_get_state(this.rawPlayer));
     }
 
     @Override
@@ -254,6 +275,7 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public void release() {
+        this.repeat(false); // just in case
         // DETACH END REACHED
         LibVlc.libvlc_event_detach(this.rawEvents, libvlc_event_e.libvlc_MediaListEndReached.intValue(), this.endReachedCallback, null);
         LibVlc.libvlc_media_release(this.rawMedia);
@@ -267,5 +289,25 @@ public final class VLMediaPlayer extends MediaPlayer {
         if (LibVlc.libvlc_media_get_stats(this.rawMedia, this.rawStats) != 0)
             throw new IllegalStateException("Failed to get media stats");
         return new libvlc_media_stats_t();
+    }
+
+    public static boolean load(WaterMedia instance) {
+        // TODO: move all VLC discovery logic over here and make "videolan4j a just bindings library
+        LOGGER.info(IT, "Starting LibVLC...");
+        if (VideoLan4J.load("--no-quiet", "--verbose", "--file-logging", "--logfile=/logs/vlc.log")) {
+            LOGGER.info(IT, "Created new LibVLC instance");
+            VideoLan4J.setBufferAllocator(MemoryUtil::memAlignedAlloc);
+            VideoLan4J.setBufferDeallocator(MemoryUtil::memAlignedFree);
+            LOGGER.info(IT, "Overrided LibVLC buffer allocator/deallocator");
+            LOGGER.info(IT, "LibVLC started, running version {} under {}", VideoLan4J.getLibVersion(), null);
+            return true;
+        } else {
+            LOGGER.error(IT, "Failed to load LibVLC");
+            return false;
+        }
+    }
+
+    public static boolean loaded() {
+        return VideoLan4J.isDiscovered();
     }
 }

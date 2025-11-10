@@ -4,9 +4,13 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
+import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.media.sources.IPlatform;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.api.media.engine.ALManager;
-import org.watermedia.api.media.engine.GLManager;
+import org.watermedia.api.media.platforms.ALEngine;
+import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -15,10 +19,12 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, VLMediaPlayer {
+public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer, TxMediaPlayer, VLMediaPlayer {
+    private static final Executor SOURCE_FINDER_EXECUTOR = ThreadTool.createScheduledThreadPool("MediaPlayer-Sources", ThreadTool.minThreads(), 7);
+
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
-    private static final GLManager DEFAULT_GLMANAGER = new GLManager.Builder().build();
-    private static final ALManager DEFAULT_ALMANAGER = new ALManager.Builder().build();
+    private static final GLEngine DEFAULT_GLMANAGER = new GLEngine.Builder().build();
+    private static final ALEngine DEFAULT_ALMANAGER = new ALEngine.Builder().build();
     protected static final int NO_SIZE = -1;
     protected static final int NO_TEXTURE = -1;
 
@@ -26,8 +32,11 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
     protected final URI mrl;
     protected final Thread renderThread;
     protected final Executor renderThreadEx;
-    protected final GLManager glManager;
-    protected final ALManager alManager;
+    protected final GLEngine glEngine;
+    protected final ALEngine alEngine;
+    protected volatile MRL[] sources;
+    protected MRL.MediaQuality selectedQuality = MRL.MediaQuality.HIGHEST; // TODO: add a config field for this
+    protected int sourceIndex;
     protected boolean video;
     protected boolean audio;
 
@@ -46,10 +55,7 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
     private float volume = 1f; // Default volume
     private boolean muted = false;
 
-    public MediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, ALManager alManager, final boolean video, final boolean audio) {
-        // Validate the media player configuration
-        if (!video && !audio) throw new IllegalArgumentException("media player must support at least one media playback.");
-
+    public MediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {;
         Objects.requireNonNull(mrl, "MediaPlayer must have a valid media resource locator. (mrl)");
         Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
         Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
@@ -58,16 +64,16 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
         this.mrl = mrl;
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
-        this.glManager = glManager == null ? DEFAULT_GLMANAGER : glManager;
-        this.alManager = alManager == null ? DEFAULT_ALMANAGER : alManager;
+        this.glEngine = glEngine == null ? DEFAULT_GLMANAGER : glEngine;
+        this.alEngine = alEngine == null ? DEFAULT_ALMANAGER : alEngine;
         this.video = video;
         this.audio = audio;
 
         // Initialize video (if applicable)
-        this.glTexture = video ? this.glManager.createTexture() : NO_TEXTURE;
+        this.glTexture = video ? this.glEngine.createTexture() : NO_TEXTURE;
 
         // Initialize audio (if applicable)
-        this.alSources = audio ? this.alManager.genSource(this.alBuffers) : NO_TEXTURE;
+        this.alSources = audio ? this.alEngine.genSource(this.alBuffers) : NO_TEXTURE;
     }
 
     /**
@@ -107,7 +113,7 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
             throw new IllegalArgumentException("Native buffers cannot be null or empty.");
 
         synchronized(nativeBuffer) {
-            this.glManager.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
+            this.glEngine.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
             this.firstFrame = false;
         }
     }
@@ -136,15 +142,68 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
         if (this.alBufferIndex < this.alBuffers.length) {
             buffer = this.alBuffers[this.alBufferIndex++];
         } else {
-            buffer = this.alManager.dequeueBuffers(this.alSources);
+            buffer = this.alEngine.dequeueBuffers(this.alSources);
         }
         // UPLOAD
-        this.alManager.queueBuffer(this.alSources, buffer, data, alFormat, sampleRate);
+        this.alEngine.queueBuffer(this.alSources, buffer, data, alFormat, sampleRate);
 
         // PLAY IF NOT ALREADY PLAYING
-        // TODO: move this to a event system
-        this.alManager.play(this.alSources);
+        this.alEngine.play(this.alSources);
     }
+
+    /**
+     * @see MediaPlayer#openSourcesSync()
+     */
+    protected void openSources(Runnable run) {
+        if (this.sources != null) {
+            // Already loaded
+            if (run != null) {
+                run.run();
+            }
+            return;
+        }
+        SOURCE_FINDER_EXECUTOR.execute(() -> {
+            this.openSourcesSync();
+            this.renderThreadEx.execute(run);
+        });
+    }
+
+    /**
+     * Loads the sources by checking on all supported platforms, this process was done in the current thread
+     */
+    protected void openSourcesSync() {
+        if (this.sources != null) return; // Already loaded
+        this.sources = MediaAPI.getSources(this.mrl);
+    }
+
+    /**
+     * Cnages the selected quality and updates the media player
+     * keeps the time position
+     * @param quality
+     */
+    public void setQuality(MRL.MediaQuality quality) {
+        if (quality == null)
+            throw new IllegalArgumentException("Quality cannot be null."); // THIS WAS AN EXCEPTION BECAUSE NULL MAY MEANS A BUG ON DEVELOPER SIDE
+
+        if (this.selectedQuality == quality) return; // No change
+
+        this.selectedQuality = quality;
+        this.updateMedia();
+    }
+
+    public void setSourceIndex(int index) {
+        if (index < 0 || index >= this.sources.length) {
+            LOGGER.error(IT, "Source index {} is out of bounds, must be between 0 and {}", index, this.sources.length - 1);
+            return;
+        }
+        this.sourceIndex = index;
+        this.updateMedia();
+    }
+
+    /**
+     * Refresh the media player to use the new source or quality
+     */
+    protected abstract void updateMedia();
 
     /**
      * Indicates if the media player has video support enabled.
@@ -278,9 +337,9 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
     public boolean pause(boolean paused) {
         if (this.audio) {
             if (paused) {
-                this.alManager.pause(this.alSources);
+                this.alEngine.pause(this.alSources);
             } else {
-                this.alManager.play(this.alSources);
+                this.alEngine.play(this.alSources);
             }
         }
         return true;
@@ -486,7 +545,7 @@ public abstract sealed class MediaPlayer permits FFMediaPlayer, TxMediaPlayer, V
      */
     public void release() {
         if (this.video && this.glTexture != NO_TEXTURE) {
-            this.glManager.deleteTexture(this.glTexture);
+            this.glEngine.deleteTexture(this.glTexture);
         }
 
         if (this.audio && this.alSources != NO_TEXTURE) {

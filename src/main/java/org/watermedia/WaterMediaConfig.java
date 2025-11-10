@@ -5,6 +5,7 @@ import org.omegaconfig.api.annotations.NumberConditions;
 import org.omegaconfig.api.annotations.Spec;
 import org.omegaconfig.api.annotations.StringConditions;
 import org.omegaconfig.impl.fields.StringField;
+import org.watermedia.api.media.MRL;
 
 import java.io.File;
 import java.nio.file.Path;
@@ -12,6 +13,9 @@ import java.util.regex.Pattern;
 
 @Spec(value = WaterMedia.ID, suffix = "client", format = OmegaConfig.FORMAT_JSON5)
 public class WaterMediaConfig {
+    @Spec.Field
+    public static MRL.MediaQuality defaultMediaQuality = MRL.MediaQuality.HIGHER;
+
     @Spec.Field
     public static boolean videolanEnabled = true;
 

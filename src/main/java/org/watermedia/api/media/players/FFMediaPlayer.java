@@ -12,32 +12,37 @@ import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
+import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.IntPointer;
+import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
-import org.watermedia.api.media.engine.ALManager;
-import org.watermedia.api.media.engine.GLManager;
+import org.watermedia.WaterMedia;
+import org.watermedia.api.media.platforms.ALEngine;
+import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 
+import static org.bytedeco.ffmpeg.global.avutil.*;
+import static org.bytedeco.ffmpeg.global.avutil.AV_LOG_ERROR;
+import static org.bytedeco.ffmpeg.global.avutil.AV_LOG_INFO;
+import static org.bytedeco.ffmpeg.global.avutil.AV_LOG_WARNING;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
-    private static final ThreadFactory DEFAULT_THREAD_FACTORY = new ThreadFactory() {
-        private int counter = 0;
-
-        @Override
-        public Thread newThread(final Runnable r) {
-            final Thread t = new Thread(r, "FFMediaPlayer-Thread-" + (this.counter++));
-            t.setPriority(7);
-            t.setDaemon(true);
-            return t;
-        }
-    };
+    private static final ThreadFactory DEFAULT_THREAD_FACTORY = ThreadTool.createFactory("FFThread", 7);
+    private static boolean LOADED;
 
     // Constants
     private static final int AUDIO_SAMPLE_RATE = 44100;
@@ -84,14 +89,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     private double videoTimeBase;
     private double audioTimeBase;
 
-    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, ALManager alManager, final boolean video, final boolean audio) {
-        super(mrl, renderThread, renderThreadEx, glManager, alManager, video, audio);
+    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {
+        super(mrl, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
     }
 
     // ===========================================
     // LIFECYCLE METHODS
     // ===========================================
-
     @Override
     public void start() {
         if (this.running) {
@@ -229,7 +233,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     // SPEED CONTROL
     // ===========================================
-
     @Override
     public float speed() {
         return this.speedFactor;
@@ -245,7 +248,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     // STATE METHODS
     // ===========================================
-
     @Override
     public Status status() {
         return this.currentStatus;
@@ -299,6 +301,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     // MAIN PLAYER LOOP
     // ===========================================
 
+    @Override
+    protected void updateMedia() {
+        this.start(); // I BASICALLY DON'T NEED TO DO ANYTHING HERE LOL
+    }
+
     private void playerLoop() {
         try {
             // Wait until previous loop fully stopped
@@ -310,7 +317,10 @@ public final class FFMediaPlayer extends MediaPlayer {
             // Set initial loading state
             this.currentStatus = Status.LOADING;
 
-            // Initialize FFmpeg components
+            // Initialize source fetch
+            this.openSourcesSync();
+
+            // Initialize FFMPEG components
             if (!this.init()) {
                 this.currentStatus = Status.ERROR;
                 return;
@@ -429,7 +439,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                 // Natural end without repeat
                 this.currentStatus = Status.ENDED;
             }
-
         } catch (final Exception e) {
             LOGGER.error(IT, "Error in player loop", e);
             this.currentStatus = Status.ERROR;
@@ -453,7 +462,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             // Open format context
             this.formatContext = avformat.avformat_alloc_context();
-            if (avformat.avformat_open_input(this.formatContext, this.mrl.toString(), null, null) < 0) {
+            if (avformat.avformat_open_input(this.formatContext, this.sources[this.sourceIndex].sourceQuality().values().toArray(new URI[0])[0].toString(), null, null) < 0) {
                 return false;
             }
 
@@ -592,14 +601,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
             }
 
-            // Scale and upload frame
-            swscale.sws_scale(this.swsContext, this.videoFrame.data(), this.videoFrame.linesize(),
-                    0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
+            // Convert ANY format to BGRA
+            this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
+            synchronized (this.videoBuffer) {
+                swscale.sws_scale(this.swsContext, this.videoFrame.data(), this.videoFrame.linesize(),
+                        0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
+            }
 
             final int stride = this.scaledFrame.linesize(0);
-            if (this.videoBuffer == null) {
-                this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
-            }
             this.upload(this.videoBuffer, stride / 4);
         }
     }
@@ -707,5 +716,83 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     private static double secondsFromMs(final long ms) {
         return ms / 1000.0;
+    }
+
+    public static boolean load(final WaterMedia waterMedia) {
+        Objects.requireNonNull(waterMedia, "WaterMedia instance cannot be null");
+        try {
+            LOGGER.info(IT, "Loading FFMPEG module...");
+
+            // Configure JavaCPP to use our custom FFmpeg binaries
+            final Path ffmpegPath = WaterMediaBinaries.getBinaryPath(WaterMediaBinaries.FFMPEG_ID);
+
+            if (ffmpegPath != null && Files.exists(ffmpegPath)) {
+                // Set JavaCPP properties for custom binary path
+                final String pathStr = ffmpegPath.toAbsolutePath().toString();
+
+                // Set the library path for JavaCPP
+                System.setProperty("org.bytedeco.javacpp.platform.preloadpath", pathStr);
+                System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
+
+                // Add to java.library.path
+                final String currentLibPath = System.getProperty("java.library.path");
+                if (currentLibPath == null || currentLibPath.isEmpty()) {
+                    System.setProperty("java.library.path", pathStr);
+                } else if (!currentLibPath.contains(pathStr)) {
+                    System.setProperty("java.library.path", pathStr + java.io.File.pathSeparator + currentLibPath);
+                }
+
+                LOGGER.info(IT, "Configured JavaCPP with custom FFMPEG path: {}", pathStr);
+            } else {
+                LOGGER.warn(IT, "FFMPEG binaries path not found, using JavaCPP defaults");
+            }
+
+            avutil.av_log_set_callback(LogCallback.INSTANCE);
+            avutil.av_log_set_flags(avutil.AV_LOG_PRINT_LEVEL | avutil.AV_LOG_SKIP_REPEATED);
+            avutil.av_log_set_level(LOGGER.isDebugEnabled() ? avutil.AV_LOG_DEBUG : avutil.AV_LOG_INFO);
+
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), avformat.avformat_license().getString());
+            return LOADED = true;
+        } catch (final Throwable t) {
+            LOGGER.error(IT, "Failed to load FFMPEG", t);
+            return false;
+        }
+    }
+
+    public static boolean loaded() {
+        return LOADED;
+    }
+
+    private static final class LogCallback extends Callback_Pointer_int_String_Pointer {
+        private static final int LINE_SIZE = 2048;
+        private final BytePointer pointer = new BytePointer(LINE_SIZE);
+        private final IntPointer prefixPointer = new IntPointer(1);
+        private static final LogCallback INSTANCE = new LogCallback();
+
+        public LogCallback() { super(); }
+
+        @Override
+        public void call(final Pointer pointer, final int level, final String format, final Pointer variableList) {
+            if (format == null || variableList == null || variableList.isNull()) return;
+
+            try {
+                final int written = avutil.av_log_format_line2(pointer, level, format, variableList, this.pointer, LINE_SIZE, this.prefixPointer);
+                if (written <= 0) return;
+
+                this.pointer.limit(written);
+                final byte[] bytes = this.pointer.getStringBytes();
+                final String message = new String(bytes, StandardCharsets.UTF_8).trim();
+
+                switch (level) {
+                    case AV_LOG_QUIET, AV_LOG_PANIC, AV_LOG_FATAL -> LOGGER.fatal(IT, message);
+                    case AV_LOG_ERROR -> LOGGER.error(IT, message);
+                    case AV_LOG_WARNING -> LOGGER.warn(IT, message);
+                    case AV_LOG_INFO -> LOGGER.info(IT, message);
+                    default -> LOGGER.debug(IT, message);
+                }
+            } catch (final Throwable e) {
+                LOGGER.error(IT, "Error processing FFmpeg log: {}", format);
+            }
+        }
     }
 }

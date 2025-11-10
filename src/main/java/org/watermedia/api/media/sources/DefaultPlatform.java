@@ -3,20 +3,23 @@ package org.watermedia.api.media.sources;
 import org.watermedia.api.media.MRL;
 
 import java.net.URI;
+import java.util.Map;
 
-public class StreamablePlatform implements IPlatform {
+public class DefaultPlatform implements IPlatform {
     @Override
     public String name() {
-        return "";
+        return "Default";
     }
 
     @Override
     public boolean validate(URI uri) {
-        return false;
+        return true;
     }
 
     @Override
     public MRL[] getSources(URI uri) {
-        return new MRL[0];
+        return new MRL[] {
+                new MRL(MRL.MediaType.UNKNOWN, Map.of(MRL.MediaQuality.UNKNOWN, uri))
+        };
     }
 }

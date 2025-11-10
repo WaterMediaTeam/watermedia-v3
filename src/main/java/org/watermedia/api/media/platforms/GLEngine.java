@@ -1,4 +1,4 @@
-package org.watermedia.api.media.engine;
+package org.watermedia.api.media.platforms;
 
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
@@ -12,11 +12,11 @@ import java.nio.ByteBuffer;
 import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 
-public record GLManager(IntSupplier genTexture, BiIntConsumer bindTexture, TriIntConsumer texParameter,
-                        BiIntConsumer pixelStore, IntConsumer delTexture, TexImage2DFunction texImage2D, TexSubImage2DFunction texSubImage2D) {
+public record GLEngine(IntSupplier genTexture, BiIntConsumer bindTexture, TriIntConsumer texParameter,
+                       BiIntConsumer pixelStore, IntConsumer delTexture, TexImage2DFunction texImage2D, TexSubImage2DFunction texSubImage2D) {
 
-    public GLManager {
-        WaterMedia.checkIsClientSideOrThrow(GLManager.class); // Ensure client-side only
+    public GLEngine {
+        WaterMedia.checkIsClientSideOrThrow(GLEngine.class); // Ensure client-side only
 
         if (genTexture == null || bindTexture == null || texParameter == null || pixelStore == null
                 || delTexture == null || texImage2D == null || texSubImage2D == null) {
@@ -110,8 +110,8 @@ public record GLManager(IntSupplier genTexture, BiIntConsumer bindTexture, TriIn
             return this;
         }
 
-        public GLManager build() {
-            return new GLManager(this.genTexture, this.bindTexture, this.texParameter, this.pixelStore, this.delTexture, this.texImage2D, this.texSubImage2D);
+        public GLEngine build() {
+            return new GLEngine(this.genTexture, this.bindTexture, this.texParameter, this.pixelStore, this.delTexture, this.texImage2D, this.texSubImage2D);
         }
     }
 }

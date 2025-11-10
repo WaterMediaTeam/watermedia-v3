@@ -11,7 +11,7 @@ public class ForgeBootstrap {
     public ForgeBootstrap() {
         try {
             WaterMedia.start(NAME, null, null, FMLLoader.getDist().isClient());
-        } catch (Exception e) {
+        } catch (final Exception e) {
             throw new RuntimeException("Failed starting " + WaterMedia.NAME + " for " + NAME + ": " + e.getMessage(), e);
         }
     }

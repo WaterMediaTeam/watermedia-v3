@@ -1,10 +1,28 @@
 package org.watermedia.api.media.sources;
 
+import org.watermedia.api.media.MRL;
+
+import java.net.URI;
+import java.util.Map;
+
 public interface IPlatform {
 
+    /**
+     * Provides the former platform name
+     */
     String name();
 
-    boolean validate(Object url);
+    /**
+     * Checks if the URI can be provided of sources using this platform
+     * @param uri uri to validate
+     * @return if this platform can provide of sources, false otherwise
+     */
+    boolean validate(URI uri);
 
-    void apply(Object url) throws Exception;
+    /**
+     * Gives all the available sources and its potential qualities.
+     * @param uri
+     * @return available sources, null if nothing was found
+     */
+    MRL[] getSources(URI uri);
 }

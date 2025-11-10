@@ -12,7 +12,7 @@ public class FabricBootstrap implements ModInitializer {
     public void onInitialize() {
         try {
             WaterMedia.start(NAME, null, FabricLoader.getInstance().getGameDir(), FabricLoader.getInstance().getEnvironmentType() == EnvType.CLIENT);
-        } catch (Exception e) {
+        } catch (final Exception e) {
             throw new RuntimeException("Failed starting " + WaterMedia.NAME + " for " + NAME + ": " + e.getMessage(), e);
         }
     }

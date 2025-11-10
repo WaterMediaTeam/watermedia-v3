@@ -6,6 +6,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.omegaconfig.OmegaConfig;
 import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
 
 import java.io.File;
@@ -31,12 +32,24 @@ public class WaterMedia {
     public final Path tmp, cwd;
     public final boolean clientSide;
 
+    private boolean ffmpeg, videolan;
+
     private WaterMedia(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
         if (instance != null) throw new IllegalStateException("Instance was already created");
         this.name = name;
         this.tmp = tmp == null ? DEFAULT_TEMP : tmp;
         this.cwd = cwd == null ? DEFAULT_CWD : cwd;
         this.clientSide = clientSide;
+    }
+
+    public static boolean ffmpeg() {
+        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
+        return instance.ffmpeg;
+    }
+
+    public static boolean videolan() {
+        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
+        return instance.videolan;
     }
 
     /**
@@ -56,6 +69,13 @@ public class WaterMedia {
 
         LOGGER.info(IT, "Preparing '{}v{}' for '{}'", NAME, VERSION, name);
         LOGGER.info(IT, "OS Detected: {} ({})", System.getProperty("os.name"), System.getProperty("os.arch"));
+
+        if (clientSide) {
+            LOGGER.info(IT, "Starting Binaries extraction...");
+            WaterMediaBinaries.start(instance.name, instance.tmp, instance.cwd, true);
+        } else {
+            LOGGER.info(IT, "Binaries extraction skipped, no requested on server-side");
+        }
 
         LOGGER.info(IT, "Registering {} config spec into OmegaConfig", NAME);
         OmegaConfig.register(WaterMediaConfig.class);

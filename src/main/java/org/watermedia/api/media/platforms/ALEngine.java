@@ -1,11 +1,11 @@
-package org.watermedia.api.media.engine;
+package org.watermedia.api.media.platforms;
 
 import org.lwjgl.openal.AL10;
 import org.watermedia.tools.ThreadTool;
 
 import java.nio.ByteBuffer;
 
-public record ALManager() {
+public record ALEngine() {
 
     public int genSource(final int[] buffers) {
         AL10.alGenBuffers(buffers);
@@ -39,8 +39,8 @@ public record ALManager() {
     public static final class Builder {
 
 
-        public ALManager build() {
-            return new ALManager();
+        public ALEngine build() {
+            return new ALEngine();
         }
     }
 }

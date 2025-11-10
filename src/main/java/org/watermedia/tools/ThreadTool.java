@@ -1,8 +1,10 @@
 package org.watermedia.tools;
 
+import org.watermedia.api.util.MathUtil;
+
 import java.util.HashMap;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ThreadTool {
     public static final HashMap<String, Integer> THREADS = new HashMap<>();
@@ -15,11 +17,29 @@ public class ThreadTool {
         return false;
     }
 
-    public static void sleep(long timeoutMillis) {
+    public static Executor createScheduledThreadPool(final String name, final int threadCount, final int priority) {
+        return Executors.newScheduledThreadPool(threadCount, createFactory(name, priority));
+    }
+
+    public static ThreadFactory createFactory(final String name, final int priority) {
+        final AtomicInteger count = new AtomicInteger(0);
+        return r -> {
+            final Thread t = new Thread(r);
+            t.setDaemon(true);
+            t.setPriority(MathUtil.clamp(1, 10, priority));
+            t.setName(name + "-" + count.get());
+            return t;
+        };
+    }
+
+    // RETURNS TRUE IF SLEEP WAS COMPLETED, FALSE IF WAS INTERRUPTED
+    public static boolean sleep(long timeoutMillis) {
         try {
             Thread.sleep(timeoutMillis);
+            return true;
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt(); // Restore interrupted status
+            return false;
         }
     }
 

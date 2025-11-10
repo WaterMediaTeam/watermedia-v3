@@ -5,7 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.decode.DecoderAPI;
 import org.watermedia.api.decode.Image;
-import org.watermedia.api.media.engine.GLManager;
+import org.watermedia.api.media.platforms.GLEngine;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.NetTool;
 import org.watermedia.tools.ThreadTool;
@@ -41,8 +41,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     private int lastFrameIndex = -1; // Last frame index to avoid unnecessary updates
     private static long lastTick = System.currentTimeMillis();
 
-    public TxMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLManager glManager, final boolean video) {
-        super(mrl, renderThread, renderThreadEx, glManager, null, video, false);
+    public TxMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, final boolean video) {
+        super(mrl, renderThread, renderThreadEx, glEngine, null, video, false);
     }
 
     @Override
@@ -88,6 +88,11 @@ public final class TxMediaPlayer extends MediaPlayer {
             LOGGER.error(IT, "Failed to open media: {}", this.mrl, e);
             this.status = Status.ERROR;
         }
+    }
+
+    @Override
+    protected void updateMedia() {
+
     }
 
     @Override
