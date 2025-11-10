@@ -402,7 +402,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // Wait a bit for final frames to play
                         Thread.sleep(500);
 
-                        if (this.repeat()) {
+                        if (this.repeat()) { // TODO: WHAT SHOULD BE THE BEHAVIOR OF REPEAT?, REPEAT THE WHOLE PLAYLIST? OR THE CURRENT MEDIA?
                             LOGGER.info(IT, "Repeating playback");
                             this.seekTarget = 0;
                             // Status stays PLAYING for repeat
@@ -649,8 +649,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private void cleanup() {
-        this.running = false;
-
         // Free FFmpeg resources
         if (this.swsContext != null) {
             swscale.sws_freeContext(this.swsContext);
@@ -700,6 +698,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         LOGGER.info(IT, "Cleanup completed");
+        this.running = false;
     }
 
     // ===========================================

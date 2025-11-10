@@ -18,30 +18,49 @@ import org.watermedia.videolan4j.tools.*;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public final class VLMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(VLMediaPlayer.class.getSimpleName());
-    private static final Chroma CHROMA = Chroma.RV32; // Use RV32 aka BGRA format for video buffers
+    private static final Chroma CHROMA = Chroma.RV32;
     private static final AudioFormat AUDIO_FORMAT = AudioFormat.S16N_STEREO_96;
 
     // VIDEO BUFFERS
     private ByteBuffer nativeBuffer = null;
     private Pointer nativePointer = null;
 
-    // VIDEOLAN
-    private final libvlc_media_player_t rawPlayer;
+    // VIDEOLAN CORE
+    private final libvlc_media_player_t rawPlayer = VideoLan4J.createMediaPlayer();
     private final libvlc_media_stats_t rawStats = null;
-    private final libvlc_event_manager_t rawEvents;
-    private libvlc_media_t rawMedia;
+    private final libvlc_event_manager_t rawPlayerEvents;
 
-    // EXTRA
-    private boolean loadingSources = false;
+    // MEDIA LIST PARA MANEJAR MÚLTIPLES CALIDADES
+    private libvlc_media_list_t mediaList;
+    private libvlc_media_list_player_t mediaListPlayer;
+    private libvlc_event_manager_t mediaListEvents;
 
-    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {
+    // MEDIA ACTUAL
+    private libvlc_media_t currentMedia;
+    private int currentMediaIndex = 0;
+
+    // FLAGS DE ESTADO
+    private volatile boolean loadingSources = false;
+    private volatile boolean changingQuality = false;
+    private long savedPosition = -1;
+    private boolean wasPlaying = false;
+
+    public VLMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx,
+                         GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {
         super(mrl, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
-        this.rawPlayer = VideoLan4J.createMediaPlayer();
+
+        // Crear media list y list player
+        this.mediaList = LibVlc.libvlc_media_list_new(VideoLan4J.getDefaultInstance());
+        this.mediaListPlayer = LibVlc.libvlc_media_list_player_new(VideoLan4J.getDefaultInstance());
+
+        // Asociar el media player con el list player
+        LibVlc.libvlc_media_list_player_set_media_player(this.mediaListPlayer, this.rawPlayer);
 
         // SETUP AUDIO
         if (this.isAudio()) {
@@ -57,23 +76,140 @@ public final class VLMediaPlayer extends MediaPlayer {
         }
 
         // REGISTER EVENTS
-        this.rawEvents = LibVlc.libvlc_media_player_event_manager(this.rawPlayer);
-        LibVlc.libvlc_event_attach(this.rawEvents, libvlc_event_e.libvlc_MediaPlayerEndReached.intValue(), this.endReachedCallback, null);
+        this.rawPlayerEvents = LibVlc.libvlc_media_player_event_manager(this.rawPlayer);
+        LibVlc.libvlc_event_attach(this.rawPlayerEvents, libvlc_event_e.libvlc_MediaPlayerEndReached.intValue(),
+                this.endReachedCallback, null);
+        LibVlc.libvlc_event_attach(this.rawPlayerEvents, libvlc_event_e.libvlc_MediaPlayerPlaying.intValue(),
+                this.playingCallback, null);
+
+        // Events para media list
+        this.mediaListEvents = LibVlc.libvlc_media_list_player_event_manager(this.mediaListPlayer);
+        LibVlc.libvlc_event_attach(this.mediaListEvents, libvlc_event_e.libvlc_MediaListPlayerPlayed.intValue(),
+                this.listPlayedCallback, null);
     }
 
+    /**
+     * Actualizar la media cuando cambian las fuentes o la calidad
+     */
     @Override
     protected void updateMedia() {
-        this.stop();
-        this.start();
+        LibVlc.libvlc_media_list_player_play_item_at_index(this.mediaListPlayer, this.currentMediaIndex);
+        if (this.changingQuality) {
+            return; // Ya estamos cambiando, evitar recursión
+        }
+
+        this.changingQuality = true;
+
+        // Guardar estado actual si está reproduciendo
+        if (this.playing()) {
+            this.savedPosition = this.time();
+            this.wasPlaying = true;
+            this.pause();
+        } else {
+            this.savedPosition = this.time();
+            this.wasPlaying = false;
+        }
+
+        // Reconstruir la media list con las nuevas fuentes/calidad
+        this.rebuildMediaList();
+
+        this.changingQuality = false;
     }
 
+    /**
+     * Reconstruir la lista de media con todas las fuentes disponibles
+     */
+    private void rebuildMediaList() {
+        // Detener reproducción actual
+        LibVlc.libvlc_media_list_player_stop(this.mediaListPlayer);
+
+        // Limpiar lista anterior
+        if (this.mediaList != null) {
+            final int count = LibVlc.libvlc_media_list_count(this.mediaList);
+            for (int i = count - 1; i >= 0; i--) {
+                LibVlc.libvlc_media_list_remove_index(this.mediaList, i);
+            }
+        }
+
+        // Bloquear la lista para modificaciones
+        LibVlc.libvlc_media_list_lock(this.mediaList);
+
+        try {
+            // Agregar todas las fuentes con la calidad seleccionada
+            for (int i = 0; i < this.sources.length; i++) {
+                final URI uri = this.sources[i].getURI(this.selectedQuality);
+                final libvlc_media_t media = VideoLan4J.createMediaInstance(uri);
+
+                // Agregar opciones específicas si es necesario
+                if (i == this.sourceIndex && this.savedPosition > 0) {
+                    // Para la media actual, agregar tiempo de inicio
+                    LibVlc.libvlc_media_add_option(media, "start-time=" + (this.savedPosition / 1000));
+                }
+
+                // Agregar a la lista
+                LibVlc.libvlc_media_list_add_media(this.mediaList, media);
+
+                // Liberar referencia local
+                LibVlc.libvlc_media_release(media);
+            }
+
+            // Establecer la lista en el player
+            LibVlc.libvlc_media_list_player_set_media_list(this.mediaListPlayer, this.mediaList);
+
+            // Saltar al índice correcto
+            if (this.sourceIndex >= 0 && this.sourceIndex < this.sources.length) {
+                LibVlc.libvlc_media_list_player_play_item_at_index(this.mediaListPlayer, this.sourceIndex);
+
+                // Si estábamos reproduciendo, continuar
+                if (this.wasPlaying) {
+                    this.renderThreadEx.execute(() -> {
+                        // Esperar un poco para que se cargue
+                        try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+
+                        if (this.savedPosition > 0) {
+                            this.seek(this.savedPosition);
+                        }
+                        this.resume();
+                    });
+                }
+            }
+
+        } finally {
+            // Desbloquear la lista
+            LibVlc.libvlc_media_list_unlock(this.mediaList);
+        }
+    }
+
+    // CALLBACKS
     private final libvlc_callback_t endReachedCallback = (event, userData) -> {
         if (this.repeat()) {
-            this.renderThreadEx.execute(this::start);
+            this.renderThreadEx.execute(() -> {
+                this.start(); // TODO: WHAT SHOULD BE THE REAL BEHAVIOR, NEXT SOURCE, RESTART, NEXT SOURCE AND RESTART?
+//                if (this.sourceIndex < this.sources.length - 1) {
+//                    // Ir a la siguiente fuente
+//                    this.selectSource(this.sourceIndex + 1);
+//                } else {
+//                    // Volver al principio
+//                    this.selectSource(0);
+//                }
+            });
         }
     };
 
-    private final libvlc_video_format_cb formatCB = (opaque, chromaPointer, widthPointer, heightPointer, pitchesPointer, linesPointer) -> {
+    private final libvlc_callback_t playingCallback = (event, userData) -> {
+        // Actualizar el media actual cuando empieza a reproducir
+        this.currentMedia = LibVlc.libvlc_media_player_get_media(this.rawPlayer);
+    };
+
+    private final libvlc_callback_t listPlayedCallback = (event, userData) -> {
+        LOGGER.debug(IT, "Media list finished playing all items");
+        if (this.repeat()) {
+            this.renderThreadEx.execute(() -> this.setSourceIndex(0));
+        }
+    };
+
+    private final libvlc_video_format_cb formatCB = (opaque, chromaPointer, widthPointer, heightPointer,
+                                                     pitchesPointer, linesPointer) -> {
         // APPLY CHROMA
         final byte[] chromaBytes = CHROMA.chroma();
         chromaPointer.getPointer().write(0, chromaBytes, 0, Math.min(chromaBytes.length, 4));
@@ -135,18 +271,24 @@ public final class VLMediaPlayer extends MediaPlayer {
 
         this.loadingSources = true;
         this.openSources(() -> {
-            final URI uri = this.sources[this.sourceIndex].getURI(this.selectedQuality);
-            this.rawMedia = VideoLan4J.createMediaInstance(uri);
-            LibVlc.libvlc_media_player_set_media(this.rawPlayer, this.rawMedia);
-            LibVlc.libvlc_media_player_play(this.rawPlayer);
+            // Construir la lista de media con todas las fuentes
+            this.rebuildMediaList();
+
+            // Comenzar reproducción desde el índice actual
+            LibVlc.libvlc_media_list_player_play_item_at_index(this.mediaListPlayer, this.sourceIndex);
+
             this.loadingSources = false;
         });
     }
 
     @Override
     public void startPaused() {
-        LibVlc.libvlc_media_add_option(this.rawMedia, "start-paused");
         this.start();
+        this.renderThreadEx.execute(() -> {
+            // Esperar un poco para que inicie
+            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            this.pause();
+        });
     }
 
     @Override
@@ -163,12 +305,12 @@ public final class VLMediaPlayer extends MediaPlayer {
     public boolean pause(final boolean paused) {
         LibVlc.libvlc_media_player_set_pause(this.rawPlayer, paused ? 1 : 0);
         super.pause(paused);
-        return false;
+        return true;
     }
 
     @Override
     public boolean stop() {
-        LibVlc.libvlc_media_player_stop(this.rawPlayer);
+        LibVlc.libvlc_media_list_player_stop(this.mediaListPlayer);
         return true;
     }
 
@@ -207,14 +349,12 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean foward() {
-        this.seek(this.time() + 5000);
-        return true;
+        return this.skipTime(5000);
     }
 
     @Override
     public boolean rewind() {
-        this.seek(this.time() - 5000);
-        return true;
+        return this.skipTime(-5000);
     }
 
     @Override
@@ -229,22 +369,28 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public Status status() {
-        return this.loadingSources ? Status.LOADING : Status.of(LibVlc.libvlc_media_player_get_state(this.rawPlayer));
+        if (this.loadingSources || this.changingQuality) {
+            return Status.LOADING;
+        }
+        return Status.of(LibVlc.libvlc_media_player_get_state(this.rawPlayer));
     }
 
     @Override
     public boolean playing() {
-        // OVERRWRITE STATUS JUST FOR PLAYING
         return LibVlc.libvlc_media_player_is_playing(this.rawPlayer) == 1;
     }
 
     @Override
     public boolean validSource() {
-        return this.rawMedia != null;
+        return this.currentMedia != null || this.mediaList != null;
     }
 
     @Override
     public boolean liveSource() {
+        // VLC puede detectar si es un stream en vivo
+        if (this.currentMedia != null) {
+            return LibVlc.libvlc_media_get_duration(this.currentMedia) == -1;
+        }
         return false;
     }
 
@@ -275,31 +421,67 @@ public final class VLMediaPlayer extends MediaPlayer {
 
     @Override
     public void release() {
-        this.repeat(false); // just in case
-        // DETACH END REACHED
-        LibVlc.libvlc_event_detach(this.rawEvents, libvlc_event_e.libvlc_MediaListEndReached.intValue(), this.endReachedCallback, null);
-        LibVlc.libvlc_media_release(this.rawMedia);
-        LibVlc.libvlc_media_player_release(this.rawPlayer);
+        this.repeat(false);
+
+        // Detener reproducción
+        if (this.mediaListPlayer != null) {
+            LibVlc.libvlc_media_list_player_stop(this.mediaListPlayer);
+        }
+
+        // Detach eventos
+        if (this.rawPlayerEvents != null) {
+            LibVlc.libvlc_event_detach(this.rawPlayerEvents, libvlc_event_e.libvlc_MediaPlayerEndReached.intValue(),
+                    this.endReachedCallback, null);
+            LibVlc.libvlc_event_detach(this.rawPlayerEvents, libvlc_event_e.libvlc_MediaPlayerPlaying.intValue(),
+                    this.playingCallback, null);
+        }
+
+        if (this.mediaListEvents != null) {
+            LibVlc.libvlc_event_detach(this.mediaListEvents, libvlc_event_e.libvlc_MediaListPlayerPlayed.intValue(),
+                    this.listPlayedCallback, null);
+        }
+
+        // Liberar recursos de VLC
+        if (this.currentMedia != null) {
+            LibVlc.libvlc_media_release(this.currentMedia);
+            this.currentMedia = null;
+        }
+
+        if (this.mediaListPlayer != null) {
+            LibVlc.libvlc_media_list_player_release(this.mediaListPlayer);
+            this.mediaListPlayer = null;
+        }
+
+        if (this.mediaList != null) {
+            LibVlc.libvlc_media_list_release(this.mediaList);
+            this.mediaList = null;
+        }
+
+        if (this.rawPlayer != null) {
+            LibVlc.libvlc_media_player_release(this.rawPlayer);
+        }
+
         this.nativeBuffer = null;
         this.nativePointer = null;
+
         super.release();
     }
 
     private libvlc_media_stats_t getMediaStats() {
-        if (LibVlc.libvlc_media_get_stats(this.rawMedia, this.rawStats) != 0)
+        if (this.currentMedia != null && LibVlc.libvlc_media_get_stats(this.currentMedia, this.rawStats) != 0) {
             throw new IllegalStateException("Failed to get media stats");
-        return new libvlc_media_stats_t();
+        }
+        return this.rawStats;
     }
 
     public static boolean load(WaterMedia instance) {
-        // TODO: move all VLC discovery logic over here and make "videolan4j a just bindings library
         LOGGER.info(IT, "Starting LibVLC...");
-        if (VideoLan4J.load("--no-quiet", "--verbose", "--file-logging", "--logfile=/logs/vlc.log")) {
+        if (VideoLan4J.load("--no-quiet", "--verbose=2")) {
             LOGGER.info(IT, "Created new LibVLC instance");
             VideoLan4J.setBufferAllocator(MemoryUtil::memAlignedAlloc);
             VideoLan4J.setBufferDeallocator(MemoryUtil::memAlignedFree);
             LOGGER.info(IT, "Overrided LibVLC buffer allocator/deallocator");
-            LOGGER.info(IT, "LibVLC started, running version {} under {}", VideoLan4J.getLibVersion(), null);
+            LOGGER.info(IT, "LibVLC started, running version {}", VideoLan4J.getLibVersion());
             return true;
         } else {
             LOGGER.error(IT, "Failed to load LibVLC");

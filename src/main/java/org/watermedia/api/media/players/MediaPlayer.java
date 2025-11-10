@@ -6,7 +6,6 @@ import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.sources.IPlatform;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.media.platforms.ALEngine;
 import org.watermedia.api.media.platforms.GLEngine;
@@ -51,6 +50,7 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
     protected final int alSources;
     private final int[] alBuffers = new int[4];
     private int alBufferIndex = 0;
+    @Deprecated // TODO: replace with a enum to choose (NONE, ONE, ALL)
     private boolean repeat;
     private float volume = 1f; // Default volume
     private boolean muted = false;
@@ -157,9 +157,7 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
     protected void openSources(Runnable run) {
         if (this.sources != null) {
             // Already loaded
-            if (run != null) {
-                run.run();
-            }
+            if (run != null) run.run();
             return;
         }
         SOURCE_FINDER_EXECUTOR.execute(() -> {
@@ -197,6 +195,16 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
             return;
         }
         this.sourceIndex = index;
+        this.updateMedia();
+    }
+
+    public void nextSource() {
+        this.sourceIndex = (this.sourceIndex + 1) % this.sources.length;
+        this.updateMedia();
+    }
+
+    public void previousSource() {
+        this.sourceIndex = (this.sourceIndex - 1 + this.sources.length) % this.sources.length;
         this.updateMedia();
     }
 
@@ -553,6 +561,21 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
             AL10.alDeleteSources(this.alSources);
             AL10.alDeleteBuffers(this.alBuffers);
         }
+    }
+
+    public enum Repeat {
+        /**
+         * No repeat, playback stops at the end of the media.
+         */
+        NONE,
+        /**
+         * Repeat the current media once it ends.
+         */
+        ONE,
+        /**
+         * Repeat all media in the playlist or queue.
+         */
+        ALL
     }
 
     /**
