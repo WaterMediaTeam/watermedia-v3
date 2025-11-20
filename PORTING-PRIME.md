@@ -1,3 +1,7 @@
+# WATERMeDIA 3.0.0-alpha.1
+Unfortunately i am lack of time to write a complete porting.
+I will sumarize it as soon as possible
+
 # WATERMEDIA 2.1.x to 3.0.0-alpha.0
 Everything was removed and rebuilded from scratch.
 
