@@ -150,7 +150,7 @@ publishMods {
     curseforge {
         accessToken = CF_TOKEN
         projectId = curseforgeid
-        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.5", "1.21.6")
+        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.5", "1.21.8", "1.21.10")
         javaVersions.addAll(JavaVersion.VERSION_21, JavaVersion.VERSION_17)
         clientRequired = true
         serverRequired = true
