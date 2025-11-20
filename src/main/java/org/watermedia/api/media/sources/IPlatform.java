@@ -24,5 +24,5 @@ public interface IPlatform {
      * @param uri
      * @return available sources, null if nothing was found
      */
-    MRL[] getSources(URI uri);
+    MRL[] getSources(URI uri) throws Exception;
 }

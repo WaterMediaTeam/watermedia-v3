@@ -1,5 +1,7 @@
 package org.watermedia.api.media;
 
+import org.watermedia.WaterMedia;
+
 import java.net.URI;
 import java.util.Date;
 import java.util.Map;
@@ -19,6 +21,7 @@ public record MRL(MediaType mediaType, Map<MediaQuality, URI> sourceQuality) {
             MediaQuality checkQuality = quality;
             while (true) {
                 checkQuality = checkQuality.getBack();
+                WaterMedia.LOGGER.info("Checking quality {}", checkQuality);
                 if (this.sourceQuality.containsKey(checkQuality)) {
                     return this.sourceQuality.get(checkQuality);
                 }
@@ -28,9 +31,16 @@ public record MRL(MediaType mediaType, Map<MediaQuality, URI> sourceQuality) {
         throw new IllegalStateException("MRL has no available qualities");
     }
 
-    public enum MediaQuality {
-        UNKNOWN(-1),
+    public String getURIString(final MediaQuality quality) {
+        final URI uri = this.getURI(quality);
+        if ("file".equals(uri.getScheme())) {
+            return uri.getPath();
+        } else {
+            return uri.toString();
+        }
+    }
 
+    public enum MediaQuality {
         /**
          * Qualities same or below 240p threshold
          */

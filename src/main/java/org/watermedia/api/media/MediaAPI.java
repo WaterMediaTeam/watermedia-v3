@@ -38,10 +38,14 @@ public class MediaAPI extends WaterMediaAPI {
         for (final IPlatform platform: PLATFORMS) {
             LOGGER.info("Checking {}", platform.name());
             if (platform.validate(uri)) {
-                LOGGER.info("Using source {}", platform.name());
-                final MRL[] source = platform.getSources(uri);
-                if (source == null) continue;
-                return source;
+                try {
+                    LOGGER.info("Using source {}", platform.name());
+                    final MRL[] source = platform.getSources(uri);
+                    if (source == null) continue;
+                    return source;
+                } catch (final Throwable t) {
+                    LOGGER.error("Platform {} threw an exception while validating URI: {}", platform.name(), uri, t);
+                }
             }
         }
         throw new IllegalStateException("This exception should not be threw");

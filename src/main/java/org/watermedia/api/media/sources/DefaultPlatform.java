@@ -19,7 +19,7 @@ public class DefaultPlatform implements IPlatform {
     @Override
     public MRL[] getSources(URI uri) {
         return new MRL[] {
-                new MRL(MRL.MediaType.UNKNOWN, Map.of(MRL.MediaQuality.UNKNOWN, uri))
+                new MRL(MRL.MediaType.UNKNOWN, Map.of(MRL.MediaQuality.HIGHEST, uri))
         };
     }
 }

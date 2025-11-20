@@ -18,6 +18,15 @@ import static java.net.HttpURLConnection.HTTP_UNAVAILABLE;
 
 public class NetTool {
 
+    public static HttpURLConnection connectToHTTP(URI uri, String method) throws IOException {
+        final URL url = uri.toURL();
+        final HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod(method);
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(15000);
+        return connection;
+    }
+
     public static boolean validateHTTP200(int code, URI uri) throws IOException {
         switch (code) {
             case HTTP_OK, HTTP_NOT_MODIFIED, -1 -> {

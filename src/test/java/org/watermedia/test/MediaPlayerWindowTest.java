@@ -29,8 +29,11 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 public class MediaPlayerWindowTest {
     private static final String NAME = "WATERMeDIA: Multimedia API";
     private static final URI MEDIA_GIF = URI.create("https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif");
+    private static final URI MEDIA_STREAMABLE = URI.create("https://streamable.com/6yszde");
     private static final URI MEDIA_VIDEO = URI.create("https://www.mediafire.com/file/f23l3csbeeap9jo/TU_QLO.mp4/file");
     private static final URI MEDIA_VIDEO_STATIC = URI.create("https://cdn-cf-east.streamable.com/video/mp4/6yszde.mp4?Expires=1759724603795&Key-Pair-Id=APKAIEYUVEN4EVB2OKEQ&Signature=XQf9-YLrvJNaipIPfiWIscrCfimWBx4FDQk-84IN37zvqpiswcrL3ODtsHgmV2KIRbXdllaq7SWXr580~t1eF3EKwLLIRNvW4Zg4scBqaWykjF2eymLqrDdiRQ7wh95zcIGmL-yyB4mUFD7dZz-mSKaQ3YFmTiSNfClYNbkHVzce2QVUqeFnRARdrzHT~LYNRZSKDhKglq014cW2nLj22pDFVQdv1uVmjmyxVaxnJNqV-59ssq01wMYeYhScALLTOgYQTHqz84~WU1WOwlizHYjrX4ptq--konfQWTJCmuSby4yYZEc-c0~uKzRRHxqQxp07vFH~b5-oLTD3jwGCJw__");
+    private static final URI MEDIA_VIDEO_STATIC2 = URI.create("https://files.catbox.moe/uxypnp.mp4");
+    private static final URI MEDIA_VIDEO_STATIC3 = URI.create("https://files.catbox.moe/1n0jn9.mp4");
 
     // The window handle
     private static long window;
@@ -42,7 +45,7 @@ public class MediaPlayerWindowTest {
         Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
         WaterMedia.start("Java Test", null, null, true);
         init();
-        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
+        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC3, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
         player.start();
         // Make the window visible
         glfwShowWindow(window);
