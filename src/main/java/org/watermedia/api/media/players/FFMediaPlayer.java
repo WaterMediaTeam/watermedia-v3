@@ -805,8 +805,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         public LogCallback() { super(); }
 
         @Override
-        public void call(final Pointer pointer, final int level, final String format, final Pointer variableList) {
+        public void call(final Pointer pointer, int level, final String format, final Pointer variableList) {
             if (format == null || variableList == null || variableList.isNull()) return;
+            level = AV_LOG_TRACE;
 
             try {
                 final int written = avutil.av_log_format_line2(pointer, level, format, variableList, this.pointer, LINE_SIZE, this.prefixPointer);
