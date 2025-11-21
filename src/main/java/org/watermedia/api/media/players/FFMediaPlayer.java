@@ -805,9 +805,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         public LogCallback() { super(); }
 
         @Override
-        public void call(final Pointer pointer, int level, final String format, final Pointer variableList) {
+        public void call(final Pointer pointer, final int level, final String format, final Pointer variableList) {
             if (format == null || variableList == null || variableList.isNull()) return;
-            level = AV_LOG_TRACE;
 
             try {
                 final int written = avutil.av_log_format_line2(pointer, level, format, variableList, this.pointer, LINE_SIZE, this.prefixPointer);
@@ -822,10 +821,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                     case AV_LOG_ERROR -> LOGGER.error(IT, message);
                     case AV_LOG_WARNING -> LOGGER.warn(IT, message);
                     case AV_LOG_INFO -> LOGGER.info(IT, message);
-                    default -> LOGGER.debug(IT, message);
+                    default -> LOGGER.info(IT, message);
                 }
             } catch (final Throwable e) {
-                LOGGER.error(IT, "Error processing FFmpeg log: {}", format);
+                LOGGER.error(IT, "Error processing FFmpeg log, level {} - format '{}'", level, format);
             }
         }
     }
