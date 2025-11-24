@@ -1,5 +1,6 @@
 package org.watermedia.api.media.players;
 
+import com.sun.jna.Platform;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
@@ -463,6 +464,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             // Open format context
             this.formatContext = avformat.avformat_alloc_context();
             final AVDictionary options = new AVDictionary(); {
+                if (Platform.isMac()) {
+                    // Intentar usar VideoToolbox (aceleración de hardware de macOS)
+                    av_dict_set(options, "hwaccel", "videotoolbox", 0);
+
+                    // O intentar sin aceleración pero con mejor compatibilidad
+                    av_dict_set(options, "threads", "auto", 0);
+                    av_dict_set(options, "refcounted_frames", "1", 0);
+                }
+
 //                // Buffer size en bytes (ejemplo: 8MB)
 //                av_dict_set(options, "buffer_size", "33554432", 0);  // 32MB
 //                av_dict_set(options, "rtbufsize", "15000000", 0);  // 15MB buffer RTSP
@@ -497,10 +507,12 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             if (avformat.avformat_open_input(this.formatContext, this.sources[this.sourceIndex].getURIString(this.selectedQuality), null, options) < 0) {
+                LOGGER.error("Failed to open input: {}", this.sources[this.sourceIndex].getURIString(this.selectedQuality));
                 return false;
             }
 
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
+                LOGGER.error("Failed to find stream info");
                 return false;
             }
 
@@ -528,10 +540,12 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
                 if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
                         this.formatContext.streams(this.videoStreamIndex).codecpar()) < 0) {
+                    LOGGER.error("Failed to copy video codec parameters to context");
                     return false;
                 }
 
                 if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
+                    LOGGER.error("Failed to open video codec");
                     return false;
                 }
 
@@ -542,13 +556,19 @@ public final class FFMediaPlayer extends MediaPlayer {
                         this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
                         swscale.SWS_BILINEAR, null, null, (double[]) null);
 
-                if (this.swsContext == null) return false;
+                if (this.swsContext == null) {
+                    LOGGER.error("Failed to initialize SWScale context");
+                    return false;
+                }
 
                 this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
                 this.scaledFrame.width(this.width());
                 this.scaledFrame.height(this.height());
 
-                if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) return false;
+                if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) {
+                    LOGGER.error("Failed to allocate scaled video frame buffer");
+                    return false;
+                }
             }
 
             // Initialize audio decoder
@@ -563,16 +583,21 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (this.audioCodecContext == null) return false;
 
                 if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
+                    LOGGER.error("Failed to copy audio codec parameters to context");
                     return false;
                 }
 
                 if (avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null) < 0) {
+                    LOGGER.error("Failed to open audio codec");
                     return false;
                 }
 
                 // Initialize resampler
                 this.swrContext = swresample.swr_alloc();
-                if (this.swrContext == null) return false;
+                if (this.swrContext == null) {
+                    LOGGER.error("Failed to allocate SWResampler context");
+                    return false;
+                }
 
                 final AVChannelLayout inputLayout = new AVChannelLayout();
                 final AVChannelLayout outputLayout = new AVChannelLayout();
@@ -592,7 +617,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                 avutil.av_opt_set_int(this.swrContext, "out_sample_rate", AUDIO_SAMPLE_RATE, 0);
                 avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
 
-                if (swresample.swr_init(this.swrContext) < 0) return false;
+                if (swresample.swr_init(this.swrContext) < 0) {
+                    LOGGER.error("Failed to initialize SWResampler context");
+                    return false;
+                }
 
                 this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
                 this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
@@ -638,8 +666,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             // Convert ANY format to BGRA
             this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
             synchronized (this.videoBuffer) {
-                swscale.sws_scale(this.swsContext, this.videoFrame.data(), this.videoFrame.linesize(),
+                final int result = swscale.sws_scale(this.swsContext, this.videoFrame.data(), this.videoFrame.linesize(),
                         0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
+                if (result <= 0) {
+                    LOGGER.error("Failed to scale video frame, scale result: {}", result);
+                }
             }
 
             final int stride = this.scaledFrame.linesize(0);
@@ -821,7 +852,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                     case AV_LOG_ERROR -> LOGGER.error(IT, message);
                     case AV_LOG_WARNING -> LOGGER.warn(IT, message);
                     case AV_LOG_INFO -> LOGGER.info(IT, message);
-                    default -> LOGGER.info(IT, message);
+                    case AV_LOG_DEBUG -> LOGGER.debug(IT, message);
+                    default -> {
+//                        LOGGER.info(IT, message);
+                    }
                 }
             } catch (final Throwable e) {
                 LOGGER.error(IT, "Error processing FFmpeg log, level {} - format '{}'", level, format);

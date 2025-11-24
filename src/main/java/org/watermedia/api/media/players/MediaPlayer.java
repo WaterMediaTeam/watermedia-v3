@@ -114,6 +114,10 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
 
         synchronized(nativeBuffer) {
             this.glEngine.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
+            if (this.firstFrame) {
+                // TODO: make it a debug log
+                LOGGER.info("First frame processed successfully - size: {}x{}", this.width, this.height);
+            }
             this.firstFrame = false;
         }
     }
