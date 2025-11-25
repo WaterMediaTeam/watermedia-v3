@@ -42,7 +42,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
-    private static final ThreadFactory DEFAULT_THREAD_FACTORY = ThreadTool.createFactory("FFThread", 7);
+    private static final ThreadFactory DEFAULT_THREAD_FACTORY = ThreadTool.createFactory("FFThread", Thread.NORM_PRIORITY);
     private static boolean LOADED;
 
     // Constants
@@ -336,7 +336,12 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // Main playback loop
-            while (this.running && !this.stopRequested) {
+            while (this.running) {
+                if (this.stopRequested) {
+                    LOGGER.info(IT, "Stop requested, exiting playback loop");
+                    break;
+                }
+
                 // Handle seek requests
                 if (this.seekTarget >= 0) {
                     final long targetMs = this.seekTarget;
@@ -530,112 +535,139 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
             }
 
-            // Initialize video decoder
-            if (this.video && this.videoStreamIndex >= 0) {
-                final AVCodec videoCodec = avcodec.avcodec_find_decoder(
-                        this.formatContext.streams(this.videoStreamIndex).codecpar().codec_id());
+            final boolean videoInit = this.init$video();
+            final boolean audioInit = this.init$audio();
 
-                if (videoCodec == null) return false;
-
-                this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
-                if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
-                        this.formatContext.streams(this.videoStreamIndex).codecpar()) < 0) {
-                    LOGGER.error("Failed to copy video codec parameters to context");
-                    return false;
-                }
-
-                if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
-                    LOGGER.error("Failed to open video codec");
-                    return false;
-                }
-
-                this.setVideoFormat(GL12.GL_BGRA, this.videoCodecContext.width(), this.videoCodecContext.height());
-
-                this.swsContext = swscale.sws_getContext(
-                        this.width(), this.height(), this.videoCodecContext.pix_fmt(),
-                        this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
-                        swscale.SWS_BILINEAR, null, null, (double[]) null);
-
-                if (this.swsContext == null) {
-                    LOGGER.error("Failed to initialize SWScale context");
-                    return false;
-                }
-
-                this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
-                this.scaledFrame.width(this.width());
-                this.scaledFrame.height(this.height());
-
-                if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) {
-                    LOGGER.error("Failed to allocate scaled video frame buffer");
-                    return false;
-                }
+            if (!videoInit && !audioInit) {
+                LOGGER.error("No valid audio or video streams found");
+                return false;
             }
-
-            // Initialize audio decoder
-            if (this.audio && this.audioStreamIndex >= 0) {
-                final AVStream audioStream = this.formatContext.streams(this.audioStreamIndex);
-                final AVCodecParameters codecParams = audioStream.codecpar();
-                final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecParams.codec_id());
-
-                if (audioCodec == null) return false;
-
-                this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
-                if (this.audioCodecContext == null) return false;
-
-                if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
-                    LOGGER.error("Failed to copy audio codec parameters to context");
-                    return false;
-                }
-
-                if (avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null) < 0) {
-                    LOGGER.error("Failed to open audio codec");
-                    return false;
-                }
-
-                // Initialize resampler
-                this.swrContext = swresample.swr_alloc();
-                if (this.swrContext == null) {
-                    LOGGER.error("Failed to allocate SWResampler context");
-                    return false;
-                }
-
-                final AVChannelLayout inputLayout = new AVChannelLayout();
-                final AVChannelLayout outputLayout = new AVChannelLayout();
-
-                if (codecParams.ch_layout().nb_channels() > 0) {
-                    avutil.av_channel_layout_copy(inputLayout, codecParams.ch_layout());
-                } else {
-                    avutil.av_channel_layout_default(inputLayout, codecParams.ch_layout().nb_channels());
-                }
-
-                avutil.av_channel_layout_default(outputLayout, AUDIO_CHANNELS);
-
-                avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
-                avutil.av_opt_set_int(this.swrContext, "in_sample_rate", codecParams.sample_rate(), 0);
-                avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", codecParams.format(), 0);
-                avutil.av_opt_set_chlayout(this.swrContext, "out_chlayout", outputLayout, 0);
-                avutil.av_opt_set_int(this.swrContext, "out_sample_rate", AUDIO_SAMPLE_RATE, 0);
-                avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
-
-                if (swresample.swr_init(this.swrContext) < 0) {
-                    LOGGER.error("Failed to initialize SWResampler context");
-                    return false;
-                }
-
-                this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
-                this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
-                avutil.av_channel_layout_default(this.resampledFrame.ch_layout(), AUDIO_CHANNELS);
-                this.resampledFrame.sample_rate(AUDIO_SAMPLE_RATE);
-                this.resampledFrame.nb_samples(AUDIO_SAMPLES);
-
-                return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
-            }
+            LOGGER.info("FFmpeg initialized successfully - videoStreamIndex: {}, audioStreamIndex: {} - videoInit: {}, audioInit {}", this.videoStreamIndex, this.audioStreamIndex, videoInit, audioInit);
 
             return true;
         } catch (final Exception e) {
             LOGGER.error(IT, "Failed to initialize FFmpeg", e);
             return false;
         }
+    }
+
+    private boolean init$video() {
+        // Initialize video decoder
+        if (this.video && this.videoStreamIndex >= 0) {
+            final int codecId =  this.formatContext.streams(this.videoStreamIndex).codecpar().codec_id();
+            final AVCodec videoCodec = avcodec.avcodec_find_decoder(codecId);
+
+            if (videoCodec == null) {
+                LOGGER.error("Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
+                return false;
+            }
+
+            this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
+            if (avcodec.avcodec_parameters_to_context(this.videoCodecContext, this.formatContext.streams(this.videoStreamIndex).codecpar()) < 0) {
+                LOGGER.error("Failed to copy video codec parameters to context");
+                return false;
+            }
+
+            if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
+                LOGGER.error("Failed to open video codec");
+                return false;
+            }
+
+            this.setVideoFormat(GL12.GL_BGRA, this.videoCodecContext.width(), this.videoCodecContext.height());
+
+            this.swsContext = swscale.sws_getContext(
+                    this.width(), this.height(), this.videoCodecContext.pix_fmt(),
+                    this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
+                    swscale.SWS_BILINEAR, null, null, (double[]) null);
+
+            if (this.swsContext == null) {
+                LOGGER.error("Failed to initialize SWScale context");
+                return false;
+            }
+
+            this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
+            this.scaledFrame.width(this.width());
+            this.scaledFrame.height(this.height());
+
+            if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) {
+                LOGGER.error("Failed to allocate scaled video frame buffer");
+                return false;
+            }
+        } else {
+            LOGGER.warn("No video stream found or video disabled");
+        }
+        return true;
+    }
+
+    private boolean init$audio() {
+        // Initialize audio decoder
+        if (this.audio && this.audioStreamIndex >= 0) {
+            final AVStream audioStream = this.formatContext.streams(this.audioStreamIndex);
+            final AVCodecParameters codecParams = audioStream.codecpar();
+            final int codecId = codecParams.codec_id();
+            final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecId);
+
+            if (audioCodec == null) {
+                LOGGER.error("Failed to find audio codec with id {} for audioIndex {}", codecId, this.audioStreamIndex);
+                return false;
+            }
+
+            this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
+            if (this.audioCodecContext == null) {
+                LOGGER.error("Failed to allocate audio codec context");
+                return false;
+            }
+
+            if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
+                LOGGER.error("Failed to copy audio codec parameters to context");
+                return false;
+            }
+
+            if (avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null) < 0) {
+                LOGGER.error("Failed to open audio codec");
+                return false;
+            }
+
+            // Initialize resampler
+            this.swrContext = swresample.swr_alloc();
+            if (this.swrContext == null) {
+                LOGGER.error("Failed to allocate SWResampler context");
+                return false;
+            }
+
+            final AVChannelLayout inputLayout = new AVChannelLayout();
+            final AVChannelLayout outputLayout = new AVChannelLayout();
+
+            if (codecParams.ch_layout().nb_channels() > 0) {
+                avutil.av_channel_layout_copy(inputLayout, codecParams.ch_layout());
+            } else {
+                LOGGER.warn(IT, "Audio codec has no channel layout info, defaulting to stereo");
+                avutil.av_channel_layout_default(inputLayout, 2);
+            }
+
+            avutil.av_channel_layout_default(outputLayout, AUDIO_CHANNELS);
+
+            avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
+            avutil.av_opt_set_int(this.swrContext, "in_sample_rate", codecParams.sample_rate(), 0);
+            avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", codecParams.format(), 0);
+            avutil.av_opt_set_chlayout(this.swrContext, "out_chlayout", outputLayout, 0);
+            avutil.av_opt_set_int(this.swrContext, "out_sample_rate", AUDIO_SAMPLE_RATE, 0);
+            avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
+
+            if (swresample.swr_init(this.swrContext) < 0) {
+                LOGGER.error("Failed to initialize SWResampler context");
+                return false;
+            }
+
+            this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
+            this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
+            avutil.av_channel_layout_default(this.resampledFrame.ch_layout(), AUDIO_CHANNELS);
+            this.resampledFrame.sample_rate(AUDIO_SAMPLE_RATE);
+            this.resampledFrame.nb_samples(AUDIO_SAMPLES);
+
+            return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
+        }
+        return false;
     }
 
     private void processVideoPacket() {
@@ -664,7 +696,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // Convert ANY format to BGRA
-            this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
+            if (this.videoBuffer == null) {
+                this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
+            }
             synchronized (this.videoBuffer) {
                 final int result = swscale.sws_scale(this.swsContext, this.videoFrame.data(), this.videoFrame.linesize(),
                         0, this.height(), this.scaledFrame.data(), this.scaledFrame.linesize());
@@ -692,6 +726,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             if (samplesConverted > 0) {
                 final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
+                // TODO: add synchronization with the buffer pointer
                 this.upload(this.resampledFrame.data(0).limit(dataSize).asBuffer().clear(),
                         AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
             }
@@ -762,6 +797,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.packet = null;
         }
 
+        this.videoBuffer = null;
+
         LOGGER.info(IT, "Cleanup completed");
         this.running = false;
     }
@@ -811,15 +848,366 @@ public final class FFMediaPlayer extends MediaPlayer {
                 LOGGER.warn(IT, "FFMPEG binaries path not found, using JavaCPP defaults");
             }
 
-            avutil.av_log_set_callback(LogCallback.INSTANCE);
+//            avutil.av_log_set_callback(LogCallback.INSTANCE);
             avutil.av_log_set_flags(avutil.AV_LOG_PRINT_LEVEL | avutil.AV_LOG_SKIP_REPEATED);
-            avutil.av_log_set_level(LOGGER.isDebugEnabled() ? avutil.AV_LOG_DEBUG : avutil.AV_LOG_INFO);
+//            avutil.av_log_set_level(LOGGER.isDebugEnabled() ? avutil.AV_LOG_DEBUG : avutil.AV_LOG_INFO);
+            avutil.av_log_set_level(avutil.AV_LOG_DEBUG);
+
+            logFFmpegCapabilities();
 
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), avformat.avformat_license().getString());
             return LOADED = true;
         } catch (final Throwable t) {
             LOGGER.error(IT, "Failed to load FFMPEG", t);
             return false;
+        }
+    }
+
+    private static void logFFmpegCapabilities() {
+        LOGGER.info(IT, "=== FFmpeg Build Info ===");
+        LOGGER.info(IT, "avformat: {}", avformat.avformat_version());
+        LOGGER.info(IT, "avcodec:  {}", avcodec.avcodec_version());
+        LOGGER.info(IT, "avutil:   {}", avutil.avutil_version());
+        LOGGER.info(IT, "swscale:  {}", swscale.swscale_version());
+        LOGGER.info(IT, "swresample: {}", swresample.swresample_version());
+
+        try {
+            final BytePointer config = avformat.avformat_configuration();
+            if (config != null && !config.isNull()) {
+                LOGGER.info(IT, "Configuration: {}", config.getString());
+            }
+        } catch (final Exception e) {
+            LOGGER.info(IT, "Configuration: unavailable");
+        }
+
+        // Video Decoders
+        LOGGER.info(IT, "=== Video Decoders ===");
+        // H.26x family
+        checkDecoder("h261", "H.261");
+        checkDecoder("h263", "H.263");
+        checkDecoder("h263i", "H.263i / Intel H.263");
+        checkDecoder("h263p", "H.263+");
+        checkDecoder("h264", "H.264 / AVC / MPEG-4 Part 10");
+        checkDecoder("hevc", "H.265 / HEVC");
+        checkDecoder("vvc", "H.266 / VVC");
+        // MPEG family
+        checkDecoder("mpeg1video", "MPEG-1 Video");
+        checkDecoder("mpeg2video", "MPEG-2 Video");
+        checkDecoder("mpeg4", "MPEG-4 Part 2");
+        checkDecoder("msmpeg4v1", "MS MPEG-4 v1");
+        checkDecoder("msmpeg4v2", "MS MPEG-4 v2");
+        checkDecoder("msmpeg4v3", "MS MPEG-4 v3 / DivX 3");
+        // VP/AV family
+        checkDecoder("vp3", "VP3");
+        checkDecoder("vp4", "VP4");
+        checkDecoder("vp5", "VP5");
+        checkDecoder("vp6", "VP6");
+        checkDecoder("vp6a", "VP6 with Alpha");
+        checkDecoder("vp6f", "VP6 Flash");
+        checkDecoder("vp7", "VP7");
+        checkDecoder("vp8", "VP8");
+        checkDecoder("vp9", "VP9");
+        checkDecoder("av1", "AV1 / AOMedia Video 1");
+        // Image formats
+        checkDecoder("png", "PNG");
+        checkDecoder("apng", "Animated PNG");
+        checkDecoder("gif", "GIF");
+        checkDecoder("webp", "WebP");
+        checkDecoder("mjpeg", "Motion JPEG");
+        checkDecoder("mjpegb", "Motion JPEG B");
+        checkDecoder("jpeg2000", "JPEG 2000");
+        checkDecoder("jpegls", "JPEG-LS");
+        checkDecoder("bmp", "BMP");
+        checkDecoder("tiff", "TIFF");
+        checkDecoder("targa", "Targa / TGA");
+        checkDecoder("ppm", "PPM");
+        checkDecoder("pgm", "PGM");
+        checkDecoder("pbm", "PBM");
+        checkDecoder("pam", "PAM");
+        checkDecoder("exr", "OpenEXR");
+        checkDecoder("hdr", "HDR / Radiance RGBE");
+        checkDecoder("qoi", "QOI / Quite OK Image");
+        // Professional/Broadcast codecs
+        checkDecoder("theora", "Theora");
+        checkDecoder("dirac", "Dirac / VC-2");
+        checkDecoder("prores", "Apple ProRes");
+        checkDecoder("prores_aw", "Apple ProRes (iCodec)");
+        checkDecoder("prores_ks", "Apple ProRes (Kostya)");
+        checkDecoder("prores_lgpl", "Apple ProRes (LGPL)");
+        checkDecoder("dnxhd", "Avid DNxHD / DNxHR");
+        checkDecoder("cfhd", "GoPro CineForm HD");
+        checkDecoder("dvvideo", "DV Video");
+        // Legacy/Other video codecs
+        checkDecoder("cinepak", "Cinepak");
+        checkDecoder("indeo2", "Intel Indeo 2");
+        checkDecoder("indeo3", "Intel Indeo 3");
+        checkDecoder("indeo4", "Intel Indeo 4");
+        checkDecoder("indeo5", "Intel Indeo 5");
+        checkDecoder("huffyuv", "HuffYUV");
+        checkDecoder("ffvhuff", "HuffYUV FFmpeg variant");
+        checkDecoder("ffv1", "FFV1 Lossless");
+        checkDecoder("flashsv", "Flash Screen Video v1");
+        checkDecoder("flashsv2", "Flash Screen Video v2");
+        checkDecoder("flv", "FLV / Sorenson Spark");
+        checkDecoder("rv10", "RealVideo 1.0");
+        checkDecoder("rv20", "RealVideo 2.0");
+        checkDecoder("rv30", "RealVideo 3.0");
+        checkDecoder("rv40", "RealVideo 4.0");
+        checkDecoder("svq1", "Sorenson Vector Quantizer 1");
+        checkDecoder("svq3", "Sorenson Vector Quantizer 3");
+        checkDecoder("wmv1", "Windows Media Video 7");
+        checkDecoder("wmv2", "Windows Media Video 8");
+        checkDecoder("wmv3", "Windows Media Video 9");
+        checkDecoder("vc1", "VC-1 / WMV9 Advanced Profile");
+        checkDecoder("utvideo", "Ut Video");
+        checkDecoder("rawvideo", "Raw Video");
+        // Screen capture codecs
+        checkDecoder("mss1", "MS Screen 1");
+        checkDecoder("mss2", "MS Screen 2");
+        checkDecoder("tscc", "TechSmith Screen Capture");
+        checkDecoder("tscc2", "TechSmith Screen Capture 2");
+        checkDecoder("cscd", "CamStudio");
+        checkDecoder("fraps", "Fraps");
+        checkDecoder("zmbv", "Zip Motion Blocks Video");
+        checkDecoder("g2m", "GoToMeeting");
+        // Lossless codecs
+        checkDecoder("lagarith", "Lagarith Lossless");
+        checkDecoder("magicyuv", "MagicYUV Lossless");
+        checkDecoder("cllc", "Canopus Lossless");
+        checkDecoder("snow", "Snow Wavelet");
+        // Animation/Game codecs
+        checkDecoder("anm", "Deluxe Paint Animation");
+        checkDecoder("binkvideo", "Bink Video");
+        checkDecoder("smackvideo", "Smacker Video");
+        checkDecoder("roqvideo", "id RoQ Video");
+        checkDecoder("idcin", "id CIN Video");
+        checkDecoder("interplayvideo", "Interplay MVE Video");
+        checkDecoder("vmd", "Sierra VMD Video");
+        checkDecoder("flic", "Autodesk FLIC");
+        // Hardware accelerated (if available)
+        checkDecoder("h264_qsv", "H.264 Intel QuickSync");
+        checkDecoder("h264_cuvid", "H.264 NVIDIA CUVID");
+        checkDecoder("hevc_qsv", "HEVC Intel QuickSync");
+        checkDecoder("hevc_cuvid", "HEVC NVIDIA CUVID");
+        checkDecoder("vp9_qsv", "VP9 Intel QuickSync");
+        checkDecoder("vp9_cuvid", "VP9 NVIDIA CUVID");
+        checkDecoder("av1_qsv", "AV1 Intel QuickSync");
+        checkDecoder("av1_cuvid", "AV1 NVIDIA CUVID");
+
+        // Audio Decoders
+        LOGGER.info(IT, "=== Audio Decoders ===");
+        // AAC family
+        checkDecoder("aac", "AAC (Advanced Audio Coding)");
+        checkDecoder("aac_fixed", "AAC Fixed-point");
+        checkDecoder("aac_latm", "AAC LATM");
+        // MP3/MPEG Audio
+        checkDecoder("mp1", "MP1 / MPEG Audio Layer 1");
+        checkDecoder("mp1float", "MP1 Float");
+        checkDecoder("mp2", "MP2 / MPEG Audio Layer 2");
+        checkDecoder("mp2float", "MP2 Float");
+        checkDecoder("mp3", "MP3 / MPEG Audio Layer 3");
+        checkDecoder("mp3float", "MP3 Float");
+        checkDecoder("mp3adu", "MP3 ADU");
+        checkDecoder("mp3adufloat", "MP3 ADU Float");
+        checkDecoder("mp3on4", "MP3 on MP4");
+        checkDecoder("mp3on4float", "MP3 on MP4 Float");
+        // Modern lossy
+        checkDecoder("vorbis", "Vorbis");
+        checkDecoder("opus", "Opus");
+        // Dolby/DTS
+        checkDecoder("ac3", "AC-3 / Dolby Digital");
+        checkDecoder("ac3_fixed", "AC-3 Fixed-point");
+        checkDecoder("eac3", "E-AC-3 / Dolby Digital Plus");
+        checkDecoder("truehd", "Dolby TrueHD");
+        checkDecoder("mlp", "MLP / Dolby Lossless");
+        checkDecoder("dolby_e", "Dolby E");
+        checkDecoder("dts", "DTS");
+        checkDecoder("dca", "DTS Coherent Acoustics");
+        // Lossless audio
+        checkDecoder("flac", "FLAC");
+        checkDecoder("alac", "Apple Lossless / ALAC");
+        checkDecoder("ape", "Monkey's Audio / APE");
+        checkDecoder("wavpack", "WavPack");
+        checkDecoder("tta", "True Audio / TTA");
+        checkDecoder("tak", "TAK");
+        checkDecoder("shorten", "Shorten");
+        checkDecoder("als", "MPEG-4 ALS");
+        checkDecoder("wmalossless", "Windows Media Audio Lossless");
+        // Windows Media Audio
+        checkDecoder("wmav1", "Windows Media Audio 1");
+        checkDecoder("wmav2", "Windows Media Audio 2");
+        checkDecoder("wmapro", "Windows Media Audio Pro");
+        checkDecoder("wmavoice", "Windows Media Audio Voice");
+        // RealAudio
+        checkDecoder("ra_144", "RealAudio 1.0 / 14.4k");
+        checkDecoder("ra_288", "RealAudio 2.0 / 28.8k");
+        checkDecoder("ralf", "RealAudio Lossless");
+        checkDecoder("cook", "RealAudio Cook / G2");
+        // Sony ATRAC
+        checkDecoder("atrac1", "Sony ATRAC1");
+        checkDecoder("atrac3", "Sony ATRAC3");
+        checkDecoder("atrac3p", "Sony ATRAC3+");
+        checkDecoder("atrac3al", "Sony ATRAC3 AL");
+        checkDecoder("atrac3pal", "Sony ATRAC3+ AL");
+        checkDecoder("atrac9", "Sony ATRAC9");
+        // Speech codecs
+        checkDecoder("speex", "Speex");
+        checkDecoder("gsm", "GSM");
+        checkDecoder("gsm_ms", "GSM Microsoft");
+        checkDecoder("amrnb", "AMR-NB");
+        checkDecoder("amrwb", "AMR-WB");
+        checkDecoder("libilbc", "iLBC");
+        checkDecoder("evrc", "EVRC");
+        checkDecoder("qcelp", "QCELP / PureVoice");
+        checkDecoder("g723_1", "G.723.1");
+        checkDecoder("g729", "G.729");
+        checkDecoder("truespeech", "TrueSpeech");
+        checkDecoder("dss_sp", "DSS SP");
+        checkDecoder("sipr", "SIPRO / RealAudio 4");
+        // ADPCM variants
+        checkDecoder("adpcm_ima_wav", "ADPCM IMA WAV");
+        checkDecoder("adpcm_ima_qt", "ADPCM IMA QuickTime");
+        checkDecoder("adpcm_ima_dk3", "ADPCM IMA Duck DK3");
+        checkDecoder("adpcm_ima_dk4", "ADPCM IMA Duck DK4");
+        checkDecoder("adpcm_ima_ws", "ADPCM IMA Westwood");
+        checkDecoder("adpcm_ima_smjpeg", "ADPCM IMA SMJPEG");
+        checkDecoder("adpcm_ms", "ADPCM Microsoft");
+        checkDecoder("adpcm_4xm", "ADPCM 4X Movie");
+        checkDecoder("adpcm_xa", "ADPCM XA");
+        checkDecoder("adpcm_adx", "ADPCM ADX");
+        checkDecoder("adpcm_ea", "ADPCM Electronic Arts");
+        checkDecoder("adpcm_g722", "ADPCM G.722");
+        checkDecoder("adpcm_g726", "ADPCM G.726");
+        checkDecoder("adpcm_g726le", "ADPCM G.726 LE");
+        checkDecoder("adpcm_ct", "ADPCM Creative");
+        checkDecoder("adpcm_swf", "ADPCM Shockwave Flash");
+        checkDecoder("adpcm_yamaha", "ADPCM Yamaha");
+        checkDecoder("adpcm_thp", "ADPCM THP");
+        checkDecoder("adpcm_thp_le", "ADPCM THP LE");
+        checkDecoder("adpcm_psx", "ADPCM PlayStation");
+        checkDecoder("adpcm_aica", "ADPCM Dreamcast AICA");
+        checkDecoder("adpcm_afc", "ADPCM Nintendo AFC");
+        checkDecoder("adpcm_dtk", "ADPCM Nintendo DTK");
+        checkDecoder("adpcm_vima", "ADPCM LucasArts VIMA");
+        checkDecoder("adpcm_zork", "ADPCM Zork");
+        // PCM formats
+        checkDecoder("pcm_s8", "PCM signed 8-bit");
+        checkDecoder("pcm_s8_planar", "PCM signed 8-bit planar");
+        checkDecoder("pcm_s16be", "PCM signed 16-bit BE");
+        checkDecoder("pcm_s16be_planar", "PCM signed 16-bit BE planar");
+        checkDecoder("pcm_s16le", "PCM signed 16-bit LE");
+        checkDecoder("pcm_s16le_planar", "PCM signed 16-bit LE planar");
+        checkDecoder("pcm_s24be", "PCM signed 24-bit BE");
+        checkDecoder("pcm_s24le", "PCM signed 24-bit LE");
+        checkDecoder("pcm_s24le_planar", "PCM signed 24-bit LE planar");
+        checkDecoder("pcm_s24daud", "PCM signed 24-bit D-Cinema");
+        checkDecoder("pcm_s32be", "PCM signed 32-bit BE");
+        checkDecoder("pcm_s32le", "PCM signed 32-bit LE");
+        checkDecoder("pcm_s32le_planar", "PCM signed 32-bit LE planar");
+        checkDecoder("pcm_s64be", "PCM signed 64-bit BE");
+        checkDecoder("pcm_s64le", "PCM signed 64-bit LE");
+        checkDecoder("pcm_u8", "PCM unsigned 8-bit");
+        checkDecoder("pcm_u16be", "PCM unsigned 16-bit BE");
+        checkDecoder("pcm_u16le", "PCM unsigned 16-bit LE");
+        checkDecoder("pcm_u24be", "PCM unsigned 24-bit BE");
+        checkDecoder("pcm_u24le", "PCM unsigned 24-bit LE");
+        checkDecoder("pcm_u32be", "PCM unsigned 32-bit BE");
+        checkDecoder("pcm_u32le", "PCM unsigned 32-bit LE");
+        checkDecoder("pcm_f16le", "PCM float 16-bit LE");
+        checkDecoder("pcm_f24le", "PCM float 24-bit LE");
+        checkDecoder("pcm_f32be", "PCM float 32-bit BE");
+        checkDecoder("pcm_f32le", "PCM float 32-bit LE");
+        checkDecoder("pcm_f64be", "PCM float 64-bit BE");
+        checkDecoder("pcm_f64le", "PCM float 64-bit LE");
+        checkDecoder("pcm_alaw", "PCM A-law");
+        checkDecoder("pcm_mulaw", "PCM mu-law");
+        checkDecoder("pcm_vidc", "PCM Archimedes VIDC");
+        checkDecoder("pcm_bluray", "PCM Blu-ray");
+        checkDecoder("pcm_dvd", "PCM DVD");
+        // Game/multimedia audio
+        checkDecoder("binkaudio_rdft", "Bink Audio RDFT");
+        checkDecoder("binkaudio_dct", "Bink Audio DCT");
+        checkDecoder("smackaud", "Smacker Audio");
+        checkDecoder("roq_dpcm", "id RoQ DPCM");
+        checkDecoder("interplay_dpcm", "Interplay DPCM");
+        checkDecoder("xan_dpcm", "Xan DPCM");
+        checkDecoder("sol_dpcm", "Sol DPCM");
+        checkDecoder("mpc7", "Musepack SV7");
+        checkDecoder("mpc8", "Musepack SV8");
+        checkDecoder("qdm2", "QDesign Music Codec 2");
+        checkDecoder("qdmc", "QDesign Music Codec");
+        checkDecoder("mace3", "MACE 3:1");
+        checkDecoder("mace6", "MACE 6:1");
+        checkDecoder("hca", "CRI HCA");
+        checkDecoder("xma1", "Xbox Media Audio 1");
+        checkDecoder("xma2", "Xbox Media Audio 2");
+        // Misc
+        checkDecoder("comfortnoise", "RFC 3389 Comfort Noise");
+        checkDecoder("dvaudio", "DV Audio");
+        checkDecoder("s302m", "SMPTE 302M");
+        checkDecoder("sbc", "Bluetooth SBC");
+
+        // Hardware acceleration
+        LOGGER.info(IT, "=== Hardware Acceleration ===");
+        int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
+        int hwCount = 0;
+        while ((hwType = avutil.av_hwdevice_iterate_types(hwType)) != avutil.AV_HWDEVICE_TYPE_NONE) {
+            try {
+                final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
+                if (hwName != null && !hwName.isNull()) {
+                    LOGGER.info(IT, "  [OK] {}", hwName.getString());
+                    hwCount++;
+                }
+            } catch (final Exception e) {
+                // Ignorar
+            }
+        }
+        if (hwCount == 0) {
+            LOGGER.info(IT, "  None available");
+        }
+
+        // Pixel formats
+        LOGGER.info(IT, "=== Pixel Formats ===");
+        checkPixelFormat(avutil.AV_PIX_FMT_YUV420P, "yuv420p", "Planar YUV 4:2:0");
+        checkPixelFormat(avutil.AV_PIX_FMT_YUV422P, "yuv422p", "Planar YUV 4:2:2");
+        checkPixelFormat(avutil.AV_PIX_FMT_YUV444P, "yuv444p", "Planar YUV 4:4:4");
+        checkPixelFormat(avutil.AV_PIX_FMT_YUV420P10LE, "yuv420p10le", "Planar YUV 4:2:0 10-bit LE");
+        checkPixelFormat(avutil.AV_PIX_FMT_YUV422P10LE, "yuv422p10le", "Planar YUV 4:2:2 10-bit LE");
+        checkPixelFormat(avutil.AV_PIX_FMT_YUV444P10LE, "yuv444p10le", "Planar YUV 4:4:4 10-bit LE");
+        checkPixelFormat(avutil.AV_PIX_FMT_NV12, "nv12", "Semi-planar YUV 4:2:0");
+        checkPixelFormat(avutil.AV_PIX_FMT_NV21, "nv21", "Semi-planar YUV 4:2:0 (UV swapped)");
+        checkPixelFormat(avutil.AV_PIX_FMT_BGRA, "bgra", "Packed BGRA 8:8:8:8");
+        checkPixelFormat(avutil.AV_PIX_FMT_RGBA, "rgba", "Packed RGBA 8:8:8:8");
+        checkPixelFormat(avutil.AV_PIX_FMT_ARGB, "argb", "Packed ARGB 8:8:8:8");
+        checkPixelFormat(avutil.AV_PIX_FMT_ABGR, "abgr", "Packed ABGR 8:8:8:8");
+        checkPixelFormat(avutil.AV_PIX_FMT_RGB24, "rgb24", "Packed RGB 8:8:8");
+        checkPixelFormat(avutil.AV_PIX_FMT_BGR24, "bgr24", "Packed BGR 8:8:8");
+        checkPixelFormat(avutil.AV_PIX_FMT_GRAY8, "gray8", "Grayscale 8-bit");
+        checkPixelFormat(avutil.AV_PIX_FMT_GRAY16LE, "gray16le", "Grayscale 16-bit LE");
+    }
+    private static void checkDecoder(final String name, final String description) {
+        try {
+            final AVCodec codec = avcodec.avcodec_find_decoder_by_name(name);
+            if (codec != null && !codec.isNull()) {
+                LOGGER.info(IT, "  [OK] {} ({})", name, description);
+            } else {
+                LOGGER.warn(IT, "  [MISSING] {} ({})", name, description);
+            }
+        } catch (final Exception e) {
+            LOGGER.warn(IT, "  [ERROR] {} - {}", name, e.getMessage());
+        }
+    }
+
+    private static void checkPixelFormat(final int format, final String name, final String description) {
+        try {
+            final AVPixFmtDescriptor desc = avutil.av_pix_fmt_desc_get(format);
+            if (desc != null && !desc.isNull()) {
+                LOGGER.info(IT, "  [OK] {} ({})", name, description);
+            } else {
+                LOGGER.warn(IT, "  [MISSING] {} ({})", name, description);
+            }
+        } catch (final Exception e) {
+            LOGGER.warn(IT, "  [ERROR] {} - {}", name, e.getMessage());
         }
     }
 
@@ -852,7 +1240,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     case AV_LOG_ERROR -> LOGGER.error(IT, message);
                     case AV_LOG_WARNING -> LOGGER.warn(IT, message);
                     case AV_LOG_INFO -> LOGGER.info(IT, message);
-                    case AV_LOG_DEBUG -> LOGGER.debug(IT, message);
+                    case AV_LOG_DEBUG -> LOGGER.info(IT, message);
                     default -> {
 //                        LOGGER.info(IT, message);
                     }

@@ -27,7 +27,7 @@ public class ThreadTool {
             final Thread t = new Thread(r);
             t.setDaemon(true);
             t.setPriority(MathUtil.clamp(1, 10, priority));
-            t.setName(name + "-" + count.get());
+            t.setName(name + "-" + count.getAndIncrement());
             return t;
         };
     }

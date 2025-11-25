@@ -11,10 +11,13 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
-@Spec(value = WaterMedia.ID, suffix = "client", format = OmegaConfig.FORMAT_JSON5)
+@Spec(value = WaterMedia.ID, suffix = "client", format = OmegaConfig.FORMAT_TOML)
 public class WaterMediaConfig {
+
     @Spec.Field
     public static MRL.MediaQuality defaultMediaQuality = MRL.MediaQuality.HIGHER;
+
+    public static boolean searchForLowMediaQuality = false;
 
     @Spec.Field
     public static boolean videolanEnabled = true;
