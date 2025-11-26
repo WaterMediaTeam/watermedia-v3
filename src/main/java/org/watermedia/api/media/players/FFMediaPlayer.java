@@ -285,16 +285,15 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public long time() {
-        if (this.clockPaused) {
-            return msFromSeconds(this.masterClock);
-        }
-
-        if (this.clockBaseTime <= 0) {
+        if (this.clockPaused || this.clockBaseTime <= 0) {
             return msFromSeconds(this.masterClock);
         }
 
         final double elapsed = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0;
-        return msFromSeconds(this.masterClock + (elapsed * this.speedFactor));
+
+        final double interpolated = Math.min(elapsed * this.speedFactor, 0.1);
+
+        return msFromSeconds(this.masterClock + interpolated);
     }
 
     // ===========================================
@@ -468,15 +467,6 @@ public final class FFMediaPlayer extends MediaPlayer {
             // Open format context
             this.formatContext = avformat.avformat_alloc_context();
             final AVDictionary options = new AVDictionary(); {
-                if (Platform.isMac()) {
-                    // Intentar usar VideoToolbox (aceleración de hardware de macOS)
-                    av_dict_set(options, "hwaccel", "videotoolbox", 0);
-
-                    // O intentar sin aceleración pero con mejor compatibilidad
-                    av_dict_set(options, "threads", "auto", 0);
-                    av_dict_set(options, "refcounted_frames", "1", 0);
-                }
-
 //                // Buffer size en bytes (ejemplo: 8MB)
 //                av_dict_set(options, "buffer_size", "33554432", 0);  // 32MB
 //                av_dict_set(options, "rtbufsize", "15000000", 0);  // 15MB buffer RTSP
@@ -736,14 +726,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         // Always prefer audio clock when available
         if (this.audio && this.audioStreamIndex >= 0) {
             this.masterClock = ptsInSeconds;
-            if (!this.clockPaused && this.clockBaseTime <= 0) {
-                this.clockBaseTime = System.nanoTime() - (long)(ptsInSeconds * 1_000_000_000L);
-            }
+            this.clockBaseTime = System.nanoTime();
         } else if (!this.audio && this.video) {
             this.masterClock = ptsInSeconds;
-            if (!this.clockPaused && this.clockBaseTime <= 0) {
-                this.clockBaseTime = System.nanoTime() - (long)(ptsInSeconds * 1_000_000_000L);
-            }
+            this.clockBaseTime = System.nanoTime();
         }
     }
 
