@@ -91,7 +91,7 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
         this.width = width;
         this.height = height;
         this.firstFrame = true;
-        LOGGER.debug(IT,"Set video format: chroma={}, width={}, height={}", chroma, width, height);
+        LOGGER.debug(IT,"Set video format: chroma={}, width={}, height={}", chroma == GL12.GL_RGBA ? "RGBA" : "BGRA", width, height);
     }
 
     protected void upload(final ByteBuffer nativeBuffer, final int stride) {
@@ -114,10 +114,6 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
 
         synchronized(nativeBuffer) {
             this.glEngine.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
-            if (this.firstFrame) {
-                // TODO: make it a debug log
-                LOGGER.info("First frame processed successfully - size: {}x{}", this.width, this.height);
-            }
             this.firstFrame = false;
         }
     }

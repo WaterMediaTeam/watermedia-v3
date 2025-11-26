@@ -52,7 +52,8 @@ public record GLEngine(IntSupplier genTexture, BiIntConsumer bindTexture, TriInt
         this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, GL11.GL_ZERO);
 
         if (firstFrame) {
-            this.texImage2D.apply(GL11.GL_TEXTURE_2D, 0, format, width, height, 0, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
+            // NOTE: INTERNAL FORMAT CANNOT BE GL_RGBA HERE, OTHERWISE IT CAUSES ISSUES ON SOME GPUS (SPECIALLY MACOS)
+            this.texImage2D.apply(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height, 0, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
         } else {
             this.texSubImage2D.apply(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, buffers);
         }

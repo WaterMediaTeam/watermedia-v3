@@ -5,19 +5,20 @@ import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.ARBDebugOutput;
 import org.lwjgl.opengl.GL;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL12;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 
+import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
-import java.util.Queue;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
@@ -35,11 +36,34 @@ public class MediaPlayerWindowTest {
     private static final URI MEDIA_VIDEO_STATIC2 = URI.create("https://files.catbox.moe/uxypnp.mp4");
     private static final URI MEDIA_VIDEO_STATIC3 = URI.create("https://files.catbox.moe/1n0jn9.mp4");
 
-    // The window handle
+    private static final DateFormat FORMAT = new SimpleDateFormat("HH:mm:ss");
+    static {
+        FORMAT.setTimeZone(TimeZone.getTimeZone("GMT-00:00"));
+    }
+
+    // THE WINDOW HANDLE
     private static long window;
     private static MediaPlayer player;
     private static final Queue<Runnable> executor = new ConcurrentLinkedQueue<>();
     private static Thread thread;
+
+    // TEXT RENDERING SYSTEM
+    private static final Map<Character, CharTexture> charTextureCache = new HashMap<>();
+    private static Font textFont;
+    private static final int FONT_SIZE = 24;
+
+    // CHAR TEXTURE DATA HOLDER
+    private static class CharTexture {
+        final int textureId;
+        final int width;
+        final int height;
+
+        CharTexture(final int textureId, final int width, final int height) {
+            this.textureId = textureId;
+            this.width = width;
+            this.height = height;
+        }
+    }
 
     public static void main(final String... args) {
         Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
@@ -131,6 +155,9 @@ public class MediaPlayerWindowTest {
         final ALCapabilities alCaps = AL.createCapabilities(alcCaps);
 
         thread = Thread.currentThread();
+
+        // INITIALIZE TEXT RENDERING SYSTEM
+        textFont = new Font("Consola", Font.PLAIN, FONT_SIZE);
     }
 
     private static void loop() {
@@ -177,6 +204,67 @@ public class MediaPlayerWindowTest {
                 glEnd();
             }
 
+            // ============================================================
+            // TEXT RENDERING - AFTER LINE 180
+            // ============================================================
+
+            // GET WINDOW DIMENSIONS FOR PROPER TEXT POSITIONING
+            final IntBuffer widthBuffer = MemoryUtil.memAllocInt(1);
+            final IntBuffer heightBuffer = MemoryUtil.memAllocInt(1);
+            glfwGetWindowSize(window, widthBuffer, heightBuffer);
+            final int windowWidth = widthBuffer.get(0);
+            final int windowHeight = heightBuffer.get(0);
+            MemoryUtil.memFree(widthBuffer);
+            MemoryUtil.memFree(heightBuffer);
+
+            // PREPARE TEXT LINES TO RENDER
+            final String[] textLines = {
+                    String.format("Status: %s", player.status()),
+                    String.format("Time: %s (%s) / %s (%s)", FORMAT.format(new Date(player.time())), player.time(), FORMAT.format(new Date(player.duration())), player.duration()),
+                    String.format("Speed: %.2f", player.speed()),
+                    String.format("Is Live: %s", player.liveSource()),
+                    String.format("Volume: %d%%", player.volume()),
+            };
+
+            // SETUP ORTHOGRAPHIC PROJECTION FOR 2D TEXT RENDERING
+            glMatrixMode(GL_PROJECTION);
+            glPushMatrix();
+            glLoadIdentity();
+            glOrtho(0, windowWidth, windowHeight, 0, -1, 1);
+            glMatrixMode(GL_MODELVIEW);
+            glPushMatrix();
+            glLoadIdentity();
+
+            // DISABLE DEPTH TEST FOR TEXT OVERLAY
+            glDisable(GL_DEPTH_TEST);
+
+            // CALCULATE VERTICAL CENTERING
+            final int lineHeight = FONT_SIZE + 5; // FONT SIZE + SPACING
+            final int totalTextHeight = textLines.length * lineHeight;
+            final int startY = (windowHeight - totalTextHeight) / 2;
+
+            // RENDER EACH LINE OF TEXT
+            final int textX = 20; // LEFT MARGIN
+            int currentY = startY;
+
+            for (final String line : textLines) {
+                renderText(line, textX, currentY, Color.WHITE);
+                currentY += lineHeight;
+            }
+
+            // RESTORE PREVIOUS PROJECTION AND MODELVIEW MATRICES
+            glMatrixMode(GL_PROJECTION);
+            glPopMatrix();
+            glMatrixMode(GL_MODELVIEW);
+            glPopMatrix();
+
+            // RE-ENABLE DEPTH TEST
+            glEnable(GL_DEPTH_TEST);
+
+            // ============================================================
+            // END TEXT RENDERING
+            // ============================================================
+
             glfwSwapBuffers(window); // swap the color buffers
 
             // Poll for window events. The key callback above will only be
@@ -188,6 +276,105 @@ public class MediaPlayerWindowTest {
 //            LOGGER.info("Duration: {}, Time: {}, Playing: {}, Volume: {}, Status: {}",
 //                    this.player.duration(), this.player.time(), this.player.playing(), this.player.volume(), this.player.status());
         }
+    }
+
+    /**
+     * RENDER TEXT AT SPECIFIED POSITION WITH GIVEN COLOR
+     */
+    private static void renderText(final String text, final int x, final int y, final Color color) {
+        if (text == null || text.isEmpty()) return;
+
+        glColor4f(color.getRed() / 255.0f, color.getGreen() / 255.0f, color.getBlue() / 255.0f, color.getAlpha() / 255.0f);
+
+        int currentX = x;
+
+        for (final char c : text.toCharArray()) {
+            final CharTexture charTex = getCharTexture(c);
+            if (charTex == null) continue;
+
+            glBindTexture(GL_TEXTURE_2D, charTex.textureId);
+
+            glBegin(GL_QUADS);
+            {
+                glTexCoord2f(0, 0); glVertex2f(currentX, y);
+                glTexCoord2f(1, 0); glVertex2f(currentX + charTex.width, y);
+                glTexCoord2f(1, 1); glVertex2f(currentX + charTex.width, y + charTex.height);
+                glTexCoord2f(0, 1); glVertex2f(currentX, y + charTex.height);
+            }
+            glEnd();
+
+            currentX += charTex.width;
+        }
+    }
+
+    /**
+     * GET OR CREATE TEXTURE FOR A CHARACTER
+     */
+    private static CharTexture getCharTexture(final char c) {
+        // CHECK CACHE FIRST
+        if (charTextureCache.containsKey(c)) {
+            return charTextureCache.get(c);
+        }
+
+        // CREATE NEW TEXTURE FOR CHARACTER
+        final BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g2d = img.createGraphics();
+        g2d.setFont(textFont);
+        final FontMetrics fm = g2d.getFontMetrics();
+
+        // GET CHARACTER DIMENSIONS
+        final int charWidth = fm.charWidth(c);
+        final int charHeight = fm.getHeight();
+        g2d.dispose();
+
+        if (charWidth == 0 || charHeight == 0) {
+            return null;
+        }
+
+        // CREATE IMAGE WITH PROPER SIZE
+        final BufferedImage charImage = new BufferedImage(charWidth, charHeight, BufferedImage.TYPE_INT_ARGB);
+        g2d = charImage.createGraphics();
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2d.setFont(textFont);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(String.valueOf(c), 0, fm.getAscent());
+        g2d.dispose();
+
+        // CONVERT IMAGE TO OPENGL TEXTURE
+        final int textureId = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, textureId);
+
+        // SETUP TEXTURE PARAMETERS
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+
+        // CONVERT BUFFEREDIMAGE TO BYTEBUFFER
+        final int[] pixels = new int[charWidth * charHeight];
+        charImage.getRGB(0, 0, charWidth, charHeight, pixels, 0, charWidth);
+
+        final ByteBuffer buffer = MemoryUtil.memAlloc(charWidth * charHeight * 4);
+        for (int i = 0; i < charHeight; i++) {
+            for (int j = 0; j < charWidth; j++) {
+                final int pixel = pixels[i * charWidth + j];
+                buffer.put((byte) ((pixel >> 16) & 0xFF)); // RED
+                buffer.put((byte) ((pixel >> 8) & 0xFF));  // GREEN
+                buffer.put((byte) (pixel & 0xFF));         // BLUE
+                buffer.put((byte) ((pixel >> 24) & 0xFF)); // ALPHA
+            }
+        }
+        buffer.flip();
+
+        // UPLOAD TEXTURE TO GPU
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, charWidth, charHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+        MemoryUtil.memFree(buffer);
+
+        // CACHE THE TEXTURE
+        final CharTexture charTex = new CharTexture(textureId, charWidth, charHeight);
+        charTextureCache.put(c, charTex);
+
+        return charTex;
     }
 
     public static void execute(final Runnable command) {

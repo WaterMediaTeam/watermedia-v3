@@ -1,6 +1,5 @@
 package org.watermedia.api.media.players;
 
-import com.sun.jna.Platform;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
@@ -486,8 +485,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 //                av_dict_set(options, "fflags", "nobuffer+fastseek+flush_packets", 0);
 //
 //                // Para HTTP - mantener conexión viva y múltiples requests
-//                av_dict_set(options, "http_persistent", "1", 0);
-//                av_dict_set(options, "multiple_requests", "1", 0);
+                av_dict_set(options, "http_persistent", "1", 0);
+                av_dict_set(options, "multiple_requests", "1", 0);
 //
 //                // Control de latencia - muy importante para streaming
 //                av_dict_set(options, "analyzeduration", "10000000", 0);
@@ -499,9 +498,9 @@ public final class FFMediaPlayer extends MediaPlayer {
 //                av_dict_set(options, "live_start_index", "-1", 0);  // Empezar 3 segmentos antes del final
 //
 //                // Para protocolos HTTP/HTTPS
-//                av_dict_set(options, "reconnect", "1", 0);
-//                av_dict_set(options, "reconnect_streamed", "1", 0);
-//                av_dict_set(options, "reconnect_delay_max", "5", 0);
+                av_dict_set(options, "reconnect", "1", 0);
+                av_dict_set(options, "reconnect_streamed", "1", 0);
+                av_dict_set(options, "reconnect_delay_max", "5", 0);
 
                 // Timeout para operaciones de red (en microsegundos)
                 av_dict_set(options, "timeout", "10000000", 0);
