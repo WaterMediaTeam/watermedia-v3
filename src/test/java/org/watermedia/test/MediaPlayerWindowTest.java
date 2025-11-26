@@ -12,6 +12,8 @@ import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 
 import java.awt.*;
+import java.awt.font.FontRenderContext;
+import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -157,7 +159,7 @@ public class MediaPlayerWindowTest {
         thread = Thread.currentThread();
 
         // INITIALIZE TEXT RENDERING SYSTEM
-        textFont = new Font("Consola", Font.PLAIN, FONT_SIZE);
+        textFont = new Font("Consolas", Font.PLAIN, FONT_SIZE);
     }
 
     private static void loop() {
@@ -180,7 +182,6 @@ public class MediaPlayerWindowTest {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the framebuffer
 
             glBindTexture(GL_TEXTURE_2D, player.texture());
-
 
             glColor4f(1, 1, 1, 1);
 
@@ -317,14 +318,16 @@ public class MediaPlayerWindowTest {
         }
 
         // CREATE NEW TEXTURE FOR CHARACTER
-        final BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+        final BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_4BYTE_ABGR);
         Graphics2D g2d = img.createGraphics();
-        g2d.setFont(textFont);
-        final FontMetrics fm = g2d.getFontMetrics();
 
-        // GET CHARACTER DIMENSIONS
-        final int charWidth = fm.charWidth(c);
-        final int charHeight = fm.getHeight();
+        g2d.setFont(textFont);
+        FontRenderContext frc = g2d.getFontRenderContext();
+        Rectangle2D bounds = textFont.getStringBounds(String.valueOf(c), frc);
+
+        final int charWidth = (int)Math.ceil(bounds.getWidth());
+        final int charHeight = (int)Math.ceil(bounds.getHeight());
+
         g2d.dispose();
 
         if (charWidth == 0 || charHeight == 0) {
@@ -334,10 +337,12 @@ public class MediaPlayerWindowTest {
         // CREATE IMAGE WITH PROPER SIZE
         final BufferedImage charImage = new BufferedImage(charWidth, charHeight, BufferedImage.TYPE_INT_ARGB);
         g2d = charImage.createGraphics();
-        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_GASP);
         g2d.setFont(textFont);
         g2d.setColor(Color.WHITE);
-        g2d.drawString(String.valueOf(c), 0, fm.getAscent());
+        final int x = -(int)bounds.getX();
+        final int y = -(int)bounds.getY();
+        g2d.drawString(String.valueOf(c), x, y);
         g2d.dispose();
 
         // CONVERT IMAGE TO OPENGL TEXTURE
@@ -367,6 +372,11 @@ public class MediaPlayerWindowTest {
         buffer.flip();
 
         // UPLOAD TEXTURE TO GPU
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, charWidth, charHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
         MemoryUtil.memFree(buffer);
 
