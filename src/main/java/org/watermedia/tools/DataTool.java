@@ -4,7 +4,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 public class DataTool {
-
     public static int readBytesAsInt(ByteBuffer buffer, int length, ByteOrder order) {
         int value = 0;
         for (int i = 0; i < length; i++) {

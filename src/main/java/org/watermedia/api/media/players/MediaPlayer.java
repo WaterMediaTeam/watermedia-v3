@@ -264,7 +264,7 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
      */
     public void volume(int volume) {
         this.volume = MathUtil.clamp(0, 100, volume) / 100f; // Convert to float between 0.0 and 1.0
-        this.muted = this.volume < 1;
+        this.muted = volume < 1;
         AL10.alSourcef(this.alSources, AL10.AL_GAIN, this.muted ? 0 : this.volume);
     }
 
