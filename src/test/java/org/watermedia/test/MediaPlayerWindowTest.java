@@ -15,6 +15,7 @@ import java.awt.*;
 import java.awt.font.FontRenderContext;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -37,7 +38,8 @@ public class MediaPlayerWindowTest {
     private static final URI MEDIA_VIDEO_STATIC = URI.create("https://cdn-cf-east.streamable.com/video/mp4/6yszde.mp4?Expires=1759724603795&Key-Pair-Id=APKAIEYUVEN4EVB2OKEQ&Signature=XQf9-YLrvJNaipIPfiWIscrCfimWBx4FDQk-84IN37zvqpiswcrL3ODtsHgmV2KIRbXdllaq7SWXr580~t1eF3EKwLLIRNvW4Zg4scBqaWykjF2eymLqrDdiRQ7wh95zcIGmL-yyB4mUFD7dZz-mSKaQ3YFmTiSNfClYNbkHVzce2QVUqeFnRARdrzHT~LYNRZSKDhKglq014cW2nLj22pDFVQdv1uVmjmyxVaxnJNqV-59ssq01wMYeYhScALLTOgYQTHqz84~WU1WOwlizHYjrX4ptq--konfQWTJCmuSby4yYZEc-c0~uKzRRHxqQxp07vFH~b5-oLTD3jwGCJw__");
     private static final URI MEDIA_VIDEO_STATIC2 = URI.create("https://files.catbox.moe/uxypnp.mp4");
     private static final URI MEDIA_VIDEO_STATIC3 = URI.create("https://files.catbox.moe/1n0jn9.mp4");
-    private static final URI MEDIA_H265 = URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_8k60P_bilibili_1.mp4");
+    private static final URI MEDIA_VIDEO_STATIC4 = URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_4k25P_main_1.mp4");
+    private static final URI MEDIA_H265 = new File("C:\\Users\\J-RAP\\Downloads\\hevc.mp4").toURI();
 
     private static final DateFormat FORMAT = new SimpleDateFormat("HH:mm:ss");
     static {
@@ -72,7 +74,7 @@ public class MediaPlayerWindowTest {
         Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
         WaterMedia.start("Java Test", null, null, true);
         init();
-        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC3, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
+        player = new FFMediaPlayer(MEDIA_H265, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
         player.start();
         // Make the window visible
         glfwShowWindow(window);
@@ -118,6 +120,8 @@ public class MediaPlayerWindowTest {
                 case GLFW_KEY_RIGHT -> player.foward();
                 case GLFW_KEY_UP -> player.volume(player.volume() + 5);
                 case GLFW_KEY_DOWN -> player.volume(player.volume() - 5);
+                case GLFW_KEY_S -> player.stop();
+                case GLFW_KEY_0, GLFW_KEY_KP_0 -> player.seek(0);
             }
         });
 
@@ -179,7 +183,7 @@ public class MediaPlayerWindowTest {
 
         // Run the rendering loop until the user has attempted to close
         // the window or has pressed the ESCAPE key.
-        while (!glfwWindowShouldClose(window) && !player.ended()) {
+        while (!glfwWindowShouldClose(window) && !player.ended() && !player.stopped()) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the framebuffer
 
             glBindTexture(GL_TEXTURE_2D, player.texture());

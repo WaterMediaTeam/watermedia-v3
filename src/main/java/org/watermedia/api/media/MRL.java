@@ -34,7 +34,7 @@ public record MRL(MediaType mediaType, Map<MediaQuality, URI> sourceQuality) {
     public String getURIString(final MediaQuality quality) {
         final URI uri = this.getURI(quality);
         if ("file".equals(uri.getScheme())) {
-            return uri.getPath();
+            return uri.getPath().substring(1);
         } else {
             return uri.toString();
         }

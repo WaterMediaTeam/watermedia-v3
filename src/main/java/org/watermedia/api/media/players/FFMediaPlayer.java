@@ -13,7 +13,6 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
-import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
@@ -27,6 +26,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
@@ -82,7 +82,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     private volatile boolean running = false;
     private volatile Status currentStatus = Status.WAITING;
     private volatile boolean pauseRequested = false;
-    private volatile boolean stopRequested = false;
     private volatile long seekTarget = -1;
     private volatile float speedFactor = 1.0f;
 
@@ -133,7 +132,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final int MAX_DECODE_THREADS = Math.min(Runtime.getRuntime().availableProcessors(), 16);
 
     public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx,
-                         GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {
+                         final GLEngine glEngine, final ALEngine alEngine, final boolean video, final boolean audio) {
         super(mrl, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
     }
 
@@ -142,11 +141,17 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     @Override
     public void start() {
-        if (this.running) {
-            this.stop();
+        if (this.playerThread != null && this.playerThread.isAlive() && this.playerThread.isInterrupted()) {
+            this.stop(); // CANNOT TRUST AUTHORS
         }
+        final Thread oldThread = this.playerThread;
 
-        this.playerThread = DEFAULT_THREAD_FACTORY.newThread(this::playerLoop);
+        this.playerThread = DEFAULT_THREAD_FACTORY.newThread(() -> {
+            if (oldThread != null && !ThreadTool.join(oldThread)) {
+                return; // IF THE OLD THREAD STILL EXIST BUT WHILE WE JOIN CURRENT THREAD IS INTERRUPTED, THEN DO NOTHING.
+            }
+            this.playerLoop();
+        });
         this.playerThread.setDaemon(true);
         this.playerThread.start();
     }
@@ -197,7 +202,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
-        this.stopRequested = true;
+        this.playerThread.interrupt();
         return true;
     }
 
@@ -233,7 +238,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean previousFrame() {
         if (!this.canSeek()) return false;
 
-        long frameTimeMs = (long)(this.frameDurationSeconds * 1000);
+        final long frameTimeMs = (long)(this.frameDurationSeconds * 1000);
         return this.seek(Math.max(0, this.time() - frameTimeMs));
     }
 
@@ -241,7 +246,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean nextFrame() {
         if (!this.canSeek()) return false;
 
-        long frameTimeMs = (long)(this.frameDurationSeconds * 1000);
+        final long frameTimeMs = (long)(this.frameDurationSeconds * 1000);
         return this.seek(this.time() + frameTimeMs);
     }
 
@@ -323,20 +328,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     // FRAME SKIP STATS (DEBUG/MONITORING)
     // ===========================================
-
-    public long getSkippedFrames() {
-        return this.totalSkippedFrames;
-    }
-
-    public long getRenderedFrames() {
-        return this.totalRenderedFrames;
-    }
-
-    public double getSkipRatio() {
+    private double getSkipRatio() {
         final long total = this.totalSkippedFrames + this.totalRenderedFrames;
         return total > 0 ? (double) this.totalSkippedFrames / total : 0.0;
     }
 
+    // TODO: DOWNLEVEL THIS
     public double getVideoFps() {
         return this.videoFps;
     }
@@ -359,12 +356,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     private void playerLoop() {
         try {
-            // Wait until previous loop fully stopped
-            while (this.running) {
-                Thread.sleep(100);
-            }
-            this.running = true;
-
             // Reset stats
             this.consecutiveSkips = 0;
             this.totalSkippedFrames = 0;
@@ -391,12 +382,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // Main playback loop
-            while (this.running) {
-                if (this.stopRequested) {
-                    LOGGER.info(IT, "Stop requested, exiting playback loop");
-                    break;
-                }
-
+            while (!Thread.currentThread().isInterrupted()) {
                 // Handle seek requests
                 if (this.seekTarget >= 0) {
                     this.performSeek();
@@ -439,11 +425,14 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // Set final status
-            if (this.stopRequested) {
+            if (Thread.currentThread().isInterrupted()) {
                 this.currentStatus = Status.STOPPED;
             } else if (this.currentStatus == Status.PLAYING) {
                 this.currentStatus = Status.ENDED;
             }
+        } catch (final InterruptedException e) { // NOT AN ERROR, PLAYER JUST STOPPED
+            this.currentStatus = Status.STOPPED;
+            Thread.currentThread().interrupt();
         } catch (final Exception e) {
             LOGGER.error(IT, "Error in player loop", e);
             this.currentStatus = Status.ERROR;
@@ -1301,5 +1290,13 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     public static boolean loaded() {
         return LOADED;
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+
+    public void setRunning(boolean running) {
+        this.running = running;
     }
 }

@@ -32,6 +32,16 @@ public class ThreadTool {
         };
     }
 
+    public static boolean join(Thread target) {
+        try {
+            target.join();
+            return true;
+        } catch (final InterruptedException e) {
+            target.interrupt(); // restore interrupt status
+            return false;
+        }
+    }
+
     // RETURNS TRUE IF SLEEP WAS COMPLETED, FALSE IF WAS INTERRUPTED
     public static boolean sleep(long timeoutMillis) {
         try {
