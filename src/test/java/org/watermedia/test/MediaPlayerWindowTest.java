@@ -74,7 +74,7 @@ public class MediaPlayerWindowTest {
         Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
         WaterMedia.start("Java Test", null, null, true);
         init();
-        player = new FFMediaPlayer(MEDIA_H265, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
+        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC4, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
         player.start();
         // Make the window visible
         glfwShowWindow(window);
