@@ -13,8 +13,7 @@ base {
 }
 
 test {
-//    useJUnitPlatform()
-    failOnNoDiscoveredTests.set(false)
+    useJUnitPlatform()
 }
 
 java {
