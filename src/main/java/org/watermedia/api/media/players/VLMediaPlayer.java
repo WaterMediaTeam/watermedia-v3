@@ -7,8 +7,8 @@ import org.lwjgl.openal.AL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.platforms.ALEngine;
-import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.videolan4j.VideoLan4J;
 import org.watermedia.videolan4j.binding.internal.*;
 import org.watermedia.videolan4j.binding.lib.LibC;
@@ -18,7 +18,6 @@ import org.watermedia.videolan4j.tools.*;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.watermedia.WaterMedia.LOGGER;
 

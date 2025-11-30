@@ -1,7 +1,7 @@
 package org.watermedia.api.media.players;
 
-import org.watermedia.api.media.platforms.ALEngine;
-import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.GLEngine;
 
 import java.net.URI;
 import java.util.concurrent.Executor;

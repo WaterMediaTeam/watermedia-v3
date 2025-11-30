@@ -1,4 +1,4 @@
-package org.watermedia.api.media.platforms;
+package org.watermedia.api.media.engines;
 
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;

@@ -1,7 +1,6 @@
-package org.watermedia.api.media.sources;
+package org.watermedia.api.media.platform;
 
 import com.google.gson.Gson;
-import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
 import org.watermedia.api.media.MRL;
 import org.watermedia.tools.NetTool;

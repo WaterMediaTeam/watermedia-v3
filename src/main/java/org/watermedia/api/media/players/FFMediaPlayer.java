@@ -17,8 +17,8 @@ import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.platforms.ALEngine;
-import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.ThreadTool;
 
@@ -26,7 +26,6 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;

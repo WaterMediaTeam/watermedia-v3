@@ -5,7 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.decode.DecoderAPI;
 import org.watermedia.api.decode.Image;
-import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.NetTool;
 import org.watermedia.tools.ThreadTool;

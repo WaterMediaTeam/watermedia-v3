@@ -1,4 +1,4 @@
-package org.watermedia.api.media.sources;
+package org.watermedia.api.media.platform;
 
 import org.watermedia.api.media.MRL;
 

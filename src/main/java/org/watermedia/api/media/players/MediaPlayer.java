@@ -7,8 +7,8 @@ import org.lwjgl.opengl.GL12;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.api.media.platforms.ALEngine;
-import org.watermedia.api.media.platforms.GLEngine;
+import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;

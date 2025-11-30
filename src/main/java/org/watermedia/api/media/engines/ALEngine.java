@@ -1,4 +1,4 @@
-package org.watermedia.api.media.platforms;
+package org.watermedia.api.media.engines;
 
 import org.lwjgl.openal.AL10;
 import org.watermedia.tools.ThreadTool;

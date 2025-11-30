@@ -1,9 +1,8 @@
-package org.watermedia.api.media.sources;
+package org.watermedia.api.media.platform;
 
 import org.watermedia.api.media.MRL;
 
 import java.net.URI;
-import java.util.Map;
 
 public interface IPlatform {
 
