@@ -142,7 +142,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     @Override
     public void start() {
-        LOGGER.info("STARTRING FFFMPEG PLAYER");
         if (this.playerThread != null && this.playerThread.isAlive() && !this.playerThread.isInterrupted()) {
             this.stop(); // CANNOT TRUST AUTHORS
         }
@@ -663,7 +662,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 av_dict_set(options, "max_delay", "5000000", 0);
 
                 if (avformat.avformat_open_input(this.formatContext, this.source.uri(this.selectedQuality).toString(), null, options) < 0) {
-                    LOGGER.error("Failed to open input: {}", this.source.uri(this.selectedQuality).toString());
+                    LOGGER.error(IT, "Failed to open input: {}", this.source.uri(this.selectedQuality).toString());
                     return false;
                 }
             } finally {
@@ -672,7 +671,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
-                LOGGER.error("Failed to find stream info");
+                LOGGER.error(IT, "Failed to find stream info");
                 return false;
             }
 
@@ -694,11 +693,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             final boolean audioInit = this.initAudio();
 
             if (!videoInit && !audioInit) {
-                LOGGER.error("No valid audio or video streams found");
+                LOGGER.error(IT, "No valid audio or video streams found");
                 return false;
             }
 
-            LOGGER.info("FFmpeg initialized successfully - video: {} (hw: {}), audio: {}",
+            LOGGER.info(IT, "FFmpeg initialized successfully - video: {} (hw: {}), audio: {}",
                     videoInit, this.isHardwareAccelerated(), audioInit);
 
             return true;
@@ -710,7 +709,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     private boolean initVideo() {
         if (!this.video || this.videoStreamIndex < 0) {
-            LOGGER.warn("No video stream found or video disabled");
+            LOGGER.warn(IT, "No video stream found or video disabled");
             return true;  // Not an error if video is disabled
         }
 
@@ -744,7 +743,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         // OPTIMIZACIÓN: Alineación de 32 bytes para SIMD
         if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) {
-            LOGGER.error("Failed to allocate scaled video frame buffer");
+            LOGGER.error(IT, "Failed to allocate scaled video frame buffer");
             return false;
         }
 
@@ -865,7 +864,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVCodec videoCodec = avcodec.avcodec_find_decoder(codecId);
 
         if (videoCodec == null) {
-            LOGGER.error("Failed to find video codec with id {} for videoIndex {}",
+            LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}",
                     codecId, this.videoStreamIndex);
             return false;
         }
@@ -873,7 +872,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
         if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
                 videoStream.codecpar()) < 0) {
-            LOGGER.error("Failed to copy video codec parameters to context");
+            LOGGER.error(IT, "Failed to copy video codec parameters to context");
             return false;
         }
 
@@ -881,7 +880,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.configureDecoderThreading(this.videoCodecContext);
 
         if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
-            LOGGER.error("Failed to open video codec");
+            LOGGER.error(IT, "Failed to open video codec");
             return false;
         }
 
@@ -928,31 +927,31 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecId);
 
         if (audioCodec == null) {
-            LOGGER.error("Failed to find audio codec with id {} for audioIndex {}",
+            LOGGER.error(IT, "Failed to find audio codec with id {} for audioIndex {}",
                     codecId, this.audioStreamIndex);
             return false;
         }
 
         this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
         if (this.audioCodecContext == null) {
-            LOGGER.error("Failed to allocate audio codec context");
+            LOGGER.error(IT, "Failed to allocate audio codec context");
             return false;
         }
 
         if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
-            LOGGER.error("Failed to copy audio codec parameters to context");
+            LOGGER.error(IT, "Failed to copy audio codec parameters to context");
             return false;
         }
 
         if (avcodec.avcodec_open2(this.audioCodecContext, audioCodec, (PointerPointer<?>) null) < 0) {
-            LOGGER.error("Failed to open audio codec");
+            LOGGER.error(IT, "Failed to open audio codec");
             return false;
         }
 
         // Initialize resampler
         this.swrContext = swresample.swr_alloc();
         if (this.swrContext == null) {
-            LOGGER.error("Failed to allocate SWResampler context");
+            LOGGER.error(IT, "Failed to allocate SWResampler context");
             return false;
         }
 
@@ -979,7 +978,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
 
             if (swresample.swr_init(this.swrContext) < 0) {
-                LOGGER.error("Failed to initialize SWResampler context");
+                LOGGER.error(IT, "Failed to initialize SWResampler context");
                 return false;
             }
         } finally {

@@ -42,6 +42,7 @@ public class MediaAPI extends WaterMediaAPI {
         }
 
         // REGISTER PLATFORMS
+        PLATFORMS.push(new ImgurPlatform());
         PLATFORMS.push(new KickPlatform());
         PLATFORMS.push(new StreamablePlatform());
         PLATFORMS.push(new WaterPlatform());

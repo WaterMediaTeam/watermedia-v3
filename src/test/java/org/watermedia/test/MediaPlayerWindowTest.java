@@ -48,18 +48,14 @@ public class MediaPlayerWindowTest {
     // APPLICATION STATE
     // ============================================================
     private enum AppState {
-        ENGINE_SELECTOR,
         SOURCE_SELECTOR,
+        MRL_SOURCE_SELECTOR,
         QUALITY_SELECTOR,
         PLAYER_RUNNING,
         PLAYER_FINISHED
     }
 
-    private static volatile AppState currentState = AppState.ENGINE_SELECTOR;
-
-    // ENGINE SELECTOR STATE
-    private static volatile int engineSelectorIndex = 0;
-    private static final String[] ENGINE_OPTIONS = {"FFMPEG", "VLC", "EXIT"};
+    private static volatile AppState currentState = AppState.SOURCE_SELECTOR;
 
     // SOURCE SELECTOR STATE
     private static volatile int sourceSelectorIndex = 0;
@@ -70,13 +66,12 @@ public class MediaPlayerWindowTest {
     private static MRL.Quality[] availableQualities;
     private static volatile MRL.Quality selectedQuality = MRL.Quality.HIGHEST;
 
+    // MRL SOURCE SELECTOR STATE
+    private static volatile int mrlSourceSelectorIndex = 0;
+    private static MRL.Source[] availableSources;
+
     // PLAYER FINISHED STATE
     private static volatile String playerFinishedReason = "";
-
-    // SELECTED ENGINE TYPE
-    private enum EngineType { FFMPEG, VLC }
-
-    private static volatile EngineType selectedEngine = null;
 
     // CURRENT SELECTED MRL AND SOURCE
     private static volatile MRL selectedMRL = null;
@@ -96,6 +91,17 @@ public class MediaPlayerWindowTest {
     // FADE OVERLAY WIDTH
     private static final int FADE_WIDTH = 350;
 
+    // ALERT BOX DIMENSIONS
+    private static final int ALERT_WIDTH = 280;
+    private static final int ALERT_HEIGHT = 40;
+    private static final int ALERT_MARGIN = 15;
+
+    // COLORS
+    private static final Color COLOR_GREEN = new Color(0, 255, 0);
+    private static final Color COLOR_ORANGE = new Color(255, 165, 0);
+    private static final Color COLOR_WHITE = Color.WHITE;
+    private static final Color COLOR_BLACK = Color.BLACK;
+
     // CHAR TEXTURE DATA HOLDER
     private record CharTexture(int textureId, int width, int height) {}
 
@@ -109,6 +115,7 @@ public class MediaPlayerWindowTest {
         MEDIA_SOURCES.put("4K VIDEO #5 (3840x2160)", MRL.get(URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_4k25P_main_1.mp4")));
         MEDIA_SOURCES.put("8K VIDEO #6 (7680x4320)", MRL.get(URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_8k60P_bilibili_1.mp4")));
         MEDIA_SOURCES.put("KICK STREAM #7 (???x???)", MRL.get(URI.create("https://kick.com/yosoyrick")));
+        MEDIA_SOURCES.put("IMGUR MULTISOURCE #8 (???x???)", MRL.get(URI.create("https://imgur.com/gallery/random-images-videos-to-test-k1e4ufO")));
         sourceKeys = MEDIA_SOURCES.keySet().toArray(new String[0]);
 
         init();
@@ -176,31 +183,16 @@ public class MediaPlayerWindowTest {
         if (action != GLFW_RELEASE) return;
 
         switch (currentState) {
-            case ENGINE_SELECTOR -> handleEngineSelectorKeys(key);
             case SOURCE_SELECTOR -> handleSourceSelectorKeys(key);
+            case MRL_SOURCE_SELECTOR -> handleMrlSourceSelectorKeys(key);
             case QUALITY_SELECTOR -> handleQualitySelectorKeys(key);
             case PLAYER_RUNNING -> handlePlayerKeys(key);
             case PLAYER_FINISHED -> handlePlayerFinishedKeys(key);
         }
     }
 
-    private static void handleEngineSelectorKeys(final int key) {
-        switch (key) {
-            case GLFW_KEY_UP -> {
-                engineSelectorIndex--;
-                if (engineSelectorIndex < 0) engineSelectorIndex = ENGINE_OPTIONS.length - 1;
-            }
-            case GLFW_KEY_DOWN -> {
-                engineSelectorIndex++;
-                if (engineSelectorIndex >= ENGINE_OPTIONS.length) engineSelectorIndex = 0;
-            }
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectEngine();
-            case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(window, true);
-        }
-    }
-
     private static void handleSourceSelectorKeys(final int key) {
-        final int totalOptions = sourceKeys.length + 1; // +1 for BACK option
+        final int totalOptions = sourceKeys.length + 1; // +1 for EXIT option
         switch (key) {
             case GLFW_KEY_UP -> {
                 sourceSelectorIndex--;
@@ -211,9 +203,35 @@ public class MediaPlayerWindowTest {
                 if (sourceSelectorIndex >= totalOptions) sourceSelectorIndex = 0;
             }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectSource();
+            case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(window, true);
+        }
+    }
+
+    private static void handleMrlSourceSelectorKeys(final int key) {
+        if (availableSources == null || availableSources.length == 0) return;
+
+        final int totalOptions = availableSources.length + 1; // +1 for BACK option
+        switch (key) {
+            case GLFW_KEY_UP -> {
+                mrlSourceSelectorIndex--;
+                if (mrlSourceSelectorIndex < 0) mrlSourceSelectorIndex = totalOptions - 1;
+            }
+            case GLFW_KEY_DOWN -> {
+                mrlSourceSelectorIndex++;
+                if (mrlSourceSelectorIndex >= totalOptions) mrlSourceSelectorIndex = 0;
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectMrlSource();
             case GLFW_KEY_ESCAPE -> {
-                currentState = AppState.ENGINE_SELECTOR;
-                selectedEngine = null;
+                // If we came from player, go back to player
+                if (player != null) {
+                    currentState = AppState.PLAYER_RUNNING;
+                    if (player.paused()) {
+                        player.resume();
+                    }
+                } else {
+                    currentState = AppState.SOURCE_SELECTOR;
+                    availableSources = null;
+                }
             }
         }
     }
@@ -233,7 +251,12 @@ public class MediaPlayerWindowTest {
             }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectQuality();
             case GLFW_KEY_ESCAPE -> {
-                currentState = AppState.SOURCE_SELECTOR;
+                // Go back to MRL source selector if multiple sources, otherwise to source selector
+                if (availableSources != null && availableSources.length > 1) {
+                    currentState = AppState.MRL_SOURCE_SELECTOR;
+                } else {
+                    currentState = AppState.SOURCE_SELECTOR;
+                }
                 availableQualities = null;
             }
         }
@@ -248,6 +271,9 @@ public class MediaPlayerWindowTest {
 
             // ENTER - Open quality selector
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> openQualitySelectorFromPlayer();
+
+            // TAB - Open MRL source selector (if multiple sources available)
+            case GLFW_KEY_TAB -> openMrlSourceSelectorFromPlayer();
 
             // Basic controls
             case GLFW_KEY_SPACE -> player.togglePlay();
@@ -289,6 +315,11 @@ public class MediaPlayerWindowTest {
     private static void openQualitySelectorFromPlayer() {
         if (selectedSource == null) return;
 
+        // Pause the player while selecting
+        if (player != null && player.playing()) {
+            player.pause();
+        }
+
         final Set<MRL.Quality> qualities = selectedSource.availableQualities();
         if (qualities == null || qualities.isEmpty()) return;
 
@@ -307,6 +338,18 @@ public class MediaPlayerWindowTest {
         currentState = AppState.QUALITY_SELECTOR;
     }
 
+    private static void openMrlSourceSelectorFromPlayer() {
+        if (selectedMRL == null) return;
+        if (availableSources == null || availableSources.length <= 1) return;
+
+        // Pause the player while selecting
+        if (player != null && player.playing()) {
+            player.pause();
+        }
+
+        currentState = AppState.MRL_SOURCE_SELECTOR;
+    }
+
     private static void seekToPercentage(final int percentage) {
         if (player == null) return;
         final long duration = player.duration();
@@ -316,24 +359,10 @@ public class MediaPlayerWindowTest {
         }
     }
 
-    private static void selectEngine() {
-        switch (engineSelectorIndex) {
-            case 0 -> { // FFMPEG
-                if (FFMediaPlayer.loaded()) {
-                    selectedEngine = EngineType.FFMPEG;
-                    currentState = AppState.SOURCE_SELECTOR;
-                    sourceSelectorIndex = 0;
-                }
-            }
-            case 1 -> glfwSetWindowShouldClose(window, true); // EXIT
-        }
-    }
-
     private static void selectSource() {
-        // Last option is BACK
+        // Last option is EXIT
         if (sourceSelectorIndex >= sourceKeys.length) {
-            currentState = AppState.ENGINE_SELECTOR;
-            selectedEngine = null;
+            glfwSetWindowShouldClose(window, true);
             return;
         }
 
@@ -345,12 +374,53 @@ public class MediaPlayerWindowTest {
             return; // Do nothing if not ready
         }
 
-        selectedSource = selectedMRL.source(0);
-        if (selectedSource == null) {
+        // Get all available sources from MRL
+        availableSources = selectedMRL.sources();
+        if (availableSources == null || availableSources.length == 0) {
             return;
         }
 
-        // Open quality selector
+        // If only one source, skip to quality selector
+        if (availableSources.length == 1) {
+            selectedSource = availableSources[0];
+            openQualitySelector();
+        } else {
+            // Multiple sources - show source selector
+            mrlSourceSelectorIndex = 0;
+            currentState = AppState.MRL_SOURCE_SELECTOR;
+        }
+    }
+
+    private static void selectMrlSource() {
+        // Last option is BACK
+        if (mrlSourceSelectorIndex >= availableSources.length) {
+            // If we came from player, go back to player
+            if (player != null) {
+                currentState = AppState.PLAYER_RUNNING;
+                if (player.paused()) {
+                    player.resume();
+                }
+            } else {
+                currentState = AppState.SOURCE_SELECTOR;
+            }
+            return;
+        }
+
+        // If changing source while playing, stop current player
+        final boolean wasPlaying = player != null;
+        if (wasPlaying) {
+            player.stop();
+            player.release();
+            player = null;
+        }
+
+        selectedSource = availableSources[mrlSourceSelectorIndex];
+        openQualitySelector();
+    }
+
+    private static void openQualitySelector() {
+        if (selectedSource == null) return;
+
         final Set<MRL.Quality> qualities = selectedSource.availableQualities();
         if (qualities != null && !qualities.isEmpty()) {
             availableQualities = qualities.toArray(new MRL.Quality[0]);
@@ -358,13 +428,22 @@ public class MediaPlayerWindowTest {
             qualitySelectorIndex = 0;
             selectedQuality = MRL.Quality.HIGHEST;
             currentState = AppState.QUALITY_SELECTOR;
+        } else {
+            // No qualities available, start player directly
+            selectedQuality = MRL.Quality.UNKNOWN;
+            startPlayer();
         }
     }
 
     private static void selectQuality() {
         // Last option is BACK
         if (qualitySelectorIndex >= availableQualities.length) {
-            currentState = AppState.SOURCE_SELECTOR;
+            // Go back to MRL source selector if multiple sources, otherwise to source selector
+            if (availableSources != null && availableSources.length > 1) {
+                currentState = AppState.MRL_SOURCE_SELECTOR;
+            } else {
+                currentState = AppState.SOURCE_SELECTOR;
+            }
             availableQualities = null;
             return;
         }
@@ -374,7 +453,7 @@ public class MediaPlayerWindowTest {
     }
 
     private static void startPlayer() {
-        if (selectedSource == null) return;
+        if (selectedMRL == null || selectedSource == null) return;
 
         if (player != null) {
             player.setQuality(selectedQuality);
@@ -382,10 +461,19 @@ public class MediaPlayerWindowTest {
             return;
         }
 
-        // Create the appropriate player
-        if (selectedEngine == EngineType.FFMPEG) {
-            player = new FFMediaPlayer(selectedSource, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
-        }
+        // Find the source index
+        final int sourceIndex = availableSources != null ? mrlSourceSelectorIndex : 0;
+
+        // Use MRL's createPlayer method with source index
+        player = selectedMRL.createPlayer(
+                sourceIndex,
+                Thread.currentThread(),
+                MediaPlayerWindowTest::execute,
+                null,
+                null,
+                true,
+                true
+        );
 
         if (player != null) {
             player.setQuality(selectedQuality);
@@ -428,12 +516,15 @@ public class MediaPlayerWindowTest {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             switch (currentState) {
-                case ENGINE_SELECTOR -> renderEngineSelector();
                 case SOURCE_SELECTOR -> renderSourceSelector();
+                case MRL_SOURCE_SELECTOR -> renderMrlSourceSelector();
                 case QUALITY_SELECTOR -> renderQualitySelector();
                 case PLAYER_RUNNING -> renderPlayer();
                 case PLAYER_FINISHED -> renderPlayerFinished();
             }
+
+            // Always render FFMPEG alert if not loaded
+            renderFFmpegAlert();
 
             glfwSwapBuffers(window);
             glfwPollEvents();
@@ -450,27 +541,49 @@ public class MediaPlayerWindowTest {
         }
     }
 
-    private static void renderEngineSelector() {
+    private static void renderFFmpegAlert() {
+        if (FFMediaPlayer.loaded()) return; // Don't show if FFMPEG is available
+
         final int[] windowSize = getWindowSize();
         final int windowWidth = windowSize[0];
-        final int windowHeight = windowSize[1];
 
-        setupOrthoProjection(windowWidth, windowHeight);
+        setupOrthoProjection(windowWidth, windowSize[1]);
+        glDisable(GL_TEXTURE_2D);
 
-        final boolean ffmpegLoaded = FFMediaPlayer.loaded();
+        final int alertX = windowWidth - ALERT_WIDTH - ALERT_MARGIN;
+        final int alertY = ALERT_MARGIN;
 
-        final String[] lines = {
-                "=== Choose Media Engine ===",
-                "",
-                buildMenuLine("FFMPEG", 0, engineSelectorIndex, ffmpegLoaded),
-                buildMenuLine(" EXIT ", 1, engineSelectorIndex, true),
-                "",
-                "Use UP/DOWN arrows to navigate",
-                "Press ENTER to select",
-                "Press ESC to quit"
-        };
+        // Draw orange background box
+        glColor4f(COLOR_ORANGE.getRed() / 255f, COLOR_ORANGE.getGreen() / 255f, COLOR_ORANGE.getBlue() / 255f, 0.9f);
+        glBegin(GL_QUADS);
+        {
+            glVertex2f(alertX, alertY);
+            glVertex2f(alertX + ALERT_WIDTH, alertY);
+            glVertex2f(alertX + ALERT_WIDTH, alertY + ALERT_HEIGHT);
+            glVertex2f(alertX, alertY + ALERT_HEIGHT);
+        }
+        glEnd();
 
-        renderMenuText(lines, windowWidth, windowHeight);
+        // Draw border
+        glColor4f(0.8f, 0.4f, 0, 1f);
+        glLineWidth(2f);
+        glBegin(GL_LINE_LOOP);
+        {
+            glVertex2f(alertX, alertY);
+            glVertex2f(alertX + ALERT_WIDTH, alertY);
+            glVertex2f(alertX + ALERT_WIDTH, alertY + ALERT_HEIGHT);
+            glVertex2f(alertX, alertY + ALERT_HEIGHT);
+        }
+        glEnd();
+
+        glEnable(GL_TEXTURE_2D);
+
+        // Draw alert text
+        final String alertText = "! FFMPEG UNAVAILABLE";
+        final int textX = alertX + 10;
+        final int textY = alertY + 10;
+        renderText(alertText, textX, textY, COLOR_BLACK);
+
         restoreProjection();
     }
 
@@ -483,7 +596,6 @@ public class MediaPlayerWindowTest {
 
         final ArrayList<String> linesList = new ArrayList<>();
         linesList.add("=== Select Video Source ===");
-        linesList.add("Engine: " + (selectedEngine == EngineType.FFMPEG ? "FFMPEG" : "VLC"));
         linesList.add("");
 
         for (int i = 0; i < sourceKeys.length; i++) {
@@ -494,14 +606,67 @@ public class MediaPlayerWindowTest {
             linesList.add(prefix + sourceKeys[i] + " [" + status + "]" + arrow);
         }
 
-        // Add BACK option
-        final String backPrefix = (sourceSelectorIndex == sourceKeys.length) ? "> " : "  ";
-        final String backArrow = (sourceSelectorIndex == sourceKeys.length) ? " <" : "";
-        linesList.add(backPrefix + "[BACK]" + backArrow);
+        // Add EXIT option
+        final String exitPrefix = (sourceSelectorIndex == sourceKeys.length) ? "> " : "  ";
+        final String exitArrow = (sourceSelectorIndex == sourceKeys.length) ? " <" : "";
+        linesList.add(exitPrefix + "[EXIT]" + exitArrow);
 
         linesList.add("");
         linesList.add("Use UP/DOWN arrows to navigate");
         linesList.add("Press ENTER to select (only READY sources)");
+        linesList.add("Press ESC to quit");
+
+        final String[] lines = linesList.toArray(new String[0]);
+        renderMenuText(lines, windowWidth, windowHeight);
+        restoreProjection();
+    }
+
+    private static void renderMrlSourceSelector() {
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+
+        final ArrayList<String> linesList = new ArrayList<>();
+        linesList.add("=== Select Media Source ===");
+        linesList.add("MRL: " + sourceKeys[sourceSelectorIndex]);
+        linesList.add("Sources available: " + (availableSources != null ? availableSources.length : 0));
+        linesList.add("");
+
+        if (availableSources != null) {
+            for (int i = 0; i < availableSources.length; i++) {
+                final String prefix = (i == mrlSourceSelectorIndex) ? "> " : "  ";
+                final String arrow = (i == mrlSourceSelectorIndex) ? " <" : "";
+                final MRL.Source src = availableSources[i];
+
+                // Build source description
+                final String typeName = src.type().name();
+                final int qualityCount = src.availableQualities().size();
+                final String metaTitle = (src.metadata() != null && src.metadata().title() != null)
+                        ? src.metadata().title()
+                        : "Untitled";
+
+                // Truncate title if too long
+                final String displayTitle = metaTitle.length() > 25
+                        ? metaTitle.substring(0, 22) + "..."
+                        : metaTitle;
+
+                final String sourceInfo = String.format("SOURCE #%d [%s] - %s (%d qualities)",
+                        i + 1, typeName, displayTitle, qualityCount);
+                linesList.add(prefix + sourceInfo + arrow);
+            }
+        }
+
+        // Add BACK option
+        final int backIndex = availableSources != null ? availableSources.length : 0;
+        final String backPrefix = (mrlSourceSelectorIndex == backIndex) ? "> " : "  ";
+        final String backArrow = (mrlSourceSelectorIndex == backIndex) ? " <" : "";
+        linesList.add(backPrefix + "[BACK]" + backArrow);
+
+        linesList.add("");
+        linesList.add("Use UP/DOWN arrows to navigate");
+        linesList.add("Press ENTER to select");
         linesList.add("Press ESC to go back");
 
         final String[] lines = linesList.toArray(new String[0]);
@@ -518,7 +683,6 @@ public class MediaPlayerWindowTest {
 
         final ArrayList<String> linesList = new ArrayList<>();
         linesList.add("=== Select Quality ===");
-        linesList.add("Engine: " + (selectedEngine == EngineType.FFMPEG ? "FFMPEG" : "VLC"));
         if (selectedMRL != null) {
             linesList.add("Source: " + sourceKeys[sourceSelectorIndex]);
         }
@@ -658,18 +822,23 @@ public class MediaPlayerWindowTest {
         setupOrthoProjection(windowWidth, windowHeight);
         glDisable(GL_DEPTH_TEST);
 
-        final String engineName = (selectedEngine == EngineType.FFMPEG) ? "FFMediaPlayer" : "VLMediaPlayer";
+        final String engineName = player.getClass().getSimpleName();
+
+        // Calculate current source index
+        final int currentSourceIndex = (availableSources != null) ? mrlSourceSelectorIndex + 1 : 1;
+        final int totalSources = (availableSources != null) ? availableSources.length : 1;
 
         // Left side - Player info
         final ArrayList<String> leftLines = new ArrayList<>();
         leftLines.add("Engine: " + engineName);
+        leftLines.add("Source: " + currentSourceIndex + "/" + totalSources);
         leftLines.add("Size: " + player.width() + "x" + player.height());
         leftLines.add("Status: " + player.status());
         leftLines.add("Time: " + FORMAT.format(new Date(player.time())) + " / " + FORMAT.format(new Date(player.duration())));
         leftLines.add("Speed: " + String.format("%.2f", player.speed()));
         leftLines.add("Is Live: " + player.liveSource());
         leftLines.add("Volume: " + player.volume() + "%");
-        leftLines.add("Quality: " + player.quality());
+        leftLines.add("Quality: " + selectedQuality.name());
         leftLines.add("");
         leftLines.add("--- Controls ---");
         leftLines.add("SPACE: Play/Pause");
@@ -679,6 +848,9 @@ public class MediaPlayerWindowTest {
         leftLines.add("0-9: Seek 0%-90%");
         leftLines.add("./,: Next/Prev Frame");
         leftLines.add("ENTER: Quality Select");
+        if (totalSources > 1) {
+            leftLines.add("TAB: Source Select");
+        }
 
         // Right side - Metadata
         final ArrayList<String> rightLines = new ArrayList<>();
@@ -713,17 +885,17 @@ public class MediaPlayerWindowTest {
         final int leftX = 20;
         final int rightX = windowWidth - FADE_WIDTH + 20;
 
-        // Render left side
+        // Render left side - GREEN text
         int currentY = leftStartY;
         for (final String line : leftLines) {
-            renderText(line, leftX, currentY, Color.WHITE);
+            renderText(line, leftX, currentY, COLOR_GREEN);
             currentY += lineHeight;
         }
 
-        // Render right side
+        // Render right side - GREEN text
         currentY = rightStartY;
         for (final String line : rightLines) {
-            renderText(line, rightX, currentY, Color.WHITE);
+            renderText(line, rightX, currentY, COLOR_GREEN);
             currentY += lineHeight;
         }
 
@@ -733,17 +905,10 @@ public class MediaPlayerWindowTest {
 
     private static String getMRLStatusString(final MRL mrl) {
         if (mrl == null) return "FAILED";
+        if (mrl.error()) return "FAILED";
         if (mrl.ready()) return "READY";
         if (mrl.busy()) return "BUSY";
-        if (mrl.error()) return "FAILED";
         return "UNKNOWN";
-    }
-
-    private static String buildMenuLine(final String name, final int index, final int selectedIndex, final boolean loaded) {
-        final String prefix = (index == selectedIndex) ? "> " : "  ";
-        final String status = loaded ? "" : " (ERR_UNLOADED)";
-        final String arrow = (index == selectedIndex) ? " <" : "";
-        return prefix + name + status + arrow;
     }
 
     private static void renderMenuText(final String[] lines, final int windowWidth, final int windowHeight) {
@@ -755,7 +920,7 @@ public class MediaPlayerWindowTest {
         for (final String line : lines) {
             final int textWidth = calculateTextWidth(line);
             final int textX = (windowWidth - textWidth) / 2;
-            renderText(line, textX, currentY, Color.GREEN);
+            renderText(line, textX, currentY, COLOR_GREEN);
             currentY += lineHeight;
         }
     }
@@ -851,7 +1016,7 @@ public class MediaPlayerWindowTest {
         g2d = charImage.createGraphics();
         g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_GASP);
         g2d.setFont(textFont);
-        g2d.setColor(Color.WHITE);
+        g2d.setColor(COLOR_WHITE);
         final int cx = -(int) bounds.getX();
         final int cy = -(int) bounds.getY();
         g2d.drawString(String.valueOf(c), cx, cy);
