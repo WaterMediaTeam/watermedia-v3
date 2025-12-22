@@ -3,7 +3,6 @@ package org.watermedia.api.media.platform;
 import org.watermedia.api.media.MRL;
 
 import java.net.URI;
-import java.util.Map;
 
 public class DefaultPlatform implements IPlatform {
     @Override
@@ -13,13 +12,16 @@ public class DefaultPlatform implements IPlatform {
 
     @Override
     public boolean validate(URI uri) {
-        return true;
+        return true; // DEFAULT
     }
 
     @Override
-    public MRL[] getSources(URI uri) {
-        return new MRL[] {
-                new MRL(MRL.MediaType.UNKNOWN, Map.of(MRL.MediaQuality.HIGHEST, uri))
+    public MRL.Source[] getSources(final URI uri) {
+        final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.UNKNOWN);
+        sourceBuilder.quality(MRL.Quality.UNKNOWN, uri);
+
+        return new MRL.Source[] {
+                sourceBuilder.build()
         };
     }
 }

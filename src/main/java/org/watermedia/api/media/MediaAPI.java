@@ -6,10 +6,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
-import org.watermedia.api.media.platform.DefaultPlatform;
-import org.watermedia.api.media.platform.IPlatform;
-import org.watermedia.api.media.platform.StreamablePlatform;
-import org.watermedia.api.media.platform.WaterPlatform;
+import org.watermedia.api.media.platform.*;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
@@ -29,52 +26,21 @@ public class MediaAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
     private static final LinkedList<IPlatform> PLATFORMS = new LinkedList<>();
 
-    public static MRL[] getSources(final URI uri) {
-        LOGGER.info("Loading source for {}", uri);
-        if (PLATFORMS.isEmpty()) {
-            LOGGER.error("SOMEHOW PLATFORMS ARE EMPTY");
-        }
+    static MRL.Source[] getSources(final URI uri) {
+        LOGGER.info("Fetching sources for {}", uri);
+
         for (final IPlatform platform: PLATFORMS) {
-            LOGGER.info("Checking {}", platform.name());
+            LOGGER.debug("Checking {}", platform.name());
             if (platform.validate(uri)) {
                 try {
-                    LOGGER.info("Using source {}", platform.name());
-                    final MRL[] source = platform.getSources(uri);
-                    if (source == null) continue;
-                    return source;
+                    LOGGER.debug("Using source {}", platform.name());
+                    return platform.getSources(uri);
                 } catch (final Throwable t) {
-                    LOGGER.error("Platform {} threw an exception while validating URI: {}", platform.name(), uri, t);
+                    LOGGER.error("Failed to open source {} for the {}", uri, platform.name(), t);
                 }
             }
         }
-        throw new IllegalStateException("This exception should not be threw");
-    }
-
-    public static MediaPlayer getMediaPlayer(final URI uri, final Thread thread, final Executor renderThreadEx, final GLEngine glEngine, final ALEngine alEngine, final boolean video, final boolean audio) {
-        WaterMedia.checkIsClientSideOrThrow(MediaAPI.class);
-
-        try {
-            final URLConnection conn = uri.toURL().openConnection();
-            if (conn instanceof final HttpURLConnection http) {
-                NetTool.validateHTTP200(http.getResponseCode(), uri);
-            }
-            final String[] type = conn.getContentType().split("/");
-            if (type[0].equals("image")) {
-                return new TxMediaPlayer(uri, thread, renderThreadEx, glEngine, video);
-            } else {
-                if (VLMediaPlayer.loaded()) {
-                    LOGGER.debug(IT, "Creating LibVLC MediaPlayer for URI: {}", uri);
-                    return new VLMediaPlayer(uri, thread, renderThreadEx, glEngine, alEngine, video, audio);
-                } else if (FFMediaPlayer.loaded()) {
-                    LOGGER.debug(IT, "Creating FFMPEG MediaPlayer for URI: {}", uri);
-                    return new FFMediaPlayer(uri, thread, renderThreadEx, glEngine, alEngine, video, audio);
-                } else {
-                    LOGGER.error(IT, "Neither LibVLC nor FFMPEG are loaded, cannot create MediaPlayer for URI: {}", uri);
-                }
-            }
-        } catch (final Throwable t) {
-            LOGGER.error(IT, "Failed to create MediaPlayer for URI: {}", uri, t);
-        }
+        LOGGER.fatal(IT, "This line must not be reached", new IllegalStateException("Oh no!"));
         return null;
     }
 
@@ -86,6 +52,7 @@ public class MediaAPI extends WaterMediaAPI {
         }
 
         // REGISTER PLATFORMS
+        PLATFORMS.push(new KickPlatform());
         PLATFORMS.push(new StreamablePlatform());
         PLATFORMS.push(new WaterPlatform());
         PLATFORMS.addLast(new DefaultPlatform()); // default, always returns something

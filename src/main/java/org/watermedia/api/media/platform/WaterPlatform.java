@@ -16,8 +16,8 @@ public class WaterPlatform implements IPlatform {
     }
 
     @Override
-    public MRL[] getSources(URI uri) {
+    public MRL.Source[] getSources(URI uri) {
         // TODO: support for "local" which is the runtime path and "online" which is the current server (if has one)
-        return new MRL[0];
+        return new MRL.Source[0];
     }
 }

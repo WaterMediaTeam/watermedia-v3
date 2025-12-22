@@ -8,6 +8,7 @@ import org.watermedia.tools.NetTool;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public class StreamablePlatform implements IPlatform {
     private static final String API_URL = "https://api.streamable.com/videos/";
@@ -17,7 +18,7 @@ public class StreamablePlatform implements IPlatform {
     @Override public boolean validate(final URI uri) { return "streamable.com".equals(uri.getHost()); }
 
     @Override
-    public MRL[] getSources(final URI uri) {
+    public MRL.Source[] getSources(final URI uri) {
         final String videoId = uri.getPath().substring(1);
 
         try {
@@ -27,12 +28,14 @@ public class StreamablePlatform implements IPlatform {
             try (final var is = new InputStreamReader(connection.getInputStream())) {
                 final VideoData video = GSON.fromJson(is, VideoData.class);
 
-                final var qualities = Map.of(
-                    MRL.MediaQuality.of(video.files.mp4.width), new URI(video.files.mp4.url),
-                    MRL.MediaQuality.of(video.files.mp4_mobile.width), new URI(video.files.mp4_mobile.url)
-                );
+                final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
 
-                return new MRL[] { new MRL(MRL.MediaType.VIDEO, qualities) };
+                sourceBuilder.metadata(new MRL.Metadata(video.title, videoId, video.thumbnail, null, (long) (video.files.original.duration * 1000L), null));
+
+                sourceBuilder.quality(MRL.Quality.of(video.files.mp4.width, video.files.mp4.height), new URI(video.files.mp4.url));
+                sourceBuilder.quality(MRL.Quality.of(video.files.mp4Small.width, video.files.mp4Small.height), new URI(video.files.mp4Small.url));
+
+                return new MRL.Source[] { sourceBuilder.build() };
             } finally {
                 connection.disconnect();
             }
@@ -41,15 +44,15 @@ public class StreamablePlatform implements IPlatform {
         }
     }
 
-    private record VideoData(int status, int percent, String message, VideoFiles files) {
+    private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") URI thumbnail, VideoFiles files) {
 
     }
 
-    private record VideoFiles(VideoFile mp4, @SerializedName("mp4-mobile") VideoFile mp4_mobile) {
+    private record VideoFiles(VideoFile original, VideoFile mp4, @SerializedName("mp4-mobile") VideoFile mp4Small) {
 
     }
 
-    public record VideoFile(int status, String url, int framerate, int width, int height, int bitrate, int size, float duration) {
+    public record VideoFile(int status, String url, float framerate, int width, int height, int bitrate, int size, float duration) {
 
     }
 }

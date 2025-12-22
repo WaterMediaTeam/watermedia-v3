@@ -1,10 +1,13 @@
 package org.watermedia.api.media.platform;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.media.MRL;
 
 import java.net.URI;
 
 public interface IPlatform {
+    Marker IT = MarkerManager.getMarker("IPlatform");
 
     /**
      * Provides the former platform name
@@ -23,5 +26,5 @@ public interface IPlatform {
      * @param uri
      * @return available sources, null if nothing was found
      */
-    MRL[] getSources(URI uri) throws Exception;
+    MRL.Source[] getSources(URI uri) throws Exception;
 }

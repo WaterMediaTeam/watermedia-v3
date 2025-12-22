@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 public class WaterMediaConfig {
 
     @Spec.Field
-    public static MRL.MediaQuality defaultMediaQuality = MRL.MediaQuality.HIGHER;
+    public static MRL.Quality defaultMediaQuality = MRL.Quality.HIGHER;
 
     public static boolean searchForLowMediaQuality = false;
 

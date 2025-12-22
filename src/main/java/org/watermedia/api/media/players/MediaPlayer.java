@@ -5,13 +5,11 @@ import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.tools.ThreadTool;
 
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.Executor;
@@ -28,14 +26,12 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
     protected static final int NO_TEXTURE = -1;
 
     // Basic Properties
-    protected final URI mrl;
+    protected final MRL.Source source;
     protected final Thread renderThread;
     protected final Executor renderThreadEx;
     protected final GLEngine glEngine;
     protected final ALEngine alEngine;
-    protected volatile MRL[] sources;
-    protected MRL.MediaQuality selectedQuality = MRL.MediaQuality.HIGHEST; // TODO: add a config field for this
-    protected int sourceIndex;
+    protected MRL.Quality selectedQuality = MRL.Quality.HIGHEST; // TODO: add a config field for this
     protected boolean video;
     protected boolean audio;
 
@@ -55,13 +51,13 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
     private float volume = 1f; // Default volume
     private boolean muted = false;
 
-    public MediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {;
-        Objects.requireNonNull(mrl, "MediaPlayer must have a valid media resource locator. (mrl)");
+    public MediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {;
+        Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
         Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
         Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
 
         // Initialize properties
-        this.mrl = mrl;
+        this.source = source;
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
         this.glEngine = glEngine == null ? DEFAULT_GLMANAGER : glEngine;
@@ -152,34 +148,11 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
     }
 
     /**
-     * @see MediaPlayer#openSourcesSync()
-     */
-    protected void openSources(Runnable run) {
-        if (this.sources != null) {
-            // Already loaded
-            if (run != null) run.run();
-            return;
-        }
-        SOURCE_FINDER_EXECUTOR.execute(() -> {
-            this.openSourcesSync();
-            this.renderThreadEx.execute(run);
-        });
-    }
-
-    /**
-     * Loads the sources by checking on all supported platforms, this process was done in the current thread
-     */
-    protected void openSourcesSync() {
-        if (this.sources != null) return; // Already loaded
-        this.sources = MediaAPI.getSources(this.mrl);
-    }
-
-    /**
      * Cnages the selected quality and updates the media player
      * keeps the time position
      * @param quality
      */
-    public void setQuality(MRL.MediaQuality quality) {
+    public void setQuality(MRL.Quality quality) {
         if (quality == null)
             throw new IllegalArgumentException("Quality cannot be null."); // THIS WAS AN EXCEPTION BECAUSE NULL MAY MEANS A BUG ON DEVELOPER SIDE
 
@@ -189,23 +162,8 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
         this.updateMedia();
     }
 
-    public void setSourceIndex(int index) {
-        if (index < 0 || index >= this.sources.length) {
-            LOGGER.error(IT, "Source index {} is out of bounds, must be between 0 and {}", index, this.sources.length - 1);
-            return;
-        }
-        this.sourceIndex = index;
-        this.updateMedia();
-    }
-
-    public void nextSource() {
-        this.sourceIndex = (this.sourceIndex + 1) % this.sources.length;
-        this.updateMedia();
-    }
-
-    public void previousSource() {
-        this.sourceIndex = (this.sourceIndex - 1 + this.sources.length) % this.sources.length;
-        this.updateMedia();
+    public MRL.Quality quality() {
+        return this.selectedQuality;
     }
 
     /**

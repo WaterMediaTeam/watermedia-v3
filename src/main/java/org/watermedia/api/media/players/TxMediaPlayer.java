@@ -5,6 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.api.decode.DecoderAPI;
 import org.watermedia.api.decode.Image;
+import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.NetTool;
@@ -41,8 +42,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     private int lastFrameIndex = -1; // Last frame index to avoid unnecessary updates
     private static long lastTick = System.currentTimeMillis();
 
-    public TxMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, final boolean video) {
-        super(mrl, renderThread, renderThreadEx, glEngine, null, video, false);
+    public TxMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, final boolean video) {
+        super(source, renderThread, renderThreadEx, glEngine, null, video, false);
     }
 
     @Override
@@ -58,16 +59,17 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     private void fetchImage() {
         this.status = Status.LOADING; // Set status to loading
-        try (final NetTool.Request request = new NetTool.Request(this.mrl.toURL(), "GET", null)) {
+        final var uri = this.source.uri(this.selectedQuality);
+        try (final NetTool.Request request = new NetTool.Request(uri.toURL(), "GET", null)) {
             final String type = request.getContentType();
             if (type == null || !type.startsWith("image/")) {
                 throw new IllegalArgumentException("Invalid media type: " + type);
             } else {
-                LOGGER.debug(IT, "Fetching image from: {} with content type {}", this.mrl, type);
+                LOGGER.debug(IT, "Fetching image from: {} with content type {}", this.source, type);
             }
 
             final int code = request.getResponseCode();
-            final boolean valid = NetTool.validateHTTP200(code, this.mrl);
+            final boolean valid = NetTool.validateHTTP200(code, uri);
             if (valid) {
                 this.status = Status.BUFFERING;
             }
@@ -77,15 +79,15 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.status = this.triggerPause ? Status.PAUSED : Status.PLAYING;
 
             if (this.images == null || this.images.frames() == null || this.images.frames().length == 0) {
-                throw new IOException("No frames found in the media: " + this.mrl);
+                throw new IOException("No frames found in the media: " + this.source);
             }
 
             this.setVideoFormat(GL12.GL_BGRA, this.images.width(), this.images.height());
 
             ACTIVE_PLAYERS.add(this);
-            LOGGER.debug(IT, "Successfully fetched image: {} with dimensions {}x{} and delay {}", this.mrl, this.images.width(), this.images.height(), this.images.delay());
+            LOGGER.debug(IT, "Successfully fetched image: {} with dimensions {}x{} and delay {}", this.source, this.images.width(), this.images.height(), this.images.delay());
         } catch (final Throwable e) {
-            LOGGER.error(IT, "Failed to open media: {}", this.mrl, e);
+            LOGGER.error(IT, "Failed to open media: {}", this.source, e);
             this.status = Status.ERROR;
         }
     }
@@ -145,11 +147,11 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public boolean seek(final long time) {
         if (this.images == null || this.images.frames() == null || this.images.frames().length == 0) {
-            LOGGER.warn(IT, "Cannot seek, no frames available for: {}", this.mrl);
+            LOGGER.warn(IT, "Cannot seek, no frames available for: {}", this.source);
             return false;
         }
         if (time < 0 || time > this.images.duration()) {
-            LOGGER.warn(IT, "Seek time out of bounds for: {}. Time: {}, Duration: {}", this.mrl, time, this.images.duration());
+            LOGGER.warn(IT, "Seek time out of bounds for: {}. Time: {}, Duration: {}", this.source, time, this.images.duration());
             return false;
         }
         this.time = time;

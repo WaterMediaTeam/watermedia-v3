@@ -8,14 +8,15 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.players.VLMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 
 import java.awt.*;
 import java.awt.font.FontRenderContext;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -32,23 +33,59 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 
 public class MediaPlayerWindowTest {
     private static final String NAME = "WATERMeDIA: Multimedia API";
-    private static final URI MEDIA_GIF = URI.create("https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif");
-    private static final URI MEDIA_STREAMABLE = URI.create("https://streamable.com/6yszde");
-    private static final URI MEDIA_VIDEO = URI.create("https://www.mediafire.com/file/f23l3csbeeap9jo/TU_QLO.mp4/file");
-    private static final URI MEDIA_VIDEO_STATIC = URI.create("https://cdn-cf-east.streamable.com/video/mp4/6yszde.mp4?Expires=1759724603795&Key-Pair-Id=APKAIEYUVEN4EVB2OKEQ&Signature=XQf9-YLrvJNaipIPfiWIscrCfimWBx4FDQk-84IN37zvqpiswcrL3ODtsHgmV2KIRbXdllaq7SWXr580~t1eF3EKwLLIRNvW4Zg4scBqaWykjF2eymLqrDdiRQ7wh95zcIGmL-yyB4mUFD7dZz-mSKaQ3YFmTiSNfClYNbkHVzce2QVUqeFnRARdrzHT~LYNRZSKDhKglq014cW2nLj22pDFVQdv1uVmjmyxVaxnJNqV-59ssq01wMYeYhScALLTOgYQTHqz84~WU1WOwlizHYjrX4ptq--konfQWTJCmuSby4yYZEc-c0~uKzRRHxqQxp07vFH~b5-oLTD3jwGCJw__");
-    private static final URI MEDIA_VIDEO_STATIC2 = URI.create("https://files.catbox.moe/uxypnp.mp4");
-    private static final URI MEDIA_VIDEO_STATIC3 = URI.create("https://files.catbox.moe/1n0jn9.mp4");
-    private static final URI MEDIA_VIDEO_STATIC4 = URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_4k25P_main_1.mp4");
-    private static final URI MEDIA_H265 = new File("C:\\Users\\J-RAP\\Downloads\\hevc.mp4").toURI();
+
+    // ============================================================
+    // MEDIA SOURCES - DYNAMIC HASHMAP
+    // ============================================================
+    private static final LinkedHashMap<String, MRL> MEDIA_SOURCES = new LinkedHashMap<>();
 
     private static final DateFormat FORMAT = new SimpleDateFormat("HH:mm:ss");
+
     static {
         FORMAT.setTimeZone(TimeZone.getTimeZone("GMT-00:00"));
     }
 
+    // ============================================================
+    // APPLICATION STATE
+    // ============================================================
+    private enum AppState {
+        ENGINE_SELECTOR,
+        SOURCE_SELECTOR,
+        QUALITY_SELECTOR,
+        PLAYER_RUNNING,
+        PLAYER_FINISHED
+    }
+
+    private static volatile AppState currentState = AppState.ENGINE_SELECTOR;
+
+    // ENGINE SELECTOR STATE
+    private static volatile int engineSelectorIndex = 0;
+    private static final String[] ENGINE_OPTIONS = {"FFMPEG", "VLC", "EXIT"};
+
+    // SOURCE SELECTOR STATE
+    private static volatile int sourceSelectorIndex = 0;
+    private static String[] sourceKeys;
+
+    // QUALITY SELECTOR STATE
+    private static volatile int qualitySelectorIndex = 0;
+    private static MRL.Quality[] availableQualities;
+    private static volatile MRL.Quality selectedQuality = MRL.Quality.HIGHEST;
+
+    // PLAYER FINISHED STATE
+    private static volatile String playerFinishedReason = "";
+
+    // SELECTED ENGINE TYPE
+    private enum EngineType { FFMPEG, VLC }
+
+    private static volatile EngineType selectedEngine = null;
+
+    // CURRENT SELECTED MRL AND SOURCE
+    private static volatile MRL selectedMRL = null;
+    private static volatile MRL.Source selectedSource = null;
+
     // THE WINDOW HANDLE
     private static long window;
-    private static MediaPlayer player;
+    private static volatile MediaPlayer player;
     private static final Queue<Runnable> executor = new ConcurrentLinkedQueue<>();
     private static Thread thread;
 
@@ -57,92 +94,67 @@ public class MediaPlayerWindowTest {
     private static Font textFont;
     private static final int FONT_SIZE = 24;
 
-    // CHAR TEXTURE DATA HOLDER
-    private static class CharTexture {
-        final int textureId;
-        final int width;
-        final int height;
+    // FADE OVERLAY WIDTH
+    private static final int FADE_WIDTH = 350;
 
-        CharTexture(final int textureId, final int width, final int height) {
-            this.textureId = textureId;
-            this.width = width;
-            this.height = height;
-        }
-    }
+    // CHAR TEXTURE DATA HOLDER
+    private record CharTexture(int textureId, int width, int height) {}
 
     public static void main(final String... args) {
-        Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
         WaterMedia.start("Java Test", null, null, true);
+
+        // Populate source keys array
+        MEDIA_SOURCES.put("GIFTS #1 (1920x1080)", MRL.get(URI.create("https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif")));
+        MEDIA_SOURCES.put("STREAMABLE #2 (1280x720)", MRL.get(URI.create("https://streamable.com/6yszde")));
+        MEDIA_SOURCES.put("RAKKUN #4 (1280x720)", MRL.get(URI.create("https://files.catbox.moe/1n0jn9.mp4")));
+        MEDIA_SOURCES.put("4K VIDEO #5 (3840x2160)", MRL.get(URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_4k25P_main_1.mp4")));
+        MEDIA_SOURCES.put("8K VIDEO #6 (7680x4320)", MRL.get(URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_8k60P_bilibili_1.mp4")));
+        MEDIA_SOURCES.put("KICK STREAM #7 (???x???)", MRL.get(URI.create("https://kick.com/yosoyrick")));
+        sourceKeys = MEDIA_SOURCES.keySet().toArray(new String[0]);
+
         init();
-        player = new FFMediaPlayer(MEDIA_VIDEO_STATIC4, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
-        player.start();
+
         // Make the window visible
         glfwShowWindow(window);
-        loop();
 
-        // Free the window callbacks and destroy the window
+        // Main application loop
+        mainLoop();
+
+        // Cleanup
         glfwFreeCallbacks(window);
         glfwDestroyWindow(window);
-
-        // Terminate GLFW and free the error callback
         glfwTerminate();
         glfwSetErrorCallback(null).close();
         System.exit(0);
     }
 
     private static void init() {
-        // Setup an error callback. The default implementation
-        // will print the error message in System.err.
         GLFWErrorCallback.createPrint(System.err).set();
 
-        // Initialize GLFW. Most GLFW functions will not work before doing this.
-        if (!glfwInit())
-            throw new IllegalStateException("Unable to initialize GLFW");
+        if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
 
-        // Configure GLFW
-        glfwDefaultWindowHints(); // optional, the current window hints are already the default
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // the window will stay hidden after creation
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // the window will be resizable
+        glfwDefaultWindowHints();
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 
-        // Create the window
         window = glfwCreateWindow(1280, 720, NAME, NULL, NULL);
-        if (window == NULL)
-            throw new RuntimeException("Failed to create the GLFW window");
+        if (window == NULL) throw new RuntimeException("Failed to create the GLFW window");
 
-        // Setup a key callback. It will be called every time a key is pressed, repeated or released.
-        glfwSetKeyCallback(window, (window, key, scancode, action, mods) -> {
-            if (action != GLFW_RELEASE) return;
-            switch (key) {
-                case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(window, true); // We will detect this in the rendering loop
-                case GLFW_KEY_SPACE -> player.togglePlay();
-                case GLFW_KEY_LEFT -> player.rewind();
-                case GLFW_KEY_RIGHT -> player.foward();
-                case GLFW_KEY_UP -> player.volume(player.volume() + 5);
-                case GLFW_KEY_DOWN -> player.volume(player.volume() - 5);
-                case GLFW_KEY_S -> player.stop();
-                case GLFW_KEY_0, GLFW_KEY_KP_0 -> player.seek(0);
-            }
-        });
+        // Setup key callback - handles all states
+        glfwSetKeyCallback(window, MediaPlayerWindowTest::handleKeyInput);
 
-        // Get the thread stack and push a new frame
+        // Center the window
         try (final MemoryStack stack = stackPush()) {
-            final IntBuffer pWidth = stack.mallocInt(1); // int*
-            final IntBuffer pHeight = stack.mallocInt(1); // int*
-
-            // Get the window size passed to glfwCreateWindow
+            final IntBuffer pWidth = stack.mallocInt(1);
+            final IntBuffer pHeight = stack.mallocInt(1);
             glfwGetWindowSize(window, pWidth, pHeight);
 
-            // Get the resolution of the primary monitor
             final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-
-            // Center the window
             glfwSetWindowPos(window, (vidmode.width() - pWidth.get(0)) / 2, (vidmode.height() - pHeight.get(0)) / 2);
-        } // the stack frame is popped automatically
+        }
 
-        // Make the OpenGL context current
         glfwMakeContextCurrent(window);
-        // Enable v-sync
         glfwSwapInterval(1);
 
         GL.createCapabilities();
@@ -151,142 +163,655 @@ public class MediaPlayerWindowTest {
         final long device = ALC10.alcOpenDevice((ByteBuffer) null);
         if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
 
-        // Crear contexto
         final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
         ALC10.alcMakeContextCurrent(context);
 
-        // Crear capabilities ALC (dispositivo)
         final ALCCapabilities alcCaps = ALC.createCapabilities(device);
-
-        // Crear capabilities AL (contexto)
         final ALCapabilities alCaps = AL.createCapabilities(alcCaps);
 
         thread = Thread.currentThread();
-
-        // INITIALIZE TEXT RENDERING SYSTEM
         textFont = new Font("Consolas", Font.PLAIN, FONT_SIZE);
     }
 
-    private static void loop() {
+    private static void handleKeyInput(final long window, final int key, final int scancode, final int action, final int mods) {
+        if (action != GLFW_RELEASE) return;
+
+        switch (currentState) {
+            case ENGINE_SELECTOR -> handleEngineSelectorKeys(key);
+            case SOURCE_SELECTOR -> handleSourceSelectorKeys(key);
+            case QUALITY_SELECTOR -> handleQualitySelectorKeys(key);
+            case PLAYER_RUNNING -> handlePlayerKeys(key);
+            case PLAYER_FINISHED -> handlePlayerFinishedKeys(key);
+        }
+    }
+
+    private static void handleEngineSelectorKeys(final int key) {
+        switch (key) {
+            case GLFW_KEY_UP -> {
+                engineSelectorIndex--;
+                if (engineSelectorIndex < 0) engineSelectorIndex = ENGINE_OPTIONS.length - 1;
+            }
+            case GLFW_KEY_DOWN -> {
+                engineSelectorIndex++;
+                if (engineSelectorIndex >= ENGINE_OPTIONS.length) engineSelectorIndex = 0;
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectEngine();
+            case GLFW_KEY_ESCAPE -> glfwSetWindowShouldClose(window, true);
+        }
+    }
+
+    private static void handleSourceSelectorKeys(final int key) {
+        final int totalOptions = sourceKeys.length + 1; // +1 for BACK option
+        switch (key) {
+            case GLFW_KEY_UP -> {
+                sourceSelectorIndex--;
+                if (sourceSelectorIndex < 0) sourceSelectorIndex = totalOptions - 1;
+            }
+            case GLFW_KEY_DOWN -> {
+                sourceSelectorIndex++;
+                if (sourceSelectorIndex >= totalOptions) sourceSelectorIndex = 0;
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectSource();
+            case GLFW_KEY_ESCAPE -> {
+                currentState = AppState.ENGINE_SELECTOR;
+                selectedEngine = null;
+            }
+        }
+    }
+
+    private static void handleQualitySelectorKeys(final int key) {
+        if (availableQualities == null || availableQualities.length == 0) return;
+
+        final int totalOptions = availableQualities.length + 1; // +1 for BACK option
+        switch (key) {
+            case GLFW_KEY_UP -> {
+                qualitySelectorIndex--;
+                if (qualitySelectorIndex < 0) qualitySelectorIndex = totalOptions - 1;
+            }
+            case GLFW_KEY_DOWN -> {
+                qualitySelectorIndex++;
+                if (qualitySelectorIndex >= totalOptions) qualitySelectorIndex = 0;
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> selectQuality();
+            case GLFW_KEY_ESCAPE -> {
+                currentState = AppState.SOURCE_SELECTOR;
+                availableQualities = null;
+            }
+        }
+    }
+
+    private static void handlePlayerKeys(final int key) {
+        if (player == null) return;
+
+        switch (key) {
+            // ESC - Return to source selector
+            case GLFW_KEY_ESCAPE -> stopPlayerAndReturnToMenu();
+
+            // ENTER - Open quality selector
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> openQualitySelectorFromPlayer();
+
+            // Basic controls
+            case GLFW_KEY_SPACE -> player.togglePlay();
+            case GLFW_KEY_LEFT -> player.rewind();
+            case GLFW_KEY_RIGHT -> player.foward();
+            case GLFW_KEY_S -> player.stop();
+
+            // Volume control
+            case GLFW_KEY_UP -> player.volume(player.volume() + 5);
+            case GLFW_KEY_DOWN -> player.volume(player.volume() - 5);
+
+            // Frame stepping
+            case GLFW_KEY_PERIOD -> player.nextFrame();      // . = next frame
+            case GLFW_KEY_COMMA -> player.previousFrame();   // , = previous frame
+
+            // Percentage seek (0-9 keys for 0%-90%)
+            case GLFW_KEY_0, GLFW_KEY_KP_0 -> seekToPercentage(0);
+            case GLFW_KEY_1, GLFW_KEY_KP_1 -> seekToPercentage(10);
+            case GLFW_KEY_2, GLFW_KEY_KP_2 -> seekToPercentage(20);
+            case GLFW_KEY_3, GLFW_KEY_KP_3 -> seekToPercentage(30);
+            case GLFW_KEY_4, GLFW_KEY_KP_4 -> seekToPercentage(40);
+            case GLFW_KEY_5, GLFW_KEY_KP_5 -> seekToPercentage(50);
+            case GLFW_KEY_6, GLFW_KEY_KP_6 -> seekToPercentage(60);
+            case GLFW_KEY_7, GLFW_KEY_KP_7 -> seekToPercentage(70);
+            case GLFW_KEY_8, GLFW_KEY_KP_8 -> seekToPercentage(80);
+            case GLFW_KEY_9, GLFW_KEY_KP_9 -> seekToPercentage(90);
+        }
+    }
+
+    private static void handlePlayerFinishedKeys(final int key) {
+        switch (key) {
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE -> {
+                currentState = AppState.SOURCE_SELECTOR;
+                playerFinishedReason = "";
+            }
+        }
+    }
+
+    private static void openQualitySelectorFromPlayer() {
+        if (selectedSource == null) return;
+
+        final Set<MRL.Quality> qualities = selectedSource.availableQualities();
+        if (qualities == null || qualities.isEmpty()) return;
+
+        availableQualities = qualities.toArray(new MRL.Quality[0]);
+        Arrays.sort(availableQualities, Comparator.comparingInt(q -> q.threshold));
+        qualitySelectorIndex = 0;
+
+        // Find current quality in list
+        for (int i = 0; i < availableQualities.length; i++) {
+            if (availableQualities[i] == selectedQuality) {
+                qualitySelectorIndex = i;
+                break;
+            }
+        }
+
+        currentState = AppState.QUALITY_SELECTOR;
+    }
+
+    private static void seekToPercentage(final int percentage) {
+        if (player == null) return;
+        final long duration = player.duration();
+        if (duration > 0) {
+            final long targetTime = (duration * percentage) / 100;
+            player.seek(targetTime);
+        }
+    }
+
+    private static void selectEngine() {
+        switch (engineSelectorIndex) {
+            case 0 -> { // FFMPEG
+                if (FFMediaPlayer.loaded()) {
+                    selectedEngine = EngineType.FFMPEG;
+                    currentState = AppState.SOURCE_SELECTOR;
+                    sourceSelectorIndex = 0;
+                }
+            }
+            case 1 -> { // VLC
+                if (VLMediaPlayer.loaded()) {
+                    selectedEngine = EngineType.VLC;
+                    currentState = AppState.SOURCE_SELECTOR;
+                    sourceSelectorIndex = 0;
+                }
+            }
+            case 2 -> glfwSetWindowShouldClose(window, true); // EXIT
+        }
+    }
+
+    private static void selectSource() {
+        // Last option is BACK
+        if (sourceSelectorIndex >= sourceKeys.length) {
+            currentState = AppState.ENGINE_SELECTOR;
+            selectedEngine = null;
+            return;
+        }
+
+        final String selectedKey = sourceKeys[sourceSelectorIndex];
+        selectedMRL = MEDIA_SOURCES.get(selectedKey);
+
+        // Only allow selection if MRL is ready
+        if (!selectedMRL.ready()) {
+            return; // Do nothing if not ready
+        }
+
+        selectedSource = selectedMRL.source(0);
+        if (selectedSource == null) {
+            return;
+        }
+
+        // Open quality selector
+        final Set<MRL.Quality> qualities = selectedSource.availableQualities();
+        if (qualities != null && !qualities.isEmpty()) {
+            availableQualities = qualities.toArray(new MRL.Quality[0]);
+            Arrays.sort(availableQualities, Comparator.comparingInt(q -> q.threshold));
+            qualitySelectorIndex = 0;
+            selectedQuality = MRL.Quality.HIGHEST;
+            currentState = AppState.QUALITY_SELECTOR;
+        }
+    }
+
+    private static void selectQuality() {
+        // Last option is BACK
+        if (qualitySelectorIndex >= availableQualities.length) {
+            currentState = AppState.SOURCE_SELECTOR;
+            availableQualities = null;
+            return;
+        }
+
+        selectedQuality = availableQualities[qualitySelectorIndex];
+        startPlayer();
+    }
+
+    private static void startPlayer() {
+        if (selectedSource == null) return;
+
+        if (player != null) {
+            player.setQuality(selectedQuality);
+            currentState = AppState.PLAYER_RUNNING;
+            return;
+        }
+
+        // Create the appropriate player
+        if (selectedEngine == EngineType.FFMPEG) {
+            player = new FFMediaPlayer(selectedSource, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
+        } else if (selectedEngine == EngineType.VLC) {
+            player = new VLMediaPlayer(selectedSource, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
+        }
+
+        if (player != null) {
+            player.setQuality(selectedQuality);
+            player.start();
+            currentState = AppState.PLAYER_RUNNING;
+        }
+    }
+
+    private static void stopPlayerAndReturnToMenu() {
+        if (player != null) {
+            player.stop();
+            player.release();
+            player = null;
+        }
+        currentState = AppState.SOURCE_SELECTOR;
+    }
+
+    private static void transitionToFinishedState(final String reason) {
+        playerFinishedReason = reason;
+        if (player != null) {
+            player.release();
+            player = null;
+        }
+        currentState = AppState.PLAYER_FINISHED;
+    }
+
+    private static void mainLoop() {
         ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
             System.out.println(MemoryUtil.memASCII(message));
         }, 0);
 
-        // Set the clear color
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-
         glEnable(GL_TEXTURE_2D);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        glfwSetWindowSizeCallback(window, (window, width, height) -> glViewport(0, 0, width, height));
+        glfwSetWindowSizeCallback(window, (w, width, height) -> glViewport(0, 0, width, height));
 
-        // Run the rendering loop until the user has attempted to close
-        // the window or has pressed the ESCAPE key.
-        while (!glfwWindowShouldClose(window) && !player.ended() && !player.stopped()) {
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // clear the framebuffer
+        while (!glfwWindowShouldClose(window)) {
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            glBindTexture(GL_TEXTURE_2D, player.texture());
-
-            glColor4f(1, 1, 1, 1);
-
-            glBegin(GL_QUADS);
-            {
-                glTexCoord2f(0, 1); glVertex2f(-1, -1);
-                glTexCoord2f(0, 0); glVertex2f(-1, 1);
-                glTexCoord2f(1, 0); glVertex2f(1, 1);
-                glTexCoord2f(1, 1); glVertex2f(1, -1);
-            }
-            glEnd();
-
-            if (player != null && (!player.playing())) {
-                glBegin(GL_QUADS);
-                {
-                    glTexCoord2f(0, 1); glVertex2f(-1, -1);
-                    glTexCoord2f(0, 0); glVertex2f(-1, 1);
-                    glTexCoord2f(1, 0); glVertex2f(1, 1);
-                    glTexCoord2f(1, 1); glVertex2f(1, -1);
-                }
-                glEnd();
+            switch (currentState) {
+                case ENGINE_SELECTOR -> renderEngineSelector();
+                case SOURCE_SELECTOR -> renderSourceSelector();
+                case QUALITY_SELECTOR -> renderQualitySelector();
+                case PLAYER_RUNNING -> renderPlayer();
+                case PLAYER_FINISHED -> renderPlayerFinished();
             }
 
-            // ============================================================
-            // TEXT RENDERING - AFTER LINE 180
-            // ============================================================
-
-            // GET WINDOW DIMENSIONS FOR PROPER TEXT POSITIONING
-            final IntBuffer widthBuffer = MemoryUtil.memAllocInt(1);
-            final IntBuffer heightBuffer = MemoryUtil.memAllocInt(1);
-            glfwGetWindowSize(window, widthBuffer, heightBuffer);
-            final int windowWidth = widthBuffer.get(0);
-            final int windowHeight = heightBuffer.get(0);
-            MemoryUtil.memFree(widthBuffer);
-            MemoryUtil.memFree(heightBuffer);
-
-            // PREPARE TEXT LINES TO RENDER
-            final String[] textLines = {
-                    String.format("Status: %s", player.status()),
-                    String.format("Time: %s (%s) / %s (%s)", FORMAT.format(new Date(player.time())), player.time(), FORMAT.format(new Date(player.duration())), player.duration()),
-                    String.format("Speed: %.2f", player.speed()),
-                    String.format("Is Live: %s", player.liveSource()),
-                    String.format("Volume: %d%%", player.volume()),
-            };
-
-            // SETUP ORTHOGRAPHIC PROJECTION FOR 2D TEXT RENDERING
-            glMatrixMode(GL_PROJECTION);
-            glPushMatrix();
-            glLoadIdentity();
-            glOrtho(0, windowWidth, windowHeight, 0, -1, 1);
-            glMatrixMode(GL_MODELVIEW);
-            glPushMatrix();
-            glLoadIdentity();
-
-            // DISABLE DEPTH TEST FOR TEXT OVERLAY
-            glDisable(GL_DEPTH_TEST);
-
-            // CALCULATE VERTICAL CENTERING
-            final int lineHeight = FONT_SIZE + 5; // FONT SIZE + SPACING
-            final int totalTextHeight = textLines.length * lineHeight;
-            final int startY = (windowHeight - totalTextHeight) / 2;
-
-            // RENDER EACH LINE OF TEXT
-            final int textX = 20; // LEFT MARGIN
-            int currentY = startY;
-
-            for (final String line : textLines) {
-                renderText(line, textX, currentY, Color.WHITE);
-                currentY += lineHeight;
-            }
-
-            // RESTORE PREVIOUS PROJECTION AND MODELVIEW MATRICES
-            glMatrixMode(GL_PROJECTION);
-            glPopMatrix();
-            glMatrixMode(GL_MODELVIEW);
-            glPopMatrix();
-
-            // RE-ENABLE DEPTH TEST
-            glEnable(GL_DEPTH_TEST);
-
-            // ============================================================
-            // END TEXT RENDERING
-            // ============================================================
-
-            glfwSwapBuffers(window); // swap the color buffers
-
-            // Poll for window events. The key callback above will only be
-            // invoked during this call.
+            glfwSwapBuffers(window);
             glfwPollEvents();
+
             while (!executor.isEmpty()) {
                 executor.poll().run();
             }
-//            LOGGER.info("Duration: {}, Time: {}, Playing: {}, Volume: {}, Status: {}",
-//                    this.player.duration(), this.player.time(), this.player.playing(), this.player.volume(), this.player.status());
+        }
+
+        // Cleanup player if running
+        if (player != null) {
+            player.stop();
+            player.release();
         }
     }
 
-    /**
-     * RENDER TEXT AT SPECIFIED POSITION WITH GIVEN COLOR
-     */
+    private static void renderEngineSelector() {
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+
+        final boolean ffmpegLoaded = FFMediaPlayer.loaded();
+        final boolean vlcLoaded = VLMediaPlayer.loaded();
+
+        final String[] lines = {
+                "=== Choose Media Engine ===",
+                "",
+                buildMenuLine("FFMPEG", 0, engineSelectorIndex, ffmpegLoaded),
+                buildMenuLine("LIBVLC", 1, engineSelectorIndex, vlcLoaded),
+                buildMenuLine(" EXIT ", 2, engineSelectorIndex, true),
+                "",
+                "Use UP/DOWN arrows to navigate",
+                "Press ENTER to select",
+                "Press ESC to quit"
+        };
+
+        renderMenuText(lines, windowWidth, windowHeight);
+        restoreProjection();
+    }
+
+    private static void renderSourceSelector() {
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+
+        final ArrayList<String> linesList = new ArrayList<>();
+        linesList.add("=== Select Video Source ===");
+        linesList.add("Engine: " + (selectedEngine == EngineType.FFMPEG ? "FFMPEG" : "VLC"));
+        linesList.add("");
+
+        for (int i = 0; i < sourceKeys.length; i++) {
+            final String prefix = (i == sourceSelectorIndex) ? "> " : "  ";
+            final String arrow = (i == sourceSelectorIndex) ? " <" : "";
+            final MRL mrl = MEDIA_SOURCES.get(sourceKeys[i]);
+            final String status = getMRLStatusString(mrl);
+            linesList.add(prefix + sourceKeys[i] + " [" + status + "]" + arrow);
+        }
+
+        // Add BACK option
+        final String backPrefix = (sourceSelectorIndex == sourceKeys.length) ? "> " : "  ";
+        final String backArrow = (sourceSelectorIndex == sourceKeys.length) ? " <" : "";
+        linesList.add(backPrefix + "[BACK]" + backArrow);
+
+        linesList.add("");
+        linesList.add("Use UP/DOWN arrows to navigate");
+        linesList.add("Press ENTER to select (only READY sources)");
+        linesList.add("Press ESC to go back");
+
+        final String[] lines = linesList.toArray(new String[0]);
+        renderMenuText(lines, windowWidth, windowHeight);
+        restoreProjection();
+    }
+
+    private static void renderQualitySelector() {
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+
+        final ArrayList<String> linesList = new ArrayList<>();
+        linesList.add("=== Select Quality ===");
+        linesList.add("Engine: " + (selectedEngine == EngineType.FFMPEG ? "FFMPEG" : "VLC"));
+        if (selectedMRL != null) {
+            linesList.add("Source: " + sourceKeys[sourceSelectorIndex]);
+        }
+        linesList.add("");
+
+        if (availableQualities != null) {
+            for (int i = 0; i < availableQualities.length; i++) {
+                final String prefix = (i == qualitySelectorIndex) ? "> " : "  ";
+                final String arrow = (i == qualitySelectorIndex) ? " <" : "";
+                final MRL.Quality q = availableQualities[i];
+                final String qualityName = q.name() + " (" + q.threshold + "p)";
+                linesList.add(prefix + qualityName + arrow);
+            }
+        }
+
+        // Add BACK option
+        final int backIndex = availableQualities != null ? availableQualities.length : 0;
+        final String backPrefix = (qualitySelectorIndex == backIndex) ? "> " : "  ";
+        final String backArrow = (qualitySelectorIndex == backIndex) ? " <" : "";
+        linesList.add(backPrefix + "[BACK]" + backArrow);
+
+        linesList.add("");
+        linesList.add("Use UP/DOWN arrows to navigate");
+        linesList.add("Press ENTER to select");
+        linesList.add("Press ESC to go back");
+
+        final String[] lines = linesList.toArray(new String[0]);
+        renderMenuText(lines, windowWidth, windowHeight);
+        restoreProjection();
+    }
+
+    private static void renderPlayer() {
+        if (player == null) return;
+
+        // Check if player ended, error, or stopped - transition to finished state
+        if (player.ended()) {
+            transitionToFinishedState("ENDED");
+            return;
+        }
+        if (player.error()) {
+            transitionToFinishedState("ERROR");
+            return;
+        }
+        if (player.stopped()) {
+            transitionToFinishedState("STOPPED");
+            return;
+        }
+
+        // Render video texture
+        glBindTexture(GL_TEXTURE_2D, player.texture());
+        glColor4f(1, 1, 1, 1);
+
+        glBegin(GL_QUADS);
+        {
+            glTexCoord2f(0, 1); glVertex2f(-1, -1);
+            glTexCoord2f(0, 0); glVertex2f(-1, 1);
+            glTexCoord2f(1, 0); glVertex2f(1, 1);
+            glTexCoord2f(1, 1); glVertex2f(1, -1);
+        }
+        glEnd();
+
+        // Render fade overlays and debug overlay
+        renderFadeOverlays();
+        renderDebugOverlay();
+    }
+
+    private static void renderPlayerFinished() {
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+
+        final String[] lines = {
+                "=== Video Playback Finished ===",
+                "",
+                "Video has " + playerFinishedReason,
+                "",
+                "> [GO BACK] <",
+                "",
+                "Press ENTER or ESC to return"
+        };
+
+        renderMenuText(lines, windowWidth, windowHeight);
+        restoreProjection();
+    }
+
+    private static void renderFadeOverlays() {
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+        glDisable(GL_TEXTURE_2D);
+
+        // Left fade overlay (dark to transparent)
+        glBegin(GL_QUADS);
+        {
+            // Left edge - fully dark
+            glColor4f(0, 0, 0, 0.85f);
+            glVertex2f(0, 0);
+            glVertex2f(0, windowHeight);
+
+            // Right edge of left fade - transparent
+            glColor4f(0, 0, 0, 0.0f);
+            glVertex2f(FADE_WIDTH, windowHeight);
+            glVertex2f(FADE_WIDTH, 0);
+        }
+        glEnd();
+
+        // Right fade overlay (transparent to dark)
+        glBegin(GL_QUADS);
+        {
+            // Left edge of right fade - transparent
+            glColor4f(0, 0, 0, 0.0f);
+            glVertex2f(windowWidth - FADE_WIDTH, 0);
+            glVertex2f(windowWidth - FADE_WIDTH, windowHeight);
+
+            // Right edge - fully dark
+            glColor4f(0, 0, 0, 0.85f);
+            glVertex2f(windowWidth, windowHeight);
+            glVertex2f(windowWidth, 0);
+        }
+        glEnd();
+
+        glEnable(GL_TEXTURE_2D);
+        restoreProjection();
+    }
+
+    private static void renderDebugOverlay() {
+        if (player == null) return;
+
+        final int[] windowSize = getWindowSize();
+        final int windowWidth = windowSize[0];
+        final int windowHeight = windowSize[1];
+
+        setupOrthoProjection(windowWidth, windowHeight);
+        glDisable(GL_DEPTH_TEST);
+
+        final String engineName = (selectedEngine == EngineType.FFMPEG) ? "FFMediaPlayer" : "VLMediaPlayer";
+
+        // Left side - Player info
+        final ArrayList<String> leftLines = new ArrayList<>();
+        leftLines.add("Engine: " + engineName);
+        leftLines.add("Size: " + player.width() + "x" + player.height());
+        leftLines.add("Status: " + player.status());
+        leftLines.add("Time: " + FORMAT.format(new Date(player.time())) + " / " + FORMAT.format(new Date(player.duration())));
+        leftLines.add("Speed: " + String.format("%.2f", player.speed()));
+        leftLines.add("Is Live: " + player.liveSource());
+        leftLines.add("Volume: " + player.volume() + "%");
+        leftLines.add("Quality: " + player.quality());
+        leftLines.add("");
+        leftLines.add("--- Controls ---");
+        leftLines.add("SPACE: Play/Pause");
+        leftLines.add("S: Stop | ESC: Menu");
+        leftLines.add("LEFT/RIGHT: -/+5s");
+        leftLines.add("UP/DOWN: Volume");
+        leftLines.add("0-9: Seek 0%-90%");
+        leftLines.add("./,: Next/Prev Frame");
+        leftLines.add("ENTER: Quality Select");
+
+        // Right side - Metadata
+        final ArrayList<String> rightLines = new ArrayList<>();
+        rightLines.add("--- Metadata ---");
+
+        if (selectedSource != null && selectedSource.metadata() != null) {
+            final MRL.Metadata meta = selectedSource.metadata();
+            rightLines.add("Title: " + (meta.title() != null ? meta.title() : "N/A"));
+            rightLines.add("Author: " + (meta.author() != null ? meta.author() : "N/A"));
+            rightLines.add("Description:");
+            if (meta.description() != null) {
+                // Word wrap description
+                final String desc = meta.description();
+                final int maxLen = 30;
+                for (int i = 0; i < desc.length(); i += maxLen) {
+                    rightLines.add("  " + desc.substring(i, Math.min(i + maxLen, desc.length())));
+                }
+            } else {
+                rightLines.add("  N/A");
+            }
+            rightLines.add("Duration: " + (meta.duration() > 0 ? FORMAT.format(new Date(meta.duration())) : "N/A"));
+            if (meta.publishedAt() != null) {
+                rightLines.add("Published: " + meta.publishedAt().toString());
+            }
+        } else {
+            rightLines.add("Unavailable");
+        }
+
+        final int lineHeight = FONT_SIZE + 5;
+        final int leftStartY = 20;
+        final int rightStartY = 20;
+        final int leftX = 20;
+        final int rightX = windowWidth - FADE_WIDTH + 20;
+
+        // Render left side
+        int currentY = leftStartY;
+        for (final String line : leftLines) {
+            renderText(line, leftX, currentY, Color.WHITE);
+            currentY += lineHeight;
+        }
+
+        // Render right side
+        currentY = rightStartY;
+        for (final String line : rightLines) {
+            renderText(line, rightX, currentY, Color.WHITE);
+            currentY += lineHeight;
+        }
+
+        restoreProjection();
+        glEnable(GL_DEPTH_TEST);
+    }
+
+    private static String getMRLStatusString(final MRL mrl) {
+        if (mrl == null) return "FAILED";
+        if (mrl.ready()) return "READY";
+        if (mrl.busy()) return "BUSY";
+        if (mrl.error()) return "FAILED";
+        return "UNKNOWN";
+    }
+
+    private static String buildMenuLine(final String name, final int index, final int selectedIndex, final boolean loaded) {
+        final String prefix = (index == selectedIndex) ? "> " : "  ";
+        final String status = loaded ? "" : " (ERR_UNLOADED)";
+        final String arrow = (index == selectedIndex) ? " <" : "";
+        return prefix + name + status + arrow;
+    }
+
+    private static void renderMenuText(final String[] lines, final int windowWidth, final int windowHeight) {
+        final int lineHeight = FONT_SIZE + 8;
+        final int totalTextHeight = lines.length * lineHeight;
+        final int startY = (windowHeight - totalTextHeight) / 2;
+
+        int currentY = startY;
+        for (final String line : lines) {
+            final int textWidth = calculateTextWidth(line);
+            final int textX = (windowWidth - textWidth) / 2;
+            renderText(line, textX, currentY, Color.GREEN);
+            currentY += lineHeight;
+        }
+    }
+
+    private static int calculateTextWidth(final String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int width = 0;
+        for (final char c : text.toCharArray()) {
+            final CharTexture charTex = getCharTexture(c);
+            if (charTex != null) {
+                width += charTex.width;
+            }
+        }
+        return width;
+    }
+
+    private static int[] getWindowSize() {
+        final IntBuffer widthBuffer = MemoryUtil.memAllocInt(1);
+        final IntBuffer heightBuffer = MemoryUtil.memAllocInt(1);
+        glfwGetWindowSize(window, widthBuffer, heightBuffer);
+        final int windowWidth = widthBuffer.get(0);
+        final int windowHeight = heightBuffer.get(0);
+        MemoryUtil.memFree(widthBuffer);
+        MemoryUtil.memFree(heightBuffer);
+        return new int[]{windowWidth, windowHeight};
+    }
+
+    private static void setupOrthoProjection(final int windowWidth, final int windowHeight) {
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(0, windowWidth, windowHeight, 0, -1, 1);
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+    }
+
+    private static void restoreProjection() {
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+    }
+
     private static void renderText(final String text, final int x, final int y, final Color color) {
         if (text == null || text.isEmpty()) return;
 
@@ -313,25 +838,20 @@ public class MediaPlayerWindowTest {
         }
     }
 
-    /**
-     * GET OR CREATE TEXTURE FOR A CHARACTER
-     */
     private static CharTexture getCharTexture(final char c) {
-        // CHECK CACHE FIRST
         if (charTextureCache.containsKey(c)) {
             return charTextureCache.get(c);
         }
 
-        // CREATE NEW TEXTURE FOR CHARACTER
         final BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_4BYTE_ABGR);
         Graphics2D g2d = img.createGraphics();
 
         g2d.setFont(textFont);
-        FontRenderContext frc = g2d.getFontRenderContext();
-        Rectangle2D bounds = textFont.getStringBounds(String.valueOf(c), frc);
+        final FontRenderContext frc = g2d.getFontRenderContext();
+        final Rectangle2D bounds = textFont.getStringBounds(String.valueOf(c), frc);
 
-        final int charWidth = (int)Math.ceil(bounds.getWidth());
-        final int charHeight = (int)Math.ceil(bounds.getHeight());
+        final int charWidth = (int) Math.ceil(bounds.getWidth());
+        final int charHeight = (int) Math.ceil(bounds.getHeight());
 
         g2d.dispose();
 
@@ -339,28 +859,24 @@ public class MediaPlayerWindowTest {
             return null;
         }
 
-        // CREATE IMAGE WITH PROPER SIZE
         final BufferedImage charImage = new BufferedImage(charWidth, charHeight, BufferedImage.TYPE_INT_ARGB);
         g2d = charImage.createGraphics();
         g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_GASP);
         g2d.setFont(textFont);
         g2d.setColor(Color.WHITE);
-        final int x = -(int)bounds.getX();
-        final int y = -(int)bounds.getY();
-        g2d.drawString(String.valueOf(c), x, y);
+        final int cx = -(int) bounds.getX();
+        final int cy = -(int) bounds.getY();
+        g2d.drawString(String.valueOf(c), cx, cy);
         g2d.dispose();
 
-        // CONVERT IMAGE TO OPENGL TEXTURE
         final int textureId = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, textureId);
 
-        // SETUP TEXTURE PARAMETERS
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
-        // CONVERT BUFFEREDIMAGE TO BYTEBUFFER
         final int[] pixels = new int[charWidth * charHeight];
         charImage.getRGB(0, 0, charWidth, charHeight, pixels, 0, charWidth);
 
@@ -376,7 +892,6 @@ public class MediaPlayerWindowTest {
         }
         buffer.flip();
 
-        // UPLOAD TEXTURE TO GPU
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
@@ -385,7 +900,6 @@ public class MediaPlayerWindowTest {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, charWidth, charHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
         MemoryUtil.memFree(buffer);
 
-        // CACHE THE TEXTURE
         final CharTexture charTex = new CharTexture(textureId, charWidth, charHeight);
         charTextureCache.put(c, charTex);
 
@@ -393,8 +907,7 @@ public class MediaPlayerWindowTest {
     }
 
     public static void execute(final Runnable command) {
-        if (command == null)
-            throw new IllegalArgumentException("Command cannot be null");
+        if (command == null) throw new IllegalArgumentException("Command cannot be null");
         executor.add(command);
     }
 }

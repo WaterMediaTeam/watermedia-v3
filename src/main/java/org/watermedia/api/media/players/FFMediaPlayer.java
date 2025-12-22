@@ -17,6 +17,7 @@ import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.binaries.WaterMediaBinaries;
@@ -130,9 +131,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final int MIN_DECODE_THREADS = 2;
     private static final int MAX_DECODE_THREADS = Math.min(Runtime.getRuntime().availableProcessors(), 16);
 
-    public FFMediaPlayer(final URI mrl, final Thread renderThread, final Executor renderThreadEx,
+    public FFMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx,
                          final GLEngine glEngine, final ALEngine alEngine, final boolean video, final boolean audio) {
-        super(mrl, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
+        super(source, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
     }
 
     // ===========================================
@@ -140,7 +141,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     @Override
     public void start() {
-        if (this.playerThread != null && this.playerThread.isAlive() && this.playerThread.isInterrupted()) {
+        LOGGER.info("STARTRING FFFMPEG PLAYER");
+        if (this.playerThread != null && this.playerThread.isAlive() && !this.playerThread.isInterrupted()) {
             this.stop(); // CANNOT TRUST AUTHORS
         }
         final Thread oldThread = this.playerThread;
@@ -349,8 +351,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
 
     @Override
+    @Deprecated
     protected void updateMedia() {
-        this.start();
     }
 
     private void playerLoop() {
@@ -362,9 +364,6 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.audioClockValid = false;
 
             this.currentStatus = Status.LOADING;
-
-            // Initialize source fetch
-            this.openSourcesSync();
 
             // Initialize FFMPEG components
             if (!this.init()) {
@@ -530,10 +529,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 av_dict_set(options, "rtsp_transport", "tcp", 0);
                 av_dict_set(options, "max_delay", "5000000", 0);
 
-                if (avformat.avformat_open_input(this.formatContext,
-                        this.sources[this.sourceIndex].getURIString(this.selectedQuality), null, options) < 0) {
-                    LOGGER.error("Failed to open input: {}",
-                            this.sources[this.sourceIndex].getURIString(this.selectedQuality));
+                if (avformat.avformat_open_input(this.formatContext, this.source.uri(this.selectedQuality).toString(), null, options) < 0) {
+                    LOGGER.error("Failed to open input: {}", this.source.uri(this.selectedQuality).toString());
                     return false;
                 }
             } finally {
