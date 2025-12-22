@@ -16,7 +16,7 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer, TxMediaPlayer, VLMediaPlayer {
+public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Executor SOURCE_FINDER_EXECUTOR = ThreadTool.createScheduledThreadPool("MediaPlayer-Sources", ThreadTool.minThreads(), 7);
 
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());

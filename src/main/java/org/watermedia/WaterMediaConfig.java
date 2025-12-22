@@ -20,12 +20,6 @@ public class WaterMediaConfig {
     public static boolean searchForLowMediaQuality = false;
 
     @Spec.Field
-    public static boolean videolanEnabled = true;
-
-    @Spec.Field
-    public static Path customVideolanPath = new File("").toPath();
-
-    @Spec.Field
     public static boolean ffmpegEnabled = true;
 
     @Spec.Field

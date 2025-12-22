@@ -10,7 +10,6 @@ import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.FFMediaPlayer;
-import org.watermedia.api.media.players.VLMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 
 import java.awt.*;
@@ -326,14 +325,7 @@ public class MediaPlayerWindowTest {
                     sourceSelectorIndex = 0;
                 }
             }
-            case 1 -> { // VLC
-                if (VLMediaPlayer.loaded()) {
-                    selectedEngine = EngineType.VLC;
-                    currentState = AppState.SOURCE_SELECTOR;
-                    sourceSelectorIndex = 0;
-                }
-            }
-            case 2 -> glfwSetWindowShouldClose(window, true); // EXIT
+            case 1 -> glfwSetWindowShouldClose(window, true); // EXIT
         }
     }
 
@@ -393,8 +385,6 @@ public class MediaPlayerWindowTest {
         // Create the appropriate player
         if (selectedEngine == EngineType.FFMPEG) {
             player = new FFMediaPlayer(selectedSource, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
-        } else if (selectedEngine == EngineType.VLC) {
-            player = new VLMediaPlayer(selectedSource, Thread.currentThread(), MediaPlayerWindowTest::execute, null, null, true, true);
         }
 
         if (player != null) {
@@ -468,14 +458,12 @@ public class MediaPlayerWindowTest {
         setupOrthoProjection(windowWidth, windowHeight);
 
         final boolean ffmpegLoaded = FFMediaPlayer.loaded();
-        final boolean vlcLoaded = VLMediaPlayer.loaded();
 
         final String[] lines = {
                 "=== Choose Media Engine ===",
                 "",
                 buildMenuLine("FFMPEG", 0, engineSelectorIndex, ffmpegLoaded),
-                buildMenuLine("LIBVLC", 1, engineSelectorIndex, vlcLoaded),
-                buildMenuLine(" EXIT ", 2, engineSelectorIndex, true),
+                buildMenuLine(" EXIT ", 1, engineSelectorIndex, true),
                 "",
                 "Use UP/DOWN arrows to navigate",
                 "Press ENTER to select",

@@ -59,7 +59,6 @@ sourceSets {
 
 dependencies {
     // DEPENDENCIES
-    include "org.watermedia:videolan-natives"
     include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
 
     // EXTERNAL DEPENDENCIES

@@ -7,7 +7,6 @@ import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
-import org.watermedia.api.media.players.VLMediaPlayer;
 import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
@@ -305,11 +304,6 @@ public final class MRL {
             if (source.type == MediaType.IMAGE) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
                 return new TxMediaPlayer(source, renderThread, renderThreadEx, glEngine, video);
-            }
-
-            if (VLMediaPlayer.loaded()) {
-                LOGGER.debug(IT, "Creating VLMediaPlayer for: {}", source);
-                return new VLMediaPlayer(source, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
             }
 
             if (FFMediaPlayer.loaded()) {
