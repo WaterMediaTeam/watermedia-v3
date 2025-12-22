@@ -1,6 +1,41 @@
+# WATERMeDIA 3.0.0-alpha.3
+## MRL arrives!
+MRL its a smart URI wrapper instance, it caches the URI and triss to fetch the source asynchronimously.
+At the moment you create the instance, the MRL fetch the URL to find what sources are available (for galleries) and its available qualities (480p or 1440p)
+
+Usage its simple as
+``MRL.get(URI)``
+
+if the MRL doesn't exists or its expired, it creates a new one.
+
+To create a MediaPlayer you must do
+``createPlayer(int sourceIndex, Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, final ALEngine alEngine, boolean video, final boolean audio)``
+
+the MRL will choose the optimized mediaplayer engine for the selected media type.
+
+But before you must check if the MRL was not busy or has an error (no valid)
+
+``MRL#busy()`` and `MRL#error()`
+
+MediaPlayers now requires MRL.Source instead or MRL, Sources aren't opened on the same
+MediaPlayer instance because some edgecases (imgur) sources can be VIDEO and IMAGE, so, creating
+a MediaPlayer for specific sources solves this edge cases, qualities on the other hand are ALWAYS the
+same media type, so you don't need to worry about
+
+## VLC WAS REMOVED
+VLC has no purpose since FFMPEG implementation has become MUCH stable and way better simple than VLC, so in order
+to reduce the Binaries file size and simplify the logic, libVLC and videolan-natives its now removed.
+
+videolan-natives repository its now archived and will not receive any futher updates.
+
 # WATERMeDIA 3.0.0-alpha.1
-Unfortunately i am lack of time to write a complete porting.
-I will sumarize it as soon as possible
+## Engines update
+MediaPlayers now requires a new special type of argument, ``GLEngine`` and `ALEngine`
+GLEngine was made to delegate OpenGL logic to any exiting GLManager running on the GL context (like minecraft has),
+it prevents bugs and edge cases where the GLManager expects some configurations but WATERMeDIA changes it silently by
+calling natives.
+
+Please look at the class builders for more information, both are self descriptive.
 
 # WATERMEDIA 2.1.x to 3.0.0-alpha.0
 Everything was removed and rebuilded from scratch.
