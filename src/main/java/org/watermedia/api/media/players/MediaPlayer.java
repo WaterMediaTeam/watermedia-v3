@@ -8,7 +8,6 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
-import org.watermedia.tools.ThreadTool;
 
 import java.nio.ByteBuffer;
 import java.util.Objects;
@@ -16,9 +15,7 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer, TxMediaPlayer {
-    private static final Executor SOURCE_FINDER_EXECUTOR = ThreadTool.createScheduledThreadPool("MediaPlayer-Sources", ThreadTool.minThreads(), 7);
-
+public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
     private static final GLEngine DEFAULT_GLMANAGER = new GLEngine.Builder().build();
     private static final ALEngine DEFAULT_ALMANAGER = new ALEngine.Builder().build();

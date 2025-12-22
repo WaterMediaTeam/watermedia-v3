@@ -4,12 +4,11 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 
-import java.net.URI;
 import java.util.concurrent.Executor;
 
-public final class ClockMediaPlayer extends MediaPlayer {
+public final class ServerMediaPlayer extends MediaPlayer {
 
-    public ClockMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine, final ALEngine alEngine) {
+    public ServerMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine, final ALEngine alEngine) {
         super(source, renderThread, renderThreadEx, glEngine, alEngine, false, false);
     }
 
