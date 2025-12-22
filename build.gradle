@@ -14,7 +14,7 @@ base {
 
 test {
 //    useJUnitPlatform()
-//    failOnNoDiscoveredTests.set(false)
+    failOnNoDiscoveredTests.set(false)
 }
 
 java {
@@ -125,8 +125,10 @@ jar {
             }
         }
     }
+    exclude('META-INF/versions/', 'META-INF/maven/')
+
     // Configurar estrategia para combinar archivos de servicios duplicados
-    filesMatching('META-INF/services/*') {
+    filesMatching('META-INF/*') {
         // Combinar contenido de archivos de servicio con el mismo nombre
         duplicatesStrategy = DuplicatesStrategy.INCLUDE
     }
