@@ -14,11 +14,6 @@ public final class ClockMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    protected void updateMedia() {
-
-    }
-
-    @Override
     public boolean previousFrame() {
         return false;
     }

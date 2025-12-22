@@ -148,28 +148,21 @@ public abstract sealed class MediaPlayer permits ClockMediaPlayer, FFMediaPlayer
     }
 
     /**
-     * Cnages the selected quality and updates the media player
-     * keeps the time position
-     * @param quality
+     * Changes the selected quality.
+     * The media player will detect this change in its playback loop
+     * and switch to the new quality while maintaining the current timestamp.
+     * @param quality the new quality to use
      */
-    public void setQuality(MRL.Quality quality) {
+    public void setQuality(final MRL.Quality quality) {
         if (quality == null)
-            throw new IllegalArgumentException("Quality cannot be null."); // THIS WAS AN EXCEPTION BECAUSE NULL MAY MEANS A BUG ON DEVELOPER SIDE
+            throw new IllegalArgumentException("Quality cannot be null.");
 
-        if (this.selectedQuality == quality) return; // No change
-
-        this.selectedQuality = quality;
-        this.updateMedia();
+        this.selectedQuality = quality; // Player loop will detect the change
     }
 
     public MRL.Quality quality() {
         return this.selectedQuality;
     }
-
-    /**
-     * Refresh the media player to use the new source or quality
-     */
-    protected abstract void updateMedia();
 
     /**
      * Indicates if the media player has video support enabled.

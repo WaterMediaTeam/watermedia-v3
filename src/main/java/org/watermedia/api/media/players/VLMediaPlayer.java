@@ -107,11 +107,6 @@ public final class VLMediaPlayer extends MediaPlayer {
     private final libvlc_audio_set_volume_cb volumeCB = (data, volume, mute) -> {};
 
     @Override
-    protected void updateMedia() {
-
-    }
-
-    @Override
     public boolean previousFrame() {
         // LibVlc.libvlc_media_player_previous_frame(this.rawPlayer);
         LOGGER.warn(IT, "Prev frame is not supported by VLC Media Player");

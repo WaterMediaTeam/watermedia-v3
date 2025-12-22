@@ -84,6 +84,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private volatile boolean pauseRequested = false;
     private volatile long seekTarget = -1;
     private volatile float speedFactor = 1.0f;
+    private volatile MRL.Quality activeQuality; // Quality currently being played
 
     // ===========================================
     // CLOCK SYSTEM - Optimizado
@@ -350,11 +351,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // MAIN PLAYER LOOP
     // ===========================================
 
-    @Override
-    @Deprecated
-    protected void updateMedia() {
-    }
-
     private void playerLoop() {
         try {
             // Reset stats
@@ -364,6 +360,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.audioClockValid = false;
 
             this.currentStatus = Status.LOADING;
+
+            // Store the quality we're about to use
+            this.activeQuality = this.selectedQuality;
 
             // Initialize FFMPEG components
             if (!this.init()) {
@@ -381,6 +380,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             // Main playback loop
             while (!Thread.currentThread().isInterrupted()) {
+                // Handle quality change requests
+                if (this.activeQuality != this.selectedQuality) {
+                    this.performQualitySwitch();
+                    continue;
+                }
+
                 // Handle seek requests
                 if (this.seekTarget >= 0) {
                     this.performSeek();
@@ -437,6 +442,134 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             this.cleanup();
         }
+    }
+
+    /**
+     * Performs a quality switch by saving current timestamp, cleaning up resources,
+     * reinitializing with new quality URL, and seeking to the saved timestamp.
+     */
+    private void performQualitySwitch() {
+        final MRL.Quality newQuality = this.selectedQuality;
+        final long currentTimeMs = this.time();
+        final boolean wasPaused = this.pauseRequested;
+
+        LOGGER.info(IT, "Switching quality from {} to {} at {}ms", this.activeQuality, newQuality, currentTimeMs);
+
+        // Update active quality before cleanup
+        this.activeQuality = newQuality;
+
+        // Cleanup current FFmpeg resources (but don't reset running state)
+        this.cleanupForQualitySwitch();
+
+        // Reset stats for new stream
+        this.consecutiveSkips = 0;
+        this.totalSkippedFrames = 0;
+        this.totalRenderedFrames = 0;
+        this.audioClockValid = false;
+
+        this.currentStatus = Status.BUFFERING;
+
+        // Reinitialize with new quality
+        if (!this.init()) {
+            LOGGER.error(IT, "Failed to reinitialize after quality switch to {}", newQuality);
+            this.currentStatus = Status.ERROR;
+            return;
+        }
+
+        // Seek to the saved timestamp
+        if (currentTimeMs > 0 && this.canSeek()) {
+            this.seekTarget = currentTimeMs;
+        }
+
+        // Restore pause state
+        if (wasPaused) {
+            this.currentStatus = Status.PAUSED;
+        } else {
+            this.currentStatus = Status.PLAYING;
+            this.clockBaseTime = System.nanoTime();
+        }
+
+        LOGGER.info(IT, "Quality switch completed to {}", newQuality);
+    }
+
+    /**
+     * Cleans up FFmpeg resources for quality switch without affecting player state.
+     * Similar to cleanup() but preserves running state and thread.
+     */
+    private void cleanupForQualitySwitch() {
+        LOGGER.debug(IT, "Cleaning up FFmpeg resources for quality switch...");
+
+        // Free HW context first
+        if (this.hwTransferFrame != null) {
+            av_frame_free(this.hwTransferFrame);
+            this.hwTransferFrame = null;
+        }
+        if (this.hwDeviceCtx != null) {
+            av_buffer_unref(this.hwDeviceCtx);
+            this.hwDeviceCtx = null;
+        }
+        this.hwPixelFormat = AV_PIX_FMT_NONE;
+
+        // Free contexts
+        if (this.swsContext != null) {
+            swscale.sws_freeContext(this.swsContext);
+            this.swsContext = null;
+        }
+        if (this.swrContext != null) {
+            swresample.swr_free(this.swrContext);
+            this.swrContext = null;
+        }
+        if (this.videoCodecContext != null) {
+            avcodec.avcodec_free_context(this.videoCodecContext);
+            this.videoCodecContext = null;
+        }
+        if (this.audioCodecContext != null) {
+            avcodec.avcodec_free_context(this.audioCodecContext);
+            this.audioCodecContext = null;
+        }
+        if (this.formatContext != null) {
+            try {
+                avformat.avformat_close_input(this.formatContext);
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Error closing format context during quality switch", e);
+            }
+            this.formatContext = null;
+        }
+
+        // Free frames
+        if (this.videoFrame != null) {
+            avutil.av_frame_free(this.videoFrame);
+            this.videoFrame = null;
+        }
+        if (this.audioFrame != null) {
+            avutil.av_frame_free(this.audioFrame);
+            this.audioFrame = null;
+        }
+        if (this.scaledFrame != null) {
+            avutil.av_frame_free(this.scaledFrame);
+            this.scaledFrame = null;
+        }
+        if (this.resampledFrame != null) {
+            avutil.av_frame_free(this.resampledFrame);
+            this.resampledFrame = null;
+        }
+        if (this.packet != null) {
+            avcodec.av_packet_free(this.packet);
+            this.packet = null;
+        }
+
+        // Clear buffers
+        this.videoBuffer = null;
+        this.audioBuffer = null;
+        this.videoBufferInitialized = false;
+
+        // Reset stream indices
+        this.videoStreamIndex = -1;
+        this.audioStreamIndex = -1;
+        this.audioClockValid = false;
+        this.swsInputFormat = AV_PIX_FMT_NONE;
+
+        LOGGER.debug(IT, "Quality switch cleanup completed");
     }
 
     /**

@@ -93,11 +93,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    protected void updateMedia() {
-
-    }
-
-    @Override
     public boolean previousFrame() {
         if (!this.paused()) return false;
         this.triggerPrevFrame = true;
