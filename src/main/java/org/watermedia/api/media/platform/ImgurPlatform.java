@@ -17,6 +17,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import static org.watermedia.WaterMedia.LOGGER;
+
 public class ImgurPlatform implements IPlatform {
     private static final String API_URL = "https://api.imgur.com/3";
     private static final String API_KEY = "685cdf74b1229b9";
@@ -71,7 +73,7 @@ public class ImgurPlatform implements IPlatform {
             final List<MRL.Source> sources = new ArrayList<>();
             
             // Iterate over gallery images
-            for (final Image img : data.images()) {
+            for (final Image img: data.images()) {
                 sources.add(this.buildSourceFromImage(img, data.title(), data.accountUrl()));
             }
 
@@ -95,20 +97,18 @@ public class ImgurPlatform implements IPlatform {
     }
 
     private MRL.Source buildSourceFromImage(final Image img, final String fallbackTitle, final String accountUrl) {
-        // Determine URL and Type (prefer MP4 for animations/video)
-        String link = img.link();
-        final boolean video = img.mp4() != null && !img.mp4().isEmpty();
-        if (video) {
-            link = img.hls();
-        }
-
         // Parse MimeType
-        MRL.MediaType type = MRL.MediaType.fromMimeType(img.type());
-        
+        final MRL.MediaType type = MRL.MediaType.fromMimeType(img.type());
+
         // Fix for when Imgur says "image/gif" but provides an mp4 link, treated as video
-        if (video) {
-            type = MRL.MediaType.VIDEO;
-        }
+        final String link = switch (type) {
+            case IMAGE -> img.link();
+            case VIDEO -> img.hasSound() ? img.mp4() : img.link();
+            default -> {
+                LOGGER.warn("Imgur provided an unexpected media type: {}", img.type());
+                yield img.link();
+            }
+        };
 
         // Build Metadata
         final String title = img.title() != null ? img.title() : fallbackTitle;

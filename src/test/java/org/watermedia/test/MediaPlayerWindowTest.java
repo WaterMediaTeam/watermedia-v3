@@ -116,6 +116,8 @@ public class MediaPlayerWindowTest {
         MEDIA_SOURCES.put("8K VIDEO #6 (7680x4320)", MRL.get(URI.create("https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_8k60P_bilibili_1.mp4")));
         MEDIA_SOURCES.put("KICK STREAM #7 (???x???)", MRL.get(URI.create("https://kick.com/yosoyrick")));
         MEDIA_SOURCES.put("IMGUR MULTISOURCE #8 (???x???)", MRL.get(URI.create("https://imgur.com/gallery/random-images-videos-to-test-k1e4ufO")));
+        MEDIA_SOURCES.put("RANDOM APNG #9 (???x???)", MRL.get(URI.create("https://i.ibb.co/jyhTX5q/maya-megu-APNG.png")));
+        MEDIA_SOURCES.put("LARGER MULTISOURCE #10 (???x???)", MRL.get(URI.create("https://imgur.com/gallery/images-that-i-use-to-test-watermedia-aWYiadd")));
         sourceKeys = MEDIA_SOURCES.keySet().toArray(new String[0]);
 
         init();

@@ -84,7 +84,14 @@ public final class TxMediaPlayer extends MediaPlayer {
 
             this.setVideoFormat(GL12.GL_BGRA, this.images.width(), this.images.height());
 
-            ACTIVE_PLAYERS.add(this);
+            if (this.images.frames().length == 1) {
+                LOGGER.debug(IT, "Single frame image detected, uploading first frame and setting status to PLAYING");
+                this.upload(this.images.frames()[0], 0);
+                this.status = Status.PLAYING;
+            } else {
+                LOGGER.debug(IT, "Multi-frame image detected, adding to active players for playback");
+                ACTIVE_PLAYERS.add(this);
+            }
             LOGGER.debug(IT, "Successfully fetched image: {} with dimensions {}x{} and delay {}", this.source, this.images.width(), this.images.height(), this.images.delay());
         } catch (final Throwable e) {
             LOGGER.error(IT, "Failed to open media: {}", this.source, e);
@@ -217,6 +224,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public long duration() {
+        if (this.images == null) return 0;
         return this.images.duration();
     }
 
@@ -238,6 +246,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
 
             for (final TxMediaPlayer player: ACTIVE_PLAYERS) {
+
                 if (player.triggerPause && !player.paused) {
                     player.paused = true;
                     player.triggerPause = false;
@@ -269,13 +278,16 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final long currentTime = detained ? player.time : player.time + (long) (delta * player.speed);
 
                 // PLAYER TIME
-                if (currentTime >= player.images.duration()) {
-                    if (player.repeat()) {
-                        player.time = 0; // reset time
-                    } else {
-                        player.time = player.images.duration(); // set to end
-                        player.status = Status.ENDED;
-                        continue; // skip tick
+                if (player.duration() != 0 && player.duration() != 1) {
+                    if (currentTime >= player.images.duration()) {
+                        if (player.repeat()) {
+                            player.time = 0; // reset time
+                        } else {
+                            player.time = player.images.duration(); // set to end
+                            LOGGER.info(IT, "Media ended: {}, time {}, duration: {}", player.source, player.time, player.images.duration());
+                            player.status = Status.ENDED;
+                            continue; // skip tick
+                        }
                     }
                 }
 

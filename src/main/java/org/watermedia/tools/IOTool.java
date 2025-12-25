@@ -10,7 +10,8 @@ public class IOTool {
     public static String getVersion() {
         try {
             final Manifest manifest = new Manifest(jarOpenResource("/META-INF/MANIFEST.MF"));
-            return manifest.getMainAttributes().getValue("version");
+            final String version = manifest.getMainAttributes().getValue("version");
+            return version == null ? "3.0.0-unknown" : version;
         } catch (final IOException e) {
             throw new RuntimeException("Failed to read self manifest", e);
         }

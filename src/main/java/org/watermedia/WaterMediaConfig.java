@@ -25,6 +25,9 @@ public class WaterMediaConfig {
     @Spec.Field
     public static Path customFFmpegPath = new File("").toPath();
 
+    @Spec.Field
+    public static boolean pngDecoder$useBKGDChunk = false;
+
 
     @Spec(value = "server")
     public static class Server {

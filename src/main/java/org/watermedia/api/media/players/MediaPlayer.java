@@ -17,8 +17,6 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
-    private static final GLEngine DEFAULT_GLMANAGER = new GLEngine.Builder().build();
-    private static final ALEngine DEFAULT_ALMANAGER = new ALEngine.Builder().build();
     protected static final int NO_SIZE = -1;
     protected static final int NO_TEXTURE = -1;
 
@@ -57,8 +55,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.source = source;
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
-        this.glEngine = glEngine == null ? DEFAULT_GLMANAGER : glEngine;
-        this.alEngine = alEngine == null ? DEFAULT_ALMANAGER : alEngine;
+        this.glEngine = glEngine == null ? new GLEngine.Builder().build() : glEngine;
+        this.alEngine = alEngine == null ? new ALEngine.Builder().build() : alEngine;
         this.video = video;
         this.audio = audio;
 
@@ -502,12 +500,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public void release() {
         if (this.video && this.glTexture != NO_TEXTURE) {
             this.glEngine.deleteTexture(this.glTexture);
+            this.glEngine.release();
         }
 
         if (this.audio && this.alSources != NO_TEXTURE) {
             AL10.alSourceStop(this.alSources);
             AL10.alDeleteSources(this.alSources);
             AL10.alDeleteBuffers(this.alBuffers);
+            // this.alEngine.release();
         }
     }
 

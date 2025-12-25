@@ -291,7 +291,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean liveSource() {
-        return this.formatContext != null && this.formatContext.duration() == avutil.AV_NOPTS_VALUE;
+        return this.formatContext != null && !this.formatContext.isNull() && this.formatContext.duration() == avutil.AV_NOPTS_VALUE;
     }
 
     @Override
@@ -650,6 +650,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             try {
                 // Network options
+                av_dict_set(options, "user-agent", WaterMedia.USER_AGENT, 0);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
