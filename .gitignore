@@ -3,6 +3,7 @@
 /gradle/
 gradlew.bat
 gradlew
+hs_err_pid*
 libs
 /build/
 /build/classes/java/main/
