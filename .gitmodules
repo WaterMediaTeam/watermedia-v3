@@ -1,0 +1,6 @@
+[submodule "libs/binaries"]
+	path = libs/binaries
+	url = https://github.com/WaterMediaTeam/binaries.git
+[submodule "libs/tools"]
+	path = libs/tools
+	url = https://github.com/WaterMediaTeam/tools.git
