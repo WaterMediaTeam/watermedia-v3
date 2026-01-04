@@ -8,8 +8,6 @@ import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL21;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.tools.functions.BiIntConsumer;
-import org.watermedia.tools.functions.TriIntConsumer;
 
 import java.nio.ByteBuffer;
 import java.util.function.IntConsumer;
@@ -31,9 +29,9 @@ public final class GLEngine {
     private static final int BYTES_PER_PIXEL = 4; // RGBA/BGRA
 
     private final IntSupplier genTexture;
-    private final BiIntConsumer bindTexture;
-    private final TriIntConsumer texParameter;
-    private final BiIntConsumer pixelStore;
+    private final BindConsumer bindTexture;
+    private final TexParamConsumer texParameter;
+    private final BindConsumer pixelStore;
     private final IntConsumer delTexture;
 
     // PBO state
@@ -43,7 +41,7 @@ public final class GLEngine {
     private boolean pboReady = false;
     private long allocatedPboSize = 0;
 
-    public GLEngine(final IntSupplier genTexture, final BiIntConsumer bindTexture, final TriIntConsumer texParameter, final BiIntConsumer pixelStore, final IntConsumer delTexture) {
+    public GLEngine(final IntSupplier genTexture, final BindConsumer bindTexture, final TexParamConsumer texParameter, final BindConsumer pixelStore, final IntConsumer delTexture) {
         WaterMedia.checkIsClientSideOrThrow(GLEngine.class);
         if (genTexture == null || bindTexture == null || texParameter == null
                 || pixelStore == null || delTexture == null) {
@@ -224,18 +222,28 @@ public final class GLEngine {
 
     public static class Builder {
         private IntSupplier genTexture = GL11::glGenTextures;
-        private BiIntConsumer bindTexture = GL11::glBindTexture;
-        private TriIntConsumer texParameter = GL11::glTexParameteri;
-        private BiIntConsumer pixelStore = GL11::glPixelStorei;
+        private BindConsumer bindTexture = GL11::glBindTexture;
+        private TexParamConsumer texParameter = GL11::glTexParameteri;
+        private BindConsumer pixelStore = GL11::glPixelStorei;
         private IntConsumer delTexture = GL11::glDeleteTextures;
 
         public Builder setGenTexture(final IntSupplier f) { this.genTexture = f; return this; }
-        public Builder setBindTexture(final BiIntConsumer f) { this.bindTexture = f; return this; }
-        public Builder setTexParameter(final TriIntConsumer f) { this.texParameter = f; return this; }
-        public Builder setPixelStore(final BiIntConsumer f) { this.pixelStore = f; return this; }
+        public Builder setBindTexture(final BindConsumer f) { this.bindTexture = f; return this; }
+        public Builder setTexParameter(final TexParamConsumer f) { this.texParameter = f; return this; }
+        public Builder setPixelStore(final BindConsumer f) { this.pixelStore = f; return this; }
         public Builder setDelTexture(final IntConsumer f) { this.delTexture = f; return this; }
         public GLEngine build() {
             return new GLEngine(this.genTexture, this.bindTexture, this.texParameter, this.pixelStore, this.delTexture);
         }
+    }
+
+    @FunctionalInterface
+    public interface BindConsumer {
+        void accept(int a, int b);
+    }
+
+    @FunctionalInterface
+    public interface TexParamConsumer {
+        void accept(int a, int b, int c);
     }
 }

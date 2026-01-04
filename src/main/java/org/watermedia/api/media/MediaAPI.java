@@ -27,6 +27,7 @@ public class MediaAPI extends WaterMediaAPI {
                     return platform.getSources(uri);
                 } catch (final Throwable t) {
                     LOGGER.error("Failed to open source {} for the {}", uri, platform.name(), t);
+                    return new MRL.Source[0];
                 }
             }
         }
@@ -42,6 +43,7 @@ public class MediaAPI extends WaterMediaAPI {
         }
 
         // REGISTER PLATFORMS
+        PLATFORMS.push(new YoutubePlatform());
         PLATFORMS.push(new ImgurPlatform());
         PLATFORMS.push(new KickPlatform());
         PLATFORMS.push(new StreamablePlatform());

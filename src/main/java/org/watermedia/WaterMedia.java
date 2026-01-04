@@ -17,8 +17,8 @@ import java.util.ServiceLoader;
 public class WaterMedia {
     private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
     public static final String ID = "watermedia";
-    public static final String NAME = "WATERMeDIA";
-    public static final String VERSION = IOTool.getVersion();
+    public static final String NAME = "WaterMedia";
+    public static final String VERSION = IOTool.jarVersion();
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
     public static final Logger LOGGER = LogManager.getLogger(ID);
 
@@ -32,24 +32,12 @@ public class WaterMedia {
     public final Path tmp, cwd;
     public final boolean clientSide;
 
-    private boolean ffmpeg, videolan;
-
     private WaterMedia(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
         if (instance != null) throw new IllegalStateException("Instance was already created");
         this.name = name;
         this.tmp = tmp == null ? DEFAULT_TEMP : tmp;
         this.cwd = cwd == null ? DEFAULT_CWD : cwd;
         this.clientSide = clientSide;
-    }
-
-    public static boolean ffmpeg() {
-        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
-        return instance.ffmpeg;
-    }
-
-    public static boolean videolan() {
-        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
-        return instance.videolan;
     }
 
     /**
@@ -67,33 +55,37 @@ public class WaterMedia {
          Objects.requireNonNull(name, "Name of the environment cannot be null");
          WaterMedia.instance = new WaterMedia(name, tmp, cwd, clientSide);
 
-        LOGGER.info(IT, "Preparing '{}v{}' for '{}'", NAME, VERSION, name);
-        LOGGER.info(IT, "OS Detected: {} ({})", System.getProperty("os.name"), System.getProperty("os.arch"));
+        LOGGER.info(IT, "Running '{} v{}' for '{}'", NAME, VERSION, name);
+        LOGGER.info(IT, "OS Detected: {} ({}) - Java: {}", System.getProperty("os.name"), System.getProperty("os.arch"), System.getProperty("java.version"));
+        LOGGER.info(IT, "RAM stats (used/total/max): {}/{}/{} MB", (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1024 / 1024, Runtime.getRuntime().totalMemory() / 1024 / 1024, Runtime.getRuntime().maxMemory() / 1024 / 1024);
+        LOGGER.info(IT, "Process Path: {}", instance.cwd.toAbsolutePath());
+        LOGGER.info(IT, "Temp folder: {}", instance.tmp.toAbsolutePath());
 
         if (clientSide) {
-            LOGGER.info(IT, "Starting Binaries extraction...");
+            LOGGER.info(IT, "Starting {}", WaterMediaBinaries.NAME);
             WaterMediaBinaries.start(instance.name, instance.tmp, instance.cwd, true);
         } else {
-            LOGGER.info(IT, "Binaries extraction skipped, no requested on server-side");
+            LOGGER.info(IT, "Skipping WMB startup on server-side environment");
         }
 
-        LOGGER.info(IT, "Registering {} config spec into OmegaConfig", NAME);
+        LOGGER.info(IT, "Starting configuration spec registration...");
         OmegaConfig.register(WaterMediaConfig.class);
-        LOGGER.info(IT, "Successfully registered config spec");
 
+        LOGGER.info(IT, "Starting WATERMeDIA APIs");
         apis = ServiceLoader.load(WaterMediaAPI.class);
         for (final WaterMediaAPI api: apis) {
-            LOGGER.info(IT, "Loading {}", api.name());
+            LOGGER.info(IT, "Starting {}", api.name());
             try {
                 if (!api.start(instance)) {
-                    LOGGER.warn(IT, "The {} module refuses to load", api.name());
+                    LOGGER.warn(IT, "Failed to start {} - API refuses", api.name());
                 }
             } catch (final Exception e) {
                 LOGGER.fatal(IT, "Unexpected exception handled loading API module {}, we cannot recover back!", api.name());
                 throw new UnsupportedOperationException("Failed to start WATERMeDIA: Multimedia API", e);
             }
-            LOGGER.info(IT, "Loaded {} successfully", api.name());
+            LOGGER.info(IT, "Started {} successfully", api.name());
         }
+        LOGGER.info(IT, "== WATERMeDIA initialized successfully");
     }
 
     public static String toId(final String path) { return WaterMedia.ID + ":" + path; }
@@ -103,4 +95,15 @@ public class WaterMedia {
         if (!instance.clientSide)
             throw new IllegalStateException("Called a " + clazz.getSimpleName() + " method on a server-side environment");
     }
+
+    public static Path cwd() {
+        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
+        return instance.cwd;
+    }
+
+    public static Path tmp() {
+        if (instance == null) throw new IllegalStateException("WATERMeDIA was not initialized");
+        return instance.tmp;
+    }
 }
+

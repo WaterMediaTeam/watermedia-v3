@@ -190,6 +190,12 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public int texture() { return this.glTexture; }
 
     /**
+     * Returns the OpenAL source ID used for audio playback.
+     * @return the OpenAL source ID, or {@link MediaPlayer#NO_TEXTURE NO_TEXTURE} if audio is not supported.
+     */
+    public int audioSource() { return this.alSources; }
+
+    /**
      * Moves to the previous frame of the video.
      * @return true if the operation was successful, false otherwise.
      */
@@ -499,8 +505,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public void release() {
         if (this.video && this.glTexture != NO_TEXTURE) {
-            this.glEngine.deleteTexture(this.glTexture);
-            this.glEngine.release();
+            this.renderThreadEx.execute(() -> {
+                this.glEngine.deleteTexture(this.glTexture);
+                this.glEngine.release();
+            });
         }
 
         if (this.audio && this.alSources != NO_TEXTURE) {

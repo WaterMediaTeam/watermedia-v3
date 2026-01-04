@@ -1,11 +1,10 @@
 package org.watermedia.tools;
 
+import org.watermedia.WaterMedia;
+
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.net.URL;
-import java.net.URLConnection;
+import java.net.*;
 
 import static java.net.HttpURLConnection.*;
 import static java.net.HttpURLConnection.HTTP_FORBIDDEN;
@@ -18,19 +17,38 @@ import static java.net.HttpURLConnection.HTTP_UNAVAILABLE;
 
 public class NetTool {
 
-    public static HttpURLConnection connectToHTTP(URI uri, String method) throws IOException {
+    public static HttpURLConnection connectToHTTP(final URI uri, final String method, final String accept) throws IOException {
         final URL url = uri.toURL();
-        final HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setRequestMethod(method);
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(15000);
-        return connection;
+        final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(15000);
+        conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
+        conn.setRequestProperty("Accept", accept);
+        conn.setInstanceFollowRedirects(true);
+        return conn;
     }
 
-    public static boolean validateHTTP200(int code, URI uri) throws IOException {
+    public static URLConnection connectToURI(final URI uri) throws IOException {
+        try {
+            final URL url = uri.toURL();
+            final URLConnection conn = url.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(15000);
+            conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
+            return conn;
+        } catch (final MalformedURLException e) {
+            return null;
+        }
+    }
+
+    public static boolean validateHTTP200(final int code, final URI uri) throws IOException {
         switch (code) {
             case HTTP_OK, HTTP_NOT_MODIFIED, -1 -> {
                 return true; // DO NOTHING
+            }
+            case HTTP_MOVED_TEMP, HTTP_MOVED_PERM -> {
+                return false; // REDIRECTION SHOULD BE HANDLED OUTSIDE
             }
             case HTTP_REQ_TOO_LONG -> throw new IOException("Request take too long to:" + uri);
             case HTTP_BAD_REQUEST -> throw new IOException("Bad request to: " + uri);
@@ -51,7 +69,7 @@ public class NetTool {
         private final String body;
         private final URLConnection connection;
 
-        public Request(URL url, String method, String body) throws IOException {
+        public Request(final URL url, final String method, final String body) throws IOException {
             this.url = url;
             this.method = method;
             this.body = body;

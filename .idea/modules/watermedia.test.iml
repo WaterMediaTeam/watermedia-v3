@@ -5,8 +5,8 @@
       <configuration>
         <autoDetectTypes>
           <platformType>FORGE</platformType>
-          <platformType>NEOFORGE</platformType>
           <platformType>FABRIC</platformType>
+          <platformType>NEOFORGE</platformType>
         </autoDetectTypes>
         <projectReimportVersion>1</projectReimportVersion>
       </configuration>

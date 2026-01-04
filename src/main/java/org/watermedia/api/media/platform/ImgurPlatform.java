@@ -3,8 +3,6 @@ package org.watermedia.api.media.platform;
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.platform.IPlatform;
-import org.watermedia.tools.DataTool;
 import org.watermedia.tools.NetTool;
 
 import java.io.IOException;
@@ -15,7 +13,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -37,7 +34,7 @@ public class ImgurPlatform implements IPlatform {
     @Override
     public boolean validate(final URI uri) {
         // i.imgur.com usually points to raw files, imgur.com points to the site/api
-        return "imgur.com".equals(uri.getHost());
+        return "imgur.com".equalsIgnoreCase(uri.getHost());
     }
 
     @Override
@@ -98,7 +95,7 @@ public class ImgurPlatform implements IPlatform {
 
     private MRL.Source buildSourceFromImage(final Image img, final String fallbackTitle, final String accountUrl) {
         // Parse MimeType
-        final MRL.MediaType type = MRL.MediaType.fromMimeType(img.type());
+        final MRL.MediaType type = MRL.MediaType.of(img.type());
 
         // Fix for when Imgur says "image/gif" but provides an mp4 link, treated as video
         final String link = switch (type) {
@@ -137,7 +134,7 @@ public class ImgurPlatform implements IPlatform {
 
     private String fetch(final String urlString) throws IOException {
         final URI uri = URI.create(urlString);
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET");
+        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "application/json");
         
         try {
             final int code = conn.getResponseCode();

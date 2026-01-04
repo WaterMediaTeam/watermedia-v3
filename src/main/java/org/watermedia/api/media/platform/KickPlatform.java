@@ -4,18 +4,15 @@ import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MRL;
-import org.watermedia.tools.HlsTools;
+import org.watermedia.tools.HlsTool;
 import org.watermedia.tools.NetTool;
 
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.text.DateFormat;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.Date;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -53,7 +50,7 @@ public class KickPlatform implements IPlatform {
 
             // INIT
             final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
-            final var r = HlsTools.fetch(channel.url);
+            final var r = HlsTool.fetch(channel.url);
 
             // BASIC METADATA
             sourceBuilder.metadata(new MRL.Metadata(
@@ -65,7 +62,7 @@ public class KickPlatform implements IPlatform {
                     channel.user.username)
             );
 
-            if (r instanceof final HlsTools.MasterResult master) {
+            if (r instanceof final HlsTool.MasterResult master) {
                 for (final var variant: master.variants()) {
                     sourceBuilder.quality(MRL.Quality.of(variant.width(), variant.height()), URI.create(variant.uri()));
                 }
@@ -93,7 +90,7 @@ public class KickPlatform implements IPlatform {
                 throw new IllegalStateException("Video is marked as mature content");
 
             final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
-            final var r = HlsTools.fetch(uri);
+            final var r = HlsTool.fetch(uri);
 
             sourceBuilder.metadata(new MRL.Metadata(
                     video.livestream.channel.user.username,
@@ -104,7 +101,7 @@ public class KickPlatform implements IPlatform {
                     video.livestream.channel.user.username)
             );
 
-            if (r instanceof final HlsTools.MasterResult master) {
+            if (r instanceof final HlsTool.MasterResult master) {
                 for (final var variant: master.variants()) {
                     sourceBuilder.quality(MRL.Quality.of(variant.width(), variant.height()), URI.create(variant.uri()));
                 }
@@ -130,9 +127,7 @@ public class KickPlatform implements IPlatform {
     }
 
     private InputStream getInputStream(final URI uri) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET");
-        conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
-        conn.setRequestProperty("Accept", "application/json");
+        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "application/json");
         try {
             NetTool.validateHTTP200(conn.getResponseCode(), uri);
             return new ByteArrayInputStream(conn.getInputStream().readAllBytes());

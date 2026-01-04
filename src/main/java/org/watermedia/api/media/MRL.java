@@ -9,6 +9,7 @@ import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.tools.ThreadTool;
 
+import java.io.File;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
@@ -51,9 +52,18 @@ public final class MRL {
         this.uri = Objects.requireNonNull(uri, "URI cannot be null");
     }
 
-    // =========================================================================
-    // STATIC FACTORY & CACHE
-    // =========================================================================
+    /**
+     * Gets or creates an MRL for the given URI.
+     * If cached and not expired, returns immediately.
+     * Otherwise, starts async loading via IPlatform.
+     *
+     * @param uri the media URI
+     * @return the MRL instance (may still be loading)
+     */
+    public static MRL get(final String uri) {
+        final File f = new File(uri);
+        return get(f.exists() ? f.toURI() : URI.create(uri));
+    }
 
     /**
      * Gets or creates an MRL for the given URI.
@@ -63,7 +73,7 @@ public final class MRL {
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
      */
-    public static MRL get(final URI uri) {
+    private static MRL get(final URI uri) {
         Objects.requireNonNull(uri, "URI cannot be null");
 
         // Cleanup expired entries periodically
@@ -378,7 +388,7 @@ public final class MRL {
         /**
          * Parses a MIME type string into MediaType.
          */
-        public static MediaType fromMimeType(final String mimeType) {
+        public static MediaType of(final String mimeType) {
             if (mimeType == null || mimeType.isEmpty()) return UNKNOWN;
 
             final String[] type = mimeType.split("/");

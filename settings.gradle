@@ -7,4 +7,5 @@ pluginManagement {
 
 rootProject.name = 'watermedia'
 
-includeBuild("../binaries")
+includeBuild("libs/binaries")
+includeBuild("libs/tools")

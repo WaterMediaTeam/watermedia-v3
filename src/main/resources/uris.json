@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Platform Tests",
+    "uris": [
+
+      {
+        "name": "STREAMABLE TEST",
+        "uri": "https://streamable.com/6yszde"
+      },
+
+      {
+        "name": "KICK STREAM TEST",
+        "uri": "https://kick.com/locochon"
+      },
+      {
+        "name": "IMGUR MULTISOURCE (???x???)",
+        "uri": "https://imgur.com/gallery/images-that-i-use-to-test-watermedia-aWYiadd"
+      }
+    ]
+  },
+  {
+    "name": "Format Tests",
+    "uris": [
+      {
+        "name": "GIF TEST",
+        "uri": "https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif"
+      },
+      {
+        "name": "APNG TEST",
+        "uri": "https://i.ibb.co/jyhTX5q/maya-megu-APNG.png"
+      },
+      {
+        "name": "H.264 MP4 TEST (RAKKUN)",
+        "uri": "https://files.catbox.moe/1n0jn9.mp4"
+      },
+      {
+        "name": "H.265 MP4 TEST",
+        "uri": "https://lf-tk-sg.ibytedtos.com/obj/tcs-client-sg/resources/hevc_8k60P_bilibili_1.mp4"
+      }
+    ]
+  }
+]

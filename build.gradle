@@ -1,7 +1,7 @@
 plugins {
     id 'java'
     id 'com.google.osdetector' version '1.7.+'
-    id "me.modmuss50.mod-publish-plugin" version "0.8.+"
+    id "me.modmuss50.mod-publish-plugin" version "1.1.+"
 }
 
 def MT_TOKEN = System.getenv("MODRINTH_TOKEN")
@@ -53,6 +53,7 @@ sourceSets {
 
     // LIBRARY
     main.compileClasspath += configurations.library
+    main.runtimeClasspath += configurations.library
     test.compileClasspath += configurations.library
     test.runtimeClasspath += configurations.library
 }
@@ -60,6 +61,7 @@ sourceSets {
 dependencies {
     // DEPENDENCIES
     include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
+    include "org.watermedia:tools"
 
     // EXTERNAL DEPENDENCIES
     library "org.watermedia:binaries"
@@ -71,14 +73,12 @@ dependencies {
     library "com.github.WaterMediaTeam:modloaders:$loaders_version"
     library "com.google.code.gson:gson:$gson_version"
 
-    library "net.java.dev.jna:jna:$jna_version"
-    library "net.java.dev.jna:jna-platform:$jna_version"
-
     library "org.apache.logging.log4j:log4j-api:$log4j_version"
     library "org.apache.logging.log4j:log4j-core:$log4j_version"
 
     library "org.lwjgl:lwjgl-opengl:$opengl_version"
     library "org.lwjgl:lwjgl-glfw:$opengl_version"
+    library "org.lwjgl:lwjgl-stb:$opengl_version"
     library "org.lwjgl:lwjgl-openal:$openal_version"
 
     // TEST DEPENDENCIES
@@ -117,11 +117,7 @@ jar {
     from {
         configurations.include.collect {
             it.isDirectory() ? it.matching {
-                exclude '*'
-//                include 'META-INF/services/**'  // Incluir servicios
             } : zipTree(it).matching {
-                exclude '*'
-//                include 'META-INF/services/**'  // Incluir servicios
             }
         }
     }

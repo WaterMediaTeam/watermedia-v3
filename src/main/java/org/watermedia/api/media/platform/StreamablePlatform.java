@@ -15,14 +15,14 @@ public class StreamablePlatform implements IPlatform {
     private static final Gson GSON = new Gson();
 
     @Override public String name() { return "Streamable"; }
-    @Override public boolean validate(final URI uri) { return "streamable.com".equals(uri.getHost()); }
+    @Override public boolean validate(final URI uri) { return "streamable.com".equalsIgnoreCase(uri.getHost()); }
 
     @Override
     public MRL.Source[] getSources(final URI uri) {
         final String videoId = uri.getPath().substring(1);
 
         try {
-            final var connection = NetTool.connectToHTTP(new URI(API_URL + videoId), "GET");
+            final var connection = NetTool.connectToHTTP(new URI(API_URL + videoId), "GET", "application/json");
             NetTool.validateHTTP200(connection.getResponseCode(), uri);
 
             try (final var is = new InputStreamReader(connection.getInputStream())) {
@@ -33,7 +33,9 @@ public class StreamablePlatform implements IPlatform {
                 sourceBuilder.metadata(new MRL.Metadata(video.title, videoId, video.thumbnail, null, (long) (video.files.original.duration * 1000L), null));
 
                 sourceBuilder.quality(MRL.Quality.of(video.files.mp4.width, video.files.mp4.height), new URI(video.files.mp4.url));
-                sourceBuilder.quality(MRL.Quality.of(video.files.mp4Small.width, video.files.mp4Small.height), new URI(video.files.mp4Small.url));
+                if (video.files.mp4Small != null) {
+                    sourceBuilder.quality(MRL.Quality.of(video.files.mp4Small.width, video.files.mp4Small.height), new URI(video.files.mp4Small.url));
+                }
 
                 return new MRL.Source[] { sourceBuilder.build() };
             } finally {

@@ -75,7 +75,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             }
 
             LOGGER.debug(IT, "Server Response code: {}, running decoding", code);
-            this.images = DecoderAPI.decodeImage(IOTool.readAllBytes(request.getInputStream()));
+            this.images = DecoderAPI.decodeImage(request.getInputStream().readAllBytes());
             this.status = this.triggerPause ? Status.PAUSED : Status.PLAYING;
 
             if (this.images == null || this.images.frames() == null || this.images.frames().length == 0) {

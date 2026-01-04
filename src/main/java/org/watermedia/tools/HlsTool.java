@@ -19,16 +19,10 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * HLS M3U8 Parser - Zero dependencies, static API
- * Compatible with Twitch, Kick, and HLS-compliant services
- */
-public final class HlsTools {
-    private HlsTools() {} // No instances
+public final class HlsTool {
+    private HlsTool() {}
 
-    /**
-     * Parse M3U8 content from string
-     */
+
     public static Result parse(final String content, final String source) {
         if (content == null || content.isBlank()) {
             return new ErrorResult("Content is null or empty", null);
@@ -50,11 +44,11 @@ public final class HlsTools {
         }
     }
 
-    /**
-     * Fetch URL and parse M3U8
-     */
     public static Result fetch(final URI uri) {
         try {
+            final var http = NetTool.connectToHTTP(uri, "GET", "*/*");
+            NetTool.validateHTTP200(http.getResponseCode(), uri);
+
             final var client = HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(10))
                     .followRedirects(HttpClient.Redirect.NORMAL)
@@ -376,7 +370,7 @@ public final class HlsTools {
 
         System.out.println("=== MASTER PLAYLIST ===\n");
 
-        final Result result = HlsTools.parse(master, "test.m3u8");
+        final Result result = HlsTool.parse(master, "test.m3u8");
 
         if (result instanceof final MasterResult m) {
             System.out.println("Source: " + m.source());
@@ -413,7 +407,7 @@ public final class HlsTools {
             https://cdn.example.com/segment3.ts
             """;
 
-        final Result mediaResult = HlsTools.parse(media, "playlist.m3u8");
+        final Result mediaResult = HlsTool.parse(media, "playlist.m3u8");
 
         if (mediaResult instanceof final MediaResult m) {
             System.out.println("Source: " + m.source());

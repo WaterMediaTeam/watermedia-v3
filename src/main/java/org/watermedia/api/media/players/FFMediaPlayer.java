@@ -23,7 +23,6 @@ import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.ThreadTool;
 
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -311,7 +310,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public long duration() {
-        return (this.formatContext == null || this.liveSource()) ? -1 : this.formatContext.duration() / 1000;
+        return (this.formatContext == null || this.formatContext.isNull() || this.liveSource()) ? -1 : this.formatContext.duration() / 1000;
     }
 
     @Override
@@ -644,13 +643,19 @@ public final class FFMediaPlayer extends MediaPlayer {
                 return false;
             }
 
+            // PREPARE URI
+            final var uri = this.source.uri(this.selectedQuality);
+            final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+
             // Open format context
             this.formatContext = avformat.avformat_alloc_context();
             final AVDictionary options = new AVDictionary();
 
             try {
-                // Network options
-                av_dict_set(options, "user-agent", WaterMedia.USER_AGENT, 0);
+                av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
+                        "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
+                        "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n", 0);
+
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
@@ -662,8 +667,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 av_dict_set(options, "rtsp_transport", "tcp", 0);
                 av_dict_set(options, "max_delay", "5000000", 0);
 
-                if (avformat.avformat_open_input(this.formatContext, this.source.uri(this.selectedQuality).toString(), null, options) < 0) {
-                    LOGGER.error(IT, "Failed to open input: {}", this.source.uri(this.selectedQuality).toString());
+                if (avformat.avformat_open_input(this.formatContext, url, null, options) < 0) {
+                    LOGGER.error(IT, "Failed to open input: {}", url);
                     return false;
                 }
             } finally {
@@ -1345,7 +1350,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         try {
             LOGGER.info(IT, "Loading FFMPEG module...");
 
-            final Path ffmpegPath = WaterMediaBinaries.getBinaryPath(WaterMediaBinaries.FFMPEG_ID);
+            final Path ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
 
             if (ffmpegPath != null && Files.exists(ffmpegPath)) {
                 final String pathStr = ffmpegPath.toAbsolutePath().toString();
