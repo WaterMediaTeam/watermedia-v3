@@ -5,7 +5,6 @@ gradlew.bat
 gradlew
 hs_err_pid*
 *.jar
-libs
 *.log
 /build/
 /build/classes/java/main/
