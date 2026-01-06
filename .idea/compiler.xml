@@ -2,8 +2,6 @@
 <project version="4">
   <component name="CompilerConfiguration">
     <bytecodeTargetLevel target="17">
-      <module name="org.watermedia.tools.main" target="21" />
-      <module name="org.watermedia.tools.test" target="21" />
       <module name="tools" target="21" />
       <module name="tools.main" target="21" />
       <module name="tools.test" target="21" />
