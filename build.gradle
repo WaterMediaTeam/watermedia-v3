@@ -64,7 +64,7 @@ dependencies {
     include "org.watermedia:tools"
 
     // EXTERNAL DEPENDENCIES
-    library "org.watermedia:wm_binaries"
+    library "org.watermedia:binaries"
     include ("com.github.MinecraftOmega:omegaconfig:$omegaconfig_version") { // TODO: do not shade
         transitive = false
     }
