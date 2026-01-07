@@ -1,7 +1,3 @@
 # configuration file for building snapshots and releases with jitpack.io
 jdk:
   - openjdk21
-before_install:
-  - git submodule update --init --recursive --remote
-install:
-  - gradle wrapper --gradle-version 9.2.1
