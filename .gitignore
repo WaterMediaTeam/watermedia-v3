@@ -1,8 +1,5 @@
 # Project exclude paths
 /.gradle/
-/gradle/
-gradlew.bat
-gradlew
 hs_err_pid*
 *.jar
 *.log
