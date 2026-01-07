@@ -5,8 +5,8 @@ git:
   updateSubmodules: false
 before_install:
   - cd libs
-  - rmdir -r tools
-  - rmdir -r binaries
+  - rm -r tools
+  - rm -r binaries
   - git clone https://github.com/WaterMediaTeam/tools.git
   - git clone https://github.com/WaterMediaTeam/binaries.git
   - cd ../
