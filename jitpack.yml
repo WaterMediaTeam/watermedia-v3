@@ -4,4 +4,4 @@ jdk:
 before_install:
   - git submodule update --init --recursive --remote
 install:
-  - gradle 9.2.1 install
+  - gradle wrapper --gradle-version 9.2.1
