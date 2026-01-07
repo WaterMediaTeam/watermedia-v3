@@ -1,7 +1,7 @@
 # Project exclude paths
 /.gradle/
 hs_err_pid*
-*.jar
+/*.jar
 *.log
 /build/
 /build/classes/java/main/
