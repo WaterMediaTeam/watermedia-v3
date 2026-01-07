@@ -2,4 +2,6 @@
 jdk:
   - openjdk21
 before_install:
-  - ./scripts/jitpack_setup.sh
+  - git submodule update --init --recursive --remote
+install:
+  - gradle 9.2.1 install
