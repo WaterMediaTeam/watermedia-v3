@@ -133,7 +133,10 @@ jar {
 publishMods {
     file = jar.archiveFile
     changelog = getChangelogText()
-    type = ALPHA
+    type = "alpha".equalsIgnoreCase(project.properties.versionType?.toString())
+            ? ALPHA : "beta".equalsIgnoreCase(project.properties.versionType?.toString())
+            ? BETA : "release".equalsIgnoreCase(project.properties.versionType?.toString())
+            ? STABLE : ALPHA
     displayName = "WM/${project.properties.version}"
     modLoaders.add("forge")
     modLoaders.add("neoforge")
