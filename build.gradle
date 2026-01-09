@@ -123,19 +123,17 @@ jar {
     }
     exclude('META-INF/versions/', 'META-INF/maven/')
 
-    // Configurar estrategia para combinar archivos de servicios duplicados
     filesMatching('META-INF/*') {
-        // Combinar contenido de archivos de servicio con el mismo nombre
-        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE // COMBINE FILES
     }
 }
 
 publishMods {
     file = jar.archiveFile
     changelog = getChangelogText()
-    type = "alpha".equalsIgnoreCase(project.properties.versionType?.toString())
-            ? ALPHA : "beta".equalsIgnoreCase(project.properties.versionType?.toString())
-            ? BETA : "release".equalsIgnoreCase(project.properties.versionType?.toString())
+    type = "alpha".equalsIgnoreCase(project.properties.versiontype?.toString())
+            ? ALPHA : "beta".equalsIgnoreCase(project.properties.versiontype?.toString())
+            ? BETA : "release".equalsIgnoreCase(project.properties.versiontype?.toString())
             ? STABLE : ALPHA
     displayName = "WM/${project.properties.version}"
     modLoaders.add("forge")
@@ -150,20 +148,22 @@ publishMods {
     curseforge {
         accessToken = CF_TOKEN
         projectId = curseforgeid
-        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.5", "1.21.8", "1.21.10")
-        javaVersions.addAll(JavaVersion.VERSION_21, JavaVersion.VERSION_17)
+        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.11")
+        javaVersions.addAll(JavaVersion.VERSION_25, JavaVersion.VERSION_21, JavaVersion.VERSION_17)
         clientRequired = true
         serverRequired = true
         projectSlug = id
         additionalFile(sourcesJar) {
             name = "WM-sources/${project.properties.version}"
         }
+        requires("watermedia-binaries")
     }
 
     modrinth {
         accessToken = MT_TOKEN
         projectId = modrinthid
-        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.5")
+        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.11")
+        requires("watermedia-binaries")
     }
 }
 

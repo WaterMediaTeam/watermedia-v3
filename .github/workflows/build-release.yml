@@ -46,8 +46,14 @@ jobs:
       - name: Build JAR
         run: gradle build
 
-      - name: Publish to CurseForge and Modrinth
-        run: gradle publishMods
+      - name: Publish to CurseForge
+        if: ${{ matrix.platform == 'curseforge' }}
+        run: gradle publishCurseforge --parallel
         env:
           CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+
+      - name: Publish to Modrinth
+        if: ${{ matrix.platform == 'modrinth' }}
+        run: gradle publishModrinth --parallel
+        env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
