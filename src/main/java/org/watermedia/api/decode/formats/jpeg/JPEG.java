@@ -2,6 +2,7 @@ package org.watermedia.api.decode.formats.jpeg;
 
 import org.watermedia.api.decode.Decoder;
 import org.watermedia.api.decode.Image;
+import org.watermedia.tools.DataTool;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -68,13 +69,7 @@ public class JPEG extends Decoder {
             final int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
             for (final int pixel : pixels) {
                 final int a = (type == BufferedImage.TYPE_INT_ARGB) ? ((pixel >> 24) & 0xFF) : 0xFF;
-                final int r = (pixel >> 16) & 0xFF;
-                final int g = (pixel >> 8) & 0xFF;
-                final int b = pixel & 0xFF;
-                buffer.put((byte) b);
-                buffer.put((byte) g);
-                buffer.put((byte) r);
-                buffer.put((byte) a);
+                DataTool.rgbaToBrga(buffer, pixel, (byte) a);
             }
         } else if (type == BufferedImage.TYPE_3BYTE_BGR) {
             // FAST PATH FOR BGR IMAGES - ALREADY BGR, JUST ADD ALPHA

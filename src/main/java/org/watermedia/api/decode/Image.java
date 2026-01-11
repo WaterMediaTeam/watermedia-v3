@@ -3,6 +3,7 @@ package org.watermedia.api.decode;
 import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 public record Image(ByteBuffer[] frames, int width, int height, long[] delay, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
@@ -36,5 +37,17 @@ public record Image(ByteBuffer[] frames, int width, int height, long[] delay, lo
             return this.duration * this.repeat();
         }
         return this.duration;
+    }
+
+    @Override
+    public String toString() {
+        return "Image{" +
+                "frames=" + Arrays.toString(this.frames) +
+                ", width=" + this.width +
+                ", height=" + this.height +
+                ", delay=" + Arrays.toString(this.delay) +
+                ", duration=" + this.duration +
+                ", repeat=" + this.repeat +
+                '}';
     }
 }

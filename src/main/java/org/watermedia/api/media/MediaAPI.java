@@ -3,7 +3,6 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.WaterMediaAPI;
 import org.watermedia.api.media.platform.*;
 import org.watermedia.api.media.players.FFMediaPlayer;
 
@@ -12,9 +11,15 @@ import java.util.LinkedList;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class MediaAPI extends WaterMediaAPI {
+public class MediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
-    private static final LinkedList<IPlatform> PLATFORMS = new LinkedList<>();
+    private static final LinkedList<IPlatform> PLATFORMS = new LinkedList<>() {
+        @Override
+        public void push(final IPlatform platform) {
+            LOGGER.info(IT, "Registering {} platform support", platform.name());
+            super.push(platform);
+        }
+    };
 
     static MRL.Source[] getSources(final URI uri) {
         LOGGER.info("Fetching sources for {}", uri);
@@ -35,14 +40,14 @@ public class MediaAPI extends WaterMediaAPI {
         return null;
     }
 
-    @Override
-    public boolean start(final WaterMedia instance) throws Exception {
+    public static boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
-            LOGGER.warn(IT, "Detected server-side environment, lockdown mode enabled");
+            LOGGER.warn(IT, "Media API refuses to load on server-side");
             return false;
         }
 
         // REGISTER PLATFORMS
+        LOGGER.info(IT, "Registering supported platforms");
         PLATFORMS.push(new YoutubePlatform());
         PLATFORMS.push(new ImgurPlatform());
         PLATFORMS.push(new KickPlatform());
@@ -50,34 +55,11 @@ public class MediaAPI extends WaterMediaAPI {
         PLATFORMS.push(new WaterPlatform());
         PLATFORMS.addLast(new DefaultPlatform()); // default, always returns something
 
-        // LOAD PLATFORMS
-        final boolean ffmpegLoaded = FFMediaPlayer.load(instance);
+        // LOAD ENGINES
+        LOGGER.info(IT, "Starting media engines");
+        FFMediaPlayer.load(instance);
 
-        // CHECK IF NEITHER OF THEM ARE LOADED
-        if (!ffmpegLoaded) {
-            LOGGER.fatal(IT, "FFMPEG are unable to be started in your environment, please report this issue to the WaterMedia's authors");
-            return false;
-        }
 
         return true;
-    }
-
-    @Override
-    public boolean onlyClient() {
-        return true;
-    }
-
-    @Override
-    public void test() {
-        // TODO: test must run a FFPROBE test
-    }
-
-    @Override
-    public Priority priority() {
-        return Priority.NORMAL;
-    }
-
-    @Override
-    public void release(final WaterMedia instance) {
     }
 }

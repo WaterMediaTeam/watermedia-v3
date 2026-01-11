@@ -112,7 +112,7 @@ jar {
         attributes "Implementation-Version"     : version
         attributes "Implementation-Vendor"      : authors
         attributes "Implementation-Timestamp"   : new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
-        attributes "Main-Class": "org.watermedia.app.Main"
+        attributes "Main-Class": "org.watermedia.bootstrap.app.AppBootstrap"
     }
     from {
         configurations.include.collect {

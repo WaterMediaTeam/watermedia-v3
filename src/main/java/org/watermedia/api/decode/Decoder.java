@@ -6,6 +6,13 @@ import java.nio.ByteBuffer;
 public abstract class Decoder {
 
     /**
+     * Provides the decoder name
+     */
+    public String name() {
+        return this.getClass().getSimpleName();
+    }
+
+    /**
      * Reads the "expected" header of the decoder format.
      * When it matches, it doesn't rewind to the initial position assuming it will proceed with the decoding
      * When it doesn't, rewinds to the initial position to let other decoders properly check the value.

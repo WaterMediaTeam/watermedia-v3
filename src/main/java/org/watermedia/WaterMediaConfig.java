@@ -1,6 +1,7 @@
 package org.watermedia;
 
 import org.omegaconfig.OmegaConfig;
+import org.omegaconfig.api.annotations.Comment;
 import org.omegaconfig.api.annotations.NumberConditions;
 import org.omegaconfig.api.annotations.Spec;
 import org.omegaconfig.api.annotations.StringConditions;
@@ -11,13 +12,11 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
-@Spec(value = WaterMedia.ID, suffix = "client", format = OmegaConfig.FORMAT_TOML)
+@Spec(value = WaterMedia.ID, suffix = "common", format = OmegaConfig.FORMAT_TOML)
 public class WaterMediaConfig {
 
     @Spec.Field
     public static MRL.Quality defaultMediaQuality = MRL.Quality.HIGHER;
-
-    public static boolean searchForLowMediaQuality = false;
 
     @Spec.Field
     public static boolean ffmpegEnabled = true;
@@ -27,6 +26,10 @@ public class WaterMediaConfig {
 
     @Spec.Field
     public static boolean pngDecoder$useBKGDChunk = false;
+
+    @Spec.Field
+    @Comment("Decoder fails when PNG chunk data doesn't match with the CRC")
+    public static boolean pngEncoder$failOnCorruptedData = true;
 
 
     @Spec(value = "server")

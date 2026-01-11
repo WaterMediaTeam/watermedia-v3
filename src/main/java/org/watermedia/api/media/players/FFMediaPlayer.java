@@ -1,5 +1,7 @@
 package org.watermedia.api.media.players;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
@@ -13,19 +15,20 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.Loader;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
 import org.watermedia.WaterMedia;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.ThreadTool;
 
+import java.io.File;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
@@ -45,6 +48,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadFactory DEFAULT_THREAD_FACTORY = ThreadTool.createFactory("FFThread", Thread.NORM_PRIORITY);
+    private static final Logger log = LogManager.getLogger(FFMediaPlayer.class);
     private static boolean LOADED;
 
     // ===========================================
@@ -380,13 +384,85 @@ public final class FFMediaPlayer extends MediaPlayer {
             while (!Thread.currentThread().isInterrupted()) {
                 // Handle quality change requests
                 if (this.activeQuality != this.selectedQuality) {
-                    this.performQualitySwitch();
+                    final MRL.Quality newQuality = this.selectedQuality;
+                    final long currentTimeMs = this.time();
+                    final boolean wasPaused = this.pauseRequested;
+
+                    LOGGER.info(IT, "Switching quality from {} to {} at {}ms", this.activeQuality, newQuality, currentTimeMs);
+
+                    // Update active quality before cleanup
+                    this.activeQuality = newQuality;
+
+                    // Cleanup current FFMPEG resources (but don't reset running state)
+                    this.cleanup();
+
+                    // Reset stats for new stream
+                    this.consecutiveSkips = 0;
+                    this.totalSkippedFrames = 0;
+                    this.totalRenderedFrames = 0;
+                    this.audioClockValid = false;
+
+                    this.currentStatus = Status.BUFFERING;
+
+                    // Reinitialize with new quality
+                    if (!this.init()) {
+                        LOGGER.error(IT, "Failed to reinitialize after quality switch to {}", newQuality);
+                        this.currentStatus = Status.ERROR;
+                        return;
+                    }
+
+                    // Seek to the saved timestamp
+                    if (currentTimeMs > 0 && this.canSeek()) {
+                        this.seekTarget = currentTimeMs;
+                    }
+
+                    // Restore pause state
+                    if (wasPaused) {
+                        this.currentStatus = Status.PAUSED;
+                    } else {
+                        this.currentStatus = Status.PLAYING;
+                        this.clockBaseTime = System.nanoTime();
+                    }
+
+                    LOGGER.info(IT, "Quality switch completed to {}", newQuality);
                     continue;
                 }
 
                 // Handle seek requests
                 if (this.seekTarget >= 0) {
-                    this.performSeek();
+                    final long targetMs = this.seekTarget;
+                    this.seekTarget = -1;
+
+                    if (this.formatContext == null || !this.canSeek()) {
+                        LOGGER.warn(IT, "Cannot seek - invalid format context or live stream");
+                        return;
+                    }
+
+                    final long currentMs = msFromSeconds(this.masterClock);
+                    LOGGER.info(IT, "Seeking to {}ms - current time {}ms", targetMs, currentMs);
+
+                    // Flush codecs
+                    if (this.videoCodecContext != null) {
+                        avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                    }
+                    if (this.audioCodecContext != null) {
+                        avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                    }
+
+                    // Perform seek
+                    final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
+                    final int seekFlags = targetMs < currentMs ? avformat.AVSEEK_FLAG_BACKWARD : 0;
+                    final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
+
+                    if (result >= 0) {
+                        this.masterClock = secondsFromMs(targetMs);
+                        this.clockBaseTime = System.nanoTime();
+                        this.consecutiveSkips = 0;
+                        this.audioClockValid = false;  // Invalidar clock de audio tras seek
+                        LOGGER.info(IT, "Seek completed to {}ms", targetMs);
+                    } else {
+                        LOGGER.error(IT, "av_seek_frame failed with error: {}", result);
+                    }
                     continue;
                 }
 
@@ -439,173 +515,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.currentStatus = Status.ERROR;
         } finally {
             this.cleanup();
-        }
-    }
-
-    /**
-     * Performs a quality switch by saving current timestamp, cleaning up resources,
-     * reinitializing with new quality URL, and seeking to the saved timestamp.
-     */
-    private void performQualitySwitch() {
-        final MRL.Quality newQuality = this.selectedQuality;
-        final long currentTimeMs = this.time();
-        final boolean wasPaused = this.pauseRequested;
-
-        LOGGER.info(IT, "Switching quality from {} to {} at {}ms", this.activeQuality, newQuality, currentTimeMs);
-
-        // Update active quality before cleanup
-        this.activeQuality = newQuality;
-
-        // Cleanup current FFmpeg resources (but don't reset running state)
-        this.cleanupForQualitySwitch();
-
-        // Reset stats for new stream
-        this.consecutiveSkips = 0;
-        this.totalSkippedFrames = 0;
-        this.totalRenderedFrames = 0;
-        this.audioClockValid = false;
-
-        this.currentStatus = Status.BUFFERING;
-
-        // Reinitialize with new quality
-        if (!this.init()) {
-            LOGGER.error(IT, "Failed to reinitialize after quality switch to {}", newQuality);
-            this.currentStatus = Status.ERROR;
-            return;
-        }
-
-        // Seek to the saved timestamp
-        if (currentTimeMs > 0 && this.canSeek()) {
-            this.seekTarget = currentTimeMs;
-        }
-
-        // Restore pause state
-        if (wasPaused) {
-            this.currentStatus = Status.PAUSED;
-        } else {
-            this.currentStatus = Status.PLAYING;
-            this.clockBaseTime = System.nanoTime();
-        }
-
-        LOGGER.info(IT, "Quality switch completed to {}", newQuality);
-    }
-
-    /**
-     * Cleans up FFmpeg resources for quality switch without affecting player state.
-     * Similar to cleanup() but preserves running state and thread.
-     */
-    private void cleanupForQualitySwitch() {
-        LOGGER.debug(IT, "Cleaning up FFmpeg resources for quality switch...");
-
-        // Free HW context first
-        if (this.hwTransferFrame != null) {
-            av_frame_free(this.hwTransferFrame);
-            this.hwTransferFrame = null;
-        }
-        if (this.hwDeviceCtx != null) {
-            av_buffer_unref(this.hwDeviceCtx);
-            this.hwDeviceCtx = null;
-        }
-        this.hwPixelFormat = AV_PIX_FMT_NONE;
-
-        // Free contexts
-        if (this.swsContext != null) {
-            swscale.sws_freeContext(this.swsContext);
-            this.swsContext = null;
-        }
-        if (this.swrContext != null) {
-            swresample.swr_free(this.swrContext);
-            this.swrContext = null;
-        }
-        if (this.videoCodecContext != null) {
-            avcodec.avcodec_free_context(this.videoCodecContext);
-            this.videoCodecContext = null;
-        }
-        if (this.audioCodecContext != null) {
-            avcodec.avcodec_free_context(this.audioCodecContext);
-            this.audioCodecContext = null;
-        }
-        if (this.formatContext != null) {
-            try {
-                avformat.avformat_close_input(this.formatContext);
-            } catch (final Exception e) {
-                LOGGER.warn(IT, "Error closing format context during quality switch", e);
-            }
-            this.formatContext = null;
-        }
-
-        // Free frames
-        if (this.videoFrame != null) {
-            avutil.av_frame_free(this.videoFrame);
-            this.videoFrame = null;
-        }
-        if (this.audioFrame != null) {
-            avutil.av_frame_free(this.audioFrame);
-            this.audioFrame = null;
-        }
-        if (this.scaledFrame != null) {
-            avutil.av_frame_free(this.scaledFrame);
-            this.scaledFrame = null;
-        }
-        if (this.resampledFrame != null) {
-            avutil.av_frame_free(this.resampledFrame);
-            this.resampledFrame = null;
-        }
-        if (this.packet != null) {
-            avcodec.av_packet_free(this.packet);
-            this.packet = null;
-        }
-
-        // Clear buffers
-        this.videoBuffer = null;
-        this.audioBuffer = null;
-        this.videoBufferInitialized = false;
-
-        // Reset stream indices
-        this.videoStreamIndex = -1;
-        this.audioStreamIndex = -1;
-        this.audioClockValid = false;
-        this.swsInputFormat = AV_PIX_FMT_NONE;
-
-        LOGGER.debug(IT, "Quality switch cleanup completed");
-    }
-
-    /**
-     * OPTIMIZACIÓN: Seek extraído a método separado para claridad y mejor branch prediction
-     */
-    private void performSeek() {
-        final long targetMs = this.seekTarget;
-        this.seekTarget = -1;
-
-        if (this.formatContext == null || !this.canSeek()) {
-            LOGGER.warn(IT, "Cannot seek - invalid format context or live stream");
-            return;
-        }
-
-        final long currentMs = msFromSeconds(this.masterClock);
-        LOGGER.info(IT, "Seeking to {}ms - current time {}ms", targetMs, currentMs);
-
-        // Flush codecs
-        if (this.videoCodecContext != null) {
-            avcodec.avcodec_flush_buffers(this.videoCodecContext);
-        }
-        if (this.audioCodecContext != null) {
-            avcodec.avcodec_flush_buffers(this.audioCodecContext);
-        }
-
-        // Perform seek
-        final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
-        final int seekFlags = targetMs < currentMs ? avformat.AVSEEK_FLAG_BACKWARD : 0;
-        final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
-
-        if (result >= 0) {
-            this.masterClock = secondsFromMs(targetMs);
-            this.clockBaseTime = System.nanoTime();
-            this.consecutiveSkips = 0;
-            this.audioClockValid = false;  // Invalidar clock de audio tras seek
-            LOGGER.info(IT, "Seek completed to {}ms", targetMs);
-        } else {
-            LOGGER.error(IT, "av_seek_frame failed with error: {}", result);
+            this.running = false;
         }
     }
 
@@ -628,7 +538,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
     // INITIALIZATION - OPTIMIZED
     // ===========================================
-
     private boolean init() {
         try {
             // Allocate structures
@@ -703,7 +612,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 return false;
             }
 
-            LOGGER.info(IT, "FFmpeg initialized successfully - video: {} (hw: {}), audio: {}",
+            LOGGER.info(IT, "FFMPEG initialized successfully - video: {} (hw: {}), audio: {}",
                     videoInit, this.isHardwareAccelerated(), audioInit);
 
             return true;
@@ -1249,7 +1158,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ===========================================
 
     private void cleanup() {
-        LOGGER.info(IT, "Cleaning up FFmpeg resources...");
+        LOGGER.info(IT, "Cleaning up FFMPEG resources...");
 
         // Free HW context first
         if (this.hwTransferFrame != null) {
@@ -1322,7 +1231,6 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.swsInputFormat = AV_PIX_FMT_NONE;
 
         LOGGER.info(IT, "Cleanup completed");
-        this.running = false;
     }
 
     // ===========================================
@@ -1345,39 +1253,68 @@ public final class FFMediaPlayer extends MediaPlayer {
     // STATIC LOADER
     // ===========================================
 
-    public static boolean load(final WaterMedia waterMedia) {
-        Objects.requireNonNull(waterMedia, "WaterMedia instance cannot be null");
+    public static boolean load(final WaterMedia watermedia) {
+        Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
+
+        LOGGER.info(IT, "Starting FFMPEG...");
+
         try {
-            LOGGER.info(IT, "Loading FFMPEG module...");
+            // ASK WATERMEDIA WHERE WAS FFMPEG
+            final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
+            final String configPath = WaterMediaConfig.customFFmpegPath != null ? WaterMediaConfig.customFFmpegPath.toAbsolutePath().toString() : null;
+            final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
 
-            final Path ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
+            System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
+            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
 
-            if (ffmpegPath != null && Files.exists(ffmpegPath)) {
-                final String pathStr = ffmpegPath.toAbsolutePath().toString();
-
-                System.setProperty("org.bytedeco.javacpp.platform.preloadpath", pathStr);
-                System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
-
-                final String currentLibPath = System.getProperty("java.library.path");
-                if (currentLibPath == null || currentLibPath.isEmpty()) {
-                    System.setProperty("java.library.path", pathStr);
-                } else if (!currentLibPath.contains(pathStr)) {
-                    System.setProperty("java.library.path",
-                            pathStr + java.io.File.pathSeparator + currentLibPath);
-                }
-
-                LOGGER.info(IT, "Configured JavaCPP with custom FFMPEG path: {}", pathStr);
-            } else {
-                LOGGER.warn(IT, "FFMPEG binaries path not found, using JavaCPP defaults");
+            final String currentLibPath = System.getProperty("java.library.path");
+            if (currentLibPath == null || currentLibPath.isEmpty()) {
+                System.setProperty("java.library.path", ffmpegPath);
+            } else if (!currentLibPath.contains(ffmpegPath)) {
+                System.setProperty("java.library.path", ffmpegPath + java.io.File.pathSeparator + currentLibPath);
             }
+
+            LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
 
             avutil.av_log_set_flags(avutil.AV_LOG_PRINT_LEVEL | avutil.AV_LOG_SKIP_REPEATED);
             avutil.av_log_set_level(LOGGER.isDebugEnabled() ? avutil.AV_LOG_DEBUG : avutil.AV_LOG_INFO);
 
-            logFFmpegCapabilities();
+            LOGGER.info(IT, "=== FFMPEG Build Info ===");
+            LOGGER.info(IT, "avformat: {}", avformat.avformat_version());
+            LOGGER.info(IT, "avcodec:  {}", avcodec.avcodec_version());
+            LOGGER.info(IT, "avutil:   {}", avutil.avutil_version());
+            LOGGER.info(IT, "swscale:  {}", swscale.swscale_version());
+            LOGGER.info(IT, "swresample: {}", swresample.swresample_version());
 
-            LOGGER.info(IT, "FFMPEG started, running version {} under {}",
-                    avformat.avformat_version(), avformat.avformat_license().getString());
+            try {
+                final BytePointer config = avformat.avformat_configuration();
+                if (config != null && !config.isNull()) {
+                    LOGGER.info(IT, "Configuration: {}", config.getString());
+                }
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Configuration: unavailable");
+            }
+
+            // Hardware acceleration
+            LOGGER.info(IT, "Hardware Acceleration:");
+            int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
+            int hwCount = 0;
+            do {
+                hwType = avutil.av_hwdevice_iterate_types(hwType);
+                if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
+
+                final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
+                if (hwName != null && !hwName.isNull()) {
+                    LOGGER.info(IT, "  • {}", hwName.getString());
+                    hwCount++;
+                }
+            } while (true);
+
+            if (hwCount == 0) {
+                LOGGER.info(IT, "  (none available)");
+            }
+
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), avformat.avformat_license().getString());
             return LOADED = true;
         } catch (final Throwable t) {
             LOGGER.error(IT, "Failed to load FFMPEG", t);
@@ -1385,52 +1322,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    private static void logFFmpegCapabilities() {
-        LOGGER.info(IT, "=== FFMPEG Build Info ===");
-        LOGGER.debug(IT, "avformat: {}", avformat.avformat_version());
-        LOGGER.debug(IT, "avcodec:  {}", avcodec.avcodec_version());
-        LOGGER.debug(IT, "avutil:   {}", avutil.avutil_version());
-        LOGGER.debug(IT, "swscale:  {}", swscale.swscale_version());
-        LOGGER.debug(IT, "swresample: {}", swresample.swresample_version());
-
-        try {
-            final BytePointer config = avformat.avformat_configuration();
-            if (config != null && !config.isNull()) {
-                LOGGER.debug(IT, "Configuration: {}", config.getString());
-            }
-        } catch (final Exception e) {
-            LOGGER.warn(IT, "Configuration: unavailable");
-        }
-
-        // Hardware acceleration
-        LOGGER.info(IT, "Hardware Acceleration:");
-        int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
-        int hwCount = 0;
-        do {
-            hwType = avutil.av_hwdevice_iterate_types(hwType);
-            if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
-
-            final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
-            if (hwName != null && !hwName.isNull()) {
-                LOGGER.info(IT, "  • {}", hwName.getString());
-                hwCount++;
-            }
-        } while (true);
-
-        if (hwCount == 0) {
-            LOGGER.info(IT, "  (none available)");
-        }
-    }
-
     public static boolean loaded() {
         return LOADED;
-    }
-
-    public boolean isRunning() {
-        return running;
-    }
-
-    public void setRunning(boolean running) {
-        this.running = running;
     }
 }

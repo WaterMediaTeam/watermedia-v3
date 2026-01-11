@@ -3,17 +3,20 @@ package org.watermedia.api.decode;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.decode.formats.gif.GIF;
+import org.watermedia.api.decode.formats.jpeg.JPEG;
+import org.watermedia.api.decode.formats.png.PNG;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ServiceLoader;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class DecoderAPI extends WaterMediaAPI {
+public class DecoderAPI {
     private static final Marker IT = MarkerManager.getMarker(DecoderAPI.class.getSimpleName());
-    private static ServiceLoader<Decoder> SERVICE;
+    private static final List<Decoder> DECODERS = new ArrayList<>();
 
     /**
      * @see #decodeImage(ByteBuffer)
@@ -30,11 +33,11 @@ public class DecoderAPI extends WaterMediaAPI {
      * @return a {@link Image} instance with a raw decoded image, the resulting buffers are in BGRA
      */
     public static Image decodeImage(final ByteBuffer buffer) {
-        for (final Decoder decoder: SERVICE) {
+        for (final Decoder decoder: DECODERS) {
             if (decoder.supported(buffer)) {
                 try {
                     return decoder.decode(buffer);
-                } catch (IOException e) {
+                } catch (final IOException e) {
                     // Log the exception or handle it as needed
                     LOGGER.error(IT, "Decoding failed: {}",e.getMessage(), e);
                 }
@@ -44,38 +47,29 @@ public class DecoderAPI extends WaterMediaAPI {
         return null;
     }
 
-    @Override
-    public boolean start(WaterMedia instance) throws Exception {
-        LOGGER.info(IT, "Loading image decoders");
-        SERVICE = ServiceLoader.load(Decoder.class);
-        for (final Decoder decoder: SERVICE) {
-            LOGGER.info(IT, "Testing {}", decoder.getClass().getSimpleName());
-            if (!decoder.test()) {
-                LOGGER.debug(IT, "Decoder {} fail test", decoder.getClass().getSimpleName());
-            }
+    public static void register(Decoder decoder) {
+        if (decoder == null) {
+            LOGGER.error(IT, "Ignoring register of null Decoder");
+            return;
         }
-        LOGGER.info(IT, "All decoders loaded");
+        if (!decoder.test()) {
+            LOGGER.error(IT, "Failed to register decoder {}, self-test failed", decoder.name());
+            return;
+        }
+
+        LOGGER.info(IT, "Registering {}", decoder.getClass().getSimpleName());
+        DECODERS.add(decoder);
+    }
+
+    public static boolean start(final WaterMedia instance) {
+        if (!instance.clientSide) {
+            LOGGER.warn(IT, "Decoder API refuses to load on server-side");
+            return false;
+        }
+
+        register(new PNG());
+        register(new JPEG());
+        register(new GIF());
         return true;
-    }
-
-    @Override
-    public boolean onlyClient() {
-        LOGGER.warn(IT, "DecoderAPI is not client-side only, but is recommended to be used only in client-side");
-        return false;
-    }
-
-    @Override
-    public void test() {
-
-    }
-
-    @Override
-    public Priority priority() {
-        return Priority.NORMAL;
-    }
-
-    @Override
-    public void release(WaterMedia instance) {
-        SERVICE = null;
     }
 }

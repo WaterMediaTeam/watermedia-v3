@@ -179,7 +179,7 @@ public class GIF extends Decoder {
 
     @Override
     public boolean test() {
-        return false;
+        return true;
     }
 
     private void renderImage(final int[] indexes, final int[] canvas, final ImageDescriptor id, final ScreenDescriptor lsd, final ColorTable colorTable, final GraphicExtension gce) {

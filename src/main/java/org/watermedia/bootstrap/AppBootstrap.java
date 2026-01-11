@@ -272,6 +272,7 @@ public class AppBootstrap {
                         if (h > this.getHeight()) { h = this.getHeight(); w = (int) (h * aspect); }
                         g.drawImage(BootstrapWindow.this.bannerImg, (this.getWidth() - w) / 2, (this.getHeight() - h) / 2, w, h, this);
                     } else {
+                        System.out.println("No banner found");
                         g.setColor(new Color(0, 180, 255));
                         g.setFont(new Font("Consolas", Font.BOLD, 24));
                         g.drawString("WaterMedia", 20, 50);
