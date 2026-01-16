@@ -83,6 +83,11 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
+    public float fps() {
+        return 0;
+    }
+
+    @Override
     public float speed() {
         return 0;
     }
@@ -103,22 +108,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean validSource() {
-        return false;
-    }
-
-    @Override
     public boolean liveSource() {
         return false;
     }
 
     @Override
     public boolean canSeek() {
-        return false;
-    }
-
-    @Override
-    public boolean canPause() {
         return false;
     }
 

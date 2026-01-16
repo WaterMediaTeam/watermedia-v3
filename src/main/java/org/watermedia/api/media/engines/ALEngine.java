@@ -12,25 +12,25 @@ public record ALEngine() {
         return AL10.alGenSources();
     }
 
-    public void queueBuffer(int source, int buffer, ByteBuffer data, int alFormat, int sampleRate) {
+    public void queueBuffer(final int source, final int buffer, final ByteBuffer data, final int alFormat, final int sampleRate) {
         AL10.alBufferData(buffer, alFormat, data, sampleRate);
         AL10.alSourceQueueBuffers(source, buffer);
     }
 
-    public int dequeueBuffers(int source) {
+    public int dequeueBuffers(final int source) {
         while (AL10.alGetSourcei(source, AL10.AL_BUFFERS_PROCESSED) <= 0) {
             ThreadTool.sleep(1);
         }
         return AL10.alSourceUnqueueBuffers(source);
     }
 
-    public void pause(int source) {
+    public void pause(final int source) {
         if (AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) != AL10.AL_PAUSED) {
             AL10.alSourcePause(source);
         }
     }
 
-    public void play(int source) {
+    public void play(final int source) {
         if (AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) {
             AL10.alSourcePlay(source);
         }

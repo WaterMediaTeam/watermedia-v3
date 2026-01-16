@@ -99,7 +99,7 @@ public class PNG extends Decoder {
             final CHUNK chunk = CHUNK.read(buffer);
 
             // CHECK CRC INTEGRITY
-            if (chunk.corrupted()) {
+            if (chunk.corrupted() && WaterMediaConfig.pngDecoder$failOnCorruptedData) {
                 throw new DecoderException("Chunk CRC mismatch on chunk " + chunk.type() + " - data corrupted");
             }
 

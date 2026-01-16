@@ -39,7 +39,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // Audio Properties
     protected final int alSources;
-    private final int[] alBuffers = new int[4];
+    private final int[] alBuffers = new int[8];
     private int alBufferIndex = 0;
     @Deprecated // TODO: replace with a enum to choose (NONE, ONE, ALL)
     private boolean repeat;
@@ -294,7 +294,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param paused true to pause the media playback, false to resume
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean pause(boolean paused) {
+    public boolean pause(final boolean paused) {
         if (this.audio) {
             if (paused) {
                 this.alEngine.pause(this.alSources);
@@ -364,6 +364,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if the operation was successful, false otherwise.
      */
     public abstract boolean rewind();
+
+    /**
+     * Provides the Frames per Second
+     * Result value its a float because 29.97 framerate exists.
+     * Check this <a href="https://www.youtube.com/watch?v=3GJUM6pCpew">full explanation</a>
+     * @return the FPS count
+     */
+    public abstract float fps();
 
     /**
      * Returns the current playback speed.
@@ -463,14 +471,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean error() { return this.status() == Status.ERROR; }
 
     /**
-     * @deprecated i couldn't find a better way to name this method
-     * and has no specific purpose, canPlay is better
-     * @return
-     */
-    @Deprecated
-    public abstract boolean validSource();
-
-    /**
      * Indicates if the media source is a live stream.
      * Live streams typically do not support seeking and have an indefinite duration.
      * @return true if the media source is a live stream, false otherwise.
@@ -483,14 +483,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if seeking is supported, false otherwise.
      */
     public abstract boolean canSeek();
-
-    /**
-     * Indicates if the media player supports pausing operations.
-     * Some media formats or live streams may not support pausing.
-     * @return true if pausing is supported, false otherwise.
-     */
-    public abstract boolean canPause();
-
     /**
      * Indicates if the media player is ready to start playback.
      * This typically means that the media has been loaded and buffered sufficiently.

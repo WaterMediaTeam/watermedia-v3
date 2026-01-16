@@ -1468,7 +1468,7 @@ public class WaterMediaApp {
         y = renderLabelValue("Engine:", player.getClass().getSimpleName(), 15, y, COLOR_BLUE, COLOR_GRAY);
         y = renderLabelValue("Source:", (sourceSelectorIndex + 1) + "/" + (availableSources != null ? availableSources.length : 1), 15, y, COLOR_BLUE, COLOR_GRAY);
         y = renderLabelValue("Size:", player.width() + "x" + player.height(), 15, y, COLOR_BLUE, COLOR_GRAY);
-        y = renderLabelValue("Status:", player.status().toString(), 15, y, COLOR_BLUE, COLOR_GRAY);
+        y = renderLabelValue("Status:", player.status().name(), 15, y, COLOR_BLUE, COLOR_GRAY);
 
         final long duration = player.duration();
         final String timeValue = duration <= 0

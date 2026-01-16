@@ -182,6 +182,11 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     @Override
+    public float fps() {
+        return 0;
+    }
+
+    @Override
     public float speed() {
         return this.speed;
     }
@@ -198,11 +203,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean validSource() {
-        return this.images != null && this.images.frames() != null && this.images.frames().length > 0;
-    }
-
-    @Override
     public boolean liveSource() {
         return false; // always false for picture players
     }
@@ -213,13 +213,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean canPause() {
-        return this.validSource();
-    }
-
-    @Override
     public boolean canPlay() {
-        return this.validSource();
+        return this.images != null && this.images.frames() != null && this.images.frames().length > 0;
     }
 
     @Override

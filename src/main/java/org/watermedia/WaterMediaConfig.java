@@ -29,7 +29,7 @@ public class WaterMediaConfig {
 
     @Spec.Field
     @Comment("Decoder fails when PNG chunk data doesn't match with the CRC")
-    public static boolean pngEncoder$failOnCorruptedData = true;
+    public static boolean pngDecoder$failOnCorruptedData = true;
 
 
     @Spec(value = "server")

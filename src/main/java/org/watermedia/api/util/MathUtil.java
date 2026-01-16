@@ -231,6 +231,16 @@ public enum MathUtil {
     public static int msToTick(final long ms) { return (int) (ms / 50); }
 
     /**
+     * Converts seconds in a floating-point number into milliseconds long
+     * @param sec Time in seconds
+     * @return seconds converted in milliseconds
+     */
+    public static long secondsToMs(final double sec) { return ((long) sec * 1000L); }
+
+    public static double msToSeconds(final long ms) { return ms / 1000.0d; }
+
+
+    /**
      * Returns a precise scale of a start time and end time.
      * If time is out of range, it will be reset to zero
      * ej start: 0, end: 10, time: 15 - Result will be 0.5d

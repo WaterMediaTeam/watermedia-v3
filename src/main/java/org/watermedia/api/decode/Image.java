@@ -5,6 +5,15 @@ import org.watermedia.tools.DataTool;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
+/**
+ * Decoded image container. it can be animated or not
+ * @param frames decoded frames in BGRA
+ * @param width with of the frames, if frames varies in size always picks the widest size
+ * @param height height of the frames, if frames varies in size always picks the highest size
+ * @param delay the i delay of the i frame, when its 0 means that it automatically has to jump into the next frame, otherwise has to wait x time in milliseconds
+ * @param duration total duration of the animation, its the sum of all the delays
+ * @param repeat number of repeat times, {@link #NO_REPEAT} when the animation must be shown once, and {@link #REPEAT_FOREVER} when should be in loop
+ */
 public record Image(ByteBuffer[] frames, int width, int height, long[] delay, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
     public static final int NO_REPEAT = -1;

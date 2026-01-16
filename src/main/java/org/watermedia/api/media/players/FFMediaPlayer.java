@@ -1,7 +1,5 @@
 package org.watermedia.api.media.players;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
@@ -15,7 +13,6 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
-import org.bytedeco.javacpp.Loader;
 import org.bytedeco.javacpp.PointerPointer;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
@@ -24,7 +21,9 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
@@ -33,6 +32,7 @@ import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 
+import static org.bytedeco.ffmpeg.global.avcodec.*;
 import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -48,101 +48,90 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadFactory DEFAULT_THREAD_FACTORY = ThreadTool.createFactory("FFThread", Thread.NORM_PRIORITY);
-    private static final Logger log = LogManager.getLogger(FFMediaPlayer.class);
     private static boolean LOADED;
 
-    // ===========================================
-    // AUDIO CONSTANTS - OPTIMIZED
-    // ===========================================
+    // CONSTANTS
     private static final int AUDIO_SAMPLE_RATE = 48000;
     private static final int AUDIO_CHANNELS = 2;
-    private static final int AUDIO_SAMPLES = 2048;  // OPTIMIZACIÓN: Más samples = menos llamadas, mejor eficiencia
-    private static final int AUDIO_BUFFER_SIZE = AUDIO_SAMPLES * AUDIO_CHANNELS * 2; // Pre-calculado
+    private static final int AUDIO_SAMPLES = 2048;
+    private static final int[] VIDEO_HW_CODECS = {
+            AV_HWDEVICE_TYPE_CUDA,          // NVIDIA
+            AV_HWDEVICE_TYPE_QSV,           // INTEL
+            //  OS DEDICATED HARDWARE
+            AV_HWDEVICE_TYPE_D3D12VA,       // Windows DirectX 12
+            AV_HWDEVICE_TYPE_D3D11VA,       // Windows DirectX 11
+            AV_HWDEVICE_TYPE_VIDEOTOOLBOX,  // MACOS
+            AV_HWDEVICE_TYPE_VAAPI,         // Linux VA-API
+            AV_HWDEVICE_TYPE_VDPAU,         // Linux VDPAU
+            AV_HWDEVICE_TYPE_DRM,           // Linux DRM
+            AV_HWDEVICE_TYPE_MEDIACODEC,    // Android MEDIACODEC
+            //  GENERIC HARDWARE DECODERS
+            AV_HWDEVICE_TYPE_VULKAN,        // VULKAN
+            AV_HWDEVICE_TYPE_OPENCL,        // OPENCL
+    };
 
-    // ===========================================
     // FFMPEG COMPONENTS
-    // ===========================================
     private AVFormatContext formatContext;
     private AVCodecContext videoCodecContext;
     private AVCodecContext audioCodecContext;
     private SwsContext swsContext;
     private SwrContext swrContext;
 
-    // Hardware acceleration
+    // HW
     private AVBufferRef hwDeviceCtx;
     private int hwPixelFormat = AV_PIX_FMT_NONE;
     private AVFrame hwTransferFrame;  // Para transferir desde GPU
     private int swsInputFormat = AV_PIX_FMT_NONE;  // Formato real de entrada para sws
 
-    // Stream indices
+    // STREAM INDEXES
     private int videoStreamIndex = -1;
     private int audioStreamIndex = -1;
 
-    // ===========================================
-    // THREADING - volatile para visibilidad
-    // ===========================================
+    // STATUS
     private Thread playerThread;
-    private volatile boolean running = false;
     private volatile Status currentStatus = Status.WAITING;
     private volatile boolean pauseRequested = false;
     private volatile long seekTarget = -1;
     private volatile float speedFactor = 1.0f;
     private volatile MRL.Quality activeQuality; // Quality currently being played
 
-    // ===========================================
-    // CLOCK SYSTEM - Optimizado
-    // ===========================================
+    // CLOCK SYSTEM
     private volatile double masterClock = 0.0;
     private volatile long clockBaseTime = -1;
     private volatile boolean clockPaused = false;
     private volatile long pausedTime = 0;
-    private volatile boolean audioClockValid = false;  // NUEVO: Track si audio está activo
+    private volatile boolean audioClockValid = false;
 
-    // ===========================================
-    // REUSABLE BUFFERS - Pre-allocated
-    // ===========================================
+    // REUSABLE BUFFERS
     private AVPacket packet;
     private AVFrame videoFrame;
     private AVFrame audioFrame;
     private AVFrame scaledFrame;
     private AVFrame resampledFrame;
-
-    // OPTIMIZACIÓN: Buffers pre-allocated y reutilizados
     private ByteBuffer videoBuffer;
-    private ByteBuffer audioBuffer;  // NUEVO: Buffer reutilizable para audio
     private boolean videoBufferInitialized = false;
 
-    // Time bases (cached)
+    // TIMES
     private double videoTimeBase;
     private double audioTimeBase;
 
-    // ===========================================
-    // FRAME SKIPPING - Sistema Adaptativo
-    // ===========================================
-    private double frameDurationSeconds = 0.033;   // Default 30fps, recalculado en init
-    private double skipThreshold;                   // 1 frame de tolerancia
-    private double aggressiveSkipThreshold;         // 3+ frames - skip agresivo
-    private double videoFps = 30.0;
+    // FRAME TIMING
+    private double frameDurationSeconds = 0.033;
+    private double aggressiveSkipThreshold;
+    private float videoFps = 30.0f;
 
-    // Estadísticas de frame skipping
-    private volatile int consecutiveSkips = 0;
-    private volatile long totalSkippedFrames = 0;
-    private volatile long totalRenderedFrames = 0;
+    // STATS (unused)
+    private int consecutiveSkips = 0;
+    private long totalSkippedFrames = 0;
+    private long totalRenderedFrames = 0;
 
-    // ===========================================
-    // ADAPTIVE THREADING
-    // ===========================================
-    private static final int MIN_DECODE_THREADS = 2;
-    private static final int MAX_DECODE_THREADS = Math.min(Runtime.getRuntime().availableProcessors(), 16);
+    private static final int MAX_DECODE_THREADS = ThreadTool.halfThreads();
 
     public FFMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx,
                          final GLEngine glEngine, final ALEngine alEngine, final boolean video, final boolean audio) {
         super(source, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
     }
 
-    // ===========================================
-    // LIFECYCLE METHODS
-    // ===========================================
     @Override
     public void start() {
         if (this.playerThread != null && this.playerThread.isAlive() && !this.playerThread.isInterrupted()) {
@@ -172,10 +161,6 @@ public final class FFMediaPlayer extends MediaPlayer {
         super.release();
     }
 
-    // ===========================================
-    // CONTROL METHODS
-    // ===========================================
-
     @Override
     public boolean pause() {
         return this.pause(true);
@@ -184,15 +169,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public boolean pause(final boolean paused) {
         super.pause(paused);
+        this.pauseRequested = paused;
+        this.clockPaused = paused;
         if (paused && !this.pauseRequested) {
-            this.pauseRequested = true;
-            this.clockPaused = true;
             this.pausedTime = this.time();
             return true;
         } else if (!paused && this.pauseRequested) {
-            this.pauseRequested = false;
-            this.clockPaused = false;
-            this.masterClock = secondsFromMs(this.pausedTime);
+            this.masterClock = MathUtil.msToSeconds(this.pausedTime);
             this.clockBaseTime = System.nanoTime();
             return true;
         }
@@ -214,10 +197,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean togglePlay() {
         return this.pause(!this.pauseRequested);
     }
-
-    // ===========================================
-    // SEEKING METHODS
-    // ===========================================
 
     @Override
     public boolean seek(long timeMs) {
@@ -264,9 +243,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         return this.skipTime(-5000);
     }
 
-    // ===========================================
-    // SPEED CONTROL
-    // ===========================================
+    @Override
+    public float fps() {
+        return this.videoFps;
+    }
+
     @Override
     public float speed() {
         return this.speedFactor;
@@ -279,17 +260,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         return true;
     }
 
-    // ===========================================
-    // STATE METHODS
-    // ===========================================
     @Override
     public Status status() {
         return this.currentStatus;
-    }
-
-    @Override
-    public boolean validSource() {
-        return this.formatContext != null && (this.videoStreamIndex >= 0 || this.audioStreamIndex >= 0);
     }
 
     @Override
@@ -299,17 +272,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean canSeek() {
-        return this.validSource() && !this.liveSource();
-    }
-
-    @Override
-    public boolean canPause() {
-        return this.validSource();
+        return !this.liveSource();
     }
 
     @Override
     public boolean canPlay() {
-        return this.validSource();
+        return this.formatContext != null && (this.videoStreamIndex >= 0 || this.audioStreamIndex >= 0);
     }
 
     @Override
@@ -320,26 +288,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public long time() {
         if (this.clockPaused || this.clockBaseTime <= 0) {
-            return msFromSeconds(this.masterClock);
+            return MathUtil.secondsToMs(this.masterClock);
         }
 
         final double elapsed = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0;
         final double interpolated = Math.min(elapsed * this.speedFactor, 0.1);
 
-        return msFromSeconds(this.masterClock + interpolated);
-    }
-
-    // ===========================================
-    // FRAME SKIP STATS (DEBUG/MONITORING)
-    // ===========================================
-    private double getSkipRatio() {
-        final long total = this.totalSkippedFrames + this.totalRenderedFrames;
-        return total > 0 ? (double) this.totalSkippedFrames / total : 0.0;
-    }
-
-    // TODO: DOWNLEVEL THIS
-    public double getVideoFps() {
-        return this.videoFps;
+        return MathUtil.secondsToMs(this.masterClock + interpolated);
     }
 
     /**
@@ -349,30 +304,21 @@ public final class FFMediaPlayer extends MediaPlayer {
         return this.hwDeviceCtx != null && !this.hwDeviceCtx.isNull();
     }
 
-    // ===========================================
-    // MAIN PLAYER LOOP
-    // ===========================================
-
     private void playerLoop() {
         try {
-            // Reset stats
+            // RESET
             this.consecutiveSkips = 0;
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
             this.audioClockValid = false;
 
             this.currentStatus = Status.LOADING;
-
-            // Store the quality we're about to use
             this.activeQuality = this.selectedQuality;
-
-            // Initialize FFMPEG components
             if (!this.init()) {
                 this.currentStatus = Status.ERROR;
                 return;
             }
 
-            // Set initial state
             if (this.pauseRequested) {
                 this.currentStatus = Status.PAUSED;
             } else {
@@ -380,15 +326,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.clockBaseTime = System.nanoTime();
             }
 
-            // Main playback loop
             while (!Thread.currentThread().isInterrupted()) {
-                // Handle quality change requests
+                // HANDLE QUALITY SWITCH
                 if (this.activeQuality != this.selectedQuality) {
                     final MRL.Quality newQuality = this.selectedQuality;
                     final long currentTimeMs = this.time();
                     final boolean wasPaused = this.pauseRequested;
 
-                    LOGGER.info(IT, "Switching quality from {} to {} at {}ms", this.activeQuality, newQuality, currentTimeMs);
+                    LOGGER.info(IT, "Switching quality from {} to {} at {}s", this.activeQuality, newQuality, MathUtil.msToSeconds(currentTimeMs));
 
                     // Update active quality before cleanup
                     this.activeQuality = newQuality;
@@ -424,21 +369,21 @@ public final class FFMediaPlayer extends MediaPlayer {
                         this.clockBaseTime = System.nanoTime();
                     }
 
-                    LOGGER.info(IT, "Quality switch completed to {}", newQuality);
+                    LOGGER.info(IT, "Successfully switched quality to {}", newQuality);
                     continue;
                 }
 
-                // Handle seek requests
+                // HANDLE SEEK
                 if (this.seekTarget >= 0) {
                     final long targetMs = this.seekTarget;
                     this.seekTarget = -1;
 
                     if (this.formatContext == null || !this.canSeek()) {
-                        LOGGER.warn(IT, "Cannot seek - invalid format context or live stream");
+                        LOGGER.warn(IT, "Failed to perform seek - cannot seek on current context");
                         return;
                     }
 
-                    final long currentMs = msFromSeconds(this.masterClock);
+                    final long currentMs = MathUtil.secondsToMs(this.masterClock);
                     LOGGER.info(IT, "Seeking to {}ms - current time {}ms", targetMs, currentMs);
 
                     // Flush codecs
@@ -455,7 +400,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
 
                     if (result >= 0) {
-                        this.masterClock = secondsFromMs(targetMs);
+                        this.masterClock = MathUtil.msToSeconds(targetMs);
                         this.clockBaseTime = System.nanoTime();
                         this.consecutiveSkips = 0;
                         this.audioClockValid = false;  // Invalidar clock de audio tras seek
@@ -466,23 +411,33 @@ public final class FFMediaPlayer extends MediaPlayer {
                     continue;
                 }
 
-                // Update status based on pause state
+                // UPDATE STATUS BASED ON PAUSE
                 if (this.pauseRequested && this.currentStatus != Status.PAUSED) {
                     this.currentStatus = Status.PAUSED;
                 } else if (!this.pauseRequested && this.currentStatus == Status.PAUSED) {
                     this.currentStatus = Status.PLAYING;
                 }
 
-                // Handle pause state - OPTIMIZACIÓN: yield en lugar de sleep fijo
                 if (this.pauseRequested) {
-                    Thread.sleep(10);
+                    Thread.yield();
                     continue;
                 }
 
                 // Read and process frame
                 final int result = avformat.av_read_frame(this.formatContext, this.packet);
                 if (result < 0) {
-                    this.handleEndOfStream();
+                    LOGGER.info(IT, "Finished! - R: {}, S: {}", this.totalRenderedFrames, this.totalSkippedFrames);
+
+                    Thread.sleep(100);
+
+                    if (this.repeat()) {
+                        LOGGER.info(IT, "Repeating playback");
+                        this.seekTarget = 0;
+                    } else {
+                        LOGGER.info(IT, "Playback ended naturally");
+                        this.currentStatus = Status.ENDED;
+                    }
+
                     if (this.currentStatus != Status.PLAYING) {
                         break;
                     }
@@ -515,23 +470,6 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.currentStatus = Status.ERROR;
         } finally {
             this.cleanup();
-            this.running = false;
-        }
-    }
-
-    private void handleEndOfStream() throws InterruptedException {
-        LOGGER.info(IT, "End of stream reached - rendered: {}, skipped: {}, ratio: {}%",
-                this.totalRenderedFrames, this.totalSkippedFrames,
-                String.format("%.2f", this.getSkipRatio() * 100));
-
-        Thread.sleep(500);
-
-        if (this.repeat()) {
-            LOGGER.info(IT, "Repeating playback");
-            this.seekTarget = 0;
-        } else {
-            LOGGER.info(IT, "Playback ended naturally");
-            this.currentStatus = Status.ENDED;
         }
     }
 
@@ -547,10 +485,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.scaledFrame = avutil.av_frame_alloc();
             this.resampledFrame = avutil.av_frame_alloc();
 
-            if (this.packet == null || this.videoFrame == null || this.audioFrame == null
-                    || this.scaledFrame == null || this.resampledFrame == null) {
+            if (this.packet == null || this.videoFrame == null || this.audioFrame == null || this.scaledFrame == null || this.resampledFrame == null)
                 return false;
-            }
 
             // PREPARE URI
             final var uri = this.source.uri(this.selectedQuality);
@@ -564,7 +500,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                 av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
                         "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
                         "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n", 0);
-
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
@@ -581,7 +516,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                     return false;
                 }
             } finally {
-                // OPTIMIZACIÓN: Siempre liberar AVDictionary
                 av_dict_free(options);
             }
 
@@ -607,17 +541,13 @@ public final class FFMediaPlayer extends MediaPlayer {
             final boolean videoInit = this.initVideo();
             final boolean audioInit = this.initAudio();
 
-            if (!videoInit && !audioInit) {
-                LOGGER.error(IT, "No valid audio or video streams found");
-                return false;
-            }
+            if (!videoInit && !audioInit)
+                throw new IllegalStateException("Video and Audio failed to initialize");
 
-            LOGGER.info(IT, "FFMPEG initialized successfully - video: {} (hw: {}), audio: {}",
-                    videoInit, this.isHardwareAccelerated(), audioInit);
-
+            LOGGER.info(IT, "FFMediaPlayer started! - video: {} (hw: {}), audio: {}", videoInit, this.isHardwareAccelerated(), audioInit);
             return true;
         } catch (final Exception e) {
-            LOGGER.error(IT, "Failed to initialize FFmpeg", e);
+            LOGGER.error(IT, "Failed to initialize FFMediaPlayer", e);
             return false;
         }
     }
@@ -631,17 +561,34 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
         final int codecId = videoStream.codecpar().codec_id();
 
-        // OPTIMIZACIÓN: Calcular FPS y frame duration para frame skipping
-        this.calculateFrameTiming(videoStream);
+        final AVRational frameRate = videoStream.avg_frame_rate();
 
-        // Intentar decodificación por hardware primero
-        if (this.initHardwareDecoder(codecId, videoStream)) {
-            LOGGER.info(IT, "Hardware acceleration enabled");
+        if (frameRate.num() > 0 && frameRate.den() > 0) {
+            this.videoFps = (float) av_q2d(frameRate);
+            this.frameDurationSeconds = 1.0 / this.videoFps;
         } else {
-            // Fallback a software decoder
-            if (!this.initSoftwareDecoder(codecId, videoStream)) {
-                return false;
+            // Fallback basado en time_base si avg_frame_rate no está disponible
+            final AVRational tbr = videoStream.r_frame_rate();
+            if (tbr.num() > 0 && tbr.den() > 0) {
+                this.videoFps = (float) av_q2d(tbr);
+                this.frameDurationSeconds = 1.0 / this.videoFps;
             }
+        }
+
+        this.aggressiveSkipThreshold = this.frameDurationSeconds * 5.0;
+
+        LOGGER.info(IT, "Video timing: {}fps, frame duration: {}ms, skip threshold: {}ms",
+                String.format("%.2f", this.videoFps),
+                String.format("%.2f", this.frameDurationSeconds * 1000),
+                String.format("%.2f", this.aggressiveSkipThreshold * 1000));
+
+        // START DECODER
+        final AVCodec decoder = avcodec.avcodec_find_decoder(codecId);
+        if (decoder == null)
+            LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
+
+        if (!this.initHwDecoder(decoder, videoStream) || !this.initSwDecoder(decoder, videoStream)) {
+            return false;
         }
 
         // Initialize video format
@@ -665,97 +612,38 @@ public final class FFMediaPlayer extends MediaPlayer {
         return true;
     }
 
-    /**
-     * OPTIMIZACIÓN: Calcular timing de frames para frame skipping adaptativo
-     */
-    private void calculateFrameTiming(final AVStream videoStream) {
-        final AVRational frameRate = videoStream.avg_frame_rate();
-
-        if (frameRate.num() > 0 && frameRate.den() > 0) {
-            this.videoFps = (double) frameRate.num() / frameRate.den();
-            this.frameDurationSeconds = 1.0 / this.videoFps;
-        } else {
-            // Fallback basado en time_base si avg_frame_rate no está disponible
-            final AVRational tbr = videoStream.r_frame_rate();
-            if (tbr.num() > 0 && tbr.den() > 0) {
-                this.videoFps = (double) tbr.num() / tbr.den();
-                this.frameDurationSeconds = 1.0 / this.videoFps;
-            }
-        }
-
-        // Configurar thresholds de frame skipping basados en FPS detectado
-        // Solo skipear cuando estamos MUY atrasados para evitar stuttering
-        this.skipThreshold = this.frameDurationSeconds * 2.0;           // 2 frames de tolerancia (no usado actualmente)
-        this.aggressiveSkipThreshold = this.frameDurationSeconds * 5.0; // 5 frames = empezar a skipear
-
-        LOGGER.info(IT, "Video timing: {}fps, frame duration: {}ms, skip threshold: {}ms",
-                String.format("%.2f", this.videoFps),
-                String.format("%.2f", this.frameDurationSeconds * 1000),
-                String.format("%.2f", this.aggressiveSkipThreshold * 1000));
-    }
-
-    /**
-     * OPTIMIZACIÓN: Intentar inicializar decodificación por hardware
-     */
-    private boolean initHardwareDecoder(final int codecId, final AVStream videoStream) {
-        // Lista de tipos de HW a intentar, en orden de preferencia
-        final int[] hwTypes = {
-                AV_HWDEVICE_TYPE_CUDA,      // NVIDIA
-                AV_HWDEVICE_TYPE_D3D11VA,   // Windows DirectX 11
-                AV_HWDEVICE_TYPE_DXVA2,     // Windows DirectX 9
-                AV_HWDEVICE_TYPE_VAAPI,     // Linux VA-API
-                AV_HWDEVICE_TYPE_VDPAU,     // Linux VDPAU
-                AV_HWDEVICE_TYPE_VIDEOTOOLBOX  // macOS
-        };
-
-        final AVCodec decoder = avcodec.avcodec_find_decoder(codecId);
-        if (decoder == null) {
-            return false;
-        }
-
-        for (final int hwType : hwTypes) {
-            // Verificar si este codec soporta este tipo de HW
+    private boolean initHwDecoder(final AVCodec decoder, final AVStream videoStream) {
+        for (final int hwType: VIDEO_HW_CODECS) {
             for (int i = 0; ; i++) {
                 final AVCodecHWConfig config = avcodec.avcodec_get_hw_config(decoder, i);
                 if (config == null) break;
+                if (config.device_type() != hwType || (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) == 0) continue;
 
-                if (config.device_type() == hwType &&
-                        (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) {
-
-                    // Intentar crear el contexto de HW
-                    this.hwDeviceCtx = new AVBufferRef();
-                    if (av_hwdevice_ctx_create(this.hwDeviceCtx, hwType, (String) null, null, 0) >= 0) {
-
-                        // Crear codec context con HW
-                        this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
-                        if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
-                                videoStream.codecpar()) < 0) {
-                            this.cleanupHwContext();
-                            continue;
-                        }
-
-                        this.videoCodecContext.hw_device_ctx(av_buffer_ref(this.hwDeviceCtx));
-                        this.hwPixelFormat = config.pix_fmt();
-
-                        // Configurar threading
-                        this.configureDecoderThreading(this.videoCodecContext);
-
-                        if (avcodec.avcodec_open2(this.videoCodecContext, decoder,
-                                (PointerPointer<?>) null) >= 0) {
-
-                            // Allocar frame para transferencia desde GPU
-                            this.hwTransferFrame = av_frame_alloc();
-
-                            final BytePointer hwName = av_hwdevice_get_type_name(hwType);
-                            LOGGER.info(IT, "Hardware decoder initialized: {}",
-                                    hwName != null ? hwName.getString() : "unknown");
-                            return true;
-                        }
-
+                // ALLOCATE HW CONTEXT
+                this.hwDeviceCtx = new AVBufferRef();
+                if (av_hwdevice_ctx_create(this.hwDeviceCtx, hwType, (String) null, null, 0) >= 0) {
+                    // CREATE CODEC
+                    this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
+                    if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
                         this.cleanupHwContext();
-                    } else {
-                        this.hwDeviceCtx = null;
+                        continue;
                     }
+
+                    this.videoCodecContext.hw_device_ctx(av_buffer_ref(this.hwDeviceCtx));
+                    this.hwPixelFormat = config.pix_fmt();
+
+                    if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
+                        this.hwTransferFrame = av_frame_alloc();
+
+                        final BytePointer hwName = av_hwdevice_get_type_name(hwType);
+                        LOGGER.info(IT, "Hardware decoder initialized: {}", hwName != null ? hwName.getString() : "unknown (" + hwType + ")");
+                        IOTool.closeQuietly(hwName);
+                        return true;
+                    }
+
+                    this.cleanupHwContext();
+                } else {
+                    this.hwDeviceCtx = null;
                 }
             }
         }
@@ -775,26 +663,28 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.hwPixelFormat = AV_PIX_FMT_NONE;
     }
 
-    private boolean initSoftwareDecoder(final int codecId, final AVStream videoStream) {
-        final AVCodec videoCodec = avcodec.avcodec_find_decoder(codecId);
-
-        if (videoCodec == null) {
-            LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}",
-                    codecId, this.videoStreamIndex);
-            return false;
-        }
-
-        this.videoCodecContext = avcodec.avcodec_alloc_context3(videoCodec);
-        if (avcodec.avcodec_parameters_to_context(this.videoCodecContext,
-                videoStream.codecpar()) < 0) {
+    private boolean initSwDecoder(final AVCodec decoder, final AVStream videoStream) {
+        this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
+        if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
             LOGGER.error(IT, "Failed to copy video codec parameters to context");
             return false;
         }
 
-        // OPTIMIZACIÓN: Threading adaptativo
-        this.configureDecoderThreading(this.videoCodecContext);
+        final int width = this.videoCodecContext.width();
+        final int height = this.videoCodecContext.height();
+        final long pixels = (long) width * height;
 
-        if (avcodec.avcodec_open2(this.videoCodecContext, videoCodec, (PointerPointer<?>) null) < 0) {
+        final int threads = pixels <= 921600
+                ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2073600
+                ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3686400
+                ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
+
+        this.videoCodecContext.thread_count(threads);
+        this.videoCodecContext.thread_type(AVCodecContext.FF_THREAD_FRAME | AVCodecContext.FF_THREAD_SLICE);
+
+        LOGGER.debug(IT, "Decoder threading: {} threads for {}x{}", threads, width, height);
+
+        if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) < 0) {
             LOGGER.error(IT, "Failed to open video codec");
             return false;
         }
@@ -802,39 +692,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         return true;
     }
 
-    /**
-     * OPTIMIZACIÓN: Configurar threading del decoder basado en resolución y CPU
-     */
-    private void configureDecoderThreading(final AVCodecContext ctx) {
-        final int width = ctx.width();
-        final int height = ctx.height();
-        final long pixels = (long) width * height;
-
-        // Escalar threads basado en resolución
-        int threads;
-        if (pixels <= 921600) {          // <= 720p
-            threads = Math.min(4, MAX_DECODE_THREADS);
-        } else if (pixels <= 2073600) {  // <= 1080p
-            threads = Math.min(6, MAX_DECODE_THREADS);
-        } else if (pixels <= 3686400) {  // <= 1440p
-            threads = Math.min(8, MAX_DECODE_THREADS);
-        } else {                          // 4K+
-            threads = MAX_DECODE_THREADS;
-        }
-
-        threads = Math.max(MIN_DECODE_THREADS, threads);
-
-        ctx.thread_count(threads);
-        // FRAME threading es más eficiente para video moderno
-        ctx.thread_type(AVCodecContext.FF_THREAD_FRAME);
-
-        LOGGER.debug(IT, "Decoder threading: {} threads for {}x{}", threads, width, height);
-    }
-
     private boolean initAudio() {
-        if (!this.audio || this.audioStreamIndex < 0) {
+        if (!this.audio || this.audioStreamIndex < 0)
             return false;
-        }
 
         final AVStream audioStream = this.formatContext.streams(this.audioStreamIndex);
         final AVCodecParameters codecParams = audioStream.codecpar();
@@ -842,8 +702,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecId);
 
         if (audioCodec == null) {
-            LOGGER.error(IT, "Failed to find audio codec with id {} for audioIndex {}",
-                    codecId, this.audioStreamIndex);
+            LOGGER.error(IT, "Failed to find audio codec with id {} for audioIndex {}", codecId, this.audioStreamIndex);
             return false;
         }
 
@@ -853,7 +712,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        if (avcodec.avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
+        if (avcodec_parameters_to_context(this.audioCodecContext, codecParams) < 0) {
             LOGGER.error(IT, "Failed to copy audio codec parameters to context");
             return false;
         }
@@ -908,19 +767,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.resampledFrame.sample_rate(AUDIO_SAMPLE_RATE);
         this.resampledFrame.nb_samples(AUDIO_SAMPLES);
 
-        if (avutil.av_frame_get_buffer(this.resampledFrame, 0) < 0) {
-            return false;
-        }
-
-        // OPTIMIZACIÓN: Pre-allocar buffer de audio
-        this.audioBuffer = ByteBuffer.allocateDirect(AUDIO_BUFFER_SIZE);
-
-        return true;
+        return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
     }
-
-    // ===========================================
-    // VIDEO PROCESSING - OPTIMIZED WITH FRAME SKIPPING
-    // ===========================================
 
     private void processVideoPacket() {
         if (avcodec.avcodec_send_packet(this.videoCodecContext, this.packet) < 0) return;
@@ -928,7 +776,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         while (avcodec.avcodec_receive_frame(this.videoCodecContext, this.videoFrame) >= 0) {
             AVFrame frameToScale = this.videoFrame;
 
-            // Si usamos HW acceleration, transferir frame desde GPU
+            // ON HW DECODING, GET FROM GPU
             if (this.hwDeviceCtx != null && this.videoFrame.format() == this.hwPixelFormat) {
                 if (av_hwframe_transfer_data(this.hwTransferFrame, this.videoFrame, 0) < 0) {
                     LOGGER.warn(IT, "Failed to transfer frame from GPU");
@@ -938,29 +786,27 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             final double framePts = this.videoFrame.pts() * this.videoTimeBase;
-
-            // Determinar el tiempo de referencia
             final double referenceTime = this.getReferenceTime();
             final double drift = framePts - referenceTime;
 
-            // FRAME SKIPPING: Solo cuando estamos MUY atrasados (>3 frames)
+            // FRAME SKIPPING
             if (drift < -this.aggressiveSkipThreshold) {
                 this.totalSkippedFrames++;
                 this.consecutiveSkips++;
 
-                // Pero siempre renderizar al menos 1 de cada 5 frames para feedback visual
-                if (this.consecutiveSkips < 5) {
-                    continue;
-                }
-                // Forzar render después de 5 skips consecutivos
-                this.consecutiveSkips = 0;
-            } else {
-                this.consecutiveSkips = 0;
+                // RENDER 1 FRAME AFTER 5 FRAMES
+                if (this.consecutiveSkips < 5) continue;
             }
+            this.consecutiveSkips = 0;
 
-            // SINCRONIZACIÓN: Esperar si el frame está adelantado
-            if (drift > 0.001) {  // Frame adelantado > 1ms
-                this.waitForDisplayTime(drift);
+            if (drift > 0.001) {  // ON DRIFT, DELAY
+                final long delayMs = MathUtil.secondsToMs(drift);
+                if (delayMs <= 0 || delayMs > 1.0 || this.pauseRequested) return;
+
+                if (delayMs > 1)
+                    ThreadTool.sleep(delayMs - 1);
+
+                Thread.yield();
             }
 
             // Actualizar clock desde video solo si no hay audio
@@ -970,16 +816,63 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // Scale and upload frame
-            this.scaleAndUploadFrame(frameToScale);
+            final int frameFormat = frameToScale.format();
+            final int frameWidth = frameToScale.width();
+            final int frameHeight = frameToScale.height();
+
+            // Verificar si necesitamos crear o recrear el SwsContext
+            if (this.swsContext == null || this.swsInputFormat != frameFormat) {
+                // Liberar contexto anterior si existe
+                if (this.swsContext != null) {
+                    swscale.sws_freeContext(this.swsContext);
+                    this.swsContext = null;
+                }
+
+                // Crear nuevo contexto con el formato real del frame
+                this.swsContext = swscale.sws_getContext(
+                        frameWidth, frameHeight, frameFormat,
+                        this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
+                        swscale.SWS_BILINEAR, null, null, (double[]) null
+                );
+
+                if (this.swsContext == null) {
+                    LOGGER.error(IT, "Failed to create SwsContext for format {} ({}x{})", frameFormat, frameWidth, frameHeight);
+                    return;
+                }
+
+                this.swsInputFormat = frameFormat;
+                LOGGER.debug(IT, "Created SwsContext: format {} ({}x{}) -> BGRA ({}x{})", frameFormat, frameWidth, frameHeight, this.width(), this.height());
+            }
+
+            // Initialize buffer lazily
+            if (!this.videoBufferInitialized) {
+                this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
+                this.videoBufferInitialized = true;
+            }
+
+            synchronized (this.videoBuffer) {
+                final int result = swscale.sws_scale(
+                        this.swsContext,
+                        frameToScale.data(),
+                        frameToScale.linesize(),
+                        0,
+                        frameHeight,
+                        this.scaledFrame.data(),
+                        this.scaledFrame.linesize()
+                );
+
+                if (result <= 0) {
+                    LOGGER.error(IT, "Failed to scale video frame: result={}, srcFmt={}, srcSize={}x{}", result, frameFormat, frameWidth, frameHeight);
+                    return;
+                }
+            }
+
+            final int stride = this.scaledFrame.linesize(0);
+            this.upload(this.videoBuffer, stride / 4);
             this.totalRenderedFrames++;
         }
     }
 
-    /**
-     * Obtiene el tiempo de referencia para sincronización
-     * - Con audio: usa el master clock (basado en audio PTS)
-     * - Sin audio: usa el tiempo transcurrido desde clockBaseTime
-     */
     private double getReferenceTime() {
         if (this.audioClockValid && this.audio) {
             // Audio es master - interpolar desde último update
@@ -995,110 +888,16 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    /**
-     * Espera hasta que sea tiempo de mostrar el frame
-     * @param delaySeconds tiempo a esperar en segundos
-     */
-    private void waitForDisplayTime(final double delaySeconds) {
-        if (delaySeconds <= 0 || delaySeconds > 1.0 || this.pauseRequested) {
-            return;
-        }
-
-        final long delayMs = (long)(delaySeconds * 1000);
-
-        // Sleep simple - no necesitamos precisión sub-millisecond para video
-        if (delayMs > 1) {
-            try {
-                Thread.sleep(delayMs - 1);  // Despertar ~1ms antes
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-
-        // Pequeño yield para el tiempo restante
-        Thread.yield();
-    }
-
-    /**
-     * OPTIMIZACIÓN: Escalar y subir frame con SwsContext creado/actualizado dinámicamente
-     * basado en el formato real del frame (importante para HW acceleration)
-     */
-    private void scaleAndUploadFrame(final AVFrame frame) {
-        final int frameFormat = frame.format();
-        final int frameWidth = frame.width();
-        final int frameHeight = frame.height();
-
-        // Verificar si necesitamos crear o recrear el SwsContext
-        if (this.swsContext == null || this.swsInputFormat != frameFormat) {
-            // Liberar contexto anterior si existe
-            if (this.swsContext != null) {
-                swscale.sws_freeContext(this.swsContext);
-                this.swsContext = null;
-            }
-
-            // Crear nuevo contexto con el formato real del frame
-            this.swsContext = swscale.sws_getContext(
-                    frameWidth, frameHeight, frameFormat,
-                    this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
-                    swscale.SWS_BILINEAR, null, null, (double[]) null
-            );
-
-            if (this.swsContext == null) {
-                LOGGER.error(IT, "Failed to create SwsContext for format {} ({}x{})",
-                        frameFormat, frameWidth, frameHeight);
-                return;
-            }
-
-            this.swsInputFormat = frameFormat;
-            LOGGER.debug(IT, "Created SwsContext: format {} ({}x{}) -> BGRA ({}x{})",
-                    frameFormat, frameWidth, frameHeight, this.width(), this.height());
-        }
-
-        // Initialize buffer lazily
-        if (!this.videoBufferInitialized) {
-            this.videoBuffer = this.scaledFrame.data(0).asByteBuffer();
-            this.videoBufferInitialized = true;
-        }
-
-        synchronized (this.videoBuffer) {
-            final int result = swscale.sws_scale(
-                    this.swsContext,
-                    frame.data(),
-                    frame.linesize(),
-                    0,
-                    frameHeight,  // Usar altura del frame fuente
-                    this.scaledFrame.data(),
-                    this.scaledFrame.linesize()
-            );
-
-            if (result <= 0) {
-                LOGGER.error(IT, "Failed to scale video frame: result={}, srcFmt={}, srcSize={}x{}",
-                        result, frameFormat, frameWidth, frameHeight);
-                return;
-            }
-        }
-
-        final int stride = this.scaledFrame.linesize(0);
-        this.upload(this.videoBuffer, stride / 4);
-    }
-
-    // ===========================================
-    // AUDIO PROCESSING - OPTIMIZED
-    // ===========================================
-
     private void processAudioPacket() {
         if (avcodec.avcodec_send_packet(this.audioCodecContext, this.packet) < 0) return;
 
         while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0) {
-            final double ptsInSeconds = this.audioFrame.pts() * this.audioTimeBase;
-
-            // Audio clock is primary - siempre actualizar
-            this.masterClock = ptsInSeconds;
+            // AUDIO CLOCK IS PRIMARY CLOCK
+            this.masterClock = this.audioFrame.pts() * this.audioTimeBase;
             this.clockBaseTime = System.nanoTime();
             this.audioClockValid = true;
 
-            // OPTIMIZACIÓN: Usar swr_convert_frame para mejor manejo de residuales
+            // RESAMPLE TO NON-FLOATING POINT
             final int samplesConverted = swresample.swr_convert(
                     this.swrContext,
                     this.resampledFrame.data(),
@@ -1110,7 +909,6 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (samplesConverted > 0) {
                 final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
 
-                // OPTIMIZACIÓN: Reutilizar ByteBuffer wrapper
                 final ByteBuffer audioData = this.resampledFrame.data(0)
                         .limit(dataSize)
                         .asBuffer()
@@ -1119,48 +917,36 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
             }
 
-            // OPTIMIZACIÓN: Flush residual samples del resampler
-            this.flushResamplerResiduals();
-        }
-    }
+            // CHECK FOR RESAMPLES
+            final long delay = swresample.swr_get_delay(this.swrContext, AUDIO_SAMPLE_RATE);
 
-    /**
-     * OPTIMIZACIÓN: Extraer samples residuales del resampler
-     */
-    private void flushResamplerResiduals() {
-        // Check si hay samples pendientes en el resampler
-        final long delay = swresample.swr_get_delay(this.swrContext, AUDIO_SAMPLE_RATE);
+            if (delay > AUDIO_SAMPLES / 2) {
+                // FLUSH RESIDUALS
+                final int flushed = swresample.swr_convert(
+                        this.swrContext,
+                        this.resampledFrame.data(),
+                        this.resampledFrame.nb_samples(),
+                        null,
+                        0
+                );
 
-        if (delay > AUDIO_SAMPLES / 2) {
-            // Flush residuales
-            final int flushed = swresample.swr_convert(
-                    this.swrContext,
-                    this.resampledFrame.data(),
-                    this.resampledFrame.nb_samples(),
-                    null,
-                    0
-            );
+                if (flushed > 0) {
+                    final int dataSize = flushed * AUDIO_CHANNELS * 2;
+                    final ByteBuffer audioData = this.resampledFrame.data(0)
+                            .limit(dataSize)
+                            .asBuffer()
+                            .clear();
 
-            if (flushed > 0) {
-                final int dataSize = flushed * AUDIO_CHANNELS * 2;
-                final ByteBuffer audioData = this.resampledFrame.data(0)
-                        .limit(dataSize)
-                        .asBuffer()
-                        .clear();
-
-                this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+                    this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+                }
             }
         }
     }
-
-    // ===========================================
-    // CLEANUP - COMPLETE RESOURCE RELEASE
-    // ===========================================
 
     private void cleanup() {
         LOGGER.info(IT, "Cleaning up FFMPEG resources...");
 
-        // Free HW context first
+        // FREE HW
         if (this.hwTransferFrame != null) {
             av_frame_free(this.hwTransferFrame);
             this.hwTransferFrame = null;
@@ -1171,7 +957,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
         this.hwPixelFormat = AV_PIX_FMT_NONE;
 
-        // Free contexts
+        // FREE CONTEXTS
         if (this.swsContext != null) {
             swscale.sws_freeContext(this.swsContext);
             this.swsContext = null;
@@ -1221,7 +1007,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         // Clear buffers
         this.videoBuffer = null;
-        this.audioBuffer = null;
         this.videoBufferInitialized = false;
 
         // Reset state
@@ -1233,25 +1018,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         LOGGER.info(IT, "Cleanup completed");
     }
 
-    // ===========================================
-    // UTILITY METHODS
-    // ===========================================
-
     private static double av_q2d(final AVRational a) {
         return (double) a.num() / a.den();
     }
-
-    private static long msFromSeconds(final double seconds) {
-        return (long)(seconds * 1000);
-    }
-
-    private static double secondsFromMs(final long ms) {
-        return ms / 1000.0;
-    }
-
-    // ===========================================
-    // STATIC LOADER
-    // ===========================================
 
     public static boolean load(final WaterMedia watermedia) {
         Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
@@ -1308,13 +1077,16 @@ public final class FFMediaPlayer extends MediaPlayer {
                     LOGGER.info(IT, "  • {}", hwName.getString());
                     hwCount++;
                 }
+                IOTool.closeQuietly(hwName);
             } while (true);
 
             if (hwCount == 0) {
                 LOGGER.info(IT, "  (none available)");
             }
 
-            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), avformat.avformat_license().getString());
+            final BytePointer license = avformat.avformat_license();
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), license != null && !license.isNull() ? license.getString() : "unknown");
+            IOTool.closeQuietly(license);
             return LOADED = true;
         } catch (final Throwable t) {
             LOGGER.error(IT, "Failed to load FFMPEG", t);
