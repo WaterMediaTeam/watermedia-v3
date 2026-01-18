@@ -1071,7 +1071,7 @@ public class WaterMediaApp {
     private static void selectQuality() {
         if (availableQualities == null || qualityDialogIndex >= availableQualities.length) return;
         selectedQuality = availableQualities[qualityDialogIndex];
-        if (player != null) player.setQuality(selectedQuality);
+        if (player != null) player.quality(selectedQuality);
         currentState = AppState.PLAYER_RUNNING;
     }
 
@@ -1096,7 +1096,7 @@ public class WaterMediaApp {
             return;
         }
 
-        player.setQuality(selectedQuality);
+        player.quality(selectedQuality);
         player.start();
         currentState = AppState.PLAYER_RUNNING;
         escPressed = false;

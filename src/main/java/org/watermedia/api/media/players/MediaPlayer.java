@@ -4,6 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.opengl.GL12;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.media.engines.ALEngine;
@@ -17,16 +18,17 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
-    protected static final int NO_SIZE = -1;
-    protected static final int NO_TEXTURE = -1;
+    protected static final int NO_SIZE = 0;
+    protected static final int NO_TEXTURE = -1; // THIS IS -1 BECAUSE ZERO REPRESENTS NULL
+    protected static final int NO_DURATION = 0;
 
     // Basic Properties
     protected final MRL.Source source;
     protected final Thread renderThread;
     protected final Executor renderThreadEx;
-    protected final GLEngine glEngine;
-    protected final ALEngine alEngine;
-    protected MRL.Quality selectedQuality = MRL.Quality.HIGHEST; // TODO: add a config field for this
+    protected final GLEngine gl;
+    protected final ALEngine al;
+    protected MRL.Quality quality = WaterMediaConfig.defaultMediaQuality;
     protected boolean video;
     protected boolean audio;
 
@@ -41,12 +43,12 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected final int alSources;
     private final int[] alBuffers = new int[8];
     private int alBufferIndex = 0;
-    @Deprecated // TODO: replace with a enum to choose (NONE, ONE, ALL)
     private boolean repeat;
     private float volume = 1f; // Default volume
+    private float speed = 1.0f;
     private boolean muted = false;
 
-    public MediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, GLEngine glEngine, ALEngine alEngine, final boolean video, final boolean audio) {;
+    public MediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine gl, final ALEngine al, final boolean video, final boolean audio) {;
         Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
         Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
         Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
@@ -55,16 +57,16 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.source = source;
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
-        this.glEngine = glEngine == null ? new GLEngine.Builder().build() : glEngine;
-        this.alEngine = alEngine == null ? new ALEngine.Builder().build() : alEngine;
+        this.gl = gl == null ? new GLEngine.Builder().build() : gl;
+        this.al = al == null ? new ALEngine.Builder().build() : al;
         this.video = video;
         this.audio = audio;
 
         // Initialize video (if applicable)
-        this.glTexture = video ? this.glEngine.createTexture() : NO_TEXTURE;
+        this.glTexture = video ? this.gl.createTexture() : NO_TEXTURE;
 
         // Initialize audio (if applicable)
-        this.alSources = audio ? this.alEngine.genSource(this.alBuffers) : NO_TEXTURE;
+        this.alSources = audio ? this.al.genSource(this.alBuffers) : NO_TEXTURE;
     }
 
     /**
@@ -104,7 +106,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             throw new IllegalArgumentException("Native buffers cannot be null or empty.");
 
         synchronized(nativeBuffer) {
-            this.glEngine.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
+            this.gl.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
             this.firstFrame = false;
         }
     }
@@ -133,13 +135,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (this.alBufferIndex < this.alBuffers.length) {
             buffer = this.alBuffers[this.alBufferIndex++];
         } else {
-            buffer = this.alEngine.dequeueBuffers(this.alSources);
+            buffer = this.al.dequeueBuffers(this.alSources);
         }
         // UPLOAD
-        this.alEngine.queueBuffer(this.alSources, buffer, data, alFormat, sampleRate);
+        this.al.queueBuffer(this.alSources, buffer, data, alFormat, sampleRate);
 
         // PLAY IF NOT ALREADY PLAYING
-        this.alEngine.play(this.alSources);
+        this.al.play(this.alSources);
     }
 
     /**
@@ -148,28 +150,26 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * and switch to the new quality while maintaining the current timestamp.
      * @param quality the new quality to use
      */
-    public void setQuality(final MRL.Quality quality) {
-        if (quality == null)
-            throw new IllegalArgumentException("Quality cannot be null.");
-
-        this.selectedQuality = quality; // Player loop will detect the change
+    public void quality(final MRL.Quality quality) {
+        if (quality == null) throw new IllegalArgumentException("Quality cannot be null.");
+        this.quality = quality; // Player loop will detect the change
     }
 
     public MRL.Quality quality() {
-        return this.selectedQuality;
+        return this.quality;
     }
 
     /**
      * Indicates if the media player has video support enabled.
      * @return true if video support is enabled, false otherwise.
      */
-    public boolean isVideo() { return this.video; }
+    public boolean withVideo() { return this.video; }
 
     /**
      * Indicates if the media player has audio support enabled.
      * @return true if audio support is enabled, false otherwise.
      */
-    public boolean isAudio() { return this.audio; }
+    public boolean withAudio() { return this.audio; }
 
     /**
      * Returns the width of the video in pixels.
@@ -277,15 +277,17 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Resumes media playback from the current position.
+     * @see #pause(boolean)
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean resume();
+    public boolean resume() { return this.pause(false); }
 
     /**
      * Pauses media playback at the current position.
+     * @see #pause(boolean)
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean pause();
+    public boolean pause() { return this.pause(true); }
 
     /**
      * Pauses or resumes media playback based on the provided parameter.
@@ -295,13 +297,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if the operation was successful, false otherwise.
      */
     public boolean pause(final boolean paused) {
-        if (this.audio) {
-            if (paused) {
-                this.alEngine.pause(this.alSources);
-            } else {
-                this.alEngine.play(this.alSources);
-            }
-        }
+        if (!this.audio) return false; // NOT SUCCESS, NO AUDIO
+
+        if (paused) this.al.pause(this.alSources);
+        else this.al.play(this.alSources);
+
         return true;
     }
 
@@ -380,7 +380,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * while a speed less than 1.0f indicates slower playback.
      * @return the current playback speed.
      */
-    public abstract float speed();
+    public float speed() { return this.speed; }
 
     /**
      * Sets the playback speed.
@@ -391,7 +391,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param speed the desired playback speed.
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean speed(float speed);
+    public boolean speed(float speed) {
+        if (speed <= 0 || speed > 4.0f) return false;
+        this.speed = speed;
+        return true;
+    }
 
     /**
      * Returns the total duration of the media in milliseconds.
@@ -403,18 +407,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Indicates whether the media should repeat playback when it reaches the end.
      */
-    public boolean repeat() {
-        return this.repeat;
-    }
+    public boolean repeat() { return this.repeat; }
 
     /**
      * Sets whether the media should repeat playback when it reaches the end.
      * @param repeat true to enable repeat playback, false to disable
      * @return the new repeat state
      */
-    public boolean repeat(final boolean repeat) {
-        return this.repeat = repeat;
-    }
+    public boolean repeat(final boolean repeat) { return this.repeat = repeat; }
 
     /**
      * Returns the current status of the media player.
@@ -498,8 +498,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public void release() {
         if (this.video && this.glTexture != NO_TEXTURE) {
             this.renderThreadEx.execute(() -> {
-                this.glEngine.deleteTexture(this.glTexture);
-                this.glEngine.release();
+                this.gl.deleteTexture(this.glTexture);
+                this.gl.release();
             });
         }
 
@@ -509,21 +509,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             AL10.alDeleteBuffers(this.alBuffers);
             // this.alEngine.release();
         }
-    }
-
-    public enum Repeat {
-        /**
-         * No repeat, playback stops at the end of the media.
-         */
-        NONE,
-        /**
-         * Repeat the current media once it ends.
-         */
-        ONE,
-        /**
-         * Repeat all media in the playlist or queue.
-         */
-        ALL
     }
 
     /**

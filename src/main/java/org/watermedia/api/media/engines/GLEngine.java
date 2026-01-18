@@ -124,8 +124,7 @@ public final class GLEngine {
             // FIRST FRAME: DIRECT SYNC UPLOAD + PREPARE PBO FOR NEXT FRAME
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height, 0,
-                    format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, memoryAddress);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height, 0, format, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, memoryAddress);
             this.checkGLError("glTexImage2D direct");
 
             // PREPARE PBO[0] WITH CURRENT DATA FOR NEXT FRAME

@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 public class WaterMediaConfig {
 
     @Spec.Field
-    public static MRL.Quality defaultMediaQuality = MRL.Quality.HIGHER;
+    public static MRL.Quality defaultMediaQuality = MRL.Quality.HIGHEST;
 
     @Spec.Field
     public static boolean ffmpegEnabled = true;

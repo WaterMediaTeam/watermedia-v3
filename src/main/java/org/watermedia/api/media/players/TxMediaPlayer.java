@@ -7,12 +7,10 @@ import org.watermedia.api.decode.DecoderAPI;
 import org.watermedia.api.decode.Image;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.GLEngine;
-import org.watermedia.tools.IOTool;
 import org.watermedia.tools.NetTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
-import java.net.URI;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -59,7 +57,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     private void fetchImage() {
         this.status = Status.LOADING; // Set status to loading
-        final var uri = this.source.uri(this.selectedQuality);
+        final var uri = this.source.uri(this.quality);
         try (final NetTool.Request request = new NetTool.Request(uri.toURL(), "GET", null)) {
             final String type = request.getContentType();
             if (type == null || !type.startsWith("image/")) {
