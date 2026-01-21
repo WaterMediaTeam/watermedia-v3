@@ -1,8 +1,7 @@
 [
   {
-    "name": "Platform Tests",
+    "name": "Platforms",
     "uris": [
-
       {
         "name": "STREAMABLE TEST",
         "uri": "https://streamable.com/6yszde"
@@ -19,16 +18,26 @@
     ]
   },
   {
-    "name": "Format Tests",
+    "name": "GIF format",
     "uris": [
       {
-        "name": "GIF TEST",
+        "name": "GIF #1",
         "uri": "https://blog.phonehouse.es/wp-content/uploads/2018/01/giphy-1-1.gif"
-      },
+      }
+    ]
+  },
+  {
+    "name": "PNG format",
+    "uris": [
       {
         "name": "APNG TEST",
         "uri": "https://i.ibb.co/jyhTX5q/maya-megu-APNG.png"
-      },
+      }
+    ]
+  },
+  {
+    "name": "Video formats",
+    "uris": [
       {
         "name": "H.264 MP4 TEST (RAKKUN)",
         "uri": "https://files.catbox.moe/1n0jn9.mp4"

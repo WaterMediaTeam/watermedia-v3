@@ -67,7 +67,7 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
         }
 
         // CRC OVER DATA
-        for (final byte b : this.data) {
+        for (final byte b: this.data) {
             crcCalc = CRC_TABLE[(crcCalc ^ b) & 0xFF] ^ (crcCalc >>> 8);
         }
 

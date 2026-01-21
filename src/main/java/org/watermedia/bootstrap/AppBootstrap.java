@@ -7,10 +7,16 @@ import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.*;
-import java.net.*;
-import java.nio.file.*;
-import java.util.*;
+import java.net.URI;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.net.URLConnection;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.StringJoiner;
 
 public class AppBootstrap {
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia/libs");
@@ -55,7 +61,8 @@ public class AppBootstrap {
             try {
                 Class.forName("org.watermedia.binaries.WaterMediaBinaries");
                 inClassPath = true;
-            } catch (ClassNotFoundException ignored) {}
+            } catch (final ClassNotFoundException ignored) {
+            }
 
             if (binaries == null && !inClassPath) {
                 showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
@@ -127,7 +134,7 @@ public class AppBootstrap {
 
     private static void relaunch(final List<Path> jars, final String[] args) throws Exception {
         final StringJoiner cp = new StringJoiner(File.pathSeparator);
-        for (final Path jar: jars) cp.add(jar.toAbsolutePath().toString());
+        for (final Path jar : jars) cp.add(jar.toAbsolutePath().toString());
 
         final String currentCp = System.getProperty("java.class.path");
         if (currentCp != null && !currentCp.isBlank()) cp.add(currentCp);
@@ -136,7 +143,10 @@ public class AppBootstrap {
         while (cl != null) {
             if (cl instanceof final URLClassLoader ucl) {
                 for (final URL url : ucl.getURLs()) {
-                    try { cp.add(Path.of(url.toURI()).toString()); } catch (final Exception ignored) {}
+                    try {
+                        cp.add(Path.of(url.toURI()).toString());
+                    } catch (final Exception ignored) {
+                    }
                 }
             }
             cl = cl.getParent();
@@ -157,7 +167,7 @@ public class AppBootstrap {
     private static Path findLocalJar(final String prefix) {
         final File[] files = new File("").getAbsoluteFile().listFiles();
         if (files == null) return null;
-        for (final File f: files) {
+        for (final File f : files) {
             if (f.getName().startsWith(prefix) && f.getName().endsWith(".jar")) return f.toPath();
         }
         return null;
@@ -206,7 +216,8 @@ public class AppBootstrap {
         dialog.setBackground(Color.BLACK);
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
             dialog.setIconImage(ImageIO.read(in));
-        } catch (final Exception ignored) {}
+        } catch (final Exception ignored) {
+        }
 
 
         final TextArea text = new TextArea(msg, 20, 80, TextArea.SCROLLBARS_VERTICAL_ONLY);
@@ -218,7 +229,10 @@ public class AppBootstrap {
         final Button ok = new Button("    OK    ");
         ok.setFont(new Font("Consolas", Font.BOLD, 18));
         ok.setPreferredSize(new Dimension(120, 40));
-        ok.addActionListener(e -> { dialog.dispose(); System.exit(1); });
+        ok.addActionListener(e -> {
+            dialog.dispose();
+            System.exit(1);
+        });
         ok.setBackground(new Color(60, 60, 60));
         ok.setForeground(Color.WHITE);
 
@@ -231,7 +245,10 @@ public class AppBootstrap {
         dialog.pack();
         dialog.setLocationRelativeTo(null);
         dialog.addWindowListener(new java.awt.event.WindowAdapter() {
-            @Override public void windowClosing(final java.awt.event.WindowEvent e) { System.exit(1); }
+            @Override
+            public void windowClosing(final java.awt.event.WindowEvent e) {
+                System.exit(1);
+            }
         });
         dialog.requestFocusInWindow();
         dialog.setAlwaysOnTop(true);
@@ -254,11 +271,13 @@ public class AppBootstrap {
 
             try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
                 this.setIconImage(ImageIO.read(in));
-            } catch (final Exception ignored) {}
+            } catch (final Exception ignored) {
+            }
 
             try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
                 if (in != null) this.bannerImg = ImageIO.read(in);
-            } catch (final Exception ignored) {}
+            } catch (final Exception ignored) {
+            }
 
             // BANNER
             final Canvas banner = new Canvas() {
@@ -269,7 +288,10 @@ public class AppBootstrap {
                     if (BootstrapWindow.this.bannerImg != null) {
                         final double aspect = (double) BootstrapWindow.this.bannerImg.getWidth() / BootstrapWindow.this.bannerImg.getHeight();
                         int w = this.getWidth(), h = (int) (w / aspect);
-                        if (h > this.getHeight()) { h = this.getHeight(); w = (int) (h * aspect); }
+                        if (h > this.getHeight()) {
+                            h = this.getHeight();
+                            w = (int) (h * aspect);
+                        }
                         g.drawImage(BootstrapWindow.this.bannerImg, (this.getWidth() - w) / 2, (this.getHeight() - h) / 2, w, h, this);
                     } else {
                         System.out.println("No banner found");
@@ -278,7 +300,11 @@ public class AppBootstrap {
                         g.drawString("WaterMedia", 20, 50);
                     }
                 }
-                @Override public Dimension getPreferredSize() { return new Dimension(960, 120); }
+
+                @Override
+                public Dimension getPreferredSize() {
+                    return new Dimension(960, 120);
+                }
             };
 
             // CONSOLE
@@ -301,7 +327,11 @@ public class AppBootstrap {
                     final String txt = BootstrapWindow.this.progress + "%";
                     g.drawString(txt, (this.getWidth() - g.getFontMetrics().stringWidth(txt)) / 2, 16);
                 }
-                @Override public Dimension getPreferredSize() { return new Dimension(960, 24); }
+
+                @Override
+                public Dimension getPreferredSize() {
+                    return new Dimension(960, 24);
+                }
             };
 
             this.progressPanel = new Panel(new BorderLayout());
@@ -316,16 +346,22 @@ public class AppBootstrap {
             this.setSize(960, 540);
             this.setLocationRelativeTo(null);
             this.addWindowListener(new java.awt.event.WindowAdapter() {
-                @Override public void windowClosing(final java.awt.event.WindowEvent e) { System.exit(0); }
+                @Override
+                public void windowClosing(final java.awt.event.WindowEvent e) {
+                    System.exit(0);
+                }
             });
             this.addComponentListener(new java.awt.event.ComponentAdapter() {
-                @Override public void componentResized(final java.awt.event.ComponentEvent e) {
-                    BootstrapWindow.this.repaint(); }
+                @Override
+                public void componentResized(final java.awt.event.ComponentEvent e) {
+                    BootstrapWindow.this.repaint();
+                }
             });
 
             // REDIRECT STDOUT/STDERR
             final PrintStream redirect = new PrintStream(new OutputStream() {
                 private final StringBuilder line = new StringBuilder();
+
                 @Override
                 public void write(final int b) {
                     BootstrapWindow.this.originalOut.write(b);

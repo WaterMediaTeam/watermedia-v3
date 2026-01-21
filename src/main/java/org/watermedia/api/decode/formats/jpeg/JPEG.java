@@ -67,7 +67,7 @@ public class JPEG extends Decoder {
         if (type == BufferedImage.TYPE_INT_ARGB || type == BufferedImage.TYPE_INT_RGB) {
             // FAST PATH FOR INT-BASED IMAGES
             final int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-            for (final int pixel : pixels) {
+            for (final int pixel: pixels) {
                 final int a = (type == BufferedImage.TYPE_INT_ARGB) ? ((pixel >> 24) & 0xFF) : 0xFF;
                 DataTool.rgbaToBrga(buffer, pixel, (byte) a);
             }
@@ -110,7 +110,7 @@ public class JPEG extends Decoder {
     public boolean test() {
         // CHECK IF IMAGEIO CAN READ JPEG FORMAT
         final String[] readers = ImageIO.getReaderFormatNames();
-        for (final String format : readers) {
+        for (final String format: readers) {
             if (format.equalsIgnoreCase("JPEG") || format.equalsIgnoreCase("JPG")) {
                 return true;
             }

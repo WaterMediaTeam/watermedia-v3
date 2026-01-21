@@ -12,7 +12,7 @@ public class NeoBootstrap {
         try {
             WaterMedia.start(NAME, null, null, FMLLoader.getDist().isClient());
         } catch (final Exception e) {
-            throw new RuntimeException("Failed starting " + WaterMedia.NAME + " for " + NAME +": " + e.getMessage(), e);
+            throw new RuntimeException("Failed starting " + WaterMedia.NAME + " for " + NAME + ": " + e.getMessage(), e);
         }
     }
 }

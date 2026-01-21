@@ -67,7 +67,7 @@ public class PNG extends Decoder {
     @Override
     public boolean supported(final ByteBuffer buffer) {
         buffer.mark();
-        for (final byte value : PNG_SIGNATURE) {
+        for (final byte value: PNG_SIGNATURE) {
             if (!buffer.hasRemaining() || buffer.get() != value) {
                 buffer.reset();
                 return false;
@@ -391,13 +391,13 @@ public class PNG extends Decoder {
      */
     private byte[] jointChunk(final List<byte[]> chunks) {
         int totalLength = 0;
-        for (final byte[] chunk : chunks) {
+        for (final byte[] chunk: chunks) {
             totalLength += chunk.length;
         }
 
         final byte[] result = new byte[totalLength];
         int offset = 0;
-        for (final byte[] chunk : chunks) {
+        for (final byte[] chunk: chunks) {
             System.arraycopy(chunk, 0, result, offset, chunk.length);
             offset += chunk.length;
         }

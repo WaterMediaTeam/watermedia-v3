@@ -260,7 +260,7 @@ public final class HlsTool {
         String segTitle = "";
         String dateTime = null;
 
-        for (String line : content.split("\n")) {
+        for (String line: content.split("\n")) {
             line = line.trim();
 
             if (line.startsWith("#EXT-X-VERSION:")) {
@@ -376,11 +376,11 @@ public final class HlsTool {
             System.out.println("Source: " + m.source());
             System.out.println("Version: " + m.version());
             System.out.println("\nSession Data:");
-            for (final var sd : m.sessionData()) {
+            for (final var sd: m.sessionData()) {
                 System.out.println("  " + sd.id() + " = " + sd.value());
             }
             System.out.println("\nVariants (sorted by quality):");
-            for (final var v : m.sorted()) {
+            for (final var v: m.sorted()) {
                 System.out.printf("  %-8s  %10s  %5.1f fps  %,10d bps  %s%n",
                         v.quality(), v.resolution(), v.fps(), v.bandwidth(), v.uri());
             }
@@ -418,7 +418,7 @@ public final class HlsTool {
             System.out.println("VOD: " + m.vod());
             System.out.printf("Total Duration: %.3fs%n", m.totalDuration());
             System.out.println("\nSegments:");
-            for (final var s : m.segments()) {
+            for (final var s: m.segments()) {
                 System.out.printf("  [%d] %.3fs - %s%n", s.sequence(), s.duration(),
                         s.uri().substring(s.uri().lastIndexOf('/') + 1));
             }

@@ -99,7 +99,7 @@ public final class MRL {
      * Useful for prefetching playlist items.
      */
     public static void preload(final URI... uris) {
-        for (final URI uri : uris) {
+        for (final URI uri: uris) {
             get(uri); // Will start async load if not cached
         }
     }
@@ -242,7 +242,7 @@ public final class MRL {
         final Source[] s = this.sources;
         if (s == null) return null;
 
-        for (final Source src : s) {
+        for (final Source src: s) {
             if (src.type == type) return src;
         }
         return null;
