@@ -33,22 +33,20 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected boolean audio;
 
     // Video Properties
-    private int glChroma; // Default to BGRA
     private int width = NO_SIZE;
     private int height = NO_SIZE;
     private final int glTexture;
+    private int glChroma; // Default to BGRA
     private boolean firstFrame = true;
 
     // Audio Properties
     protected final int alSources;
-    private final int[] alBuffers = new int[8];
-    private int alBufferIndex = 0;
     private boolean repeat;
     private float volume = 1f; // Default volume
     private float speed = 1.0f;
     private boolean muted = false;
 
-    public MediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine gl, final ALEngine al, final boolean video, final boolean audio) {;
+    public MediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine gl, final ALEngine al, final boolean video, final boolean audio) {
         Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
         Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
         Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
@@ -66,7 +64,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.glTexture = video ? this.gl.createTexture() : NO_TEXTURE;
 
         // Initialize audio (if applicable)
-        this.alSources = audio ? this.al.genSource(this.alBuffers) : NO_TEXTURE;
+        this.alSources = audio ? this.al.genSource() : NO_TEXTURE;
     }
 
     /**
@@ -77,6 +75,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param height the height of the video in pixels.
      */
     public void setVideoFormat(final int chroma, final int width, final int height) {
+        // TODO: test if whe should rid off of RGBA and just use BGRA
         if (chroma != GL12.GL_RGBA && chroma != GL12.GL_BGRA)
             throw new IllegalArgumentException("Unsupported chroma format: " + chroma);
 
@@ -111,34 +110,19 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         }
     }
 
-    protected void upload(final ByteBuffer data, final int alFormat, final int sampleRate, final int channels) {
-        if (!this.audio) {
+    protected void upload(final ByteBuffer data, final int format, final int samples, final int channels) {
+        if (!this.audio)
             throw new IllegalStateException("MediaPlayer was built with no audio support");
-        }
 
-        if (alFormat != AL10.AL_FORMAT_MONO8 && alFormat != AL10.AL_FORMAT_MONO16 && alFormat != AL10.AL_FORMAT_STEREO8 && alFormat != AL10.AL_FORMAT_STEREO16) {
-            throw new IllegalArgumentException("Unsupported audio format: " + alFormat);
-        }
+        // TODO: test if I should keep FORMAT_STEREO8 or just use STEREO16
+        if (format != AL10.AL_FORMAT_STEREO8 && format != AL10.AL_FORMAT_STEREO16)
+            throw new IllegalArgumentException("Unsupported audio format: " + format);
 
-        if (channels < 1 || channels > 2) {
-            throw new IllegalArgumentException("Unsupported channel count: " + channels);
-        }
-
-        if (channels == 1 && (alFormat != AL10.AL_FORMAT_MONO8 && alFormat != AL10.AL_FORMAT_MONO16)) {
-            throw new IllegalArgumentException("Mono format expected for single channel audio.");
-        } else if (channels == 2 && (alFormat != AL10.AL_FORMAT_STEREO8 && alFormat != AL10.AL_FORMAT_STEREO16)) {
-            throw new IllegalArgumentException("Stereo format expected for dual channel audio.");
-        }
+        if (channels != 2)
+            throw new IllegalArgumentException(channels == 1 ? "Mono format is not supported anymore." : "Unsupported channel count: " + channels);
 
         // PREPARE
-        final int buffer;
-        if (this.alBufferIndex < this.alBuffers.length) {
-            buffer = this.alBuffers[this.alBufferIndex++];
-        } else {
-            buffer = this.al.dequeueBuffers(this.alSources);
-        }
-        // UPLOAD
-        this.al.queueBuffer(this.alSources, buffer, data, alFormat, sampleRate);
+        this.al.uploadBuffer(this.alSources, data, format, samples);
 
         // PLAY IF NOT ALREADY PLAYING
         this.al.play(this.alSources);
@@ -155,9 +139,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.quality = quality; // Player loop will detect the change
     }
 
-    public MRL.Quality quality() {
-        return this.quality;
-    }
+    public MRL.Quality quality() { return this.quality; }
 
     /**
      * Indicates if the media player has video support enabled.
@@ -214,10 +196,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param volume the desired volume level (0-100), mute status is set to false if volume is greater than 0
      *               but will not be set mute to true if volume is set to 0
      */
-    public void volume(int volume) {
+    public void volume(final int volume) {
         this.volume = MathUtil.clamp(0, 100, volume) / 100f; // Convert to float between 0.0 and 1.0
         this.muted = volume < 1;
-        AL10.alSourcef(this.alSources, AL10.AL_GAIN, this.muted ? 0 : this.volume);
+        this.al.volume(this.alSources, this.muted ? 0.0f : this.volume);
     }
 
     /**
@@ -232,10 +214,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * and when unmuted, the volume is restored to the previous level.
      * @param mute true to mute the audio, false to unmute
      */
-    public void mute(boolean mute) {
+    public void mute(final boolean mute) {
         this.muted = mute;
-        // Restore volume
-        AL10.alSourcef(this.alSources, AL10.AL_GAIN, mute ? 0.0f : this.volume); // Mute audio
+        this.al.volume(this.alSources, mute ? 0.0f : this.volume);
     }
 
     /**
@@ -391,9 +372,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param speed the desired playback speed.
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean speed(float speed) {
+    public boolean speed(final float speed) {
         if (speed <= 0 || speed > 4.0f) return false;
         this.speed = speed;
+        this.al.speed(this.alSources, speed);
         return true;
     }
 
@@ -504,10 +486,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         }
 
         if (this.audio && this.alSources != NO_TEXTURE) {
-            AL10.alSourceStop(this.alSources);
-            AL10.alDeleteSources(this.alSources);
-            AL10.alDeleteBuffers(this.alBuffers);
-            // this.alEngine.release();
+            this.al.release(this.alSources);
         }
     }
 

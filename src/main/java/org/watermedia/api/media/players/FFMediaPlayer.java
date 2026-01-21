@@ -22,6 +22,7 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
@@ -88,13 +89,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     private volatile boolean pauseRequested = false;
     private volatile boolean qualityRequest = false;
     private volatile long seekTo = -1;
+    private volatile long preciseSeekTo = -1;
 
     // CLOCK SYSTEM
-    private volatile double masterClock = 0.0;
-    private volatile long clockBaseTime = -1;
-    private volatile boolean clockPaused = false;
-    private volatile long pausedTime = 0;
-    private volatile boolean audioClockValid = false;
+    private final MasterClock clock = new MasterClock();
 
     // REUSABLE BUFFERS
     private AVPacket packet;
@@ -109,12 +107,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private double videoTimeBase;
     private double audioTimeBase;
 
-    // FRAME TIMING
-    private double frameDurationSeconds = 0.033;
-    private double aggressiveSkipThreshold;
-    private float videoFps = 30.0f;
-
-    // STATS (unused)
+    // STATS (unused yet)
     private int consecutiveSkips = 0;
     private long totalSkippedFrames = 0;
     private long totalRenderedFrames = 0;
@@ -159,22 +152,21 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean pause(final boolean paused) {
         // super.pause(paused); // MOVED INTO PLAYER LOOP
         this.pauseRequested = paused;
-        this.clockPaused = paused;
-        if (paused && !this.pauseRequested) {
-            this.pausedTime = this.time();
-            return true;
-        } else if (!paused && this.pauseRequested) {
-            this.masterClock = MathUtil.msToSeconds(this.pausedTime);
-            this.clockBaseTime = System.nanoTime();
-            return true;
+        if (paused) {
+            this.clock.pause();
+        } else {
+            this.clock.resume();
         }
-        return false;
+        return true;
     }
 
     @Override
     public boolean stop() {
-        this.playerThread.interrupt();
-        return true;
+        if (this.playerThread != null) {
+            this.playerThread.interrupt();
+            return true;
+        }
+        return false;
     }
 
     @Override
@@ -184,13 +176,17 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean seek(long timeMs) {
         if (!this.canSeek()) return false;
 
-        timeMs = Math.max(0, Math.min(timeMs, this.duration()));
-        this.seekTo = timeMs;
+        this.preciseSeekTo = Math.max(0, Math.min(timeMs, this.duration()));
         return true;
     }
 
     @Override
-    public boolean seekQuick(final long timeMs) { return this.seek(timeMs); }
+    public boolean seekQuick(final long timeMs) {
+        if (!this.canSeek()) return false;
+
+        this.seekTo = Math.max(0, Math.min(timeMs, this.duration()));  // USA FAST SEEK
+        return true;
+    }
 
     @Override
     public boolean skipTime(final long timeMs) { return this.seek(this.time() + timeMs); }
@@ -199,7 +195,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean previousFrame() {
         if (!this.canSeek()) return false;
 
-        final long frameTimeMs = (long)(this.frameDurationSeconds * 1000);
+        final long frameTimeMs = this.clock.frameDuration();
         return this.seek(Math.max(0, this.time() - frameTimeMs));
     }
 
@@ -207,7 +203,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean nextFrame() {
         if (!this.canSeek()) return false;
 
-        final long frameTimeMs = (long)(this.frameDurationSeconds * 1000);
+        final long frameTimeMs = this.clock.frameDuration();
         return this.seek(this.time() + frameTimeMs);
     }
 
@@ -218,7 +214,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean rewind() { return this.skipTime(-5000); }
 
     @Override
-    public float fps() { return this.videoFps; }
+    public float fps() { return this.clock.fps(); }
 
     @Override
     public Status status() { return this.status; }
@@ -243,13 +239,16 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public long time() {
-        if (this.clockPaused || this.clockBaseTime <= 0)
-            return MathUtil.secondsToMs(this.masterClock);
+        return this.clock.time();
+    }
 
-        final double elapsed = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0;
-        final double interpolated = Math.min(elapsed * this.speed(), 0.1);
-
-        return MathUtil.secondsToMs(this.masterClock + interpolated);
+    @Override
+    public boolean speed(float speed) {
+        if (super.speed(speed)) {
+            this.clock.speed(speed);
+            return true;
+        }
+        return false;
     }
 
     public boolean isHwAccel() { return !isNull(this.hwDeviceCtx); }
@@ -260,7 +259,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.consecutiveSkips = 0;
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
-            this.audioClockValid = false;
+            this.clock.reset();
 
             this.status = Status.LOADING;
             if (!this.init()) {
@@ -272,13 +271,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.status = Status.PAUSED;
             } else {
                 this.status = Status.PLAYING;
-                this.clockBaseTime = System.nanoTime();
+                this.clock.start();
             }
 
-            while (!Thread.currentThread().isInterrupted()) {
+            while (!ThreadTool.isInterrupted()) {
                 // HANDLE QUALITY SWITCH
                 if (this.qualityRequest) {
                     final long currentTimeMs = this.time();
+                    final boolean wasPaused = this.pauseRequested;
 
                     LOGGER.info(IT, "Switching quality to {} at {}s", this.quality, MathUtil.msToSeconds(currentTimeMs));
 
@@ -289,7 +289,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                     this.consecutiveSkips = 0;
                     this.totalSkippedFrames = 0;
                     this.totalRenderedFrames = 0;
-                    this.audioClockValid = false;
+
+                    // NO resetear el clock aquí, solo pausarlo temporalmente
+                    this.clock.pause();
+
                     this.status = Status.BUFFERING;
 
                     // RE-INIT
@@ -300,15 +303,18 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     // SEEK TO THE CURRENT TIMESTAMP
                     if (currentTimeMs > 0 && this.canSeek()) {
-                        this.seekTo = currentTimeMs;
+                        this.preciseSeekTo = currentTimeMs;
                     }
 
-                    // RESTORE PAUSE
-                    if (this.pauseRequested) {
+                    this.clock.time(currentTimeMs);
+
+                    // RESTORE PAUSE/PLAY state
+                    if (wasPaused) {
                         this.status = Status.PAUSED;
+                        this.clock.pause();
                     } else {
                         this.status = Status.PLAYING;
-                        this.clockBaseTime = System.nanoTime();
+                        this.clock.start(); // Esto reinicia baseTimeMs pero masterTimeMs ya está en currentTimeMs
                     }
 
                     LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
@@ -316,36 +322,111 @@ public final class FFMediaPlayer extends MediaPlayer {
                     continue;
                 }
 
-                // HANDLE SEEK
+                // HANDLE PRECISE SEEK
+                if (this.preciseSeekTo >= 0) {
+                    final long targetMs = this.preciseSeekTo;
+                    this.preciseSeekTo = -1;
+
+                    if (this.formatContext == null || !this.canSeek()) {
+                        LOGGER.warn(IT, "Failed to perform precise seek - cannot seek on current context");
+                        continue;
+                    }
+
+                    final long currentMs = this.clock.time();
+                    LOGGER.info(IT, "Precise seeking to {}ms - current time {}ms", targetMs, currentMs);
+
+                    // FLUSH CODECS
+                    if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                    if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+
+                    // SEEK BACKWARD FIRST TO FIND A KEYFRAME BEFORE TARGET
+                    final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
+                    final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, avformat.AVSEEK_FLAG_BACKWARD);
+
+                    if (result >= 0) {
+                        // NOW DECODE FRAMES UNTIL WE REACH THE TARGET
+                        int maxFramesToSkip = 500;
+                        long lastAudioPts = -1;
+                        long lastVideoPts = -1;
+                        boolean reachedTarget = false;
+
+                        while (maxFramesToSkip-- > 0 && !ThreadTool.isInterrupted() && !reachedTarget) {
+                            final int readResult = avformat.av_read_frame(this.formatContext, this.packet);
+                            if (readResult < 0) break;
+
+                            try {
+                                final int streamIndex = this.packet.stream_index();
+                                final long packetPts = this.packet.pts();
+
+                                if (streamIndex == this.audioStreamIndex && this.audio && packetPts != avutil.AV_NOPTS_VALUE) {
+                                    lastAudioPts = (long) (packetPts * this.audioTimeBase * 1000);
+
+                                    // SIEMPRE enviar al decoder, pero sin reproducir
+                                    avcodec.avcodec_send_packet(this.audioCodecContext, this.packet);
+
+                                    // Drenar frames decodificados sin reproducirlos
+                                    while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0);
+
+                                    if (lastAudioPts >= targetMs - this.clock.frameDuration()) {
+                                        reachedTarget = true;
+                                    }
+                                } else if (streamIndex == this.videoStreamIndex && this.video && packetPts != avutil.AV_NOPTS_VALUE) {
+                                    lastVideoPts = (long) (packetPts * this.videoTimeBase * 1000);
+
+                                    // SIEMPRE enviar al decoder para mantener la cadena de referencia
+                                    avcodec.avcodec_send_packet(this.videoCodecContext, this.packet);
+
+                                    // Drenar frames decodificados sin renderizarlos
+                                    while (avcodec.avcodec_receive_frame(this.videoCodecContext, this.videoFrame) >= 0) {
+                                        // Solo consumir, no renderizar
+                                    }
+
+                                    if (!this.audio && lastVideoPts >= targetMs - this.clock.frameDuration()) {
+                                        reachedTarget = true;
+                                    }
+                                }
+                            } finally {
+                                avcodec.av_packet_unref(this.packet);
+                            }
+                        }
+
+                        this.clock.time(targetMs);
+                        this.consecutiveSkips = 0;
+                        LOGGER.info(IT, "Precise seek completed to {}ms (audio: {}ms, video: {}ms)", targetMs, lastAudioPts, lastVideoPts);
+                    } else {
+                        LOGGER.error(IT, "Precise seek failed with error: {}", result);
+                    }
+                    continue;
+                }
+
+                // HANDLE FAST SEEK (imprecise, keyframe-based)
                 if (this.seekTo >= 0) {
                     final long targetMs = this.seekTo;
                     this.seekTo = -1;
 
                     if (this.formatContext == null || !this.canSeek()) {
                         LOGGER.warn(IT, "Failed to perform seek - cannot seek on current context");
-                        return;
+                        continue;
                     }
 
-                    final long currentMs = MathUtil.secondsToMs(this.masterClock);
-                    LOGGER.info(IT, "Seeking to {}ms - current time {}ms", targetMs, currentMs);
+                    final long currentMs = this.clock.time();
+                    LOGGER.info(IT, "Fast seeking to {}ms - current time {}ms", targetMs, currentMs);
 
                     // FLUSH CODECS
                     if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                     if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
 
-                    // Perform seek
+                    // SIMPLE KEYFRAME SEEK
                     final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
                     final int seekFlags = targetMs < currentMs ? avformat.AVSEEK_FLAG_BACKWARD : 0;
                     final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
 
                     if (result >= 0) {
-                        this.masterClock = MathUtil.msToSeconds(targetMs);
-                        this.clockBaseTime = System.nanoTime();
+                        this.clock.time(targetMs);
                         this.consecutiveSkips = 0;
-                        this.audioClockValid = false;  // IGNORE AUDIO CLOCK
-                        LOGGER.info(IT, "Seek completed to {}ms", targetMs);
+                        LOGGER.info(IT, "Fast seek completed to {}ms", targetMs);
                     } else {
-                        LOGGER.error(IT, "seek failed with error: {}", result);
+                        LOGGER.error(IT, "Fast seek failed with error: {}", result);
                     }
                     continue;
                 }
@@ -369,11 +450,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (result < 0) {
                     LOGGER.info(IT, "Finished! - R: {}, S: {}", this.totalRenderedFrames, this.totalSkippedFrames);
 
-                    Thread.sleep(100);
-
                     if (this.repeat()) {
                         LOGGER.info(IT, "Repeating playback");
                         this.seekTo = 0;
+                        continue; // GO BACK
                     } else {
                         LOGGER.info(IT, "Playback ended naturally");
                         this.status = Status.ENDED;
@@ -395,9 +475,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
             }
             this.status = ThreadTool.isInterrupted() ? Status.STOPPED : Status.ENDED;
-        } catch (final InterruptedException e) { // NOT AN ERROR, PLAYER JUST STOPPED
-            this.status = Status.STOPPED;
-            ThreadTool.interrupt();
         } catch (final Throwable e) {
             LOGGER.fatal(IT, "Error handled in in player loop for URI {}", this.source.uri(this.quality), e);
             this.status = Status.ERROR;
@@ -405,6 +482,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.cleanup();
         }
     }
+
 
     private boolean init() {
         try {
@@ -489,31 +567,26 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
-        final int codecId = videoStream.codecpar().codec_id();
-
         final AVRational frameRate = videoStream.avg_frame_rate();
 
         if (frameRate.num() > 0 && frameRate.den() > 0) {
-            this.videoFps = (float) av_q2d(frameRate);
-            this.frameDurationSeconds = 1.0 / this.videoFps;
+            this.clock.fps((float) av_q2d(frameRate));
         } else {
             // Fallback basado en time_base si avg_frame_rate no está disponible
             // Aunque personalmente no le encuentro utilidad
             final AVRational tbr = videoStream.r_frame_rate();
             if (tbr.num() > 0 && tbr.den() > 0) {
-                this.videoFps = (float) av_q2d(tbr);
-                this.frameDurationSeconds = 1.0 / this.videoFps;
+                this.clock.fps((float) av_q2d(tbr));
             }
         }
 
-        this.aggressiveSkipThreshold = this.frameDurationSeconds * 5.0;
-
         LOGGER.info(IT, "Video timing: {}fps, frame duration: {}ms, skip threshold: {}ms",
-                String.format("%.2f", this.videoFps),
-                String.format("%.2f", this.frameDurationSeconds * 1000),
-                String.format("%.2f", this.aggressiveSkipThreshold * 1000));
+                this.clock.fps(),
+                this.clock.frameDuration(),
+                this.clock.skipThreshold());
 
         // START DECODER
+        final int codecId = videoStream.codecpar().codec_id();
         final AVCodec decoder = avcodec.avcodec_find_decoder(codecId);
         if (decoder == null)
             LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
@@ -528,7 +601,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final int width = this.videoCodecContext.width();
             final int height = this.videoCodecContext.height();
-            final long pixels = (long) width * height;
+            final int pixels = width * height;
 
             final int threads = pixels <= 921600
                     ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2073600
@@ -553,7 +626,6 @@ public final class FFMediaPlayer extends MediaPlayer {
         // el formato real del frame puede diferir del codec context cuando
         // se usa hardware acceleration (el frame transferido desde GPU
         // típicamente es NV12/P010, no el formato original del stream)
-
         this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
         this.scaledFrame.width(this.width());
         this.scaledFrame.height(this.height());
@@ -712,12 +784,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                 frameToScale = this.hwTransferFrame;
             }
 
-            final double framePts = this.videoFrame.pts() * this.videoTimeBase;
-            final double referenceTime = this.getReferenceTime();
-            final double drift = framePts - referenceTime;
+            final long framePtsMs = (long) (this.videoFrame.pts() * this.videoTimeBase * 1000);
 
             // FRAME SKIPPING
-            if (drift < -this.aggressiveSkipThreshold) {
+            if (this.clock.skip(framePtsMs)) {
+                LOGGER.debug(IT, "Decoding is taking too long, skipping!");
                 this.totalSkippedFrames++;
                 this.consecutiveSkips++;
 
@@ -726,20 +797,14 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
             this.consecutiveSkips = 0;
 
-            if (drift > 0.001) {  // ON DRIFT, DELAY
-                final long delayMs = MathUtil.secondsToMs(drift);
-                if (delayMs <= 0 || delayMs > 1.0 || this.pauseRequested) return;
-
-                if (delayMs > 1)
-                    ThreadTool.sleep(delayMs - 1);
-
-                Thread.yield();
+            // BACKPRESSURE WHEN IS NOT AUDIO
+            if (this.audioStreamIndex < 0 && (this.pauseRequested || !this.clock.waiting(framePtsMs))) {
+                return; // Interrupted or pause requested
             }
 
             // UPDATE CLOCK WHEN THERE IS NO AUDIO
-            if (!this.audioClockValid) {
-                this.masterClock = framePts;
-                this.clockBaseTime = System.nanoTime();
+            if (this.audioStreamIndex < 0) {
+                this.clock.update(framePtsMs);
             }
 
             final int frameFormat = frameToScale.format();
@@ -798,26 +863,13 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    // TODO: check why the code its the same and if can be just merged
-    private double getReferenceTime() {
-        if (this.audioClockValid && this.audio) {
-            final double elapsed = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0;
-            return this.masterClock + (elapsed * this.speed());
-        } else {
-            if (this.clockBaseTime <= 0) return 0.0;
-            final double elapsed = (System.nanoTime() - this.clockBaseTime) / 1_000_000_000.0;
-            return this.masterClock + (elapsed * this.speed());
-        }
-    }
-
     private void processAudioPacket() {
         if (avcodec.avcodec_send_packet(this.audioCodecContext, this.packet) < 0) return;
 
         while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0) {
             // AUDIO CLOCK IS PRIMARY CLOCK
-            this.masterClock = this.audioFrame.pts() * this.audioTimeBase;
-            this.clockBaseTime = System.nanoTime();
-            this.audioClockValid = true;
+            final long audioPtsMs = (long) (this.audioFrame.pts() * this.audioTimeBase * 1000);
+            this.clock.update(audioPtsMs);
 
             // RESAMPLE TO NON-FLOATING POINT
             final int samplesConverted = swresample.swr_convert(
@@ -934,15 +986,12 @@ public final class FFMediaPlayer extends MediaPlayer {
         // Reset state
         this.videoStreamIndex = -1;
         this.audioStreamIndex = -1;
-        this.audioClockValid = false;
         this.swsInputFormat = AV_PIX_FMT_NONE;
 
         LOGGER.info(IT, "Cleanup completed");
     }
 
-    private static double av_q2d(final AVRational a) { return a.num() / 1.0 / a.den(); }
     private static boolean isNull(Pointer p) { return p == null || p.isNull(); }
-
     public static boolean load(final WaterMedia watermedia) {
         Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
 

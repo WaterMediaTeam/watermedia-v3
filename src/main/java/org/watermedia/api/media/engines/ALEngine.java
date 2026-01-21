@@ -5,23 +5,19 @@ import org.watermedia.tools.ThreadTool;
 
 import java.nio.ByteBuffer;
 
-public record ALEngine() {
+public final class ALEngine {
+    private static final int BUFFERS_COUNT = 2;
 
-    public int genSource(final int[] buffers) {
-        AL10.alGenBuffers(buffers);
+    private final int[] buffers;
+    private int index = 0;
+
+    public ALEngine(final int[] buffers) {
+        this.buffers = buffers;
+    }
+
+    public int genSource() {
+        AL10.alGenBuffers(this.buffers);
         return AL10.alGenSources();
-    }
-
-    public void queueBuffer(final int source, final int buffer, final ByteBuffer data, final int alFormat, final int sampleRate) {
-        AL10.alBufferData(buffer, alFormat, data, sampleRate);
-        AL10.alSourceQueueBuffers(source, buffer);
-    }
-
-    public int dequeueBuffers(final int source) {
-        while (AL10.alGetSourcei(source, AL10.AL_BUFFERS_PROCESSED) <= 0) {
-            ThreadTool.sleep(1);
-        }
-        return AL10.alSourceUnqueueBuffers(source);
     }
 
     public void pause(final int source) {
@@ -36,11 +32,45 @@ public record ALEngine() {
         }
     }
 
+    public void speed(final int source, final float speed) {
+        AL10.alSourcef(source, AL10.AL_VELOCITY, speed);
+    }
+
+    public void volume(final int source, final float volume) {
+        AL10.alSourcef(source, AL10.AL_GAIN, volume);
+    }
+
+    public void release(final int source) {
+        AL10.alSourceStop(source);
+        AL10.alDeleteSources(source);
+        AL10.alDeleteBuffers(source);
+    }
+
+    public void uploadBuffer(final int source, final ByteBuffer data, final int format, final int samples) {
+        final int buffer;
+        if (this.index < this.buffers.length) {
+            buffer = this.buffers[this.index++];
+        } else {
+            while (AL10.alGetSourcei(source, AL10.AL_BUFFERS_PROCESSED) <= 0) {
+                ThreadTool.sleep(1);
+            }
+            buffer = AL10.alSourceUnqueueBuffers(source);
+        }
+        AL10.alBufferData(buffer, format, data, samples);
+        AL10.alSourceQueueBuffers(source, buffer);
+    }
+
+    public int[] buffers() {
+        return this.buffers;
+    }
+
+    public int[] buffersCopy() {
+        return this.buffers.clone();
+    }
+
     public static final class Builder {
-
-
         public ALEngine build() {
-            return new ALEngine();
+            return new ALEngine(new int[BUFFERS_COUNT]);
         }
     }
 }
