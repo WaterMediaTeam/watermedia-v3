@@ -197,7 +197,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      *               but will not be set mute to true if volume is set to 0
      */
     public void volume(final int volume) {
-        this.volume = MathUtil.clamp(0, 100, volume) / 100f; // Convert to float between 0.0 and 1.0
+        this.volume = MathUtil.clamp(volume, 0, 100) / 100f; // Convert to float between 0.0 and 1.0
         this.muted = volume < 1;
         this.al.volume(this.alSources, this.muted ? 0.0f : this.volume);
     }

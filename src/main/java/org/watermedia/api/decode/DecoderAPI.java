@@ -6,6 +6,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.decode.formats.gif.GIF;
 import org.watermedia.api.decode.formats.jpeg.JPEG;
 import org.watermedia.api.decode.formats.png.PNG;
+import org.watermedia.api.decode.formats.webp.WEBP;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -70,6 +71,7 @@ public class DecoderAPI {
         register(new PNG());
         register(new JPEG());
         register(new GIF());
+        register(new WEBP());
         return true;
     }
 }

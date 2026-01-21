@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'java-library'
     id 'com.google.osdetector' version '1.7.+'
     id "me.modmuss50.mod-publish-plugin" version "1.1.+"
 }
@@ -13,8 +14,10 @@ base {
 }
 
 test {
-//    useJUnitPlatform()
-    failOnNoDiscoveredTests.set(false)
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
 }
 
 java {
@@ -82,8 +85,9 @@ dependencies {
     library "org.lwjgl:lwjgl-openal:$openal_version"
 
     // TEST DEPENDENCIES
-    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
-    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+    testImplementation(platform('org.junit:junit-bom:6.0.2'))
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     testRuntimeOnly "org.lwjgl:lwjgl:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:natives-$osdetector.os"

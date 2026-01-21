@@ -930,8 +930,12 @@ public enum MathUtil {
         }
     }
 
-    public static int clamp(int min, int max, int value) {
+    public static int clamp(int value, int min, int max) {
         return value >= max ? max : value <= min ? min : value;
+    }
+
+    public static int clip255(int value) {
+        return clamp(value, 0, 255);
     }
 
     /**

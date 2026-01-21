@@ -13,7 +13,7 @@ public abstract class Decoder {
     }
 
     /**
-     * Reads the "expected" header of the decoder format.
+     * Creates a mark on the buffer and Reads the "expected" header of the decoder format.
      * When it matches, it doesn't rewind to the initial position assuming it will proceed with the decoding
      * When it doesn't, rewinds to the initial position to let other decoders properly check the value.
      * @param buffer encoded picture data
@@ -24,7 +24,7 @@ public abstract class Decoder {
     /**
      * Decodes an image from the provided ByteBuffer.
      * The buffer should be positioned at the start of the encoded image data.
-     * The header should be skipped previously by the call of {@link #decode(ByteBuffer)}
+     * The header should be skipped previously by the call of {@link #supported(ByteBuffer)}
      *
      * @param buffer encoded picture data
      * @return decoded image
@@ -36,5 +36,6 @@ public abstract class Decoder {
      * Test current decoder
      * @return
      */
+    @Deprecated(forRemoval = true)
     public abstract boolean test();
 }

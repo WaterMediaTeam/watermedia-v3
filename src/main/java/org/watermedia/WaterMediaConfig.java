@@ -9,11 +9,18 @@ import org.omegaconfig.impl.fields.StringField;
 import org.watermedia.api.media.MRL;
 
 import java.io.File;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
 @Spec(value = WaterMedia.ID, suffix = "common", format = OmegaConfig.FORMAT_TOML)
 public class WaterMediaConfig {
+
+    @Spec.Field
+    public static String remoteHost = "http://localhost:25580/";
+
+    @Spec.Field
+    public static String remoteToken = "watermedia_default_token_change_it";
 
     @Spec.Field
     public static MRL.Quality defaultMediaQuality = MRL.Quality.HIGHEST;

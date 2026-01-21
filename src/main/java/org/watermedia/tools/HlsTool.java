@@ -1,5 +1,7 @@
 package org.watermedia.tools;
 
+import org.watermedia.WaterMedia;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,26 +49,14 @@ public final class HlsTool {
     public static Result fetch(final URI uri) {
         try {
             final var http = NetTool.connectToHTTP(uri, "GET", "*/*");
+            http.setConnectTimeout(10_000);
+            http.setInstanceFollowRedirects(true);
+            http.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
+            http.setDoInput(true);
             NetTool.validateHTTP200(http.getResponseCode(), uri);
 
-            final var client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .followRedirects(HttpClient.Redirect.NORMAL)
-                    .build();
-
-            final var request = HttpRequest.newBuilder()
-                    .uri(uri)
-                    .header("User-Agent", "WATERMeDIA/1.0")
-                    .GET()
-                    .build();
-
-            final var response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-
-            if (response.statusCode() != 200) {
-                return new ErrorResult("HTTP " + response.statusCode(), null);
-            }
-
-            return parse(response.body(), uri.toString());
+            final var response = http.getInputStream().readAllBytes();
+            return parse(new String(response, StandardCharsets.UTF_8), uri.toString());
 
         } catch (final Exception e) {
             return new ErrorResult("Fetch error: " + e.getMessage(), e);

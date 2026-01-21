@@ -18,6 +18,80 @@
     ]
   },
   {
+    "name": "WEBP lossless format",
+    "uris": [
+      {
+        "name": "TV LOSSLESS",
+        "uri": "https://files.catbox.moe/2ihp24.webp"
+      },
+      {
+        "name": "WEBP #1 (lossless)",
+        "uri": "https://www.gstatic.com/webp/gallery3/1_webp_ll.webp"
+      },
+      {
+        "name": "WEBP #2 (lossless)",
+        "uri": "https://www.gstatic.com/webp/gallery3/2_webp_ll.webp"
+      },
+      {
+        "name": "WEBP #2 RE-ENCODED (lossless)",
+        "uri": "https://files.catbox.moe/vafr93.webp"
+      },
+      {
+        "name": "WEBP #3 (lossless)",
+        "uri": "https://www.gstatic.com/webp/gallery3/3_webp_ll.webp"
+      },
+      {
+        "name": "WEBP #4 (lossless)",
+        "uri": "https://www.gstatic.com/webp/gallery3/4_webp_ll.webp"
+      },
+      {
+        "name": "WEBP #5 (lossless)",
+        "uri": "https://www.gstatic.com/webp/gallery3/5_webp_ll.webp"
+      }
+    ]
+  },
+  {
+    "name": "WEBP lossy format",
+    "uris": [
+      {
+        "name": "HEX",
+        "uri": "https://files.catbox.moe/797vqd.webp"
+      },
+      {
+        "name": "RBG",
+        "uri": "https://files.catbox.moe/z8efsa.webp"
+      },
+      {
+        "name": "TV TEST",
+        "uri": "https://files.catbox.moe/izh9qa.webp"
+      },
+      {
+        "name": "ANIMATED",
+        "uri": "https://mathiasbynens.be/demo/animated-webp-supported.webp"
+      },
+      {
+        "name": "WEBP #1",
+        "uri": "https://www.gstatic.com/webp/gallery3/1_webp_a.webp"
+      },
+      {
+        "name": "WEBP #2",
+        "uri": "https://www.gstatic.com/webp/gallery3/2_webp_a.webp"
+      },
+      {
+        "name": "WEBP #3",
+        "uri": "https://www.gstatic.com/webp/gallery3/3_webp_a.webp"
+      },
+      {
+        "name": "WEBP #4",
+        "uri": "https://www.gstatic.com/webp/gallery3/4_webp_a.webp"
+      },
+      {
+        "name": "WEBP #5",
+        "uri": "https://www.gstatic.com/webp/gallery3/5_webp_a.webp"
+      }
+    ]
+  },
+  {
     "name": "GIF format",
     "uris": [
       {

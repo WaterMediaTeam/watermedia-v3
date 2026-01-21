@@ -63,7 +63,12 @@ public class WaterMedia {
 
         if (clientSide) {
             LOGGER.info(IT, "Starting binary dependency {}", WaterMediaBinaries.NAME);
-            WaterMediaBinaries.start(instance.name, instance.tmp, instance.cwd, true);
+            // DO NOT THROW, LET'S JUST LOG THE ERROR - SOME ENVIRONMENTS MAY NOT NEED IT
+            try {
+                WaterMediaBinaries.start(instance.name, instance.tmp, instance.cwd, true);
+            } catch (Throwable t) {
+                LOGGER.error(IT, "Failed to start binary dependency {}", WaterMediaBinaries.NAME, t);
+            }
         } else {
             // TODO: should we?
             LOGGER.info(IT, "Skipping WMB startup on server-side environment");

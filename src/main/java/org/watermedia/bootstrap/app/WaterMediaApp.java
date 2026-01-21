@@ -34,6 +34,7 @@ import org.watermedia.tools.ThreadTool;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
+import java.io.File;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -46,6 +47,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Date;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -309,6 +311,9 @@ public class WaterMediaApp {
     }
 
     private void renderBottomBar() {
+        if (true) {
+            return;
+        }
         DrawTool.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
 
         // Seekbar
@@ -678,8 +683,14 @@ public class WaterMediaApp {
     // ========================================
 
     private static void initLogging() {
+        final String filename = "logs/watermedia-app.log";
+        final File logfile = new File(filename);
+        if (logfile.exists() && !logfile.renameTo(new File("logs/watermedia-app-" + new Date() + ".log"))) {
+            System.err.println("Failed to rotate log file");
+        }
+
         final ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
-        builder.setStatusLevel(Level.DEBUG);
+        builder.setStatusLevel(Level.INFO);
 
         final AppenderComponentBuilder console = builder.newAppender("Console", "Console")
                 .addAttribute("target", ConsoleAppender.Target.SYSTEM_OUT);
@@ -687,14 +698,14 @@ public class WaterMediaApp {
                 .addAttribute("pattern", "%highlight{[%d{HH:mm:ss}] [%t/%level] [%logger/%marker]: %msg%n}"));
 
         final AppenderComponentBuilder file = builder.newAppender("File", "File")
-                .addAttribute("fileName", "logs/watermedia-app.log")
+                .addAttribute("fileName", filename)
                 .addAttribute("append", true);
         file.add(builder.newLayout("PatternLayout")
                 .addAttribute("pattern", "[%d{HH:mm:ss}] [%t/%level] [%logger/%marker]: %msg%n"));
 
         builder.add(console);
         builder.add(file);
-        builder.add(builder.newRootLogger(Level.DEBUG)
+        builder.add(builder.newRootLogger(Level.INFO)
                 .add(builder.newAppenderRef("Console"))
                 .add(builder.newAppenderRef("File")));
 
