@@ -30,15 +30,18 @@ jobs:
           java-version: '21'
           distribution: 'microsoft'
 
-      - name: Setup Gradle 9.2.1
+      - name: Setup Gradle 9.3.0
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.2.1'
+          gradle-version: '9.3.0'
 
       - name: Show Gradle & Java versions
         run: |
           gradle --version
           java -version
 
+      - name: Test
+        run: gradle test --parallel
+
       - name: Build
-        run: gradle build
+        run: gradle build --parallel
