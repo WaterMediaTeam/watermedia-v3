@@ -529,6 +529,18 @@ public final class MRL {
         public Metadata(final String title, final String description, final long duration) {
             this(title, description, null, null, duration, null);
         }
+
+        public MediaPlayer createThumbnailPlayer() {
+            if (this.thumbnail == null) return null;
+            final Source source = new Source(MediaType.IMAGE, this.thumbnail);
+
+            try {
+                return new TxMediaPlayer(source, Thread.currentThread(), Runnable::run, null, false);
+            } catch (final Throwable t) {
+                LOGGER.error(IT, "Failed to create thumbnail player for: {}", this.thumbnail, t);
+                return null;
+            }
+        }
     }
 
     /**
