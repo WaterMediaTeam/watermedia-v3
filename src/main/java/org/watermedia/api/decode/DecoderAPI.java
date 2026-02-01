@@ -5,6 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.decode.formats.gif.GIF;
 import org.watermedia.api.decode.formats.jpeg.JPEG;
+import org.watermedia.api.decode.formats.netpbm.NETPBM;
 import org.watermedia.api.decode.formats.png.PNG;
 import org.watermedia.api.decode.formats.webp.WEBP;
 
@@ -72,6 +73,7 @@ public class DecoderAPI {
         register(new JPEG());
         register(new GIF());
         register(new WEBP());
+        register(new NETPBM());
         return true;
     }
 }

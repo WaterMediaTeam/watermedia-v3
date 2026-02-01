@@ -54,7 +54,7 @@ public class JPEG extends Decoder {
 
         // CREATE IMAGE WITH SINGLE FRAME (JPEG IS NOT ANIMATED)
         // DURATION OF 1ms FOR STATIC IMAGE
-        return new Image(new ByteBuffer[] { pixels }, width, height, new long[] { 1L }, Image.NO_REPEAT);
+        return new Image(new ByteBuffer[] { pixels }, width, height, Image.NO_DELAY, Image.NO_REPEAT);
     }
 
     private ByteBuffer extractPixels(final BufferedImage image, final int width, final int height) {

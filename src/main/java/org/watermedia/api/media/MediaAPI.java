@@ -6,7 +6,9 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.media.platform.*;
 import org.watermedia.api.media.players.FFMediaPlayer;
 
+import java.net.FileNameMap;
 import java.net.URI;
+import java.net.URLConnection;
 import java.util.LinkedList;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -45,6 +47,20 @@ public class MediaAPI {
             LOGGER.warn(IT, "Media API refuses to load on server-side");
             return false;
         }
+
+        final FileNameMap map = URLConnection.getFileNameMap();
+        URLConnection.setFileNameMap((FileNameMap) fileName -> {
+            final String contentType = map.getContentTypeFor(fileName);
+            if (contentType != null)
+                return contentType;
+
+            //Add custom types here
+            if (fileName.endsWith(".pam"))
+                return "image/x-portable-arbitrarymap";
+
+            LOGGER.warn("Unknown file type for {}", fileName);
+            return null;
+        });
 
         // REGISTER PLATFORMS
         LOGGER.info(IT, "Registering supported platforms");
