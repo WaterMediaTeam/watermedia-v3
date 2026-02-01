@@ -17,6 +17,7 @@ import java.util.Arrays;
 public record Image(ByteBuffer[] frames, int width, int height, long[] delay, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
     public static final int NO_REPEAT = -1;
+    public static final long[] NO_DELAY = new long[] { 1L };
 
     public Image {
         if (frames == null || frames.length == 0) {
