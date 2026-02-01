@@ -1,5 +1,7 @@
 package org.watermedia.api.decode.formats.png.chunks;
 
+import org.watermedia.api.decode.formats.png.PNG;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -34,22 +36,32 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
     }
 
     /**
-     * Reads tRNS chunk data from buffer based on color type
+     * Reads tRNS chunk from buffer based on color type (reads length/type header first)
      */
-    public static TRNS read(final int colorType, final int size, final ByteBuffer buffer) {
-        return switch (colorType) {
-            case 0 -> { // GREYSCALE
+    public static TRNS read(final ByteBuffer buffer, final int colorType) {
+        final int length = buffer.getInt();
+        final int type = buffer.getInt();
+
+        if (type != SIGNATURE)
+            throw new IllegalArgumentException("Invalid chunk type for tRNS: 0x" + Integer.toHexString(type));
+
+        return switch (PNG.ColorType.of(colorType)) {
+            case GREYSCALE -> {
+                if (length != 2)
+                    throw new IllegalArgumentException("tRNS for greyscale must be 2 bytes, got " + length);
                 final int gray = buffer.getShort() & 0xFFFF;
                 yield new TRNS(gray);
             }
-            case 2 -> { // TRUECOLOR
+            case TRUECOLOR -> {
+                if (length != 6)
+                    throw new IllegalArgumentException("tRNS for truecolor must be 6 bytes, got " + length);
                 final int red = buffer.getShort() & 0xFFFF;
                 final int green = buffer.getShort() & 0xFFFF;
                 final int blue = buffer.getShort() & 0xFFFF;
                 yield new TRNS(red, green, blue);
             }
-            case 3 -> { // INDEXED-COLOR
-                final byte[] alphas = new byte[size];
+            case INDEXED -> {
+                final byte[] alphas = new byte[length];
                 buffer.get(alphas);
                 yield new TRNS(alphas);
             }
@@ -68,15 +80,15 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
         final byte[] data = chunk.data();
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
 
-        return switch (colorType) {
-            case 0 -> { // GREYSCALE - 2 BYTES FOR GRAY SAMPLE
+        return switch (PNG.ColorType.of(colorType)) {
+            case GREYSCALE -> {
                 if (data.length != 2) {
                     throw new IllegalArgumentException("tRNS for greyscale must be 2 bytes, got " + data.length);
                 }
                 final int gray = buffer.getShort() & 0xFFFF;
                 yield new TRNS(gray);
             }
-            case 2 -> { // TRUECOLOR - 6 BYTES FOR RGB SAMPLES
+            case TRUECOLOR -> {
                 if (data.length != 6) {
                     throw new IllegalArgumentException("tRNS for truecolor must be 6 bytes, got " + data.length);
                 }
@@ -85,7 +97,7 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
                 final int blue = buffer.getShort() & 0xFFFF;
                 yield new TRNS(red, green, blue);
             }
-            case 3 -> { // INDEXED-COLOR - 1 BYTE PER PALETTE ENTRY (UP TO 256)
+            case INDEXED -> {
                 final byte[] alphas = new byte[data.length];
                 System.arraycopy(data, 0, alphas, 0, data.length);
                 yield new TRNS(alphas);
@@ -105,28 +117,5 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
             return 255; // FULLY OPAQUE FOR UNDEFINED ENTRIES
         }
         return this.alphaPerPalette[index] & 0xFF;
-    }
-
-    /**
-     * Returns whether the given greyscale value should be transparent
-     * Only valid for greyscale images (color type 0)
-     */
-    public boolean isTransparent(final int grayValue) {
-        return this.gray >= 0 && grayValue == this.gray;
-    }
-
-    /**
-     * Returns whether the given RGB value should be transparent
-     * Only valid for truecolor images (color type 2)
-     */
-    public boolean isTransparent(final int r, final int g, final int b) {
-        return this.red >= 0 && r == this.red && g == this.green && b == this.blue;
-    }
-
-    /**
-     * Returns the number of alpha entries in the palette alpha table
-     */
-    public int alphaTableSize() {
-        return this.alphaPerPalette != null ? this.alphaPerPalette.length : 0;
     }
 }

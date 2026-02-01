@@ -12,14 +12,18 @@ public record PLTE(int[] colors) {
     public static final int SIGNATURE = 0x50_4C_54_45; // "PLTE"
 
     /**
-     * Reads PLTE chunk data from buffer
+     * Reads PLTE chunk from buffer (reads length/type header first)
      */
-    public static PLTE read(final ByteBuffer buffer, final int dataLength) {
-        if (dataLength % 3 != 0) {
-            throw new IllegalArgumentException("PLTE data length must be divisible by 3");
-        }
+    public static PLTE read(final ByteBuffer buffer) {
+        final int length = buffer.getInt();
+        final int type = buffer.getInt();
 
-        final int count = dataLength / 3;
+        if (type != SIGNATURE)
+            throw new IllegalArgumentException("Invalid chunk type for PLTE: 0x" + Integer.toHexString(type));
+        if (length % 3 != 0)
+            throw new IllegalArgumentException("PLTE data length must be divisible by 3, got " + length);
+
+        final int count = length / 3;
         final int[] colors = new int[count];
 
         for (int i = 0; i < count; i++) {

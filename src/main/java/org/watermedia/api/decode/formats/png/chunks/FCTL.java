@@ -13,6 +13,7 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
                    short delay, short delay_den, byte dispose, byte blend) {
 
     public static final int SIGNATURE = 0x66_63_54_4C; // "fcTL"
+    public static final int LENGTH = 26;               // FIXED LENGTH OF fcTL DATA
 
     // DISPOSE OPERATIONS
     public static final byte DISPOSE_OP_NONE = 0;       // LEAVE OUTPUT BUFFER AS IS
@@ -31,9 +32,10 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
-        if (type != SIGNATURE) {
+        if (type != SIGNATURE)
             throw new IllegalArgumentException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(type));
-        }
+        if (length != LENGTH)
+            throw new IllegalArgumentException("fcTL chunk length must be 26, got " + length);
 
         return new FCTL(
                 buffer.getInt(),     // SEQUENCE NUMBER
@@ -57,7 +59,7 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
         }
 
         final byte[] data = chunk.data();
-        if (data.length != 26) {
+        if (data.length != LENGTH) {
             throw new IllegalArgumentException("fcTL data must be 26 bytes, got " + data.length);
         }
 

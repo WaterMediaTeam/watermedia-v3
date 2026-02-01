@@ -1,5 +1,7 @@
 package org.watermedia.api.decode.formats.png.chunks;
 
+import org.watermedia.api.decode.formats.png.PNG;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -11,11 +13,20 @@ import java.nio.ByteOrder;
  */
 public record IHDR(int width, int height, int depth, int colorType, int compression, int filter, int interlace) {
     public static final int SIGNATURE = 0x49_48_44_52; // "IHDR"
+    public static final int LENGTH = 13;
 
     /**
-     * Reads IHDR chunk data from buffer (legacy method, reads length/type from buffer)
+     * Reads IHDR chunk from buffer (reads length/type header first)
      */
     public static IHDR read(final ByteBuffer buffer) {
+        final int length = buffer.getInt();
+        final int type = buffer.getInt();
+
+        if (type != SIGNATURE)
+            throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(type));
+        if (length != LENGTH)
+            throw new IllegalArgumentException("IHDR chunk length must be 13, got " + length);
+
         return new IHDR(
                 buffer.getInt(),    // WIDTH (4 BYTES)
                 buffer.getInt(),    // HEIGHT (4 BYTES)
@@ -51,45 +62,15 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
         );
     }
 
-    /**
-     * Returns the number of samples per pixel based on color type
-     */
-    public int samplesPerPixel() {
-        return switch (this.colorType) {
-            case 0 -> 1;  // GREYSCALE
-            case 2 -> 3;  // TRUECOLOR (RGB)
-            case 3 -> 1;  // INDEXED
-            case 4 -> 2;  // GREYSCALE + ALPHA
-            case 6 -> 4;  // TRUECOLOR + ALPHA (RGBA)
-            default -> throw new IllegalStateException("Unknown color type: " + this.colorType);
+    public int bytesPerPixel() {
+        final int samplesPerPixel = switch (PNG.ColorType.of(this.colorType)) {
+            case GREYSCALE -> 1;
+            case TRUECOLOR -> 3;
+            case INDEXED -> 1;
+            case GREYSCALE_ALPHA -> 2;
+            case TRUECOLOR_ALPHA -> 4;
+            case FORBIDDEN_1, FORBIDDEN_5 -> throw new IllegalStateException("Forbidden color type: " + this.colorType);
         };
-    }
-
-    /**
-     * Returns whether this image has an alpha channel
-     */
-    public boolean hasAlpha() {
-        return this.colorType == 4 || this.colorType == 6;
-    }
-
-    /**
-     * Returns whether this image uses a palette
-     */
-    public boolean isIndexed() {
-        return this.colorType == 3;
-    }
-
-    /**
-     * Returns whether this image is greyscale
-     */
-    public boolean isGreyscale() {
-        return this.colorType == 0 || this.colorType == 4;
-    }
-
-    /**
-     * Returns whether this image uses truecolor
-     */
-    public boolean isTruecolor() {
-        return this.colorType == 2 || this.colorType == 6;
+        return Math.max(1, (samplesPerPixel * this.depth) / 8);
     }
 }

@@ -14,7 +14,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
@@ -32,6 +34,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * - Interlacing: None (0) and Adam7 (1)
  * - Filter types: None, Sub, Up, Average, Paeth
  * - APNG animation frames
+ * - Color management: gAMA, cHRM, sRGB, iCCP, cICP
+ * - HDR metadata: mDCv, cLLi
+ * - All ancillary chunks per PNG 3rd Edition specification
  *
  * @see <a href="https://www.w3.org/TR/png-3/">PNG Specification Third Edition</a>
  */
@@ -47,6 +52,29 @@ public class PNG extends Decoder {
     private static final int FILTER_AVERAGE = 3;
     private static final int FILTER_PAETH = 4;
 
+    /**
+     * PNG Color Types as defined in PNG Specification
+     */
+    public enum ColorType {
+        GREYSCALE,        // 0
+        FORBIDDEN_1,      // 1 (NOT VALID)
+        TRUECOLOR,        // 2
+        INDEXED,          // 3
+        GREYSCALE_ALPHA,  // 4
+        FORBIDDEN_5,      // 5 (NOT VALID)
+        TRUECOLOR_ALPHA;  // 6
+
+        private static final ColorType[] VALUES = values();
+
+        /**
+         * Returns the ColorType for the given ordinal value.
+         * @throws ArrayIndexOutOfBoundsException if value is out of range (not 0-6)
+         */
+        public static ColorType of(final int value) {
+            return VALUES[value];
+        }
+    }
+
     // ADAM7 INTERLACING PASS PARAMETERS
     // STARTING COLUMN FOR EACH PASS
     private static final int[] ADAM7_X_START = {0, 4, 0, 2, 0, 1, 0};
@@ -56,6 +84,12 @@ public class PNG extends Decoder {
     private static final int[] ADAM7_X_STEP = {8, 8, 4, 4, 2, 2, 1};
     // ROW INCREMENT FOR EACH PASS
     private static final int[] ADAM7_Y_STEP = {8, 8, 8, 4, 4, 2, 2};
+
+    // SRGB GAMMA VALUE (APPROXIMATELY 2.2)
+    private static final float SRGB_GAMMA = 2.2f;
+    private static final float DEFAULT_GAMMA = 2.2f;
+    // STANDARD DISPLAY GAMMA
+    private static final float DISPLAY_GAMMA = 2.2f;
 
     public PNG() {}
 
@@ -95,6 +129,9 @@ public class PNG extends Decoder {
         final List<byte[]> idatChunks = new ArrayList<>();
         final List<List<byte[]>> fdatChunks = new ArrayList<>();
 
+        // METADATA CONTAINER
+        final Metadata metadata = new Metadata();
+
         while (buffer.hasRemaining()) {
             final CHUNK chunk = CHUNK.read(buffer);
 
@@ -109,10 +146,7 @@ public class PNG extends Decoder {
                     this.validateIHDR(ihdr);
                 }
 
-                case PLTE.SIGNATURE -> {
-                    plte = PLTE.convert(chunk);
-                }
-
+                case PLTE.SIGNATURE -> plte = PLTE.convert(chunk);
                 case TRNS.SIGNATURE -> {
                     if (ihdr == null) throw new DecoderException("tRNS before IHDR");
                     trns = TRNS.convert(chunk, ihdr.colorType());
@@ -126,9 +160,40 @@ public class PNG extends Decoder {
                     }
                 }
 
-                case ACTL.SIGNATURE -> {
-                    actl = ACTL.convert(chunk, buffer.order());
+                // COLOR SPACE CHUNKS
+                case GAMA.SIGNATURE -> metadata.gamma(GAMA.convert(chunk));
+                case CHRM.SIGNATURE -> metadata.chrm(CHRM.convert(chunk));
+                case SRGB.SIGNATURE -> metadata.srgb(SRGB.convert(chunk));
+                case ICCP.SIGNATURE -> metadata.iccp(ICCP.convert(chunk));
+
+                case SBIT.SIGNATURE -> {
+                    if (ihdr == null) throw new DecoderException("sBIT before IHDR");
+                    metadata.sbit(SBIT.convert(chunk, ihdr.colorType()));
                 }
+
+                // HDR CHUNKS (PNG 3RD EDITION)
+                case CICP.SIGNATURE -> metadata.cicp(CICP.convert(chunk));
+                case MDCV.SIGNATURE -> metadata.mdcv(MDCV.convert(chunk));
+                case CLLI.SIGNATURE -> metadata.clli(CLLI.convert(chunk));
+
+                // TEXT CHUNKS
+                case TEXT.SIGNATURE -> metadata.text(TEXT.convert(chunk));
+                case ZTXT.SIGNATURE -> metadata.addCompressedText(ZTXT.convert(chunk));
+                case ITXT.SIGNATURE -> metadata.addIntlText(ITXT.convert(chunk));
+
+                // MISCELLANEOUS CHUNKS
+                case PHYS.SIGNATURE -> metadata.phys(PHYS.convert(chunk));
+                case HIST.SIGNATURE -> {
+                    if (plte == null) throw new DecoderException("hIST before PLTE");
+                    metadata.hist(HIST.convert(chunk, plte.size()));
+                }
+
+                case SPLT.SIGNATURE -> metadata.addPalette(SPLT.convert(chunk));
+                case EXIF.SIGNATURE -> metadata.exif(EXIF.convert(chunk));
+                case TIME.SIGNATURE -> metadata.lastModTime(TIME.convert(chunk));
+
+                // ANIMATION CHUNKS
+                case ACTL.SIGNATURE -> actl = ACTL.convert(chunk, buffer.order());
 
                 case FCTL.SIGNATURE -> {
                     final FCTL fctl = FCTL.convert(chunk, buffer.order());
@@ -172,22 +237,25 @@ public class PNG extends Decoder {
             }
         }
 
-        if (ihdr == null) {
-            throw new DecoderException("Missing IHDR chunk");
-        }
-        if (idatChunks.isEmpty()) {
-            throw new DecoderException("Missing IDAT chunk");
-        }
+        // VALIDATE REQUIRED CHUNKS
+        if (ihdr == null) throw new DecoderException("Missing IHDR chunk");
+        if (idatChunks.isEmpty()) throw new DecoderException("Missing IDAT chunk");
+
+        // BUILD GAMMA CORRECTION LUT IF AVAILABLE
+        final float[] gammaLUT = buildGammaLUT(metadata);
 
         // DECODE STATIC IMAGE
         final byte[] compressedData = this.jointChunk(idatChunks);
         final byte[] decompressedData = this.inflate(compressedData);
         final int[][] staticImage = this.decodeData(decompressedData, ihdr, plte, trns);
 
+        // APPLY GAMMA CORRECTION
+        if (gammaLUT != null)
+            applyGammaCorrection(staticImage, gammaLUT);
+
         // FLATTEN ALPHA IF BKGD IS ENABLED AND PRESENT
-        if (bkgd != null) {
+        if (bkgd != null)
             this.flattenAlpha(staticImage, bkgd, ihdr.depth(), plte);
-        }
 
         // CONVERT TO BGRA FORMAT
         final ByteBuffer staticPixels = this.toBGRA(staticImage, ihdr.width(), ihdr.height());
@@ -229,6 +297,10 @@ public class PNG extends Decoder {
                             ihdr.colorType(), ihdr.compression(), ihdr.filter(), ihdr.interlace());
                     framePixels = this.decodeData(frameDecompressed, frameIhdr, plte, trns);
 
+                    // APPLY GAMMA CORRECTION TO FRAME
+                    if (gammaLUT != null)
+                        applyGammaCorrection(framePixels, gammaLUT);
+
                     // FLATTEN ALPHA IF BKGD IS ENABLED
                     if (bkgd != null) {
                         this.flattenAlpha(framePixels, bkgd, ihdr.depth(), plte);
@@ -257,6 +329,71 @@ public class PNG extends Decoder {
 
         // STATIC PNG - SINGLE FRAME WITH NO ANIMATION
         return new Image(new ByteBuffer[] { staticPixels }, ihdr.width(), ihdr.height(), new long[] { 0L }, 1L, Image.NO_REPEAT);
+    }
+
+    /**
+     * Builds gamma correction lookup table based on metadata
+     * @return The gamma LUT, or null if no gamma correction is needed
+     */
+    private static float[] buildGammaLUT(final Metadata metadata) {
+        float fileGamma;
+
+        // DETERMINE SOURCE GAMMA
+        if (metadata.srgb() != null) {
+            // SRGB CHUNK PRESENT - USE SRGB TRANSFER FUNCTION
+            fileGamma = SRGB_GAMMA;
+        } else if (metadata.cicp() != null) {
+            final CICP cicp = metadata.cicp();
+            if (cicp.isSRGB()) {
+                fileGamma = SRGB_GAMMA;
+            } else if (cicp.isHDR()) {
+                // HDR IMAGES USE DIFFERENT TRANSFER FUNCTIONS - SKIP SIMPLE GAMMA
+                return null;
+            } else {
+                fileGamma = DEFAULT_GAMMA;
+            }
+        } else if (metadata.gamma() != null) {
+            fileGamma = metadata.gamma().gammaValue();
+        } else {
+            // NO GAMMA INFO - ASSUME SRGB
+            return null;
+        }
+
+        // ONLY BUILD LUT IF GAMMA DIFFERS SIGNIFICANTLY FROM DISPLAY
+        if (Math.abs(fileGamma - DISPLAY_GAMMA) < 0.01f) {
+            return null;
+        }
+
+        // BUILD LOOKUP TABLE
+        final float[] gammaLUT = new float[256];
+        final float exponent = fileGamma / DISPLAY_GAMMA;
+
+        for (int i = 0; i < 256; i++) {
+            gammaLUT[i] = (float) Math.pow(i / 255.0, exponent);
+        }
+
+        return gammaLUT;
+    }
+
+    /**
+     * Applies gamma correction to pixel array
+     */
+    private static void applyGammaCorrection(final int[][] pixels, final float[] gammaLUT) {
+        for (int y = 0; y < pixels.length; y++) {
+            for (int x = 0; x < pixels[y].length; x++) {
+                final int argb = pixels[y][x];
+                final int a = (argb >> 24) & 0xFF;
+                final int r = (argb >> 16) & 0xFF;
+                final int g = (argb >> 8) & 0xFF;
+                final int b = argb & 0xFF;
+
+                final int correctedR = Math.round(gammaLUT[r] * 255);
+                final int correctedG = Math.round(gammaLUT[g] * 255);
+                final int correctedB = Math.round(gammaLUT[b] * 255);
+
+                pixels[y][x] = (a << 24) | (correctedR << 16) | (correctedG << 8) | correctedB;
+            }
+        }
     }
 
     /**
@@ -299,18 +436,10 @@ public class PNG extends Decoder {
      */
     private int bkgdToARGB(final BKGD bkgd, final int depth, final PLTE plte) {
         if (bkgd.isIndexed() && plte != null) {
-            final int rgb = plte.getColor(bkgd.paletteIndex());
             return 0xFF000000 | plte.getColor(bkgd.paletteIndex());
-        } else if (bkgd.isGreyscale()) {
-            final int gray = this.scaleTo8Bit(bkgd.gray(), depth);
-            return 0xFF000000 | (gray << 16) | (gray << 8) | gray;
-        } else if (bkgd.isTruecolor()) {
-            final int r = this.scaleTo8Bit(bkgd.red(), depth);
-            final int g = this.scaleTo8Bit(bkgd.green(), depth);
-            final int b = this.scaleTo8Bit(bkgd.blue(), depth);
-            return 0xFF000000 | (r << 16) | (g << 8) | b;
+        } else {
+            return bkgd.toRGB8(depth);
         }
-        return 0xFF000000; // DEFAULT BLACK
     }
 
     /**
@@ -352,27 +481,27 @@ public class PNG extends Decoder {
             throw new DecoderException("Invalid image dimensions: " + ihdr.width() + "x" + ihdr.height());
         }
 
-        final int colorType = ihdr.colorType();
+        final ColorType colorType = ColorType.of(ihdr.colorType());
         final int depth = ihdr.depth();
 
         // VALIDATE COLOR TYPE AND BIT DEPTH COMBINATIONS
         switch (colorType) {
-            case 0 -> { // GREYSCALE
+            case GREYSCALE -> {
                 if (depth != 1 && depth != 2 && depth != 4 && depth != 8 && depth != 16) {
                     throw new DecoderException("Invalid bit depth " + depth + " for greyscale");
                 }
             }
-            case 2, 4, 6 -> { // TRUECOLOR, GREYSCALE+ALPHA, TRUECOLOR+ALPHA
+            case TRUECOLOR, GREYSCALE_ALPHA, TRUECOLOR_ALPHA -> {
                 if (depth != 8 && depth != 16) {
                     throw new DecoderException("Invalid bit depth " + depth + " for color type " + colorType);
                 }
             }
-            case 3 -> { // INDEXED-COLOR
+            case INDEXED -> {
                 if (depth != 1 && depth != 2 && depth != 4 && depth != 8) {
                     throw new DecoderException("Invalid bit depth " + depth + " for indexed-color");
                 }
             }
-            default -> throw new DecoderException("Unknown color type: " + colorType);
+            case FORBIDDEN_1, FORBIDDEN_5 -> throw new DecoderException("Forbidden color type: " + ihdr.colorType());
         }
 
         if (ihdr.compression() != 0) {
@@ -441,7 +570,7 @@ public class PNG extends Decoder {
         final int[][] pixels = new int[height][width];
 
         // CALCULATE BYTES PER PIXEL (FOR FILTERING)
-        final int bpp = this.bytesPerPixel(ihdr);
+        final int bpp = ihdr.bytesPerPixel();
 
         if (ihdr.interlace() == 0) {
             // NO INTERLACING
@@ -471,26 +600,6 @@ public class PNG extends Decoder {
     private int passDimension(final int dim, final int start, final int step) {
         if (start >= dim) return 0;
         return (dim - start + step - 1) / step;
-    }
-
-    /**
-     * Calculates bytes per pixel for filtering purposes
-     */
-    private int bytesPerPixel(final IHDR ihdr) {
-        final int depth = ihdr.depth();
-        final int colorType = ihdr.colorType();
-
-        final int samplesPerPixel = switch (colorType) {
-            case 0 -> 1;       // GREYSCALE
-            case 2 -> 3;       // TRUECOLOR
-            case 3 -> 1;       // INDEXED
-            case 4 -> 2;       // GREYSCALE + ALPHA
-            case 6 -> 4;       // TRUECOLOR + ALPHA
-            default -> 1;
-        };
-
-        final int bitsPerPixel = samplesPerPixel * depth;
-        return Math.max(1, bitsPerPixel / 8);
     }
 
     /**
@@ -543,15 +652,15 @@ public class PNG extends Decoder {
      */
     private int scanlineBytes(final int width, final IHDR ihdr) {
         final int depth = ihdr.depth();
-        final int colorType = ihdr.colorType();
+        final ColorType colorType = ColorType.of(ihdr.colorType());
 
         final int samplesPerPixel = switch (colorType) {
-            case 0 -> 1;       // GREYSCALE
-            case 2 -> 3;       // TRUECOLOR
-            case 3 -> 1;       // INDEXED
-            case 4 -> 2;       // GREYSCALE + ALPHA
-            case 6 -> 4;       // TRUECOLOR + ALPHA
-            default -> 1;
+            case GREYSCALE -> 1;
+            case TRUECOLOR -> 3;
+            case INDEXED -> 1;
+            case GREYSCALE_ALPHA -> 2;
+            case TRUECOLOR_ALPHA -> 4;
+            case FORBIDDEN_1, FORBIDDEN_5 -> 1;
         };
 
         final int bitsPerPixel = samplesPerPixel * depth;
@@ -631,7 +740,7 @@ public class PNG extends Decoder {
     private void decodeRowPixels(final byte[] row, final int[][] pixels, final int y, final int xStart, final int xStep,
                                  final int passWidth, final IHDR ihdr, final PLTE plte, final TRNS trns) throws IOException {
         final int depth = ihdr.depth();
-        final int colorType = ihdr.colorType();
+        final ColorType colorType = ColorType.of(ihdr.colorType());
         final int imageWidth = ihdr.width();
 
         int bitOffset = 0;
@@ -640,9 +749,8 @@ public class PNG extends Decoder {
             final int x = xStart + passX * xStep;
             if (x >= imageWidth) break;
 
-            final int argb;
-            switch (colorType) {
-                case 0 -> { // GREYSCALE
+            pixels[y][x] = switch (colorType) {
+                case GREYSCALE -> {
                     int gray = this.extractSample(row, bitOffset, depth);
                     bitOffset += depth;
                     gray = this.scaleTo8Bit(gray, depth);
@@ -651,10 +759,10 @@ public class PNG extends Decoder {
                     if (trns != null && gray == trns.gray()) {
                         alpha = 0;
                     }
-                    argb = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                    yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
                 }
 
-                case 2 -> { // TRUECOLOR
+                case TRUECOLOR -> {
                     int r = this.extractSample(row, bitOffset, depth);
                     bitOffset += depth;
                     int g = this.extractSample(row, bitOffset, depth);
@@ -672,10 +780,10 @@ public class PNG extends Decoder {
                             b == this.scaleTo8Bit(trns.blue(), depth)) {
                         alpha = 0;
                     }
-                    argb = (alpha << 24) | (r << 16) | (g << 8) | b;
+                    yield (alpha << 24) | (r << 16) | (g << 8) | b;
                 }
 
-                case 3 -> { // INDEXED-COLOR
+                case INDEXED -> {
                     final int index = this.extractSample(row, bitOffset, depth);
                     bitOffset += depth;
 
@@ -684,10 +792,10 @@ public class PNG extends Decoder {
                     }
                     final int rgb = plte.getColor(index);
                     final int alpha = (trns != null) ? trns.getAlpha(index) : 255;
-                    argb = (alpha << 24) | rgb;
+                    yield (alpha << 24) | rgb;
                 }
 
-                case 4 -> { // GREYSCALE WITH ALPHA
+                case GREYSCALE_ALPHA -> {
                     int gray = this.extractSample(row, bitOffset, depth);
                     bitOffset += depth;
                     int alpha = this.extractSample(row, bitOffset, depth);
@@ -695,10 +803,10 @@ public class PNG extends Decoder {
 
                     gray = this.scaleTo8Bit(gray, depth);
                     alpha = this.scaleTo8Bit(alpha, depth);
-                    argb = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                    yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
                 }
 
-                case 6 -> { // TRUECOLOR WITH ALPHA
+                case TRUECOLOR_ALPHA -> {
                     int r = this.extractSample(row, bitOffset, depth);
                     bitOffset += depth;
                     int g = this.extractSample(row, bitOffset, depth);
@@ -712,13 +820,11 @@ public class PNG extends Decoder {
                     g = this.scaleTo8Bit(g, depth);
                     b = this.scaleTo8Bit(b, depth);
                     alpha = this.scaleTo8Bit(alpha, depth);
-                    argb = (alpha << 24) | (r << 16) | (g << 8) | b;
+                    yield (alpha << 24) | (r << 16) | (g << 8) | b;
                 }
 
-                default -> throw new DecoderException("Unknown color type: " + colorType);
-            }
-
-            pixels[y][x] = argb;
+                case FORBIDDEN_1, FORBIDDEN_5 -> throw new DecoderException("Forbidden color type: " + ihdr.colorType());
+            };
         }
     }
 
@@ -892,5 +998,85 @@ public class PNG extends Decoder {
     public boolean test() {
         // TODO: add a proper test
         return true;
+    }
+
+    private static class Metadata {
+        // COLOR SPACE
+        private GAMA gamma;
+        private CHRM chrm;
+        private SRGB srgb;
+        private ICCP iccp;
+        private SBIT sbit;
+
+        // HDR (PNG 3RD EDITION)
+        private CICP cicp;
+        private MDCV mdcv;
+        private CLLI clli;
+
+        // TEXT (STORED AS KEYWORD -> VALUE MAP)
+        private final Map<String, String> texts = new HashMap<>();
+        private final List<ZTXT> compressedTexts = new ArrayList<>();
+        private final List<ITXT> intlTexts = new ArrayList<>();
+
+        // MISCELLANEOUS
+        private PHYS phys;
+        private HIST hist;
+        private final List<SPLT> palettes = new ArrayList<>();
+        private EXIF exif;
+        private TIME lastModTime;
+
+        // COLOR SPACE
+        public GAMA gamma() { return this.gamma; }
+        public void gamma(final GAMA gamma) { this.gamma = gamma; }
+
+        public CHRM chrm() { return this.chrm; }
+        public void chrm(final CHRM chrm) { this.chrm = chrm; }
+
+        public SRGB srgb() { return this.srgb; }
+        public void srgb(final SRGB srgb) { this.srgb = srgb; }
+
+        public ICCP iccp() { return this.iccp; }
+        public void iccp(final ICCP iccp) { this.iccp = iccp; }
+
+        public SBIT sbit() { return this.sbit; }
+        public void sbit(final SBIT sbit) { this.sbit = sbit; }
+
+        // HDR
+        public CICP cicp() { return this.cicp; }
+        public void cicp(final CICP cicp) { this.cicp = cicp; }
+
+        public MDCV mdcv() { return this.mdcv; }
+        public void mdcv(final MDCV mdcv) { this.mdcv = mdcv; }
+
+        public CLLI clli() { return this.clli; }
+        public void clli(final CLLI clli) { this.clli = clli; }
+
+        // TEXT
+        public Map<String, String> texts() { return this.texts; }
+        public String text(final String keyword) { return this.texts.get(keyword); }
+        public void text(final String keyword, final String value) { this.texts.put(keyword, value); }
+        public void text(final TEXT text) { this.texts.put(text.keyword(), text.text()); }
+
+        public List<ZTXT> compressedTexts() { return this.compressedTexts; }
+        public void addCompressedText(final ZTXT ztxt) { this.compressedTexts.add(ztxt); }
+
+        public List<ITXT> intlTexts() { return this.intlTexts; }
+        public void addIntlText(final ITXT itxt) { this.intlTexts.add(itxt); }
+
+        // MISCELLANEOUS
+        public PHYS phys() { return this.phys; }
+        public void phys(final PHYS phys) { this.phys = phys; }
+
+        public HIST hist() { return this.hist; }
+        public void hist(final HIST hist) { this.hist = hist; }
+
+        public List<SPLT> palettes() { return this.palettes; }
+        public void addPalette(final SPLT splt) { this.palettes.add(splt); }
+
+        public EXIF exif() { return this.exif; }
+        public void exif(final EXIF exif) { this.exif = exif; }
+
+        public TIME lastModTime() { return this.lastModTime; }
+        public void lastModTime(final TIME time) { this.lastModTime = time; }
     }
 }

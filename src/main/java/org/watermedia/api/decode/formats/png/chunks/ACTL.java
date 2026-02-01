@@ -1,7 +1,5 @@
 package org.watermedia.api.decode.formats.png.chunks;
 
-import org.watermedia.tools.DataTool;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -13,26 +11,24 @@ import java.nio.ByteOrder;
  */
 public record ACTL(int frameCount, int loopCount) {
     public static final int SIGNATURE = 0x61_63_54_4C; // "acTL"
+    public static final int LENGTH = 8;
 
     /**
-     * Reads acTL chunk from buffer (legacy method, reads length/type from buffer)
+     * Reads acTL chunk from buffer (reads length/type header first)
      */
     public static ACTL read(final ByteBuffer buffer) {
-        // CHUNK HEADER: LENGTH (4 BYTES), TYPE (4 BYTES)
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
-        if (type != SIGNATURE) {
+        if (type != SIGNATURE)
             throw new IllegalArgumentException("Invalid chunk type for acTL: 0x" + Integer.toHexString(type));
-        }
+        if (length != LENGTH)
+            throw new IllegalArgumentException("acTL chunk length must be 8, got " + length);
 
-        final int frameCount = buffer.getInt();
-        final int loopCount = buffer.getInt();
-
-        // SKIP CRC
-        buffer.getInt();
-
-        return new ACTL(frameCount, loopCount);
+        return new ACTL(
+                buffer.getInt(),  // FRAME COUNT
+                buffer.getInt()   // LOOP COUNT
+        );
     }
 
     /**
