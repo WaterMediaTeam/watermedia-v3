@@ -24,7 +24,6 @@ import java.util.regex.Pattern;
 public final class HlsTool {
     private HlsTool() {}
 
-
     public static Result parse(final String content, final String source) {
         if (content == null || content.isBlank()) {
             return new ErrorResult("Content is null or empty", null);
@@ -333,85 +332,5 @@ public final class HlsTool {
         if (s == null) return def;
         try { return Double.parseDouble(s.trim()); }
         catch (final NumberFormatException e) { return def; }
-    }
-
-    // ==========================================================================
-    // TEST
-    // ==========================================================================
-
-    public static void main(final String[] args) {
-        final String master = """
-            #EXTM3U
-            #EXT-X-SESSION-DATA:DATA-ID="NODE",VALUE="cloudfront.hls.live-video.net"
-            #EXT-X-SESSION-DATA:DATA-ID="BROADCAST-ID",VALUE="315425928548"
-            #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="chunked",NAME="1080p60",AUTOSELECT=YES,DEFAULT=YES
-            #EXT-X-STREAM-INF:BANDWIDTH=9014525,RESOLUTION=1920x1080,CODECS="avc1.64002A,mp4a.40.2",VIDEO="chunked",FRAME-RATE=60.000
-            https://example.com/chunked.m3u8
-            #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="720p60",NAME="720p60",AUTOSELECT=YES,DEFAULT=YES
-            #EXT-X-STREAM-INF:BANDWIDTH=3422999,RESOLUTION=1280x720,CODECS="avc1.4D401F,mp4a.40.2",VIDEO="720p60",FRAME-RATE=60.000
-            https://example.com/720p60.m3u8
-            #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="480p30",NAME="480p",AUTOSELECT=YES,DEFAULT=YES
-            #EXT-X-STREAM-INF:BANDWIDTH=1427999,RESOLUTION=852x480,CODECS="avc1.4D401F,mp4a.40.2",VIDEO="480p30",FRAME-RATE=30.000
-            https://example.com/480p30.m3u8
-            #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="360p30",NAME="360p",AUTOSELECT=YES,DEFAULT=YES
-            #EXT-X-STREAM-INF:BANDWIDTH=630000,RESOLUTION=640x360,CODECS="avc1.4D401F,mp4a.40.2",VIDEO="360p30",FRAME-RATE=30.000
-            https://example.com/360p30.m3u8
-            """;
-
-        System.out.println("=== MASTER PLAYLIST ===\n");
-
-        final Result result = HlsTool.parse(master, "test.m3u8");
-
-        if (result instanceof final MasterResult m) {
-            System.out.println("Source: " + m.source());
-            System.out.println("Version: " + m.version());
-            System.out.println("\nSession Data:");
-            for (final var sd: m.sessionData()) {
-                System.out.println("  " + sd.id() + " = " + sd.value());
-            }
-            System.out.println("\nVariants (sorted by quality):");
-            for (final var v: m.sorted()) {
-                System.out.printf("  %-8s  %10s  %5.1f fps  %,10d bps  %s%n",
-                        v.quality(), v.resolution(), v.fps(), v.bandwidth(), v.uri());
-            }
-            m.best().ifPresent(b -> System.out.println("\nBest: " + b.quality()));
-            m.worst().ifPresent(w -> System.out.println("Worst: " + w.quality()));
-        }
-        else if (result instanceof final ErrorResult e) {
-            System.err.println("Error: " + e.message());
-        }
-
-        System.out.println("\n=== MEDIA PLAYLIST ===\n");
-
-        final String media = """
-            #EXTM3U
-            #EXT-X-VERSION:3
-            #EXT-X-TARGETDURATION:6
-            #EXT-X-MEDIA-SEQUENCE:1074
-            #EXT-X-PROGRAM-DATE-TIME:2025-12-16T10:56:19.451Z
-            #EXTINF:4.167,live
-            https://cdn.example.com/segment1.ts
-            #EXTINF:4.166,live
-            https://cdn.example.com/segment2.ts
-            #EXTINF:4.167,live
-            https://cdn.example.com/segment3.ts
-            """;
-
-        final Result mediaResult = HlsTool.parse(media, "playlist.m3u8");
-
-        if (mediaResult instanceof final MediaResult m) {
-            System.out.println("Source: " + m.source());
-            System.out.println("Version: " + m.version());
-            System.out.println("Target Duration: " + m.targetDuration() + "s");
-            System.out.println("Sequence: " + m.sequence());
-            System.out.println("Live: " + m.live());
-            System.out.println("VOD: " + m.vod());
-            System.out.printf("Total Duration: %.3fs%n", m.totalDuration());
-            System.out.println("\nSegments:");
-            for (final var s: m.segments()) {
-                System.out.printf("  [%d] %.3fs - %s%n", s.sequence(), s.duration(),
-                        s.uri().substring(s.uri().lastIndexOf('/') + 1));
-            }
-        }
     }
 }

@@ -1,0 +1,36 @@
+$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$session.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0"
+$session.Cookies.Add((New-Object System.Net.Cookie("ld_anonymous_user_key", "ld_anonymous_5416", "/", "medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("cf_clearance", "JEGvBkpoxEA9PU69VH346v_V_7VZPRHBuq9uOuCzUpw-1769674365-1.2.1.1-KWU4KDnvEiBTVmotaAJVvdJWU7iO129HIZ564fvVfzeQF8ZQshX1tKO91j4HA13sqT92..ZPlzYTYSIOAJvd6oO0km5Qrx6YG31EHl8hs9mckP_1mvvK8W7_hmwwLmmF9MtADFtCkpaRqlhlMfYe4XlFMZ3LlXId82Gvz9r0bcT5rTf3HopGgiXA5Lv22aveCdJVC.U2RGutY.5SAlKL4AKJJxA0IR3OtDXUPpHZ8Wk", "/", ".medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("medal-auth", "eyJ1c2VySWQiOiI1MzI3ODAzOTciLCJpZCI6IjUzMjc4MDM5NyIsImtleSI6ImUwYzkxYzVmLTAyYTktNDdlNS1iNmNkLWE4NGEyMDE0MDRmZCIsImF1dGgiOnsia2V5IjoiZTBjOTFjNWYtMDJhOS00N2U1LWI2Y2QtYTg0YTIwMTQwNGZkIiwidXNlcklkIjoiNTMyNzgwMzk3In0sInJlZ2lzdGVyZWRVc2VyIjpmYWxzZX0=", "/", "medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("AMP_MKTG_68186c87b6", "JTdCJTIycmVmZXJyZXIlMjIlM0ElMjJodHRwcyUzQSUyRiUyRnd3dy5nb29nbGUuY29tJTJGJTIyJTJDJTIycmVmZXJyaW5nX2RvbWFpbiUyMiUzQSUyMnd3dy5nb29nbGUuY29tJTIyJTdE", "/", ".medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("usprivacy", "1N--", "/", ".medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("medal-accept-cookie", "true", "/", "medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("_cfuvid", "OF3KgC5wZZ.rlEthrMbwGWHqdN0TSCrzfSxvIwkU3UE-1769674366141-0.0.1.1-604800000", "/", ".medal.tv")))
+$session.Cookies.Add((New-Object System.Net.Cookie("AMP_68186c87b6", "JTdCJTIyZGV2aWNlSWQlMjIlM0ElMjI1MzI3ODAzOTclMjIlMkMlMjJzZXNzaW9uSWQlMjIlM0ExNzY5Njc0MzY1NzAwJTJDJTIyb3B0T3V0JTIyJTNBZmFsc2UlMkMlMjJsYXN0RXZlbnRUaW1lJTIyJTNBMTc2OTY3NDM4NDY1MCUyQyUyMmxhc3RFdmVudElkJTIyJTNBMTAlMkMlMjJwYWdlQ291bnRlciUyMiUzQTIlN0Q=", "/", ".medal.tv")))
+Invoke-WebRequest -UseBasicParsing -Uri "https://medal.tv/api/content?taggedUserIds=58722080&limit=12&offset=0&sortDirection=DESC" `
+-WebSession $session `
+-Headers @{
+"authority"="medal.tv"
+  "method"="GET"
+  "path"="/api/content?taggedUserIds=58722080&limit=12&offset=0&sortDirection=DESC"
+  "scheme"="https"
+  "accept"="*/*"
+  "accept-encoding"="gzip, deflate, br, zstd"
+  "accept-language"="es-MX,es;q=0.9,en;q=0.8,es-ES;q=0.7"
+  "baggage"="sentry-environment=production,sentry-release=1.0.5259-edfa174,sentry-public_key=aa19d26f9ae56d5c2eac3f392d93444a,sentry-trace_id=5fe80b1ee3fad5fb23a9cf3f395939f2,sentry-org_id=150878,sentry-sampled=false,sentry-sample_rand=0.30916587535015383,sentry-sample_rate=0"
+  "dnt"="1"
+  "idempotency-key"="da56c80b-d8d3-4732-9bde-a4c89205533a"
+  "priority"="u=1, i"
+  "referer"="https://medal.tv/es/games/gta-v/clips/iKFjyjPPBBHWAdWFK"
+  "sec-ch-ua"="`"Not(A:Brand`";v=`"8`", `"Chromium`";v=`"144`", `"Microsoft Edge`";v=`"144`""
+  "sec-ch-ua-mobile"="?0"
+  "sec-ch-ua-platform"="`"Windows`""
+  "sec-fetch-dest"="empty"
+  "sec-fetch-mode"="cors"
+  "sec-fetch-site"="same-origin"
+  "sentry-trace"="5fe80b1ee3fad5fb23a9cf3f395939f2-818bad38e261b9ab-0"
+  "x-authentication"="532780397,e0c91c5f-02a9-47e5-b6cd-a84a201404fd"
+} `
+-ContentType "application/json"
+https://medal.tv/es/games/gta-v/clip/iKFjyjPPBBHWAdWFK
