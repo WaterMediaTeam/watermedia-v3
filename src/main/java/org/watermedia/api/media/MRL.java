@@ -62,7 +62,7 @@ public final class MRL {
      */
     public static MRL get(final String uri) {
         final File f = new File(uri);
-        return get(f.exists() ? f.toURI() : URI.create(uri));
+        return get(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
     }
 
     /**
@@ -73,6 +73,7 @@ public final class MRL {
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
      */
+    @Deprecated
     private static MRL get(final URI uri) {
         Objects.requireNonNull(uri, "URI cannot be null");
 
