@@ -5,6 +5,12 @@ import org.watermedia.tools.IOTool;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.URI;
@@ -17,14 +23,29 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.StringJoiner;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
+// BOOTSTRAP LAUNCHER FOR WATERMEDIA STANDALONE APPLICATION
+// WHY A NEW PROCESS IS REQUIRED:
+// THE JVM LOCKS THE CLASSPATH AT STARTUP. URLCLASSLOADER TRICKS BREAK WITH NATIVE LIBS,
+// SERVICELOADER (LOG4J SPI), AND SPLIT PACKAGES. SPAWNING A FRESH JVM IS THE ONLY RELIABLE SOLUTION.
 public class AppBootstrap {
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia/libs");
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
     private static final String BOOTSTRAPPED_FLAG = "watermedia.app";
-    private static final Font CONSOLE_FONT = new Font("Consolas", Font.PLAIN, 18);
 
-    private static final String[][] DEPENDENCIES = {
+    // UI CONSTANTS
+    private static final Font FONT = new Font("Consolas", Font.PLAIN, 18);
+    private static final Font FONT_BOLD = new Font("Consolas", Font.BOLD, 24);
+    private static final Color C_BLACK = Color.BLACK, C_WHITE = Color.WHITE;
+    private static final Color C_GREEN = new Color(0, 255, 0), C_RED = new Color(255, 100, 100);
+    private static final Color C_BLUE = new Color(79, 181, 255), C_BLUE_DARK = new Color(0, 150, 255);
+    private static final Color C_GRAY = new Color(80, 80, 80), C_GRAY_DARK = new Color(30, 30, 30);
+    private static final int PAD = 15, SCROLL_W = 12;
+
+    // DEPENDENCIES
+    private static final String[][] DEPS = {
             {"log4j-api-2.25.0.jar", "org/apache/logging/log4j/log4j-api/2.25.0/log4j-api-2.25.0.jar"},
             {"log4j-core-2.25.0.jar", "org/apache/logging/log4j/log4j-core/2.25.0/log4j-core-2.25.0.jar"},
             {"lwjgl-3.3.6.jar", "org/lwjgl/lwjgl/3.3.6/lwjgl-3.3.6.jar"},
@@ -34,168 +55,159 @@ public class AppBootstrap {
             {"lwjgl-openal-3.3.6.jar", "org/lwjgl/lwjgl-openal/3.3.6/lwjgl-openal-3.3.6.jar"},
             {"gson-2.10.1.jar", "com/google/code/gson/gson/2.10.1/gson-2.10.1.jar"},
     };
-
-    private static final String[] LWJGL_NATIVES = {"lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal"};
+    private static final String[] NATIVES = {"lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal"};
 
     private static BootstrapWindow window;
 
     public static void main(final String... args) {
         if (System.getProperty(BOOTSTRAPPED_FLAG) != null) {
-            launchApp(args);
+            try {
+                WaterMediaApp.main(args);
+            } catch (final Throwable e) {
+                showError(e);
+            }
             return;
         }
 
         try {
             window = new BootstrapWindow();
             window.setVisible(true);
-
             System.out.println("WaterMedia App Bootstrap");
             System.out.println("========================");
 
             Files.createDirectories(LIBS_DIR);
+
             final List<Path> jars = new ArrayList<>();
+            final List<String[]> toDownload = new ArrayList<>();
 
             // FIND BINARIES
             final Path binaries = findLocalJar("wm_binaries");
-            boolean inClassPath = false;
+            boolean inCp = false;
             try {
                 Class.forName("org.watermedia.binaries.WaterMediaBinaries");
-                inClassPath = true;
-            } catch (final ClassNotFoundException ignored) {
-            }
+                inCp = true;
+            } catch (final ClassNotFoundException ignored) {}
 
-            if (binaries == null && !inClassPath) {
+            if (binaries == null && !inCp) {
                 showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
                 return;
             }
-            if (binaries != null)
-                jars.add(binaries);
-
+            if (binaries != null) jars.add(binaries);
             System.out.println("[OK] WaterMedia Binaries found");
 
-            // COLLECT DEPENDENCIES
-            final List<String[]> toDownload = new ArrayList<>();
-            for (final String[] dep : DEPENDENCIES) {
-                final Path path = LIBS_DIR.resolve(dep[0]);
-                if (Files.exists(path)) {
-                    jars.add(path);
+            // COLLECT DEPS
+            for (final String[] dep : DEPS) {
+                final Path p = LIBS_DIR.resolve(dep[0]);
+                if (Files.exists(p)) {
+                    jars.add(p);
                     System.out.println("[CACHED] " + dep[0]);
                 } else {
                     toDownload.add(dep);
                 }
             }
 
-            // NATIVES
-            final String natives = "natives-" + IOTool.getPlatformClassifier();
-            System.out.println("Platform: " + natives);
-            for (final String module : LWJGL_NATIVES) {
-                final String filename = module + "-3.3.6-" + natives + ".jar";
-                final Path path = LIBS_DIR.resolve(filename);
-                if (Files.exists(path)) {
-                    jars.add(path);
-                    System.out.println("[CACHED] " + filename);
+            final String nat = "natives-" + IOTool.getPlatformClassifier();
+            System.out.println("Platform: " + nat);
+            for (final String mod : NATIVES) {
+                final String fn = mod + "-3.3.6-" + nat + ".jar";
+                final Path p = LIBS_DIR.resolve(fn);
+                if (Files.exists(p)) {
+                    jars.add(p);
+                    System.out.println("[CACHED] " + fn);
                 } else {
-                    toDownload.add(new String[]{filename, "org/lwjgl/" + module + "/3.3.6/" + filename});
+                    toDownload.add(new String[]{fn, "org/lwjgl/" + mod + "/3.3.6/" + fn});
                 }
             }
 
             // DOWNLOAD
             for (final String[] dep : toDownload) {
-                final Path dest = LIBS_DIR.resolve(dep[0]);
-                download(MAVEN + dep[1], dest);
-                jars.add(dest);
+                final Path d = LIBS_DIR.resolve(dep[0]);
+                download(MAVEN + dep[1], d);
+                jars.add(d);
             }
 
-            // ADD CURRENT JAR
             jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
-
-            System.out.println("\n[OK] Dependencies ready - " + jars.size() + " JARs");
-            System.out.println("Relaunching...");
-
-            // CLOSE AFTER 3 SECONDS
+            System.out.println("\n[OK] Dependencies ready - " + jars.size() + " JARs\nRelaunching...");
             Thread.sleep(3000);
             window.dispose();
-
-            // RELAUNCH
             relaunch(jars, args);
-
         } catch (final Exception e) {
             showError(e);
         }
     }
 
-    private static void launchApp(final String[] args) {
-        try {
-            WaterMediaApp.main(args);
-        } catch (final Throwable e) {
-            showError(e);
-        }
-    }
-
+    // RELAUNCH METHOD - SPAWNS A NEW JVM PROCESS WITH UPDATED CLASSPATH
+    // THE CLASSPATH NOW INCLUDES THE DOWNLOADED DEPENDENCIES
+    // THE FLAG "watermedia.app=true" PREVENTS INFINITE RELAUNCH LOOPS (SEE main() CHECK AT LINE 63)
+    // inheritIO() CONNECTS STDIN/STDOUT/STDERR SO THE USER SEES ALL OUTPUT - NO HIDDEN BEHAVIOR
     private static void relaunch(final List<Path> jars, final String[] args) throws Exception {
+        // BUILD CLASSPATH FROM ALL COLLECTED JARS
         final StringJoiner cp = new StringJoiner(File.pathSeparator);
-        for (final Path jar : jars) cp.add(jar.toAbsolutePath().toString());
+        jars.forEach(j -> cp.add(j.toAbsolutePath().toString()));
 
-        final String currentCp = System.getProperty("java.class.path");
-        if (currentCp != null && !currentCp.isBlank()) cp.add(currentCp);
+        // PRESERVE EXISTING CLASSPATH ENTRIES
+        final String cur = System.getProperty("java.class.path");
+        if (cur != null && !cur.isBlank()) cp.add(cur);
 
-        ClassLoader cl = Thread.currentThread().getContextClassLoader();
-        while (cl != null) {
-            if (cl instanceof final URLClassLoader ucl) {
-                for (final URL url : ucl.getURLs()) {
+        // INCLUDE ANY URLS FROM PARENT CLASSLOADERS
+        for (ClassLoader cl = Thread.currentThread().getContextClassLoader(); cl != null; cl = cl.getParent()) {
+            if (cl instanceof final URLClassLoader u) {
+                for (final URL url : u.getURLs()) {
                     try {
                         cp.add(Path.of(url.toURI()).toString());
-                    } catch (final Exception ignored) {
-                    }
+                    } catch (final Exception ignored) {}
                 }
             }
-            cl = cl.getParent();
         }
 
-        final List<String> cmd = new ArrayList<>();
-        cmd.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
-        cmd.add("-D" + BOOTSTRAPPED_FLAG + "=true");
-        cmd.add("-cp");
-        cmd.add(cp.toString());
-        cmd.add(AppBootstrap.class.getName());
+        // BUILD COMMAND: [java executable] [-Dwatermedia.app=true] [-cp classpath] [main class] [args]
+        // USES THE SAME JAVA FROM java.home
+        final List<String> cmd = new ArrayList<>(Arrays.asList(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-D" + BOOTSTRAPPED_FLAG + "=true", "-cp", cp.toString(), AppBootstrap.class.getName()));
         cmd.addAll(Arrays.asList(args));
-
-        final Process process = new ProcessBuilder(cmd).inheritIO().start();
-        System.exit(process.waitFor());
+        // START THE NEW PROCESS AND WAIT FOR IT TO COMPLETE, THEN EXIT WITH ITS EXIT CODE
+        System.exit(new ProcessBuilder(cmd).inheritIO().start().waitFor());
     }
 
     private static Path findLocalJar(final String prefix) {
         final File[] files = new File("").getAbsoluteFile().listFiles();
-        if (files == null) return null;
-        for (final File f : files) {
-            if (f.getName().startsWith(prefix) && f.getName().endsWith(".jar")) return f.toPath();
+        if (files != null) {
+            for (final File f : files) {
+                if (f.getName().startsWith(prefix) && f.getName().endsWith(".jar")) return f.toPath();
+            }
         }
         return null;
     }
 
+    // DOWNLOAD METHOD - FETCHES JAR FILES FROM MAVEN CENTRAL (repo1.maven.org)
+    // MAVEN CENTRAL IS THE OFFICIAL PUBLIC REPOSITORY FOR JAVA LIBRARIES - TRUSTED SOURCE
+    // DOWNLOADS ONLY WELL-KNOWN LIBRARIES: LOG4J, LWJGL, GSON (SEE DEPS ARRAY AT LINE 48)
+    // FILES ARE CACHED IN SYSTEM TEMP FOLDER (java.io.tmpdir/watermedia/libs) TO AVOID RE-DOWNLOADING
+    // THIS IS STANDARD PRACTICE FOR JAVA APPLICATIONS THAT NEED RUNTIME DEPENDENCIES
     private static void download(final String url, final Path dest) throws Exception {
         System.out.println("[DOWNLOADING] " + dest.getFileName());
         window.setDownloading(true);
 
-        final URLConnection conn = URI.create(url).toURL().openConnection();
-        conn.setRequestProperty("User-Agent", "WaterMedia/3.0.0");
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
+        // STANDARD HTTP CONNECTION TO MAVEN CENTRAL
+        final URLConnection c = URI.create(url).toURL().openConnection();
+        c.setRequestProperty("User-Agent", "WaterMedia/3.0.0");
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(30000);
 
-        final long total = conn.getContentLengthLong();
-        try (final InputStream in = new BufferedInputStream(conn.getInputStream());
+        // SIMPLE FILE DOWNLOAD WITH PROGRESS TRACKING - WRITES DIRECTLY TO DESTINATION PATH
+        final long total = c.getContentLengthLong();
+        try (final InputStream in = new BufferedInputStream(c.getInputStream());
              final OutputStream out = new BufferedOutputStream(Files.newOutputStream(dest))) {
-
             final byte[] buf = new byte[8192];
-            long downloaded = 0;
-            int read;
-            while ((read = in.read(buf)) != -1) {
-                out.write(buf, 0, read);
-                downloaded += read;
-                if (total > 0) window.setProgress((int) ((downloaded * 100) / total));
+            long dl = 0;
+            int r;
+            while ((r = in.read(buf)) != -1) {
+                out.write(buf, 0, r);
+                dl += r;
+                if (total > 0) window.setProgress((int) (dl * 100 / total));
             }
         }
-
         window.setProgress(100);
         Thread.sleep(500);
         window.setDownloading(false);
@@ -211,185 +223,377 @@ public class AppBootstrap {
         System.err.println("ERROR: " + msg);
         if (window != null) window.dispose();
 
-        final Dialog dialog = new Dialog((Frame) null, "WaterMedia: Error", true);
-        dialog.setLayout(new BorderLayout(10, 10));
-        dialog.setBackground(Color.BLACK);
-        try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
-            dialog.setIconImage(ImageIO.read(in));
-        } catch (final Exception ignored) {
-        }
+        final Dialog dlg = new Dialog((Frame) null, "WaterMedia: Fatal Error", true);
+        dlg.setLayout(new BorderLayout(0, 0));
+        dlg.setBackground(C_BLACK);
+        loadIcon(dlg::setIconImage);
 
-
-        final TextArea text = new TextArea(msg, 20, 80, TextArea.SCROLLBARS_VERTICAL_ONLY);
-        text.setEditable(false);
-        text.setBackground(Color.BLACK);
-        text.setForeground(new Color(255, 100, 100));
-        text.setFont(CONSOLE_FONT);
+        final ScrollPanel txt = new ScrollPanel(msg.replace("\t", "    "), C_RED);
 
         final Button ok = new Button("    OK    ");
         ok.setFont(new Font("Consolas", Font.BOLD, 18));
         ok.setPreferredSize(new Dimension(120, 40));
         ok.addActionListener(e -> {
-            dialog.dispose();
+            dlg.dispose();
             System.exit(1);
         });
         ok.setBackground(new Color(60, 60, 60));
-        ok.setForeground(Color.WHITE);
+        ok.setForeground(C_WHITE);
 
-        final Panel btnPanel = new Panel(new FlowLayout(FlowLayout.CENTER, 20, 15));
-        btnPanel.setBackground(Color.BLACK);
-        btnPanel.add(ok);
+        final Panel btn = new Panel(new FlowLayout(FlowLayout.CENTER, 20, 15));
+        btn.setBackground(C_BLACK);
+        btn.add(ok);
 
-        dialog.add(text, BorderLayout.CENTER);
-        dialog.add(btnPanel, BorderLayout.SOUTH);
-        dialog.pack();
-        dialog.setLocationRelativeTo(null);
-        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
-            @Override
-            public void windowClosing(final java.awt.event.WindowEvent e) {
-                System.exit(1);
+        dlg.add(txt, BorderLayout.CENTER);
+        dlg.add(btn, BorderLayout.SOUTH);
+        dlg.setSize(1100, 500);
+        dlg.setLocationRelativeTo(null);
+        dlg.addWindowListener(onClose(() -> System.exit(1)));
+        dlg.addComponentListener(onResize(txt::repaint));
+        dlg.setAlwaysOnTop(true);
+        dlg.setVisible(true);
+    }
+
+    private static void loadIcon(final Consumer<Image> setter) {
+        try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
+            if (in != null) setter.accept(ImageIO.read(in));
+        } catch (final Exception ignored) {}
+    }
+
+    // ========== LAMBDA HELPERS ==========
+    private static Canvas canvas(final Consumer<Graphics> paint, final int w, final int h) {
+        return new Canvas() {
+            public void update(final Graphics g) { this.paint(g); }
+            public void paint(final Graphics g) { paint.accept(g); }
+            public Dimension getPreferredSize() { return new Dimension(w, h); }
+        };
+    }
+
+    private static Canvas canvas(final BiConsumer<Canvas, Graphics> paint, final int w, final int h) {
+        return new Canvas() {
+            public void update(final Graphics g) { this.paint(g); }
+            public void paint(final Graphics g) { paint.accept(this, g); }
+            public Dimension getPreferredSize() { return new Dimension(w, h); }
+        };
+    }
+
+    private static MouseAdapter onDrag(final Consumer<MouseEvent> onPress, final Consumer<MouseEvent> onDrag) {
+        final boolean[] dragging = {false};
+        return new MouseAdapter() {
+            public void mousePressed(final MouseEvent e) {
+                dragging[0] = true;
+                onPress.accept(e);
             }
-        });
-        dialog.requestFocusInWindow();
-        dialog.setAlwaysOnTop(true);
-        dialog.setVisible(true);
+            public void mouseReleased(final MouseEvent e) {
+                dragging[0] = false;
+            }
+            public void mouseDragged(final MouseEvent e) {
+                if (dragging[0]) onDrag.accept(e);
+            }
+        };
+    }
+
+    private static WindowAdapter onClose(final Runnable r) {
+        return new WindowAdapter() {
+            public void windowClosing(final WindowEvent e) { r.run(); }
+        };
+    }
+
+    private static ComponentAdapter onResize(final Runnable r) {
+        return new ComponentAdapter() {
+            public void componentResized(final ComponentEvent e) { r.run(); }
+        };
+    }
+
+    // ========== SCROLL PANEL ==========
+    private static class ScrollPanel extends Panel {
+        private final String[] lines;
+        private final Color color;
+        private final Canvas content, scrollbar;
+        private int off, max = 1, vis = 1, dragY, dragOff;
+        private boolean auto = true;
+        private Image buf;
+        private int bufW, bufH;
+
+        ScrollPanel(final String text, final Color color) {
+            super(new BorderLayout(0, 0));
+            this.lines = text.split("\n", -1);
+            this.color = color;
+            this.setBackground(C_BLACK);
+
+            this.content = canvas((c, g) -> {
+                final int w = c.getWidth(), h = c.getHeight();
+                if (w <= 0 || h <= 0) return;
+
+                if (this.buf == null || this.bufW != w || this.bufH != h) {
+                    this.buf = c.createImage(w, h);
+                    this.bufW = w;
+                    this.bufH = h;
+                }
+
+                final Graphics o = this.buf.getGraphics();
+                o.setColor(C_BLACK);
+                o.fillRect(0, 0, w, h);
+                o.setColor(this.color);
+                o.setFont(FONT);
+
+                final FontMetrics fm = o.getFontMetrics();
+                final int lh = fm.getHeight();
+                final int ml = (h - PAD * 2) / lh;
+
+                this.max = Math.max(1, this.lines.length);
+                this.vis = Math.max(1, ml);
+
+                final int st = this.auto ? Math.max(0, this.lines.length - ml) : this.off;
+                if (this.auto) this.off = st;
+
+                int y = PAD + fm.getAscent();
+                for (int i = st; i < this.lines.length && i < st + ml; i++, y += lh) {
+                    o.drawString(this.lines[i], PAD, y);
+                }
+                o.dispose();
+                g.drawImage(this.buf, 0, 0, c);
+            }, 0, 0);
+
+            this.content.setBackground(C_BLACK);
+            this.content.addMouseWheelListener(e -> {
+                this.scroll(e.getWheelRotation() * 3);
+                this.repaint();
+            });
+
+            this.scrollbar = canvas((c, g) -> {
+                g.setColor(C_BLACK);
+                g.fillRect(0, 0, c.getWidth(), c.getHeight());
+                if (this.max <= this.vis) return;
+                final int th = c.getHeight();
+                final int hh = Math.max(20, th * this.vis / this.max);
+                final int rng = this.max - this.vis;
+                final int thumbY = rng > 0 ? this.off * (th - hh) / rng : 0;
+                g.setColor(C_GRAY);
+                g.fillRect(2, thumbY, c.getWidth() - 4, hh);
+            }, SCROLL_W, 100);
+            this.scrollbar.setBackground(C_BLACK);
+
+            final MouseAdapter ma = onDrag(
+                    e -> { this.dragY = e.getY(); this.dragOff = this.off; },
+                    e -> {
+                        final int rng = this.max - this.vis;
+                        if (rng <= 0) return;
+                        final int th = this.scrollbar.getHeight();
+                        final int hh = Math.max(20, th * this.vis / this.max);
+                        final int av = th - hh;
+                        this.off = Math.max(0, Math.min(rng, this.dragOff + (av > 0 ? (e.getY() - this.dragY) * rng / av : 0)));
+                        this.auto = this.off >= rng;
+                        this.repaint();
+                    });
+            this.scrollbar.addMouseListener(ma);
+            this.scrollbar.addMouseMotionListener(ma);
+
+            this.add(this.content, BorderLayout.CENTER);
+            this.add(this.scrollbar, BorderLayout.EAST);
+        }
+
+        private void scroll(final int d) {
+            final int rng = this.max - this.vis;
+            if (rng <= 0) return;
+            this.off = Math.max(0, Math.min(rng, this.off + d));
+            this.auto = this.off >= rng;
+        }
     }
 
     // ========== BOOTSTRAP WINDOW ==========
     private static class BootstrapWindow extends Frame {
-        private final TextArea console;
-        private final Panel progressPanel;
-        private final Canvas progressBar;
-        private final PrintStream originalOut = System.out;
-        private volatile int progress = 0;
-        private BufferedImage bannerImg;
+        private final StringBuilder txt = new StringBuilder();
+        private final PrintStream origOut = System.out;
+        private final Canvas console, scrollbar, progBar;
+        private final Panel progPanel;
+        private int prog, off, max = 1, vis = 1, dragY, dragOff;
+        private boolean auto = true;
+        private BufferedImage banner;
+        private Image buf;
+        private int bufW, bufH;
 
         BootstrapWindow() {
             super("WaterMedia: Multimedia API");
-            this.setBackground(Color.BLACK);
+            this.setBackground(C_BLACK);
             this.setLayout(new BorderLayout(0, 0));
-
-            try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
-                this.setIconImage(ImageIO.read(in));
-            } catch (final Exception ignored) {
-            }
+            loadIcon(this::setIconImage);
 
             try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
-                if (in != null) this.bannerImg = ImageIO.read(in);
-            } catch (final Exception ignored) {
-            }
+                if (in != null) this.banner = ImageIO.read(in);
+            } catch (final Exception ignored) {}
 
-            // BANNER
-            final Canvas banner = new Canvas() {
-                @Override
-                public void paint(final Graphics g) {
-                    g.setColor(Color.BLACK);
-                    g.fillRect(0, 0, this.getWidth(), this.getHeight());
-                    if (BootstrapWindow.this.bannerImg != null) {
-                        final double aspect = (double) BootstrapWindow.this.bannerImg.getWidth() / BootstrapWindow.this.bannerImg.getHeight();
-                        int w = this.getWidth(), h = (int) (w / aspect);
-                        if (h > this.getHeight()) {
-                            h = this.getHeight();
-                            w = (int) (h * aspect);
-                        }
-                        g.drawImage(BootstrapWindow.this.bannerImg, (this.getWidth() - w) / 2, (this.getHeight() - h) / 2, w, h, this);
-                    } else {
-                        System.out.println("No banner found");
-                        g.setColor(new Color(0, 180, 255));
-                        g.setFont(new Font("Consolas", Font.BOLD, 24));
-                        g.drawString("WaterMedia", 20, 50);
+            // HEADER
+            final Panel hdr = new Panel(new BorderLayout(0, 0));
+            hdr.setBackground(C_BLACK);
+            hdr.add(canvas(g -> {
+                g.setColor(C_BLACK);
+                g.fillRect(0, 0, 9999, 9999);
+                if (this.banner != null) {
+                    final double a = (double) this.banner.getWidth() / this.banner.getHeight();
+                    int w = (int) g.getClipBounds().getWidth();
+                    int h = (int) (w / a);
+                    final int ch = (int) g.getClipBounds().getHeight();
+                    if (h > ch) {
+                        h = ch;
+                        w = (int) (h * a);
                     }
+                    g.drawImage(this.banner, ((int) g.getClipBounds().getWidth() - w) / 2, (ch - h) / 2, w, h, null);
+                } else {
+                    g.setColor(C_BLUE);
+                    g.setFont(FONT_BOLD);
+                    g.drawString("WaterMedia", 20, 50);
                 }
+            }, 960, 120), BorderLayout.CENTER);
+            hdr.add(canvas(g -> {
+                g.setColor(C_BLUE);
+                g.fillRect(0, 0, 9999, 9999);
+            }, 960, 4), BorderLayout.SOUTH);
 
-                @Override
-                public Dimension getPreferredSize() {
-                    return new Dimension(960, 120);
-                }
-            };
+            // SCROLLBAR
+            this.scrollbar = canvas((c, g) -> {
+                g.setColor(C_BLACK);
+                g.fillRect(0, 0, c.getWidth(), c.getHeight());
+                if (this.max <= this.vis) return;
+                final int th = c.getHeight();
+                final int hh = Math.max(20, th * this.vis / this.max);
+                final int rng = this.max - this.vis;
+                final int thumbY = rng > 0 ? this.off * (th - hh) / rng : 0;
+                g.setColor(C_GRAY);
+                g.fillRect(2, thumbY, c.getWidth() - 4, hh);
+            }, SCROLL_W, 100);
+            this.scrollbar.setBackground(C_BLACK);
 
             // CONSOLE
-            this.console = new TextArea("", 20, 100, TextArea.SCROLLBARS_VERTICAL_ONLY);
-            this.console.setEditable(false);
-            this.console.setBackground(Color.BLACK);
-            this.console.setForeground(new Color(0, 255, 0));
-            this.console.setFont(CONSOLE_FONT);
+            this.console = canvas((c, g) -> {
+                final int w = c.getWidth(), h = c.getHeight();
+                if (w <= 0 || h <= 0) return;
 
-            // PROGRESS BAR
-            this.progressBar = new Canvas() {
-                @Override
-                public void paint(final Graphics g) {
-                    g.setColor(new Color(30, 30, 30));
-                    g.fillRect(0, 0, this.getWidth(), this.getHeight());
-                    g.setColor(new Color(0, 150, 255));
-                    g.fillRect(0, 0, (int) (this.getWidth() * BootstrapWindow.this.progress / 100.0), this.getHeight());
-                    g.setColor(Color.WHITE);
-                    g.setFont(CONSOLE_FONT);
-                    final String txt = BootstrapWindow.this.progress + "%";
-                    g.drawString(txt, (this.getWidth() - g.getFontMetrics().stringWidth(txt)) / 2, 16);
+                if (this.buf == null || this.bufW != w || this.bufH != h) {
+                    this.buf = c.createImage(w, h);
+                    this.bufW = w;
+                    this.bufH = h;
                 }
 
-                @Override
-                public Dimension getPreferredSize() {
-                    return new Dimension(960, 24);
+                final Graphics o = this.buf.getGraphics();
+                o.setColor(C_BLACK);
+                o.fillRect(0, 0, w, h);
+                o.setColor(C_GREEN);
+                o.setFont(FONT);
+
+                final FontMetrics fm = o.getFontMetrics();
+                final int lh = fm.getHeight();
+                final int ml = (h - PAD * 2) / lh;
+                final String[] lines = this.txt.toString().split("\n", -1);
+
+                this.updateScroll(lines.length, ml);
+                final int st = this.auto ? Math.max(0, lines.length - ml) : this.off;
+
+                int y = PAD + fm.getAscent();
+                for (int i = st; i < lines.length && i < st + ml; i++, y += lh) {
+                    o.drawString(lines[i], PAD, y);
                 }
-            };
+                o.dispose();
+                g.drawImage(this.buf, 0, 0, c);
+            }, 0, 0);
+            this.console.setBackground(C_BLACK);
+            this.console.addMouseWheelListener(e -> {
+                this.scroll(e.getWheelRotation() * 3);
+                this.console.repaint();
+                this.scrollbar.repaint();
+            });
 
-            this.progressPanel = new Panel(new BorderLayout());
-            this.progressPanel.setBackground(Color.BLACK);
-            this.progressPanel.add(this.progressBar, BorderLayout.CENTER);
-            this.progressPanel.setVisible(false);
+            final MouseAdapter sma = onDrag(
+                    e -> {
+                        this.dragY = e.getY();
+                        this.dragOff = this.off; },
+                    e -> {
+                        final int rng = this.max - this.vis;
+                        if (rng <= 0) return;
+                        final int th = this.scrollbar.getHeight();
+                        final int hh = Math.max(20, th * this.vis / this.max);
+                        final int av = th - hh;
+                        this.off = Math.max(0, Math.min(rng, this.dragOff + (av > 0 ? (e.getY() - this.dragY) * rng / av : 0)));
+                        this.auto = this.off >= rng;
+                        this.scrollbar.repaint();
+                        this.console.repaint();
+                    });
+            this.scrollbar.addMouseListener(sma);
+            this.scrollbar.addMouseMotionListener(sma);
 
-            this.add(banner, BorderLayout.NORTH);
-            this.add(this.console, BorderLayout.CENTER);
-            this.add(this.progressPanel, BorderLayout.SOUTH);
+            final Panel cp = new Panel(new BorderLayout(0, 0));
+            cp.setBackground(C_BLACK);
+            cp.add(this.console, BorderLayout.CENTER);
+            cp.add(this.scrollbar, BorderLayout.EAST);
 
+            // PROGRESS
+            this.progBar = canvas(g -> {
+                final int w = (int) g.getClipBounds().getWidth();
+                g.setColor(C_GRAY_DARK);
+                g.fillRect(0, 0, w, 24);
+                g.setColor(C_BLUE_DARK);
+                g.fillRect(0, 0, w * this.prog / 100, 24);
+                g.setColor(C_WHITE);
+                g.setFont(FONT);
+                final String s = this.prog + "%";
+                g.drawString(s, (w - g.getFontMetrics().stringWidth(s)) / 2, 16);
+            }, 960, 24);
+
+            this.progPanel = new Panel(new BorderLayout());
+            this.progPanel.setBackground(C_BLACK);
+            this.progPanel.add(this.progBar, BorderLayout.CENTER);
+            this.progPanel.setVisible(false);
+
+            this.add(hdr, BorderLayout.NORTH);
+            this.add(cp, BorderLayout.CENTER);
+            this.add(this.progPanel, BorderLayout.SOUTH);
             this.setSize(960, 540);
             this.setLocationRelativeTo(null);
-            this.addWindowListener(new java.awt.event.WindowAdapter() {
-                @Override
-                public void windowClosing(final java.awt.event.WindowEvent e) {
-                    System.exit(0);
-                }
-            });
-            this.addComponentListener(new java.awt.event.ComponentAdapter() {
-                @Override
-                public void componentResized(final java.awt.event.ComponentEvent e) {
-                    BootstrapWindow.this.repaint();
-                }
-            });
+            this.addWindowListener(onClose(() -> System.exit(0)));
+            this.addComponentListener(onResize(this::repaint));
 
             // REDIRECT STDOUT/STDERR
-            final PrintStream redirect = new PrintStream(new OutputStream() {
-                private final StringBuilder line = new StringBuilder();
-
-                @Override
+            System.setOut(new PrintStream(new OutputStream() {
+                private final StringBuilder ln = new StringBuilder();
                 public void write(final int b) {
-                    BootstrapWindow.this.originalOut.write(b);
+                    BootstrapWindow.this.origOut.write(b);
                     if (b == '\n') {
-                        final String text = this.line.toString();
-                        this.line.setLength(0);
-                        EventQueue.invokeLater(() -> {
-                            BootstrapWindow.this.console.append(text + "\n");
-                            BootstrapWindow.this.console.setCaretPosition(BootstrapWindow.this.console.getText().length());
-                        });
+                        BootstrapWindow.this.txt.append(this.ln).append("\n");
+                        this.ln.setLength(0);
+                        EventQueue.invokeLater(BootstrapWindow.this.console::repaint);
                     } else {
-                        this.line.append((char) b);
+                        this.ln.append((char) b);
                     }
                 }
-            });
-            System.setOut(redirect);
-            System.setErr(redirect);
+            }));
+            System.setErr(System.out);
         }
 
-        void setProgress(final int percent) {
-            this.progress = percent;
-            this.progressBar.repaint();
+        void setProgress(final int p) {
+            this.prog = p;
+            this.progBar.repaint();
         }
 
-        void setDownloading(final boolean active) {
-            this.progress = 0;
-            this.progressPanel.setVisible(active);
+        void setDownloading(final boolean a) {
+            this.prog = 0;
+            this.progPanel.setVisible(a);
             this.validate();
+        }
+
+        private void scroll(final int d) {
+            final int rng = this.max - this.vis;
+            if (rng <= 0) return;
+            this.off = Math.max(0, Math.min(rng, this.off + d));
+            this.auto = this.off >= rng;
+        }
+
+        private void updateScroll(final int t, final int v) {
+            if (this.max != t || this.vis != v) {
+                this.max = Math.max(1, t);
+                this.vis = Math.max(1, v);
+                if (this.auto) this.off = Math.max(0, this.max - this.vis);
+                this.scrollbar.repaint();
+            }
         }
     }
 }
