@@ -42,4 +42,7 @@ public abstract class Screen {
 
     public void handleMouseClick(final double mx, final double my) {
     }
+
+    public void handleScroll(final double yOffset) {
+    }
 }

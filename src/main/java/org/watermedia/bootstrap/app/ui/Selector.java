@@ -7,8 +7,10 @@ import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
+import static org.lwjgl.opengl.GL11.*;
+
 /**
- * A selector component with support for sections/groups.
+ * A selector component with support for sections/groups and scrolling.
  *
  * @param <T> Type of items in the selector
  */
@@ -32,6 +34,15 @@ public class Selector<T> {
     private Dimension bounds = Dimension.ZERO;
     private final List<Dimension> itemBounds = new ArrayList<>();
 
+    // Scrolling support
+    private int maxHeight = -1;
+    private int scrollOffset = 0;
+    private int totalContentHeight = 0;
+    private int visibleHeight = 0;
+    private int cachedLineHeight = 24;
+    private static final int SCROLLBAR_WIDTH = 8;
+    private static final int SCROLL_AMOUNT = 30;
+
     public Selector() {
         this.labelProvider = Object::toString;
     }
@@ -43,6 +54,7 @@ public class Selector<T> {
     public Selector<T> clear() {
         this.entries.clear();
         this.selectedIndex = 0;
+        this.scrollOffset = 0;
         return this;
     }
 
@@ -94,6 +106,11 @@ public class Selector<T> {
 
     public Selector<T> indent(final int i) {
         this.indent = i;
+        return this;
+    }
+
+    public Selector<T> maxHeight(final int h) {
+        this.maxHeight = h;
         return this;
     }
 
@@ -173,6 +190,7 @@ public class Selector<T> {
         if (newIndex != this.selectedIndex) {
             this.selectedIndex = newIndex;
             if (this.onSelectionChanged != null) this.onSelectionChanged.run();
+            this.ensureSelectedVisible();
         }
     }
 
@@ -183,6 +201,80 @@ public class Selector<T> {
         if (newIndex != this.selectedIndex) {
             this.selectedIndex = newIndex;
             if (this.onSelectionChanged != null) this.onSelectionChanged.run();
+            this.ensureSelectedVisible();
+        }
+    }
+
+    public void scrollBy(final int delta) {
+        if (!this.needsScrollbar()) return;
+        final int maxScroll = this.totalContentHeight - this.visibleHeight;
+        this.scrollOffset = Math.max(0, Math.min(maxScroll, this.scrollOffset + delta));
+    }
+
+    public void handleScroll(final double yOffset) {
+        this.scrollBy((int) (-yOffset * SCROLL_AMOUNT));
+    }
+
+    public boolean needsScrollbar() {
+        return this.maxHeight > 0 && this.totalContentHeight > this.visibleHeight;
+    }
+
+    private void ensureSelectedVisible() {
+        if (this.maxHeight <= 0 || this.totalContentHeight <= this.maxHeight) return;
+        if (this.selectedIndex < 0) return;
+
+        // If first item is selected, reset scroll to show title
+        if (this.selectedIndex == 0) {
+            this.scrollOffset = 0;
+            return;
+        }
+
+        // Calculate the Y position of the selected item relative to content start
+        final int lineH = this.cachedLineHeight;
+        int y = 0;
+
+        // Title
+        if (this.title != null && !this.title.isEmpty()) {
+            y += lineH + 10;
+        }
+
+        // Find the selected item's position
+        int selectableIdx = 0;
+        for (final Entry<T> entry : this.entries) {
+            if (entry.header) {
+                y += 5 + lineH;
+            } else {
+                if (selectableIdx == this.selectedIndex) {
+                    // Found the selected item
+                    final int itemTop = y;
+                    final int itemBottom = y + lineH;
+
+                    // Check if we need to scroll up
+                    if (itemTop < this.scrollOffset) {
+                        this.scrollOffset = Math.max(0, itemTop - 5);
+                    }
+                    // Check if we need to scroll down
+                    else if (itemBottom > this.scrollOffset + this.visibleHeight) {
+                        this.scrollOffset = itemBottom - this.visibleHeight + 5;
+                    }
+                    return;
+                }
+                y += lineH;
+                selectableIdx++;
+            }
+        }
+
+        // Check for back button
+        if (this.showBack && this.isBackSelected()) {
+            y += 10;
+            final int itemTop = y;
+            final int itemBottom = y + lineH;
+
+            if (itemTop < this.scrollOffset) {
+                this.scrollOffset = Math.max(0, itemTop - 5);
+            } else if (itemBottom > this.scrollOffset + this.visibleHeight) {
+                this.scrollOffset = itemBottom - this.visibleHeight + 5;
+            }
         }
     }
 
@@ -205,8 +297,29 @@ public class Selector<T> {
         this.itemBounds.clear();
         DrawTool.setupOrtho(windowW, windowH);
 
-        int y = this.bounds.y();
         final int lineH = renderer.lineHeight();
+        final boolean useScissor = this.maxHeight > 0 && this.totalContentHeight > this.maxHeight;
+
+        // Calculate visible area
+        this.visibleHeight = this.maxHeight > 0 ? Math.min(this.maxHeight, this.totalContentHeight) : this.totalContentHeight;
+
+        // Clamp scroll offset
+        if (useScissor) {
+            final int maxScroll = this.totalContentHeight - this.visibleHeight;
+            this.scrollOffset = Math.max(0, Math.min(maxScroll, this.scrollOffset));
+        } else {
+            this.scrollOffset = 0;
+        }
+
+        // Enable scissor test for clipping
+        if (useScissor) {
+            glEnable(GL_SCISSOR_TEST);
+            // OpenGL scissor uses bottom-left origin, so convert coordinates
+            final int scissorY = windowH - this.bounds.y() - this.visibleHeight;
+            glScissor(0, scissorY, windowW - SCROLLBAR_WIDTH - 10, this.visibleHeight);
+        }
+
+        int y = this.bounds.y() - this.scrollOffset;
 
         // Title
         if (this.title != null && !this.title.isEmpty()) {
@@ -251,11 +364,41 @@ public class Selector<T> {
             this.itemBounds.add(new Dimension(this.bounds.x(), y, Math.max(renderer.width(text), this.minWidth), lineH));
         }
 
+        // Disable scissor test
+        if (useScissor) {
+            glDisable(GL_SCISSOR_TEST);
+        }
+
+        // Draw scrollbar if needed
+        if (useScissor) {
+            this.renderScrollbar(windowW, windowH);
+        }
+
         DrawTool.restoreProjection();
+    }
+
+    private void renderScrollbar(final int windowW, final int windowH) {
+        final int scrollbarX = windowW - SCROLLBAR_WIDTH - 10;
+        final int scrollbarY = this.bounds.y();
+        final int scrollbarHeight = this.visibleHeight;
+
+        // Scrollbar track (dark background)
+        DrawTool.disableTextures();
+        DrawTool.fill(scrollbarX, scrollbarY, SCROLLBAR_WIDTH, scrollbarHeight, 0.15f, 0.15f, 0.15f, 0.8f);
+
+        // Scrollbar thumb
+        final float thumbRatio = (float) this.visibleHeight / this.totalContentHeight;
+        final int thumbHeight = Math.max(20, (int) (scrollbarHeight * thumbRatio));
+        final float scrollRatio = (float) this.scrollOffset / (this.totalContentHeight - this.visibleHeight);
+        final int thumbY = scrollbarY + (int) ((scrollbarHeight - thumbHeight) * scrollRatio);
+
+        DrawTool.fill(scrollbarX, thumbY, SCROLLBAR_WIDTH, thumbHeight, 0.31f, 0.71f, 1f, 0.9f);
+        DrawTool.enableTextures();
     }
 
     public Dimension calculateBounds(final TextRenderer text, final int startX, final int startY) {
         final int lineH = text.lineHeight();
+        this.cachedLineHeight = lineH;
         int height = 0;
 
         if (this.title != null) height += lineH + 10;
@@ -280,6 +423,10 @@ public class Selector<T> {
                 itemNumber++;
             }
         }
+
+        // Store total content height for scrolling
+        this.totalContentHeight = height;
+        this.visibleHeight = this.maxHeight > 0 ? Math.min(this.maxHeight, height) : height;
 
         this.bounds = new Dimension(startX, startY, width, height);
         return this.bounds;

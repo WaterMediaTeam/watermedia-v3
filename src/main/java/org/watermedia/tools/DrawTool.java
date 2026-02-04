@@ -112,7 +112,116 @@ public final class DrawTool {
         glVertex2f(x, y + h);
         glEnd();
     }
-    
+
+    /**
+     * Fills a triangle with three vertices.
+     */
+    public static void fillTriangle(float x1, float y1, float x2, float y2, float x3, float y3,
+                                    float r, float g, float b, float a) {
+        color(r, g, b, a);
+        glBegin(GL_TRIANGLES);
+        glVertex2f(x1, y1);
+        glVertex2f(x2, y2);
+        glVertex2f(x3, y3);
+        glEnd();
+    }
+
+    /**
+     * Fills a triangle with rounded corners.
+     * @param x1, y1 First vertex (top)
+     * @param x2, y2 Second vertex (bottom-left)
+     * @param x3, y3 Third vertex (bottom-right)
+     * @param radius Corner rounding radius
+     */
+    public static void fillRoundedTriangle(float x1, float y1, float x2, float y2, float x3, float y3,
+                                           float radius, float r, float g, float b, float a) {
+        color(r, g, b, a);
+
+        // Calculate edge directions (normalized)
+        float d12x = x2 - x1, d12y = y2 - y1;
+        float d23x = x3 - x2, d23y = y3 - y2;
+        float d31x = x1 - x3, d31y = y1 - y3;
+
+        float len12 = (float) Math.sqrt(d12x * d12x + d12y * d12y);
+        float len23 = (float) Math.sqrt(d23x * d23x + d23y * d23y);
+        float len31 = (float) Math.sqrt(d31x * d31x + d31y * d31y);
+
+        d12x /= len12; d12y /= len12;
+        d23x /= len23; d23y /= len23;
+        d31x /= len31; d31y /= len31;
+
+        // Calculate inset amount based on angles
+        float inset = radius * 2f;
+
+        // Inset corner centers
+        float c1x = x1 + (d12x - d31x) * inset / 2f;
+        float c1y = y1 + (d12y - d31y) * inset / 2f;
+        float c2x = x2 + (d23x - d12x) * inset / 2f;
+        float c2y = y2 + (d23y - d12y) * inset / 2f;
+        float c3x = x3 + (d31x - d23x) * inset / 2f;
+        float c3y = y3 + (d31y - d23y) * inset / 2f;
+
+        // Calculate angles for arcs at each corner
+        float angle1Start = (float) Math.atan2(-d31y, -d31x);
+        float angle1End = (float) Math.atan2(d12y, d12x);
+        float angle2Start = (float) Math.atan2(-d12y, -d12x);
+        float angle2End = (float) Math.atan2(d23y, d23x);
+        float angle3Start = (float) Math.atan2(-d23y, -d23x);
+        float angle3End = (float) Math.atan2(d31y, d31x);
+
+        // Normalize angle ranges
+        if (angle1End < angle1Start) angle1End += 2 * Math.PI;
+        if (angle2End < angle2Start) angle2End += 2 * Math.PI;
+        if (angle3End < angle3Start) angle3End += 2 * Math.PI;
+
+        final int arcSegments = 5;
+
+        // Draw as triangle fan from centroid
+        float cx = (x1 + x2 + x3) / 3f;
+        float cy = (y1 + y2 + y3) / 3f;
+
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2f(cx, cy);
+
+        // Corner 1 arc
+        for (int i = 0; i <= arcSegments; i++) {
+            float angle = angle1Start + (angle1End - angle1Start) * i / arcSegments;
+            glVertex2f(c1x + (float) Math.cos(angle) * radius, c1y + (float) Math.sin(angle) * radius);
+        }
+
+        // Corner 2 arc
+        for (int i = 0; i <= arcSegments; i++) {
+            float angle = angle2Start + (angle2End - angle2Start) * i / arcSegments;
+            glVertex2f(c2x + (float) Math.cos(angle) * radius, c2y + (float) Math.sin(angle) * radius);
+        }
+
+        // Corner 3 arc
+        for (int i = 0; i <= arcSegments; i++) {
+            float angle = angle3Start + (angle3End - angle3Start) * i / arcSegments;
+            glVertex2f(c3x + (float) Math.cos(angle) * radius, c3y + (float) Math.sin(angle) * radius);
+        }
+
+        // Close - back to first point of corner 1
+        glVertex2f(c1x + (float) Math.cos(angle1Start) * radius, c1y + (float) Math.sin(angle1Start) * radius);
+
+        glEnd();
+    }
+
+    /**
+     * Fills a circle at the specified center with given radius.
+     */
+    public static void fillCircle(float cx, float cy, float radius, float r, float g, float b, float a) {
+        color(r, g, b, a);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2f(cx, cy);
+        final int segments = 16;
+        for (int i = 0; i <= segments; i++) {
+            final float angle = (float) (i * 2 * Math.PI / segments);
+            glVertex2f(cx + (float) Math.cos(angle) * radius, cy + (float) Math.sin(angle) * radius);
+        }
+        glEnd();
+    }
+
     // ============================================================
     // OUTLINED SHAPES
     // ============================================================

@@ -88,6 +88,9 @@ public class MRLSelectorScreen extends Screen {
         DrawTool.setupOrtho(windowW, windowH);
 
         final int y = this.renderBanner(windowW, windowH) + 10;
+        // Calculate max height: from current Y to bottom bar area (windowH - 100 for padding)
+        final int maxHeight = windowH - 100 - y;
+        this.selector.maxHeight(maxHeight);
         this.selector.calculateBounds(this.text, AppContext.PADDING, y);
         this.selector.render(this.text, windowW, windowH);
 
@@ -131,6 +134,11 @@ public class MRLSelectorScreen extends Screen {
     @Override
     public void handleMouseClick(final double mx, final double my) {
         this.selector.handleClick(mx, my);
+    }
+
+    @Override
+    public void handleScroll(final double yOffset) {
+        this.selector.handleScroll(yOffset);
     }
 
     @Override

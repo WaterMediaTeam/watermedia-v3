@@ -18,4 +18,5 @@ public final class Colors {
     public static final Color GRAY = new Color(128, 128, 128);
     public static final Color DARK_GRAY = new Color(64, 64, 64);
     public static final Color ORANGE = new Color(255, 128, 0);
+    public static final Color BLACK = Color.BLACK;
 }

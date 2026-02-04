@@ -122,6 +122,11 @@ public class WaterMediaApp {
         glfwSetMouseButtonCallback(this.ctx.windowHandle, (w, button, action, mods) -> {
             if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) this.ctx.mouseClicked = true;
         });
+        glfwSetScrollCallback(this.ctx.windowHandle, (w, xOffset, yOffset) -> {
+            if (!this.ctx.hasError()) {
+                this.screens.handleScroll(yOffset);
+            }
+        });
         glfwSetWindowSizeCallback(this.ctx.windowHandle, (w, width, height) -> {
             this.ctx.windowWidth = width;
             this.ctx.windowHeight = height;
@@ -267,7 +272,6 @@ public class WaterMediaApp {
             }
 
             this.renderBottomBar();
-            this.renderAlerts();
 
             glfwSwapBuffers(this.ctx.windowHandle);
             glfwPollEvents();
@@ -311,9 +315,6 @@ public class WaterMediaApp {
     }
 
     private void renderBottomBar() {
-        if (true) {
-            return;
-        }
         DrawTool.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
 
         // Seekbar
@@ -331,31 +332,6 @@ public class WaterMediaApp {
         // Instructions - show error dialog instructions if error is present
         final String instructions = this.ctx.hasError() ? "ENTER/ESC: Close" : this.screens.currentInstructions();
         this.ctx.text.render(instructions, AppContext.PADDING, this.ctx.windowHeight - 60, Colors.GRAY);
-
-        DrawTool.restoreProjection();
-    }
-
-    private void renderAlerts() {
-        int level = 0;
-        if (!FFMediaPlayer.loaded()) this.renderAlert("! FFMPEG UNAVAILABLE", level++);
-        if (!AppContext.IN_MODS) this.renderAlert("! NO MINECRAFT CONTEXT", level++);
-    }
-
-    private void renderAlert(final String text, final int level) {
-        DrawTool.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
-
-        final int textWidth = this.ctx.text.width(text) + 20;
-        final int alertW = Math.max(350, textWidth);
-        final int alertH = 35;
-        final int alertX = this.ctx.windowWidth - alertW - 15;
-        final int alertY = 15 + (35 * level) + (10 * level);
-
-        DrawTool.disableTextures();
-        DrawTool.fill(alertX, alertY, alertW, alertH, 1f, 0.5f, 0f, 0.9f);
-        DrawTool.rect(alertX, alertY, alertW, alertH, 0.8f, 0.4f, 0f, 1f, 2);
-        DrawTool.enableTextures();
-
-        this.ctx.text.render(text, alertX + 10, alertY + 8, new Color(50, 25, 0));
 
         DrawTool.restoreProjection();
     }

@@ -82,6 +82,12 @@ public class ScreenManager {
         }
     }
 
+    public void handleScroll(final double yOffset) {
+        if (this.current != null) {
+            this.current.handleScroll(yOffset);
+        }
+    }
+
     public String currentInstructions() {
         return this.current != null ? this.current.instructions() : "";
     }

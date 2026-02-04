@@ -362,17 +362,17 @@ public class AppBootstrap {
             });
 
             this.scrollbar = canvas((c, g) -> {
-                g.setColor(C_BLACK);
+                g.setColor(C_GRAY_DARK);
                 g.fillRect(0, 0, c.getWidth(), c.getHeight());
                 if (this.max <= this.vis) return;
                 final int th = c.getHeight();
                 final int hh = Math.max(20, th * this.vis / this.max);
                 final int rng = this.max - this.vis;
                 final int thumbY = rng > 0 ? this.off * (th - hh) / rng : 0;
-                g.setColor(C_GRAY);
+                g.setColor(C_BLUE);
                 g.fillRect(2, thumbY, c.getWidth() - 4, hh);
             }, SCROLL_W, 100);
-            this.scrollbar.setBackground(C_BLACK);
+            this.scrollbar.setBackground(C_GRAY_DARK);
 
             final MouseAdapter ma = onDrag(
                     e -> { this.dragY = e.getY(); this.dragOff = this.off; },
@@ -452,17 +452,17 @@ public class AppBootstrap {
 
             // SCROLLBAR
             this.scrollbar = canvas((c, g) -> {
-                g.setColor(C_BLACK);
+                g.setColor(C_GRAY_DARK);
                 g.fillRect(0, 0, c.getWidth(), c.getHeight());
                 if (this.max <= this.vis) return;
                 final int th = c.getHeight();
                 final int hh = Math.max(20, th * this.vis / this.max);
                 final int rng = this.max - this.vis;
                 final int thumbY = rng > 0 ? this.off * (th - hh) / rng : 0;
-                g.setColor(C_GRAY);
+                g.setColor(C_BLUE);
                 g.fillRect(2, thumbY, c.getWidth() - 4, hh);
             }, SCROLL_W, 100);
-            this.scrollbar.setBackground(C_BLACK);
+            this.scrollbar.setBackground(C_GRAY_DARK);
 
             // CONSOLE
             this.console = canvas((c, g) -> {

@@ -1,7 +1,9 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.ui.Colors;
 import org.watermedia.bootstrap.app.ui.Selector;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.DrawTool;
@@ -108,10 +110,66 @@ public class HomeScreen extends Screen {
         DrawTool.setupOrtho(windowW, windowH);
 
         final int y = this.renderBanner(windowW, windowH) + 10;
+        // Calculate max height: from current Y to bottom bar area (windowH - 100 for padding)
+        final int maxHeight = windowH - 100 - y;
+        this.selector.maxHeight(maxHeight);
         this.selector.calculateBounds(this.text, AppContext.PADDING, y);
         this.selector.render(this.text, windowW, windowH);
 
+        // Render warnings fixed at top-right (not affected by scroll)
+        this.renderWarnings(windowW, y);
+
         DrawTool.restoreProjection();
+    }
+
+    private void renderWarnings(final int windowW, final int startY) {
+        int level = 0;
+        if (!FFMediaPlayer.loaded()) {
+            this.renderWarning("NO FFMPEG ENGINE", windowW, startY, level++);
+        }
+        if (!AppContext.IN_MODS) {
+            this.renderWarning("NO MC CONTEXT", windowW, startY, level++);
+        }
+    }
+
+    private void renderWarning(final String text, final int windowW, final int startY, final int level) {
+        final int lineH = this.text.lineHeight();
+        final int textWidth = this.text.width(text);
+        final int hPadding = 8;  // horizontal padding
+        final int triSize = lineH - 6;  // triangle size smaller than font
+        final int triMargin = 6;  // space between triangle and text
+        final float cornerRadius = 2f;  // rounded corner radius
+
+        final int boxH = lineH;
+        final int boxW = hPadding + triSize + triMargin + textWidth + hPadding;
+        final int rightMargin = AppContext.PADDING + 12;  // extra margin to avoid scrollbar
+        final int boxX = windowW - boxW - rightMargin;
+        final int boxY = startY + (boxH + 5) * level;
+
+        DrawTool.disableTextures();
+
+        // Orange background
+        DrawTool.fill(boxX, boxY, boxW, boxH, 1f, 0.5f, 0f, 0.9f);
+
+        // Darker orange border
+        DrawTool.rect(boxX, boxY, boxW, boxH, 0.8f, 0.35f, 0f, 1f, 2);
+
+        // Rounded triangle (centered vertically in box)
+        final float triX = boxX + hPadding;
+        final float triCenterY = boxY + boxH / 2f;
+        DrawTool.fillRoundedTriangle(
+                triX + triSize / 2f, triCenterY - triSize / 2f + 1,  // top
+                triX, triCenterY + triSize / 2f - 1,                  // bottom-left
+                triX + triSize, triCenterY + triSize / 2f - 1,        // bottom-right
+                cornerRadius,
+                0.7f, 0.3f, 0f, 1f);
+
+        DrawTool.enableTextures();
+
+        // Text with manual vertical offset to center visually
+        final int textX = boxX + hPadding + triSize + triMargin;
+        final int textY = boxY + 8;  // increased offset to center text visually
+        this.text.render(text, textX, textY, Colors.BLACK);
     }
 
     public int renderBanner(final int windowW, final int windowH) {
@@ -121,9 +179,12 @@ public class HomeScreen extends Screen {
         final int renderH = (int) (this.ctx.bannerHeight * scale);
         final int renderW = (int) (this.ctx.bannerWidth * scale);
 
+        // Center the banner horizontally
+        final int bannerX = (windowW - renderW) / 2;
+
         DrawTool.bindTexture(this.ctx.bannerTextureId);
         DrawTool.color(1, 1, 1, 1);
-        DrawTool.blit(AppContext.PADDING, AppContext.PADDING, renderW, renderH);
+        DrawTool.blit(bannerX, AppContext.PADDING, renderW, renderH);
 
         final int lineY = AppContext.PADDING + renderH + 15;
         DrawTool.disableTextures();
@@ -151,6 +212,11 @@ public class HomeScreen extends Screen {
     @Override
     public void handleMouseClick(final double mx, final double my) {
         this.selector.handleClick(mx, my);
+    }
+
+    @Override
+    public void handleScroll(final double yOffset) {
+        this.selector.handleScroll(yOffset);
     }
 
     @Override
