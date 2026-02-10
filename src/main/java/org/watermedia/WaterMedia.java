@@ -4,7 +4,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.omegaconfig.OmegaConfig;
+import me.srrapero720.waterconfig.WaterConfig;
 import org.watermedia.api.decode.DecoderAPI;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.network.NetworkAPI;
@@ -75,7 +75,7 @@ public class WaterMedia {
         }
 
         LOGGER.info(IT, "Starting Config registration...");
-        OmegaConfig.register(WaterMediaConfig.class);
+        WaterConfig.register(WaterMediaConfig.class);
 
         LOGGER.info(IT, "Starting Decoders API...");
         if (!DecoderAPI.start(instance)) {

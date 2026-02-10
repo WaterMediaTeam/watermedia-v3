@@ -1,11 +1,11 @@
 package org.watermedia;
 
-import org.omegaconfig.OmegaConfig;
-import org.omegaconfig.api.annotations.Comment;
-import org.omegaconfig.api.annotations.NumberConditions;
-import org.omegaconfig.api.annotations.Spec;
-import org.omegaconfig.api.annotations.StringConditions;
-import org.omegaconfig.impl.fields.StringField;
+import me.srrapero720.waterconfig.WaterConfig;
+import me.srrapero720.waterconfig.api.annotations.Comment;
+import me.srrapero720.waterconfig.api.annotations.NumberConditions;
+import me.srrapero720.waterconfig.api.annotations.Spec;
+import me.srrapero720.waterconfig.api.annotations.StringConditions;
+import me.srrapero720.waterconfig.impl.fields.StringField;
 import org.watermedia.api.media.MRL;
 
 import java.io.File;
@@ -13,7 +13,7 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
-@Spec(value = WaterMedia.ID, suffix = "common", format = OmegaConfig.FORMAT_TOML)
+@Spec(value = WaterMedia.ID, suffix = "common", format = WaterConfig.FORMAT_TOML)
 public class WaterMediaConfig {
 
     @Spec.Field
@@ -21,6 +21,9 @@ public class WaterMediaConfig {
 
     @Spec.Field
     public static String remoteToken = "watermedia_default_token_change_it";
+
+    @Spec.Field
+    public static int remotePort = 25580;
 
     @Spec.Field
     public static MRL.Quality defaultMediaQuality = MRL.Quality.HIGHEST;
@@ -37,6 +40,8 @@ public class WaterMediaConfig {
     @Spec.Field
     @Comment("Decoder fails when PNG chunk data doesn't match with the CRC")
     public static boolean pngDecoder$failOnCorruptedData = true;
+
+
 
 
     @Spec(value = "server")

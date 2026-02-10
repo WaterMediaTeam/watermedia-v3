@@ -62,13 +62,13 @@ sourceSets {
 }
 
 dependencies {
-    // DEPENDENCIES
-    include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
-    include "org.watermedia:tools"
-
-    // EXTERNAL DEPENDENCIES
+    // EXT DEP
     library "org.watermedia:binaries"
-    include ("com.github.MinecraftOmega:omegaconfig:$omegaconfig_version") { // TODO: do not shade
+
+    // DEPENDENCIES
+    include "org.watermedia:tools"
+    include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
+    include ("com.github.SrRapero720:waterconfig:$waterconfig_version") { // TODO: do not shade
         transitive = false
     }
 
