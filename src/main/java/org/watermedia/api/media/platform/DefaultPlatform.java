@@ -21,17 +21,13 @@ public class DefaultPlatform implements IPlatform {
     }
 
     @Override
-    public MRL.Source[] getSources(final URI uri) throws Exception {
+    public Result getSources(final URI uri) throws Exception {
         final URLConnection conn = NetTool.connectToURI(uri);
 
         if (conn != null) {
-            try {
-                conn.connect();
-                conn.getInputStream().close();
-                LOGGER.info("Connected to {} with content type {}", uri, conn.getContentType());
-            } catch (Exception e) {
-                LOGGER.warn("Failed to connect to {}: {}", uri, e.getMessage());
-            }
+            conn.connect();
+            conn.getInputStream().close();
+            LOGGER.info("Connected to {} with content type {}", uri, conn.getContentType());
         }
 
         final var sourceBuilder = new MRL.SourceBuilder(conn == null ? MRL.MediaType.UNKNOWN : MRL.MediaType.of(conn.getContentType()))
@@ -41,6 +37,6 @@ public class DefaultPlatform implements IPlatform {
             http.disconnect();
         }
 
-        return new MRL.Source[] { sourceBuilder.build() };
+        return new Result(null, sourceBuilder.build());
     }
 }

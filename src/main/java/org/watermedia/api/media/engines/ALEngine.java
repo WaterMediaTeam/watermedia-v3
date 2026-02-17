@@ -6,7 +6,7 @@ import org.watermedia.tools.ThreadTool;
 import java.nio.ByteBuffer;
 
 public final class ALEngine {
-    private static final int BUFFERS_COUNT = 2;
+    private static final int BUFFERS_COUNT = 4;
 
     private final int[] buffers;
     private int index = 0;

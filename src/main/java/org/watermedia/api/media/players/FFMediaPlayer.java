@@ -234,7 +234,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public void quality(final MRL.Quality quality) {
         super.quality(quality);
-        this.qualityRequest = true;
+        if (this.playerThread != null && this.playerThread.isAlive() && !this.playerThread.isInterrupted()) {
+            this.qualityRequest = true;
+        }
     }
 
     @Override
@@ -586,8 +588,31 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.clock.skipThreshold());
 
         // START DECODER
-        final int codecId = videoStream.codecpar().codec_id();
-        final AVCodec decoder = avcodec.avcodec_find_decoder(codecId);
+        final AVCodecParameters codecpar = videoStream.codecpar();
+        final int codecId = codecpar.codec_id();
+
+        // DECODER NAME
+        final String codecName = avcodec_get_name(codecId).getString();
+
+        // LARGE DECODER NAME
+        final AVCodecDescriptor descriptor = avcodec_descriptor_get(codecId);
+        final String codecLongName = descriptor != null ? descriptor.long_name().getString() : "unknown";
+
+        // OTHER DATA
+        final long bitrate = codecpar.bit_rate();
+        final int profile = codecpar.profile();
+        final int level = codecpar.level();
+        final int pixFmt = codecpar.format();
+
+        LOGGER.info(IT, "Video codec: {} ({}), bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
+                codecName, codecLongName,
+                bitrate > 0 ? bitrate / 1000 : "N/A",
+                avcodec.avcodec_profile_name(codecId, profile) != null
+                        ? avcodec.avcodec_profile_name(codecId, profile).getString() : profile,
+                level,
+                av_get_pix_fmt_name(pixFmt) != null ? av_get_pix_fmt_name(pixFmt).getString() : pixFmt);
+
+        final AVCodec decoder = avcodec_find_decoder(codecId);
         if (decoder == null)
             LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
 
@@ -788,7 +813,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             // FRAME SKIPPING
             if (this.clock.skip(framePtsMs)) {
-                LOGGER.debug(IT, "Decoding is taking too long, skipping!");
+                LOGGER.debug(IT, "Your decoding is taking too long, skipping!");
                 this.totalSkippedFrames++;
                 this.consecutiveSkips++;
 
@@ -831,7 +856,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
 
                 this.swsInputFormat = frameFormat;
-                LOGGER.debug(IT, "Created SwsContext: format {} ({}x{}) -> BGRA ({}x{})", frameFormat, frameWidth, frameHeight, this.width(), this.height());
+                LOGGER.debug(IT, "Successfully created SwsContext: format {} ({}x{}) -> BGRA ({}x{})", frameFormat, frameWidth, frameHeight, this.width(), this.height());
             }
 
             // GET A SINGLE BUFFER INSTANCE, SO JAVACPP DOESN'T SPAM BUFFER OBJECTS WITH THE SAME POINTER
@@ -880,6 +905,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     this.audioFrame.nb_samples()
             );
 
+            // HAVE SAMPLES, UPLOAD!
             if (samplesConverted > 0) {
                 final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
 
@@ -957,7 +983,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.formatContext = null;
         }
 
-        // Free frames
+        // FREE INSTANCES
         if (this.videoFrame != null) {
             avutil.av_frame_free(this.videoFrame);
             this.videoFrame = null;
@@ -979,11 +1005,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.packet = null;
         }
 
-        // Clear buffers
+        // CLEAR
         this.videoBuffer = null;
         this.videoBufferInitialized = false;
 
-        // Reset state
+        // RESET
         this.videoStreamIndex = -1;
         this.audioStreamIndex = -1;
         this.swsInputFormat = AV_PIX_FMT_NONE;
@@ -991,16 +1017,23 @@ public final class FFMediaPlayer extends MediaPlayer {
         LOGGER.info(IT, "Cleanup completed");
     }
 
+    // NO NULLPOINTERS ON JAVA, NO NULLPOINTERS ON NATIVE
     private static boolean isNull(Pointer p) { return p == null || p.isNull(); }
+
     public static boolean load(final WaterMedia watermedia) {
         Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
 
         LOGGER.info(IT, "Starting FFMPEG...");
+        if (WaterMediaConfig.media.disableFFMPEG) {
+            LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
+            return true;
+        }
 
         try {
-            // ASK WATERMEDIA WHERE WAS FFMPEG
+            // ASK WATERMEDIA BINARIES WHERE WAS FFMPEG
             final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
-            final String configPath = WaterMediaConfig.customFFmpegPath != null ? WaterMediaConfig.customFFmpegPath.toAbsolutePath().toString() : null;
+            // ALSO LOOK IN USER-DEFINED FOLDERS (OR RUNTIME FOLDER AS DEFAULT)
+            final String configPath = WaterMediaConfig.media.customFFmpegPath != null ? WaterMediaConfig.media.customFFmpegPath.toAbsolutePath().toString() : null;
             final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
 
             System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
@@ -1015,6 +1048,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
 
+            // THIS IS QUITE PROBLEMATIC
             avutil.av_log_set_flags(avutil.AV_LOG_PRINT_LEVEL | avutil.AV_LOG_SKIP_REPEATED);
             avutil.av_log_set_level(LOGGER.isDebugEnabled() ? avutil.AV_LOG_DEBUG : avutil.AV_LOG_INFO);
 
@@ -1025,6 +1059,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             LOGGER.info(IT, "swscale:  {}", swscale.swscale_version());
             LOGGER.info(IT, "swresample: {}", swresample.swresample_version());
 
+            // BUILD CONFIGURATION, THE ARGUMENTS USED
             try {
                 final BytePointer config = avformat.avformat_configuration();
                 if (config != null && !config.isNull()) {
@@ -1034,7 +1069,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 LOGGER.warn(IT, "Configuration: unavailable");
             }
 
-            // Hardware acceleration
+            // HW ACCELERATION
             LOGGER.info(IT, "Hardware Acceleration:");
             int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
             int hwCount = 0;
@@ -1054,6 +1089,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 LOGGER.info(IT, "  (none available)");
             }
 
+            // LICENSE INFO (binaries ships GPL but that doesn't contaminate WMB or WM itself)
             final BytePointer license = avformat.avformat_license();
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), license != null && !license.isNull() ? license.getString() : "unknown");
             IOTool.closeQuietly(license);

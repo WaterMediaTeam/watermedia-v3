@@ -17,6 +17,7 @@ import java.util.List;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class ImgurPlatform implements IPlatform {
+    public static final String NAME = "Imgur";
     private static final String API_URL = "https://api.imgur.com/3";
     private static final String API_KEY = "685cdf74b1229b9";
     private static final Gson GSON = new Gson();
@@ -27,18 +28,13 @@ public class ImgurPlatform implements IPlatform {
     private static final String TAG_GALLERY_URL = API_URL + "/gallery/t/%s/%s?client_id=" + API_KEY;
 
     @Override
-    public String name() {
-        return "Imgur";
-    }
+    public String name() { return NAME; }
 
     @Override
-    public boolean validate(final URI uri) {
-        // i.imgur.com usually points to raw files, imgur.com points to the site/api
-        return "imgur.com".equalsIgnoreCase(uri.getHost());
-    }
+    public boolean validate(final URI uri) { return "imgur.com".equalsIgnoreCase(uri.getHost()); }
 
     @Override
-    public MRL.Source[] getSources(final URI uri) throws Exception {
+    public Result getSources(final URI uri) throws Exception {
         final var path = uri.getPath();
         final var fragment = uri.getFragment();
 
@@ -74,7 +70,7 @@ public class ImgurPlatform implements IPlatform {
                 sources.add(this.buildSourceFromImage(img, data.title(), data.accountUrl()));
             }
 
-            return sources.toArray(MRL.Source[]::new);
+            return new Result(null, sources.toArray(MRL.Source[]::new));
 
         } else {
             // Simple Image
@@ -89,7 +85,7 @@ public class ImgurPlatform implements IPlatform {
             final Image img = res.data();
             final MRL.Source source = this.buildSourceFromImage(img, img.title(), img.accountUrl());
             
-            return new MRL.Source[]{ source };
+            return new Result(null, source);
         }
     }
 

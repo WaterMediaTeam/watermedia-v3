@@ -5,6 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.media.MRL;
 
 import java.net.URI;
+import java.time.Instant;
 
 public interface IPlatform {
     Marker IT = MarkerManager.getMarker("IPlatform");
@@ -24,7 +25,19 @@ public interface IPlatform {
     /**
      * Gives all the available sources and its potential qualities.
      * @param uri
-     * @return available sources, null if nothing was found
+     * @return delivery with available sources and expiration instant, null on fail
      */
-    MRL.Source[] getSources(URI uri) throws Exception;
+    Result getSources(URI uri) throws Exception;
+
+
+    /**
+     * Result of the platform source finder (PSF)
+     * @param expires Expiration instant of this result, null means it never expires
+     * @param sources Array of all available sources
+     */
+    record Result(Instant expires, MRL.Source... sources) {
+        public int size() {
+            return this.sources.length;
+        }
+    }
 }

@@ -1,15 +1,12 @@
 package org.watermedia.api.media.platform;
 
-import org.watermedia.api.media.MRL;
-
 import java.net.URI;
 
 public class YoutubePlatform implements IPlatform {
+    public static final String NAME = "YouTube";
 
     @Override
-    public String name() {
-        return "Youtube";
-    }
+    public String name() { return NAME; }
 
     @Override
     public boolean validate(URI uri) {
@@ -18,7 +15,7 @@ public class YoutubePlatform implements IPlatform {
     }
 
     @Override
-    public MRL.Source[] getSources(URI uri) throws Exception {
+    public Result getSources(URI uri) throws Exception {
         throw new UnsupportedOperationException("YoutubePlatform.getSources is not implemented yet");
     }
 }

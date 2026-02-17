@@ -106,15 +106,4 @@ public class JPEG extends Decoder {
         return buffer;
     }
 
-    @Override
-    public boolean test() {
-        // CHECK IF IMAGEIO CAN READ JPEG FORMAT
-        final String[] readers = ImageIO.getReaderFormatNames();
-        for (final String format: readers) {
-            if (format.equalsIgnoreCase("JPEG") || format.equalsIgnoreCase("JPG")) {
-                return true;
-            }
-        }
-        return false;
-    }
 }

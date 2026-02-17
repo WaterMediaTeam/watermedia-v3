@@ -54,10 +54,6 @@ public class DecoderAPI {
             LOGGER.error(IT, "Ignoring register of null Decoder");
             return;
         }
-        if (!decoder.test()) {
-            LOGGER.error(IT, "Failed to register decoder {}, self-test failed", decoder.name());
-            return;
-        }
 
         LOGGER.info(IT, "Registering {}", decoder.getClass().getSimpleName());
         DECODERS.add(decoder);

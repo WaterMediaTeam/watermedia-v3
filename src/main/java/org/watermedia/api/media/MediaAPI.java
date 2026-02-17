@@ -6,6 +6,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.media.platform.*;
 import org.watermedia.api.media.players.FFMediaPlayer;
 
+import java.io.File;
 import java.net.FileNameMap;
 import java.net.URI;
 import java.net.URLConnection;
@@ -15,31 +16,39 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public class MediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
-    private static final LinkedList<IPlatform> PLATFORMS = new LinkedList<>() {
+    static final LinkedList<IPlatform> PLATFORMS = new LinkedList<>() {
         @Override
         public void push(final IPlatform platform) {
             LOGGER.info(IT, "Registering {} platform support", platform.name());
+            // ENSURE UNIQUE
+            if (this.contains(platform)) throw new IllegalStateException("Platform already registered: " + platform.name());
+            // ENSURE DEFAULT IS LAST
+            if (platform.getClass() == DefaultPlatform.class) {
+                this.addLast(platform);
+                return;
+            }
+            // ENSURE DEFAULT IS ALWAYS LAST
+            final IPlatform last = !this.isEmpty() && this.getLast().getClass() == DefaultPlatform.class ? this.getLast() : null;
             super.push(platform);
+            if (last != null) super.push(last);
         }
     };
 
-    static MRL.Source[] getSources(final URI uri) {
-        LOGGER.info("Fetching sources for {}", uri);
+    /**
+     * Gets or creates an MRL for the given URI.
+     * If cached and not expired, returns immediately.
+     * Otherwise, starts async loading via IPlatform.
+     *
+     * @param uri the media URI
+     * @return the MRL instance (may still be loading)
+     */
+    public static MRL getMRL(final String uri) {
+        final File f = new File(uri);
+        return MRL.get(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
+    }
 
-        for (final IPlatform platform: PLATFORMS) {
-            LOGGER.debug("Checking {}", platform.name());
-            if (platform.validate(uri)) {
-                try {
-                    LOGGER.debug("Using source {}", platform.name());
-                    return platform.getSources(uri);
-                } catch (final Throwable t) {
-                    LOGGER.error("Failed to open source {} for the {}", uri, platform.name(), t);
-                    return new MRL.Source[0];
-                }
-            }
-        }
-        LOGGER.fatal(IT, "This line must not be reached", new IllegalStateException("Oh no!"));
-        return null;
+    public static void registerPlatform(IPlatform platform) {
+        PLATFORMS.push(platform);
     }
 
     public static boolean start(final WaterMedia instance) {
@@ -49,7 +58,7 @@ public class MediaAPI {
         }
 
         final FileNameMap map = URLConnection.getFileNameMap();
-        URLConnection.setFileNameMap((FileNameMap) fileName -> {
+        URLConnection.setFileNameMap(fileName -> {
             final String contentType = map.getContentTypeFor(fileName);
             if (contentType != null)
                 return contentType;
@@ -64,17 +73,16 @@ public class MediaAPI {
 
         // REGISTER PLATFORMS
         LOGGER.info(IT, "Registering supported platforms");
-        PLATFORMS.push(new YoutubePlatform());
-        PLATFORMS.push(new ImgurPlatform());
-        PLATFORMS.push(new KickPlatform());
-        PLATFORMS.push(new StreamablePlatform());
-        PLATFORMS.push(new WaterPlatform());
-        PLATFORMS.addLast(new DefaultPlatform()); // default, always returns something
+        registerPlatform(new YoutubePlatform());
+        registerPlatform(new ImgurPlatform());
+        registerPlatform(new KickPlatform());
+        registerPlatform(new StreamablePlatform());
+//        registerPlatform(new WaterPlatform());
+        registerPlatform(new DefaultPlatform()); // default, always returns something
 
         // LOAD ENGINES
         LOGGER.info(IT, "Starting media engines");
         FFMediaPlayer.load(instance);
-
 
         return true;
     }

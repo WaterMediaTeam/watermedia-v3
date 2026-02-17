@@ -28,7 +28,4 @@ public class NETPBM extends Decoder {
         return type.decode(buffer, header);
     }
 
-    public boolean test() {
-        return true;
-    }
 }

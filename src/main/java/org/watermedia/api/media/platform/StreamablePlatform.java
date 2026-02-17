@@ -7,18 +7,20 @@ import org.watermedia.tools.NetTool;
 
 import java.io.InputStreamReader;
 import java.net.URI;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 public class StreamablePlatform implements IPlatform {
+    public static final String NAME = "Streamable";
     private static final String API_URL = "https://api.streamable.com/videos/";
     private static final Gson GSON = new Gson();
 
-    @Override public String name() { return "Streamable"; }
-    @Override public boolean validate(final URI uri) { return "streamable.com".equalsIgnoreCase(uri.getHost()); }
+    @Override
+    public String name() { return NAME; }
 
     @Override
-    public MRL.Source[] getSources(final URI uri) {
+    public boolean validate(final URI uri) { return "streamable.com".equalsIgnoreCase(uri.getHost()); }
+
+    @Override
+    public Result getSources(final URI uri) {
         final String videoId = uri.getPath().substring(1);
 
         try {
@@ -37,7 +39,11 @@ public class StreamablePlatform implements IPlatform {
                     sourceBuilder.quality(MRL.Quality.of(video.files.mp4Small.width, video.files.mp4Small.height), new URI(video.files.mp4Small.url));
                 }
 
-                return new MRL.Source[] { sourceBuilder.build() };
+                // THIS WAS IGNORED BECAUSE STREAMABLE STILL MAKES VIDEOS ACCESSIBLE FOR A LONG WHILE, EXPIRES IS JUST THEIR THING
+                // var query = NetworkAPI.parseQuery(video.files.mp4.url);
+                // long expires = MathUtil.parseLong(query.get("Expires"));
+
+                return new Result(null, sourceBuilder.build());
             } finally {
                 connection.disconnect();
             }

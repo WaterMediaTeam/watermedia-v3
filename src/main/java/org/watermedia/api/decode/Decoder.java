@@ -31,11 +31,4 @@ public abstract class Decoder {
      * @throws IOException if the decoding fails
     */
     public abstract Image decode(ByteBuffer buffer) throws IOException;
-
-    /**
-     * Test current decoder
-     * @return
-     */
-    @Deprecated(forRemoval = true)
-    public abstract boolean test();
 }

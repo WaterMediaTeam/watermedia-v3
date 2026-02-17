@@ -28,7 +28,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected final Executor renderThreadEx;
     protected final GLEngine gl;
     protected final ALEngine al;
-    protected MRL.Quality quality = WaterMediaConfig.defaultMediaQuality;
+    protected MRL.Quality quality = WaterMediaConfig.media.defaultQuality;
     protected boolean video;
     protected boolean audio;
 
@@ -75,6 +75,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param height the height of the video in pixels.
      */
     public void setVideoFormat(final int chroma, final int width, final int height) {
+        if (!this.video) return;
+
         // TODO: test if whe should rid off of RGBA and just use BGRA
         if (chroma != GL12.GL_RGBA && chroma != GL12.GL_BGRA)
             throw new IllegalArgumentException("Unsupported chroma format: " + chroma);

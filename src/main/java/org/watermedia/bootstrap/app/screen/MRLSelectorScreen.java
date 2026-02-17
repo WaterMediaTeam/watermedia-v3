@@ -60,10 +60,23 @@ public class MRLSelectorScreen extends Screen {
         this.ctx.selectedMRLName = uri.name();
         this.ctx.selectedMRL = this.ctx.groupMRLs.get(uri.name());
 
-        if (this.ctx.selectedMRL == null || !this.ctx.selectedMRL.ready()) return;
+        if (this.ctx.selectedMRL == null || !this.ctx.selectedMRL.ready()) {
+            if (this.ctx.selectedMRL == null) {
+                this.ctx.showError("Null", "The MRL is null", null);
+            }
+            if (this.ctx.selectedMRL.error()) {
+                this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
+            }
+            if (this.ctx.selectedMRL.expired()) {
+                this.ctx.showError("MRL expired", "Re-freshing MRL", () -> {
+                    this.ctx.selectedMRL = null;
+                    this.ctx.groupMRLs.remove(uri.name());
+                });
+            }
+        }
 
         this.ctx.availableSources = this.ctx.selectedMRL.sources();
-        if (this.ctx.availableSources == null || this.ctx.availableSources.length == 0) return;
+        if (this.ctx.availableSources.length == 0) return;
 
         if (this.ctx.availableSources.length == 1) {
             this.ctx.sourceSelectorIndex = 0;

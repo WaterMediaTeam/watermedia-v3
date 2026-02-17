@@ -177,11 +177,6 @@ public class GIF extends Decoder {
         return new Image(frames.toArray(ByteBuffer[]::new), lsd.width(), lsd.height(), delayArray, repeatCount);
     }
 
-    @Override
-    public boolean test() {
-        return true;
-    }
-
     private void renderImage(final int[] indexes, final int[] canvas, final ImageDescriptor id, final ScreenDescriptor lsd, final ColorTable colorTable, final GraphicExtension gce) {
         final int transparentIndex = (gce != null && gce.transparentColorFlag()) ? gce.transparentColorIndex() : -1;
 

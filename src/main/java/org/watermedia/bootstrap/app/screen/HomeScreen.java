@@ -1,6 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Colors;
@@ -89,7 +89,7 @@ public class HomeScreen extends Screen {
         this.ctx.selectedGroup = group;
         this.ctx.groupMRLs.clear();
         for (final AppContext.TestURI testUri : group.uris()) {
-            this.ctx.groupMRLs.put(testUri.name(), MRL.get(testUri.uri()));
+            this.ctx.groupMRLs.put(testUri.name(), MediaAPI.getMRL(testUri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);
     }
@@ -100,7 +100,7 @@ public class HomeScreen extends Screen {
                 this.ctx.customTests.toArray(new AppContext.TestURI[0]));
         this.ctx.groupMRLs.clear();
         for (final AppContext.TestURI uri : this.ctx.customTests) {
-            this.ctx.groupMRLs.put(uri.name(), MRL.get(uri.uri()));
+            this.ctx.groupMRLs.put(uri.name(), MediaAPI.getMRL(uri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);
     }

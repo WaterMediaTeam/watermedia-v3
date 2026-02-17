@@ -4,14 +4,13 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.platform.IPlatform;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.tools.ThreadTool;
 
-import java.io.File;
 import java.net.URI;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,6 +18,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.api.media.MediaAPI.PLATFORMS;
 
 /**
  * Media Resource Locator - Container for URIs and their various qualities.
@@ -31,15 +31,12 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class MRL {
     private static final Marker IT = MarkerManager.getMarker(MRL.class.getSimpleName());
-    private static final Map<URI, MRL> CACHE = new ConcurrentHashMap<>(64);
+    // TODO: I am not sure if keep this as URI or use String instead
+    private static final Map<URI, MRL> CACHE = new ConcurrentHashMap<>(1024);
     private static final Executor LOADER = Executors.newFixedThreadPool(
-            Math.max(2, Runtime.getRuntime().availableProcessors() / 2),
+            ThreadTool.halfLeastThreads(2),
             ThreadTool.createFactory("MRL-Loader", Thread.NORM_PRIORITY - 1)
     );
-
-    // Cache configuration
-    private static final Duration DEFAULT_TTL = Duration.ofMinutes(30);
-    private static final int MAX_CACHE_SIZE = 256;
 
     // Instance fields
     public final URI uri;
@@ -60,31 +57,16 @@ public final class MRL {
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
      */
-    public static MRL get(final String uri) {
-        final File f = new File(uri);
-        return get(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
-    }
-
-    /**
-     * Gets or creates an MRL for the given URI.
-     * If cached and not expired, returns immediately.
-     * Otherwise, starts async loading via IPlatform.
-     *
-     * @param uri the media URI
-     * @return the MRL instance (may still be loading)
-     */
-    @Deprecated
-    private static MRL get(final URI uri) {
+    static MRL get(final URI uri) {
         Objects.requireNonNull(uri, "URI cannot be null");
 
-        // Cleanup expired entries periodically
-        if (CACHE.size() > MAX_CACHE_SIZE) {
-            evictExpired();
-        }
-
+        // CREATE IF DOESN'T EXIST, AND RELOAD IF WAS EXPIRED
         return CACHE.compute(uri, (key, existing) -> {
-            // Return existing if valid and not expired
-            if (existing != null && !existing.expired()) {
+            if (existing != null) {
+                if (existing.expired()) {
+                    existing.reload();
+                }
+
                 return existing;
             }
 
@@ -126,24 +108,47 @@ public final class MRL {
         return CACHE.size();
     }
 
-    private static void evictExpired() {
-        CACHE.entrySet().removeIf(e -> e.getValue().expired());
-    }
-
     // =========================================================================
     // LOADING
     // =========================================================================
 
+    /**
+     * Reloads the current
+     */
+    public void reload() {
+        this.sources = null;
+        this.expiresAt = null;
+        this.ready = false;
+        this.error = false;
+        LOADER.execute(this::load);
+    }
+
     private void load() {
         try {
-            LOGGER.debug(IT, "Loading sources for: {}", this.uri);
-            final Source[] loaded = MediaAPI.getSources(this.uri);
+            LOGGER.info(IT, "Loading sources for: {}", this.uri);
 
-            if (loaded != null && loaded.length > 0) {
-                this.sources = loaded;
-                this.expiresAt = Instant.now().plus(DEFAULT_TTL);
+            // LOAD SOURCES
+            IPlatform.Result result = null;
+            for (final IPlatform platform: PLATFORMS) {
+                LOGGER.debug(IT,"Validating with {}", platform.name());
+                if (platform.validate(this.uri)) {
+                    try {
+                        LOGGER.debug(IT, "Getting sources from {}", platform.name());
+                        result = platform.getSources(this.uri);
+                        break;
+                    } catch (final Throwable t) {
+                        LOGGER.error(IT, "Failed to load sources of {} from {}", this.uri, platform.name(), t);
+                        break;
+                    }
+                }
+            }
+
+
+            if (result != null && result.size() > 0) {
+                this.sources = result.sources();
+                this.expiresAt = result.expires();
                 this.ready = true;
-                LOGGER.debug(IT, "Loaded {} source(s) for: {}", loaded.length, this.uri);
+                LOGGER.info(IT, "Loaded {} source(s) for: {}", result.size(), this.uri);
             } else {
                 this.error = true;
             }
@@ -180,6 +185,7 @@ public final class MRL {
 
     /**
      * Returns true if cache entry has expired.
+     * @see IPlatform.Result#expires()
      */
     public boolean expired() {
         return this.expiresAt != null && this.expiresAt.isBefore(Instant.now());
@@ -330,28 +336,6 @@ public final class MRL {
     }
 
     // =========================================================================
-    // EXPIRATION MANAGEMENT
-    // =========================================================================
-
-    /**
-     * Sets the expiration time for this MRL's cache entry.
-     *
-     * @param duration time until expiration
-     */
-    public void setTTL(final Duration duration) {
-        this.expiresAt = Instant.now().plus(duration);
-    }
-
-    /**
-     * Sets an absolute expiration time.
-     *
-     * @param instant when this entry expires
-     */
-    public void setExpiresAt(final Instant instant) {
-        this.expiresAt = instant;
-    }
-
-    // =========================================================================
     // OBJECT METHODS
     // =========================================================================
 
@@ -371,7 +355,6 @@ public final class MRL {
     public String toString() {
         return "MRL{uri=" + this.uri + ", ready=" + this.ready + ", error=" + this.error + ", sources=" + this.sourceCount() + "}";
     }
-
     // =========================================================================
     // NESTED TYPES
     // =========================================================================

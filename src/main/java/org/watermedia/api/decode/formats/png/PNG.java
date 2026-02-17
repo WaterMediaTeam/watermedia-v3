@@ -136,7 +136,7 @@ public class PNG extends Decoder {
             final CHUNK chunk = CHUNK.read(buffer);
 
             // CHECK CRC INTEGRITY
-            if (chunk.corrupted() && WaterMediaConfig.pngDecoder$failOnCorruptedData) {
+            if (chunk.corrupted() && WaterMediaConfig.decoders.pngFailOnCorruptedData) {
                 throw new DecoderException("Chunk CRC mismatch on chunk " + chunk.type() + " - data corrupted");
             }
 
@@ -154,7 +154,7 @@ public class PNG extends Decoder {
 
                 case BKGD.SIGNATURE -> {
                     // ONLY PARSE IF CONFIG ENABLES BKGD USAGE
-                    if (WaterMediaConfig.pngDecoder$useBKGDChunk) {
+                    if (WaterMediaConfig.decoders.pngUseBKGDChunk) {
                         if (ihdr == null) throw new DecoderException("bKGD before IHDR");
                         bkgd = BKGD.convert(chunk, ihdr.colorType(), ihdr.depth());
                     }
@@ -992,12 +992,6 @@ public class PNG extends Decoder {
                 (char) ((type >> 8) & 0xFF),
                 (char) (type & 0xFF)
         });
-    }
-
-    @Override
-    public boolean test() {
-        // TODO: add a proper test
-        return true;
     }
 
     private static class Metadata {

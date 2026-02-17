@@ -2,7 +2,6 @@ package org.watermedia.api.media.platform;
 
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
-import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MRL;
 import org.watermedia.tools.HlsTool;
 import org.watermedia.tools.NetTool;
@@ -10,22 +9,25 @@ import org.watermedia.tools.NetTool;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalUnit;
+import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class KickPlatform implements IPlatform {
+    public static final String NAME = "Kick";
     private static final String VIDEO_API = "https://kick.com/api/v2/video/%s";
     private static final String CHANNELS_API = "https://kick.com/api/v2/channels/%s";
     private static final DateTimeFormatter DATE_PATTERN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final Gson GSON = new Gson();
 
     @Override
-    public String name() {
-        return "Kick";
-    }
+    public String name() { return "Kick"; }
 
     @Override
     public boolean validate(final URI uri) {
@@ -33,7 +35,7 @@ public class KickPlatform implements IPlatform {
     }
 
     @Override
-    public MRL.Source[] getSources(final URI uri) throws Exception {
+    public Result getSources(final URI uri) throws Exception {
         final var path = uri.getPath().substring(1).split("/");
 
         if (path.length == 1) { // ASSUME IT WAS A CHANNEL NAME
@@ -71,7 +73,8 @@ public class KickPlatform implements IPlatform {
                 sourceBuilder.quality(MRL.Quality.HIGH, channel.url);
             }
 
-            return new MRL.Source[] { sourceBuilder.build() };
+            // WE MAKE IT EXPIRES EVERY 30 SECONDS BECAUSE... I AM REALLY NOT SURE IF THE LINKS EVEN EXPIRES
+            return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
 
         } else {
             if (!path[0].equalsIgnoreCase("video"))
@@ -110,7 +113,7 @@ public class KickPlatform implements IPlatform {
                 sourceBuilder.quality(MRL.Quality.HIGH, video.url);
             }
 
-            return new MRL.Source[] { sourceBuilder.build() };
+            return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
         }
     }
 

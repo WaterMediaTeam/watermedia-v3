@@ -1,6 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Colors;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
@@ -61,7 +61,7 @@ public class OpenMultimediaScreen extends Screen {
         if (this.ctx.customUrlText == null || this.ctx.customUrlText.isEmpty()) return;
 
         try {
-            this.ctx.selectedMRL = MRL.get(this.ctx.customUrlText);
+            this.ctx.selectedMRL = MediaAPI.getMRL(this.ctx.customUrlText);
             this.ctx.selectedMRLName = "Custom URL";
             this.ctx.selectedGroup = null;
 

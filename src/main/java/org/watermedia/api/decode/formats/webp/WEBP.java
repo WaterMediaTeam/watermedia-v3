@@ -57,11 +57,6 @@ public class WEBP extends Decoder {
         }
     }
 
-    @Override
-    public boolean test() {
-        return true;
-    }
-
     private Image decodeAnimation(final ByteBuffer buffer, final WebPInfo info) throws DecoderException {
         LOGGER.debug(IT, "decodeAnimation() called - canvas: {}x{}", info.width(), info.height());
         final List<RiffParser.AnimFrame> animFrames = RiffParser.parseFrames(buffer, info);

@@ -192,6 +192,14 @@ public enum MathUtil {
         }
     };
 
+    public static long parseLong(String s) {
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
     public abstract double apply(double start, double end, double value);
 
     private static final int SIN_SIZE = 65536;
@@ -956,6 +964,21 @@ public enum MathUtil {
      */
     public static float cos(final float pValue) {
         return SIN[(int)(pValue * 10430.378F + 16384.0F) & '\uffff'];
+    }
+
+    public static double bytesToKB(final long bytes) { return bytes / 1024.0; }
+    public static double bytesToMB(final long bytes) { return bytes / (1024.0 * 1024.0); }
+    public static double bytesToGB(final long bytes) { return bytes / (1024.0 * 1024.0 * 1024.0); }
+
+    /**
+     * Formats a byte count into a human-readable string.
+     * Automatically scales from B → KB → MB → GB at 1024 boundaries.
+     */
+    public static String displayBytes(final long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
+        return String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
     public static int sumArray(final int[] arr) {

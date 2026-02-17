@@ -74,8 +74,10 @@ public class WaterMedia {
             LOGGER.info(IT, "Skipping WMB startup on server-side environment");
         }
 
-        LOGGER.info(IT, "Starting Config registration...");
-        WaterConfig.register(WaterMediaConfig.class);
+        LOGGER.info(IT, "Starting config dependency {}", WaterConfig.ID); {
+            WaterConfig.init();
+            WaterConfig.register(WaterMediaConfig.class);
+        }
 
         LOGGER.info(IT, "Starting Decoders API...");
         if (!DecoderAPI.start(instance)) {
