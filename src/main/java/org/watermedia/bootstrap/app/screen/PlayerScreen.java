@@ -96,9 +96,7 @@ public class PlayerScreen extends Screen {
 
         // Render video
         this.renderVideo(windowW, windowH);
-        if (false) {
-            this.renderOverlay(windowW, windowH);
-        }
+        this.renderOverlay(windowW, windowH);
 
         // Render active dialog on top
         switch (this.dialogState) {
