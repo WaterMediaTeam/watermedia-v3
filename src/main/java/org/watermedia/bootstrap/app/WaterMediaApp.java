@@ -666,7 +666,7 @@ public class WaterMediaApp {
         }
 
         final ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
-        builder.setStatusLevel(Level.INFO);
+        builder.setStatusLevel(Level.DEBUG);
 
         final AppenderComponentBuilder console = builder.newAppender("Console", "Console")
                 .addAttribute("target", ConsoleAppender.Target.SYSTEM_OUT);
@@ -681,7 +681,7 @@ public class WaterMediaApp {
 
         builder.add(console);
         builder.add(file);
-        builder.add(builder.newRootLogger(Level.INFO)
+        builder.add(builder.newRootLogger(Level.DEBUG)
                 .add(builder.newAppenderRef("Console"))
                 .add(builder.newAppenderRef("File")));
 

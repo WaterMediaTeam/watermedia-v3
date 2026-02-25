@@ -205,10 +205,19 @@ public class MasterClock {
 
     /**
      * Determines if a frame should be skipped based on how far behind it is.
+     * <p>
+     * Uses {@link #time()} (capped) instead of {@link #referenceTime()} (uncapped)
+     * to prevent false drops during video packet bursts. When multiple video packets
+     * arrive without interleaved audio packets, {@code referenceTime()} races ahead
+     * with wall-clock while {@code masterTimeMs} stays at the last audio PTS.
+     * The 100ms cap in {@code time()} prevents this divergence from triggering
+     * false skips on containers with poor A/V interleaving.
+     * </p>
      * @param framePtsMs the frame's presentation timestamp in milliseconds
      * @return true if the frame should be skipped
      */
     public boolean skip(final long framePtsMs) {
+//        return framePtsMs < this.time() - this.skipThresholdMs;
         final long drift = this.drift(framePtsMs);
         return drift < -this.skipThresholdMs;
     }

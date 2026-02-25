@@ -112,6 +112,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     private long totalSkippedFrames = 0;
     private long totalRenderedFrames = 0;
 
+    // DEFERRED RENDERING
+    private boolean pendingVideoRender = false;
+    private long pendingVideoPtsMs = 0;
+    private long lastVideoRenderMs = 0;  // wall-clock of last GL upload
+    private boolean pendingUseHwFrame = false; // which AVFrame to scale
+
     private static final int MAX_DECODE_THREADS = ThreadTool.halfThreads();
 
     public FFMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx,
@@ -340,6 +346,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     // FLUSH CODECS
                     if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                     if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                    this.pendingVideoRender = false;
 
                     // SEEK BACKWARD FIRST TO FIND A KEYFRAME BEFORE TARGET
                     final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
@@ -417,6 +424,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     // FLUSH CODECS
                     if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                     if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                    this.pendingVideoRender = false;
 
                     // SIMPLE KEYFRAME SEEK
                     final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
@@ -474,6 +482,13 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (this.packet.stream_index() == this.audioStreamIndex && this.audio) this.processAudioPacket();
                 } finally {
                     avcodec.av_packet_unref(this.packet);
+                }
+
+                // DEFERRED VIDEO RENDER: after every packet (audio or video),
+                // check if it's time to render the latest decoded video frame.
+                // This catches the earliest opportunity after OpenAL unblocks.
+                if (this.video && this.videoStreamIndex >= 0) {
+                    this.renderPendingVideo();
                 }
             }
             this.status = ThreadTool.isInterrupted() ? Status.STOPPED : Status.ENDED;
@@ -794,11 +809,20 @@ public final class FFMediaPlayer extends MediaPlayer {
         return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
     }
 
+    /**
+     * DECODE ONLY: drains all frames from the packet, does HW transfer,
+     * but does NOT sws_scale or GL upload. Marks the latest non-skipped
+     * frame as pending for deferred render.
+     *
+     * After this returns, videoFrame (or hwTransferFrame) contains the
+     * last decoded frame's data, ready for sws_scale when the main loop
+     * calls renderPendingVideo().
+     */
     private void processVideoPacket() {
         if (avcodec.avcodec_send_packet(this.videoCodecContext, this.packet) < 0) return;
 
         while (avcodec.avcodec_receive_frame(this.videoCodecContext, this.videoFrame) >= 0) {
-            AVFrame frameToScale = this.videoFrame;
+            boolean useHwFrame = false;
 
             // ON HW DECODING, GET FROM GPU
             if (this.hwDeviceCtx != null && this.videoFrame.format() == this.hwPixelFormat) {
@@ -806,12 +830,12 @@ public final class FFMediaPlayer extends MediaPlayer {
                     LOGGER.warn(IT, "Failed to transfer frame from GPU");
                     continue;
                 }
-                frameToScale = this.hwTransferFrame;
+                useHwFrame = true;
             }
 
             final long framePtsMs = (long) (this.videoFrame.pts() * this.videoTimeBase * 1000);
 
-            // FRAME SKIPPING
+            // FRAME SKIPPING (too far behind clock)
             if (this.clock.skip(framePtsMs)) {
                 LOGGER.debug(IT, "Your decoding is taking too long, skipping!");
                 this.totalSkippedFrames++;
@@ -822,70 +846,101 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
             this.consecutiveSkips = 0;
 
-            // BACKPRESSURE WHEN IS NOT AUDIO
-            if (this.audioStreamIndex < 0 && (this.pauseRequested || !this.clock.waiting(framePtsMs))) {
-                return; // Interrupted or pause requested
-            }
-
-            // UPDATE CLOCK WHEN THERE IS NO AUDIO
-            if (this.audioStreamIndex < 0) {
-                this.clock.update(framePtsMs);
-            }
-
-            final int frameFormat = frameToScale.format();
-            final int frameWidth = frameToScale.width();
-            final int frameHeight = frameToScale.height();
-
-            if (this.swsContext == null || this.swsInputFormat != frameFormat) {
-                // FREE OLD CONTEXT
-                if (this.swsContext != null) {
-                    swscale.sws_freeContext(this.swsContext);
-                    this.swsContext = null;
-                }
-
-                // CREATE NEW CONTEXT WITH THE NEW FORMAT
-                this.swsContext = swscale.sws_getContext(
-                        frameWidth, frameHeight, frameFormat,
-                        this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
-                        swscale.SWS_BILINEAR, null, null, (double[]) null
-                );
-
-                if (this.swsContext == null) {
-                    LOGGER.error(IT, "Failed to create SwsContext for format {} ({}x{})", frameFormat, frameWidth, frameHeight);
-                    return;
-                }
-
-                this.swsInputFormat = frameFormat;
-                LOGGER.debug(IT, "Successfully created SwsContext: format {} ({}x{}) -> BGRA ({}x{})", frameFormat, frameWidth, frameHeight, this.width(), this.height());
-            }
-
-            // GET A SINGLE BUFFER INSTANCE, SO JAVACPP DOESN'T SPAM BUFFER OBJECTS WITH THE SAME POINTER
-            if (!this.videoBufferInitialized) {
-                this.videoBuffer = this.scaledFrame.data(0).asBuffer();
-                this.videoBufferInitialized = true;
-            }
-
-            synchronized (this.videoBuffer) {
-                final int result = swscale.sws_scale(
-                        this.swsContext,
-                        frameToScale.data(),
-                        frameToScale.linesize(),
-                        0,
-                        frameHeight,
-                        this.scaledFrame.data(),
-                        this.scaledFrame.linesize()
-                );
-
-                if (result <= 0) {
-                    LOGGER.error(IT, "Failed to scale video frame: result={}, srcFmt={}, srcSize={}x{}", result, frameFormat, frameWidth, frameHeight);
-                    return;
-                }
-            }
-
-            final int stride = this.scaledFrame.linesize(0);
-            this.upload(this.videoBuffer, stride / 4);
-            this.totalRenderedFrames++;
+            // MARK AS PENDING: the frame data lives in videoFrame/hwTransferFrame
+            // and will survive until the next avcodec_receive_frame call or until
+            // renderPendingVideo() consumes it.
+            this.pendingVideoRender = true;
+            this.pendingVideoPtsMs = framePtsMs;
+            this.pendingUseHwFrame = useHwFrame;
         }
+    }
+
+    /**
+     * DEFERRED RENDER: called from the main loop after EVERY packet dispatch.
+     * If a decoded frame is pending and enough wall-clock time has passed since
+     * the last render, performs sws_scale + GL upload.
+     *
+     * For video-only streams (no audio), uses clock.waiting() for precise pacing.
+     * For audio+video, uses wall-clock rate limiting (no sleep, no blocking).
+     *
+     * Because this runs after BOTH audio and video packets, it catches the
+     * earliest opportunity to render after OpenAL unblocks.
+     */
+    private void renderPendingVideo() {
+        if (!this.pendingVideoRender) return;
+
+        // VIDEO-ONLY: sleep-based pacing (no audio to block)
+        if (this.audioStreamIndex < 0) {
+            if (this.pauseRequested || !this.clock.waiting(this.pendingVideoPtsMs)) {
+                return; // Interrupted or paused
+            }
+            this.clock.update(this.pendingVideoPtsMs);
+        } else {
+            // AUDIO+VIDEO: wall-clock rate limiting (no sleep, no blocking)
+            final long now = System.currentTimeMillis();
+            if (now - this.lastVideoRenderMs < this.clock.frameDuration() - 2) {
+                return; // NOT TIME YET: keep pending, render on next opportunity
+            }
+        }
+
+        // CONSUME PENDING
+        this.pendingVideoRender = false;
+
+        final AVFrame frameToScale = this.pendingUseHwFrame ? this.hwTransferFrame : this.videoFrame;
+        final int frameFormat = frameToScale.format();
+        final int frameWidth = frameToScale.width();
+        final int frameHeight = frameToScale.height();
+
+        if (this.swsContext == null || this.swsInputFormat != frameFormat) {
+            // FREE OLD CONTEXT
+            if (this.swsContext != null) {
+                swscale.sws_freeContext(this.swsContext);
+                this.swsContext = null;
+            }
+
+            // CREATE NEW CONTEXT WITH THE NEW FORMAT
+            this.swsContext = swscale.sws_getContext(
+                    frameWidth, frameHeight, frameFormat,
+                    this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
+                    swscale.SWS_BILINEAR, null, null, (double[]) null
+            );
+
+            if (this.swsContext == null) {
+                LOGGER.error(IT, "Failed to create SwsContext for format {} ({}x{})", frameFormat, frameWidth, frameHeight);
+                return;
+            }
+
+            this.swsInputFormat = frameFormat;
+            LOGGER.debug(IT, "Successfully created SwsContext: format {} ({}x{}) -> BGRA ({}x{})", frameFormat, frameWidth, frameHeight, this.width(), this.height());
+        }
+
+        // GET A SINGLE BUFFER INSTANCE, SO JAVACPP DOESN'T SPAM BUFFER OBJECTS WITH THE SAME POINTER
+        if (!this.videoBufferInitialized) {
+            this.videoBuffer = this.scaledFrame.data(0).asBuffer();
+            this.videoBufferInitialized = true;
+        }
+
+        synchronized (this.videoBuffer) {
+            final int result = swscale.sws_scale(
+                    this.swsContext,
+                    frameToScale.data(),
+                    frameToScale.linesize(),
+                    0,
+                    frameHeight,
+                    this.scaledFrame.data(),
+                    this.scaledFrame.linesize()
+            );
+
+            if (result <= 0) {
+                LOGGER.error(IT, "Failed to scale video frame: result={}, srcFmt={}, srcSize={}x{}", result, frameFormat, frameWidth, frameHeight);
+                return;
+            }
+        }
+
+        final int stride = this.scaledFrame.linesize(0);
+        this.upload(this.videoBuffer, stride / 4);
+        this.lastVideoRenderMs = System.currentTimeMillis();
+        this.totalRenderedFrames++;
     }
 
     private void processAudioPacket() {
