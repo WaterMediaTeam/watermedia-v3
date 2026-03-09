@@ -68,6 +68,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // FFMPEG COMPONENTS
     private AVFormatContext formatContext;
+    private AVFormatContext slaveFormatContext;
     private AVCodecContext videoCodecContext;
     private AVCodecContext audioCodecContext;
     private SwsContext swsContext;
@@ -82,6 +83,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // STREAM INDEXES
     private int videoStreamIndex = -1;
     private int audioStreamIndex = -1;
+    private boolean useAudioSlave = false;
 
     // STATUS (SHARED IN PLAYERLOOP)
     private Thread playerThread;
@@ -96,6 +98,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // REUSABLE BUFFERS
     private AVPacket packet;
+    private AVPacket slavePacket;
     private AVFrame videoFrame;
     private AVFrame audioFrame;
     private AVFrame scaledFrame;
@@ -352,12 +355,36 @@ public final class FFMediaPlayer extends MediaPlayer {
                     final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
                     final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, avformat.AVSEEK_FLAG_BACKWARD);
 
+                    // ALSO SEEK IN SLAVE CONTEXT
+                    if (this.useAudioSlave && this.slaveFormatContext != null) {
+                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffmpegTimestamp, avformat.AVSEEK_FLAG_BACKWARD);
+                    }
+
                     if (result >= 0) {
                         // NOW DECODE FRAMES UNTIL WE REACH THE TARGET
                         int maxFramesToSkip = 500;
                         long lastAudioPts = -1;
                         long lastVideoPts = -1;
                         boolean reachedTarget = false;
+
+                        // DRAIN SLAVE AUDIO DURING PRECISE SEEK
+                        if (this.useAudioSlave && this.slaveFormatContext != null && this.audio) {
+                            int slaveFrames = 500;
+                            while (slaveFrames-- > 0 && !ThreadTool.isInterrupted()) {
+                                final int slaveResult = avformat.av_read_frame(this.slaveFormatContext, this.slavePacket);
+                                if (slaveResult < 0) break;
+                                try {
+                                    if (this.slavePacket.stream_index() == this.audioStreamIndex && this.slavePacket.pts() != avutil.AV_NOPTS_VALUE) {
+                                        lastAudioPts = (long) (this.slavePacket.pts() * this.audioTimeBase * 1000);
+                                        avcodec.avcodec_send_packet(this.audioCodecContext, this.slavePacket);
+                                        while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0);
+                                        if (lastAudioPts >= targetMs - this.clock.frameDuration()) break;
+                                    }
+                                } finally {
+                                    avcodec.av_packet_unref(this.slavePacket);
+                                }
+                            }
+                        }
 
                         while (maxFramesToSkip-- > 0 && !ThreadTool.isInterrupted() && !reachedTarget) {
                             final int readResult = avformat.av_read_frame(this.formatContext, this.packet);
@@ -367,7 +394,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                                 final int streamIndex = this.packet.stream_index();
                                 final long packetPts = this.packet.pts();
 
-                                if (streamIndex == this.audioStreamIndex && this.audio && packetPts != avutil.AV_NOPTS_VALUE) {
+                                if (!this.useAudioSlave && streamIndex == this.audioStreamIndex && this.audio && packetPts != avutil.AV_NOPTS_VALUE) {
                                     lastAudioPts = (long) (packetPts * this.audioTimeBase * 1000);
 
                                     // SIEMPRE enviar al decoder, pero sin reproducir
@@ -431,6 +458,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                     final int seekFlags = targetMs < currentMs ? avformat.AVSEEK_FLAG_BACKWARD : 0;
                     final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
 
+                    // ALSO SEEK IN SLAVE CONTEXT
+                    if (this.useAudioSlave && this.slaveFormatContext != null) {
+                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffmpegTimestamp, seekFlags);
+                    }
+
                     if (result >= 0) {
                         this.clock.time(targetMs);
                         this.consecutiveSkips = 0;
@@ -479,9 +511,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                 // PROCESS PACKETS
                 try {
                     if (this.packet.stream_index() == this.videoStreamIndex && this.video) this.processVideoPacket();
-                    if (this.packet.stream_index() == this.audioStreamIndex && this.audio) this.processAudioPacket();
+                    if (!this.useAudioSlave && this.packet.stream_index() == this.audioStreamIndex && this.audio) this.processAudioPacket();
                 } finally {
                     avcodec.av_packet_unref(this.packet);
+                }
+
+                // READ AND PROCESS AUDIO FROM SLAVE CONTEXT
+                if (this.useAudioSlave && this.slaveFormatContext != null) {
+                    this.readSlaveAudio();
                 }
 
                 // DEFERRED VIDEO RENDER: after every packet (audio or video),
@@ -516,6 +553,12 @@ public final class FFMediaPlayer extends MediaPlayer {
             // PREPARE URI
             final var uri = this.source.uri(this.quality);
             final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+            // RESOLVE AUDIO SLAVE (index 0)
+            final var audioSlaves = this.source.audioSlaves();
+            MRL.Slave audioSlave = null;
+            if (this.audio && !audioSlaves.isEmpty()) {
+                audioSlave = audioSlaves.get(0);
+            }
 
             // OPEN CONTEXT
             this.formatContext = avformat.avformat_alloc_context();
@@ -557,9 +600,25 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (codecType == avutil.AVMEDIA_TYPE_VIDEO && this.videoStreamIndex < 0 && this.video) {
                     this.videoStreamIndex = i;
                     this.videoTimeBase = av_q2d(stream.time_base());
-                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audio) {
+                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audio && audioSlave == null) {
                     this.audioStreamIndex = i;
                     this.audioTimeBase = av_q2d(stream.time_base());
+                }
+            }
+
+            // OPEN AUDIO SLAVE (index 0) IF AVAILABLE
+            if (audioSlave != null) {
+                this.useAudioSlave = this.initAudioSlave(audioSlave);
+                if (!this.useAudioSlave) {
+                    LOGGER.warn(IT, "Audio slave failed to open, falling back to main audio stream");
+                    // Fallback: find audio stream in main context
+                    for (int i = 0; i < this.formatContext.nb_streams(); i++) {
+                        final AVStream stream = this.formatContext.streams(i);
+                        if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0) {
+                            this.audioStreamIndex = i;
+                            this.audioTimeBase = av_q2d(stream.time_base());
+                        }
+                    }
                 }
             }
 
@@ -575,6 +634,72 @@ public final class FFMediaPlayer extends MediaPlayer {
             LOGGER.error(IT, "Failed to initialize FFMediaPlayer", e);
             return false;
         }
+    }
+
+    private boolean initAudioSlave(final MRL.Slave slave) {
+        final var slaveUri = slave.uri(this.quality);
+        if (slaveUri == null) {
+            LOGGER.error(IT, "Audio slave has no URI for quality {}", this.quality);
+            return false;
+        }
+
+        final var slaveUrl = slaveUri.getScheme().contains("file") ? slaveUri.getPath().substring(1) : slaveUri.toString();
+
+        this.slaveFormatContext = avformat.avformat_alloc_context();
+        final AVDictionary slaveOptions = new AVDictionary();
+
+        try {
+            av_dict_set(slaveOptions, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n", 0);
+            av_dict_set(slaveOptions, "reconnect", "1", 0);
+            av_dict_set(slaveOptions, "reconnect_streamed", "1", 0);
+            av_dict_set(slaveOptions, "reconnect_delay_max", "5", 0);
+            av_dict_set(slaveOptions, "timeout", "10000000", 0);
+
+            if (avformat.avformat_open_input(this.slaveFormatContext, slaveUrl, null, slaveOptions) < 0) {
+                LOGGER.error(IT, "Failed to open audio slave input: {}", slaveUrl);
+                this.slaveFormatContext = null;
+                return false;
+            }
+        } finally {
+            av_dict_free(slaveOptions);
+        }
+
+        if (avformat.avformat_find_stream_info(this.slaveFormatContext, (PointerPointer<?>) null) < 0) {
+            LOGGER.error(IT, "Failed to find stream info for audio slave");
+            avformat.avformat_close_input(this.slaveFormatContext);
+            this.slaveFormatContext = null;
+            return false;
+        }
+
+        // Find audio stream in slave context
+        for (int i = 0; i < this.slaveFormatContext.nb_streams(); i++) {
+            final AVStream stream = this.slaveFormatContext.streams(i);
+            if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO) {
+                this.audioStreamIndex = i;
+                this.audioTimeBase = av_q2d(stream.time_base());
+                break;
+            }
+        }
+
+        if (this.audioStreamIndex < 0) {
+            LOGGER.error(IT, "No audio stream found in audio slave: {}", slaveUrl);
+            avformat.avformat_close_input(this.slaveFormatContext);
+            this.slaveFormatContext = null;
+            return false;
+        }
+
+        // Allocate slave packet
+        this.slavePacket = avcodec.av_packet_alloc();
+        if (this.slavePacket == null) {
+            LOGGER.error(IT, "Failed to allocate slave packet");
+            avformat.avformat_close_input(this.slaveFormatContext);
+            this.slaveFormatContext = null;
+            this.audioStreamIndex = -1;
+            return false;
+        }
+
+        LOGGER.info(IT, "Audio slave opened: {}", slaveUrl);
+        return true;
     }
 
     private boolean initVideo() {
@@ -735,7 +860,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (!this.audio || this.audioStreamIndex < 0)
             return false;
 
-        final AVStream audioStream = this.formatContext.streams(this.audioStreamIndex);
+        final AVFormatContext audioContext = this.useAudioSlave ? this.slaveFormatContext : this.formatContext;
+        final AVStream audioStream = audioContext.streams(this.audioStreamIndex);
         final AVCodecParameters codecParams = audioStream.codecpar();
         final int codecId = codecParams.codec_id();
         final AVCodec audioCodec = avcodec.avcodec_find_decoder(codecId);
@@ -943,8 +1069,25 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.totalRenderedFrames++;
     }
 
+    private void readSlaveAudio() {
+        final int readResult = avformat.av_read_frame(this.slaveFormatContext, this.slavePacket);
+        if (readResult < 0) return;
+
+        try {
+            if (this.slavePacket.stream_index() == this.audioStreamIndex && this.audio) {
+                this.processAudioPacket(this.slavePacket);
+            }
+        } finally {
+            avcodec.av_packet_unref(this.slavePacket);
+        }
+    }
+
     private void processAudioPacket() {
-        if (avcodec.avcodec_send_packet(this.audioCodecContext, this.packet) < 0) return;
+        this.processAudioPacket(this.packet);
+    }
+
+    private void processAudioPacket(final AVPacket pkt) {
+        if (avcodec.avcodec_send_packet(this.audioCodecContext, pkt) < 0) return;
 
         while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0) {
             // AUDIO CLOCK IS PRIMARY CLOCK
@@ -1037,6 +1180,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
             this.formatContext = null;
         }
+        if (this.slaveFormatContext != null) {
+            try {
+                avformat.avformat_close_input(this.slaveFormatContext);
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Error closing slave format context", e);
+            }
+            this.slaveFormatContext = null;
+        }
+        this.useAudioSlave = false;
 
         // FREE INSTANCES
         if (this.videoFrame != null) {
@@ -1058,6 +1210,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (this.packet != null) {
             avcodec.av_packet_free(this.packet);
             this.packet = null;
+        }
+        if (this.slavePacket != null) {
+            avcodec.av_packet_free(this.slavePacket);
+            this.slavePacket = null;
         }
 
         // CLEAR
