@@ -47,6 +47,15 @@ public class MediaAPI {
         return MRL.get(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
     }
 
+    public static void registerPlatform(IPlatform platform, Class<? extends IPlatform> override) {
+        if (override == null || override == DefaultPlatform.class) {
+            registerPlatform(platform);
+            return;
+        }
+        PLATFORMS.removeIf(p -> p.getClass() == override);
+        registerPlatform(platform);
+    }
+
     public static void registerPlatform(IPlatform platform) {
         PLATFORMS.push(platform);
     }
