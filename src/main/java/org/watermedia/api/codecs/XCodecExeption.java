@@ -1,6 +1,8 @@
 package org.watermedia.api.codecs;
 
-public class XCodecExeption extends Exception {
+import java.io.IOException;
+
+public class XCodecExeption extends IOException {
     public XCodecExeption(final Class<?> codec, final String message) {
         super("Exception in: " + codec.getSimpleName() + " - " + message);
     }
