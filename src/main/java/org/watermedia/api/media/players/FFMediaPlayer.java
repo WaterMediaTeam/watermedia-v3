@@ -116,10 +116,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     private long totalRenderedFrames = 0;
 
     // DEFERRED RENDERING
+    private AVFrame pendingRenderFrame;
     private boolean pendingVideoRender = false;
     private long pendingVideoPtsMs = 0;
     private long lastVideoRenderMs = 0;  // wall-clock of last GL upload
-    private boolean pendingUseHwFrame = false; // which AVFrame to scale
 
     private static final int MAX_DECODE_THREADS = ThreadTool.halfThreads();
 
@@ -350,6 +350,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                     if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
                     this.pendingVideoRender = false;
+                    if (this.pendingRenderFrame != null) av_frame_unref(this.pendingRenderFrame);
 
                     // SEEK BACKWARD FIRST TO FIND A KEYFRAME BEFORE TARGET
                     final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
@@ -452,6 +453,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                     if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
                     this.pendingVideoRender = false;
+                    if (this.pendingRenderFrame != null) av_frame_unref(this.pendingRenderFrame);
 
                     // SIMPLE KEYFRAME SEEK
                     final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
@@ -546,8 +548,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.audioFrame = avutil.av_frame_alloc();
             this.scaledFrame = avutil.av_frame_alloc();
             this.resampledFrame = avutil.av_frame_alloc();
+            this.pendingRenderFrame = avutil.av_frame_alloc();
 
-            if (this.packet == null || this.videoFrame == null || this.audioFrame == null || this.scaledFrame == null || this.resampledFrame == null)
+            if (this.packet == null || this.videoFrame == null || this.audioFrame == null || this.scaledFrame == null || this.resampledFrame == null || this.pendingRenderFrame == null)
                 return false;
 
             // PREPARE URI
@@ -938,11 +941,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     /**
      * DECODE ONLY: drains all frames from the packet, does HW transfer,
      * but does NOT sws_scale or GL upload. Marks the latest non-skipped
-     * frame as pending for deferred render.
-     *
-     * After this returns, videoFrame (or hwTransferFrame) contains the
-     * last decoded frame's data, ready for sws_scale when the main loop
-     * calls renderPendingVideo().
+     * frame as pending for deferred render with its own AVFrame reference,
+     * so decoder reuse cannot invalidate the pending frame before render.
      */
     private void processVideoPacket() {
         if (avcodec.avcodec_send_packet(this.videoCodecContext, this.packet) < 0) return;
@@ -972,12 +972,18 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
             this.consecutiveSkips = 0;
 
-            // MARK AS PENDING: the frame data lives in videoFrame/hwTransferFrame
-            // and will survive until the next avcodec_receive_frame call or until
-            // renderPendingVideo() consumes it.
+            // TAKE OWN REFERENCE: av_frame_ref copies the buffer references
+            // (incrementing refcount) so FFmpeg cannot recycle the pixel data
+            // when the next avcodec_receive_frame reuses videoFrame/hwTransferFrame.
+            final AVFrame frameToRef = useHwFrame ? this.hwTransferFrame : this.videoFrame;
+            av_frame_unref(this.pendingRenderFrame);
+            if (av_frame_ref(this.pendingRenderFrame, frameToRef) < 0) {
+                LOGGER.warn(IT, "Failed to keep a pending frame reference for deferred render");
+                continue;
+            }
+
             this.pendingVideoRender = true;
             this.pendingVideoPtsMs = framePtsMs;
-            this.pendingUseHwFrame = useHwFrame;
         }
     }
 
@@ -1012,10 +1018,17 @@ public final class FFMediaPlayer extends MediaPlayer {
         // CONSUME PENDING
         this.pendingVideoRender = false;
 
-        final AVFrame frameToScale = this.pendingUseHwFrame ? this.hwTransferFrame : this.videoFrame;
+        final AVFrame frameToScale = this.pendingRenderFrame;
         final int frameFormat = frameToScale.format();
         final int frameWidth = frameToScale.width();
         final int frameHeight = frameToScale.height();
+
+        // GUARD: validate pending frame is usable (format, dimensions, data pointer)
+        if (frameFormat == AV_PIX_FMT_NONE || frameWidth <= 0 || frameHeight <= 0 || Pointer.isNull(frameToScale.data(0))) {
+            LOGGER.debug(IT, "Dropping invalid pending frame: format={}, size={}x{}", frameFormat, frameWidth, frameHeight);
+            av_frame_unref(this.pendingRenderFrame);
+            return;
+        }
 
         if (this.swsContext == null || this.swsInputFormat != frameFormat) {
             // FREE OLD CONTEXT
@@ -1067,6 +1080,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.upload(this.videoBuffer, stride / 4);
         this.lastVideoRenderMs = System.currentTimeMillis();
         this.totalRenderedFrames++;
+        av_frame_unref(this.pendingRenderFrame);
     }
 
     private void readSlaveAudio() {
@@ -1207,6 +1221,10 @@ public final class FFMediaPlayer extends MediaPlayer {
             avutil.av_frame_free(this.resampledFrame);
             this.resampledFrame = null;
         }
+        if (this.pendingRenderFrame != null) {
+            avutil.av_frame_free(this.pendingRenderFrame);
+            this.pendingRenderFrame = null;
+        }
         if (this.packet != null) {
             avcodec.av_packet_free(this.packet);
             this.packet = null;
@@ -1224,6 +1242,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.videoStreamIndex = -1;
         this.audioStreamIndex = -1;
         this.swsInputFormat = AV_PIX_FMT_NONE;
+        this.pendingVideoRender = false;
 
         LOGGER.info(IT, "Cleanup completed");
     }
