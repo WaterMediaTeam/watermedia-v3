@@ -12,7 +12,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
-@Spec(value = WaterMedia.ID, suffix = "common", format = WaterConfig.FORMAT_TOML)
+@Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
 public class WaterMediaConfig {
 
     @Spec.Field
