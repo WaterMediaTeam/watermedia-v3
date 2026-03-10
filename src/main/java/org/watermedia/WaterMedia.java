@@ -76,7 +76,7 @@ public class WaterMedia {
 
         LOGGER.info(IT, "Starting config dependency {}", WaterConfig.ID); {
             WaterConfig.init();
-            WaterConfig.register(WaterMediaConfig.class);
+            WaterConfig.registerBlocking(WaterMediaConfig.class);
         }
 
         LOGGER.info(IT, "Starting Decoders API...");
