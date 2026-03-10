@@ -164,6 +164,9 @@ public class PlayerScreen extends Screen {
 
         // Debug info
         y = this.renderLabel("--- Debug Info ---", null, 15, y);
+        if (this.ctx.selectedMRL != null) {
+            y = this.renderLabel("MRL:", this.text.truncate(this.ctx.selectedMRL.uri.toString(), 35), 15, y);
+        }
         y = this.renderLabel("Engine:", player.getClass().getSimpleName(), 15, y);
         y = this.renderLabel("Source:", (this.ctx.sourceSelectorIndex + 1) + "/" +
                 (this.ctx.availableSources != null ? this.ctx.availableSources.length : 1), 15, y);

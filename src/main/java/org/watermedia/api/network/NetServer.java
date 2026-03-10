@@ -5,13 +5,17 @@ import com.sun.net.httpserver.HttpServer;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.concurrent.Executors;
 
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.network.NetworkAPI.*;
@@ -33,7 +37,7 @@ public class NetServer {
             server.createContext("/upload", NetServer::handleUpload);
             server.createContext("/", NetServer::handleRoot);
 
-            server.setExecutor(null);
+            server.setExecutor(Executors.newCachedThreadPool());
             server.start();
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -67,45 +71,57 @@ public class NetServer {
     private static void handleUpload(final HttpExchange exchange) throws IOException {
         try (exchange) {
             if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                exchange.sendResponseHeaders(405, -1);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_METHOD, -1);
+                LOGGER.error(IT, "Received non-POST request to /upload: {}", exchange.getRequestMethod());
                 return;
             }
 
             final String token = exchange.getRequestHeaders().getFirst(X_WATERMEDIA_TOKEN);
             if (token == null || !token.equals(WaterMediaConfig.network.token)) {
-                exchange.sendResponseHeaders(401, -1);
+                LOGGER.error(IT, "Unauthorized upload attempt with token: {}", token);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_UNAUTHORIZED, -1);
                 return;
             }
 
             final String filename = exchange.getRequestHeaders().getFirst(X_WATERMEDIA_FILENAME);
             if (filename == null || filename.isBlank()) {
-                exchange.sendResponseHeaders(400, -1);
+                LOGGER.error(IT, "Bad upload attempt with file name: {}", filename);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
                 return;
             }
 
-            final byte[] data;
-            try (final var is = exchange.getRequestBody()) {
-                data = is.readAllBytes();
+            final long maxBytes = WaterMediaConfig.network.maxUploadSizeMB * 1024L * 1024L;
+            final long contentLength = Long.parseLong(exchange.getRequestHeaders().getFirst("Content-Length"));
+
+            if (contentLength <= 0) {
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
+                return;
             }
 
-            if (data.length == 0) {
-                exchange.sendResponseHeaders(400, -1);
+            if (contentLength > maxBytes) {
+                LOGGER.warn(IT, "Upload rejected: {} bytes exceeds max size of {} MB", contentLength, WaterMediaConfig.network.maxUploadSizeMB);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_ENTITY_TOO_LARGE, -1);
                 return;
             }
 
             final String id = nextId();
             final Path idDir = storageDir.resolve(id);
             Files.createDirectory(idDir);
-            Files.write(idDir.resolve(filename), data);
+            final Path targetFile = idDir.resolve(filename);
+
+            try (final var in = new BufferedInputStream(exchange.getRequestBody());
+                 final var ou = new BufferedOutputStream(Files.newOutputStream(targetFile))) {
+                in.transferTo(ou);
+            }
 
             final byte[] response = id.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain");
-            exchange.sendResponseHeaders(200, response.length);
+            exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, response.length);
             try (final var os = exchange.getResponseBody()) {
                 os.write(response);
             }
 
-            LOGGER.info(IT, "Stored '{}' as ID '{}' ({} bytes)", filename, id, data.length);
+            LOGGER.info(IT, "Stored '{}' as ID '{}' ({} bytes)", filename, id, contentLength);
         }
     }
 
@@ -118,7 +134,7 @@ public class NetServer {
 
             if ("/".equals(path)) {
                 final String info = WaterMedia.NAME + " v" + WaterMedia.VERSION;
-                exchange.sendResponseHeaders(200, info.length());
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, info.length());
                 try (final var os = exchange.getResponseBody()) {
                     os.write(info.getBytes());
                 }
@@ -128,27 +144,24 @@ public class NetServer {
             final String id = path.substring(1);
 
             // Only allow alphanumeric to prevent path traversal
-            if (!id.matches("[A-Za-z0-9]+")) {
-                exchange.sendResponseHeaders(400, -1);
+            if (!id.matches("^[a-zA-Z0-9]+$")) {
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
+                LOGGER.warn(IT, "Received request with invalid ID: {}", id);
                 return;
             }
 
             final Path idDir = storageDir.resolve(id);
             if (!Files.isDirectory(idDir)) {
-                exchange.sendResponseHeaders(404, -1);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_NOT_FOUND, -1);
+                LOGGER.warn(IT, "ID not found: {}", id);
                 return;
             }
 
             final String method = exchange.getRequestMethod().toUpperCase();
 
-            // HEAD: existence check only
-            if ("HEAD".equals(method)) {
-                exchange.sendResponseHeaders(200, -1);
-                return;
-            }
-
-            if (!"GET".equals(method)) {
-                exchange.sendResponseHeaders(405, -1);
+            if (!"GET".equals(method) && !"HEAD".equals(method)) {
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_METHOD, -1);
+                LOGGER.error(IT, "Unsupported HTTP method: {}", method);
                 return;
             }
 
@@ -159,7 +172,8 @@ public class NetServer {
             }
 
             if (file == null) {
-                exchange.sendResponseHeaders(404, -1);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_NOT_FOUND, -1);
+                LOGGER.error(IT, "No file found in ID directory: {}", idDir);
                 return;
             }
 
@@ -167,13 +181,58 @@ public class NetServer {
             String contentType = URLConnection.guessContentTypeFromName(filename);
             if (contentType == null) contentType = "application/octet-stream";
 
-            final byte[] data = Files.readAllBytes(file);
+            final long fileSize = Files.size(file);
 
             exchange.getResponseHeaders().set("Content-Type", contentType);
-            exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename.replace("\"", "_") + "\"");
-            exchange.sendResponseHeaders(200, data.length);
-            try (final var os = exchange.getResponseBody()) {
-                os.write(data);
+            exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+
+            // HEAD: return metadata only
+            if ("HEAD".equals(method)) {
+                exchange.getResponseHeaders().set("Content-Length", String.valueOf(fileSize));
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, -1);
+                return;
+            }
+
+            // GET: serve file with Range support for media seeking
+            final String rangeHeader = exchange.getRequestHeaders().getFirst("Range");
+            if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
+                final String rangeSpec = rangeHeader.substring(6);
+                final String[] parts = rangeSpec.split("-", 2);
+
+                long start, end;
+                if (parts[0].isEmpty()) {
+                    end = fileSize - 1;
+                    start = fileSize - Long.parseLong(parts[1]);
+                } else {
+                    start = Long.parseLong(parts[0]);
+                    end = parts.length > 1 && !parts[1].isEmpty() ? Long.parseLong(parts[1]) : fileSize - 1;
+                }
+
+                if (start < 0 || end >= fileSize || start > end) {
+                    exchange.getResponseHeaders().set("Content-Range", "bytes */" + fileSize);
+                    exchange.sendResponseHeaders(416, -1); // Range Not Satisfiable (no HttpURLConnection constant)
+                    return;
+                }
+
+                final long contentLength = end - start + 1;
+                exchange.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + fileSize);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_PARTIAL, contentLength);
+                try (final var ou = exchange.getResponseBody(); final var in = Files.newInputStream(file)) {
+                    in.skipNBytes(start);
+                    final byte[] buffer = new byte[8192];
+                    long remaining = contentLength;
+                    int read;
+                    while (remaining > 0 && (read = in.read(buffer, 0, (int) Math.min(buffer.length, remaining))) != -1) {
+                        ou.write(buffer, 0, read);
+                        remaining -= read;
+                    }
+                }
+            } else {
+                exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename.replace("\"", "_") + "\"");
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, fileSize);
+                try (final var ou = exchange.getResponseBody(); final var in = Files.newInputStream(file)) {
+                    in.transferTo(ou);
+                }
             }
         }
     }

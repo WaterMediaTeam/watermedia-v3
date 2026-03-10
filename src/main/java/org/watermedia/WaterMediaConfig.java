@@ -1,10 +1,7 @@
 package org.watermedia;
 
 import me.srrapero720.waterconfig.WaterConfig;
-import me.srrapero720.waterconfig.api.annotations.Comment;
-import me.srrapero720.waterconfig.api.annotations.NumberConditions;
-import me.srrapero720.waterconfig.api.annotations.Spec;
-import me.srrapero720.waterconfig.api.annotations.StringConditions;
+import me.srrapero720.waterconfig.api.annotations.*;
 import me.srrapero720.waterconfig.impl.fields.StringField;
 import org.watermedia.api.media.MRL;
 
@@ -41,6 +38,7 @@ public class WaterMediaConfig {
     @Spec(value = "media", disableStatic = true)
     public final static class Media {
         @Spec.Field
+        @Comment("Default quality for streaming media without a specified quality")
         public MRL.Quality defaultQuality = MRL.Quality.HIGHEST;
 
         @Spec.Field
@@ -59,6 +57,19 @@ public class WaterMediaConfig {
         @Comment("Enables file storage server")
         @Comment("Used only on server-side")
         public boolean enableServer = false;
+
+        @Spec.Field
+        @Comment("Force-Enable file storage server even on client-side")
+        @Comment("NOTE: this doesn't mean that the server will be accessible from other devices, you need to open the port and set the remoteHost to your public IP or domain")
+        public boolean forceEnableServer = false;
+
+        @Spec.Field
+        @Comment("Maximum upload file size in megabytes, files larger than this will be rejected by the server")
+        @Comment("Zero means unlimited, but be careful with that if your users aren't trustworthy enough")
+        @Comment("NOTE: this doesn't affect manual file uploads to the server storage folder or existing files, but only uploads through the API")
+        @Comment("Used only on server-side")
+        @NumberConditions(minInt = 0, math = true)
+        public int maxUploadSizeMB = 8;
 
         @Spec.Field
         @NumberConditions(minInt = 1, maxInt = 65535)

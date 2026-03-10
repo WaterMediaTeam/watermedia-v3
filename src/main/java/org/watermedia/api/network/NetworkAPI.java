@@ -48,6 +48,34 @@ public class NetworkAPI {
         return new URL(null, url, WATER_HANDLER);
     }
 
+    public static String parseWaterURL(final URI url) throws Exception {
+        if (!PROTOCOL_WATER.equals(url.getScheme())) {
+            throw new IllegalArgumentException("URL must use water:// protocol");
+        }
+
+        final String host = url.getHost();
+        final String path = url.getPath();
+
+        return switch (host) {
+            case WaterStreamHandler.HOST_REMOTE -> {
+                String base = WaterMediaConfig.network.remoteHost;
+                if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+                yield base + path;
+            }
+            case WaterStreamHandler.HOST_GLOBAL -> {
+                String base = WaterStreamHandler.GLOBAL_SERVER;
+                if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+                yield base + path;
+            }
+            case WaterStreamHandler.HOST_LOCAL -> {
+                String p = path;
+                if (p.startsWith("/")) p = p.substring(1);
+                yield WaterMedia.cwd().resolve(p).toString();
+            }
+            default -> throw new IllegalArgumentException("Unknown water:// host: " + host);
+        };
+    }
+
     /**
      * Uploads a file to the remote WaterMedia server in a background thread.
      * The returned {@link UploadStatus} is updated as the upload progresses.
@@ -157,7 +185,8 @@ public class NetworkAPI {
         }
 
         // Server only starts on server-side when enabled in config
-        if (!instance.clientSide && WaterMediaConfig.network.enableServer) {
+        LOGGER.info(IT, "Network server is {}enabled on this environment", (WaterMediaConfig.network.forceEnableServer || WaterMediaConfig.network.enableServer) ? "" : "NOT ");
+        if (WaterMediaConfig.network.forceEnableServer || (!instance.clientSide && WaterMediaConfig.network.enableServer)) {
             NetServer.start(WaterMediaConfig.network.serverPort, instance);
         }
 

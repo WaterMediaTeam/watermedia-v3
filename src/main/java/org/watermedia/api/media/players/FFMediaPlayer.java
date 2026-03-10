@@ -23,6 +23,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.util.MasterClock;
+import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
@@ -555,7 +556,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             // PREPARE URI
             final var uri = this.source.uri(this.quality);
-            final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+            final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.getScheme().equals(NetworkAPI.PROTOCOL_WATER) ? NetworkAPI.parseWaterURL(uri) : uri.toString();
             // RESOLVE AUDIO SLAVE (index 0)
             final var audioSlaves = this.source.audioSlaves();
             MRL.Slave audioSlave = null;
@@ -570,7 +571,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             try {
                 av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
                         "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                        "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n", 0);
+                        "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n"
+                        + (NetworkAPI.PROTOCOL_WATER.equals(uri.getScheme()) ? "\r\n" + NetworkAPI.X_WATERMEDIA_TOKEN + ": " + WaterMediaConfig.network.token : ""), 0);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
