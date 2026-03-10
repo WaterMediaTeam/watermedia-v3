@@ -1,3 +1,10 @@
+# 📦 UPDATE 3.0.0-beta.9
+- ✨ Added ``water://`` protocol support on ``FFMediaPlayer``
+- ✨ Added slaves support on ``FFMediaPlayer``
+- ✨ Added method to override registered platforms on ``MediaAPI``
+- 🐛 Fixed: HTTP file server issues
+- ⚙️ Bumped waterconfig dependency
+
 # 📦 UPDATE 3.0.0-beta.8
 - ✨ Added ``water://`` protocol
   - ``water://local/<path>`` - opens files inside Current Working Directory (instance folder)
