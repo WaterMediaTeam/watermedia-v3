@@ -1,3 +1,6 @@
+# 📦 UPDATE 3.0.0-beta.10
+- 🐛 Fixed: registering platforms after MediaAPI init causes DefaultPlatform always stay on top  
+
 # 📦 UPDATE 3.0.0-beta.9
 - ✨ Added ``water://`` protocol support on ``FFMediaPlayer``
 - ✨ Added slaves support on ``FFMediaPlayer``
