@@ -27,10 +27,7 @@ public class MediaAPI {
                 this.addLast(platform);
                 return;
             }
-            // ENSURE DEFAULT IS ALWAYS LAST
-            final IPlatform last = !this.isEmpty() && this.getLast().getClass() == DefaultPlatform.class ? this.getLast() : null;
             super.push(platform);
-            if (last != null) super.push(last);
         }
     };
 
