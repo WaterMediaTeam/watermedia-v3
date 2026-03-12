@@ -1,3 +1,7 @@
+# 📦 UPDATE 3.0.0-beta.11
+- ✨ Added: AppBootstrap.Sideloadable as a service interface to load watermedia's extensions/plugins on AppBootstrap initialization (standalone app)
+- 🐛 Fixed: wrong video playback speed on media with slaves
+
 # 📦 UPDATE 3.0.0-beta.10
 - 🐛 Fixed: registering platforms after MediaAPI init causes DefaultPlatform always stay on top  
 
