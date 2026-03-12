@@ -19,10 +19,8 @@ import java.net.URLClassLoader;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.*;
 import java.util.List;
-import java.util.StringJoiner;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -59,10 +57,18 @@ public class AppBootstrap {
 
     private static BootstrapWindow window;
 
+
+    // LOW LEVEL SIDELOADING INTERFACE - USED BY WATERMEDIA EXTENSIONS/PLUGINS TO HOOK INTO THE BOOTSTRAP PROCESS
+    public interface Sideloadable {
+        void load();
+    }
+
     public static void main(final String... args) {
         if (System.getProperty(BOOTSTRAPPED_FLAG) != null) {
             try {
                 WaterMediaApp.main(args);
+                // SIDELOADING
+                ServiceLoader.load(Sideloadable.class).forEach(Sideloadable::load);
             } catch (final Throwable e) {
                 showError(e);
             }
@@ -157,6 +163,18 @@ public class AppBootstrap {
                         cp.add(Path.of(url.toURI()).toString());
                     } catch (final Exception ignored) {}
                 }
+            }
+        }
+
+        // SEARCH FOR ANY WATERMEDIA EXTENSION/PLUGIN
+        final File[] files = new File("").getAbsoluteFile().listFiles();
+        if (files != null) {
+            for (final File f: files) {
+                if ((f.getName().startsWith("watermedia_") || f.getName().startsWith("wm_")) && f.getName().endsWith(".jar")) {
+                    cp.add(f.getAbsolutePath());
+                    System.out.println("[FOUND] Extension: " + f.getName());
+                }
+                Thread.sleep(100);
             }
         }
 
