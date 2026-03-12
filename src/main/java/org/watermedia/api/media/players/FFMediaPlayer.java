@@ -23,7 +23,6 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.util.MasterClock;
-import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
@@ -490,6 +489,19 @@ public final class FFMediaPlayer extends MediaPlayer {
                     continue;
                 }
 
+                // AUDIO SLAVE PACING
+                if (this.useAudioSlave && this.pendingVideoRender) {
+                    // Only read and process slave audio (blocks on OpenAL = pacing)
+                    if (this.slaveFormatContext != null) {
+                        this.readSlaveAudio();
+                    }
+                    // Try to render the pending frame
+                    if (this.video && this.videoStreamIndex >= 0) {
+                        this.renderPendingVideo();
+                    }
+                    continue;
+                }
+
                 // Read and process frame
                 final int result = avformat.av_read_frame(this.formatContext, this.packet);
                 if (result < 0) {
@@ -556,7 +568,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             // PREPARE URI
             final var uri = this.source.uri(this.quality);
-            final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.getScheme().equals(NetworkAPI.PROTOCOL_WATER) ? NetworkAPI.parseWaterURL(uri) : uri.toString();
+            final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
             // RESOLVE AUDIO SLAVE (index 0)
             final var audioSlaves = this.source.audioSlaves();
             MRL.Slave audioSlave = null;
@@ -571,8 +583,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             try {
                 av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
                         "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                        "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n"
-                        + (NetworkAPI.PROTOCOL_WATER.equals(uri.getScheme()) ? "\r\n" + NetworkAPI.X_WATERMEDIA_TOKEN + ": " + WaterMediaConfig.network.token : ""), 0);
+                        "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n", 0);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
@@ -1025,7 +1036,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final int frameWidth = frameToScale.width();
         final int frameHeight = frameToScale.height();
 
-        // GUARD: validate pending frame is usable (format, dimensions, data pointer)
+        // GUARD: VALIDATE PENDING FRAME IF USABLE, OTHERWISE DISCARD
         if (frameFormat == AV_PIX_FMT_NONE || frameWidth <= 0 || frameHeight <= 0 || Pointer.isNull(frameToScale.data(0))) {
             LOGGER.debug(IT, "Dropping invalid pending frame: format={}, size={}x{}", frameFormat, frameWidth, frameHeight);
             av_frame_unref(this.pendingRenderFrame);
