@@ -59,7 +59,7 @@ public final class AppContext {
     public MRL.Source[] availableSources;
     public MRL.Source selectedSource;
     public MRL.Quality[] availableQualities;
-    public MRL.Quality selectedQuality = MRL.Quality.HIGHEST;
+    public MRL.Quality selectedQuality = MRL.Quality.HIGHER;
     public int sourceSelectorIndex;
 
     // Player

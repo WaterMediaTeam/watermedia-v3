@@ -39,7 +39,7 @@ public class WaterMediaConfig {
     public final static class Media {
         @Spec.Field
         @Comment("Default quality for streaming media without a specified quality")
-        public MRL.Quality defaultQuality = MRL.Quality.HIGHEST;
+        public MRL.Quality defaultQuality = MRL.Quality.HIGHER;
 
         @Spec.Field
         @Comment("Disables FFMPEG engine (AT ALL)")

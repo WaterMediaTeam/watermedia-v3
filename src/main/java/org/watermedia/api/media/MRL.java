@@ -410,12 +410,12 @@ public final class MRL {
         UNKNOWN(0),
         Q144P(144),
         LOWEST(240),
-        LOW(360),
-        MEDIUM(480),
-        HIGH(720),
-        HIGHER(1080),
-        HIGHEST(1440),
-        Q4K(2160),
+        LOWER(360),
+        LOW(480),
+        MEDIUM(720),
+        HIGH(1080),
+        HIGHER(1440),
+        HIGHEST(2160),
         Q8K(4320);
 
         private static final Quality[] VALUES = values();
@@ -559,7 +559,7 @@ public final class MRL {
          * Gets the best available URI.
          */
         public URI bestUri() {
-            return this.uri(Quality.HIGHEST);
+            return this.uri(Quality.HIGHER);
         }
 
         /**
@@ -622,7 +622,7 @@ public final class MRL {
          * Gets the best available URI (highest quality).
          */
         public URI bestUri() {
-            return this.uri(Quality.HIGHEST);
+            return this.uri(Quality.HIGHER);
         }
 
         /**
