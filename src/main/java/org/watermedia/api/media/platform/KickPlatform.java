@@ -14,8 +14,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.time.temporal.TemporalUnit;
-import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -70,7 +68,7 @@ public class KickPlatform implements IPlatform {
                 }
             } else {
                 LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate source with high quality as default");
-                sourceBuilder.quality(MRL.Quality.HIGH, channel.url);
+                sourceBuilder.quality(MRL.Quality.MEDIUM, channel.url);
             }
 
             // WE MAKE IT EXPIRES EVERY 30 SECONDS BECAUSE... I AM REALLY NOT SURE IF THE LINKS EVEN EXPIRES
@@ -110,7 +108,7 @@ public class KickPlatform implements IPlatform {
                 }
             } else {
                 LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate source with high quality as default");
-                sourceBuilder.quality(MRL.Quality.HIGH, video.url);
+                sourceBuilder.quality(MRL.Quality.MEDIUM, video.url);
             }
 
             return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());

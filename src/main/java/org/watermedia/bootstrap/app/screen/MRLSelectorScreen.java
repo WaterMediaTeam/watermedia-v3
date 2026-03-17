@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
 import org.watermedia.bootstrap.app.AppContext;
+  import org.watermedia.bootstrap.app.ui.Colors;
 import org.watermedia.bootstrap.app.ui.Selector;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.DrawTool;
@@ -17,6 +18,9 @@ public class MRLSelectorScreen extends Screen {
 
     private final Consumer<HomeScreen.Action> navigator;
     private final Selector<AppContext.TestURI> selector;
+    private boolean loading;
+    private long loadStartTime;
+    private AppContext.TestURI pendingUri;
 
     public MRLSelectorScreen(final TextRenderer text, final AppContext ctx, final Consumer<HomeScreen.Action> navigator) {
         super(text, ctx);
@@ -39,6 +43,8 @@ public class MRLSelectorScreen extends Screen {
 
     @Override
     public void onEnter() {
+        this.loading = false;
+        this.pendingUri = null;
         if (this.ctx.selectedGroup != null) {
             this.selector.clear();
             this.selector.title("Select Media - " + this.ctx.selectedGroup.name());
@@ -60,23 +66,39 @@ public class MRLSelectorScreen extends Screen {
         this.ctx.selectedMRLName = uri.name();
         this.ctx.selectedMRL = this.ctx.groupMRLs.get(uri.name());
 
-        if (this.ctx.selectedMRL == null || !this.ctx.selectedMRL.ready()) {
-            if (this.ctx.selectedMRL == null) {
-                this.ctx.showError("Null", "The MRL is null", null);
-            }
-            if (this.ctx.selectedMRL.error()) {
-                this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
-            }
-            if (this.ctx.selectedMRL.expired()) {
-                this.ctx.showError("MRL expired", "Re-freshing MRL", () -> {
-                    this.ctx.selectedMRL = null;
-                    this.ctx.groupMRLs.remove(uri.name());
-                });
-            }
+        if (this.ctx.selectedMRL == null) {
+            this.ctx.showError("Null", "The MRL is null", null);
+            return;
         }
 
+        if (this.ctx.selectedMRL.error()) {
+            this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
+            return;
+        }
+
+        if (this.ctx.selectedMRL.expired()) {
+            this.ctx.showError("MRL expired", "Re-freshing MRL", () -> {
+                this.ctx.selectedMRL = null;
+                this.ctx.groupMRLs.remove(uri.name());
+            });
+            return;
+        }
+
+        if (this.ctx.selectedMRL.busy()) {
+            this.loading = true;
+            this.loadStartTime = System.currentTimeMillis();
+            this.pendingUri = uri;
+            return;
+        }
+
+        if (!this.ctx.selectedMRL.ready()) return;
+
+        this.proceedWithMRL();
+    }
+
+    private void proceedWithMRL() {
         this.ctx.availableSources = this.ctx.selectedMRL.sources();
-        if (this.ctx.availableSources.length == 0) return;
+        if (this.ctx.availableSources == null || this.ctx.availableSources.length == 0) return;
 
         if (this.ctx.availableSources.length == 1) {
             this.ctx.sourceSelectorIndex = 0;
@@ -89,6 +111,66 @@ public class MRLSelectorScreen extends Screen {
         }
     }
 
+    private void checkLoadingState() {
+        if (this.ctx.selectedMRL == null) {
+            this.loading = false;
+            this.pendingUri = null;
+            return;
+        }
+
+        if (this.ctx.selectedMRL.ready()) {
+            this.loading = false;
+            this.pendingUri = null;
+            this.proceedWithMRL();
+            return;
+        }
+
+        if (this.ctx.selectedMRL.error()) {
+            this.loading = false;
+            this.pendingUri = null;
+            this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
+            return;
+        }
+
+        if (System.currentTimeMillis() - this.loadStartTime > 30000) {
+            this.loading = false;
+            this.pendingUri = null;
+            this.ctx.showError("Load Error", "MRL loading timed out", null);
+        }
+    }
+
+    private void renderLoadingDialog(final int windowW, final int windowH) {
+        DrawTool.setupOrtho(windowW, windowH);
+
+        final int dots = (int) ((System.currentTimeMillis() / 500) % 4);
+        final String loadingText = "Loading" + ".".repeat(dots);
+        final String mrlName = this.pendingUri != null ? this.pendingUri.name() : "";
+
+        final int padding = 20;
+        final int lineH = this.text.lineHeight();
+
+        final int contentW = Math.max(this.text.width(loadingText),
+                Math.max(this.text.width(mrlName), this.text.width("ESC to cancel")));
+        final int dialogW = Math.min(Math.max(contentW + padding * 2 + 40, 400), windowW - 100);
+        final int dialogH = padding + lineH + 15 + lineH + 10 + lineH + padding;
+
+        final int dialogX = (windowW - dialogW) / 2;
+        final int dialogY = (windowH - dialogH) / 2;
+
+        DrawTool.dialogBox(dialogX, dialogY, dialogW, dialogH, Colors.BLUE, 3);
+
+        int y = dialogY + padding;
+        this.text.render(loadingText, dialogX + padding, y, Colors.BLUE);
+        y += lineH + 15;
+
+        this.text.render(mrlName, dialogX + padding, y, Colors.GRAY);
+        y += lineH + 10;
+
+        this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY);
+
+        DrawTool.restoreProjection();
+    }
+
     private void goBack() {
         this.ctx.clearGroupState();
         this.navigator.accept(HomeScreen.Action.BACK);
@@ -97,6 +179,10 @@ public class MRLSelectorScreen extends Screen {
     @Override
     public void render(final int windowW, final int windowH) {
         if (this.ctx.selectedGroup == null) return;
+
+        if (this.loading) {
+            this.checkLoadingState();
+        }
 
         DrawTool.setupOrtho(windowW, windowH);
 
@@ -108,18 +194,25 @@ public class MRLSelectorScreen extends Screen {
         this.selector.render(this.text, windowW, windowH);
 
         DrawTool.restoreProjection();
+
+        if (this.loading) {
+            this.renderLoadingDialog(windowW, windowH);
+        }
     }
 
     private int renderBanner(final int windowW, final int windowH) {
         if (this.ctx.bannerTextureId <= 0) return AppContext.PADDING;
 
-        final float scale = Math.min(1f, (float) Math.min(125, windowH - 200) / this.ctx.bannerHeight);
+        final int targetH = Math.min(Math.max(125, (int) (windowH * 0.17f)), windowH - 200);
+        final float scale = (float) targetH / this.ctx.bannerHeight;
         final int renderH = (int) (this.ctx.bannerHeight * scale);
         final int renderW = (int) (this.ctx.bannerWidth * scale);
 
+        final int bannerX = (windowW - renderW) / 2;
+
         DrawTool.bindTexture(this.ctx.bannerTextureId);
         DrawTool.color(1, 1, 1, 1);
-        DrawTool.blit(AppContext.PADDING, AppContext.PADDING, renderW, renderH);
+        DrawTool.blit(bannerX, AppContext.PADDING, renderW, renderH);
 
         final int lineY = AppContext.PADDING + renderH + 15;
         DrawTool.disableTextures();
@@ -131,6 +224,14 @@ public class MRLSelectorScreen extends Screen {
 
     @Override
     protected void onKeyRelease(final int key) {
+        if (this.loading) {
+            if (key == GLFW_KEY_ESCAPE) {
+                this.loading = false;
+                this.pendingUri = null;
+            }
+            return;
+        }
+
         switch (key) {
             case GLFW_KEY_UP -> this.selector.moveUp();
             case GLFW_KEY_DOWN -> this.selector.moveDown();
@@ -141,21 +242,25 @@ public class MRLSelectorScreen extends Screen {
 
     @Override
     public void handleMouseMove(final double mx, final double my) {
+        if (this.loading) return;
         this.selector.handleHover(mx, my);
     }
 
     @Override
     public void handleMouseClick(final double mx, final double my) {
+        if (this.loading) return;
         this.selector.handleClick(mx, my);
     }
 
     @Override
     public void handleScroll(final double yOffset) {
+        if (this.loading) return;
         this.selector.handleScroll(yOffset);
     }
 
     @Override
     public String instructions() {
+        if (this.loading) return "ESC: Cancel";
         return "UP/DOWN: Navigate | ENTER: Select | ESC: Back";
     }
 }

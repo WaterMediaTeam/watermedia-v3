@@ -175,7 +175,8 @@ public class HomeScreen extends Screen {
     public int renderBanner(final int windowW, final int windowH) {
         if (this.ctx.bannerTextureId <= 0) return AppContext.PADDING;
 
-        final float scale = Math.min(1f, (float) Math.min(125, windowH - 200) / this.ctx.bannerHeight);
+        final int targetH = Math.min(Math.max(125, (int) (windowH * 0.17f)), windowH - 200);
+        final float scale = (float) targetH / this.ctx.bannerHeight;
         final int renderH = (int) (this.ctx.bannerHeight * scale);
         final int renderW = (int) (this.ctx.bannerWidth * scale);
 
