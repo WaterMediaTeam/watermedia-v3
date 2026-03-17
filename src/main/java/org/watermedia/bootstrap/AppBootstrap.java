@@ -66,9 +66,12 @@ public class AppBootstrap {
     public static void main(final String... args) {
         if (System.getProperty(BOOTSTRAPPED_FLAG) != null) {
             try {
-                WaterMediaApp.main(args);
+                WaterMediaApp.start(() -> {
+                    WaterMediaApp.log("Launched with embedded WaterMedia App Bootstrap");
+                    WaterMediaApp.log("Searching for sideloadable extensions...");
+                    ServiceLoader.load(Sideloadable.class).forEach(Sideloadable::load);
+                });
                 // SIDELOADING
-                ServiceLoader.load(Sideloadable.class).forEach(Sideloadable::load);
             } catch (final Throwable e) {
                 showError(e);
             }
@@ -133,7 +136,27 @@ public class AppBootstrap {
             }
 
             jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
-            System.out.println("\n[OK] Dependencies ready - " + jars.size() + " JARs\nRelaunching...");
+
+            System.out.println("\n[OK] Dependencies ready - " + jars.size() + " JARs");
+
+            Thread.sleep(1000);
+
+            // SEARCH FOR ANY WATERMEDIA EXTENSION/PLUGIN
+            final File[] files = new File("").getAbsoluteFile().listFiles();
+            if (files != null) {
+                System.out.println("\n\n==========================\n\nSearching for extensions...");
+                for (final File f: files) {
+                    final String name = f.getName().toLowerCase();
+                    if ((name.startsWith("watermedia_") || name.startsWith("wm_") || name.startsWith("waterm_") || name.startsWith("wmedia_")) && f.getName().endsWith(".jar")) {
+                        jars.add(f.getAbsoluteFile().toPath());
+                        System.out.println("[FOUND] Extension filename: " + f.getName());
+                    }
+                    Thread.sleep(100);
+                }
+            }
+
+            System.out.println("Relaunching...");
+
             Thread.sleep(3000);
             window.dispose();
             relaunch(jars, args);
@@ -163,18 +186,6 @@ public class AppBootstrap {
                         cp.add(Path.of(url.toURI()).toString());
                     } catch (final Exception ignored) {}
                 }
-            }
-        }
-
-        // SEARCH FOR ANY WATERMEDIA EXTENSION/PLUGIN
-        final File[] files = new File("").getAbsoluteFile().listFiles();
-        if (files != null) {
-            for (final File f: files) {
-                if ((f.getName().startsWith("watermedia_") || f.getName().startsWith("wm_")) && f.getName().endsWith(".jar")) {
-                    cp.add(f.getAbsolutePath());
-                    System.out.println("[FOUND] Extension: " + f.getName());
-                }
-                Thread.sleep(100);
             }
         }
 

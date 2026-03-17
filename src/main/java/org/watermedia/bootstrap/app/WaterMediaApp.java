@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app;
 
 import com.google.gson.JsonObject;
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.MarkerManager;
 import org.apache.logging.log4j.core.appender.ConsoleAppender;
 import org.apache.logging.log4j.core.config.Configurator;
 import org.apache.logging.log4j.core.config.builder.api.AppenderComponentBuilder;
@@ -61,47 +62,43 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  * WATERMeDIA Test Application.
  */
 public class WaterMediaApp {
+    private static final AppContext ctx = new AppContext();
+    private static final ScreenManager screens = new ScreenManager();
+    private static final Dialog errorDialog = new Dialog();
 
-    private final AppContext ctx = new AppContext();
-    private final ScreenManager screens = new ScreenManager();
-    private final Dialog errorDialog = new Dialog();
+    private static ConsoleScreen consoleScreen;
 
-    private HomeScreen homeScreen;
-    private ConsoleScreen consoleScreen;
+    private static boolean running = true;
 
-    private boolean running = true;
+    static { initLogging(); }
 
-    static {
-        initLogging();
+    public static void start(final Runnable task) {
+        WaterMedia.start("WaterMediaApp", null, null, true);
+        ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
+
+        init();
+        glfwShowWindow(ctx.windowHandle);
+        task.run();
+        mainLoop();
+        cleanup();
     }
 
-    public static void main(final String... args) {
-        new WaterMediaApp().run();
-    }
-
-    private void run() {
-        WaterMedia.start("Java Test", null, null, true);
-        this.ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
-
-        this.init();
-        glfwShowWindow(this.ctx.windowHandle);
-        this.mainLoop();
-        this.cleanup();
+    public static void log(final String message) {
+        WaterMedia.LOGGER.info(MarkerManager.getMarker("ROOT"), message);
     }
 
     // ========================================
     // INITIALIZATION
     // ========================================
-
-    private void init() {
-        this.initWindow();
-        this.initAudio();
-        this.initResources();
-        this.initScreens();
-        this.initErrorDialog();
+    private static void init() {
+        initWindow();
+        initAudio();
+        initResources();
+        initScreens();
+        initErrorDialog();
     }
 
-    private void initWindow() {
+    private static void initWindow() {
         GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
 
@@ -110,26 +107,26 @@ public class WaterMediaApp {
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 
-        this.ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
-        if (this.ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
+        ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
+        if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
 
         // Callbacks
-        glfwSetKeyCallback(this.ctx.windowHandle, this::handleKeyInput);
-        glfwSetCursorPosCallback(this.ctx.windowHandle, (w, x, y) -> {
-            this.ctx.mouseX = x;
-            this.ctx.mouseY = y;
+        glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
+        glfwSetCursorPosCallback(ctx.windowHandle, (w, x, y) -> {
+            ctx.mouseX = x;
+            ctx.mouseY = y;
         });
-        glfwSetMouseButtonCallback(this.ctx.windowHandle, (w, button, action, mods) -> {
-            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) this.ctx.mouseClicked = true;
+        glfwSetMouseButtonCallback(ctx.windowHandle, (w, button, action, mods) -> {
+            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) ctx.mouseClicked = true;
         });
-        glfwSetScrollCallback(this.ctx.windowHandle, (w, xOffset, yOffset) -> {
-            if (!this.ctx.hasError()) {
-                this.screens.handleScroll(yOffset);
+        glfwSetScrollCallback(ctx.windowHandle, (w, xOffset, yOffset) -> {
+            if (!ctx.hasError()) {
+                screens.handleScroll(yOffset);
             }
         });
-        glfwSetWindowSizeCallback(this.ctx.windowHandle, (w, width, height) -> {
-            this.ctx.windowWidth = width;
-            this.ctx.windowHeight = height;
+        glfwSetWindowSizeCallback(ctx.windowHandle, (w, width, height) -> {
+            ctx.windowWidth = width;
+            ctx.windowHeight = height;
             glViewport(0, 0, width, height);
         });
 
@@ -137,22 +134,22 @@ public class WaterMediaApp {
         try (final MemoryStack stack = stackPush()) {
             final IntBuffer pWidth = stack.mallocInt(1);
             final IntBuffer pHeight = stack.mallocInt(1);
-            glfwGetWindowSize(this.ctx.windowHandle, pWidth, pHeight);
-            this.ctx.windowWidth = pWidth.get(0);
-            this.ctx.windowHeight = pHeight.get(0);
+            glfwGetWindowSize(ctx.windowHandle, pWidth, pHeight);
+            ctx.windowWidth = pWidth.get(0);
+            ctx.windowHeight = pHeight.get(0);
 
             final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-            glfwSetWindowPos(this.ctx.windowHandle,
-                    (vidmode.width() - this.ctx.windowWidth) / 2,
-                    (vidmode.height() - this.ctx.windowHeight) / 2);
+            glfwSetWindowPos(ctx.windowHandle,
+                    (vidmode.width() - ctx.windowWidth) / 2,
+                    (vidmode.height() - ctx.windowHeight) / 2);
         }
 
-        glfwMakeContextCurrent(this.ctx.windowHandle);
+        glfwMakeContextCurrent(ctx.windowHandle);
         glfwSwapInterval(1);
         GL.createCapabilities();
     }
 
-    private void initAudio() {
+    private static void initAudio() {
         final long device = ALC10.alcOpenDevice((ByteBuffer) null);
         if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
         final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
@@ -160,90 +157,90 @@ public class WaterMediaApp {
         ALC.createCapabilities(device);
         AL.createCapabilities(ALC.createCapabilities(device));
 
-        this.loadSoundClick();
+        loadSoundClick();
     }
 
-    private void initResources() {
-        this.ctx.text = new TextRenderer();
-        this.ctx.text.margin(6);
-        this.loadIcon();
-        this.loadBanner();
+    private static void initResources() {
+        ctx.text = new TextRenderer();
+        ctx.text.margin(6);
+        loadIcon();
+        loadBanner();
     }
 
-    private void initScreens() {
-        this.homeScreen = new HomeScreen(this.ctx.text, this.ctx, this::navigateAction);
-        this.consoleScreen = new ConsoleScreen(this.ctx.text, this.ctx, this::navigateAction);
+    private static void initScreens() {
+        final HomeScreen homeScreen = new HomeScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
+        consoleScreen = new ConsoleScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
 
-        this.screens.register("home", this.homeScreen);
-        this.screens.register("mrl", new MRLSelectorScreen(this.ctx.text, this.ctx, this::navigateAction));
-        this.screens.register("source", new SourceSelectorScreen(this.ctx.text, this.ctx, this::navigateAction));
-        this.screens.register("player", new PlayerScreen(this.ctx.text, this.ctx, this::navigateAction));
-        this.screens.register("multimedia", new OpenMultimediaScreen(this.ctx.text, this.ctx, this::navigateAction, this.homeScreen));
-        this.screens.register("console", this.consoleScreen);
+        screens.register("home", homeScreen);
+        screens.register("mrl", new MRLSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
+        screens.register("source", new SourceSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
+        screens.register("player", new PlayerScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
+        screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction, homeScreen));
+        screens.register("console", consoleScreen);
 
-        this.screens.navigate("home");
+        screens.navigate("home");
     }
 
-    private void initErrorDialog() {
-        this.errorDialog.minWidth(400)
+    private static void initErrorDialog() {
+        errorDialog.minWidth(400)
                 .minHeight(120)
-                .onSelectionChanged(this.ctx::playSelectionSound);
+                .onSelectionChanged(ctx::playSelectionSound);
     }
 
-    private void navigateAction(final HomeScreen.Action action) {
+    private static void navigateAction(final HomeScreen.Action action) {
         if (action == null) {
-            this.screens.backToHome();
+            screens.backToHome();
             return;
         }
 
         switch (action) {
-            case EXIT -> this.running = false;
+            case EXIT -> running = false;
 
-            case BACK -> this.screens.backToHome();
+            case BACK -> screens.backToHome();
 
             case OPEN_MULTIMEDIA -> {
                 // Check FFmpeg availability first
                 if (!FFMediaPlayer.loaded()) {
-                    this.ctx.showError("Feature Unavailable",
+                    ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
                     return;
                 }
-                this.screens.navigate("multimedia");
+                screens.navigate("multimedia");
             }
 
-            case MRL_SELECTOR -> this.screens.navigate("mrl");
+            case MRL_SELECTOR -> screens.navigate("mrl");
 
-            case SOURCE_SELECTOR -> this.screens.navigate("source");
+            case SOURCE_SELECTOR -> screens.navigate("source");
 
             case PLAYER -> {
                 // Check FFmpeg availability first
                 if (!FFMediaPlayer.loaded()) {
-                    this.ctx.showError("Feature Unavailable",
+                    ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
                     return;
                 }
-                this.screens.navigate("player");
+                screens.navigate("player");
             }
 
             case UPLOAD_LOGS -> {
                 // Check Minecraft context first
                 if (!AppContext.IN_MODS) {
-                    this.ctx.showError("Feature Unavailable",
+                    ctx.showError("Feature Unavailable",
                             "Upload logs is only available when\nrunning in Minecraft context.\n\nPlace this JAR in the mods folder\nand run Minecraft.",
                             null);
                     return;
                 }
-                this.consoleScreen.open("Upload Log Files", this.screens::backToHome);
-                this.screens.navigate("console");
-                ThreadTool.createStarted("UploadLogs", this::performUploadLogs);
+                consoleScreen.open("Upload Log Files", screens::backToHome);
+                screens.navigate("console");
+                ThreadTool.createStarted("UploadLogs", WaterMediaApp::performUploadLogs);
             }
 
             case CLEANUP -> {
-                this.consoleScreen.open("Cleanup", () -> this.running = false);
-                this.screens.navigate("console");
-                ThreadTool.createStarted("Cleanup", this::performCleanup);
+                consoleScreen.open("Cleanup", () -> running = false);
+                screens.navigate("console");
+                ThreadTool.createStarted("Cleanup", WaterMediaApp::performCleanup);
             }
         }
     }
@@ -252,7 +249,7 @@ public class WaterMediaApp {
     // MAIN LOOP
     // ========================================
 
-    private void mainLoop() {
+    private static void mainLoop() {
         ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
         }, 0);
 
@@ -261,77 +258,77 @@ public class WaterMediaApp {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        while (this.running && !glfwWindowShouldClose(this.ctx.windowHandle)) {
+        while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            this.screens.render(this.ctx.windowWidth, this.ctx.windowHeight);
+            screens.render(ctx.windowWidth, ctx.windowHeight);
 
             // Render global error dialog on top if present
-            if (this.ctx.hasError()) {
-                this.renderErrorDialog();
+            if (ctx.hasError()) {
+                renderErrorDialog();
             }
 
-            this.renderBottomBar();
+            renderBottomBar();
 
-            glfwSwapBuffers(this.ctx.windowHandle);
+            glfwSwapBuffers(ctx.windowHandle);
             glfwPollEvents();
 
             // Handle input - error dialog takes priority
-            if (this.ctx.hasError()) {
-                this.errorDialog.handleHover(this.ctx.mouseX, this.ctx.mouseY);
-                if (this.ctx.mouseClicked) {
-                    this.ctx.mouseClicked = false;
-                    this.errorDialog.handleClick(this.ctx.mouseX, this.ctx.mouseY);
+            if (ctx.hasError()) {
+                errorDialog.handleHover(ctx.mouseX, ctx.mouseY);
+                if (ctx.mouseClicked) {
+                    ctx.mouseClicked = false;
+                    errorDialog.handleClick(ctx.mouseX, ctx.mouseY);
                 }
             } else {
-                this.screens.handleMouseMove(this.ctx.mouseX, this.ctx.mouseY);
-                if (this.ctx.mouseClicked) {
-                    this.ctx.mouseClicked = false;
-                    this.screens.handleMouseClick(this.ctx.mouseX, this.ctx.mouseY);
+                screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
+                if (ctx.mouseClicked) {
+                    ctx.mouseClicked = false;
+                    screens.handleMouseClick(ctx.mouseX, ctx.mouseY);
                 }
             }
 
-            this.ctx.processExecutor();
+            ctx.processExecutor();
         }
 
-        this.ctx.releasePlayer();
+        ctx.releasePlayer();
     }
 
-    private void renderErrorDialog() {
-        this.errorDialog.title(this.ctx.globalErrorTitle)
+    private static void renderErrorDialog() {
+        errorDialog.title(ctx.globalErrorTitle)
                 .borderColor(Colors.RED)
                 .clearContent()
                 .clearButtons();
 
         // Split message into lines
-        for (final String line : this.ctx.globalErrorMessage.split("\n")) {
-            this.errorDialog.addLine(line);
+        for (final String line : ctx.globalErrorMessage.split("\n")) {
+            errorDialog.addLine(line);
         }
 
-        this.errorDialog.addButton("OK", this.ctx::clearError);
-        this.errorDialog.centerIn(this.ctx.text, this.ctx.windowWidth, this.ctx.windowHeight);
-        this.errorDialog.show();
-        this.errorDialog.render(this.ctx.text, this.ctx.windowWidth, this.ctx.windowHeight);
+        errorDialog.addButton("OK", ctx::clearError);
+        errorDialog.centerIn(ctx.text, ctx.windowWidth, ctx.windowHeight);
+        errorDialog.show();
+        errorDialog.render(ctx.text, ctx.windowWidth, ctx.windowHeight);
     }
 
-    private void renderBottomBar() {
-        DrawTool.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
+    private static void renderBottomBar() {
+        DrawTool.setupOrtho(ctx.windowWidth, ctx.windowHeight);
 
         // Seekbar
-        final int seekbarY = this.ctx.windowHeight - 82;
+        final int seekbarY = ctx.windowHeight - 82;
         float progress = 1f;
-        if (this.ctx.player != null && this.ctx.player.duration() > 0) {
-            progress = Math.min(1f, Math.max(0f, (float) this.ctx.player.time() / this.ctx.player.duration()));
+        if (ctx.player != null && ctx.player.duration() > 0) {
+            progress = Math.min(1f, Math.max(0f, (float) ctx.player.time() / ctx.player.duration()));
         }
 
         DrawTool.disableTextures();
-        DrawTool.fill(0, seekbarY, this.ctx.windowWidth, 4, 0.15f, 0.15f, 0.15f, 1f);
-        DrawTool.fill(0, seekbarY, this.ctx.windowWidth * progress, 4, 0.31f, 0.71f, 1f, 1f);
+        DrawTool.fill(0, seekbarY, ctx.windowWidth, 4, 0.15f, 0.15f, 0.15f, 1f);
+        DrawTool.fill(0, seekbarY, ctx.windowWidth * progress, 4, 0.31f, 0.71f, 1f, 1f);
         DrawTool.enableTextures();
 
         // Instructions - show error dialog instructions if error is present
-        final String instructions = this.ctx.hasError() ? "ENTER/ESC: Close" : this.screens.currentInstructions();
-        this.ctx.text.render(instructions, AppContext.PADDING, this.ctx.windowHeight - 60, Colors.GRAY);
+        final String instructions = ctx.hasError() ? "ENTER/ESC: Close" : screens.currentInstructions();
+        ctx.text.render(instructions, AppContext.PADDING, ctx.windowHeight - 60, Colors.GRAY);
 
         DrawTool.restoreProjection();
     }
@@ -340,25 +337,25 @@ public class WaterMediaApp {
     // INPUT HANDLING
     // ========================================
 
-    private void handleKeyInput(final long window, final int key, final int scancode, final int action, final int mods) {
+    private static void handleKeyInput(final long window, final int key, final int scancode, final int action, final int mods) {
         if (action != GLFW_RELEASE) return;
 
         // Error dialog takes priority
-        if (this.ctx.hasError()) {
+        if (ctx.hasError()) {
             if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE) {
-                this.ctx.clearError();
+                ctx.clearError();
             }
             return;
         }
 
-        this.screens.handleKey(key, action);
+        screens.handleKey(key, action);
     }
 
     // ========================================
     // RESOURCE LOADING
     // ========================================
 
-    private void loadIcon() {
+    private static void loadIcon() {
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
             final byte[] iconBytes = in.readAllBytes();
             final Image iconImage = DecoderAPI.decodeImage(iconBytes);
@@ -379,7 +376,7 @@ public class WaterMediaApp {
 
             final GLFWImage.Buffer icons = GLFWImage.malloc(1);
             icons.position(0).width(iconImage.width()).height(iconImage.height()).pixels(buffer);
-            glfwSetWindowIcon(this.ctx.windowHandle, icons);
+            glfwSetWindowIcon(ctx.windowHandle, icons);
 
             icons.free();
             MemoryUtil.memFree(buffer);
@@ -388,30 +385,30 @@ public class WaterMediaApp {
         }
     }
 
-    private void loadBanner() {
+    private static void loadBanner() {
         try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
             final byte[] bannerBytes = in.readAllBytes();
             final Image bannerImage = DecoderAPI.decodeImage(bannerBytes);
             if (bannerImage == null || bannerImage.frames().length == 0) return;
 
-            this.ctx.bannerWidth = bannerImage.width();
-            this.ctx.bannerHeight = bannerImage.height();
-            this.ctx.bannerTextureId = glGenTextures();
+            ctx.bannerWidth = bannerImage.width();
+            ctx.bannerHeight = bannerImage.height();
+            ctx.bannerTextureId = glGenTextures();
 
-            glBindTexture(GL_TEXTURE_2D, this.ctx.bannerTextureId);
+            glBindTexture(GL_TEXTURE_2D, ctx.bannerTextureId);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, this.ctx.bannerWidth, this.ctx.bannerHeight,
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ctx.bannerWidth, ctx.bannerHeight,
                     0, GL_BGRA, GL_UNSIGNED_BYTE, bannerImage.frames()[0]);
         } catch (final Exception e) {
             System.err.println("Failed to load banner: " + e.getMessage());
         }
     }
 
-    private void loadSoundClick() {
+    private static void loadSoundClick() {
         try (final InputStream in = IOTool.jarOpenFile("assets/duck.ogg")) {
             final byte[] soundBytes = in.readAllBytes();
 
@@ -434,13 +431,13 @@ public class WaterMediaApp {
             MemoryUtil.memFree(channelsBuffer);
             MemoryUtil.memFree(sampleRateBuffer);
 
-            this.ctx.soundBuffer = alGenBuffers();
-            alBufferData(this.ctx.soundBuffer, channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, pcmBuffer, sampleRate);
+            ctx.soundBuffer = alGenBuffers();
+            alBufferData(ctx.soundBuffer, channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, pcmBuffer, sampleRate);
             MemoryUtil.memFree(pcmBuffer);
 
-            this.ctx.soundSource = alGenSources();
-            alSourcei(this.ctx.soundSource, AL_BUFFER, this.ctx.soundBuffer);
-            alSourcef(this.ctx.soundSource, AL_GAIN, 0.2f);
+            ctx.soundSource = alGenSources();
+            alSourcei(ctx.soundSource, AL_BUFFER, ctx.soundBuffer);
+            alSourcef(ctx.soundSource, AL_GAIN, 0.2f);
         } catch (final Exception e) {
             System.err.println("Failed to load sound effect: " + e.getMessage());
         }
@@ -450,94 +447,94 @@ public class WaterMediaApp {
     // CONSOLE OPERATIONS
     // ========================================
 
-    private void performUploadLogs() {
+    private static void performUploadLogs() {
         try {
-            this.consoleScreen.info("=== Upload Log Files ===");
-            this.consoleScreen.print("");
+            consoleScreen.info("=== Upload Log Files ===");
+            consoleScreen.print("");
 
             final Path cwd = Path.of("").toAbsolutePath();
             final Path logsDir = cwd.getParent().resolve("logs");
             final Path crashDir = cwd.getParent().resolve("crash-reports");
 
-            this.consoleScreen.print("Working directory: " + cwd);
-            this.consoleScreen.print("Logs directory: " + logsDir);
-            this.consoleScreen.print("");
+            consoleScreen.print("Working directory: " + cwd);
+            consoleScreen.print("Logs directory: " + logsDir);
+            consoleScreen.print("");
 
             final Path latestLog = logsDir.resolve("latest.log");
             final Path wmLog = logsDir.resolve("watermedia-app.log");
-            final Path crashReport = this.findLatestCrashReport(crashDir);
+            final Path crashReport = findLatestCrashReport(crashDir);
 
-            this.consoleScreen.info("--- Reading files ---");
-            final String latestContent = this.readFileStatus(latestLog, "latest.log");
-            final String wmContent = this.readFileStatus(wmLog, "watermedia-app.log");
-            final String crashContent = crashReport != null ? this.readFileStatus(crashReport, crashReport.getFileName().toString()) : null;
+            consoleScreen.info("--- Reading files ---");
+            final String latestContent = readFileStatus(latestLog, "latest.log");
+            final String wmContent = readFileStatus(wmLog, "watermedia-app.log");
+            final String crashContent = crashReport != null ? readFileStatus(crashReport, crashReport.getFileName().toString()) : null;
 
             if (crashReport == null) {
-                this.consoleScreen.print("crash-reports: No crash reports found", Colors.GRAY);
+                consoleScreen.print("crash-reports: No crash reports found", Colors.GRAY);
             }
 
-            this.consoleScreen.print("");
-            this.consoleScreen.info("--- Uploading to mclo.gs ---");
+            consoleScreen.print("");
+            consoleScreen.info("--- Uploading to mclo.gs ---");
 
-            final String latestUrl = latestContent != null ? this.uploadToMclogs(latestContent, "latest.log") : null;
-            final String wmUrl = wmContent != null ? this.uploadToMclogs(wmContent, "watermedia-app.log") : null;
-            final String crashUrl = crashContent != null ? this.uploadToMclogs(crashContent, crashReport.getFileName().toString()) : null;
+            final String latestUrl = latestContent != null ? uploadToMclogs(latestContent, "latest.log") : null;
+            final String wmUrl = wmContent != null ? uploadToMclogs(wmContent, "watermedia-app.log") : null;
+            final String crashUrl = crashContent != null ? uploadToMclogs(crashContent, crashReport.getFileName().toString()) : null;
 
-            this.consoleScreen.print("");
+            consoleScreen.print("");
 
             if (latestUrl != null || wmUrl != null) {
-                this.consoleScreen.info("--- Generating issue report ---");
-                final String issueText = this.generateIssueTemplate(latestUrl, wmUrl, crashUrl);
+                consoleScreen.info("--- Generating issue report ---");
+                final String issueText = generateIssueTemplate(latestUrl, wmUrl, crashUrl);
 
                 try {
                     final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
                     clipboard.setContents(new StringSelection(issueText), null);
-                    this.consoleScreen.success("Issue template copied to clipboard!");
+                    consoleScreen.success("Issue template copied to clipboard!");
                 } catch (final Exception e) {
-                    this.consoleScreen.error("Failed to copy to clipboard: " + e.getMessage());
+                    consoleScreen.error("Failed to copy to clipboard: " + e.getMessage());
                 }
 
-                this.consoleScreen.print("");
-                this.consoleScreen.print("Opening GitHub issues page...", Colors.YELLOW);
+                consoleScreen.print("");
+                consoleScreen.print("Opening GitHub issues page...", Colors.YELLOW);
 
                 try {
                     Desktop.getDesktop().browse(URI.create("https://github.com/WaterMediaTeam/watermedia/issues/new"));
-                    this.consoleScreen.success("Browser opened!");
-                    this.consoleScreen.success("Please open a github issue and paste the content of your clipboard");
+                    consoleScreen.success("Browser opened!");
+                    consoleScreen.success("Please open a github issue and paste the content of your clipboard");
                 } catch (final Exception e) {
-                    this.consoleScreen.error("Failed to open browser: " + e.getMessage());
-                    this.consoleScreen.print("Please manually go to: https://github.com/WaterMediaTeam/watermedia/issues/new");
+                    consoleScreen.error("Failed to open browser: " + e.getMessage());
+                    consoleScreen.print("Please manually go to: https://github.com/WaterMediaTeam/watermedia/issues/new");
                 }
             } else {
-                this.consoleScreen.error("No files were uploaded successfully.");
+                consoleScreen.error("No files were uploaded successfully.");
             }
 
-            this.consoleScreen.waitForKey();
+            consoleScreen.waitForKey();
         } catch (final Exception e) {
-            this.consoleScreen.error("Unexpected error: " + e.getMessage());
-            this.consoleScreen.waitForKey();
+            consoleScreen.error("Unexpected error: " + e.getMessage());
+            consoleScreen.waitForKey();
         }
     }
 
-    private void performCleanup() {
+    private static void performCleanup() {
         try {
-            this.consoleScreen.info("=== Cleanup ===");
-            this.consoleScreen.print("");
+            consoleScreen.info("=== Cleanup ===");
+            consoleScreen.print("");
 
             final Path wmPath = WaterMedia.cwd();
             final Path tmpDir = WaterMedia.tmp();
 
-            this.consoleScreen.print("WaterMedia path: " + wmPath);
-            this.consoleScreen.print("");
-            this.consoleScreen.info("--- Cleaning tmp folder ---");
+            consoleScreen.print("WaterMedia path: " + wmPath);
+            consoleScreen.print("");
+            consoleScreen.info("--- Cleaning tmp folder ---");
 
             final var dirs = tmpDir.toFile().listFiles();
             if (dirs == null) {
-                this.consoleScreen.print("No tmp folder found", Colors.GRAY);
-                this.consoleScreen.print("");
-                this.consoleScreen.info("--- Cleanup complete ---");
-                this.consoleScreen.print("Application will close after this.");
-                this.consoleScreen.waitForKey();
+                consoleScreen.print("No tmp folder found", Colors.GRAY);
+                consoleScreen.print("");
+                consoleScreen.info("--- Cleanup complete ---");
+                consoleScreen.print("Application will close after this.");
+                consoleScreen.waitForKey();
                 return;
             }
 
@@ -546,32 +543,32 @@ public class WaterMediaApp {
 
             if (tmpDeleted > 0) {
                 if (tmpDeleted == tmpCount) {
-                    this.consoleScreen.success("Tmp folder cleaned successfully (" + tmpDeleted + " items removed)");
+                    consoleScreen.success("Tmp folder cleaned successfully (" + tmpDeleted + " items removed)");
                 } else {
-                    this.consoleScreen.success("Tmp folder deleted almost successfully (" + tmpDeleted + " items removed - " + (tmpCount - tmpDeleted) + " items failed)");
+                    consoleScreen.success("Tmp folder deleted almost successfully (" + tmpDeleted + " items removed - " + (tmpCount - tmpDeleted) + " items failed)");
                 }
             } else {
-                this.consoleScreen.error("Failed to delete tmp folder");
+                consoleScreen.error("Failed to delete tmp folder");
             }
 
             final int tmpDeleteScheduled = IOTool.deleteSchedule(tmpDir.toFile());
             if (tmpDeleteScheduled > 0) {
-                this.consoleScreen.info("Additional " + tmpDeleteScheduled + " items scheduled for deletion on exit.");
+                consoleScreen.info("Additional " + tmpDeleteScheduled + " items scheduled for deletion on exit.");
             } else {
-                this.consoleScreen.print("No additional items scheduled for deletion.", Colors.YELLOW);
+                consoleScreen.print("No additional items scheduled for deletion.", Colors.YELLOW);
             }
 
-            this.consoleScreen.print("");
-            this.consoleScreen.info("--- Cleanup complete ---");
-            this.consoleScreen.print("Application will close after this.");
-            this.consoleScreen.waitForKey();
+            consoleScreen.print("");
+            consoleScreen.info("--- Cleanup complete ---");
+            consoleScreen.print("Application will close after this.");
+            consoleScreen.waitForKey();
         } catch (final Exception e) {
-            this.consoleScreen.error("Unexpected error: " + e.getMessage());
-            this.consoleScreen.waitForKey();
+            consoleScreen.error("Unexpected error: " + e.getMessage());
+            consoleScreen.waitForKey();
         }
     }
 
-    private Path findLatestCrashReport(final Path crashDir) {
+    private static Path findLatestCrashReport(final Path crashDir) {
         if (!Files.exists(crashDir)) return null;
         try (final var stream = Files.list(crashDir)) {
             return stream.filter(p -> p.toString().endsWith(".txt"))
@@ -587,22 +584,22 @@ public class WaterMediaApp {
         }
     }
 
-    private String readFileStatus(final Path path, final String name) {
+    private static String readFileStatus(final Path path, final String name) {
         if (!Files.exists(path)) {
-            this.consoleScreen.print(name + ": NOT FOUND", Colors.RED);
+            consoleScreen.print(name + ": NOT FOUND", Colors.RED);
             return null;
         }
         try {
             final String content = Files.readString(path, StandardCharsets.UTF_8);
-            this.consoleScreen.success(name + ": Read OK (" + content.length() + " bytes)");
+            consoleScreen.success(name + ": Read OK (" + content.length() + " bytes)");
             return content;
         } catch (final Exception e) {
-            this.consoleScreen.error(name + ": FAILED TO READ - " + e.getMessage());
+            consoleScreen.error(name + ": FAILED TO READ - " + e.getMessage());
             return null;
         }
     }
 
-    private String uploadToMclogs(final String content, final String name) {
+    private static String uploadToMclogs(final String content, final String name) {
         try {
             final HttpClient client = HttpClient.newHttpClient();
             final HttpRequest request = HttpRequest.newBuilder()
@@ -617,18 +614,18 @@ public class WaterMediaApp {
                 final JsonObject json = AppContext.GSON.fromJson(response.body(), JsonObject.class);
                 if (json.get("success").getAsBoolean()) {
                     final String url = json.get("url").getAsString();
-                    this.consoleScreen.success(name + ": Uploaded -> " + url);
+                    consoleScreen.success(name + ": Uploaded -> " + url);
                     return url;
                 }
             }
-            this.consoleScreen.error(name + ": Upload failed (HTTP " + response.statusCode() + ")");
+            consoleScreen.error(name + ": Upload failed (HTTP " + response.statusCode() + ")");
         } catch (final Exception e) {
-            this.consoleScreen.error(name + ": Upload failed - " + e.getMessage());
+            consoleScreen.error(name + ": Upload failed - " + e.getMessage());
         }
         return null;
     }
 
-    private String generateIssueTemplate(final String latestUrl, final String wmUrl, final String crashUrl) {
+    private static String generateIssueTemplate(final String latestUrl, final String wmUrl, final String crashUrl) {
         return "This is an automated issue report generated by WATERMeDIA: Multimedia API.\n\n" +
                 "## Files\n" +
                 "- Logs: " + (latestUrl != null ? latestUrl : "N/A") + "\n" +
@@ -646,9 +643,9 @@ public class WaterMediaApp {
     // CLEANUP
     // ========================================
 
-    private void cleanup() {
-        glfwFreeCallbacks(this.ctx.windowHandle);
-        glfwDestroyWindow(this.ctx.windowHandle);
+    private static void cleanup() {
+        glfwFreeCallbacks(ctx.windowHandle);
+        glfwDestroyWindow(ctx.windowHandle);
         glfwTerminate();
         glfwSetErrorCallback(null).close();
         System.exit(0);
