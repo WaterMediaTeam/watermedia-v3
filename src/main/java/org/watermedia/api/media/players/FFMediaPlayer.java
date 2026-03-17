@@ -119,7 +119,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private AVFrame pendingRenderFrame;
     private boolean pendingVideoRender = false;
     private long pendingVideoPtsMs = 0;
-    private long lastVideoRenderMs = 0;  // wall-clock of last GL upload
+    private long lastVideoRenderMs = 0;
 
     private static final int MAX_DECODE_THREADS = ThreadTool.halfThreads();
 
@@ -489,15 +489,34 @@ public final class FFMediaPlayer extends MediaPlayer {
                     continue;
                 }
 
-                // AUDIO SLAVE PACING
+                // AUDIO SLAVE PACING:
+                // When using audio slave, the main context is video-only.
+                // Without interleaved audio, av_read_frame returns video packets
+                // at I/O speed with no blocking — processVideoPacket overwrites
+                // pendingRenderFrame each iteration, and frames get skipped.
+                //
+                // Fix: if there's a pending video frame awaiting render, DON'T
+                // read more video from the main context. Instead, keep feeding
+                // slave audio to OpenAL in a loop. OpenAL blocks when its buffers
+                // are full (~40ms) = natural pacing. When renderPendingVideo
+                // succeeds, break out and read the next video packet.
                 if (this.useAudioSlave && this.pendingVideoRender) {
-                    // Only read and process slave audio (blocks on OpenAL = pacing)
-                    if (this.slaveFormatContext != null) {
-                        this.readSlaveAudio();
-                    }
-                    // Try to render the pending frame
-                    if (this.video && this.videoStreamIndex >= 0) {
-                        this.renderPendingVideo();
+                    while (this.pendingVideoRender && !ThreadTool.isInterrupted()) {
+                        // Feed audio — OpenAL upload blocks when buffers full = PACING
+                        if (this.slaveFormatContext != null) {
+                            this.readSlaveAudio();
+                        }
+
+                        // Try render after each audio packet
+                        if (this.video && this.videoStreamIndex >= 0) {
+                            this.renderPendingVideo();
+                        }
+
+                        // Check for seek/pause/quality requests
+                        if (this.seekTo >= 0 || this.preciseSeekTo >= 0
+                                || this.qualityRequest || this.pauseRequested) {
+                            break;
+                        }
                     }
                     continue;
                 }
@@ -531,7 +550,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     avcodec.av_packet_unref(this.packet);
                 }
 
-                // READ AND PROCESS AUDIO FROM SLAVE CONTEXT
+                // READ AND PROCESS AUDIO FROM SLAVE CONTEXT (initial feed before pacing loop kicks in)
                 if (this.useAudioSlave && this.slaveFormatContext != null) {
                     this.readSlaveAudio();
                 }
@@ -975,7 +994,13 @@ public final class FFMediaPlayer extends MediaPlayer {
             final long framePtsMs = (long) (this.videoFrame.pts() * this.videoTimeBase * 1000);
 
             // FRAME SKIPPING (too far behind clock)
-            if (this.clock.skip(framePtsMs)) {
+            // DISABLED for audio slaves: with slaves, the audio clock races ahead
+            // of wall-clock during burst audio processing (audio packets decode
+            // instantly, clock.update() runs per packet, but wall-clock barely
+            // moves). This makes skip() see frames as "late" that are actually
+            // on time. The main loop already gates video reads via pendingVideoRender,
+            // so we only decode 1 video packet per rendered frame — skip is unnecessary.
+            if (!this.useAudioSlave && this.clock.skip(framePtsMs)) {
                 LOGGER.debug(IT, "Your decoding is taking too long, skipping!");
                 this.totalSkippedFrames++;
                 this.consecutiveSkips++;
@@ -1036,7 +1061,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final int frameWidth = frameToScale.width();
         final int frameHeight = frameToScale.height();
 
-        // GUARD: VALIDATE PENDING FRAME IF USABLE, OTHERWISE DISCARD
+        // GUARD: validate pending frame is usable
         if (frameFormat == AV_PIX_FMT_NONE || frameWidth <= 0 || frameHeight <= 0 || Pointer.isNull(frameToScale.data(0))) {
             LOGGER.debug(IT, "Dropping invalid pending frame: format={}, size={}x{}", frameFormat, frameWidth, frameHeight);
             av_frame_unref(this.pendingRenderFrame);
