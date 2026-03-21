@@ -48,7 +48,7 @@ public class WaterMediaConfig {
         @Spec.Field
         @Comment("Adds this path to the discovery path")
         @Comment("Path must not be the fat ffmpeg.exe file")
-        public Path customFFmpegPath = new File("").toPath();
+        public Path customFFMPEGPath = new File("").toPath();
     }
 
     @Spec(value = "network", disableStatic = true)

@@ -69,9 +69,9 @@ public class AppBootstrap {
                 WaterMediaApp.start(() -> {
                     WaterMediaApp.log("Launched with embedded WaterMedia App Bootstrap");
                     WaterMediaApp.log("Searching for sideloadable extensions...");
+                    // SIDELOADING
                     ServiceLoader.load(Sideloadable.class).forEach(Sideloadable::load);
                 });
-                // SIDELOADING
             } catch (final Throwable e) {
                 showError(e);
             }

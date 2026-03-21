@@ -47,7 +47,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static boolean LOADED;
 
     // CONSTANTS
-    private static final int AUDIO_SAMPLE_RATE = 48000;
+    private static final int AUDIO_SAMPLE_RATE = 44100;
     private static final int AUDIO_CHANNELS = 2;
     private static final int AUDIO_SAMPLES = 2048;
     private static final int[] VIDEO_HW_CODECS = {
@@ -1301,7 +1301,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             // ASK WATERMEDIA BINARIES WHERE WAS FFMPEG
             final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
             // ALSO LOOK IN USER-DEFINED FOLDERS (OR RUNTIME FOLDER AS DEFAULT)
-            final String configPath = WaterMediaConfig.media.customFFmpegPath != null ? WaterMediaConfig.media.customFFmpegPath.toAbsolutePath().toString() : null;
+            final String configPath = WaterMediaConfig.media.customFFMPEGPath != null ? WaterMediaConfig.media.customFFMPEGPath.toAbsolutePath().toString() : null;
             final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
 
             System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
