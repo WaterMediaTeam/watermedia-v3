@@ -43,7 +43,7 @@ public class OpenMultimediaScreen extends Screen {
         try {
             final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
             if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
-                this.ctx.customUrlText = ((String) clipboard.getData(DataFlavor.stringFlavor)).trim();
+                this.ctx.customUrlText = ((String) clipboard.getData(DataFlavor.stringFlavor)).trim().replace("\"", "");
             }
         } catch (final Exception e) {
             this.ctx.customUrlText = "";
