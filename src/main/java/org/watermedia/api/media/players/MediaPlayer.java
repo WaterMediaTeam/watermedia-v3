@@ -51,7 +51,23 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
         Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
 
-        // Initialize properties
+        // VALIDATE THREAD
+        renderThreadEx.execute(() -> {
+            if (Thread.currentThread() != renderThread) {
+                throw new IllegalStateException("MediaPlayer must be provided with the render thread and a executor that runs task on it.");
+            }
+            // VALIDATE GL CONTEXT
+            if (video) {
+                if (gl == null) {
+                    throw new IllegalArgumentException("MediaPlayer with video support must be provided with a valid GLEngine instance.");
+                }
+                if (!gl.hasGLContext()) {
+                    throw new IllegalStateException("MediaPlayer's GLEngine context must be current on the render thread.");
+                }
+            }
+        });
+
+        // INIT PROPERTIES
         this.source = source;
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
