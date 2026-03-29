@@ -1,7 +1,6 @@
 package org.watermedia.api.media.engines;
 
 import org.lwjgl.openal.AL10;
-import org.watermedia.tools.ThreadTool;
 
 import java.nio.ByteBuffer;
 
@@ -46,18 +45,23 @@ public final class ALEngine {
         AL10.alDeleteBuffers(source);
     }
 
-    public void uploadBuffer(final int source, final ByteBuffer data, final int format, final int samples) {
+    /**
+     * Upload audio data to OpenAL. Non-blocking: returns false if no buffer
+     * is available (caller should retry later).
+     */
+    public boolean uploadBuffer(final int source, final ByteBuffer data, final int format, final int samples) {
         final int buffer;
         if (this.index < this.buffers.length) {
             buffer = this.buffers[this.index++];
         } else {
-            while (AL10.alGetSourcei(source, AL10.AL_BUFFERS_PROCESSED) <= 0) {
-                ThreadTool.sleep(1);
+            if (AL10.alGetSourcei(source, AL10.AL_BUFFERS_PROCESSED) <= 0) {
+                return false; // no buffer available — try later
             }
             buffer = AL10.alSourceUnqueueBuffers(source);
         }
         AL10.alBufferData(buffer, format, data, samples);
         AL10.alSourceQueueBuffers(source, buffer);
+        return true;
     }
 
     public int[] buffers() {

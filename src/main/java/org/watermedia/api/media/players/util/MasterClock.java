@@ -1,246 +1,214 @@
 package org.watermedia.api.media.players.util;
 
-import org.watermedia.tools.ThreadTool;
-
 /**
- * Class is a timer manager, allows players to control their own timings.
- * <p>
- * MasterClock provides a unified clock system for media players that handles:
- * <ul>
- *   <li>Time tracking with nanosecond precision</li>
- *   <li>Pause/resume state management</li>
- *   <li>Speed adjustment</li>
- *   <li>Frame pacing (handbrake) without relying on external blocking operations</li>
- *   <li>Audio/Video synchronization through drift calculation</li>
- * </ul>
- * <p>
- * This class is designed to be used by any media player implementation, not just FFMPEG-based ones.
+ * Clock basado en pts_drift como ffplay.
+ *
+ * En lugar de almacenar masterTimeMs + baseTimeMs y calcular elapsed:
+ *   time = masterTimeMs + (now - baseTimeMs)
+ * almacena pts_drift = pts - wallclock_at_update:
+ *   time = pts_drift + now
+ *
+ * Ventajas:
+ * 1. NO ACUMULA ERROR: cada update() recalibra el drift completo.
+ * 2. NO NECESITA CAP: el clock siempre converge al siguiente update.
+ * 3. UN SOLO MÉTODO time(): una sola fuente de verdad.
+ * 4. VELOCIDAD VARIABLE: multiplicar speed es trivial.
+ *
+ * Internamente todo es double en SECONDS (como ffplay).
+ * Métodos timeMs()/updateMs() son convenience wrappers.
  */
-public class MasterClock {
-    // Clock state
-    private volatile long masterTimeMs = 0;
-    private volatile long baseTimeMs = -1;
-    private volatile boolean paused = false;
-    private volatile long pausedTimeMs = 0;
-    private volatile float speed = 1.0f;
+public final class MasterClock {
+    private volatile double pts;
+    private volatile double ptsDrift;
+    private volatile double lastUpdated;
+    private volatile double speed = 1.0;
+    private volatile boolean paused;
+    private volatile boolean frozen; // AFTER force(): time() RETURNS pts UNTIL FIRST update()
+    private volatile int serial;
 
-    // Frame timing configuration
+    // Frame timing (seteado al abrir el stream)
+    private volatile double frameDurationSec = 1.0 / 30.0;
     private volatile float fps = 30.0f;
-    private volatile long frameDurationMs = 33; // ~30fps default
-    private volatile long skipThresholdMs = 165; // 5 frames default
+    private volatile long skipThresholdMs = 165;
 
-    /**
-     * Creates a new MasterClock with default settings (30fps, 1.0x speed).
-     */
-    public MasterClock() {}
 
-    /**
-     * Creates a new MasterClock with specified frame rate.
-     * @param fps the target frames per second
-     */
-    public MasterClock(final float fps) {
-        this.fps(fps);
+    // ═══════════════════════════════════════════
+    //  WALLCLOCK
+    // ═══════════════════════════════════════════
+
+    /** Wallclock en seconds con precisión de nanosegundo. */
+    private static double wallclock() {
+        return System.nanoTime() / 1_000_000_000.0;
     }
 
+    // ═══════════════════════════════════════════
+    //  CLOCK READ
+    // ═══════════════════════════════════════════
+
     /**
-     * Starts or restarts the clock from the current master time.
-     * Call this when playback begins or resumes.
+     * Tiempo actual del clock en seconds.
+     * Para speed=1.0: pts + (now - wallclock_at_update)
+     *
+     * No cap needed: the consumption loop's non-blocking timing check
+     * (diff <= 0.002) provides natural real-time pacing. The clock advances
+     * at wall-clock speed via ptsDrift. Audio is consumed only when the
+     * clock reaches the frame's PTS — this inherently prevents racing.
+     *
+     * A cap would cause deadlocks when audio PTS has gaps > cap value,
+     * because time() could never reach the next frame's PTS.
      */
+    public double time() {
+        if (this.paused || this.frozen) return this.pts;
+        double now = wallclock();
+        double elapsed = now - this.lastUpdated;
+        return this.ptsDrift + now - elapsed * (1.0 - this.speed);
+    }
+
+    /** Convenience: tiempo en milisegundos. */
+    public long timeMs() {
+        return (long) (this.time() * 1000.0);
+    }
+
+    // ═══════════════════════════════════════════
+    //  CLOCK WRITE
+    // ═══════════════════════════════════════════
+
+    /**
+     * Actualizar el clock con un PTS del stream (seconds).
+     * Llamar cada vez que el audio decode procesa un frame.
+     *
+     * @param pts    PTS del frame en seconds.
+     * @param serial serial del PacketQueue que originó este frame.
+     */
+    public void update(double pts, int serial) {
+        // REJECT LARGE BACKWARD JUMPS — POST-SEEK AUDIO FROM KEYFRAME
+        // (PTS << TARGET) WOULD PULL THE CLOCK BACKWARD
+        if (pts < this.pts - this.frameDurationSec) return;
+
+        double now = wallclock();
+        this.pts = pts;
+        this.ptsDrift = pts - now;
+        this.lastUpdated = now;
+        this.serial = serial;
+        // UNFREEZE: FIRST ACCEPTED AUDIO UPDATE AFTER force() → CLOCK RESUMES
+        this.frozen = false;
+    }
+
+    /** Convenience: update con milisegundos. */
+    public void updateMs(long ptsMs, int serial) {
+        this.update(ptsMs / 1000.0, serial);
+    }
+
+    // ═══════════════════════════════════════════
+    //  PACING (para video-only sin audio)
+    // ═══════════════════════════════════════════
+
+    /**
+     * Para streams sin audio: duerme hasta que sea momento de mostrar
+     * el frame con el PTS dado.
+     *
+     * @param framePtsSec PTS del frame en seconds.
+     * @return true si es momento de mostrar, false si fue interrumpido.
+     */
+    public boolean waitUntil(double framePtsSec) {
+        while (!Thread.currentThread().isInterrupted()) {
+            double now = this.time();
+            double diff = framePtsSec - now;
+
+            if (diff <= 0.002) return true; // 2ms de tolerancia
+
+            long sleepMs = Math.min((long) (diff * 1000.0), 10);
+            try {
+                Thread.sleep(sleepMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // ═══════════════════════════════════════════
+    //  CONTROL
+    // ═══════════════════════════════════════════
+
+    /** Inicia el clock desde tiempo 0 avanzando con wallclock. */
     public void start() {
-        this.baseTimeMs = System.currentTimeMillis();
+        double now = wallclock();
+        this.pts = 0;
+        this.ptsDrift = -now;
+        this.lastUpdated = now;
         this.paused = false;
+        this.frozen = false;
     }
 
-    /**
-     * Pauses the clock, preserving the current time for later resumption.
-     */
     public void pause() {
         if (!this.paused) {
-            this.pausedTimeMs = this.time();
+            this.pts = this.time();
             this.paused = true;
         }
     }
 
-    /**
-     * Resumes the clock from the paused position.
-     */
     public void resume() {
         if (this.paused) {
-            this.masterTimeMs = this.pausedTimeMs;
-            this.baseTimeMs = System.currentTimeMillis();
+            double now = wallclock();
+            this.ptsDrift = this.pts - now;
+            this.lastUpdated = now;
             this.paused = false;
         }
     }
 
     /**
-     * Resets the clock to zero and stops it.
+     * FORCE CLOCK TO A SPECIFIC TIME (SEEK). THE CLOCK IS FROZEN AT THIS VALUE
+     * UNTIL THE FIRST update() RECALIBRATES IT. THIS PREVENTS time() FROM
+     * ADVANCING DURING SEEK PROCESSING (HTTP RECONNECTION, SYNC DRAIN),
+     * WHICH WOULD CAUSE VISIBLE CLOCK JUMPS FOR USERS AND SYNC ISSUES FOR DEVS.
      */
+    public void force(double ptsSec, int serial) {
+        this.pts = ptsSec;
+        this.serial = serial;
+        this.frozen = true;
+    }
+
+    public void forceMs(long ptsMs, int serial) {
+        this.force(ptsMs / 1000.0, serial);
+    }
+
     public void reset() {
-        this.masterTimeMs = 0;
-        this.baseTimeMs = -1;
-        this.pausedTimeMs = 0;
+        double now = wallclock();
+        this.pts = 0;
+        this.ptsDrift = -now;
+        this.lastUpdated = now;
         this.paused = false;
+        this.frozen = false;
+        this.serial = 0;
+        this.speed = 1.0;
     }
 
-    /**
-     * Sets the clock to a specific time in milliseconds.
-     * Useful for seeking operations.
-     * @param timeMs the time to set in milliseconds
-     */
-    public void time(final long timeMs) {
-        this.masterTimeMs = timeMs;
-        this.baseTimeMs = System.currentTimeMillis();
+    // ═══════════════════════════════════════════
+    //  FRAME TIMING
+    // ═══════════════════════════════════════════
+
+    /** Setear FPS del stream. Llamar al abrir el video stream. */
+    public void fps(float fps) {
+        this.fps = Math.max(fps, 1.0f);
+        this.frameDurationSec = 1.0 / this.fps;
+        // Skip threshold: ~5 frames worth
+        this.skipThresholdMs = (long) (this.frameDurationSec * 5.0 * 1000.0);
     }
 
-    /**
-     * Returns the current playback time in milliseconds.
-     * Accounts for speed and pause state.
-     * @return current time in milliseconds
-     */
-    public long time() {
-        if (this.paused || this.baseTimeMs <= 0) {
-            return this.masterTimeMs;
-        }
-        final long elapsedMs = (long) ((System.currentTimeMillis() - this.baseTimeMs) * this.speed);
-        return this.masterTimeMs + Math.min(elapsedMs, 100L);
-    }
+    public float fps() { return this.fps; }
+    public long frameDurationMs() { return (long) (this.frameDurationSec * 1000.0); }
+    public double frameDurationSec() { return this.frameDurationSec; }
+    public long skipThresholdMs() { return this.skipThresholdMs; }
+    public int serial() { return this.serial; }
+    public boolean paused() { return this.paused; }
+    public boolean frozen() { return this.frozen; }
+    public double speed() { return this.speed; }
 
-    /**
-     * Returns the reference time for A/V sync calculations in milliseconds.
-     * This is the time that frames should be compared against.
-     * @return reference time in milliseconds
-     */
-    public long referenceTime() {
-        if (this.baseTimeMs <= 0) return 0;
-        final long elapsedMs = (long) ((System.currentTimeMillis() - this.baseTimeMs) * this.speed);
-        return this.masterTimeMs + elapsedMs;
-    }
-
-    /**
-     * Checks if the clock is currently paused.
-     * @return true if paused
-     */
-    public boolean paused() {
-        return this.paused;
-    }
-
-    /**
-     * Sets the playback speed multiplier.
-     * @param speed the speed multiplier (1.0 = normal speed)
-     */
-    public void speed(final float speed) {
-        if (speed <= 0 || speed > 4.0f) return;
-        // Preserve current position when changing speed
-        final long currentTime = this.time();
+    public void speed(double speed) {
+        double currentTime = this.time();
         this.speed = speed;
-        this.masterTimeMs = currentTime;
-        this.baseTimeMs = System.currentTimeMillis();
+        this.force(currentTime, this.serial);
     }
-
-    /**
-     * Returns the current playback speed multiplier.
-     * @return the speed multiplier
-     */
-    public float speed() {
-        return this.speed;
-    }
-
-    /**
-     * Updates the master clock from a frame timestamp.
-     * This recalibrates the clock to correct any drift between the media
-     * timestamps and real-world time.
-     * @param timeMs the presentation timestamp of the frame in milliseconds
-     */
-    public void update(final long timeMs) {
-        this.masterTimeMs = timeMs;
-        this.baseTimeMs = System.currentTimeMillis();
-    }
-
-    /**
-     * Sets the frame rate for timing calculations.
-     * @param fps frames per second
-     */
-    public void fps(final float fps) {
-        if (fps > 0) {
-            this.fps = fps;
-            this.frameDurationMs = (long) (1000.0 / fps);
-            this.skipThresholdMs = this.frameDurationMs * 5;
-        }
-    }
-
-    /**
-     * Returns the configured frame rate.
-     * @return frames per second
-     */
-    public float fps() {
-        return this.fps;
-    }
-
-    /**
-     * Returns the configured frame duration in milliseconds.
-     * @return frame duration in milliseconds
-     */
-    public long frameDuration() {
-        return this.frameDurationMs;
-    }
-
-    /**
-     * Returns the threshold for aggressive frame skipping in milliseconds.
-     * @return skip threshold in milliseconds
-     */
-    public long skipThreshold() {
-        return this.skipThresholdMs;
-    }
-
-    /**
-     * Calculates the drift between a frame's PTS and the current reference time.
-     * Positive drift means the frame is ahead (should wait).
-     * Negative drift means the frame is behind (might skip).
-     * @param framePtsMs the frame's presentation timestamp in milliseconds
-     * @return the drift in milliseconds (positive = ahead, negative = behind)
-     */
-    public long drift(final long framePtsMs) {
-        return framePtsMs - this.referenceTime();
-    }
-
-    /**
-     * Determines if a frame should be skipped based on how far behind it is.
-     * <p>
-     * Uses {@link #time()} (capped) instead of {@link #referenceTime()} (uncapped)
-     * to prevent false drops during video packet bursts. When multiple video packets
-     * arrive without interleaved audio packets, {@code referenceTime()} races ahead
-     * with wall-clock while {@code masterTimeMs} stays at the last audio PTS.
-     * The 100ms cap in {@code time()} prevents this divergence from triggering
-     * false skips on containers with poor A/V interleaving.
-     * </p>
-     * @param framePtsMs the frame's presentation timestamp in milliseconds
-     * @return true if the frame should be skipped
-     */
-    public boolean skip(final long framePtsMs) {
-//        return framePtsMs < this.time() - this.skipThresholdMs;
-        final long drift = this.drift(framePtsMs);
-        return drift < -this.skipThresholdMs;
-    }
-
-    /**
-     * Waits if necessary to maintain proper frame timing.
-     * This is the "handbrake" that prevents playback from running too fast.
-     * <p>
-     * Call this BEFORE rendering a frame. It will sleep if the frame is ahead
-     * of the reference time, ensuring smooth playback without relying on
-     * external blocking operations (like OpenAL buffer dequeue).
-     * @param framePtsMs the frame's presentation timestamp in milliseconds
-     * @return true if we waited (frame was ahead), false if we didn't need to wait
-     */
-    public boolean waiting(final long framePtsMs) {
-        final long drift = this.drift(framePtsMs);
-
-        if (drift > 1)
-            return ThreadTool.sleep(drift - 1);
-
-        return false;
-    }
-
-
-
 }

@@ -22,8 +22,9 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
-import org.watermedia.api.util.MathUtil;
+import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
@@ -39,7 +40,15 @@ import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
- * MediaPlayer instance implementing FFMPEG
+ * MediaPlayer implementation using FFmpeg with multi-threaded architecture.
+ *
+ * 3 internal threads (demux, video decode, audio decode) produce decoded frames
+ * into thread-safe queues. The caller thread consumes frames via pollVideoFrame()
+ * and pollAudioFrame().
+ *
+ * Architecture follows ffplay's proven design: PacketQueues between demux and
+ * decode threads, FrameQueues between decode and render, serial-based seek
+ * invalidation, and pts_drift clock synchronization.
  */
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
@@ -50,17 +59,18 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final int AUDIO_SAMPLE_RATE = 44100;
     private static final int AUDIO_CHANNELS = 2;
     private static final int AUDIO_SAMPLES = 2048;
+    private static final int MAX_DECODE_THREADS = ThreadTool.halfThreads();
     private static final int[] VIDEO_HW_CODECS = {
             AV_HWDEVICE_TYPE_CUDA,          // NVIDIA
             AV_HWDEVICE_TYPE_QSV,           // INTEL
             //  OS DEDICATED HARDWARE
-            AV_HWDEVICE_TYPE_D3D12VA,       // Windows DirectX 12
-            AV_HWDEVICE_TYPE_D3D11VA,       // Windows DirectX 11
+            AV_HWDEVICE_TYPE_D3D12VA,       // WINDOWS DIRECTX 12
+            AV_HWDEVICE_TYPE_D3D11VA,       // WINDOWS DIRECTX 11
             AV_HWDEVICE_TYPE_VIDEOTOOLBOX,  // MACOS
-            AV_HWDEVICE_TYPE_VAAPI,         // Linux VA-API
-            AV_HWDEVICE_TYPE_VDPAU,         // Linux VDPAU
-            AV_HWDEVICE_TYPE_DRM,           // Linux DRM
-            AV_HWDEVICE_TYPE_MEDIACODEC,    // Android MEDIACODEC
+            AV_HWDEVICE_TYPE_VAAPI,         // LINUX VA-API
+            AV_HWDEVICE_TYPE_VDPAU,         // LINUX VDPAU
+            AV_HWDEVICE_TYPE_DRM,           // LINUX DRM
+            AV_HWDEVICE_TYPE_MEDIACODEC,    // ANDROID MEDIACODEC
             //  GENERIC HARDWARE DECODERS
             AV_HWDEVICE_TYPE_VULKAN,        // VULKAN
             AV_HWDEVICE_TYPE_OPENCL,        // OPENCL
@@ -76,7 +86,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // HW
     private AVBufferRef hwDeviceCtx;
-    private AVFrame hwTransferFrame;
     private int hwPixelFormat = AV_PIX_FMT_NONE;
     private int swsInputFormat = AV_PIX_FMT_NONE;
 
@@ -85,24 +94,39 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int audioStreamIndex = -1;
     private boolean useAudioSlave = false;
 
-    // STATUS (SHARED IN PLAYERLOOP)
-    private Thread playerThread;
+    // THREADS
+    private Thread lifecycleThread;
+    private Thread demuxThread;
+    private Thread videoDecodeThread;
+    private Thread audioDecodeThread;
+
+    // INIT SYNCHRONIZATION (DEMUX THREAD RUNS init, LIFECYCLE WAITS)
+    // 0 = PENDING, 1 = SUCCESS, -1 = FAILED
+    private volatile int initState = 0;
+
+    // QUEUES
+    private PacketQueue videoPacketQueue;
+    private PacketQueue audioPacketQueue;
+    private FrameQueue videoFrameQueue;
+    private FrameQueue audioFrameQueue;
+
+    // STATUS
     private volatile Status status = Status.WAITING;
     private volatile boolean pauseRequested = false;
     private volatile boolean qualityRequest = false;
-    private volatile long seekTo = -1;
-    private volatile long preciseSeekTo = -1;
 
-    // CLOCK SYSTEM
+    // SEEK (WRITTEN BY CALLER THREAD, READ BY DEMUX THREAD)
+    private volatile boolean seekRequested = false;
+    private volatile long seekTargetMs = -1;
+    private volatile boolean seekPrecise = false;
+    private final Object eofLock = new Object(); // WAKE DEMUX WHEN PARKED AT EOF
+
+
+    // CLOCK
     private final MasterClock clock = new MasterClock();
 
-    // REUSABLE BUFFERS
-    private AVPacket packet;
-    private AVPacket slavePacket;
-    private AVFrame videoFrame;
-    private AVFrame audioFrame;
+    // RENDER BUFFERS (CALLER/RENDER THREAD ONLY)
     private AVFrame scaledFrame;
-    private AVFrame resampledFrame;
     private ByteBuffer videoBuffer;
     private boolean videoBufferInitialized = false;
 
@@ -110,39 +134,38 @@ public final class FFMediaPlayer extends MediaPlayer {
     private double videoTimeBase;
     private double audioTimeBase;
 
-    // STATS (unused yet)
-    private int consecutiveSkips = 0;
+    // STATS
     private long totalSkippedFrames = 0;
     private long totalRenderedFrames = 0;
 
-    // DEFERRED RENDERING
-    private AVFrame pendingRenderFrame;
-    private boolean pendingVideoRender = false;
-    private long pendingVideoPtsMs = 0;
-    private long lastVideoRenderMs = 0;
-
-    private static final int MAX_DECODE_THREADS = ThreadTool.halfThreads();
+    // FORMAT CHANGE DETECTION (RENDER THREAD ONLY)
+    private int lastFrameWidth;
+    private int lastFrameHeight;
 
     public FFMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx,
                          final GLEngine gl, final ALEngine al, final boolean video, final boolean audio) {
         super(source, renderThread, renderThreadEx, gl, al, video, audio);
     }
 
+    // ═══════════════════════════════════════════
+    //  MEDIAPLAYER OVERRIDES
+    // ═══════════════════════════════════════════
+
     @Override
     public void start() {
-        if (this.playerThread != null && this.playerThread.isAlive() && !this.playerThread.isInterrupted()) {
-            this.stop(); // CANNOT TRUST AUTHORS
+        if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
+            this.stop();
         }
-        final Thread oldThread = this.playerThread;
+        final Thread oldThread = this.lifecycleThread;
 
-        this.playerThread = DEFAULT_THREAD_FACTORY.newThread(() -> {
+        this.lifecycleThread = DEFAULT_THREAD_FACTORY.newThread(() -> {
             if (oldThread != null && !ThreadTool.join(oldThread)) {
-                return; // IF THE OLD THREAD STILL EXIST BUT WHILE WE JOIN CURRENT THREAD IS INTERRUPTED, THEN DO NOTHING.
+                return;
             }
-            this.playerLoop();
+            this.lifecycle();
         });
-        this.playerThread.setDaemon(true);
-        this.playerThread.start();
+        this.lifecycleThread.setDaemon(true);
+        this.lifecycleThread.start();
     }
 
     @Override
@@ -159,20 +182,24 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean pause(final boolean paused) {
-        // super.pause(paused); // MOVED INTO PLAYER LOOP
+        if (this.status == Status.ENDED || this.status == Status.STOPPED || this.status == Status.ERROR) return false;
         this.pauseRequested = paused;
         if (paused) {
             this.clock.pause();
+            if (this.status == Status.PLAYING) this.status = Status.PAUSED;
         } else {
             this.clock.resume();
+            if (this.status == Status.PAUSED) this.status = Status.PLAYING;
         }
         return true;
     }
 
     @Override
     public boolean stop() {
-        if (this.playerThread != null) {
-            this.playerThread.interrupt();
+        if (this.lifecycleThread != null) {
+            this.lifecycleThread.interrupt();
+            // WAKE DEMUX IF PARKED AT EOF — interrupt ALONE WON'T UNBLOCK eofLock.wait()
+            if (this.demuxThread != null) this.demuxThread.interrupt();
             return true;
         }
         return false;
@@ -183,17 +210,21 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean seek(long timeMs) {
-        if (!this.canSeek()) return false;
-
-        this.preciseSeekTo = Math.max(0, Math.min(timeMs, this.duration()));
+        if (!this.canSeek() || this.status == Status.STOPPED || this.status == Status.ERROR) return false;
+        this.seekTargetMs = Math.max(0, Math.min(timeMs, this.duration()));
+        this.seekPrecise = true;
+        this.seekRequested = true;
+        synchronized (this.eofLock) { this.eofLock.notifyAll(); } // WAKE DEMUX IF PARKED AT EOF
         return true;
     }
 
     @Override
     public boolean seekQuick(final long timeMs) {
-        if (!this.canSeek()) return false;
-
-        this.seekTo = Math.max(0, Math.min(timeMs, this.duration()));  // USA FAST SEEK
+        if (!this.canSeek() || this.status == Status.STOPPED || this.status == Status.ERROR) return false;
+        this.seekTargetMs = Math.max(0, Math.min(timeMs, this.duration()));
+        this.seekPrecise = false;
+        this.seekRequested = true;
+        synchronized (this.eofLock) { this.eofLock.notifyAll(); }
         return true;
     }
 
@@ -203,17 +234,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public boolean previousFrame() {
         if (!this.canSeek()) return false;
-
-        final long frameTimeMs = this.clock.frameDuration();
-        return this.seek(Math.max(0, this.time() - frameTimeMs));
+        return this.seek(Math.max(0, this.time() - this.clock.frameDurationMs()));
     }
 
     @Override
     public boolean nextFrame() {
         if (!this.canSeek()) return false;
-
-        final long frameTimeMs = this.clock.frameDuration();
-        return this.seek(this.time() + frameTimeMs);
+        return this.seek(this.time() + this.clock.frameDurationMs());
     }
 
     @Override
@@ -243,15 +270,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public void quality(final MRL.Quality quality) {
         super.quality(quality);
-        if (this.playerThread != null && this.playerThread.isAlive() && !this.playerThread.isInterrupted()) {
+        if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
             this.qualityRequest = true;
         }
     }
 
     @Override
-    public long time() {
-        return this.clock.time();
-    }
+    public long time() { return this.clock.timeMs(); }
 
     @Override
     public boolean speed(float speed) {
@@ -264,331 +289,1004 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     public boolean isHwAccel() { return !isNull(this.hwDeviceCtx); }
 
-    private void playerLoop() {
+    // ═══════════════════════════════════════════
+    //  PUBLIC POLLING (CALLER/RENDER THREAD)
+    // ═══════════════════════════════════════════
+
+    /**
+     * Poll for the next video frame. Non-blocking.
+     * Call from the render/game thread in each tick.
+     *
+     * Performs A/V sync, sws_scale, and GL upload.
+     * Drops frames that are too far behind the clock.
+     *
+     * @return true if a frame was rendered, false if no frame available or not time yet.
+     */
+    public boolean pollVideoFrame() {
+        if (this.videoFrameQueue == null || !this.video || this.videoStreamIndex < 0) return false;
+        if (this.scaledFrame == null) return false;
+
+        while (true) {
+            final FrameQueue.Slot slot = this.videoFrameQueue.peek();
+            if (slot == null) return false;
+
+            // SERIAL CHECK — DISCARD FRAMES FROM BEFORE A SEEK
+            if (slot.serial != this.clock.serial()) {
+                this.videoFrameQueue.next();
+                continue;
+            }
+
+            // A/V SYNC
+            final double clockSec = this.clock.time();
+            final double frameSec = slot.ptsMs / 1000.0;
+            final double diff = frameSec - clockSec;
+
+            if (diff > 0.040) return false;  // FRAME TOO EARLY
+            if (diff < -(this.clock.skipThresholdMs() / 1000.0)) { // FRAME TOO LATE — DROP
+                this.videoFrameQueue.next();
+                this.totalSkippedFrames++;
+                continue;
+            }
+
+            // FORMAT CHANGE DETECTION
+            if (this.swsContext == null
+                    || this.swsInputFormat != slot.format
+                    || this.lastFrameWidth != slot.width
+                    || this.lastFrameHeight != slot.height) {
+                this.recreateSwsContext(slot.width, slot.height, slot.format);
+                this.lastFrameWidth = slot.width;
+                this.lastFrameHeight = slot.height;
+            }
+
+            if (this.swsContext == null) {
+                this.videoFrameQueue.next();
+                return false;
+            }
+
+            // LAZY INIT VIDEO BUFFER
+            if (!this.videoBufferInitialized) {
+                this.videoBuffer = this.scaledFrame.data(0).asBuffer();
+                this.videoBufferInitialized = true;
+            }
+
+            // SWS_SCALE + GL UPLOAD
+            synchronized (this.videoBuffer) {
+                final int result = swscale.sws_scale(
+                        this.swsContext,
+                        slot.frame.data(),
+                        slot.frame.linesize(),
+                        0,
+                        slot.height,
+                        this.scaledFrame.data(),
+                        this.scaledFrame.linesize()
+                );
+
+                if (result <= 0) {
+                    LOGGER.error(IT, "sws_scale failed: result={}, fmt={}, size={}x{}",
+                            result, slot.format, slot.width, slot.height);
+                    this.videoFrameQueue.next();
+                    return false;
+                }
+            }
+
+            final int stride = this.scaledFrame.linesize(0);
+            this.upload(this.videoBuffer, stride / 4);
+
+            // SAVE VALUES BEFORE CONSUMING (next() CLEARS THE SLOT)
+            final int frameSerial = slot.serial;
+            final double frameTimeSec = frameSec;
+
+            // CONSUME
+            this.videoFrameQueue.next();
+            this.totalRenderedFrames++;
+
+            // CLOCK UPDATE — ALWAYS FOR VIDEO-ONLY, OR WHEN FROZEN (POST-SEEK
+            // UNFREEZE: AUDIO MAY NOT HAVE ARRIVED YET TO CALL update())
+            if (this.audioStreamIndex < 0 || this.clock.frozen()) {
+                this.clock.update(frameTimeSec, frameSerial);
+            }
+
+            return true;
+        }
+    }
+
+    /**
+     * Poll for the next audio frame. Non-blocking.
+     * Call from the thread that manages OpenAL.
+     *
+     * Uploads decoded+resampled audio data to OpenAL buffers.
+     * The clock was already updated by the audio decode thread.
+     *
+     * @return true if audio was uploaded, false if no frame available.
+     */
+    public boolean pollAudioFrame() {
+        if (this.audioFrameQueue == null || !this.audio || this.audioStreamIndex < 0) return false;
+
+        while (true) {
+            final FrameQueue.Slot slot = this.audioFrameQueue.peek();
+            if (slot == null) return false;
+
+            // SERIAL CHECK
+            if (slot.serial != this.clock.serial()) {
+                this.audioFrameQueue.next();
+                continue;
+            }
+
+            // SAVE TIMING BEFORE CONSUMING
+            final long framePtsMs = slot.ptsMs;
+            final int frameSerial = slot.serial;
+
+            // EXTRACT + UPLOAD (NON-BLOCKING: IF OpenAL HAS NO BUFFER, SKIP AND RETRY LATER)
+            final int dataSize = slot.frame.nb_samples() * AUDIO_CHANNELS * 2; // S16 = 2 BYTES/SAMPLE
+            final ByteBuffer audioData = slot.frame.data(0)
+                    .limit(dataSize)
+                    .asBuffer()
+                    .clear();
+
+            if (!this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS)) {
+                return false; // OpenAL BUFFERS FULL — DON'T CONSUME, RETRY NEXT ITERATION
+            }
+
+            // CONSUME (ONLY AFTER SUCCESSFUL UPLOAD)
+            this.audioFrameQueue.next();
+
+            // CLOCK UPDATE — AUDIO IS THE PRIMARY CLOCK SOURCE
+            this.clock.updateMs(framePtsMs, frameSerial);
+
+            return true;
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    //  LIFECYCLE (SUPERVISOR THREAD)
+    // ═══════════════════════════════════════════
+
+    private void lifecycle() {
         try {
-            // RESET
-            this.consecutiveSkips = 0;
+            this.clock.reset();
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
-            this.clock.reset();
-
             this.status = Status.LOADING;
-            if (!this.init()) {
+
+            // CREATE QUEUES (BEFORE THREADS START)
+            this.videoPacketQueue = new PacketQueue(16 * 1024 * 1024);   // 16MB VIDEO (~25s AT 5Mbps)
+            this.audioPacketQueue = new PacketQueue(128 * 1024 * 1024); // 128MB AUDIO (~2h AT 140kbps)
+            this.videoFrameQueue = new FrameQueue(3);
+            this.audioFrameQueue = new FrameQueue(9);
+
+            // START DEMUX THREAD — IT RUNS init() INTERNALLY SO THAT
+            // avformat_open_input, avformat_find_stream_info, AND av_read_frame
+            // ALL HAPPEN ON THE SAME THREAD. FFMPEG'S INTERNAL I/O STATE (HTTP
+            // CONNECTION, PACKET CACHE FROM find_stream_info) IS NOT SAFELY
+            // SHARED ACROSS THREADS.
+            this.initState = 0;
+            this.demuxThread = DEFAULT_THREAD_FACTORY.newThread(this::demuxLoop);
+            this.demuxThread.setDaemon(true);
+            this.demuxThread.start();
+
+            // WAIT FOR INIT (DEMUX THREAD SIGNALS VIA VOLATILE initState)
+            while (this.initState == 0 && !Thread.currentThread().isInterrupted()) {
+                Thread.sleep(10);
+            }
+
+            if (this.initState != 1) {
                 this.status = Status.ERROR;
                 return;
             }
 
+            // START DECODE THREADS (CODEC CONTEXTS ARE NOW SET UP BY init ON DEMUX THREAD)
+            if (this.video && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
+                this.videoDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::videoDecodeLoop);
+                this.videoDecodeThread.setDaemon(true);
+                this.videoDecodeThread.start();
+            }
+            if (this.audio && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+                this.audioDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::audioDecodeLoop);
+                this.audioDecodeThread.setDaemon(true);
+                this.audioDecodeThread.start();
+            }
+
             if (this.pauseRequested) {
                 this.status = Status.PAUSED;
+                this.clock.pause();
             } else {
                 this.status = Status.PLAYING;
-                this.clock.start();
             }
 
-            while (!ThreadTool.isInterrupted()) {
-                // HANDLE QUALITY SWITCH
+            // CONSUMPTION LOOP — POLL DECODED FRAMES AND UPLOAD TO GL/AL
+            // THIS REPLACES THE OLD SINGLE-THREADED playerLoop: DECODE THREADS
+            // PRODUCE INTO QUEUES, THIS LOOP CONSUMES AND UPLOADS.
+            // AUDIO UPLOAD TO OpenAL BLOCKS WHEN BUFFERS ARE FULL (~40MS),
+            // PROVIDING NATURAL PACING FOR AUDIO+VIDEO STREAMS.
+            while (!Thread.currentThread().isInterrupted()) {
+                // QUALITY SWITCH
                 if (this.qualityRequest) {
-                    final long currentTimeMs = this.time();
-                    final boolean wasPaused = this.pauseRequested;
-
-                    LOGGER.info(IT, "Switching quality to {} at {}s", this.quality, MathUtil.msToSeconds(currentTimeMs));
-
-                    // CLEAN FFMPEG IN CASE QUALITY SWAP
-                    this.cleanup();
-
-                    // RESET FOR NEW URL
-                    this.consecutiveSkips = 0;
-                    this.totalSkippedFrames = 0;
-                    this.totalRenderedFrames = 0;
-
-                    // NO resetear el clock aquí, solo pausarlo temporalmente
-                    this.clock.pause();
-
-                    this.status = Status.BUFFERING;
-
-                    // RE-INIT
-                    if (!this.init()) {
-                        this.status = Status.ERROR;
-                        return;
-                    }
-
-                    // SEEK TO THE CURRENT TIMESTAMP
-                    if (currentTimeMs > 0 && this.canSeek()) {
-                        this.preciseSeekTo = currentTimeMs;
-                    }
-
-                    this.clock.time(currentTimeMs);
-
-                    // RESTORE PAUSE/PLAY state
-                    if (wasPaused) {
-                        this.status = Status.PAUSED;
-                        this.clock.pause();
-                    } else {
-                        this.status = Status.PLAYING;
-                        this.clock.start(); // Esto reinicia baseTimeMs pero masterTimeMs ya está en currentTimeMs
-                    }
-
-                    LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
                     this.qualityRequest = false;
+                    this.handleQualitySwitch();
+                    if (this.status == Status.ERROR) break;
                     continue;
                 }
 
-                // HANDLE PRECISE SEEK
-                if (this.preciseSeekTo >= 0) {
-                    final long targetMs = this.preciseSeekTo;
-                    this.preciseSeekTo = -1;
+                // EXIT WHEN PLAYBACK ENDED + DEMUX DEAD (NOT PARKED FOR SEEKS)
+                if (this.status == Status.ENDED && (this.demuxThread == null || !this.demuxThread.isAlive())) {
+                    final boolean videoQueueEmpty = this.videoFrameQueue == null || this.videoFrameQueue.isEmpty();
+                    final boolean audioQueueEmpty = this.audioFrameQueue == null || this.audioFrameQueue.isEmpty();
+                    if (videoQueueEmpty && audioQueueEmpty) break;
+                }
 
-                    if (this.formatContext == null || !this.canSeek()) {
-                        LOGGER.warn(IT, "Failed to perform precise seek - cannot seek on current context");
-                        continue;
-                    }
+                // DETECT DEMUX DEATH DURING BUFFERING (SEEK CRASHED / AV_SEEK_FRAME FAILED)
+                if (this.status == Status.BUFFERING && this.demuxThread != null && !this.demuxThread.isAlive()) {
+                    LOGGER.error(IT, "Demux thread died during BUFFERING — setting ERROR");
+                    this.status = Status.ERROR;
+                    break;
+                }
 
-                    final long currentMs = this.clock.time();
-                    LOGGER.info(IT, "Precise seeking to {}ms - current time {}ms", targetMs, currentMs);
+                boolean didWork = false;
 
-                    // FLUSH CODECS
-                    if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
-                    if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
-                    this.pendingVideoRender = false;
-                    if (this.pendingRenderFrame != null) av_frame_unref(this.pendingRenderFrame);
-
-                    // SEEK BACKWARD FIRST TO FIND A KEYFRAME BEFORE TARGET
-                    final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
-                    final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, avformat.AVSEEK_FLAG_BACKWARD);
-
-                    // ALSO SEEK IN SLAVE CONTEXT
-                    if (this.useAudioSlave && this.slaveFormatContext != null) {
-                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffmpegTimestamp, avformat.AVSEEK_FLAG_BACKWARD);
-                    }
-
-                    if (result >= 0) {
-                        // NOW DECODE FRAMES UNTIL WE REACH THE TARGET
-                        int maxFramesToSkip = 500;
-                        long lastAudioPts = -1;
-                        long lastVideoPts = -1;
-                        boolean reachedTarget = false;
-
-                        // DRAIN SLAVE AUDIO DURING PRECISE SEEK
-                        if (this.useAudioSlave && this.slaveFormatContext != null && this.audio) {
-                            int slaveFrames = 500;
-                            while (slaveFrames-- > 0 && !ThreadTool.isInterrupted()) {
-                                final int slaveResult = avformat.av_read_frame(this.slaveFormatContext, this.slavePacket);
-                                if (slaveResult < 0) break;
-                                try {
-                                    if (this.slavePacket.stream_index() == this.audioStreamIndex && this.slavePacket.pts() != avutil.AV_NOPTS_VALUE) {
-                                        lastAudioPts = (long) (this.slavePacket.pts() * this.audioTimeBase * 1000);
-                                        avcodec.avcodec_send_packet(this.audioCodecContext, this.slavePacket);
-                                        while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0);
-                                        if (lastAudioPts >= targetMs - this.clock.frameDuration()) break;
-                                    }
-                                } finally {
-                                    avcodec.av_packet_unref(this.slavePacket);
-                                }
+                if (!this.pauseRequested) {
+                    // AUDIO FIRST — DRAIN ALL DUE FRAMES BEFORE TOUCHING VIDEO.
+                    // AUDIO IS THE PRIMARY CLOCK SOURCE AND MUST NOT FALL BEHIND.
+                    // VIDEO sws_scale+UPLOAD AT 1080P TAKES 20-30MS PER FRAME,
+                    // WHICH STEALS WALL-CLOCK TIME FROM AUDIO PACING. BY DRAINING
+                    // ALL READY AUDIO FIRST, THE CLOCK STAYS ACCURATE EVEN IF
+                    // VIDEO PROCESSING IS SLOW.
+                    // LIMIT TO 2 AUDIO FRAMES PER ITERATION TO PREVENT
+                    // THE CLOCK FROM JUMPING TOO FAR AHEAD OF VIDEO.
+                    // EACH AUDIO UPDATE ADVANCES THE CLOCK ~46ms.
+                    // 2 FRAMES = ~92ms, WELL WITHIN THE 200ms SKIP THRESHOLD.
+                    // DRAINING ALL AT ONCE CAUSES 400ms+ CLOCK JUMPS → VIDEO DROPPED.
+                    if (this.audio && this.audioStreamIndex >= 0 && this.audioFrameQueue != null) {
+                        for (int i = 0; i < 2; i++) {
+                            final FrameQueue.Slot aSlot = this.audioFrameQueue.peek();
+                            if (aSlot == null) break;
+                            if (aSlot.serial != this.clock.serial()) {
+                                this.audioFrameQueue.next();
+                                didWork = true;
+                                i--; // SERIAL DISCARD DOESN'T COUNT TOWARDS LIMIT
+                                continue;
                             }
-                        }
-
-                        while (maxFramesToSkip-- > 0 && !ThreadTool.isInterrupted() && !reachedTarget) {
-                            final int readResult = avformat.av_read_frame(this.formatContext, this.packet);
-                            if (readResult < 0) break;
-
-                            try {
-                                final int streamIndex = this.packet.stream_index();
-                                final long packetPts = this.packet.pts();
-
-                                if (!this.useAudioSlave && streamIndex == this.audioStreamIndex && this.audio && packetPts != avutil.AV_NOPTS_VALUE) {
-                                    lastAudioPts = (long) (packetPts * this.audioTimeBase * 1000);
-
-                                    // SIEMPRE enviar al decoder, pero sin reproducir
-                                    avcodec.avcodec_send_packet(this.audioCodecContext, this.packet);
-
-                                    // Drenar frames decodificados sin reproducirlos
-                                    while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0);
-
-                                    if (lastAudioPts >= targetMs - this.clock.frameDuration()) {
-                                        reachedTarget = true;
-                                    }
-                                } else if (streamIndex == this.videoStreamIndex && this.video && packetPts != avutil.AV_NOPTS_VALUE) {
-                                    lastVideoPts = (long) (packetPts * this.videoTimeBase * 1000);
-
-                                    // SIEMPRE enviar al decoder para mantener la cadena de referencia
-                                    avcodec.avcodec_send_packet(this.videoCodecContext, this.packet);
-
-                                    // Drenar frames decodificados sin renderizarlos
-                                    while (avcodec.avcodec_receive_frame(this.videoCodecContext, this.videoFrame) >= 0) {
-                                        // Solo consumir, no renderizar
-                                    }
-
-                                    if (!this.audio && lastVideoPts >= targetMs - this.clock.frameDuration()) {
-                                        reachedTarget = true;
-                                    }
-                                }
-                            } finally {
-                                avcodec.av_packet_unref(this.packet);
-                            }
-                        }
-
-                        this.clock.time(targetMs);
-                        this.consecutiveSkips = 0;
-                        LOGGER.info(IT, "Precise seek completed to {}ms (audio: {}ms, video: {}ms)", targetMs, lastAudioPts, lastVideoPts);
-                    } else {
-                        LOGGER.error(IT, "Precise seek failed with error: {}", result);
-                    }
-                    continue;
-                }
-
-                // HANDLE FAST SEEK (imprecise, keyframe-based)
-                if (this.seekTo >= 0) {
-                    final long targetMs = this.seekTo;
-                    this.seekTo = -1;
-
-                    if (this.formatContext == null || !this.canSeek()) {
-                        LOGGER.warn(IT, "Failed to perform seek - cannot seek on current context");
-                        continue;
-                    }
-
-                    final long currentMs = this.clock.time();
-                    LOGGER.info(IT, "Fast seeking to {}ms - current time {}ms", targetMs, currentMs);
-
-                    // FLUSH CODECS
-                    if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
-                    if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
-                    this.pendingVideoRender = false;
-                    if (this.pendingRenderFrame != null) av_frame_unref(this.pendingRenderFrame);
-
-                    // SIMPLE KEYFRAME SEEK
-                    final long ffmpegTimestamp = (targetMs / 1000L) * avutil.AV_TIME_BASE;
-                    final int seekFlags = targetMs < currentMs ? avformat.AVSEEK_FLAG_BACKWARD : 0;
-                    final int result = avformat.av_seek_frame(this.formatContext, -1, ffmpegTimestamp, seekFlags);
-
-                    // ALSO SEEK IN SLAVE CONTEXT
-                    if (this.useAudioSlave && this.slaveFormatContext != null) {
-                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffmpegTimestamp, seekFlags);
-                    }
-
-                    if (result >= 0) {
-                        this.clock.time(targetMs);
-                        this.consecutiveSkips = 0;
-                        LOGGER.info(IT, "Fast seek completed to {}ms", targetMs);
-                    } else {
-                        LOGGER.error(IT, "Fast seek failed with error: {}", result);
-                    }
-                    continue;
-                }
-
-                // UPDATE STATUS BASED ON PAUSE
-                if (this.pauseRequested && this.status != Status.PAUSED) {
-                    this.status = Status.PAUSED;
-                    // TODO: THIS SHOULD NOT BE HERE
-                    super.pause();
-                } else if (!this.pauseRequested && this.status == Status.PAUSED) {
-                    this.status = Status.PLAYING;
-                }
-
-                if (this.pauseRequested) {
-                    Thread.yield();
-                    continue;
-                }
-
-                // AUDIO SLAVE PACING:
-                // When using audio slave, the main context is video-only.
-                // Without interleaved audio, av_read_frame returns video packets
-                // at I/O speed with no blocking — processVideoPacket overwrites
-                // pendingRenderFrame each iteration, and frames get skipped.
-                //
-                // Fix: if there's a pending video frame awaiting render, DON'T
-                // read more video from the main context. Instead, keep feeding
-                // slave audio to OpenAL in a loop. OpenAL blocks when its buffers
-                // are full (~40ms) = natural pacing. When renderPendingVideo
-                // succeeds, break out and read the next video packet.
-                if (this.useAudioSlave && this.pendingVideoRender) {
-                    while (this.pendingVideoRender && !ThreadTool.isInterrupted()) {
-                        // Feed audio — OpenAL upload blocks when buffers full = PACING
-                        if (this.slaveFormatContext != null) {
-                            this.readSlaveAudio();
-                        }
-
-                        // Try render after each audio packet
-                        if (this.video && this.videoStreamIndex >= 0) {
-                            this.renderPendingVideo();
-                        }
-
-                        // Check for seek/pause/quality requests
-                        if (this.seekTo >= 0 || this.preciseSeekTo >= 0
-                                || this.qualityRequest || this.pauseRequested) {
-                            break;
+                            final double diff = (aSlot.ptsMs / 1000.0) - this.clock.time();
+                            if (diff > 0.002) break; // NOT DUE YET
+                            didWork |= this.pollAudioFrame();
                         }
                     }
-                    continue;
-                }
 
-                // Read and process frame
-                final int result = avformat.av_read_frame(this.formatContext, this.packet);
-                if (result < 0) {
-                    LOGGER.info(IT, "Finished! - R: {}, S: {}", this.totalRenderedFrames, this.totalSkippedFrames);
-
-                    if (this.repeat()) {
-                        LOGGER.info(IT, "Repeating playback");
-                        this.seekTo = 0;
-                        continue; // GO BACK
-                    } else {
-                        LOGGER.info(IT, "Playback ended naturally");
-                        this.status = Status.ENDED;
-                        Thread.yield();
+                    // VIDEO: ONE FRAME PER ITERATION (A/V SYNC HANDLES TIMING)
+                    if (this.video && this.videoStreamIndex >= 0 && this.videoFrameQueue != null) {
+                        didWork |= this.pollVideoFrame();
                     }
-
-                    if (this.status != Status.PLAYING) {
-                        break;
-                    }
-                    continue;
                 }
 
-                // PROCESS PACKETS
-                try {
-                    if (this.packet.stream_index() == this.videoStreamIndex && this.video) this.processVideoPacket();
-                    if (!this.useAudioSlave && this.packet.stream_index() == this.audioStreamIndex && this.audio) this.processAudioPacket();
-                } finally {
-                    avcodec.av_packet_unref(this.packet);
-                }
-
-                // READ AND PROCESS AUDIO FROM SLAVE CONTEXT (initial feed before pacing loop kicks in)
-                if (this.useAudioSlave && this.slaveFormatContext != null) {
-                    this.readSlaveAudio();
-                }
-
-                // DEFERRED VIDEO RENDER: after every packet (audio or video),
-                // check if it's time to render the latest decoded video frame.
-                // This catches the earliest opportunity after OpenAL unblocks.
-                if (this.video && this.videoStreamIndex >= 0) {
-                    this.renderPendingVideo();
+                if (!didWork) {
+                    // SLEEP UNTIL NEXT FRAME IS APPROXIMATELY DUE
+                    Thread.sleep(1);
                 }
             }
-            this.status = ThreadTool.isInterrupted() ? Status.STOPPED : Status.ENDED;
+
+            LOGGER.info(IT, "Consumption loop exited — R: {}, S: {}, clock: {}ms, status: {}, " +
+                            "demuxAlive: {}, vDecodeAlive: {}, aDecodeAlive: {}, vQueueSize: {}, aQueueSize: {}",
+                    this.totalRenderedFrames, this.totalSkippedFrames, this.clock.timeMs(), this.status,
+                    this.demuxThread != null && this.demuxThread.isAlive(),
+                    this.videoDecodeThread != null && this.videoDecodeThread.isAlive(),
+                    this.audioDecodeThread != null && this.audioDecodeThread.isAlive(),
+                    this.videoFrameQueue != null ? this.videoFrameQueue.remaining() : -1,
+                    this.audioFrameQueue != null ? this.audioFrameQueue.remaining() : -1);
+
+            this.stopThreads();
+
+            if (!Thread.currentThread().isInterrupted() && this.status != Status.ERROR) {
+                // PIPELINE DRAINED NATURALLY → ENDED
+                this.status = Status.ENDED;
+            }
+
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            this.stopThreads();
+            this.status = Status.STOPPED;
         } catch (final Throwable e) {
-            LOGGER.fatal(IT, "Error handled in in player loop for URI {}", this.source.uri(this.quality), e);
+            LOGGER.fatal(IT, "Error in lifecycle for URI {}", this.source.uri(this.quality), e);
+            this.stopThreads();
             this.status = Status.ERROR;
         } finally {
+            this.freeQueues();
             this.cleanup();
         }
     }
 
+    // ═══════════════════════════════════════════
+    //  DEMUX THREAD
+    // ═══════════════════════════════════════════
+
+    /**
+     * Runs init() then reads from one or two AVFormatContexts, distributing packets to queues.
+     * All format context I/O (open, find_stream_info, read_frame, seek) runs on THIS thread
+     * to avoid cross-thread issues with FFmpeg's internal I/O state.
+     */
+    private void demuxLoop() {
+        // INIT ON DEMUX THREAD — KEEPS avformat_find_stream_info AND av_read_frame
+        // ON THE SAME THREAD. FFMPEG CACHES PACKETS INTERNALLY DURING find_stream_info
+        // AND SERVES THEM VIA av_read_frame, BUT THIS ONLY WORKS RELIABLY ON THE SAME THREAD.
+        try {
+            if (!this.init()) {
+                this.initState = -1;
+                return;
+            }
+        } catch (final Throwable e) {
+            LOGGER.error(IT, "Init failed with exception", e);
+            this.initState = -1;
+            return;
+        }
+        this.initState = 1;
+
+        final AVPacket packet = avcodec.av_packet_alloc();
+        final AVPacket slavePacket = this.useAudioSlave ? avcodec.av_packet_alloc() : null;
+        long demuxVideoPackets = 0;
+        long demuxAudioPackets = 0;
+        boolean mainEof = false;
+        boolean slaveEof = false;
+        long demuxIgnoredPackets = 0;
+
+        LOGGER.info(IT, "Demux loop starting — videoIdx={}, audioIdx={}, useAudioSlave={}, nb_streams={}",
+                this.videoStreamIndex, this.audioStreamIndex, this.useAudioSlave,
+                this.formatContext != null ? this.formatContext.nb_streams() : -1);
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                // ── SEEK HANDLING ──
+                if (this.seekRequested) {
+                    final long targetMs = this.seekTargetMs;
+                    final boolean precise = this.seekPrecise;
+                    this.seekRequested = false;
+
+                    // SET BUFFERING WHILE SEEK IS PROCESSING
+                    this.status = Status.BUFFERING;
+
+                    if (precise) {
+                        // PRECISE SEEK: STOP DECODE THREADS, FLUSH CODECS, SYNC DRAIN, RESTART
+                        this.stopDecodeThreads();
+                        this.videoPacketQueue.reset();
+                        this.audioPacketQueue.reset();
+                        if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                        if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                    } else {
+                        // FAST SEEK: SERIAL++ → DECODE THREADS FLUSH THEIR OWN CODECS
+                        this.videoPacketQueue.flush();
+                        this.audioPacketQueue.flush();
+                    }
+
+                    // FORCE CLOCK TO TARGET (FROZEN UNTIL FIRST update())
+                    this.clock.forceMs(targetMs, this.videoPacketQueue.serial());
+                    mainEof = false;
+                    slaveEof = false;
+
+                    // SEEK BOTH CONTEXTS (MAY BLOCK ON NETWORK — clock.time() == targetMs)
+                    final long ffTs = targetMs * 1000L;
+                    final int flags = precise ? avformat.AVSEEK_FLAG_BACKWARD
+                            : ((targetMs < this.clock.timeMs()) ? avformat.AVSEEK_FLAG_BACKWARD : 0);
+
+                    if (avformat.av_seek_frame(this.formatContext, -1, ffTs, flags) < 0) {
+                        LOGGER.error(IT, "Seek failed on main context (target={}ms)", targetMs);
+                        this.status = this.pauseRequested ? Status.PAUSED : Status.PLAYING;
+                        continue;
+                    }
+                    if (this.useAudioSlave && this.slaveFormatContext != null) {
+                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffTs, flags);
+                    }
+
+                    // SYNC DRAIN: FEED DECODER DIRECTLY TO BUILD REFERENCE FRAMES (PRECISE ONLY)
+                    if (precise) {
+                        this.syncDrain(targetMs, packet, slavePacket);
+                    }
+
+                    // RESTORE STATUS — CLOCK IS ALREADY FROZEN AT TARGET, WILL UNFREEZE
+                    // WHEN THE FIRST AUDIO FRAME IS CONSUMED (clock.update())
+                    this.status = this.pauseRequested ? Status.PAUSED : Status.PLAYING;
+                    this.ensureDecodeThreads();
+
+                    LOGGER.info(IT, "Seek completed to {}ms (precise={}, serial={}, clockMs={})",
+                            targetMs, precise, this.videoPacketQueue.serial(), this.clock.timeMs());
+                    continue;
+                }
+
+                // ── PAUSE HANDLING ──
+                if (this.pauseRequested) {
+                    Thread.sleep(10);
+                    continue;
+                }
+
+                // ── SLAVE AUDIO: 1:1 WITH VIDEO ──
+                if (this.useAudioSlave && !slaveEof && this.slaveFormatContext != null && slavePacket != null) {
+                    final int slaveResult = avformat.av_read_frame(this.slaveFormatContext, slavePacket);
+                    if (slaveResult >= 0) {
+                        try {
+                            if (slavePacket.stream_index() == this.audioStreamIndex && this.audio) {
+                                if (!this.audioPacketQueue.put(slavePacket)) break;
+                                demuxAudioPackets++;
+                            }
+                        } finally {
+                            avcodec.av_packet_unref(slavePacket);
+                        }
+                    } else {
+                        slaveEof = true;
+                        LOGGER.info(IT, "Slave audio reached EOF after {} packets", demuxAudioPackets);
+                        if (this.audioPacketQueue != null) this.audioPacketQueue.finish();
+                    }
+                }
+
+                // ── READ PACKET (MAIN CONTEXT) ──
+                if (!mainEof) {
+                    final int result = avformat.av_read_frame(this.formatContext, packet);
+                    if (result < 0) {
+                        mainEof = true;
+                        LOGGER.info(IT, "Main context EOF after {} video packets (R: {}, S: {})",
+                                demuxVideoPackets, this.totalRenderedFrames, this.totalSkippedFrames);
+                        if (this.videoPacketQueue != null) this.videoPacketQueue.finish();
+
+                        if (this.repeat() && slaveEof) {
+                            this.seekTargetMs = 0;
+                            this.seekPrecise = false;
+                            this.seekRequested = true;
+                            continue;
+                        }
+                    }
+                }
+
+                // ── CHECK IF BOTH CONTEXTS ARE EOF ──
+                if (mainEof && (slaveEof || !this.useAudioSlave)) {
+                    if (this.repeat()) {
+                        mainEof = false;
+                        slaveEof = false;
+                        this.clock.forceMs(0, this.videoPacketQueue.serial()); // IMMEDIATE RESET
+                        this.seekTargetMs = 0;
+                        this.seekPrecise = false;
+                        this.seekRequested = true;
+                        continue;
+                    }
+
+                    LOGGER.info(IT, "All contexts EOF (video: {}, audio: {})",
+                            demuxVideoPackets, demuxAudioPackets);
+                    if (!slaveEof && this.audioPacketQueue != null) this.audioPacketQueue.finish();
+
+                    // DON'T JOIN DECODE THREADS — THEY DRAIN NATURALLY VIA finish().
+                    // JOINING BLOCKS THE DEMUX AND PREVENTS seekRequested FROM BEING PROCESSED.
+                    // THE SEEK HANDLER WILL STOP THEM IF NEEDED.
+                    this.status = Status.ENDED;
+                    LOGGER.info(IT, "Playback ended — demux staying alive for seeks");
+
+                    // PARK UNTIL SEEK OR STOP (ZERO CPU)
+                    synchronized (this.eofLock) {
+                        while (!this.seekRequested && !Thread.currentThread().isInterrupted()) {
+                            this.eofLock.wait();
+                        }
+                    }
+                    if (!this.seekRequested) break;
+
+                    // SEEK AFTER EOF: RESET PIPELINE (SEEK HANDLER WILL START DECODE THREADS)
+                    LOGGER.info(IT, "Seek after EOF — restarting pipeline");
+                    this.status = Status.BUFFERING;
+                    mainEof = false;
+                    slaveEof = false;
+                    if (this.videoPacketQueue != null) this.videoPacketQueue.reset();
+                    if (this.audioPacketQueue != null) this.audioPacketQueue.reset();
+                    continue;
+                }
+
+                // ── SKIP VIDEO READ IF MAIN ALREADY AT EOF (SLAVE AUDIO STILL GOING) ──
+                if (mainEof) {
+                    // ONLY READ SLAVE AUDIO (HANDLED ABOVE), SKIP VIDEO PACKET PROCESSING
+                    continue;
+                }
+
+                try {
+                    final int streamIndex = packet.stream_index();
+                    if (streamIndex == this.videoStreamIndex && this.video) {
+                        // TRY NON-BLOCKING PUT. IF VIDEO QUEUE IS FULL, KEEP
+                        // FEEDING AUDIO FROM SLAVE WHILE WAITING FOR SPACE.
+                        // THIS PREVENTS AUDIO STARVATION DURING VIDEO BACKPRESSURE.
+                        while (!this.videoPacketQueue.tryPut(packet)) {
+                            if (Thread.currentThread().isInterrupted() || this.seekRequested) break;
+                            if (this.useAudioSlave && this.slaveFormatContext != null && slavePacket != null) {
+                                final int sr = avformat.av_read_frame(this.slaveFormatContext, slavePacket);
+                                if (sr >= 0) {
+                                    try {
+                                        if (slavePacket.stream_index() == this.audioStreamIndex && this.audio) {
+                                            this.audioPacketQueue.put(slavePacket);
+                                            demuxAudioPackets++;
+                                        }
+                                    } finally {
+                                        avcodec.av_packet_unref(slavePacket);
+                                    }
+                                }
+                            }
+                            Thread.sleep(1);
+                        }
+                        demuxVideoPackets++;
+                    } else if (!this.useAudioSlave
+                            && streamIndex == this.audioStreamIndex && this.audio) {
+                        if (!this.audioPacketQueue.put(packet)) break;
+                        demuxAudioPackets++;
+                    }
+                } finally {
+                    avcodec.av_packet_unref(packet);
+                }
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            LOGGER.info(IT, "Demux loop exiting — video: {}, audio: {}, ignored: {}, interrupted: {}",
+                    demuxVideoPackets, demuxAudioPackets, demuxIgnoredPackets,
+                    Thread.currentThread().isInterrupted());
+
+            // SIGNAL EOF TO DECODE THREADS: finish() (NOT abort()!) THE PacketQueues.
+            // finish() LETS DECODE THREADS DRAIN ALL REMAINING PACKETS BEFORE
+            // get() RETURNS NULL. abort() WOULD DISCARD PENDING PACKETS.
+            // AFTER DECODE THREADS FINISH, THE LIFECYCLE'S CONSUMPTION LOOP
+            // DRAINS THE FrameQueues BEFORE EXITING.
+            if (this.videoPacketQueue != null) this.videoPacketQueue.finish();
+            if (this.audioPacketQueue != null) this.audioPacketQueue.finish();
+
+            avcodec.av_packet_free(packet);
+            if (slavePacket != null) avcodec.av_packet_free(slavePacket);
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    //  VIDEO DECODE THREAD
+    // ═══════════════════════════════════════════
+
+    /**
+     * Consumes video packets from the queue, decodes them, handles HW transfer,
+     * and pushes decoded frames into the video FrameQueue.
+     */
+    private void videoDecodeLoop() {
+        final AVFrame tempFrame = avutil.av_frame_alloc();
+        final AVFrame hwTransfer = (this.hwDeviceCtx != null) ? avutil.av_frame_alloc() : null;
+        final int[] serialOut = new int[1];
+        int lastSerial = -1;
+        long packetsProcessed = 0;
+        long framesProduced = 0;
+        long framesDropped = 0;
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                // GET PACKET (BLOCKING)
+                final AVPacket packet = this.videoPacketQueue.get(serialOut);
+                if (packet == null) break; // ABORTED
+
+                final int packetSerial = serialOut[0];
+
+                try {
+                    // SERIAL CHANGE — FLUSH CODEC TO RESET DECODER STATE AFTER SEEK.
+                    // CUDA/NVDEC REQUIRES avcodec_flush_buffers TO PROPERLY RESET ITS
+                    // DPB (DECODED PICTURE BUFFER). WITHOUT FLUSH, THE HW DECODER RETAINS
+                    // STALE REFERENCES AND CAN'T PRODUCE OUTPUT UNTIL THE NEXT KEYFRAME.
+                    // THE FLUSH TRIGGERS A CUDA REINIT (~500ms) BUT THIS IS UNAVOIDABLE
+                    // FOR CORRECT HW DECODE AFTER SEEK.
+                    if (packetSerial != lastSerial) {
+                        if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+                        lastSerial = packetSerial;
+                    }
+
+                    // DISCARD STALE PACKETS (SERIAL MISMATCH AFTER SEEK)
+                    if (packetSerial != this.videoPacketQueue.serial()) continue;
+
+                    // DECODE
+                    if (avcodec.avcodec_send_packet(this.videoCodecContext, packet) < 0) continue;
+
+                    while (avcodec.avcodec_receive_frame(this.videoCodecContext, tempFrame) >= 0) {
+                        AVFrame frameToQueue = tempFrame;
+
+                        // HW TRANSFER (GPU → CPU MEMORY)
+                        if (hwTransfer != null && tempFrame.format() == this.hwPixelFormat) {
+                            if (av_hwframe_transfer_data(hwTransfer, tempFrame, 0) < 0) {
+                                LOGGER.warn(IT, "Failed to transfer frame from GPU");
+                                continue;
+                            }
+                            frameToQueue = hwTransfer;
+                        }
+
+                        // PTS
+                        final double ptsSec = tempFrame.pts() * this.videoTimeBase;
+                        final long ptsMs = (long) (ptsSec * 1000.0);
+
+                        // EARLY FRAME DROP — SKIP FRAMES TOO FAR BEHIND THE CLOCK
+                        if (this.audioStreamIndex >= 0) {
+                            final double drift = ptsSec - this.clock.time();
+                            if (drift < -(this.clock.skipThresholdMs() / 1000.0)) {
+                                this.totalSkippedFrames++;
+                                framesDropped++;
+                                continue;
+                            }
+                        }
+
+                        // ENQUEUE — BLOCKS IF FrameQueue IS FULL (BACKPRESSURE)
+                        final FrameQueue.Slot slot = this.videoFrameQueue.peekWritable();
+                        if (slot == null) break; // ABORTED
+
+                        // TRANSFER: AFTER THIS, slot.frame OWNS THE PIXEL BUFFERS
+                        av_frame_unref(slot.frame); // SAFETY: ENSURE CLEAN
+                        av_frame_move_ref(slot.frame, frameToQueue);
+                        slot.ptsMs = ptsMs;
+                        slot.durationMs = this.clock.frameDurationMs();
+                        slot.serial = packetSerial;
+                        slot.width = slot.frame.width();
+                        slot.height = slot.frame.height();
+                        slot.format = slot.frame.format();
+
+                        this.videoFrameQueue.push();
+                        framesProduced++;
+                    }
+
+                    packetsProcessed++;
+                } finally {
+                    avcodec.av_packet_free(packet);
+                }
+            }
+        } finally {
+            LOGGER.info(IT, "Video decode exiting — packets: {}, frames produced: {}, frames dropped: {}, interrupted: {}",
+                    packetsProcessed, framesProduced, framesDropped, Thread.currentThread().isInterrupted());
+            avutil.av_frame_free(tempFrame);
+            if (hwTransfer != null) avutil.av_frame_free(hwTransfer);
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    //  AUDIO DECODE THREAD
+    // ═══════════════════════════════════════════
+
+    /**
+     * Consumes audio packets, decodes, resamples to S16 stereo, and pushes
+     * resampled frames into the audio FrameQueue. Also updates the MasterClock
+     * (audio is the primary clock source).
+     */
+    private void audioDecodeLoop() {
+        final AVFrame tempFrame = avutil.av_frame_alloc();
+        final int[] serialOut = new int[1];
+        int lastSerial = -1;
+        long packetsProcessed = 0;
+        long framesProduced = 0;
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                final AVPacket packet = this.audioPacketQueue.get(serialOut);
+                if (packet == null) break;
+
+                final int packetSerial = serialOut[0];
+
+                try {
+                    // SERIAL CHANGE — FLUSH CODEC TO CLEAR STALE STATE AFTER SEEK
+                    if (packetSerial != lastSerial) {
+                        if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+                        lastSerial = packetSerial;
+                    }
+
+                    // DISCARD STALE PACKETS
+                    if (packetSerial != this.audioPacketQueue.serial()) continue;
+
+                    if (avcodec.avcodec_send_packet(this.audioCodecContext, packet) < 0) continue;
+
+                    while (avcodec.avcodec_receive_frame(this.audioCodecContext, tempFrame) >= 0) {
+                        final double ptsSec = tempFrame.pts() * this.audioTimeBase;
+
+                        // RESAMPLE + ENQUEUE
+                        if (!this.enqueueResampledAudio(tempFrame, ptsSec, packetSerial)) break;
+                        framesProduced++;
+
+                        // FLUSH RESAMPLER RESIDUALS
+                        final long delay = swresample.swr_get_delay(this.swrContext, AUDIO_SAMPLE_RATE);
+                        if (delay > AUDIO_SAMPLES / 2) {
+                            if (!this.enqueueResamplerFlush(packetSerial)) break;
+                            framesProduced++;
+                        }
+                    }
+
+                    packetsProcessed++;
+                } finally {
+                    avcodec.av_packet_free(packet);
+                }
+            }
+        } finally {
+            LOGGER.info(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
+                    packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
+            avutil.av_frame_free(tempFrame);
+        }
+    }
+
+    /** Resample audio and enqueue into audioFrameQueue. Returns false if queue aborted. */
+    private boolean enqueueResampledAudio(final AVFrame srcFrame, final double ptsSec, final int serial) {
+        final FrameQueue.Slot slot = this.audioFrameQueue.peekWritable();
+        if (slot == null) return false;
+
+        // SETUP SLOT FRAME FOR RESAMPLED OUTPUT
+        av_frame_unref(slot.frame);
+        slot.frame.format(AV_SAMPLE_FMT_S16);
+        slot.frame.ch_layout().nb_channels(AUDIO_CHANNELS);
+        av_channel_layout_default(slot.frame.ch_layout(), AUDIO_CHANNELS);
+        slot.frame.sample_rate(AUDIO_SAMPLE_RATE);
+        slot.frame.nb_samples(AUDIO_SAMPLES);
+
+        if (av_frame_get_buffer(slot.frame, 0) < 0) {
+            LOGGER.warn(IT, "Failed to allocate audio buffer in slot");
+            return true; // CONTINUE, DON'T BREAK THE LOOP
+        }
+
+        final int samplesConverted = swresample.swr_convert(
+                this.swrContext,
+                slot.frame.data(), slot.frame.nb_samples(),
+                srcFrame.data(), srcFrame.nb_samples()
+        );
+
+        if (samplesConverted <= 0) {
+            av_frame_unref(slot.frame);
+            return true;
+        }
+
+        slot.frame.nb_samples(samplesConverted);
+        slot.ptsMs = (long) (ptsSec * 1000.0);
+        slot.durationMs = (long) ((double) samplesConverted / AUDIO_SAMPLE_RATE * 1000.0);
+        slot.serial = serial;
+
+        this.audioFrameQueue.push();
+        return true;
+    }
+
+    /** Flush remaining samples from the resampler into the queue. */
+    private boolean enqueueResamplerFlush(final int serial) {
+        final FrameQueue.Slot slot = this.audioFrameQueue.peekWritable();
+        if (slot == null) return false;
+
+        av_frame_unref(slot.frame);
+        slot.frame.format(AV_SAMPLE_FMT_S16);
+        slot.frame.ch_layout().nb_channels(AUDIO_CHANNELS);
+        av_channel_layout_default(slot.frame.ch_layout(), AUDIO_CHANNELS);
+        slot.frame.sample_rate(AUDIO_SAMPLE_RATE);
+        slot.frame.nb_samples(AUDIO_SAMPLES);
+
+        if (av_frame_get_buffer(slot.frame, 0) < 0) return true;
+
+        final int flushed = swresample.swr_convert(
+                this.swrContext,
+                slot.frame.data(), slot.frame.nb_samples(),
+                null, 0
+        );
+
+        if (flushed <= 0) {
+            av_frame_unref(slot.frame);
+            return true;
+        }
+
+        slot.frame.nb_samples(flushed);
+        slot.ptsMs = this.clock.timeMs();
+        slot.durationMs = (long) ((double) flushed / AUDIO_SAMPLE_RATE * 1000.0);
+        slot.serial = serial;
+
+        this.audioFrameQueue.push();
+        return true;
+    }
+
+    // ═══════════════════════════════════════════
+    //  THREAD MANAGEMENT
+    // ═══════════════════════════════════════════
+
+
+    private void stopThreads() {
+        if (this.videoPacketQueue != null) this.videoPacketQueue.abort();
+        if (this.audioPacketQueue != null) this.audioPacketQueue.abort();
+        if (this.videoFrameQueue != null) this.videoFrameQueue.abort();
+        if (this.audioFrameQueue != null) this.audioFrameQueue.abort();
+        if (this.demuxThread != null) this.demuxThread.interrupt();
+        if (this.videoDecodeThread != null) this.videoDecodeThread.interrupt();
+        if (this.audioDecodeThread != null) this.audioDecodeThread.interrupt();
+        final boolean wasInterrupted = Thread.interrupted();
+        if (this.demuxThread != null) ThreadTool.join(this.demuxThread);
+        if (this.videoDecodeThread != null) ThreadTool.join(this.videoDecodeThread);
+        if (this.audioDecodeThread != null) ThreadTool.join(this.audioDecodeThread);
+        if (wasInterrupted) Thread.currentThread().interrupt();
+        this.demuxThread = null;
+        this.videoDecodeThread = null;
+        this.audioDecodeThread = null;
+    }
+
+    /** STOP ONLY DECODE THREADS (DEMUX STAYS ALIVE). USED FOR PRECISE SEEK. */
+    private void stopDecodeThreads() {
+        if (this.videoPacketQueue != null) this.videoPacketQueue.abort();
+        if (this.audioPacketQueue != null) this.audioPacketQueue.abort();
+        final boolean wasInterrupted = Thread.interrupted();
+        if (this.videoDecodeThread != null) ThreadTool.join(this.videoDecodeThread);
+        if (this.audioDecodeThread != null) ThreadTool.join(this.audioDecodeThread);
+        if (wasInterrupted) Thread.currentThread().interrupt();
+        this.videoDecodeThread = null;
+        this.audioDecodeThread = null;
+    }
+
+    /** START DECODE THREADS IF NOT ALREADY RUNNING. */
+    private void ensureDecodeThreads() {
+        if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive())
+                && this.video && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
+            this.videoDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::videoDecodeLoop);
+            this.videoDecodeThread.setDaemon(true);
+            this.videoDecodeThread.start();
+        }
+        if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive())
+                && this.audio && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+            this.audioDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::audioDecodeLoop);
+            this.audioDecodeThread.setDaemon(true);
+            this.audioDecodeThread.start();
+        }
+    }
+
+    /**
+     * SYNC DRAIN: READ PACKETS + DECODE FORWARD TO TARGET PTS ON THE DEMUX THREAD.
+     * FEEDS THE DECODER DIRECTLY (NO QUEUES) SO REFERENCE FRAMES ARE BUILT IMMEDIATELY.
+     * DECODE THREADS MUST BE STOPPED BEFORE CALLING THIS (CODEC CONTEXTS NOT THREAD-SAFE).
+     */
+    private void syncDrain(final long targetMs, final AVPacket packet, final AVPacket slavePacket) {
+        final AVFrame drainFrame = avutil.av_frame_alloc();
+        final long threshold = targetMs - this.clock.frameDurationMs();
+        int maxDrain = 500;
+        boolean videoReached = !this.video || this.videoCodecContext == null;
+        boolean audioReached = !this.audio || this.audioCodecContext == null;
+
+        while (maxDrain-- > 0 && !Thread.currentThread().isInterrupted()
+                && !this.seekRequested && (!videoReached || !audioReached)) {
+
+            if (this.useAudioSlave) {
+                // SLAVE: VIDEO FROM MAIN, AUDIO FROM SLAVE (SEPARATE CONTEXTS)
+                if (!videoReached) {
+                    videoReached = this.drainRead(this.formatContext, packet,
+                            this.videoStreamIndex, this.videoCodecContext, drainFrame,
+                            this.videoTimeBase, threshold);
+                }
+                if (!audioReached && slavePacket != null && this.slaveFormatContext != null) {
+                    audioReached = this.drainRead(this.slaveFormatContext, slavePacket,
+                            this.audioStreamIndex, this.audioCodecContext, drainFrame,
+                            this.audioTimeBase, threshold);
+                }
+            } else {
+                // NON-SLAVE: INTERLEAVED — READ ONE PACKET, ROUTE BY STREAM INDEX
+                final int readRes = avformat.av_read_frame(this.formatContext, packet);
+                if (readRes < 0) break;
+                try {
+                    final int idx = packet.stream_index();
+                    if (idx == this.videoStreamIndex && !videoReached) {
+                        videoReached = this.drainDecode(this.videoCodecContext, packet, drainFrame,
+                                this.videoTimeBase, threshold);
+                    } else if (idx == this.audioStreamIndex && !audioReached) {
+                        audioReached = this.drainDecode(this.audioCodecContext, packet, drainFrame,
+                                this.audioTimeBase, threshold);
+                    }
+                } finally {
+                    avcodec.av_packet_unref(packet);
+                }
+            }
+        }
+        avutil.av_frame_free(drainFrame);
+    }
+
+    /** READ ONE PACKET FROM CONTEXT, DECODE IF STREAM MATCHES, RETURN TRUE IF TARGET REACHED. */
+    private boolean drainRead(final AVFormatContext ctx, final AVPacket pkt,
+                              final int streamIndex, final AVCodecContext codec,
+                              final AVFrame frame, final double timeBase, final long threshold) {
+        final int res = avformat.av_read_frame(ctx, pkt);
+        if (res < 0) return false;
+        try {
+            if (pkt.stream_index() == streamIndex) {
+                return this.drainDecode(codec, pkt, frame, timeBase, threshold);
+            }
+        } finally {
+            avcodec.av_packet_unref(pkt);
+        }
+        return false;
+    }
+
+    /** SEND PACKET TO DECODER, RETURN TRUE IF ANY OUTPUT FRAME REACHED THE THRESHOLD PTS. */
+    private boolean drainDecode(final AVCodecContext codec, final AVPacket pkt,
+                                final AVFrame frame, final double timeBase, final long threshold) {
+        avcodec.avcodec_send_packet(codec, pkt);
+        while (avcodec.avcodec_receive_frame(codec, frame) >= 0) {
+            if ((long) (frame.pts() * timeBase * 1000) >= threshold) return true;
+        }
+        return false;
+    }
+
+    private void freeQueues() {
+        if (this.videoFrameQueue != null) { this.videoFrameQueue.free(); this.videoFrameQueue = null; }
+        if (this.audioFrameQueue != null) { this.audioFrameQueue.free(); this.audioFrameQueue = null; }
+        if (this.videoPacketQueue != null) { this.videoPacketQueue.free(); this.videoPacketQueue = null; }
+        if (this.audioPacketQueue != null) { this.audioPacketQueue.free(); this.audioPacketQueue = null; }
+    }
+
+    // ═══════════════════════════════════════════
+    //  QUALITY SWITCH
+    // ═══════════════════════════════════════════
+
+    private void handleQualitySwitch() {
+        final long currentMs = this.clock.timeMs();
+        final boolean wasPaused = this.pauseRequested;
+
+        LOGGER.info(IT, "Switching quality to {} at {}ms", this.quality, currentMs);
+
+        this.clock.pause();
+        this.status = Status.BUFFERING;
+
+        // STOP ALL INTERNAL THREADS
+        this.stopThreads();
+
+        // CLEANUP FFMPEG CONTEXTS
+        this.cleanup();
+
+        // RE-INIT VIA DEMUX THREAD (SAME THREAD PATTERN AS STARTUP)
+        this.totalSkippedFrames = 0;
+        this.totalRenderedFrames = 0;
+
+        // RESET QUEUES (CLEAR + UNFLAG ABORT)
+        this.videoPacketQueue.reset();
+        this.audioPacketQueue.reset();
+        this.videoFrameQueue.reset();
+        this.audioFrameQueue.reset();
+
+        // SEEK TO SAVED POSITION (DEMUX THREAD WILL HANDLE THIS AFTER INIT)
+        this.seekTargetMs = currentMs;
+        this.seekPrecise = true;
+        this.seekRequested = true;
+
+        // START DEMUX THREAD (DOES INIT + READ LOOP)
+        this.initState = 0;
+        this.demuxThread = DEFAULT_THREAD_FACTORY.newThread(this::demuxLoop);
+        this.demuxThread.setDaemon(true);
+        this.demuxThread.start();
+
+        // WAIT FOR INIT
+        try {
+            while (this.initState == 0 && !Thread.currentThread().isInterrupted()) {
+                Thread.sleep(10);
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            this.status = Status.ERROR;
+            return;
+        }
+
+        if (this.initState != 1) {
+            this.status = Status.ERROR;
+            return;
+        }
+
+        // DO NOT START DECODE THREADS HERE — THE SEEK HANDLER IN THE DEMUX
+        // THREAD WILL START THEM AFTER THE PRECISE SEEK DRAIN. STARTING THEM
+        // HERE CREATES A RACE: handleQualitySwitch STARTS THEM, THEN THE
+        // SEEK HANDLER KILLS THEM (abort+join+null), AND THE CONSUMPTION LOOP
+        // SEES decodeThread==null + queuesEmpty → DRAIN CHECK → ENDED.
+
+        // RESTORE CLOCK STATE
+        this.clock.forceMs(currentMs, this.videoPacketQueue.serial());
+
+        if (wasPaused) {
+            this.status = Status.PAUSED;
+            this.clock.pause();
+        } else {
+            this.status = Status.PLAYING;
+            this.clock.resume();
+        }
+
+        LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
+    }
+
+    // ═══════════════════════════════════════════
+    //  INIT
+    // ═══════════════════════════════════════════
 
     private boolean init() {
         try {
-            // ALLOCATE PACKETS
-            this.packet = avcodec.av_packet_alloc();
-            this.videoFrame = avutil.av_frame_alloc();
-            this.audioFrame = avutil.av_frame_alloc();
+            // ALLOCATE RENDER FRAME
             this.scaledFrame = avutil.av_frame_alloc();
-            this.resampledFrame = avutil.av_frame_alloc();
-            this.pendingRenderFrame = avutil.av_frame_alloc();
-
-            if (this.packet == null || this.videoFrame == null || this.audioFrame == null || this.scaledFrame == null || this.resampledFrame == null || this.pendingRenderFrame == null)
-                return false;
+            if (this.scaledFrame == null) return false;
 
             // PREPARE URI
             final var uri = this.source.uri(this.quality);
             final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
-            // RESOLVE AUDIO SLAVE (index 0)
+
+            // RESOLVE AUDIO SLAVE (INDEX 0)
             final var audioSlaves = this.source.audioSlaves();
             MRL.Slave audioSlave = null;
             if (this.audio && !audioSlaves.isEmpty()) {
@@ -627,7 +1325,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 return false;
             }
 
-            // FIND AVAILABLE STREAMS (AUDIO AND VIDEO ONLY)
+            // FIND AVAILABLE STREAMS
             for (int i = 0; i < this.formatContext.nb_streams(); i++) {
                 final AVStream stream = this.formatContext.streams(i);
                 final int codecType = stream.codecpar().codec_type();
@@ -641,12 +1339,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
             }
 
-            // OPEN AUDIO SLAVE (index 0) IF AVAILABLE
+            // OPEN AUDIO SLAVE IF AVAILABLE
             if (audioSlave != null) {
                 this.useAudioSlave = this.initAudioSlave(audioSlave);
                 if (!this.useAudioSlave) {
                     LOGGER.warn(IT, "Audio slave failed to open, falling back to main audio stream");
-                    // Fallback: find audio stream in main context
                     for (int i = 0; i < this.formatContext.nb_streams(); i++) {
                         final AVStream stream = this.formatContext.streams(i);
                         if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0) {
@@ -706,41 +1403,27 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        // Find audio stream in slave context
+        // FIND AUDIO STREAM IN SLAVE CONTEXT
         for (int i = 0; i < this.slaveFormatContext.nb_streams(); i++) {
             final AVStream stream = this.slaveFormatContext.streams(i);
             if (stream.codecpar().codec_type() == avutil.AVMEDIA_TYPE_AUDIO) {
                 this.audioStreamIndex = i;
                 this.audioTimeBase = av_q2d(stream.time_base());
-                break;
+                LOGGER.info(IT, "Audio slave opened: {}", slaveUrl);
+                return true;
             }
         }
 
-        if (this.audioStreamIndex < 0) {
-            LOGGER.error(IT, "No audio stream found in audio slave: {}", slaveUrl);
-            avformat.avformat_close_input(this.slaveFormatContext);
-            this.slaveFormatContext = null;
-            return false;
-        }
-
-        // Allocate slave packet
-        this.slavePacket = avcodec.av_packet_alloc();
-        if (this.slavePacket == null) {
-            LOGGER.error(IT, "Failed to allocate slave packet");
-            avformat.avformat_close_input(this.slaveFormatContext);
-            this.slaveFormatContext = null;
-            this.audioStreamIndex = -1;
-            return false;
-        }
-
-        LOGGER.info(IT, "Audio slave opened: {}", slaveUrl);
-        return true;
+        LOGGER.error(IT, "No audio stream found in audio slave: {}", slaveUrl);
+        avformat.avformat_close_input(this.slaveFormatContext);
+        this.slaveFormatContext = null;
+        return false;
     }
 
     private boolean initVideo() {
         if (!this.video || this.videoStreamIndex < 0) {
             LOGGER.warn(IT, "No video stream found or video disabled");
-            return true;  // IS NOT AN ERROR WHEN VIDEO IS DISABLED
+            return true; // NOT AN ERROR WHEN VIDEO IS DISABLED (AUDIO-ONLY IS VALID)
         }
 
         final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
@@ -749,8 +1432,6 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (frameRate.num() > 0 && frameRate.den() > 0) {
             this.clock.fps((float) av_q2d(frameRate));
         } else {
-            // Fallback basado en time_base si avg_frame_rate no está disponible
-            // Aunque personalmente no le encuentro utilidad
             final AVRational tbr = videoStream.r_frame_rate();
             if (tbr.num() > 0 && tbr.den() > 0) {
                 this.clock.fps((float) av_q2d(tbr));
@@ -758,22 +1439,15 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         LOGGER.info(IT, "Video timing: {}fps, frame duration: {}ms, skip threshold: {}ms",
-                this.clock.fps(),
-                this.clock.frameDuration(),
-                this.clock.skipThreshold());
+                this.clock.fps(), this.clock.frameDurationMs(), this.clock.skipThresholdMs());
 
-        // START DECODER
+        // FIND DECODER
         final AVCodecParameters codecpar = videoStream.codecpar();
         final int codecId = codecpar.codec_id();
 
-        // DECODER NAME
         final String codecName = avcodec_get_name(codecId).getString();
-
-        // LARGE DECODER NAME
         final AVCodecDescriptor descriptor = avcodec_descriptor_get(codecId);
         final String codecLongName = descriptor != null ? descriptor.long_name().getString() : "unknown";
-
-        // OTHER DATA
         final long bitrate = codecpar.bit_rate();
         final int profile = codecpar.profile();
         final int level = codecpar.level();
@@ -791,7 +1465,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (decoder == null)
             LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
 
-        // IF NO HW DECODER (GPU), USE SW DECODER (CPU)
+        // TRY HW DECODER, FALLBACK TO SW
         if (!this.initHwDecoder(decoder, videoStream)) {
             this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
             if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
@@ -819,18 +1493,14 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
         }
 
-        // SET FORMAT
+        // SET VIDEO FORMAT
         this.setVideoFormat(GL12.GL_BGRA, this.videoCodecContext.width(), this.videoCodecContext.height());
 
-        // NOTA: SwsContext se crea lazily en processVideoPacket porque
-        // el formato real del frame puede diferir del codec context cuando
-        // se usa hardware acceleration (el frame transferido desde GPU
-        // típicamente es NV12/P010, no el formato original del stream)
+        // SETUP SCALED FRAME (OUTPUT OF sws_scale)
         this.scaledFrame.format(avutil.AV_PIX_FMT_BGRA);
         this.scaledFrame.width(this.width());
         this.scaledFrame.height(this.height());
 
-        // ALLOCATE FRAME BUFFER ALIGNED AT 32 BYTES
         if (avutil.av_frame_get_buffer(this.scaledFrame, 32) < 0) {
             LOGGER.error(IT, "Failed to allocate scaled video frame buffer");
             return false;
@@ -846,10 +1516,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (config == null) break;
                 if (config.device_type() != hw || (config.methods() & avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) == 0) continue;
 
-                // ALLOCATE HW CONTEXT
                 this.hwDeviceCtx = new AVBufferRef();
                 if (av_hwdevice_ctx_create(this.hwDeviceCtx, hw, (String) null, null, 0) >= 0) {
-                    // CREATE CODEC
                     this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
                     if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
                         this.cleanupHwContext();
@@ -860,8 +1528,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                     this.hwPixelFormat = config.pix_fmt();
 
                     if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
-                        this.hwTransferFrame = av_frame_alloc();
-
                         final BytePointer hwName = av_hwdevice_get_type_name(hw);
                         LOGGER.info(IT, "Hardware decoder initialized: {}", hwName != null ? hwName.getString() : "unknown (" + hw + ")");
                         IOTool.closeQuietly(hwName);
@@ -907,6 +1573,14 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
+        final String audioCodecName = avcodec_get_name(codecId).getString();
+        LOGGER.info(IT, "Audio codec: {} (id={}), channels: {}, sample_rate: {}, format: {}",
+                audioCodecName, codecId,
+                codecParams.ch_layout().nb_channels(),
+                codecParams.sample_rate(),
+                av_get_sample_fmt_name(codecParams.format()) != null
+                        ? av_get_sample_fmt_name(codecParams.format()).getString() : codecParams.format());
+
         this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
         if (this.audioCodecContext == null) {
             LOGGER.error(IT, "Failed to allocate audio codec context");
@@ -923,14 +1597,13 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        // Initialize resampler
+        // INITIALIZE RESAMPLER
         this.swrContext = swresample.swr_alloc();
         if (this.swrContext == null) {
             LOGGER.error(IT, "Failed to allocate SWResampler context");
             return false;
         }
 
-        // CHANNELS LAYOUTS
         final AVChannelLayout inputLayout = new AVChannelLayout();
         final AVChannelLayout outputLayout = new AVChannelLayout();
 
@@ -961,253 +1634,53 @@ public final class FFMediaPlayer extends MediaPlayer {
             av_channel_layout_uninit(outputLayout);
         }
 
-        this.resampledFrame.format(avutil.AV_SAMPLE_FMT_S16);
-        this.resampledFrame.ch_layout().nb_channels(AUDIO_CHANNELS);
-        avutil.av_channel_layout_default(this.resampledFrame.ch_layout(), AUDIO_CHANNELS);
-        this.resampledFrame.sample_rate(AUDIO_SAMPLE_RATE);
-        this.resampledFrame.nb_samples(AUDIO_SAMPLES);
-
-        return avutil.av_frame_get_buffer(this.resampledFrame, 0) >= 0;
+        return true;
     }
 
-    /**
-     * DECODE ONLY: drains all frames from the packet, does HW transfer,
-     * but does NOT sws_scale or GL upload. Marks the latest non-skipped
-     * frame as pending for deferred render with its own AVFrame reference,
-     * so decoder reuse cannot invalidate the pending frame before render.
-     */
-    private void processVideoPacket() {
-        if (avcodec.avcodec_send_packet(this.videoCodecContext, this.packet) < 0) return;
+    // ═══════════════════════════════════════════
+    //  SWS CONTEXT
+    // ═══════════════════════════════════════════
 
-        while (avcodec.avcodec_receive_frame(this.videoCodecContext, this.videoFrame) >= 0) {
-            boolean useHwFrame = false;
-
-            // ON HW DECODING, GET FROM GPU
-            if (this.hwDeviceCtx != null && this.videoFrame.format() == this.hwPixelFormat) {
-                if (av_hwframe_transfer_data(this.hwTransferFrame, this.videoFrame, 0) < 0) {
-                    LOGGER.warn(IT, "Failed to transfer frame from GPU");
-                    continue;
-                }
-                useHwFrame = true;
-            }
-
-            final long framePtsMs = (long) (this.videoFrame.pts() * this.videoTimeBase * 1000);
-
-            // FRAME SKIPPING (too far behind clock)
-            // DISABLED for audio slaves: with slaves, the audio clock races ahead
-            // of wall-clock during burst audio processing (audio packets decode
-            // instantly, clock.update() runs per packet, but wall-clock barely
-            // moves). This makes skip() see frames as "late" that are actually
-            // on time. The main loop already gates video reads via pendingVideoRender,
-            // so we only decode 1 video packet per rendered frame — skip is unnecessary.
-            if (!this.useAudioSlave && this.clock.skip(framePtsMs)) {
-                LOGGER.debug(IT, "Your decoding is taking too long, skipping!");
-                this.totalSkippedFrames++;
-                this.consecutiveSkips++;
-
-                // RENDER 1 FRAME AFTER 5 FRAMES
-                if (this.consecutiveSkips < 5) continue;
-            }
-            this.consecutiveSkips = 0;
-
-            // TAKE OWN REFERENCE: av_frame_ref copies the buffer references
-            // (incrementing refcount) so FFmpeg cannot recycle the pixel data
-            // when the next avcodec_receive_frame reuses videoFrame/hwTransferFrame.
-            final AVFrame frameToRef = useHwFrame ? this.hwTransferFrame : this.videoFrame;
-            av_frame_unref(this.pendingRenderFrame);
-            if (av_frame_ref(this.pendingRenderFrame, frameToRef) < 0) {
-                LOGGER.warn(IT, "Failed to keep a pending frame reference for deferred render");
-                continue;
-            }
-
-            this.pendingVideoRender = true;
-            this.pendingVideoPtsMs = framePtsMs;
+    private void recreateSwsContext(final int srcWidth, final int srcHeight, final int srcFormat) {
+        if (this.swsContext != null) {
+            swscale.sws_freeContext(this.swsContext);
+            this.swsContext = null;
         }
-    }
 
-    /**
-     * DEFERRED RENDER: called from the main loop after EVERY packet dispatch.
-     * If a decoded frame is pending and enough wall-clock time has passed since
-     * the last render, performs sws_scale + GL upload.
-     *
-     * For video-only streams (no audio), uses clock.waiting() for precise pacing.
-     * For audio+video, uses wall-clock rate limiting (no sleep, no blocking).
-     *
-     * Because this runs after BOTH audio and video packets, it catches the
-     * earliest opportunity to render after OpenAL unblocks.
-     */
-    private void renderPendingVideo() {
-        if (!this.pendingVideoRender) return;
+        this.swsContext = swscale.sws_getContext(
+                srcWidth, srcHeight, srcFormat,
+                this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
+                swscale.SWS_FAST_BILINEAR, null, null, (double[]) null
+        );
 
-        // VIDEO-ONLY: sleep-based pacing (no audio to block)
-        if (this.audioStreamIndex < 0) {
-            if (this.pauseRequested || !this.clock.waiting(this.pendingVideoPtsMs)) {
-                return; // Interrupted or paused
-            }
-            this.clock.update(this.pendingVideoPtsMs);
+        final String fmtName = av_get_pix_fmt_name(srcFormat) != null
+                ? av_get_pix_fmt_name(srcFormat).getString() : String.valueOf(srcFormat);
+
+        if (this.swsContext == null) {
+            LOGGER.error(IT, "Failed to create SwsContext: {} ({}x{}) -> BGRA ({}x{})",
+                    fmtName, srcWidth, srcHeight, this.width(), this.height());
         } else {
-            // AUDIO+VIDEO: wall-clock rate limiting (no sleep, no blocking)
-            final long now = System.currentTimeMillis();
-            if (now - this.lastVideoRenderMs < this.clock.frameDuration() - 2) {
-                return; // NOT TIME YET: keep pending, render on next opportunity
-            }
-        }
-
-        // CONSUME PENDING
-        this.pendingVideoRender = false;
-
-        final AVFrame frameToScale = this.pendingRenderFrame;
-        final int frameFormat = frameToScale.format();
-        final int frameWidth = frameToScale.width();
-        final int frameHeight = frameToScale.height();
-
-        // GUARD: validate pending frame is usable
-        if (frameFormat == AV_PIX_FMT_NONE || frameWidth <= 0 || frameHeight <= 0 || Pointer.isNull(frameToScale.data(0))) {
-            LOGGER.debug(IT, "Dropping invalid pending frame: format={}, size={}x{}", frameFormat, frameWidth, frameHeight);
-            av_frame_unref(this.pendingRenderFrame);
-            return;
-        }
-
-        if (this.swsContext == null || this.swsInputFormat != frameFormat) {
-            // FREE OLD CONTEXT
-            if (this.swsContext != null) {
-                swscale.sws_freeContext(this.swsContext);
-                this.swsContext = null;
-            }
-
-            // CREATE NEW CONTEXT WITH THE NEW FORMAT
-            this.swsContext = swscale.sws_getContext(
-                    frameWidth, frameHeight, frameFormat,
-                    this.width(), this.height(), avutil.AV_PIX_FMT_BGRA,
-                    swscale.SWS_BILINEAR, null, null, (double[]) null
-            );
-
-            if (this.swsContext == null) {
-                LOGGER.error(IT, "Failed to create SwsContext for format {} ({}x{})", frameFormat, frameWidth, frameHeight);
-                return;
-            }
-
-            this.swsInputFormat = frameFormat;
-            LOGGER.debug(IT, "Successfully created SwsContext: format {} ({}x{}) -> BGRA ({}x{})", frameFormat, frameWidth, frameHeight, this.width(), this.height());
-        }
-
-        // GET A SINGLE BUFFER INSTANCE, SO JAVACPP DOESN'T SPAM BUFFER OBJECTS WITH THE SAME POINTER
-        if (!this.videoBufferInitialized) {
-            this.videoBuffer = this.scaledFrame.data(0).asBuffer();
-            this.videoBufferInitialized = true;
-        }
-
-        synchronized (this.videoBuffer) {
-            final int result = swscale.sws_scale(
-                    this.swsContext,
-                    frameToScale.data(),
-                    frameToScale.linesize(),
-                    0,
-                    frameHeight,
-                    this.scaledFrame.data(),
-                    this.scaledFrame.linesize()
-            );
-
-            if (result <= 0) {
-                LOGGER.error(IT, "Failed to scale video frame: result={}, srcFmt={}, srcSize={}x{}", result, frameFormat, frameWidth, frameHeight);
-                return;
-            }
-        }
-
-        final int stride = this.scaledFrame.linesize(0);
-        this.upload(this.videoBuffer, stride / 4);
-        this.lastVideoRenderMs = System.currentTimeMillis();
-        this.totalRenderedFrames++;
-        av_frame_unref(this.pendingRenderFrame);
-    }
-
-    private void readSlaveAudio() {
-        final int readResult = avformat.av_read_frame(this.slaveFormatContext, this.slavePacket);
-        if (readResult < 0) return;
-
-        try {
-            if (this.slavePacket.stream_index() == this.audioStreamIndex && this.audio) {
-                this.processAudioPacket(this.slavePacket);
-            }
-        } finally {
-            avcodec.av_packet_unref(this.slavePacket);
+            this.swsInputFormat = srcFormat;
+            LOGGER.info(IT, "SwsContext: {} ({}x{}) -> BGRA ({}x{})",
+                    fmtName, srcWidth, srcHeight, this.width(), this.height());
         }
     }
 
-    private void processAudioPacket() {
-        this.processAudioPacket(this.packet);
-    }
-
-    private void processAudioPacket(final AVPacket pkt) {
-        if (avcodec.avcodec_send_packet(this.audioCodecContext, pkt) < 0) return;
-
-        while (avcodec.avcodec_receive_frame(this.audioCodecContext, this.audioFrame) >= 0) {
-            // AUDIO CLOCK IS PRIMARY CLOCK
-            final long audioPtsMs = (long) (this.audioFrame.pts() * this.audioTimeBase * 1000);
-            this.clock.update(audioPtsMs);
-
-            // RESAMPLE TO NON-FLOATING POINT
-            final int samplesConverted = swresample.swr_convert(
-                    this.swrContext,
-                    this.resampledFrame.data(),
-                    this.resampledFrame.nb_samples(),
-                    this.audioFrame.data(),
-                    this.audioFrame.nb_samples()
-            );
-
-            // HAVE SAMPLES, UPLOAD!
-            if (samplesConverted > 0) {
-                final int dataSize = samplesConverted * AUDIO_CHANNELS * 2;
-
-                final ByteBuffer audioData = this.resampledFrame.data(0)
-                        .limit(dataSize)
-                        .asBuffer()
-                        .clear();
-
-                this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
-            }
-
-            // CHECK FOR RESAMPLES
-            final long delay = swresample.swr_get_delay(this.swrContext, AUDIO_SAMPLE_RATE);
-
-            if (delay > AUDIO_SAMPLES / 2) {
-                // FLUSH RESIDUALS
-                final int flushed = swresample.swr_convert(
-                        this.swrContext,
-                        this.resampledFrame.data(),
-                        this.resampledFrame.nb_samples(),
-                        null,
-                        0
-                );
-
-                if (flushed > 0) {
-                    final int dataSize = flushed * AUDIO_CHANNELS * 2;
-                    final ByteBuffer audioData = this.resampledFrame.data(0)
-                            .limit(dataSize)
-                            .asBuffer()
-                            .clear();
-
-                    this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
-                }
-            }
-        }
-    }
+    // ═══════════════════════════════════════════
+    //  CLEANUP
+    // ═══════════════════════════════════════════
 
     private void cleanup() {
         LOGGER.info(IT, "Cleaning up FFMPEG resources...");
 
-        // FREE HW
-        if (this.hwTransferFrame != null) {
-            av_frame_free(this.hwTransferFrame);
-            this.hwTransferFrame = null;
-        }
+        // HW
         if (this.hwDeviceCtx != null) {
             av_buffer_unref(this.hwDeviceCtx);
             this.hwDeviceCtx = null;
         }
         this.hwPixelFormat = AV_PIX_FMT_NONE;
 
-        // FREE CONTEXTS
+        // CONTEXTS
         if (this.swsContext != null) {
             swscale.sws_freeContext(this.swsContext);
             this.swsContext = null;
@@ -1242,34 +1715,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
         this.useAudioSlave = false;
 
-        // FREE INSTANCES
-        if (this.videoFrame != null) {
-            avutil.av_frame_free(this.videoFrame);
-            this.videoFrame = null;
-        }
-        if (this.audioFrame != null) {
-            avutil.av_frame_free(this.audioFrame);
-            this.audioFrame = null;
-        }
+        // FRAMES
         if (this.scaledFrame != null) {
             avutil.av_frame_free(this.scaledFrame);
             this.scaledFrame = null;
-        }
-        if (this.resampledFrame != null) {
-            avutil.av_frame_free(this.resampledFrame);
-            this.resampledFrame = null;
-        }
-        if (this.pendingRenderFrame != null) {
-            avutil.av_frame_free(this.pendingRenderFrame);
-            this.pendingRenderFrame = null;
-        }
-        if (this.packet != null) {
-            avcodec.av_packet_free(this.packet);
-            this.packet = null;
-        }
-        if (this.slavePacket != null) {
-            avcodec.av_packet_free(this.slavePacket);
-            this.slavePacket = null;
         }
 
         // CLEAR
@@ -1280,13 +1729,19 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.videoStreamIndex = -1;
         this.audioStreamIndex = -1;
         this.swsInputFormat = AV_PIX_FMT_NONE;
-        this.pendingVideoRender = false;
 
         LOGGER.info(IT, "Cleanup completed");
     }
 
-    // NO NULLPOINTERS ON JAVA, NO NULLPOINTERS ON NATIVE
+    // ═══════════════════════════════════════════
+    //  UTILITY
+    // ═══════════════════════════════════════════
+
     private static boolean isNull(Pointer p) { return p == null || p.isNull(); }
+
+    // ═══════════════════════════════════════════
+    //  STATIC
+    // ═══════════════════════════════════════════
 
     public static boolean load(final WaterMedia watermedia) {
         Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
@@ -1298,9 +1753,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         try {
-            // ASK WATERMEDIA BINARIES WHERE WAS FFMPEG
+            // ASK WATERMEDIA BINARIES WHERE FFMPEG IS LOCATED
             final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
-            // ALSO LOOK IN USER-DEFINED FOLDERS (OR RUNTIME FOLDER AS DEFAULT)
+            // ALSO LOOK IN USER-DEFINED FOLDERS (OR RUNTIME FOLDER AS FALLBACK)
             final String configPath = WaterMediaConfig.media.customFFMPEGPath != null ? WaterMediaConfig.media.customFFMPEGPath.toAbsolutePath().toString() : null;
             final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
 
@@ -1327,7 +1782,6 @@ public final class FFMediaPlayer extends MediaPlayer {
             LOGGER.info(IT, "swscale:  {}", swscale.swscale_version());
             LOGGER.info(IT, "swresample: {}", swresample.swresample_version());
 
-            // BUILD CONFIGURATION, THE ARGUMENTS USED
             try {
                 final BytePointer config = avformat.avformat_configuration();
                 if (config != null && !config.isNull()) {
@@ -1357,7 +1811,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                 LOGGER.info(IT, "  (none available)");
             }
 
-            // LICENSE INFO (binaries ships GPL but that doesn't contaminate WMB or WM itself)
             final BytePointer license = avformat.avformat_license();
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), license != null && !license.isNull() ? license.getString() : "unknown");
             IOTool.closeQuietly(license);
