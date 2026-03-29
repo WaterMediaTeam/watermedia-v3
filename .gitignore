@@ -12,3 +12,4 @@ hs_err_pid*
 /config/
 /.idea/
 !/.idea/icon.svg
+*.mp4
