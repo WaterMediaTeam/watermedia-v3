@@ -10,6 +10,7 @@ import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
 
 import static org.lwjgl.openal.AL10.alSourcePlay;
 import static org.lwjgl.openal.AL10.alSourceStop;
@@ -17,7 +18,7 @@ import static org.lwjgl.openal.AL10.alSourceStop;
 /**
  * Shared application context and state.
  */
-public final class AppContext {
+public final class AppContext implements Executor {
 
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
     public static final Gson GSON = new Gson();
@@ -92,6 +93,7 @@ public final class AppContext {
     public record URIGroup(String name, TestURI[] uris) {
     }
 
+    @Override
     public void execute(final Runnable task) {
         if (task != null) this.executor.add(task);
     }

@@ -17,29 +17,24 @@ import static java.net.HttpURLConnection.HTTP_UNAVAILABLE;
 
 public class NetTool {
 
+    // CAST TO HTTP
     public static HttpURLConnection connectToHTTP(final URI uri, final String method, final String accept) throws IOException {
+        return (HttpURLConnection) connectToURI(uri, method, accept);
+    }
+
+    // CONNECT TO URI FOR ANY PROTOCOL
+    public static URLConnection connectToURI(final URI uri, final String method, final String accept) throws IOException {
         final URL url = uri.toURL();
-        final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod(method);
+        final URLConnection conn = url.openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(15000);
         conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
         conn.setRequestProperty("Accept", accept);
-        conn.setInstanceFollowRedirects(true);
-        return conn;
-    }
-
-    public static URLConnection connectToURI(final URI uri) throws IOException {
-        try {
-            final URL url = uri.toURL();
-            final URLConnection conn = url.openConnection();
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
-            conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
-            return conn;
-        } catch (final MalformedURLException e) {
-            return null;
+        if (conn instanceof final HttpURLConnection http) {
+            http.setRequestMethod(method);
+            http.setInstanceFollowRedirects(true);
         }
+        return conn;
     }
 
     public static boolean validateHTTP200(final int code, final URI uri) throws IOException {
@@ -64,20 +59,20 @@ public class NetTool {
     }
 
     public static class Request implements AutoCloseable {
-        private final URL url;
+        private final URI uri;
         private final String method;
         private final String body;
         private final URLConnection connection;
 
-        public Request(final URL url, final String method, final String body) throws IOException {
-            this.url = url;
+        public Request(final URI uri, final String method, final String body) throws IOException {
+            this.uri = uri;
             this.method = method;
             this.body = body;
-            this.connection = url.openConnection();
+            this.connection = connectToHTTP(this.uri, method, body);
         }
 
-        public URL getUrl() {
-            return this.url;
+        public URI getUri() {
+            return this.uri;
         }
 
         public String getMethod() {
@@ -109,6 +104,18 @@ public class NetTool {
             if (this.connection instanceof final HttpURLConnection http) {
                 http.disconnect();
             }
+        }
+
+        public String readAll() {
+            try (final InputStream is = this.getInputStream()) {
+                return new String(is.readAllBytes());
+            } catch (final IOException e) {
+                return null;
+            }
+        }
+
+        public String getHeader(final String location) {
+            return this.connection.getHeaderField(location);
         }
     }
 }

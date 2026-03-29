@@ -51,22 +51,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
         Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
 
-        // VALIDATE THREAD
-        renderThreadEx.execute(() -> {
-            if (Thread.currentThread() != renderThread) {
-                throw new IllegalStateException("MediaPlayer must be provided with the render thread and a executor that runs task on it.");
-            }
-            // VALIDATE GL CONTEXT
-            if (video) {
-                if (gl == null) {
-                    throw new IllegalArgumentException("MediaPlayer with video support must be provided with a valid GLEngine instance.");
-                }
-                if (!gl.hasGLContext()) {
-                    throw new IllegalStateException("MediaPlayer's GLEngine context must be current on the render thread.");
-                }
-            }
-        });
-
         // INIT PROPERTIES
         this.source = source;
         this.renderThread = renderThread;
@@ -75,6 +59,22 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.al = al == null ? new ALEngine.Builder().build() : al;
         this.video = video;
         this.audio = audio;
+
+        // VALIDATE THREAD
+        renderThreadEx.execute(() -> {
+            if (Thread.currentThread() != renderThread) {
+                throw new IllegalStateException("MediaPlayer must be provided with the render thread and a executor that runs task on it.");
+            }
+            // VALIDATE GL CONTEXT
+            if (this.video) {
+                if (this.gl == null) {
+                    throw new IllegalArgumentException("MediaPlayer with video support must be provided with a valid GLEngine instance.");
+                }
+                if (!this.gl.hasGLContext()) {
+                    throw new IllegalStateException("MediaPlayer's GLEngine context must be current on the render thread.");
+                }
+            }
+        });
 
         // Initialize video (if applicable)
         this.glTexture = video ? this.gl.createTexture() : NO_TEXTURE;
@@ -108,6 +108,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         // Video format not set yet, skip uploading
         if (this.width == NO_SIZE || this.height == NO_SIZE) { return; }
 
+        if (nativeBuffer != null && !nativeBuffer.isDirect()) {
+            LOGGER.warn(IT, "Provided video frame buffer is not a direct ByteBuffer, Source: {}.", this.source.bestUri());
+        }
+
         if (this.renderThread != Thread.currentThread()) {
             this.renderThreadEx.execute(() -> this.upload(nativeBuffer, stride));
             return;
@@ -122,13 +126,17 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (nativeBuffer == null)
             throw new IllegalArgumentException("Native buffers cannot be null or empty.");
 
+        if (!nativeBuffer.isDirect()) {
+            throw new  IllegalArgumentException("Native buffer is not a direct ByteBuffer.");
+        }
+
         synchronized(nativeBuffer) {
             this.gl.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
             this.firstFrame = false;
         }
     }
 
-    protected void upload(final ByteBuffer data, final int format, final int samples, final int channels) {
+    protected boolean upload(final ByteBuffer data, final int format, final int samples, final int channels) {
         if (!this.audio)
             throw new IllegalStateException("MediaPlayer was built with no audio support");
 
@@ -139,11 +147,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (channels != 2)
             throw new IllegalArgumentException(channels == 1 ? "Mono format is not supported anymore." : "Unsupported channel count: " + channels);
 
-        // PREPARE
-        this.al.uploadBuffer(this.alSources, data, format, samples);
+        // PREPARE — non-blocking: returns false if OpenAL has no buffer available
+        if (!this.al.uploadBuffer(this.alSources, data, format, samples)) {
+            return false;
+        }
 
         // PLAY IF NOT ALREADY PLAYING
         this.al.play(this.alSources);
+        return true;
     }
 
     /**

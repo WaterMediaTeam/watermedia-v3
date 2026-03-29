@@ -22,18 +22,24 @@ public class DefaultPlatform implements IPlatform {
 
     @Override
     public Result getSources(final URI uri) throws Exception {
-        final URLConnection conn = NetTool.connectToURI(uri);
+        final URLConnection conn = NetTool.connectToURI(uri, "GET", "*/*");
 
-        if (conn != null) {
-            conn.connect();
-            conn.getInputStream().close();
-            LOGGER.info("Connected to {} with content type {}", uri, conn.getContentType());
+        conn.getInputStream().close(); // FORCE CONNECTION (to get content type)
+        // CHECK IF THE RESPONSE CODE IS 301 OR 302, IF YES, THEN RECONNECT TO THE NEW LOCATION
+        if (conn instanceof final HttpURLConnection http) {
+            final int responseCode = http.getResponseCode();
+            if (responseCode == HttpURLConnection.HTTP_MOVED_PERM || responseCode == HttpURLConnection.HTTP_MOVED_TEMP) {
+                final String newLocation = http.getHeaderField("Location");
+                LOGGER.debug("Redirected to {} from {}", newLocation, uri);
+                return this.getSources(URI.create(newLocation));
+            }
         }
 
-        final var sourceBuilder = new MRL.SourceBuilder(conn == null ? MRL.MediaType.UNKNOWN : MRL.MediaType.of(conn.getContentType()))
-                .uri(uri);
+        LOGGER.debug("Connected to {} with content type {}", uri, conn.getContentType());
 
-        if (conn instanceof HttpURLConnection http) {
+        final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.of(conn.getContentType())).uri(uri);
+
+        if (conn instanceof final HttpURLConnection http) {
             http.disconnect();
         }
 

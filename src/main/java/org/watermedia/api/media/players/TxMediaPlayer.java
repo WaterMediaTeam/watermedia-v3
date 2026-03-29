@@ -8,9 +8,13 @@ import org.watermedia.api.decode.Image;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.tools.NetTool;
+import org.watermedia.tools.NetTool.Request;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -56,45 +60,89 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     private void fetchImage() {
-        this.status = Status.LOADING; // Set status to loading
-        final var uri = this.source.uri(this.quality);
-        try (final NetTool.Request request = new NetTool.Request(uri.toURL(), "GET", null)) {
-            final String type = request.getContentType();
+        this.status = Status.LOADING;
+
+        // LOADING STAGE
+        var uri = this.source.uri(this.quality);
+        int code = 0;
+        String type = null;
+        InputStream in = null;
+        Request request = null;
+
+        for (int redirects = 0; redirects < 6; redirects++) {
+            try {
+                request = new Request(uri, "GET", null);
+                code = request.getResponseCode();
+                type = request.getContentType();
+
+                if (code >= 300 && code < 400) { // Handle redirection
+                    final String location = request.getHeader("Location");
+                    request.close();
+                    LOGGER.warn(IT, "Redirection detected for URI: {}, response code: {}, location: {}", uri, code, location);
+                    uri = URI.create(location);
+                    if (redirects == 5) {
+                        LOGGER.fatal(IT, "Too many redirects for URI: {}, aborting fetch", this.source);
+                        throw new IOException("Too many redirects");
+                    }
+                    continue;
+                }
+
+                in = request.getInputStream();
+                if (in == null) {
+                    LOGGER.error(IT, "No input stream available for URI: {}, response code: {}", uri, code);
+                    request.close();
+                    throw new IOException("No input stream available");
+                }
+                break; // Exit loop if successful
+            } catch (final Exception e) {
+                LOGGER.error(IT, "Failed to connect to media source: {}", this.source, e);
+                if (request != null) {
+                    request.close();
+                }
+                this.status = Status.ERROR;
+                return;
+            }
+        }
+
+        try {
+            NetTool.validateHTTP200(code, uri);
+
             if (type == null || !type.startsWith("image/")) {
+                LOGGER.debug(IT, "Invalid media type: {} for URI: {}, expected an image content type: {}", type, uri, code);
                 throw new IllegalArgumentException("Invalid media type: " + type);
             } else {
                 LOGGER.debug(IT, "Fetching image from: {} with content type {}", this.source, type);
             }
 
-            final int code = request.getResponseCode();
-            final boolean valid = NetTool.validateHTTP200(code, uri);
-            if (valid) {
-                this.status = Status.BUFFERING;
-            }
-
             LOGGER.debug(IT, "Server Response code: {}, running decoding", code);
-            this.images = DecoderAPI.decodeImage(request.getInputStream().readAllBytes());
+
+            // BUFFERING STAGE
+            this.status = Status.BUFFERING;
+            this.images = DecoderAPI.decodeImage(in.readAllBytes());
             this.status = this.triggerPause ? Status.PAUSED : Status.PLAYING;
 
             if (this.images == null || this.images.frames() == null || this.images.frames().length == 0) {
+                request.close();
                 throw new IOException("No frames found in the media: " + this.source);
             }
-
-            this.setVideoFormat(GL12.GL_BGRA, this.images.width(), this.images.height());
-
-            if (this.images.frames().length == 1) {
-                LOGGER.debug(IT, "Single frame image detected, uploading first frame and setting status to PLAYING");
-                this.upload(this.images.frames()[0], 0);
-                this.status = Status.PLAYING;
-            } else {
-                LOGGER.debug(IT, "Multi-frame image detected, adding to active players for playback");
-                ACTIVE_PLAYERS.add(this);
-            }
-            LOGGER.debug(IT, "Successfully fetched image: {} with dimensions {}x{} and delay {}", this.source, this.images.width(), this.images.height(), this.images.delay());
-        } catch (final Throwable e) {
-            LOGGER.error(IT, "Failed to open media: {}", this.source, e);
+            request.close();
+        } catch (Exception e) {
+            LOGGER.error(IT, "Failed fetching media data: {}", this.source, e);
             this.status = Status.ERROR;
+            return;
         }
+
+        this.setVideoFormat(GL12.GL_BGRA, this.images.width(), this.images.height());
+
+        if (this.images.frames().length == 1) {
+            LOGGER.debug(IT, "Single frame image detected, uploading first frame and setting status to PLAYING");
+            this.upload(this.images.frames()[0], 0);
+            this.status = Status.PLAYING;
+        } else {
+            LOGGER.debug(IT, "Multi-frame image detected, adding to active players for playback");
+            ACTIVE_PLAYERS.add(this);
+        }
+        LOGGER.debug(IT, "Successfully fetched image: {} with dimensions {}x{} and delay {}", this.source, this.images.width(), this.images.height(), this.images.delay());
     }
 
     @Override

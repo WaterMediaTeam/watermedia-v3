@@ -335,6 +335,33 @@ public final class MRL {
         return null;
     }
 
+    /**
+     * Finds a suitable source and creates a thumbnail MediaPlayer.
+     * First tries metadata-provided thumbnail, then image sources, then video sources.
+     * @param renderThread
+     * @param renderThreadEx
+     * @param glEngine
+     * @return
+     */
+    public MediaPlayer createThumbnailPlayer(final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine) {
+        for (final Source src: this.sources()) {
+            if (src.metadata() != null) {
+                final var player = src.metadata().createThumbnailPlayer(renderThread, renderThreadEx, glEngine);
+                if (player != null) {
+                    LOGGER.debug(IT, "Created thumbnail player from metadata for: {}", src);
+                    return player;
+                }
+            }
+            if (src.isImage()) {
+                LOGGER.debug(IT, "Creating TxMediaPlayer for image as thumbnail: {}", src);
+                return new TxMediaPlayer(src, renderThread, renderThreadEx, glEngine, true);
+            }
+            // TODO: VIDEO THUMBNAILS ARE EXPENSIVE TO CREATE, SO WE ONLY USE THEM AS A LAST RESORT
+        }
+
+        return null;
+    }
+
     // =========================================================================
     // OBJECT METHODS
     // =========================================================================
@@ -514,16 +541,11 @@ public final class MRL {
             this(title, description, null, null, duration, null);
         }
 
-        public MediaPlayer createThumbnailPlayer() {
+        public MediaPlayer createThumbnailPlayer(final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine) {
             if (this.thumbnail == null) return null;
-            final Source source = new Source(MediaType.IMAGE, this.thumbnail);
 
-            try {
-                return new TxMediaPlayer(source, Thread.currentThread(), Runnable::run, null, false);
-            } catch (final Throwable t) {
-                LOGGER.error(IT, "Failed to create thumbnail player for: {}", this.thumbnail, t);
-                return null;
-            }
+            final Source source = new Source(MediaType.IMAGE, this.thumbnail);
+            return new TxMediaPlayer(source, renderThread, renderThreadEx, glEngine, true);
         }
     }
 

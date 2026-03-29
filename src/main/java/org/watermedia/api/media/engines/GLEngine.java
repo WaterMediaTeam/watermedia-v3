@@ -2,6 +2,7 @@ package org.watermedia.api.media.engines;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.lwjgl.glfw.GLFW;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL15;
@@ -70,6 +71,10 @@ public final class GLEngine {
 
     private int nextIndex() {
         return (this.index + 1) % NUM_PBOS;
+    }
+
+    public boolean hasGLContext() {
+        return GLFW.glfwGetCurrentContext() != 0L;
     }
 
     public void uploadTexture(final int texture, final ByteBuffer buffer, final int stride, final int width, final int height, final int format, final boolean firstFrame) {

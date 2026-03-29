@@ -1,44 +1,70 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
-  import org.watermedia.bootstrap.app.ui.Colors;
-import org.watermedia.bootstrap.app.ui.Selector;
+import org.watermedia.bootstrap.app.ui.Colors;
+import org.watermedia.bootstrap.app.ui.Grid;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.DrawTool;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Screen for selecting MRLs from a group.
+ * Screen for selecting MRLs from a group, displayed as a grid with thumbnail backgrounds.
  */
 public class MRLSelectorScreen extends Screen {
 
     private final Consumer<HomeScreen.Action> navigator;
-    private final Selector<AppContext.TestURI> selector;
+    private final Grid<AppContext.TestURI> grid;
     private boolean loading;
     private long loadStartTime;
     private AppContext.TestURI pendingUri;
+
+    // Thumbnail players keyed by MRL name
+    private final Map<String, MediaPlayer> thumbnailPlayers = new LinkedHashMap<>();
+    private final java.util.Set<String> thumbnailAttempted = new java.util.HashSet<>();
 
     public MRLSelectorScreen(final TextRenderer text, final AppContext ctx, final Consumer<HomeScreen.Action> navigator) {
         super(text, ctx);
         this.navigator = navigator;
 
-        this.selector = new Selector<AppContext.TestURI>()
-                .labelProvider(uri -> text.padOrTruncate(uri.name(), 35))
-                .statusProvider(uri -> {
+        this.grid = new Grid<AppContext.TestURI>()
+                .columns(6)
+                .cellHeight(120)
+                .cellGap(10)
+                .borderWidth(4f)
+                .innerPadding(10)
+                .labelProvider(AppContext.TestURI::name)
+                .sublabelProvider(AppContext.TestURI::uri)
+                .iconProvider(uri -> {
                     final MRL mrl = ctx.groupMRLs.get(uri.name());
-                    final int count = mrl != null && mrl.ready() ? mrl.sourceCount() : 0;
-                    return "[" + count + "] [" + this.getMRLStatus(mrl) + "]";
+                    if (mrl == null) return Grid.Icon.STATUS_NULL;
+                    if (mrl.error()) return Grid.Icon.STATUS_ERROR;
+                    if (mrl.ready()) return Grid.Icon.STATUS_READY;
+                    if (mrl.busy()) return Grid.Icon.STATUS_LOADING;
+                    return Grid.Icon.STATUS_UNKNOWN;
                 })
+                .iconColorProvider(uri -> {
+                    final MRL mrl = ctx.groupMRLs.get(uri.name());
+                    if (mrl == null) return Colors.GRAY;
+                    if (mrl.error()) return Colors.RED;
+                    if (mrl.ready()) return Colors.GREEN;
+                    if (mrl.busy()) return Colors.BLUE;
+                    return Colors.GRAY;
+                })
+                .borderColorProvider(uri -> {
+                    final MRL mrl = ctx.groupMRLs.get(uri.name());
+                    if (mrl != null && mrl.error()) return Colors.RED;
+                    return Colors.BLUE;
+                })
+                .thumbnailProvider(uri -> this.thumbnailPlayers.get(uri.name()))
                 .onSelect(this::handleSelect)
-                .onBack(this::goBack)
-                .onSelectionChanged(ctx::playSelectionSound)
-                .showBack(true)
-                .backLabel("[BACK]")
-                .minWidth(AppContext.MENU_WIDTH);
+                .onSelectionChanged(ctx::playSelectionSound);
     }
 
     @Override
@@ -46,20 +72,57 @@ public class MRLSelectorScreen extends Screen {
         this.loading = false;
         this.pendingUri = null;
         if (this.ctx.selectedGroup != null) {
-            this.selector.clear();
-            this.selector.title("Select Media - " + this.ctx.selectedGroup.name());
+            this.grid.clear();
+            this.grid.title("Select Media - " + this.ctx.selectedGroup.name());
             for (final AppContext.TestURI uri : this.ctx.selectedGroup.uris()) {
-                this.selector.item(uri);
+                this.grid.item(uri);
             }
         }
     }
 
-    private String getMRLStatus(final MRL mrl) {
-        if (mrl == null) return "NULL";
-        if (mrl.error()) return "ERROR";
-        if (mrl.ready()) return "READY";
-        if (mrl.busy()) return "LOADING";
-        return "UNKNOWN";
+    @Override
+    public void onExit() {
+        this.releaseThumbnailPlayers();
+    }
+
+    /**
+     * Called each frame to create thumbnail players for MRLs that just became ready.
+     */
+    private void updateThumbnailPlayers() {
+        if (this.ctx.selectedGroup == null) return;
+
+        for (final AppContext.TestURI uri : this.ctx.selectedGroup.uris()) {
+            final String name = uri.name();
+            if (this.thumbnailAttempted.contains(name)) continue;
+
+            final MRL mrl = this.ctx.groupMRLs.get(name);
+            if (mrl == null) continue;
+            if (!mrl.ready() && !mrl.error()) continue; // still loading, wait
+
+            // Mark as attempted so we don't retry every frame
+            this.thumbnailAttempted.add(name);
+
+            if (mrl.error()) continue; // no thumbnail for errored MRLs
+
+            final MRL.Source[] sources = mrl.sources();
+            if (sources.length == 0) continue;
+
+            final MediaPlayer player = mrl.createThumbnailPlayer(Thread.currentThread(), this.ctx, null);
+
+            if (player != null) {
+                player.repeat(true);
+                player.start();
+                this.thumbnailPlayers.put(name, player);
+            }
+        }
+    }
+
+    private void releaseThumbnailPlayers() {
+        for (final MediaPlayer player : this.thumbnailPlayers.values()) {
+            player.release();
+        }
+        this.thumbnailPlayers.clear();
+        this.thumbnailAttempted.clear();
     }
 
     private void handleSelect(final int index, final AppContext.TestURI uri) {
@@ -184,14 +247,17 @@ public class MRLSelectorScreen extends Screen {
             this.checkLoadingState();
         }
 
+        this.updateThumbnailPlayers();
+
         DrawTool.setupOrtho(windowW, windowH);
 
         final int y = this.renderBanner(windowW, windowH) + 10;
-        // Calculate max height: from current Y to bottom bar area (windowH - 100 for padding)
         final int maxHeight = windowH - 100 - y;
-        this.selector.maxHeight(maxHeight);
-        this.selector.calculateBounds(this.text, AppContext.PADDING, y);
-        this.selector.render(this.text, windowW, windowH);
+        final int availableWidth = windowW - AppContext.PADDING * 2;
+
+        this.grid.maxHeight(maxHeight);
+        this.grid.calculateBounds(this.text, AppContext.PADDING, y, availableWidth);
+        this.grid.render(this.text, windowW, windowH);
 
         DrawTool.restoreProjection();
 
@@ -233,9 +299,11 @@ public class MRLSelectorScreen extends Screen {
         }
 
         switch (key) {
-            case GLFW_KEY_UP -> this.selector.moveUp();
-            case GLFW_KEY_DOWN -> this.selector.moveDown();
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.selector.confirm();
+            case GLFW_KEY_UP -> this.grid.moveUp();
+            case GLFW_KEY_DOWN -> this.grid.moveDown();
+            case GLFW_KEY_LEFT -> this.grid.moveLeft();
+            case GLFW_KEY_RIGHT -> this.grid.moveRight();
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.grid.confirm();
             case GLFW_KEY_ESCAPE -> this.goBack();
         }
     }
@@ -243,24 +311,24 @@ public class MRLSelectorScreen extends Screen {
     @Override
     public void handleMouseMove(final double mx, final double my) {
         if (this.loading) return;
-        this.selector.handleHover(mx, my);
+        this.grid.handleHover(mx, my);
     }
 
     @Override
     public void handleMouseClick(final double mx, final double my) {
         if (this.loading) return;
-        this.selector.handleClick(mx, my);
+        this.grid.handleClick(mx, my);
     }
 
     @Override
     public void handleScroll(final double yOffset) {
         if (this.loading) return;
-        this.selector.handleScroll(yOffset);
+        this.grid.handleScroll(yOffset);
     }
 
     @Override
     public String instructions() {
         if (this.loading) return "ESC: Cancel";
-        return "UP/DOWN: Navigate | ENTER: Select | ESC: Back";
+        return "ARROWS: Navigate | ENTER: Select | ESC: Back";
     }
 }

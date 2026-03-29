@@ -223,6 +223,109 @@ public final class DrawTool {
     }
 
     // ============================================================
+    // ROUNDED SHAPES
+    // ============================================================
+
+    /**
+     * Fills a rounded rectangle using the current color.
+     */
+    public static void fillRounded(float x, float y, float w, float h, float radius) {
+        radius = Math.min(radius, Math.min(w, h) / 2f);
+        fill(x + radius, y, w - 2 * radius, h);
+        fill(x, y + radius, radius, h - 2 * radius);
+        fill(x + w - radius, y + radius, radius, h - 2 * radius);
+        fillArc(x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5), 8);
+        fillArc(x + w - radius, y + radius, radius, (float) (Math.PI * 1.5), (float) (Math.PI * 2), 8);
+        fillArc(x + w - radius, y + h - radius, radius, 0, (float) (Math.PI * 0.5), 8);
+        fillArc(x + radius, y + h - radius, radius, (float) (Math.PI * 0.5), (float) Math.PI, 8);
+    }
+
+    /**
+     * Fills a rounded rectangle with specified RGBA color.
+     */
+    public static void fillRounded(float x, float y, float w, float h, float radius,
+                                    float r, float g, float b, float a) {
+        color(r, g, b, a);
+        fillRounded(x, y, w, h, radius);
+    }
+
+    /**
+     * Fills a rounded rectangle with specified Color.
+     */
+    public static void fillRounded(float x, float y, float w, float h, float radius, Color c) {
+        color(c);
+        fillRounded(x, y, w, h, radius);
+    }
+
+    /**
+     * Draws a rounded rectangle outline using the current color.
+     */
+    public static void rectRounded(float x, float y, float w, float h, float radius, float lineWidth) {
+        radius = Math.min(radius, Math.min(w, h) / 2f);
+        glLineWidth(lineWidth);
+        final int segments = 8;
+        glBegin(GL_LINE_LOOP);
+        // Top-right corner
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) (-Math.PI / 2) + (float) (Math.PI / 2) * i / segments;
+            glVertex2f(x + w - radius + (float) Math.cos(angle) * radius,
+                       y + radius + (float) Math.sin(angle) * radius);
+        }
+        // Bottom-right corner
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) (Math.PI / 2) * i / segments;
+            glVertex2f(x + w - radius + (float) Math.cos(angle) * radius,
+                       y + h - radius + (float) Math.sin(angle) * radius);
+        }
+        // Bottom-left corner
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) (Math.PI / 2) + (float) (Math.PI / 2) * i / segments;
+            glVertex2f(x + radius + (float) Math.cos(angle) * radius,
+                       y + h - radius + (float) Math.sin(angle) * radius);
+        }
+        // Top-left corner
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) Math.PI + (float) (Math.PI / 2) * i / segments;
+            glVertex2f(x + radius + (float) Math.cos(angle) * radius,
+                       y + radius + (float) Math.sin(angle) * radius);
+        }
+        glEnd();
+    }
+
+    /**
+     * Draws a rounded rectangle outline with specified RGBA color and line width.
+     */
+    public static void rectRounded(float x, float y, float w, float h, float radius,
+                                    float r, float g, float b, float a, float lineWidth) {
+        color(r, g, b, a);
+        rectRounded(x, y, w, h, radius, lineWidth);
+    }
+
+    /**
+     * Draws a rounded rectangle outline with specified Color and line width.
+     */
+    public static void rectRounded(float x, float y, float w, float h, float radius,
+                                    Color c, float lineWidth) {
+        color(c);
+        rectRounded(x, y, w, h, radius, lineWidth);
+    }
+
+    /**
+     * Fills an arc (pie slice) as part of a rounded shape.
+     */
+    private static void fillArc(float cx, float cy, float radius,
+                                 float startAngle, float endAngle, int segments) {
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2f(cx, cy);
+        for (int i = 0; i <= segments; i++) {
+            float angle = startAngle + (endAngle - startAngle) * i / segments;
+            glVertex2f(cx + (float) Math.cos(angle) * radius,
+                       cy + (float) Math.sin(angle) * radius);
+        }
+        glEnd();
+    }
+
+    // ============================================================
     // OUTLINED SHAPES
     // ============================================================
     

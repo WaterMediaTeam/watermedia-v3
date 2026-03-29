@@ -32,7 +32,11 @@ public class StreamablePlatform implements IPlatform {
 
                 final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
 
-                sourceBuilder.metadata(new MRL.Metadata(video.title, videoId, video.thumbnail, null, (long) (video.files.original.duration * 1000L), null));
+                sourceBuilder.metadata(new MRL.Metadata(video.title, videoId, URI.create(!video.thumbnail.contains("http:") ? "http:" + video.thumbnail : video.thumbnail), null, (long) (video.files.original.duration * 1000L), null));
+
+                if (video.status != 2) {
+                    throw new IllegalStateException("Video " + videoId + " is not ready yet, status: " + video.status + ", message: " + video.message);
+                }
 
                 sourceBuilder.quality(MRL.Quality.of(video.files.mp4.width, video.files.mp4.height), new URI(video.files.mp4.url));
                 if (video.files.mp4Small != null) {
@@ -52,7 +56,7 @@ public class StreamablePlatform implements IPlatform {
         }
     }
 
-    private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") URI thumbnail, VideoFiles files) {
+    private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") String thumbnail, VideoFiles files) {
 
     }
 
