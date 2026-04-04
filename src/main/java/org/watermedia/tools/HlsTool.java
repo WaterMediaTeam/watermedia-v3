@@ -78,10 +78,7 @@ public final class HlsTool {
         }
     }
 
-    // ==========================================================================
     // RESULT TYPES
-    // ==========================================================================
-
     public sealed interface Result permits MasterResult, MediaResult, ErrorResult {}
 
     public record MasterResult(String source, int version, List<Variant> variants, List<Rendition> renditions, List<SessionData> sessionData) implements Result {
@@ -114,10 +111,7 @@ public final class HlsTool {
 
     public record ErrorResult(String message, Exception cause) implements Result {}
 
-    // ==========================================================================
     // DATA RECORDS
-    // ==========================================================================
-
     public record Variant(
             String uri,
             long bandwidth,
@@ -152,10 +146,7 @@ public final class HlsTool {
 
     public record Rendition(String type, String groupId, String name, String language, String uri, boolean isDefault, boolean autoSelect) {}
 
-    // ==========================================================================
     // INTERNAL PARSING
-    // ==========================================================================
-
     private static final Pattern ATTR = Pattern.compile("([A-Z0-9-]+)=(?:\"([^\"]*)\"|([^,\\s]+))");
     private static final Pattern RES = Pattern.compile("(\\d+)x(\\d+)");
 
@@ -294,10 +285,7 @@ public final class HlsTool {
         return new MediaResult(source, version, segments, targetDuration, sequence, !endList, vod, total);
     }
 
-    // ==========================================================================
     // UTILITIES
-    // ==========================================================================
-
     private static Map<String, String> attrs(final String line) {
         final var map = new HashMap<String, String>();
         final Matcher m = ATTR.matcher(line);

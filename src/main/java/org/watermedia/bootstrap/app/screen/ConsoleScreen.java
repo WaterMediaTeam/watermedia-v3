@@ -84,18 +84,18 @@ public class ConsoleScreen extends Screen {
     public void render(final int windowW, final int windowH) {
         DrawTool.setupOrtho(windowW, windowH);
 
-        // Background
+        // BACKGROUND
         DrawTool.disableTextures();
         DrawTool.fill(0, 0, windowW, windowH, 0.05f, 0.05f, 0.1f, 1f);
         DrawTool.enableTextures();
 
-        // Title bar
+        // TITLE BAR
         DrawTool.disableTextures();
         DrawTool.fill(0, 0, windowW, 40, 0.1f, 0.1f, 0.2f, 1f);
         DrawTool.enableTextures();
         this.text.render(this.title, AppContext.PADDING, 10, Colors.BLUE);
 
-        // Console content
+        // CONSOLE CONTENT
         final int startY = 50;
         final int lineH = this.text.lineHeight() - 4;
         final int maxVisible = this.maxVisibleLines();
@@ -105,7 +105,7 @@ public class ConsoleScreen extends Screen {
             this.text.render(line.text, AppContext.PADDING, startY + i * lineH, line.color);
         }
 
-        // Scroll indicator
+        // SCROLL INDICATOR
         if (this.lines.size() > maxVisible) {
             final String scrollInfo = "Lines " + (this.scrollOffset + 1) + "-" +
                     Math.min(this.scrollOffset + maxVisible, this.lines.size()) + " of " + this.lines.size();

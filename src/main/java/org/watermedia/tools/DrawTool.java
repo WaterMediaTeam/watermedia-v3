@@ -10,12 +10,9 @@ import static org.lwjgl.opengl.GL11.*;
  */
 public final class DrawTool {
     
-    private DrawTool() {} // Prevent instantiation
-    
-    // ============================================================
+    private DrawTool() {}
+
     // PROJECTION MANAGEMENT
-    // ============================================================
-    
     public static void setupOrtho(int width, int height) {
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
@@ -33,10 +30,7 @@ public final class DrawTool {
         glPopMatrix();
     }
     
-    // ============================================================
     // COLOR UTILITIES
-    // ============================================================
-    
     public static void color(Color c) {
         glColor4f(c.getRed() / 255f, c.getGreen() / 255f, c.getBlue() / 255f, c.getAlpha() / 255f);
     }
@@ -49,10 +43,7 @@ public final class DrawTool {
         glColor4f(r, g, b, 1f);
     }
     
-    // ============================================================
     // FILLED SHAPES
-    // ============================================================
-    
     /**
      * Fills a solid rectangle.
      */
@@ -222,10 +213,7 @@ public final class DrawTool {
         glEnd();
     }
 
-    // ============================================================
     // ROUNDED SHAPES
-    // ============================================================
-
     /**
      * Fills a rounded rectangle using the current color.
      */
@@ -310,9 +298,7 @@ public final class DrawTool {
         rectRounded(x, y, w, h, radius, lineWidth);
     }
 
-    /**
-     * Fills an arc (pie slice) as part of a rounded shape.
-     */
+    // FILLS AN ARC (PIE SLICE) AS PART OF A ROUNDED SHAPE.
     private static void fillArc(float cx, float cy, float radius,
                                  float startAngle, float endAngle, int segments) {
         glBegin(GL_TRIANGLE_FAN);
@@ -325,10 +311,7 @@ public final class DrawTool {
         glEnd();
     }
 
-    // ============================================================
     // OUTLINED SHAPES
-    // ============================================================
-    
     /**
      * Draws a rectangle outline.
      */
@@ -359,10 +342,7 @@ public final class DrawTool {
         rect(x, y, w, h);
     }
     
-    // ============================================================
     // LINES
-    // ============================================================
-    
     /**
      * Draws a horizontal line.
      */
@@ -410,10 +390,7 @@ public final class DrawTool {
         glEnd();
     }
 
-    // ============================================================
     // TEXTURED QUADS
-    // ============================================================
-    
     /**
      * Renders a textured quad in ortho projection coordinates.
      */
@@ -452,10 +429,7 @@ public final class DrawTool {
         glEnd();
     }
 
-    // ============================================================
     // DIALOG RENDERING HELPERS
-    // ============================================================
-    
     /**
      * Renders a dialog background with border.
      * Disables and re-enables GL_TEXTURE_2D automatically.
@@ -488,10 +462,7 @@ public final class DrawTool {
         glEnable(GL_TEXTURE_2D);
     }
     
-    // ============================================================
     // FADE OVERLAYS
-    // ============================================================
-    
     /**
      * Renders a left-side fade overlay for player UI.
      */
@@ -520,10 +491,7 @@ public final class DrawTool {
         glEnd();
     }
     
-    // ============================================================
     // TEXTURE STATE HELPERS
-    // ============================================================
-    
     public static void enableTextures() {
         glEnable(GL_TEXTURE_2D);
     }

@@ -2,14 +2,14 @@ package org.watermedia.api.media.players;
 
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
-import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.engines.GFXEngine;
 
 import java.util.concurrent.Executor;
 
 public final class ServerMediaPlayer extends MediaPlayer {
 
-    public ServerMediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine, final ALEngine alEngine) {
-        super(source, renderThread, renderThreadEx, glEngine, alEngine, false, false);
+    public ServerMediaPlayer(final MRL.Source source, final GFXEngine gfxEngine, final ALEngine alEngine) {
+        super(source, gfxEngine, alEngine, false);
     }
 
     @Override

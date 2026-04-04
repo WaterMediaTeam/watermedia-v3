@@ -17,9 +17,9 @@ public interface NetpbmDecoder {
 
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                final int value = this.readSample(data, maxVal); // first sample
+                final int value = this.readSample(data, maxVal); // FIRST SAMPLE
 
-                // consume remaining planes if depth > 1
+                // CONSUME REMAINING PLANES IF DEPTH > 1
                 for (int d = 1; d < depth; d++) this.readSample(data, maxVal);
 
                 final int v = (value == (flip ? 1 : 0)) ? 0 : 255;
@@ -32,7 +32,7 @@ public interface NetpbmDecoder {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int gray = this.readSample(data, maxVal);
-                // skip extra planes if any
+                // SKIP EXTRA PLANES IF ANY
                 for (int d = 1; d < depth; d++) this.readSample(data, maxVal);
                 gray = (gray * 255) / maxVal;
                 frame.put((byte) gray).put((byte) gray).put((byte) gray).put((byte) 255);
@@ -48,7 +48,7 @@ public interface NetpbmDecoder {
                 int b = (depth >= 3) ? this.readSample(data, maxVal) : 0;
                 int a = hasAlpha && (depth >= 4) ? this.readSample(data, maxVal) : 255;
 
-                // skip extra planes
+                // SKIP EXTRA PLANES
                 for (int d = (hasAlpha ? 4 : 3); d < depth; d++) this.readSample(data, maxVal);
 
                 r = (r * 255) / maxVal;

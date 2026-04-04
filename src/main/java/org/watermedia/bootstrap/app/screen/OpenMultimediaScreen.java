@@ -147,10 +147,10 @@ public class OpenMultimediaScreen extends Screen {
 
     @Override
     public void render(final int windowW, final int windowH) {
-        // Render home screen as background
+        // RENDER HOME SCREEN AS BACKGROUND
         this.homeScreen.render(windowW, windowH);
 
-        // Check and render loading state
+        // CHECK AND RENDER LOADING STATE
         if (this.loading) {
             this.checkLoadingState();
             if (this.loading) {
@@ -159,23 +159,23 @@ public class OpenMultimediaScreen extends Screen {
             }
         }
 
-        // Render dialog overlay
+        // RENDER DIALOG OVERLAY
         DrawTool.setupOrtho(windowW, windowH);
 
         final String displayUrl = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
 
-        // Calculate dialog size - only title + text box (no instructions inside)
+        // CALCULATE DIALOG SIZE: ONLY TITLE + TEXT BOX (NO INSTRUCTIONS INSIDE)
         final int titleW = this.text.width("Open Multimedia");
         final int urlDisplayWidth = this.text.width(displayUrl.isEmpty() ? "(clipboard empty)" : displayUrl);
         final int contentW = Math.max(titleW, urlDisplayWidth);
 
         final int padding = 20;
         final int lineH = this.text.lineHeight();
-        final int tbH = lineH + 10; // Text box height
+        final int tbH = lineH + 10; // TEXT BOX HEIGHT
 
-        // Dialog dimensions: title + gap + textbox
+        // DIALOG DIMENSIONS: TITLE + GAP + TEXTBOX
         final int dialogW = Math.min(Math.max(contentW + padding * 2 + 40, 400), windowW - 100);
-        final int dialogH = padding + lineH + 15 + tbH + padding; // title + gap + textbox + padding
+        final int dialogH = padding + lineH + 15 + tbH + padding; // TITLE + GAP + TEXTBOX + PADDING
 
         final int dialogX = (windowW - dialogW) / 2;
         final int dialogY = (windowH - dialogH) / 2;
@@ -186,7 +186,7 @@ public class OpenMultimediaScreen extends Screen {
         this.text.render("Open Multimedia", dialogX + padding, y, Colors.BLUE);
         y += lineH + 15;
 
-        // Text box
+        // TEXT BOX
         final int tbX = dialogX + padding;
         final int tbW = dialogW - padding * 2;
 

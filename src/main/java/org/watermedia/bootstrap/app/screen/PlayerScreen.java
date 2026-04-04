@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Colors;
@@ -25,6 +26,7 @@ public class PlayerScreen extends Screen {
     private enum DialogState {NONE, QUALITY, FINISHED}
 
     private final Consumer<HomeScreen.Action> navigator;
+    private final GLEngine.Builder glEngineBuilder;
     private final Dialog finishedDialog;
 
     private DialogState dialogState = DialogState.NONE;
@@ -41,6 +43,8 @@ public class PlayerScreen extends Screen {
                 .minWidth(380)
                 .minHeight(170)
                 .onSelectionChanged(ctx::playSelectionSound);
+
+        this.glEngineBuilder = new GLEngine.Builder(Thread.currentThread(), this.ctx);
     }
 
     @Override
@@ -63,9 +67,7 @@ public class PlayerScreen extends Screen {
 
         this.ctx.player = this.ctx.selectedMRL.createPlayer(
                 this.ctx.sourceSelectorIndex,
-                Thread.currentThread(),
-                this.ctx::execute,
-                null, null, true, true
+                this.glEngineBuilder.build(), null, true
         );
 
         if (this.ctx.player == null) {
@@ -83,7 +85,7 @@ public class PlayerScreen extends Screen {
     public void render(final int windowW, final int windowH) {
         final MediaPlayer player = this.ctx.player;
 
-        // Check player state (only when no dialog is active)
+        // CHECK PLAYER STATE (ONLY WHEN NO DIALOG IS ACTIVE)
         if (player != null && this.dialogState == DialogState.NONE) {
             if (player.ended()) {
                 this.showFinishedDialog("ENDED", false);
@@ -94,11 +96,11 @@ public class PlayerScreen extends Screen {
             }
         }
 
-        // Render video
+        // RENDER VIDEO
         this.renderVideo(windowW, windowH);
         this.renderOverlay(windowW, windowH);
 
-        // Render active dialog on top
+        // RENDER ACTIVE DIALOG ON TOP
         switch (this.dialogState) {
             case QUALITY -> this.renderQualityDialog(windowW, windowH);
             case FINISHED -> this.renderFinishedDialog(windowW, windowH);
@@ -108,7 +110,7 @@ public class PlayerScreen extends Screen {
     private void renderVideo(final int windowW, final int windowH) {
         final MediaPlayer player = this.ctx.player;
 
-        // Black background
+        // BLACK BACKGROUND
         DrawTool.setupOrtho(windowW, windowH);
         DrawTool.disableTextures();
         DrawTool.fill(0, 0, windowW, windowH, 0, 0, 0, 1);
@@ -137,7 +139,7 @@ public class PlayerScreen extends Screen {
             }
         }
 
-        DrawTool.bindTexture(player.texture());
+        DrawTool.bindTexture((int) player.texture());
         DrawTool.color(1, 1, 1, 1);
         DrawTool.blitNDC(
                 (offsetX / windowW) * 2 - 1,
@@ -154,7 +156,7 @@ public class PlayerScreen extends Screen {
         DrawTool.setupOrtho(windowW, windowH);
         glDisable(GL_DEPTH_TEST);
 
-        // Fades
+        // FADES
         DrawTool.disableTextures();
         DrawTool.fadeLeft(windowW, windowH, 380, 0.9f);
         DrawTool.fadeBottom(windowW, windowH, 120, 0.9f);
@@ -162,7 +164,7 @@ public class PlayerScreen extends Screen {
 
         int y = 20;
 
-        // Debug info
+        // DEBUG INFO
         y = this.renderLabel("--- Debug Info ---", null, 15, y);
         if (this.ctx.selectedMRL != null) {
             y = this.renderLabel("MRL:", this.text.truncate(this.ctx.selectedMRL.uri.toString(), 35), 15, y);
@@ -183,7 +185,7 @@ public class PlayerScreen extends Screen {
         y = this.renderLabel("Speed:", String.format("%.2f", player.speed()) + "x", 15, y);
         y = this.renderLabel("Live:", player.liveSource() ? "Yes" : "No", 15, y);
 
-        // Metadata
+        // METADATA
         y += 15;
         y = this.renderLabel("--- Metadata ---", null, 15, y);
 
@@ -210,10 +212,7 @@ public class PlayerScreen extends Screen {
         return y + this.text.lineHeight();
     }
 
-    // ========================================
-    // Quality Dialog
-    // ========================================
-
+    // QUALITY DIALOG
     private void openQualityDialog() {
         if (this.ctx.selectedSource == null) return;
         final var qualities = this.ctx.selectedSource.availableQualities();
@@ -222,7 +221,7 @@ public class PlayerScreen extends Screen {
         this.ctx.availableQualities = qualities.toArray(new MRL.Quality[0]);
         Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(q -> q.threshold));
 
-        // Find current quality index
+        // FIND CURRENT QUALITY INDEX
         this.qualitySelectedIndex = 0;
         for (int i = 0; i < this.ctx.availableQualities.length; i++) {
             if (this.ctx.availableQualities[i] == this.ctx.selectedQuality) {
@@ -269,10 +268,7 @@ public class PlayerScreen extends Screen {
         DrawTool.restoreProjection();
     }
 
-    // ========================================
-    // Finished Dialog
-    // ========================================
-
+    // FINISHED DIALOG
     private void showFinishedDialog(final String reason, final boolean isError) {
         if (this.ctx.playerEscPressed) {
             this.ctx.playerEscPressed = false;
@@ -291,7 +287,7 @@ public class PlayerScreen extends Screen {
                 .addButton(isError ? "Retry" : "Replay", this::restartPlayer)
                 .addButton("Close", this::returnToMenu);
 
-        // Select Close by default on error (index 1), Replay otherwise (index 0)
+        // SELECT CLOSE BY DEFAULT ON ERROR (INDEX 1), REPLAY OTHERWISE (INDEX 0)
         this.finishedDialog.setSelectedIndex(isError ? 1 : 0);
         this.dialogState = DialogState.FINISHED;
 
@@ -310,10 +306,7 @@ public class PlayerScreen extends Screen {
         this.startPlayer();
     }
 
-    // ========================================
-    // Navigation
-    // ========================================
-
+    // NAVIGATION
     private void returnToMenu() {
         this.dialogState = DialogState.NONE;
         this.ctx.releasePlayer();
@@ -343,10 +336,7 @@ public class PlayerScreen extends Screen {
         player.seek((player.duration() * percent) / 100);
     }
 
-    // ========================================
-    // Input handling
-    // ========================================
-
+    // INPUT HANDLING
     @Override
     protected void onKeyRelease(final int key) {
         switch (this.dialogState) {
@@ -414,7 +404,7 @@ public class PlayerScreen extends Screen {
 
     private void handleFinishedKey(final int key) {
         switch (key) {
-            // Use LEFT/RIGHT for horizontal button navigation
+            // USE LEFT/RIGHT FOR HORIZONTAL BUTTON NAVIGATION
             case GLFW_KEY_LEFT -> this.finishedDialog.navigateLeft();
             case GLFW_KEY_RIGHT -> this.finishedDialog.navigateRight();
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.finishedDialog.confirm();

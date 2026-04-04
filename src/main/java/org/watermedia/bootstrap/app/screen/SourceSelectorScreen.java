@@ -72,7 +72,7 @@ public class SourceSelectorScreen extends Screen {
         DrawTool.setupOrtho(windowW, windowH);
 
         final int y = this.renderBanner(windowW, windowH) + 10;
-        // Calculate max height: from current Y to bottom bar area (windowH - 100 for padding)
+        // MAX HEIGHT: FROM CURRENT Y TO BOTTOM BAR AREA (windowH - 100 FOR PADDING)
         final int maxHeight = windowH - 100 - y;
         this.selector.maxHeight(maxHeight);
         this.selector.calculateBounds(this.text, AppContext.PADDING, y);

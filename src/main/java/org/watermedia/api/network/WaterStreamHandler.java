@@ -24,7 +24,7 @@ public class WaterStreamHandler extends URLStreamHandler {
     public static final String HOST_REMOTE = "remote";
     public static final String HOST_GLOBAL = "global";
 
-    // Fixed worldwide read-only server (download only, no uploads)
+    // FIXED WORLDWIDE READ-ONLY SERVER (DOWNLOAD ONLY, NO UPLOADS)
     public static final String GLOBAL_SERVER = "https://watermedia.srrapero720.me/";
 
     @Override
@@ -67,18 +67,14 @@ public class WaterStreamHandler extends URLStreamHandler {
         };
     }
 
-    /**
-     * water://local/some/path/file.png → file in CWD
-     */
+    // WATER://LOCAL/SOME/PATH/FILE.PNG → FILE IN CWD
     private static URLConnection openLocal(String path) throws IOException {
         if (path.startsWith("/")) path = path.substring(1);
         final Path file = WaterMedia.cwd().resolve(path);
         return file.toUri().toURL().openConnection();
     }
 
-    /**
-     * water://remote/abc123 → http(s)://configured-server/abc123
-     */
+    // WATER://REMOTE/ABC123 → HTTP(S)://CONFIGURED-SERVER/ABC123
     private static URLConnection openRemote(final String path) throws IOException {
         String base = WaterMediaConfig.network.remoteHost;
         if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
@@ -90,9 +86,7 @@ public class WaterStreamHandler extends URLStreamHandler {
         return conn;
     }
 
-    /**
-     * water://global/abc123 → http(s)://global-server/abc123 (read-only)
-     */
+    // WATER://GLOBAL/ABC123 → HTTP(S)://GLOBAL-SERVER/ABC123 (READ-ONLY)
     private static URLConnection openGlobal(final String path) throws IOException {
         final URL globalURL = new URL(GLOBAL_SERVER + path);
         final URLConnection conn = globalURL.openConnection();

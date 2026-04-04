@@ -36,7 +36,7 @@ public class Dialog {
         this.title = title;
     }
 
-    // Configuration
+    // CONFIGURATION
     public Dialog title(final String t) {
         this.title = t;
         return this;
@@ -93,7 +93,7 @@ public class Dialog {
         return this;
     }
 
-    // State
+    // STATE
     public boolean visible() {
         return this.visible;
     }
@@ -118,7 +118,7 @@ public class Dialog {
         return this.selectedButton;
     }
 
-    // Navigation - use these for horizontal button layouts (LEFT/RIGHT)
+    // NAVIGATION — USE FOR HORIZONTAL BUTTON LAYOUTS (LEFT/RIGHT)
     public void navigateLeft() {
         if (this.buttons.isEmpty()) return;
         final int newIndex = (this.selectedButton - 1 + this.buttons.size()) % this.buttons.size();
@@ -140,7 +140,7 @@ public class Dialog {
     public void setSelectedIndex(final int index) {
         if (index >= 0 && index < this.buttons.size()) {
             this.selectedButton = index;
-            // No callback - for initialization
+            // NO CALLBACK — FOR INITIALIZATION
         }
     }
 
@@ -151,7 +151,7 @@ public class Dialog {
         }
     }
 
-    // Rendering
+    // RENDERING
     public void render(final TextRenderer renderer, final int windowW, final int windowH) {
         if (!this.visible) return;
 
@@ -161,24 +161,24 @@ public class Dialog {
         int y = this.bounds.y() + this.padding;
         final int lineH = renderer.lineHeight();
 
-        // Title
+        // TITLE
         if (this.title != null && !this.title.isEmpty()) {
             renderer.render(this.title, this.bounds.x() + this.padding, y, this.borderColor);
             y += lineH + 15;
         }
 
-        // Content
+        // CONTENT
         for (final ContentLine line : this.contentLines) {
             renderer.render(line.text, this.bounds.x() + this.padding, y, line.color);
             y += lineH;
         }
 
-        // Buttons
+        // BUTTONS
         if (!this.buttons.isEmpty()) {
             y = this.bounds.bottom() - this.padding - lineH;
 
             if (this.buttons.size() == 2) {
-                // Two buttons: left and right aligned
+                // TWO BUTTONS: LEFT AND RIGHT ALIGNED
                 final Button left = this.buttons.get(0);
                 final Button right = this.buttons.get(1);
 
@@ -192,7 +192,7 @@ public class Dialog {
                 renderer.render(rightText, rightX, y, this.selectedButton == 1 ? Colors.BLUE : Colors.GRAY);
                 right.bounds = new Dimension(rightX, y, renderer.width(rightText), lineH);
             } else {
-                // Single button: centered
+                // SINGLE BUTTON: CENTERED
                 final Button btn = this.buttons.get(0);
                 final String text = "> " + btn.text;
                 final int x = this.bounds.x() + (this.bounds.width() - renderer.width(text)) / 2;
@@ -209,19 +209,19 @@ public class Dialog {
         int contentH = 0;
         int contentW = 0;
 
-        // Title
+        // TITLE
         if (this.title != null && !this.title.isEmpty()) {
             contentH += lineH + 15;
             contentW = Math.max(contentW, text.width(this.title));
         }
 
-        // Content lines
+        // CONTENT LINES
         for (final ContentLine line : this.contentLines) {
             contentH += lineH;
             contentW = Math.max(contentW, text.width(line.text));
         }
 
-        // Buttons
+        // BUTTONS
         if (!this.buttons.isEmpty()) {
             contentH += lineH + 25;
             if (this.buttons.size() == 2) {
@@ -239,7 +239,7 @@ public class Dialog {
         return this.bounds;
     }
 
-    // Mouse handling
+    // MOUSE HANDLING
     public boolean handleClick(final double mx, final double my) {
         if (!this.visible) return false;
 

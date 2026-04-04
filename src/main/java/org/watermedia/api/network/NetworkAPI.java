@@ -176,7 +176,7 @@ public class NetworkAPI {
     }
 
     public static boolean start(final WaterMedia instance) {
-        // Register water:// protocol handler (works on both client and server)
+        // REGISTER water:// PROTOCOL HANDLER (WORKS ON BOTH CLIENT AND SERVER)
         try {
             URL.setURLStreamHandlerFactory(protocol -> PROTOCOL_WATER.equals(protocol) ? new WaterStreamHandler() : null);
             LOGGER.info(IT, "Registered water:// protocol handler");
@@ -184,7 +184,7 @@ public class NetworkAPI {
             LOGGER.warn(IT, "Could not register water:// factory (already set?): {} — use NetworkAPI.waterURL() instead", e.getMessage());
         }
 
-        // Server only starts on server-side when enabled in config
+        // SERVER ONLY STARTS ON SERVER-SIDE WHEN ENABLED IN CONFIG
         LOGGER.info(IT, "Network server is {}enabled on this environment", (WaterMediaConfig.network.forceEnableServer || WaterMediaConfig.network.enableServer) ? "" : "NOT ");
         if (WaterMediaConfig.network.forceEnableServer || (!instance.clientSide && WaterMediaConfig.network.enableServer)) {
             NetServer.start(WaterMediaConfig.network.serverPort, instance);

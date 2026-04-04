@@ -23,7 +23,7 @@ public class WaterMedia {
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
     public static final Logger LOGGER = LogManager.getLogger(ID);
 
-    // DEFAULT OP
+    // DEFAULT PATHS
     private static final Path DEFAULT_TEMP = new File(System.getProperty("java.io.tmpdir")).toPath().toAbsolutePath().resolve("watermedia");
     private static final Path DEFAULT_CWD = new File("run").toPath().toAbsolutePath();
 
@@ -63,14 +63,14 @@ public class WaterMedia {
 
         if (clientSide) {
             LOGGER.info(IT, "Starting binary dependency {}", WaterMediaBinaries.NAME);
-            // DO NOT THROW, LET'S JUST LOG THE ERROR - SOME ENVIRONMENTS MAY NOT NEED IT
+            // DO NOT THROW — SOME ENVIRONMENTS MAY NOT NEED IT
             try {
                 WaterMediaBinaries.start(instance.name, instance.tmp, instance.cwd, true);
             } catch (Throwable t) {
                 LOGGER.error(IT, "Failed to start binary dependency {}", WaterMediaBinaries.NAME, t);
             }
         } else {
-            // TODO: should we?
+            // TODO: SHOULD WE START WMB ON SERVER-SIDE?
             LOGGER.info(IT, "Skipping WMB startup on server-side environment");
         }
 

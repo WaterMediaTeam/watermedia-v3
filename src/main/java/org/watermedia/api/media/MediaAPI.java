@@ -20,7 +20,7 @@ public class MediaAPI {
         @Override
         public void push(final IPlatform platform) {
             LOGGER.info(IT, "Registering {} platform support", platform.name());
-            // ENSURE UNIQUE
+            // ENSURE UNIQUENESS
             if (this.contains(platform)) throw new IllegalStateException("Platform already registered: " + platform.name());
             // ENSURE DEFAULT IS LAST
             if (platform.getClass() == DefaultPlatform.class) {
@@ -69,7 +69,7 @@ public class MediaAPI {
             if (contentType != null)
                 return contentType;
 
-            //Add custom types here
+            // ADD CUSTOM TYPES HERE
             if (fileName.endsWith(".pam"))
                 return "image/x-portable-arbitrarymap";
 
@@ -84,7 +84,7 @@ public class MediaAPI {
         registerPlatform(new KickPlatform());
         registerPlatform(new StreamablePlatform());
 //        registerPlatform(new WaterPlatform());
-        registerPlatform(new DefaultPlatform()); // default, always returns something
+        registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
         // LOAD ENGINES
         LOGGER.info(IT, "Starting media engines");

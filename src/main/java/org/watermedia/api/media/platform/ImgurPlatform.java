@@ -22,7 +22,7 @@ public class ImgurPlatform implements IPlatform {
     private static final String API_KEY = "685cdf74b1229b9";
     private static final Gson GSON = new Gson();
 
-    // URLs format
+    // URLS FORMAT
     private static final String IMAGE_URL = API_URL + "/image/%s?client_id=" + API_KEY;
     private static final String GALLERY_URL = API_URL + "/gallery/%s?client_id=" + API_KEY;
     private static final String TAG_GALLERY_URL = API_URL + "/gallery/t/%s/%s?client_id=" + API_KEY;
@@ -42,10 +42,10 @@ public class ImgurPlatform implements IPlatform {
         final boolean isGallery = path.startsWith("/gallery/") || path.startsWith("/a/");
         final boolean isTagGallery = fragment != null && fragment.contains("#/t/");
 
-        // Remove first slash and split
+        // REMOVE FIRST SLASH AND SPLIT
         final var pathSplit = path.substring(1).split("/");
-        // Clean ID (remove extension or extra params if any, though usually path is clean)
-        final var idSplit = pathSplit[pathSplit.length - 1].split("-"); 
+        // CLEAN ID (REMOVE EXTENSION OR EXTRA PARAMS IF ANY)
+        final var idSplit = pathSplit[pathSplit.length - 1].split("-");
         
         final var tag = fragment != null && fragment.length() > 4 ? fragment.substring("#/t/".length()) : null;
         final var id = idSplit[idSplit.length - 1];
@@ -65,7 +65,7 @@ public class ImgurPlatform implements IPlatform {
             final Gallery data = res.data();
             final List<MRL.Source> sources = new ArrayList<>();
             
-            // Iterate over gallery images
+            // ITERATE OVER GALLERY IMAGES
             for (final Image img: data.images()) {
                 sources.add(this.buildSourceFromImage(img, data.title(), data.accountUrl()));
             }
@@ -73,7 +73,7 @@ public class ImgurPlatform implements IPlatform {
             return new Result(null, sources.toArray(MRL.Source[]::new));
 
         } else {
-            // Simple Image
+            // SIMPLE IMAGE
             final String requestUrl = String.format(IMAGE_URL, id);
             final String json = this.fetch(requestUrl);
             final ImageResponse res = GSON.fromJson(json, ImageResponse.class);
@@ -90,10 +90,10 @@ public class ImgurPlatform implements IPlatform {
     }
 
     private MRL.Source buildSourceFromImage(final Image img, final String fallbackTitle, final String accountUrl) {
-        // Parse MimeType
+        // PARSE MIME TYPE
         final MRL.MediaType type = MRL.MediaType.of(img.type());
 
-        // Fix for when Imgur says "image/gif" but provides an mp4 link, treated as video
+        // FIX: IMGUR SAYS "image/gif" BUT PROVIDES AN mp4 LINK — TREAT AS VIDEO
         final String link = switch (type) {
             case IMAGE -> img.link();
             case VIDEO -> img.hasSound() ? img.mp4() : img.link();
@@ -103,7 +103,7 @@ public class ImgurPlatform implements IPlatform {
             }
         };
 
-        // Build Metadata
+        // BUILD METADATA
         final String title = img.title() != null ? img.title() : fallbackTitle;
         final String desc = img.description();
         final Instant date = Instant.ofEpochSecond(img.datetime());
@@ -111,9 +111,9 @@ public class ImgurPlatform implements IPlatform {
         final MRL.Metadata metadata = new MRL.Metadata(
                 title,
                 desc,
-                null, // Thumbnail extraction could be added here if needed (imgur uses id + 's'.jpg usually)
+                null, // THUMBNAIL EXTRACTION NOT IMPLEMENTED (IMGUR USES id + 's'.jpg)
                 date,
-                0, // Duration
+                0, // DURATION UNKNOWN FOR IMAGES
                 accountUrl
         );
 
@@ -123,7 +123,7 @@ public class ImgurPlatform implements IPlatform {
                     .metadata(metadata)
                     .build();
         } catch (final Exception e) {
-            // URI syntax exception handling
+            // URI SYNTAX EXCEPTION HANDLING
             throw new RuntimeException("Invalid URI received from Imgur: " + link, e);
         }
     }
@@ -146,10 +146,7 @@ public class ImgurPlatform implements IPlatform {
         }
     }
 
-    // ==========================================
     // DATA RECORDS
-    // ==========================================
-
     public record ImageResponse(Image data, boolean success, int status) {
     }
 
@@ -159,7 +156,7 @@ public class ImgurPlatform implements IPlatform {
     public record Gallery(
             String id,
             String title,
-            @SerializedName("description") String description, // JSON key matches field name logic, but explicit for clarity or rename
+            @SerializedName("description") String description, // JSON KEY MATCHES FIELD NAME, EXPLICIT FOR CLARITY
             long datetime,
             String cover,
             @SerializedName("account_url") String accountUrl,

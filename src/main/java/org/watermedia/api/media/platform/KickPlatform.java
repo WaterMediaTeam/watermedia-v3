@@ -45,7 +45,7 @@ public class KickPlatform implements IPlatform {
             if (channel.is_banned)
                 throw new IllegalStateException("Streamer " + path[0] + " is banned");
 
-            if (channel.livestream.is_mature) // TODO: add option to allow mature content
+            if (channel.livestream.is_mature) // TODO: ADD OPTION TO ALLOW MATURE CONTENT
                 throw new IllegalStateException("Streamer " + path[0] + " is marked as mature content");
 
             // INIT
@@ -87,7 +87,7 @@ public class KickPlatform implements IPlatform {
             if (video.livestream.channel.is_banned)
                 throw new IllegalStateException("Streamer " + video.livestream.channel.user.username + " is banned");
 
-            if (video.livestream.is_mature) // TODO: add an option to support mature content
+            if (video.livestream.is_mature) // TODO: ADD AN OPTION TO SUPPORT MATURE CONTENT
                 throw new IllegalStateException("Video is marked as mature content");
 
             final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);

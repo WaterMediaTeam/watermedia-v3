@@ -59,14 +59,14 @@ public class HomeScreen extends Screen {
     private void rebuildMenu() {
         this.grid.clear();
 
-        // Actions section (Multimedia + Tools + Exit)
+        // ACTIONS SECTION (MULTIMEDIA + TOOLS + EXIT)
         this.grid.section("Actions");
         this.grid.item(new MenuEntry("Play", Action.OPEN_MULTIMEDIA, -1, Grid.Icon.PLAY));
         this.grid.item(new MenuEntry("Upload Logs", Action.UPLOAD_LOGS, -1, Grid.Icon.UPLOAD));
         this.grid.item(new MenuEntry("Cleanup", Action.CLEANUP, -1, Grid.Icon.CLEANUP));
         this.grid.item(new MenuEntry("Exit", Action.EXIT, -1, Grid.Icon.EXIT));
 
-        // Media Tests section
+        // MEDIA TESTS SECTION
         this.grid.section("Media Tests");
         if (this.ctx.uriGroups != null) {
             for (int i = 0; i < this.ctx.uriGroups.length; i++) {
@@ -121,7 +121,7 @@ public class HomeScreen extends Screen {
         this.grid.calculateBounds(this.text, AppContext.PADDING, y, availableWidth);
         this.grid.render(this.text, windowW, windowH);
 
-        // Render warnings at absolute top-right corner
+        // RENDER WARNINGS AT ABSOLUTE TOP-RIGHT CORNER
         this.renderWarnings(windowW);
 
         DrawTool.restoreProjection();

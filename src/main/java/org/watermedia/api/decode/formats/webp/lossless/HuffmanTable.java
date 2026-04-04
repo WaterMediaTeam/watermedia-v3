@@ -35,8 +35,8 @@ public final class HuffmanTable {
         }
 
         // LSB-FIRST READING: ACCUMULATE BITS FROM LEAST SIGNIFICANT
-        // WebP stores bits LSB-first, so we accumulate them LSB-first
-        // and use reversed codes in the lookup table
+        // WEBP STORES BITS LSB-FIRST, SO WE ACCUMULATE THEM LSB-FIRST
+        // AND USE REVERSED CODES IN THE LOOKUP TABLE
         int code = 0;
         for (int len = 1; len <= 15; len++) {
             final int bit = reader.read(1);

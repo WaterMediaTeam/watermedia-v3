@@ -14,6 +14,18 @@
       {
         "name": "IMGUR MULTISOURCE (???x???)",
         "uri": "https://imgur.com/gallery/images-that-i-use-to-test-watermedia-aWYiadd"
+      },
+      {
+        "name": "YOUTUBE TEST",
+        "uri": "https://www.youtube.com/watch?v=rQ6G3WmJQCg"
+      },
+      {
+        "name": "YOUTUBE PLAYLIST TEST",
+        "uri": "https://www.youtube.com/watch?v=LlNCDSz5BeE&list=PLeWMb2RfQyfRwSHkfGMLc6AyUfVxMkfOw"
+      },
+      {
+        "name": "BILIBILI TEST",
+        "uri": "https://www.bilibili.com/video/BV1Zt4y1C7s6/"
       }
     ]
   },

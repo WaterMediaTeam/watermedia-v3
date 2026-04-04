@@ -131,7 +131,7 @@ public final class RiffParser {
 
     private static WebPInfo parseExtended(final ByteBuffer buffer, final RiffChunk vp8xChunk, final int fileSize) throws DecoderException {
         // VP8X CHUNK: 10 bytes
-        // flags(1) + reserved(3) + canvas_width(3) + canvas_height(3)
+        // FLAGS(1) + RESERVED(3) + CANVAS_WIDTH(3) + CANVAS_HEIGHT(3)
         final int dataOffset = vp8xChunk.dataOffset();
         if (vp8xChunk.size() < 10) {
             throw new DecoderException("VP8X chunk too small: " + vp8xChunk.size() + " bytes");

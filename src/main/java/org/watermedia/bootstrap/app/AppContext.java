@@ -32,28 +32,28 @@ public final class AppContext implements Executor {
         TIME_FORMAT.setTimeZone(TimeZone.getTimeZone("GMT-00:00"));
     }
 
-    // Window state
+    // WINDOW STATE
     public int windowWidth = 1280;
     public int windowHeight = 720;
     public long windowHandle;
 
-    // Mouse
+    // MOUSE
     public double mouseX;
     public double mouseY;
     public boolean mouseClicked;
 
-    // Text renderer
+    // TEXT RENDERER
     public TextRenderer text;
 
-    // Executor for GL thread tasks
+    // EXECUTOR FOR GL THREAD TASKS
     public final Queue<Runnable> executor = new ConcurrentLinkedQueue<>();
 
-    // MRL data
+    // MRL DATA
     public final LinkedHashMap<String, MRL> groupMRLs = new LinkedHashMap<>();
     public final List<TestURI> customTests = new ArrayList<>();
     public URIGroup[] uriGroups;
 
-    // Selection state
+    // SELECTION STATE
     public URIGroup selectedGroup;
     public MRL selectedMRL;
     public String selectedMRLName = "";
@@ -63,30 +63,30 @@ public final class AppContext implements Executor {
     public MRL.Quality selectedQuality = MRL.Quality.HIGHER;
     public int sourceSelectorIndex;
 
-    // Player
+    // PLAYER
     public MediaPlayer player;
     public boolean playerEscPressed;
 
-    // Banner
+    // BANNER
     public int bannerTextureId = -1;
     public int bannerWidth;
     public int bannerHeight;
 
-    // Audio
+    // AUDIO
     public int soundBuffer = -1;
     public int soundSource = -1;
 
-    // Dialog state
+    // DIALOG STATE
     public String finishedReason = "";
     public boolean finishedWasError;
     public String customUrlText = "";
 
-    // Global error dialog
+    // GLOBAL ERROR DIALOG
     public String globalErrorTitle;
     public String globalErrorMessage;
     public Runnable globalErrorOnClose;
 
-    // Records
+    // RECORDS
     public record TestURI(String name, String uri) {
     }
 

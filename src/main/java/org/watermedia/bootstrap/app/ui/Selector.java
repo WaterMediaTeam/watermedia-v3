@@ -34,7 +34,7 @@ public class Selector<T> {
     private Dimension bounds = Dimension.ZERO;
     private final List<Dimension> itemBounds = new ArrayList<>();
 
-    // Scrolling support
+    // SCROLLING SUPPORT
     private int maxHeight = -1;
     private int scrollOffset = 0;
     private int totalContentHeight = 0;
@@ -47,10 +47,7 @@ public class Selector<T> {
         this.labelProvider = Object::toString;
     }
 
-    // ========================================
-    // Building entries
-    // ========================================
-
+    // BUILDING ENTRIES
     public Selector<T> clear() {
         this.entries.clear();
         this.selectedIndex = 0;
@@ -80,10 +77,7 @@ public class Selector<T> {
         return this;
     }
 
-    // ========================================
-    // Configuration
-    // ========================================
-
+    // CONFIGURATION
     public Selector<T> title(final String t) {
         this.title = t;
         return this;
@@ -139,10 +133,7 @@ public class Selector<T> {
         return this;
     }
 
-    // ========================================
-    // State queries
-    // ========================================
-
+    // STATE QUERIES
     public int selectedIndex() {
         return this.selectedIndex;
     }
@@ -169,10 +160,7 @@ public class Selector<T> {
         return this.bounds;
     }
 
-    // ========================================
-    // Navigation
-    // ========================================
-
+    // NAVIGATION
     public void selectIndex(final int index) {
         final int count = this.selectableCount();
         if (count == 0) return;
@@ -223,37 +211,37 @@ public class Selector<T> {
         if (this.maxHeight <= 0 || this.totalContentHeight <= this.maxHeight) return;
         if (this.selectedIndex < 0) return;
 
-        // If first item is selected, reset scroll to show title
+        // IF FIRST ITEM IS SELECTED, RESET SCROLL TO SHOW TITLE
         if (this.selectedIndex == 0) {
             this.scrollOffset = 0;
             return;
         }
 
-        // Calculate the Y position of the selected item relative to content start
+        // CALCULATE Y POSITION OF SELECTED ITEM RELATIVE TO CONTENT START
         final int lineH = this.cachedLineHeight;
         int y = 0;
 
-        // Title
+        // TITLE
         if (this.title != null && !this.title.isEmpty()) {
             y += lineH + 10;
         }
 
-        // Find the selected item's position
+        // FIND THE SELECTED ITEM'S POSITION
         int selectableIdx = 0;
         for (final Entry<T> entry : this.entries) {
             if (entry.header) {
                 y += 5 + lineH;
             } else {
                 if (selectableIdx == this.selectedIndex) {
-                    // Found the selected item
+                    // FOUND THE SELECTED ITEM
                     final int itemTop = y;
                     final int itemBottom = y + lineH;
 
-                    // Check if we need to scroll up
+                    // CHECK IF WE NEED TO SCROLL UP
                     if (itemTop < this.scrollOffset) {
                         this.scrollOffset = Math.max(0, itemTop - 5);
                     }
-                    // Check if we need to scroll down
+                    // CHECK IF WE NEED TO SCROLL DOWN
                     else if (itemBottom > this.scrollOffset + this.visibleHeight) {
                         this.scrollOffset = itemBottom - this.visibleHeight + 5;
                     }
@@ -264,7 +252,7 @@ public class Selector<T> {
             }
         }
 
-        // Check for back button
+        // CHECK FOR BACK BUTTON
         if (this.showBack && this.isBackSelected()) {
             y += 10;
             final int itemTop = y;
@@ -289,10 +277,7 @@ public class Selector<T> {
         }
     }
 
-    // ========================================
-    // Rendering
-    // ========================================
-
+    // RENDERING
     public void render(final TextRenderer renderer, final int windowW, final int windowH) {
         this.itemBounds.clear();
         DrawTool.setupOrtho(windowW, windowH);
@@ -300,10 +285,10 @@ public class Selector<T> {
         final int lineH = renderer.lineHeight();
         final boolean useScissor = this.maxHeight > 0 && this.totalContentHeight > this.maxHeight;
 
-        // Calculate visible area
+        // CALCULATE VISIBLE AREA
         this.visibleHeight = this.maxHeight > 0 ? Math.min(this.maxHeight, this.totalContentHeight) : this.totalContentHeight;
 
-        // Clamp scroll offset
+        // CLAMP SCROLL OFFSET
         if (useScissor) {
             final int maxScroll = this.totalContentHeight - this.visibleHeight;
             this.scrollOffset = Math.max(0, Math.min(maxScroll, this.scrollOffset));
@@ -311,33 +296,33 @@ public class Selector<T> {
             this.scrollOffset = 0;
         }
 
-        // Enable scissor test for clipping
+        // ENABLE SCISSOR TEST FOR CLIPPING
         if (useScissor) {
             glEnable(GL_SCISSOR_TEST);
-            // OpenGL scissor uses bottom-left origin, so convert coordinates
+            // OPENGL SCISSOR USES BOTTOM-LEFT ORIGIN, SO CONVERT COORDINATES
             final int scissorY = windowH - this.bounds.y() - this.visibleHeight;
             glScissor(0, scissorY, windowW - SCROLLBAR_WIDTH - 10, this.visibleHeight);
         }
 
         int y = this.bounds.y() - this.scrollOffset;
 
-        // Title
+        // TITLE
         if (this.title != null && !this.title.isEmpty()) {
             renderer.render(this.title, this.bounds.x(), y, Colors.BLUE);
             y += lineH + 10;
         }
 
-        // Entries
+        // ENTRIES
         int selectableIdx = 0;
         int itemNumber = 1;
         for (final Entry<T> entry : this.entries) {
             if (entry.header) {
-                // Section header
+                // SECTION HEADER
                 y += 5;
                 renderer.render(entry.label, this.bounds.x(), y, Colors.BLUE);
                 y += lineH;
             } else {
-                // Selectable item
+                // SELECTABLE ITEM
                 final boolean selected = (selectableIdx == this.selectedIndex);
                 final String prefix = selected ? "> " : "  ";
                 final String label = entry.label != null ? entry.label : this.labelProvider.apply(entry.item);
@@ -355,7 +340,7 @@ public class Selector<T> {
             }
         }
 
-        // Back option
+        // BACK OPTION
         if (this.showBack) {
             y += 10;
             final boolean selected = this.isBackSelected();
@@ -364,12 +349,12 @@ public class Selector<T> {
             this.itemBounds.add(new Dimension(this.bounds.x(), y, Math.max(renderer.width(text), this.minWidth), lineH));
         }
 
-        // Disable scissor test
+        // DISABLE SCISSOR TEST
         if (useScissor) {
             glDisable(GL_SCISSOR_TEST);
         }
 
-        // Draw scrollbar if needed
+        // DRAW SCROLLBAR IF NEEDED
         if (useScissor) {
             this.renderScrollbar(windowW, windowH);
         }
@@ -382,11 +367,11 @@ public class Selector<T> {
         final int scrollbarY = this.bounds.y();
         final int scrollbarHeight = this.visibleHeight;
 
-        // Scrollbar track (dark background)
+        // SCROLLBAR TRACK (DARK BACKGROUND)
         DrawTool.disableTextures();
         DrawTool.fill(scrollbarX, scrollbarY, SCROLLBAR_WIDTH, scrollbarHeight, 0.15f, 0.15f, 0.15f, 0.8f);
 
-        // Scrollbar thumb
+        // SCROLLBAR THUMB
         final float thumbRatio = (float) this.visibleHeight / this.totalContentHeight;
         final int thumbHeight = Math.max(20, (int) (scrollbarHeight * thumbRatio));
         final float scrollRatio = (float) this.scrollOffset / (this.totalContentHeight - this.visibleHeight);
@@ -424,7 +409,7 @@ public class Selector<T> {
             }
         }
 
-        // Store total content height for scrolling
+        // STORE TOTAL CONTENT HEIGHT FOR SCROLLING
         this.totalContentHeight = height;
         this.visibleHeight = this.maxHeight > 0 ? Math.min(this.maxHeight, height) : height;
 
@@ -432,10 +417,7 @@ public class Selector<T> {
         return this.bounds;
     }
 
-    // ========================================
-    // Mouse handling
-    // ========================================
-
+    // MOUSE HANDLING
     public boolean handleClick(final double mx, final double my) {
         for (int i = 0; i < this.itemBounds.size(); i++) {
             if (this.itemBounds.get(i).contains(mx, my)) {
@@ -460,10 +442,7 @@ public class Selector<T> {
         return false;
     }
 
-    // ========================================
-    // Internal
-    // ========================================
-
+    // INTERNAL
     private int getSelectableIndex(final int selectablePosition) {
         int count = 0;
         for (int i = 0; i < this.entries.size(); i++) {

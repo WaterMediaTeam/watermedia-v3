@@ -260,10 +260,10 @@ public enum MathUtil {
     public static double scaleTempo(final long start, final long end, final long time) {
         if (start < 0 || end < 0 || time < 0) throw new IllegalArgumentException("Invalid negative value");
 
-        final long duration = end - start; // start acts like a margin
+        final long duration = end - start; // START ACTS LIKE A MARGIN
         final long realTime = time - start;
 
-        if (realTime == 0 || duration == 0) return 0; // not ArithmeticException
+        if (realTime == 0 || duration == 0) return 0; // AVOID ArithmeticException
 
         long result = realTime / duration;
         if (realTime > duration) result %= duration;
@@ -281,10 +281,10 @@ public enum MathUtil {
      */
     public static double scaleTempo(final double start, final double end, final double time) {
         if (start < 0 || end < 0 || time < 0) throw new IllegalArgumentException("Invalid negative value");
-        final double duration = end - start; // start acts like a margin
+        final double duration = end - start; // START ACTS LIKE A MARGIN
         final double realTime = time - start;
 
-        if (realTime == 0 || duration == 0) return 0; // not ArithmeticException
+        if (realTime == 0 || duration == 0) return 0; // AVOID ArithmeticException
 
         double result = realTime / duration;
         if (realTime > duration) result %= duration;
@@ -316,10 +316,10 @@ public enum MathUtil {
      */
     public static double scaleDesTempo(final long start, final long end, final long time) {
         if (start < 0 || end < 0 || time < 0) throw new IllegalArgumentException("Invalid negative value");
-        final long duration = end - start; // start acts like a margin
+        final long duration = end - start; // START ACTS LIKE A MARGIN
         final long realTime = time - start;
 
-        if (realTime == 0 || duration == 0) return 0; // not ArithmeticException
+        if (realTime == 0 || duration == 0) return 0; // AVOID ArithmeticException
 
         return (double) realTime / duration;
     }
@@ -335,10 +335,10 @@ public enum MathUtil {
      */
     public static double scaleDesTempo(final double start, final double end, final double time) {
         if (start < 0 || end < 0 || time < 0) throw new IllegalArgumentException("Invalid negative value");
-        final double duration = end - start; // start acts like a margin
+        final double duration = end - start; // START ACTS LIKE A MARGIN
         final double realTime = time - start;
 
-        if (realTime == 0 || duration == 0) return 0; // not ArithmeticException
+        if (realTime == 0 || duration == 0) return 0; // AVOID ArithmeticException
 
         final double result = realTime / duration;
         return (Double.isNaN(result)) ? 0 : result;
@@ -384,7 +384,7 @@ public enum MathUtil {
         if (x == 0 || y == 0) return 0;
 
         final long r = x % y;
-        // if the signs are different and modulo not zero, adjust result
+        // IF SIGNS ARE DIFFERENT AND MODULO NOT ZERO, ADJUST RESULT
         if ((x ^ y) < 0 && r != 0) {
             return r + y;
         }
@@ -395,7 +395,7 @@ public enum MathUtil {
         if (x == 0 || y == 0) return 0;
 
         final int r = x % y;
-        // if the signs are different and modulo not zero, adjust result
+        // IF SIGNS ARE DIFFERENT AND MODULO NOT ZERO, ADJUST RESULT
         if ((x ^ y) < 0 && r != 0) {
             return r + y;
         }
@@ -403,12 +403,12 @@ public enum MathUtil {
     }
 
     public static int floorMod(final long x, final int y) {
-        // Result cannot overflow the range of int.
+        // RESULT CANNOT OVERFLOW THE RANGE OF int.
         return (int) floorMod(x, (long)y);
     }
 
     public static int floorMod(final int x, final long y) {
-        // Result cannot overflow the range of int.
+        // RESULT CANNOT OVERFLOW THE RANGE OF int.
         return (int) floorMod((long) x, y);
     }
 

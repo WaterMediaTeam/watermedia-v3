@@ -289,7 +289,7 @@ public class AppBootstrap {
         } catch (final Exception ignored) {}
     }
 
-    // ========== LAMBDA HELPERS ==========
+    // LAMBDA HELPERS
     private static Canvas canvas(final Consumer<Graphics> paint, final int w, final int h) {
         return new Canvas() {
             public void update(final Graphics g) { this.paint(g); }
@@ -334,7 +334,7 @@ public class AppBootstrap {
         };
     }
 
-    // ========== SCROLL PANEL ==========
+    // SCROLL PANEL
     private static class ScrollPanel extends Panel {
         private final String[] lines;
         private final Color color;
@@ -430,7 +430,7 @@ public class AppBootstrap {
         }
     }
 
-    // ========== BOOTSTRAP WINDOW ==========
+    // BOOTSTRAP WINDOW
     private static class BootstrapWindow extends Frame {
         private final StringBuilder txt = new StringBuilder();
         private final PrintStream origOut = System.out;

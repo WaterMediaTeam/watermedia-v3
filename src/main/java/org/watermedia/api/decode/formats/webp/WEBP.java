@@ -232,7 +232,7 @@ public class WEBP extends Decoder {
             final int size = frameData.getInt(offset + 4);
             LOGGER.debug(IT, "Found chunk at offset {} - fourCC: 0x{}, size: {}", offset, Integer.toHexString(fourCC), size);
 
-            // dataOffset is relative to frameData (starts at offset + 8)
+            // dataOffset IS RELATIVE TO frameData (STARTS AT offset + 8)
             final RiffChunk chunk = new RiffChunk(fourCC, size, offset + 8);
 
             if (fourCC == RiffChunk.ALPH) {

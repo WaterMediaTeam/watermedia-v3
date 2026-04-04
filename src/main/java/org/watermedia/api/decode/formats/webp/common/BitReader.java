@@ -33,11 +33,7 @@ public final class BitReader {
         this.bitsAvail = 0;
     }
 
-    /**
-     * Ensure at least 'bits' bits are available in the buffer.
-     * Loads more bytes from the stream if needed.
-     * Returns actual number of bits available (may be less than requested if EOF).
-     */
+    // ENSURE AT LEAST 'BITS' BITS ARE AVAILABLE IN THE BUFFER. LOADS MORE BYTES FROM THE STREAM IF NEEDED. RETURNS ACTUAL NUMBER OF BITS AVAILABLE (MAY BE LESS THAN REQUESTED IF EOF).
     private int ensureBits(final int bits) {
         while (this.bitsAvail < bits && this.buf.hasRemaining()) {
             this.bitBuf |= (this.buf.get() & 0xFF) << this.bitsAvail;

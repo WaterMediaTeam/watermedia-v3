@@ -26,8 +26,7 @@ public class CodecsAPI {
         Objects.requireNonNull(instance, "WaterMedia cannot be null");
 
         // REGISTER READERS
-
-        // REGISTER WRITTERS
+        // REGISTER WRITERS
     }
 
 }

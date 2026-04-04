@@ -3,7 +3,7 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.media.engines.ALEngine;
-import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.platform.IPlatform;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
@@ -38,7 +38,7 @@ public final class MRL {
             ThreadTool.createFactory("MRL-Loader", Thread.NORM_PRIORITY - 1)
     );
 
-    // Instance fields
+    // INSTANCE FIELDS
     public final URI uri;
     private volatile Source[] sources;
     private volatile Instant expiresAt;
@@ -70,7 +70,7 @@ public final class MRL {
                 return existing;
             }
 
-            // Create new and start loading
+            // CREATE NEW AND START LOADING
             final MRL mrl = new MRL(key);
             LOADER.execute(mrl::load);
             return mrl;
@@ -83,7 +83,7 @@ public final class MRL {
      */
     public static void preload(final URI... uris) {
         for (final URI uri: uris) {
-            get(uri); // Will start async load if not cached
+            get(uri); // WILL START ASYNC LOAD IF NOT CACHED
         }
     }
 
@@ -108,10 +108,7 @@ public final class MRL {
         return CACHE.size();
     }
 
-    // =========================================================================
     // LOADING
-    // =========================================================================
-
     /**
      * Reloads the current
      */
@@ -158,10 +155,7 @@ public final class MRL {
         }
     }
 
-    // =========================================================================
     // STATE QUERIES
-    // =========================================================================
-
     /**
      * Returns true if sources are ready to use.
      */
@@ -205,10 +199,7 @@ public final class MRL {
         return this.ready;
     }
 
-    // =========================================================================
     // SOURCE ACCESS
-    // =========================================================================
-
     /**
      * Returns all sources, or empty array if not ready.
      */
@@ -291,26 +282,18 @@ public final class MRL {
         return this.sourceByType(MediaType.AUDIO);
     }
 
-    // =========================================================================
     // MEDIA PLAYER FACTORY
-    // =========================================================================
-
     /**
      * Creates the optimal MediaPlayer for the first available source.
      */
-    public MediaPlayer createPlayer(final Thread renderThread, final Executor renderThreadEx,
-                                    final GLEngine glEngine, final ALEngine alEngine,
-                                    final boolean video, final boolean audio) {
-        return this.createPlayer(0, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
+    public MediaPlayer createPlayer(final GFXEngine gfxEngine, final ALEngine alEngine, final boolean audio) {
+        return this.createPlayer(0, gfxEngine, alEngine, audio);
     }
 
     /**
      * Creates a MediaPlayer for a specific source and quality.
      */
-    public MediaPlayer createPlayer(final int sourceIndex,
-                                    final Thread renderThread, final Executor renderThreadEx,
-                                    final GLEngine glEngine, final ALEngine alEngine,
-                                    final boolean video, final boolean audio) {
+    public MediaPlayer createPlayer(final int sourceIndex, final GFXEngine gfxEngine, final ALEngine alEngine, final boolean audio) {
         final Source source = this.source(sourceIndex);
         if (source == null) {
             LOGGER.warn(IT, "Cannot create player: source {} not available for {}", sourceIndex, this.uri);
@@ -320,12 +303,12 @@ public final class MRL {
         try {
             if (source.type == MediaType.IMAGE) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
-                return new TxMediaPlayer(source, renderThread, renderThreadEx, glEngine, video);
+                return new TxMediaPlayer(source, gfxEngine);
             }
 
             if (FFMediaPlayer.loaded()) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
-                return new FFMediaPlayer(source, renderThread, renderThreadEx, glEngine, alEngine, video, audio);
+                return new FFMediaPlayer(source, gfxEngine, alEngine, audio);
             }
 
             LOGGER.error(IT, "No media backend available for: {}", this.uri);
@@ -338,15 +321,13 @@ public final class MRL {
     /**
      * Finds a suitable source and creates a thumbnail MediaPlayer.
      * First tries metadata-provided thumbnail, then image sources, then video sources.
-     * @param renderThread
-     * @param renderThreadEx
-     * @param glEngine
+     * @param gfxEngine
      * @return
      */
-    public MediaPlayer createThumbnailPlayer(final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine) {
+    public MediaPlayer createThumbnailPlayer(final GFXEngine gfxEngine) {
         for (final Source src: this.sources()) {
             if (src.metadata() != null) {
-                final var player = src.metadata().createThumbnailPlayer(renderThread, renderThreadEx, glEngine);
+                final var player = src.metadata().createThumbnailPlayer(gfxEngine);
                 if (player != null) {
                     LOGGER.debug(IT, "Created thumbnail player from metadata for: {}", src);
                     return player;
@@ -354,7 +335,7 @@ public final class MRL {
             }
             if (src.isImage()) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image as thumbnail: {}", src);
-                return new TxMediaPlayer(src, renderThread, renderThreadEx, glEngine, true);
+                return new TxMediaPlayer(src, gfxEngine);
             }
             // TODO: VIDEO THUMBNAILS ARE EXPENSIVE TO CREATE, SO WE ONLY USE THEM AS A LAST RESORT
         }
@@ -362,10 +343,7 @@ public final class MRL {
         return null;
     }
 
-    // =========================================================================
     // OBJECT METHODS
-    // =========================================================================
-
     @Override
     public boolean equals(final Object o) {
         if (this == o) return true;
@@ -382,10 +360,7 @@ public final class MRL {
     public String toString() {
         return "MRL{uri=" + this.uri + ", ready=" + this.ready + ", error=" + this.error + ", sources=" + this.sourceCount() + "}";
     }
-    // =========================================================================
     // NESTED TYPES
-    // =========================================================================
-
     /**
      * Media types supported by sources.
      */
@@ -461,10 +436,10 @@ public final class MRL {
          * @return the appropriate quality level
          */
         public static Quality of(final int width, final int height) {
-            final int size = Math.min(width, height); // Use smaller dimension (height for landscape)
+            final int size = Math.min(width, height); // USE SMALLER DIMENSION (HEIGHT FOR LANDSCAPE)
             if (size <= 0) return UNKNOWN;
 
-            // Binary search would be overkill for 10 elements
+            // BINARY SEARCH WOULD BE OVERKILL FOR 10 ELEMENTS
             for (int i = VALUES.length - 1; i >= 0; i--) {
                 if (size >= VALUES[i].threshold) {
                     return VALUES[i];
@@ -500,7 +475,7 @@ public final class MRL {
             if (available == null || available.isEmpty()) return null;
             if (available.contains(preferred)) return preferred;
 
-            // Search outward from preferred
+            // SEARCH OUTWARD FROM PREFERRED
             Quality lower = preferred.lower();
             Quality higher = preferred.higher();
 
@@ -513,11 +488,11 @@ public final class MRL {
                     if (available.contains(higher)) return higher;
                     higher = higher.higher();
                 }
-                // Prevent infinite loop
+                // PREVENT INFINITE LOOP
                 if (lower.ordinal() == 0 && higher.ordinal() == VALUES.length - 1) break;
             }
 
-            // Fallback: return any available
+            // FALLBACK: RETURN ANY AVAILABLE
             return available.iterator().next();
         }
     }
@@ -541,11 +516,11 @@ public final class MRL {
             this(title, description, null, null, duration, null);
         }
 
-        public MediaPlayer createThumbnailPlayer(final Thread renderThread, final Executor renderThreadEx, final GLEngine glEngine) {
+        public MediaPlayer createThumbnailPlayer(final GFXEngine gfxEngine) {
             if (this.thumbnail == null) return null;
 
             final Source source = new Source(MediaType.IMAGE, this.thumbnail);
-            return new TxMediaPlayer(source, renderThread, renderThreadEx, glEngine, true);
+            return new TxMediaPlayer(source, gfxEngine);
         }
     }
 
@@ -623,8 +598,7 @@ public final class MRL {
             this(type, qualities, List.of(), metadata);
         }
 
-        // Quality access
-
+        // QUALITY ACCESS
         /**
          * Gets the URI for a specific quality, falling back to closest available.
          */
@@ -668,8 +642,7 @@ public final class MRL {
             return this.qualities.containsKey(quality);
         }
 
-        // Slave access
-
+        // SLAVE ACCESS
         /**
          * Returns true if this source has slave tracks.
          */
@@ -708,8 +681,7 @@ public final class MRL {
                     .orElse(null);
         }
 
-        // Mutation (returns new instances)
-
+        // MUTATION (RETURNS NEW INSTANCES)
         /**
          * Adds or updates a quality level.
          */
@@ -747,8 +719,7 @@ public final class MRL {
             return new Source(this.type, this.qualities, this.slaves, metadata);
         }
 
-        // Type queries
-
+        // TYPE QUERIES
         /**
          * Returns true if this is a video source.
          */
@@ -771,10 +742,7 @@ public final class MRL {
         }
     }
 
-    // =========================================================================
     // BUILDER FOR COMPLEX SOURCES
-    // =========================================================================
-
     /**
      * Builder for creating Source instances with complex configurations.
      */

@@ -65,9 +65,9 @@ public class NetServer {
     }
 
     // POST /upload
-    // Headers: X-WaterMedia-Token (required), X-WaterMedia-Filename (required)
-    // Body: raw file bytes
-    // Response: 200 + generated short ID as plain text
+    // HEADERS: X-WaterMedia-Token (REQUIRED), X-WaterMedia-Filename (REQUIRED)
+    // BODY: RAW FILE BYTES
+    // RESPONSE: 200 + GENERATED SHORT ID AS PLAIN TEXT
     private static void handleUpload(final HttpExchange exchange) throws IOException {
         try (exchange) {
             if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
@@ -125,9 +125,9 @@ public class NetServer {
         }
     }
 
-    // GET  /<id>  → download file with Content-Disposition and correct Content-Type
-    // HEAD /<id>  → check existence (200 or 404)
-    // GET  /      → server info
+    // GET  /<id>  — DOWNLOAD FILE WITH Content-Disposition AND CORRECT Content-Type
+    // HEAD /<id>  — CHECK EXISTENCE (200 OR 404)
+    // GET  /      — SERVER INFO
     private static void handleRoot(final HttpExchange exchange) throws IOException {
         try (exchange) {
             final String path = exchange.getRequestURI().getPath();
@@ -143,7 +143,7 @@ public class NetServer {
 
             final String id = path.substring(1);
 
-            // Only allow alphanumeric to prevent path traversal
+            // ONLY ALLOW ALPHANUMERIC TO PREVENT PATH TRAVERSAL
             if (!id.matches("^[a-zA-Z0-9]+$")) {
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
                 LOGGER.warn(IT, "Received request with invalid ID: {}", id);
@@ -165,7 +165,7 @@ public class NetServer {
                 return;
             }
 
-            // Find the stored file inside the ID directory
+            // FIND THE STORED FILE INSIDE THE ID DIRECTORY
             final Path file;
             try (final var listing = Files.list(idDir)) {
                 file = listing.findFirst().orElse(null);
@@ -186,14 +186,14 @@ public class NetServer {
             exchange.getResponseHeaders().set("Content-Type", contentType);
             exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
 
-            // HEAD: return metadata only
+            // HEAD: RETURN METADATA ONLY
             if ("HEAD".equals(method)) {
                 exchange.getResponseHeaders().set("Content-Length", String.valueOf(fileSize));
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, -1);
                 return;
             }
 
-            // GET: serve file with Range support for media seeking
+            // GET: SERVE FILE WITH RANGE SUPPORT FOR MEDIA SEEKING
             final String rangeHeader = exchange.getRequestHeaders().getFirst("Range");
             if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
                 final String rangeSpec = rangeHeader.substring(6);

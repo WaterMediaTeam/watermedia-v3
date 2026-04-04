@@ -331,10 +331,7 @@ public class PNG extends Decoder {
         return new Image(new ByteBuffer[] { staticPixels }, ihdr.width(), ihdr.height(), new long[] { 0L }, 1L, Image.NO_REPEAT);
     }
 
-    /**
-     * Builds gamma correction lookup table based on metadata
-     * @return The gamma LUT, or null if no gamma correction is needed
-     */
+    // BUILDS GAMMA CORRECTION LOOKUP TABLE BASED ON METADATA
     private static float[] buildGammaLUT(final Metadata metadata) {
         float fileGamma;
 
@@ -375,9 +372,7 @@ public class PNG extends Decoder {
         return gammaLUT;
     }
 
-    /**
-     * Applies gamma correction to pixel array
-     */
+    // APPLIES GAMMA CORRECTION TO PIXEL ARRAY
     private static void applyGammaCorrection(final int[][] pixels, final float[] gammaLUT) {
         for (int y = 0; y < pixels.length; y++) {
             for (int x = 0; x < pixels[y].length; x++) {
@@ -396,9 +391,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Flattens alpha channel by compositing against bKGD color
-     */
+    // FLATTENS ALPHA CHANNEL BY COMPOSITING AGAINST BKGD COLOR
     private void flattenAlpha(final int[][] pixels, final BKGD bkgd, final int depth, final PLTE plte) {
         final int bgColor = this.bkgdToARGB(bkgd, depth, plte);
         final int bgR = (bgColor >> 16) & 0xFF;
@@ -431,9 +424,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Converts bKGD to ARGB color value
-     */
+    // CONVERTS BKGD TO ARGB COLOR VALUE
     private int bkgdToARGB(final BKGD bkgd, final int depth, final PLTE plte) {
         if (bkgd.isIndexed() && plte != null) {
             return 0xFF000000 | plte.getColor(bkgd.paletteIndex());
@@ -442,9 +433,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Fills buffer with a solid color
-     */
+    // FILLS BUFFER WITH A SOLID COLOR
     private void fillBuffer(final int[][] buffer, final int width, final int height, final int color) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -453,9 +442,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Clears a buffer to fully transparent black
-     */
+    // CLEARS A BUFFER TO FULLY TRANSPARENT BLACK
     private void clearBuffer(final int[][] buffer, final int width, final int height) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -464,18 +451,14 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Copies source buffer to destination buffer
-     */
+    // COPIES SOURCE BUFFER TO DESTINATION BUFFER
     private void copyBuffer(final int[][] src, final int[][] dst, final int width, final int height) {
         for (int y = 0; y < height; y++) {
             System.arraycopy(src[y], 0, dst[y], 0, width);
         }
     }
 
-    /**
-     * Validates IHDR parameters according to PNG spec
-     */
+    // VALIDATES IHDR PARAMETERS ACCORDING TO PNG SPEC
     private void validateIHDR(final IHDR ihdr) throws DecoderException {
         if (ihdr.width() <= 0 || ihdr.height() <= 0) {
             throw new DecoderException("Invalid image dimensions: " + ihdr.width() + "x" + ihdr.height());
@@ -515,9 +498,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Concatenates multiple chunk data arrays into one
-     */
+    // CONCATENATES MULTIPLE CHUNK DATA ARRAYS INTO ONE
     private byte[] jointChunk(final List<byte[]> chunks) {
         int totalLength = 0;
         for (final byte[] chunk: chunks) {
@@ -533,9 +514,7 @@ public class PNG extends Decoder {
         return result;
     }
 
-    /**
-     * Decompresses zlib-compressed data using Inflater
-     */
+    // DECOMPRESSES ZLIB-COMPRESSED DATA USING INFLATER
     private byte[] inflate(final byte[] compressed) throws IOException {
         final Inflater inflater = new Inflater();
         inflater.setInput(compressed);
@@ -560,10 +539,7 @@ public class PNG extends Decoder {
         return output.toByteArray();
     }
 
-    /**
-     * Decodes decompressed image data into ARGB pixel array
-     * Handles interlacing and filtering
-     */
+    // DECODES DECOMPRESSED IMAGE DATA INTO ARGB PIXEL ARRAY HANDLES INTERLACING AND FILTERING
     private int[][] decodeData(final byte[] data, final IHDR ihdr, final PLTE plte, final TRNS trns) throws IOException {
         final int width = ihdr.width();
         final int height = ihdr.height();
@@ -594,17 +570,13 @@ public class PNG extends Decoder {
         return pixels;
     }
 
-    /**
-     * Calculates the dimension (width or height) for an interlace pass
-     */
+    // CALCULATES THE DIMENSION (WIDTH OR HEIGHT) FOR AN INTERLACE PASS
     private int passDimension(final int dim, final int start, final int step) {
         if (start >= dim) return 0;
         return (dim - start + step - 1) / step;
     }
 
-    /**
-     * Decodes a single pass of image data (or entire image for non-interlaced)
-     */
+    // DECODES A SINGLE PASS OF IMAGE DATA (OR ENTIRE IMAGE FOR NON-INTERLACED)
     private int decodePass(final byte[] data, final int dataOffset, final int[][] pixels,
                            final int xStart, final int yStart, final int xStep, final int yStep,
                            final int passWidth, final int passHeight,
@@ -647,9 +619,7 @@ public class PNG extends Decoder {
         return offset;
     }
 
-    /**
-     * Calculates the number of bytes in a scanline (excluding filter byte)
-     */
+    // CALCULATES THE NUMBER OF BYTES IN A SCANLINE (EXCLUDING FILTER BYTE)
     private int scanlineBytes(final int width, final IHDR ihdr) {
         final int depth = ihdr.depth();
         final ColorType colorType = ColorType.of(ihdr.colorType());
@@ -667,10 +637,7 @@ public class PNG extends Decoder {
         return (width * bitsPerPixel + 7) / 8;
     }
 
-    /**
-     * Applies filter reconstruction to a scanline
-     * Modifies currentRow in place
-     */
+    // APPLIES FILTER RECONSTRUCTION TO A SCANLINE MODIFIES CURRENTROW IN PLACE
     private void unfilterRow(final byte[] currentRow, final byte[] previousRow, final int filterType, final int bpp) throws IOException {
         final int length = currentRow.length;
 
@@ -718,10 +685,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Path predictor function as defined in PNG spec
-     * Returns the value nearest to p = a + b - c
-     */
+    // PATH PREDICTOR FUNCTION AS DEFINED IN PNG SPEC RETURNS THE VALUE NEAREST TO P = A + B - C
     private int pathPredictor(final int a, final int b, final int c) {
         final int p = a + b - c;
         final int pa = Math.abs(p - a);
@@ -734,9 +698,7 @@ public class PNG extends Decoder {
         return c;
     }
 
-    /**
-     * Decodes pixels from a filtered scanline into the pixel array
-     */
+    // DECODES PIXELS FROM A FILTERED SCANLINE INTO THE PIXEL ARRAY
     private void decodeRowPixels(final byte[] row, final int[][] pixels, final int y, final int xStart, final int xStep,
                                  final int passWidth, final IHDR ihdr, final PLTE plte, final TRNS trns) throws IOException {
         final int depth = ihdr.depth();
@@ -828,9 +790,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Extracts a sample value from the row at the given bit offset
-     */
+    // EXTRACTS A SAMPLE VALUE FROM THE ROW AT THE GIVEN BIT OFFSET
     private int extractSample(final byte[] row, final int bitOffset, final int depth) {
         final int byteOffset = bitOffset / 8;
         if (depth >= 8) {
@@ -847,9 +807,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Scales a sample value from its original depth to 8-bit
-     */
+    // SCALES A SAMPLE VALUE FROM ITS ORIGINAL DEPTH TO 8-BIT
     private int scaleTo8Bit(final int value, final int depth) {
         if (depth == 8) return value;
         if (depth == 16) return value >> 8;
@@ -859,9 +817,7 @@ public class PNG extends Decoder {
         return value;
     }
 
-    /**
-     * Converts ARGB pixel array to BGRA ByteBuffer
-     */
+    // CONVERTS ARGB PIXEL ARRAY TO BGRA BYTEBUFFER
     private ByteBuffer toBGRA(final int[][] pixels, final int width, final int height) {
         final ByteBuffer buffer = ByteBuffer.allocateDirect(width * height * 4);
         for (int y = 0; y < height; y++) {
@@ -875,9 +831,7 @@ public class PNG extends Decoder {
         return buffer;
     }
 
-    /**
-     * Applies APNG dispose operation to output buffer
-     */
+    // APPLIES APNG DISPOSE OPERATION TO OUTPUT BUFFER
     private void applyDispose(final int[][] outputBuffer, final int[][] previousBuffer, final FCTL fctl,
                               final BKGD bkgd, final int depth, final PLTE plte, final int canvasWidth, final int canvasHeight) {
         final int disposeOp = fctl.dispose() & 0xFF;
@@ -910,9 +864,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Applies APNG blend operation to composite frame onto output buffer
-     */
+    // APPLIES APNG BLEND OPERATION TO COMPOSITE FRAME ONTO OUTPUT BUFFER
     private void applyBlendOp(final int[][] outputBuffer, final int[][] framePixels, final FCTL fctl) {
         final int blendOp = fctl.blend() & 0xFF;
         final int xOffset = fctl.xOffset();
@@ -944,9 +896,7 @@ public class PNG extends Decoder {
         }
     }
 
-    /**
-     * Alpha composites source over destination (Porter-Duff "over" operation)
-     */
+    // ALPHA COMPOSITES SOURCE OVER DESTINATION (PORTER-DUFF "OVER" OPERATION)
     private int alphaComposite(final int srcARGB, final int dstARGB) {
         final int srcA = (srcARGB >> 24) & 0xFF;
         final int srcR = (srcARGB >> 16) & 0xFF;
@@ -982,9 +932,7 @@ public class PNG extends Decoder {
         return (outA << 24) | (outR << 16) | (outG << 8) | outB;
     }
 
-    /**
-     * Converts chunk type int to readable string
-     */
+    // CONVERTS CHUNK TYPE INT TO READABLE STRING
     private String chunkTypeToString(final int type) {
         return String.valueOf(new char[] {
                 (char) ((type >> 24) & 0xFF),

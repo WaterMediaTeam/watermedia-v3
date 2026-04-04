@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Colors;
@@ -24,8 +25,9 @@ public class MRLSelectorScreen extends Screen {
     private boolean loading;
     private long loadStartTime;
     private AppContext.TestURI pendingUri;
+    private GLEngine.Builder glEngineBuilder;
 
-    // Thumbnail players keyed by MRL name
+    // THUMBNAIL PLAYERS KEYED BY MRL NAME
     private final Map<String, MediaPlayer> thumbnailPlayers = new LinkedHashMap<>();
     private final java.util.Set<String> thumbnailAttempted = new java.util.HashSet<>();
 
@@ -65,6 +67,8 @@ public class MRLSelectorScreen extends Screen {
                 .thumbnailProvider(uri -> this.thumbnailPlayers.get(uri.name()))
                 .onSelect(this::handleSelect)
                 .onSelectionChanged(ctx::playSelectionSound);
+
+        this.glEngineBuilder = new GLEngine.Builder(Thread.currentThread(), this.ctx);
     }
 
     @Override
@@ -85,9 +89,7 @@ public class MRLSelectorScreen extends Screen {
         this.releaseThumbnailPlayers();
     }
 
-    /**
-     * Called each frame to create thumbnail players for MRLs that just became ready.
-     */
+    // CALLED EACH FRAME TO CREATE THUMBNAIL PLAYERS FOR MRLS THAT JUST BECAME READY.
     private void updateThumbnailPlayers() {
         if (this.ctx.selectedGroup == null) return;
 
@@ -97,17 +99,17 @@ public class MRLSelectorScreen extends Screen {
 
             final MRL mrl = this.ctx.groupMRLs.get(name);
             if (mrl == null) continue;
-            if (!mrl.ready() && !mrl.error()) continue; // still loading, wait
+            if (!mrl.ready() && !mrl.error()) continue; // STILL LOADING, WAIT
 
-            // Mark as attempted so we don't retry every frame
+            // MARK AS ATTEMPTED SO WE DON'T RETRY EVERY FRAME
             this.thumbnailAttempted.add(name);
 
-            if (mrl.error()) continue; // no thumbnail for errored MRLs
+            if (mrl.error()) continue; // NO THUMBNAIL FOR ERRORED MRLs
 
             final MRL.Source[] sources = mrl.sources();
             if (sources.length == 0) continue;
 
-            final MediaPlayer player = mrl.createThumbnailPlayer(Thread.currentThread(), this.ctx, null);
+            final MediaPlayer player = mrl.createThumbnailPlayer(this.glEngineBuilder.build());
 
             if (player != null) {
                 player.repeat(true);

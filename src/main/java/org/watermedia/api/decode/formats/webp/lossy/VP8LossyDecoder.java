@@ -154,8 +154,7 @@ public final class VP8LossyDecoder {
         return DataTool.yuvToBgraBuf(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
     }
 
-    // ==================== RFC6386 SECTION 9 - FRAME HEADER ====================
-
+    // RFC6386 SECTION 9 - FRAME HEADER
     // RFC6386 SECTION 9.1 - UNCOMPRESSED DATA CHUNK
     private static FrameInfo parseFrameHeader(final ByteBuffer buf) throws DecoderException {
         if (buf.remaining() < 10) throw new DecoderException("VP8 frame too small");
@@ -266,8 +265,7 @@ public final class VP8LossyDecoder {
         return st;
     }
 
-    // ==================== RFC6386 SECTIONS 11-14 - MACROBLOCK DECODING ====================
-
+    // RFC6386 SECTIONS 11-14 - MACROBLOCK DECODING
     private static void decodeMBs(final VP8BoolDecoder hdrBr, final VP8BoolDecoder[] tokBr, final State st,
                                   final byte[] yPln, final byte[] uPln, final byte[] vPln,
                                   final int yStr, final int uvStr, final int mbW, final int mbH) throws DecoderException {
@@ -465,8 +463,7 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // ==================== RFC6386 SECTION 13 - COEFFICIENT DECODING ====================
-
+    // RFC6386 SECTION 13 - COEFFICIENT DECODING
     private static int decodeCoeffs(final VP8BoolDecoder br, final short[] coeffs, final int[][][][] probs,
                                     final int type, final int first, final int dcQ, final int acQ, int ctx) throws DecoderException {
         int nz = 0;
@@ -546,8 +543,7 @@ public final class VP8LossyDecoder {
         return br.readBool(p[8]) ? SubMode.B_HU : SubMode.B_HD;
     }
 
-    // ==================== RFC6386 SECTION 14 - DCT/WHT INVERSION ====================
-
+    // RFC6386 SECTION 14 - DCT/WHT INVERSION
     private static void inverseWHT(final short[] in, final short[] out) {
         final int[] t = new int[16];
 
@@ -614,8 +610,7 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // ==================== RFC6386 SECTION 12 - INTRAFRAME PREDICTION ====================
-
+    // RFC6386 SECTION 12 - INTRAFRAME PREDICTION
     // LIBWEBP BORDER VALUES: 127 FOR TOP ROW (mbY=0), 129 FOR LEFT COLUMN (mbX=0)
     private static byte[] borderFill(final int sz, final int val) {
         final byte[] r = new byte[sz];
@@ -940,8 +935,7 @@ public final class VP8LossyDecoder {
         return (a + 2 * b + c + 2) >> 2;
     }
 
-    // ==================== RFC6386 SECTION 15 - LOOP FILTER ====================
-
+    // RFC6386 SECTION 15 - LOOP FILTER
     private static void applyLoopFilter(final State st, final byte[] yPln, final byte[] uPln, final byte[] vPln,
                                         final int yStr, final int uvStr, final int mbW, final int mbH, final boolean keyFrame) {
         for (int mbY = 0; mbY < mbH; mbY++) {
@@ -960,7 +954,7 @@ public final class VP8LossyDecoder {
                     level = st.loopLvl;
                 }
                 if (st.useLfDelta) {
-                    level += st.refLfDelta[0]; // ref_lf_delta[0] for intra frame
+                    level += st.refLfDelta[0]; // refLfDelta[0] FOR INTRA FRAME
                     if (isI4x4 != 0) level += st.modeLfDelta[0];
                 }
                 level = Math.max(0, Math.min(63, level));
@@ -1171,10 +1165,8 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // ==================== YUV TO BGRA CONVERSION ====================
-
-    // ==================== RFC6386 SECTION 12 - PREDICTION MODES ====================
-
+    // YUV TO BGRA CONVERSION
+    // RFC6386 SECTION 12 - PREDICTION MODES
     // RFC6386 SECTION 12.1 - 16X16 LUMA AND 8X8 CHROMA MODES
     enum MBMode {
         DC, V, H, TM;
@@ -1198,8 +1190,7 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // ==================== INTERNAL STATE CLASSES ====================
-
+    // INTERNAL STATE CLASSES
     private static final class FrameInfo {
         boolean keyFrame;
         int p0Sz, w, h, hdrSz;
@@ -1217,7 +1208,7 @@ public final class VP8LossyDecoder {
         int loopLvl, sharpLvl;
         int[] refLfDelta = new int[4];
         int[] modeLfDelta = new int[4];
-        // per-MB info for loop filter (stored during decode, used during filter)
+        // PER-MB INFO FOR LOOP FILTER (STORED DURING DECODE, USED DURING FILTER)
         int[] mbSeg, mbIsI4x4, mbFInner;
     }
 

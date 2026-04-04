@@ -87,9 +87,7 @@ public class WaterMediaApp {
         WaterMedia.LOGGER.info(MarkerManager.getMarker("ROOT"), message);
     }
 
-    // ========================================
     // INITIALIZATION
-    // ========================================
     private static void init() {
         initWindow();
         initAudio();
@@ -110,7 +108,7 @@ public class WaterMediaApp {
         ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
         if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
 
-        // Callbacks
+        // CALLBACKS
         glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
         glfwSetCursorPosCallback(ctx.windowHandle, (w, x, y) -> {
             ctx.mouseX = x;
@@ -130,7 +128,7 @@ public class WaterMediaApp {
             glViewport(0, 0, width, height);
         });
 
-        // Center window
+        // CENTER WINDOW
         try (final MemoryStack stack = stackPush()) {
             final IntBuffer pWidth = stack.mallocInt(1);
             final IntBuffer pHeight = stack.mallocInt(1);
@@ -199,7 +197,7 @@ public class WaterMediaApp {
             case BACK -> screens.backToHome();
 
             case OPEN_MULTIMEDIA -> {
-                // Check FFmpeg availability first
+                // CHECK FFMPEG AVAILABILITY FIRST
                 if (!FFMediaPlayer.loaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
@@ -214,7 +212,7 @@ public class WaterMediaApp {
             case SOURCE_SELECTOR -> screens.navigate("source");
 
             case PLAYER -> {
-                // Check FFmpeg availability first
+                // CHECK FFMPEG AVAILABILITY FIRST
                 if (!FFMediaPlayer.loaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
@@ -225,7 +223,7 @@ public class WaterMediaApp {
             }
 
             case UPLOAD_LOGS -> {
-                // Check Minecraft context first
+                // CHECK MINECRAFT CONTEXT FIRST
                 if (!AppContext.IN_MODS) {
                     ctx.showError("Feature Unavailable",
                             "Upload logs is only available when\nrunning in Minecraft context.\n\nPlace this JAR in the mods folder\nand run Minecraft.",
@@ -245,10 +243,7 @@ public class WaterMediaApp {
         }
     }
 
-    // ========================================
     // MAIN LOOP
-    // ========================================
-
     private static void mainLoop() {
         ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
         }, 0);
@@ -263,7 +258,7 @@ public class WaterMediaApp {
 
             screens.render(ctx.windowWidth, ctx.windowHeight);
 
-            // Render global error dialog on top if present
+            // RENDER GLOBAL ERROR DIALOG ON TOP IF PRESENT
             if (ctx.hasError()) {
                 renderErrorDialog();
             }
@@ -273,7 +268,7 @@ public class WaterMediaApp {
             glfwSwapBuffers(ctx.windowHandle);
             glfwPollEvents();
 
-            // Handle input - error dialog takes priority
+            // HANDLE INPUT — ERROR DIALOG TAKES PRIORITY
             if (ctx.hasError()) {
                 errorDialog.handleHover(ctx.mouseX, ctx.mouseY);
                 if (ctx.mouseClicked) {
@@ -300,7 +295,7 @@ public class WaterMediaApp {
                 .clearContent()
                 .clearButtons();
 
-        // Split message into lines
+        // SPLIT MESSAGE INTO LINES
         for (final String line : ctx.globalErrorMessage.split("\n")) {
             errorDialog.addLine(line);
         }
@@ -314,7 +309,7 @@ public class WaterMediaApp {
     private static void renderBottomBar() {
         DrawTool.setupOrtho(ctx.windowWidth, ctx.windowHeight);
 
-        // Seekbar
+        // SEEKBAR
         final int seekbarY = ctx.windowHeight - 82;
         float progress = 1f;
         if (ctx.player != null && ctx.player.duration() > 0) {
@@ -326,21 +321,18 @@ public class WaterMediaApp {
         DrawTool.fill(0, seekbarY, ctx.windowWidth * progress, 4, 0.31f, 0.71f, 1f, 1f);
         DrawTool.enableTextures();
 
-        // Instructions - show error dialog instructions if error is present
+        // INSTRUCTIONS — SHOW ERROR DIALOG INSTRUCTIONS IF ERROR IS PRESENT
         final String instructions = ctx.hasError() ? "ENTER/ESC: Close" : screens.currentInstructions();
         ctx.text.render(instructions, AppContext.PADDING, ctx.windowHeight - 60, Colors.GRAY);
 
         DrawTool.restoreProjection();
     }
 
-    // ========================================
     // INPUT HANDLING
-    // ========================================
-
     private static void handleKeyInput(final long window, final int key, final int scancode, final int action, final int mods) {
         if (action != GLFW_RELEASE) return;
 
-        // Error dialog takes priority
+        // ERROR DIALOG TAKES PRIORITY
         if (ctx.hasError()) {
             if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE) {
                 ctx.clearError();
@@ -351,10 +343,7 @@ public class WaterMediaApp {
         screens.handleKey(key, action);
     }
 
-    // ========================================
     // RESOURCE LOADING
-    // ========================================
-
     private static void loadIcon() {
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
             final byte[] iconBytes = in.readAllBytes();
@@ -443,10 +432,7 @@ public class WaterMediaApp {
         }
     }
 
-    // ========================================
     // CONSOLE OPERATIONS
-    // ========================================
-
     private static void performUploadLogs() {
         try {
             consoleScreen.info("=== Upload Log Files ===");
@@ -639,10 +625,7 @@ public class WaterMediaApp {
                 "- FFmpeg Loaded: " + FFMediaPlayer.loaded() + "\n";
     }
 
-    // ========================================
     // CLEANUP
-    // ========================================
-
     private static void cleanup() {
         glfwFreeCallbacks(ctx.windowHandle);
         glfwDestroyWindow(ctx.windowHandle);
@@ -651,10 +634,7 @@ public class WaterMediaApp {
         System.exit(0);
     }
 
-    // ========================================
     // LOGGING
-    // ========================================
-
     private static void initLogging() {
         final String filename = "logs/watermedia-app.log";
         final File logfile = new File(filename);

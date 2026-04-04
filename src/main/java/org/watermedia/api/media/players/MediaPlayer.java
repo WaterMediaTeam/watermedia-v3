@@ -3,11 +3,11 @@ package org.watermedia.api.media.players;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.openal.AL10;
-import org.lwjgl.opengl.GL12;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.engines.GLEngine;
 
 import java.nio.ByteBuffer;
@@ -22,132 +22,47 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected static final int NO_TEXTURE = -1; // THIS IS -1 BECAUSE ZERO REPRESENTS NULL
     protected static final int NO_DURATION = 0;
 
-    // Basic Properties
+    // BASIC PROPERTIES
     protected final MRL.Source source;
-    protected final Thread renderThread;
-    protected final Executor renderThreadEx;
-    protected final GLEngine gl;
+    protected final GFXEngine gfx;
     protected final ALEngine al;
     protected MRL.Quality quality = WaterMediaConfig.media.defaultQuality;
-    protected boolean video;
     protected boolean audio;
 
-    // Video Properties
-    private int width = NO_SIZE;
-    private int height = NO_SIZE;
-    private final int glTexture;
-    private int glChroma; // Default to BGRA
-    private boolean firstFrame = true;
-
-    // Audio Properties
+    // AUDIO PROPERTIES
     protected final int alSources;
     private boolean repeat;
-    private float volume = 1f; // Default volume
+    private float volume = 1f;
     private float speed = 1.0f;
     private boolean muted = false;
 
-    public MediaPlayer(final MRL.Source source, final Thread renderThread, final Executor renderThreadEx, final GLEngine gl, final ALEngine al, final boolean video, final boolean audio) {
+    public MediaPlayer(final MRL.Source source, final GFXEngine gfx, final ALEngine al, final boolean audio) {
         Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
-        Objects.requireNonNull(renderThread, "MediaPlayer must have a valid render thread.");
-        Objects.requireNonNull(renderThreadEx, "MediaPlayer must have a valid render thread executor.");
+        if (gfx == null)
+            LOGGER.warn(IT, "GFXEngine is null — there will be no video output");
 
         // INIT PROPERTIES
         this.source = source;
-        this.renderThread = renderThread;
-        this.renderThreadEx = renderThreadEx;
-        this.gl = gl == null ? new GLEngine.Builder().build() : gl;
+        this.gfx = gfx;
         this.al = al == null ? new ALEngine.Builder().build() : al;
-        this.video = video;
         this.audio = audio;
 
-        // VALIDATE THREAD
-        renderThreadEx.execute(() -> {
-            if (Thread.currentThread() != renderThread) {
-                throw new IllegalStateException("MediaPlayer must be provided with the render thread and a executor that runs task on it.");
-            }
-            // VALIDATE GL CONTEXT
-            if (this.video) {
-                if (this.gl == null) {
-                    throw new IllegalArgumentException("MediaPlayer with video support must be provided with a valid GLEngine instance.");
-                }
-                if (!this.gl.hasGLContext()) {
-                    throw new IllegalStateException("MediaPlayer's GLEngine context must be current on the render thread.");
-                }
-            }
-        });
-
-        // Initialize video (if applicable)
-        this.glTexture = video ? this.gl.createTexture() : NO_TEXTURE;
-
-        // Initialize audio (if applicable)
+        // INITIALIZE AUDIO (IF APPLICABLE)
         this.alSources = audio ? this.al.genSource() : NO_TEXTURE;
-    }
-
-    /**
-     * Sets the video format for rendering.
-     *
-     * @param chroma the chroma format, the only supported value is {@link GL12#GL_RGBA GL_RGBA} and {@link GL12#GL_BGRA GL_BGRA}.
-     * @param width  the width of the video in pixels.
-     * @param height the height of the video in pixels.
-     */
-    public void setVideoFormat(final int chroma, final int width, final int height) {
-        if (!this.video) return;
-
-        // TODO: test if whe should rid off of RGBA and just use BGRA
-        if (chroma != GL12.GL_RGBA && chroma != GL12.GL_BGRA)
-            throw new IllegalArgumentException("Unsupported chroma format: " + chroma);
-
-        this.glChroma = chroma;
-        this.width = width;
-        this.height = height;
-        this.firstFrame = true;
-        LOGGER.debug(IT,"Set video format: chroma={}, width={}, height={}", chroma == GL12.GL_RGBA ? "RGBA" : "BGRA", width, height);
-    }
-
-    protected void upload(final ByteBuffer nativeBuffer, final int stride) {
-        // Video format not set yet, skip uploading
-        if (this.width == NO_SIZE || this.height == NO_SIZE) { return; }
-
-        if (nativeBuffer != null && !nativeBuffer.isDirect()) {
-            LOGGER.warn(IT, "Provided video frame buffer is not a direct ByteBuffer, Source: {}.", this.source.bestUri());
-        }
-
-        if (this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.upload(nativeBuffer, stride));
-            return;
-        }
-
-        if (!this.video)
-            throw new IllegalStateException("MediaPlayer was built with no video support");
-
-        if (this.glChroma != GL12.GL_RGBA && this.glChroma != GL12.GL_BGRA)
-            throw new IllegalArgumentException("Unsupported chroma format: " + this.glChroma);
-
-        if (nativeBuffer == null)
-            throw new IllegalArgumentException("Native buffers cannot be null or empty.");
-
-        if (!nativeBuffer.isDirect()) {
-            throw new  IllegalArgumentException("Native buffer is not a direct ByteBuffer.");
-        }
-
-        synchronized(nativeBuffer) {
-            this.gl.uploadTexture(this.glTexture, nativeBuffer, stride, this.width, this.height, this.glChroma, this.firstFrame);
-            this.firstFrame = false;
-        }
     }
 
     protected boolean upload(final ByteBuffer data, final int format, final int samples, final int channels) {
         if (!this.audio)
             throw new IllegalStateException("MediaPlayer was built with no audio support");
 
-        // TODO: test if I should keep FORMAT_STEREO8 or just use STEREO16
+        // TODO: TEST IF FORMAT_STEREO8 SHOULD BE KEPT OR REPLACED WITH STEREO16
         if (format != AL10.AL_FORMAT_STEREO8 && format != AL10.AL_FORMAT_STEREO16)
             throw new IllegalArgumentException("Unsupported audio format: " + format);
 
         if (channels != 2)
             throw new IllegalArgumentException(channels == 1 ? "Mono format is not supported anymore." : "Unsupported channel count: " + channels);
 
-        // PREPARE — non-blocking: returns false if OpenAL has no buffer available
+        // NON-BLOCKING: RETURNS FALSE IF OPENAL HAS NO BUFFER AVAILABLE
         if (!this.al.uploadBuffer(this.alSources, data, format, samples)) {
             return false;
         }
@@ -165,7 +80,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public void quality(final MRL.Quality quality) {
         if (quality == null) throw new IllegalArgumentException("Quality cannot be null.");
-        this.quality = quality; // Player loop will detect the change
+        this.quality = quality;
     }
 
     public MRL.Quality quality() { return this.quality; }
@@ -174,7 +89,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Indicates if the media player has video support enabled.
      * @return true if video support is enabled, false otherwise.
      */
-    public boolean withVideo() { return this.video; }
+    public boolean withVideo() { return this.gfx != null; }
 
     /**
      * Indicates if the media player has audio support enabled.
@@ -186,19 +101,19 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Returns the width of the video in pixels.
      * @return the width of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
-    public final int width() { return this.width; }
+    public final int width() { return this.gfx.width(); }
 
     /**
      * Returns the height of the video in pixels.
      * @return the height of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
-    public final int height() { return this.height; }
+    public final int height() { return this.gfx.height(); }
 
     /**
-     * Returns the OpenGL texture ID used for rendering the video frames.
-     * @return the OpenGL texture ID, or {@link MediaPlayer#NO_TEXTURE NO_TEXTURE} if video is not supported.
+     * Returns the texture ID used for rendering the video frames.
+     * @return the texture ID, or 0 if not yet initialized.
      */
-    public int texture() { return this.glTexture; }
+    public long texture() { return this.gfx.texture(); }
 
     /**
      * Returns the OpenAL source ID used for audio playback.
@@ -226,7 +141,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      *               but will not be set mute to true if volume is set to 0
      */
     public void volume(final int volume) {
-        this.volume = MathUtil.clamp(volume, 0, 100) / 100f; // Convert to float between 0.0 and 1.0
+        this.volume = MathUtil.clamp(volume, 0, 100) / 100f;
         this.muted = volume < 1;
         this.al.volume(this.alSources, this.muted ? 0.0f : this.volume);
     }
@@ -507,13 +422,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * After calling this method, the media player should not be used again.
      */
     public void release() {
-        if (this.video && this.glTexture != NO_TEXTURE) {
-            this.renderThreadEx.execute(() -> {
-                this.gl.deleteTexture(this.glTexture);
-                this.gl.release();
-            });
-        }
-
         if (this.audio && this.alSources != NO_TEXTURE) {
             this.al.release(this.alSources);
         }

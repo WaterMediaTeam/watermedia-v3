@@ -55,7 +55,7 @@ public final class ALEngine {
             buffer = this.buffers[this.index++];
         } else {
             if (AL10.alGetSourcei(source, AL10.AL_BUFFERS_PROCESSED) <= 0) {
-                return false; // no buffer available — try later
+                return false; // NO BUFFER AVAILABLE — TRY LATER
             }
             buffer = AL10.alSourceUnqueueBuffers(source);
         }
