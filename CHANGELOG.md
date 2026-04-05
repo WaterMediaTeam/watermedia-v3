@@ -1,3 +1,6 @@
+# 📦 UPDATE 3.0.0-beta.13
+- 🐛 Fixed: Crashes on GL context with CORE_PROFILE (specifically on Minecraft 1.17+)
+
 # 📦 BREAKING UPDATE 3.0.0-beta.12
 - ✨ Improved 4K video performance on FFMediaPlayer
 - ✨ Redesigned WaterMedia App with a tile-based layout
