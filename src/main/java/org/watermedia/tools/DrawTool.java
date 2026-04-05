@@ -1,134 +1,275 @@
 package org.watermedia.tools;
 
-import java.awt.Color;
+import org.lwjgl.opengl.*;
+import org.lwjgl.system.MemoryUtil;
 
-import static org.lwjgl.opengl.GL11.*;
+import java.awt.Color;
+import java.nio.FloatBuffer;
 
 /**
- * Utility class for OpenGL drawing operations.
- * Contains static methods for common rendering tasks to reduce code duplication.
+ * Core Profile (OpenGL 3.2+) utility class for 2D drawing.
+ * Uses VAO/VBO + shaders internally. Call {@link #init()} after GL context creation
+ * and {@link #cleanup()} before GL context destruction.
  */
 public final class DrawTool {
-    
+
     private DrawTool() {}
 
-    // PROJECTION MANAGEMENT
-    public static void setupOrtho(int width, int height) {
-        glMatrixMode(GL_PROJECTION);
-        glPushMatrix();
-        glLoadIdentity();
-        glOrtho(0, width, height, 0, -1, 1);
-        glMatrixMode(GL_MODELVIEW);
-        glPushMatrix();
-        glLoadIdentity();
+    // GLSL 150 CORE SHADERS
+    private static final String VERT_SRC = """
+            #version 150 core
+            in vec2 position;
+            in vec2 texCoord;
+            in vec4 vertColor;
+            uniform mat4 projection;
+            out vec2 vTexCoord;
+            out vec4 vColor;
+            void main() {
+                vTexCoord = texCoord;
+                vColor = vertColor;
+                gl_Position = projection * vec4(position, 0.0, 1.0);
+            }
+            """;
+
+    private static final String FRAG_SRC = """
+            #version 150 core
+            in vec2 vTexCoord;
+            in vec4 vColor;
+            uniform sampler2D tex;
+            uniform float useTexture;
+            out vec4 fragColor;
+            void main() {
+                if (useTexture > 0.5) {
+                    fragColor = texture(tex, vTexCoord) * vColor;
+                } else {
+                    fragColor = vColor;
+                }
+            }
+            """;
+
+    // VERTEX FORMAT: position(2) + texCoord(2) + color(4) = 8 floats = 32 bytes
+    private static final int FPV = 8;
+    private static final int MAX_VERTS = 512;
+    private static final float[] IDENTITY = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+    // GL RESOURCES
+    private static int program;
+    private static int uProjection, uUseTexture;
+    private static int vao, vbo;
+    private static FloatBuffer uploadBuf;
+    private static FloatBuffer projBuf;
+    private static boolean initialized;
+
+    // CURRENT STATE
+    private static float curR = 1f, curG = 1f, curB = 1f, curA = 1f;
+    private static final float[] verts = new float[MAX_VERTS * FPV];
+
+    // ──────────────── LIFECYCLE ────────────────
+
+    public static void init() {
+        if (initialized) return;
+
+        final int vert = compileShader(GL20.GL_VERTEX_SHADER, VERT_SRC);
+        final int frag = compileShader(GL20.GL_FRAGMENT_SHADER, FRAG_SRC);
+
+        program = GL20.glCreateProgram();
+        GL20.glAttachShader(program, vert);
+        GL20.glAttachShader(program, frag);
+        GL20.glBindAttribLocation(program, 0, "position");
+        GL20.glBindAttribLocation(program, 1, "texCoord");
+        GL20.glBindAttribLocation(program, 2, "vertColor");
+        GL20.glLinkProgram(program);
+        if (GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
+            throw new RuntimeException("DrawTool link: " + GL20.glGetProgramInfoLog(program, 1024));
+        }
+        GL20.glDetachShader(program, vert);
+        GL20.glDetachShader(program, frag);
+        GL20.glDeleteShader(vert);
+        GL20.glDeleteShader(frag);
+
+        uProjection = GL20.glGetUniformLocation(program, "projection");
+        uUseTexture = GL20.glGetUniformLocation(program, "useTexture");
+
+        // SET SAMPLER TO TEXTURE UNIT 0
+        GL20.glUseProgram(program);
+        GL20.glUniform1i(GL20.glGetUniformLocation(program, "tex"), 0);
+        GL20.glUseProgram(0);
+
+        // VAO + VBO
+        vao = GL30.glGenVertexArrays();
+        vbo = GL15.glGenBuffers();
+        GL30.glBindVertexArray(vao);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vbo);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, (long) MAX_VERTS * FPV * Float.BYTES, GL15.GL_STREAM_DRAW);
+
+        final int stride = FPV * Float.BYTES;
+        GL20.glEnableVertexAttribArray(0);
+        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, stride, 0);
+        GL20.glEnableVertexAttribArray(1);
+        GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, stride, 2L * Float.BYTES);
+        GL20.glEnableVertexAttribArray(2);
+        GL20.glVertexAttribPointer(2, 4, GL11.GL_FLOAT, false, stride, 4L * Float.BYTES);
+
+        GL30.glBindVertexArray(0);
+
+        // CPU BUFFERS
+        uploadBuf = MemoryUtil.memAllocFloat(MAX_VERTS * FPV);
+        projBuf = MemoryUtil.memAllocFloat(16);
+        projBuf.put(IDENTITY).flip();
+
+        initialized = true;
     }
-    
+
+    public static void cleanup() {
+        if (!initialized) return;
+        GL20.glDeleteProgram(program);
+        GL30.glDeleteVertexArrays(vao);
+        GL15.glDeleteBuffers(vbo);
+        MemoryUtil.memFree(uploadBuf);
+        MemoryUtil.memFree(projBuf);
+        initialized = false;
+    }
+
+    // ──────────────── INTERNAL ────────────────
+
+    private static int compileShader(final int type, final String source) {
+        final int shader = GL20.glCreateShader(type);
+        GL20.glShaderSource(shader, source);
+        GL20.glCompileShader(shader);
+        if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
+            final String log = GL20.glGetShaderInfoLog(shader, 1024);
+            GL20.glDeleteShader(shader);
+            throw new RuntimeException("DrawTool shader: " + log);
+        }
+        return shader;
+    }
+
+    private static void v(final int i, final float x, final float y,
+                          final float u, final float tv,
+                          final float r, final float g, final float b, final float a) {
+        final int off = i * FPV;
+        verts[off] = x; verts[off + 1] = y;
+        verts[off + 2] = u; verts[off + 3] = tv;
+        verts[off + 4] = r; verts[off + 5] = g; verts[off + 6] = b; verts[off + 7] = a;
+    }
+
+    private static void draw(final int mode, final int count, final boolean textured) {
+        if (!initialized) init();
+
+        GL20.glUseProgram(program);
+        GL20.glUniformMatrix4fv(uProjection, false, projBuf);
+        GL20.glUniform1f(uUseTexture, textured ? 1f : 0f);
+
+        GL30.glBindVertexArray(vao);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vbo);
+
+        uploadBuf.clear();
+        uploadBuf.put(verts, 0, count * FPV);
+        uploadBuf.flip();
+        GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, uploadBuf);
+
+        GL11.glDrawArrays(mode, 0, count);
+
+        GL30.glBindVertexArray(0);
+        GL20.glUseProgram(0);
+    }
+
+    // ──────────────── PROJECTION ────────────────
+
+    public static void setupOrtho(final int width, final int height) {
+        projBuf.clear();
+        projBuf.put(2f / width).put(0).put(0).put(0);
+        projBuf.put(0).put(-2f / height).put(0).put(0);
+        projBuf.put(0).put(0).put(-1f).put(0);
+        projBuf.put(-1f).put(1f).put(0).put(1f);
+        projBuf.flip();
+    }
+
     public static void restoreProjection() {
-        glMatrixMode(GL_PROJECTION);
-        glPopMatrix();
-        glMatrixMode(GL_MODELVIEW);
-        glPopMatrix();
+        projBuf.clear();
+        projBuf.put(IDENTITY).flip();
     }
-    
-    // COLOR UTILITIES
-    public static void color(Color c) {
-        glColor4f(c.getRed() / 255f, c.getGreen() / 255f, c.getBlue() / 255f, c.getAlpha() / 255f);
+
+    // ──────────────── COLOR ────────────────
+
+    public static void color(final Color c) {
+        curR = c.getRed() / 255f; curG = c.getGreen() / 255f;
+        curB = c.getBlue() / 255f; curA = c.getAlpha() / 255f;
     }
-    
-    public static void color(float r, float g, float b, float a) {
-        glColor4f(r, g, b, a);
+
+    public static void color(final float r, final float g, final float b, final float a) {
+        curR = r; curG = g; curB = b; curA = a;
     }
-    
-    public static void color(float r, float g, float b) {
-        glColor4f(r, g, b, 1f);
+
+    public static void color(final float r, final float g, final float b) {
+        curR = r; curG = g; curB = b; curA = 1f;
     }
-    
-    // FILLED SHAPES
-    /**
-     * Fills a solid rectangle.
-     */
-    public static void fill(float x, float y, float w, float h) {
-        glBegin(GL_QUADS);
-        glVertex2f(x, y);
-        glVertex2f(x + w, y);
-        glVertex2f(x + w, y + h);
-        glVertex2f(x, y + h);
-        glEnd();
+
+    // ──────────────── FILLED SHAPES ────────────────
+
+    public static void fill(final float x, final float y, final float w, final float h) {
+        v(0, x,     y,     0, 0, curR, curG, curB, curA);
+        v(1, x + w, y,     0, 0, curR, curG, curB, curA);
+        v(2, x + w, y + h, 0, 0, curR, curG, curB, curA);
+        v(3, x,     y,     0, 0, curR, curG, curB, curA);
+        v(4, x + w, y + h, 0, 0, curR, curG, curB, curA);
+        v(5, x,     y + h, 0, 0, curR, curG, curB, curA);
+        draw(GL11.GL_TRIANGLES, 6, false);
     }
-    
-    /**
-     * Fills a solid rectangle with specified color.
-     */
-    public static void fill(float x, float y, float w, float h, Color c) {
+
+    public static void fill(final float x, final float y, final float w, final float h, final Color c) {
         color(c);
         fill(x, y, w, h);
     }
-    
-    /**
-     * Fills a solid rectangle with specified RGBA color.
-     */
-    public static void fill(float x, float y, float w, float h, float r, float g, float b, float a) {
+
+    public static void fill(final float x, final float y, final float w, final float h,
+                            final float r, final float g, final float b, final float a) {
         color(r, g, b, a);
         fill(x, y, w, h);
     }
-    
-    /**
-     * Fills a horizontal gradient rectangle (left color to right color).
-     */
-    public static void fillGradientH(float x, float y, float w, float h, 
-                                      float r1, float g1, float b1, float a1,
-                                      float r2, float g2, float b2, float a2) {
-        glBegin(GL_QUADS);
-        glColor4f(r1, g1, b1, a1);
-        glVertex2f(x, y);
-        glVertex2f(x, y + h);
-        glColor4f(r2, g2, b2, a2);
-        glVertex2f(x + w, y + h);
-        glVertex2f(x + w, y);
-        glEnd();
-    }
-    
-    /**
-     * Fills a vertical gradient rectangle (top color to bottom color).
-     */
-    public static void fillGradientV(float x, float y, float w, float h,
-                                      float r1, float g1, float b1, float a1,
-                                      float r2, float g2, float b2, float a2) {
-        glBegin(GL_QUADS);
-        glColor4f(r1, g1, b1, a1);
-        glVertex2f(x, y);
-        glVertex2f(x + w, y);
-        glColor4f(r2, g2, b2, a2);
-        glVertex2f(x + w, y + h);
-        glVertex2f(x, y + h);
-        glEnd();
+
+    public static void fillGradientH(final float x, final float y, final float w, final float h,
+                                      final float r1, final float g1, final float b1, final float a1,
+                                      final float r2, final float g2, final float b2, final float a2) {
+        v(0, x,     y,     0, 0, r1, g1, b1, a1);
+        v(1, x,     y + h, 0, 0, r1, g1, b1, a1);
+        v(2, x + w, y + h, 0, 0, r2, g2, b2, a2);
+        v(3, x,     y,     0, 0, r1, g1, b1, a1);
+        v(4, x + w, y + h, 0, 0, r2, g2, b2, a2);
+        v(5, x + w, y,     0, 0, r2, g2, b2, a2);
+        draw(GL11.GL_TRIANGLES, 6, false);
     }
 
-    /**
-     * Fills a triangle with three vertices.
-     */
-    public static void fillTriangle(float x1, float y1, float x2, float y2, float x3, float y3,
-                                    float r, float g, float b, float a) {
+    public static void fillGradientV(final float x, final float y, final float w, final float h,
+                                      final float r1, final float g1, final float b1, final float a1,
+                                      final float r2, final float g2, final float b2, final float a2) {
+        v(0, x,     y,     0, 0, r1, g1, b1, a1);
+        v(1, x + w, y,     0, 0, r1, g1, b1, a1);
+        v(2, x + w, y + h, 0, 0, r2, g2, b2, a2);
+        v(3, x,     y,     0, 0, r1, g1, b1, a1);
+        v(4, x + w, y + h, 0, 0, r2, g2, b2, a2);
+        v(5, x,     y + h, 0, 0, r2, g2, b2, a2);
+        draw(GL11.GL_TRIANGLES, 6, false);
+    }
+
+    public static void fillTriangle(final float x1, final float y1,
+                                    final float x2, final float y2,
+                                    final float x3, final float y3,
+                                    final float r, final float g, final float b, final float a) {
         color(r, g, b, a);
-        glBegin(GL_TRIANGLES);
-        glVertex2f(x1, y1);
-        glVertex2f(x2, y2);
-        glVertex2f(x3, y3);
-        glEnd();
+        v(0, x1, y1, 0, 0, curR, curG, curB, curA);
+        v(1, x2, y2, 0, 0, curR, curG, curB, curA);
+        v(2, x3, y3, 0, 0, curR, curG, curB, curA);
+        draw(GL11.GL_TRIANGLES, 3, false);
     }
 
-    /**
-     * Fills a triangle with rounded corners.
-     * @param x1, y1 First vertex (top)
-     * @param x2, y2 Second vertex (bottom-left)
-     * @param x3, y3 Third vertex (bottom-right)
-     * @param radius Corner rounding radius
-     */
-    public static void fillRoundedTriangle(float x1, float y1, float x2, float y2, float x3, float y3,
-                                           float radius, float r, float g, float b, float a) {
+    public static void fillRoundedTriangle(final float x1, final float y1,
+                                           final float x2, final float y2,
+                                           final float x3, final float y3,
+                                           final float radius,
+                                           final float r, final float g, final float b, final float a) {
         color(r, g, b, a);
 
-        // Calculate edge directions (normalized)
         float d12x = x2 - x1, d12y = y2 - y1;
         float d23x = x3 - x2, d23y = y3 - y2;
         float d31x = x1 - x3, d31y = y1 - y3;
@@ -141,10 +282,7 @@ public final class DrawTool {
         d23x /= len23; d23y /= len23;
         d31x /= len31; d31y /= len31;
 
-        // Calculate inset amount based on angles
         float inset = radius * 2f;
-
-        // Inset corner centers
         float c1x = x1 + (d12x - d31x) * inset / 2f;
         float c1y = y1 + (d12y - d31y) * inset / 2f;
         float c2x = x2 + (d23x - d12x) * inset / 2f;
@@ -152,7 +290,6 @@ public final class DrawTool {
         float c3x = x3 + (d31x - d23x) * inset / 2f;
         float c3y = y3 + (d31y - d23y) * inset / 2f;
 
-        // Calculate angles for arcs at each corner
         float angle1Start = (float) Math.atan2(-d31y, -d31x);
         float angle1End = (float) Math.atan2(d12y, d12x);
         float angle2Start = (float) Math.atan2(-d12y, -d12x);
@@ -160,64 +297,58 @@ public final class DrawTool {
         float angle3Start = (float) Math.atan2(-d23y, -d23x);
         float angle3End = (float) Math.atan2(d31y, d31x);
 
-        // Normalize angle ranges
-        if (angle1End < angle1Start) angle1End += 2 * Math.PI;
-        if (angle2End < angle2Start) angle2End += 2 * Math.PI;
-        if (angle3End < angle3Start) angle3End += 2 * Math.PI;
+        if (angle1End < angle1Start) angle1End += (float) (2 * Math.PI);
+        if (angle2End < angle2Start) angle2End += (float) (2 * Math.PI);
+        if (angle3End < angle3Start) angle3End += (float) (2 * Math.PI);
 
-        final int arcSegments = 5;
+        final int arcSeg = 5;
+        int idx = 0;
 
-        // Draw as triangle fan from centroid
         float cx = (x1 + x2 + x3) / 3f;
         float cy = (y1 + y2 + y3) / 3f;
+        v(idx++, cx, cy, 0, 0, curR, curG, curB, curA);
 
-        glBegin(GL_TRIANGLE_FAN);
-        glVertex2f(cx, cy);
-
-        // Corner 1 arc
-        for (int i = 0; i <= arcSegments; i++) {
-            float angle = angle1Start + (angle1End - angle1Start) * i / arcSegments;
-            glVertex2f(c1x + (float) Math.cos(angle) * radius, c1y + (float) Math.sin(angle) * radius);
+        for (int i = 0; i <= arcSeg; i++) {
+            float angle = angle1Start + (angle1End - angle1Start) * i / arcSeg;
+            v(idx++, c1x + (float) Math.cos(angle) * radius,
+                     c1y + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
         }
-
-        // Corner 2 arc
-        for (int i = 0; i <= arcSegments; i++) {
-            float angle = angle2Start + (angle2End - angle2Start) * i / arcSegments;
-            glVertex2f(c2x + (float) Math.cos(angle) * radius, c2y + (float) Math.sin(angle) * radius);
+        for (int i = 0; i <= arcSeg; i++) {
+            float angle = angle2Start + (angle2End - angle2Start) * i / arcSeg;
+            v(idx++, c2x + (float) Math.cos(angle) * radius,
+                     c2y + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
         }
-
-        // Corner 3 arc
-        for (int i = 0; i <= arcSegments; i++) {
-            float angle = angle3Start + (angle3End - angle3Start) * i / arcSegments;
-            glVertex2f(c3x + (float) Math.cos(angle) * radius, c3y + (float) Math.sin(angle) * radius);
+        for (int i = 0; i <= arcSeg; i++) {
+            float angle = angle3Start + (angle3End - angle3Start) * i / arcSeg;
+            v(idx++, c3x + (float) Math.cos(angle) * radius,
+                     c3y + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
         }
+        v(idx++, c1x + (float) Math.cos(angle1Start) * radius,
+                 c1y + (float) Math.sin(angle1Start) * radius,
+                 0, 0, curR, curG, curB, curA);
 
-        // Close - back to first point of corner 1
-        glVertex2f(c1x + (float) Math.cos(angle1Start) * radius, c1y + (float) Math.sin(angle1Start) * radius);
-
-        glEnd();
+        draw(GL11.GL_TRIANGLE_FAN, idx, false);
     }
 
-    /**
-     * Fills a circle at the specified center with given radius.
-     */
-    public static void fillCircle(float cx, float cy, float radius, float r, float g, float b, float a) {
+    public static void fillCircle(final float cx, final float cy, final float radius,
+                                  final float r, final float g, final float b, final float a) {
         color(r, g, b, a);
-        glBegin(GL_TRIANGLE_FAN);
-        glVertex2f(cx, cy);
         final int segments = 16;
+        v(0, cx, cy, 0, 0, curR, curG, curB, curA);
         for (int i = 0; i <= segments; i++) {
             final float angle = (float) (i * 2 * Math.PI / segments);
-            glVertex2f(cx + (float) Math.cos(angle) * radius, cy + (float) Math.sin(angle) * radius);
+            v(1 + i, cx + (float) Math.cos(angle) * radius,
+                     cy + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
         }
-        glEnd();
+        draw(GL11.GL_TRIANGLE_FAN, 2 + segments, false);
     }
 
-    // ROUNDED SHAPES
-    /**
-     * Fills a rounded rectangle using the current color.
-     */
-    public static void fillRounded(float x, float y, float w, float h, float radius) {
+    // ROUNDED RECTANGLES
+    public static void fillRounded(final float x, final float y, final float w, final float h, float radius) {
         radius = Math.min(radius, Math.min(w, h) / 2f);
         fill(x + radius, y, w - 2 * radius, h);
         fill(x, y + radius, radius, h - 2 * radius);
@@ -228,279 +359,232 @@ public final class DrawTool {
         fillArc(x + radius, y + h - radius, radius, (float) (Math.PI * 0.5), (float) Math.PI, 8);
     }
 
-    /**
-     * Fills a rounded rectangle with specified RGBA color.
-     */
-    public static void fillRounded(float x, float y, float w, float h, float radius,
-                                    float r, float g, float b, float a) {
+    public static void fillRounded(final float x, final float y, final float w, final float h, final float radius,
+                                    final float r, final float g, final float b, final float a) {
         color(r, g, b, a);
         fillRounded(x, y, w, h, radius);
     }
 
-    /**
-     * Fills a rounded rectangle with specified Color.
-     */
-    public static void fillRounded(float x, float y, float w, float h, float radius, Color c) {
+    public static void fillRounded(final float x, final float y, final float w, final float h,
+                                    final float radius, final Color c) {
         color(c);
         fillRounded(x, y, w, h, radius);
     }
 
-    /**
-     * Draws a rounded rectangle outline using the current color.
-     */
-    public static void rectRounded(float x, float y, float w, float h, float radius, float lineWidth) {
-        radius = Math.min(radius, Math.min(w, h) / 2f);
-        glLineWidth(lineWidth);
-        final int segments = 8;
-        glBegin(GL_LINE_LOOP);
-        // Top-right corner
-        for (int i = 0; i <= segments; i++) {
-            float angle = (float) (-Math.PI / 2) + (float) (Math.PI / 2) * i / segments;
-            glVertex2f(x + w - radius + (float) Math.cos(angle) * radius,
-                       y + radius + (float) Math.sin(angle) * radius);
-        }
-        // Bottom-right corner
-        for (int i = 0; i <= segments; i++) {
-            float angle = (float) (Math.PI / 2) * i / segments;
-            glVertex2f(x + w - radius + (float) Math.cos(angle) * radius,
-                       y + h - radius + (float) Math.sin(angle) * radius);
-        }
-        // Bottom-left corner
-        for (int i = 0; i <= segments; i++) {
-            float angle = (float) (Math.PI / 2) + (float) (Math.PI / 2) * i / segments;
-            glVertex2f(x + radius + (float) Math.cos(angle) * radius,
-                       y + h - radius + (float) Math.sin(angle) * radius);
-        }
-        // Top-left corner
-        for (int i = 0; i <= segments; i++) {
-            float angle = (float) Math.PI + (float) (Math.PI / 2) * i / segments;
-            glVertex2f(x + radius + (float) Math.cos(angle) * radius,
-                       y + radius + (float) Math.sin(angle) * radius);
-        }
-        glEnd();
-    }
-
-    /**
-     * Draws a rounded rectangle outline with specified RGBA color and line width.
-     */
-    public static void rectRounded(float x, float y, float w, float h, float radius,
-                                    float r, float g, float b, float a, float lineWidth) {
-        color(r, g, b, a);
-        rectRounded(x, y, w, h, radius, lineWidth);
-    }
-
-    /**
-     * Draws a rounded rectangle outline with specified Color and line width.
-     */
-    public static void rectRounded(float x, float y, float w, float h, float radius,
-                                    Color c, float lineWidth) {
-        color(c);
-        rectRounded(x, y, w, h, radius, lineWidth);
-    }
-
-    // FILLS AN ARC (PIE SLICE) AS PART OF A ROUNDED SHAPE.
-    private static void fillArc(float cx, float cy, float radius,
-                                 float startAngle, float endAngle, int segments) {
-        glBegin(GL_TRIANGLE_FAN);
-        glVertex2f(cx, cy);
+    private static void fillArc(final float cx, final float cy, final float radius,
+                                 final float startAngle, final float endAngle, final int segments) {
+        v(0, cx, cy, 0, 0, curR, curG, curB, curA);
         for (int i = 0; i <= segments; i++) {
             float angle = startAngle + (endAngle - startAngle) * i / segments;
-            glVertex2f(cx + (float) Math.cos(angle) * radius,
-                       cy + (float) Math.sin(angle) * radius);
+            v(1 + i, cx + (float) Math.cos(angle) * radius,
+                     cy + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
         }
-        glEnd();
+        draw(GL11.GL_TRIANGLE_FAN, 2 + segments, false);
     }
 
-    // OUTLINED SHAPES
-    /**
-     * Draws a rectangle outline.
-     */
-    public static void rect(float x, float y, float w, float h) {
-        glBegin(GL_LINE_LOOP);
-        glVertex2f(x, y);
-        glVertex2f(x + w, y);
-        glVertex2f(x + w, y + h);
-        glVertex2f(x, y + h);
-        glEnd();
+    // ──────────────── OUTLINES ────────────────
+
+    public static void rect(final float x, final float y, final float w, final float h) {
+        v(0, x,     y,     0, 0, curR, curG, curB, curA);
+        v(1, x + w, y,     0, 0, curR, curG, curB, curA);
+        v(2, x + w, y + h, 0, 0, curR, curG, curB, curA);
+        v(3, x,     y + h, 0, 0, curR, curG, curB, curA);
+        draw(GL11.GL_LINE_LOOP, 4, false);
     }
-    
-    /**
-     * Draws a rectangle outline with specified color and line width.
-     */
-    public static void rect(float x, float y, float w, float h, Color c, float lineWidth) {
+
+    public static void rect(final float x, final float y, final float w, final float h,
+                            final Color c, final float lineWidth) {
         color(c);
-        glLineWidth(lineWidth);
+        GL11.glLineWidth(lineWidth);
         rect(x, y, w, h);
     }
-    
-    /**
-     * Draws a rectangle outline with specified RGBA color and line width.
-     */
-    public static void rect(float x, float y, float w, float h, float r, float g, float b, float a, float lineWidth) {
+
+    public static void rect(final float x, final float y, final float w, final float h,
+                            final float r, final float g, final float b, final float a, final float lineWidth) {
         color(r, g, b, a);
-        glLineWidth(lineWidth);
+        GL11.glLineWidth(lineWidth);
         rect(x, y, w, h);
     }
-    
-    // LINES
-    /**
-     * Draws a horizontal line.
-     */
-    public static void lineH(float x, float y, float length) {
-        glBegin(GL_LINES);
-        glVertex2f(x, y);
-        glVertex2f(x + length, y);
-        glEnd();
+
+    public static void rectRounded(final float x, final float y, final float w, final float h,
+                                    float radius, final float lineWidth) {
+        radius = Math.min(radius, Math.min(w, h) / 2f);
+        GL11.glLineWidth(lineWidth);
+        final int segments = 8;
+        int idx = 0;
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) (-Math.PI / 2) + (float) (Math.PI / 2) * i / segments;
+            v(idx++, x + w - radius + (float) Math.cos(angle) * radius,
+                     y + radius + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
+        }
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) (Math.PI / 2) * i / segments;
+            v(idx++, x + w - radius + (float) Math.cos(angle) * radius,
+                     y + h - radius + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
+        }
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) (Math.PI / 2) + (float) (Math.PI / 2) * i / segments;
+            v(idx++, x + radius + (float) Math.cos(angle) * radius,
+                     y + h - radius + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
+        }
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float) Math.PI + (float) (Math.PI / 2) * i / segments;
+            v(idx++, x + radius + (float) Math.cos(angle) * radius,
+                     y + radius + (float) Math.sin(angle) * radius,
+                     0, 0, curR, curG, curB, curA);
+        }
+        draw(GL11.GL_LINE_LOOP, idx, false);
     }
-    
-    /**
-     * Draws a horizontal line with specified color and width.
-     */
-    public static void lineH(float x, float y, float length, Color c, float lineWidth) {
-        color(c);
-        glLineWidth(lineWidth);
-        lineH(x, y, length);
-    }
-    
-    /**
-     * Draws a horizontal line with specified RGBA color and width.
-     */
-    public static void lineH(float x, float y, float length, float r, float g, float b, float a, float lineWidth) {
+
+    public static void rectRounded(final float x, final float y, final float w, final float h, final float radius,
+                                    final float r, final float g, final float b, final float a, final float lineWidth) {
         color(r, g, b, a);
-        glLineWidth(lineWidth);
+        rectRounded(x, y, w, h, radius, lineWidth);
+    }
+
+    public static void rectRounded(final float x, final float y, final float w, final float h, final float radius,
+                                    final Color c, final float lineWidth) {
+        color(c);
+        rectRounded(x, y, w, h, radius, lineWidth);
+    }
+
+    // ──────────────── LINES ────────────────
+
+    public static void lineH(final float x, final float y, final float length) {
+        v(0, x,          y, 0, 0, curR, curG, curB, curA);
+        v(1, x + length, y, 0, 0, curR, curG, curB, curA);
+        draw(GL11.GL_LINES, 2, false);
+    }
+
+    public static void lineH(final float x, final float y, final float length, final Color c, final float lineWidth) {
+        color(c);
+        GL11.glLineWidth(lineWidth);
         lineH(x, y, length);
     }
 
-    /**
-     * Draws a vertical line.
-     */
-    public static void lineV(float x, float y, float length, Color c, float lineWidth) {
+    public static void lineH(final float x, final float y, final float length,
+                              final float r, final float g, final float b, final float a, final float lineWidth) {
+        color(r, g, b, a);
+        GL11.glLineWidth(lineWidth);
+        lineH(x, y, length);
+    }
+
+    public static void lineV(final float x, final float y, final float length, final Color c, final float lineWidth) {
         color(c);
-        glLineWidth(lineWidth);
+        GL11.glLineWidth(lineWidth);
         lineV(x, y, length);
     }
 
-    /**
-     * Draws a vertical line.
-     */
-    public static void lineV(float x, float y, float length) {
-        glBegin(GL_LINES);
-        glVertex2f(x, y);
-        glVertex2f(x, y + length);
-        glEnd();
+    public static void lineV(final float x, final float y, final float length) {
+        v(0, x, y,          0, 0, curR, curG, curB, curA);
+        v(1, x, y + length, 0, 0, curR, curG, curB, curA);
+        draw(GL11.GL_LINES, 2, false);
     }
 
-    // TEXTURED QUADS
-    /**
-     * Renders a textured quad in ortho projection coordinates.
-     */
-    public static void blit(float x, float y, float w, float h) {
-        glBegin(GL_QUADS);
-        glTexCoord2f(0, 0); glVertex2f(x, y);
-        glTexCoord2f(1, 0); glVertex2f(x + w, y);
-        glTexCoord2f(1, 1); glVertex2f(x + w, y + h);
-        glTexCoord2f(0, 1); glVertex2f(x, y + h);
-        glEnd();
-    }
-    
-    /**
-     * Renders a textured quad with custom UV coordinates.
-     */
-    public static void blit(float x, float y, float w, float h,
-                            float u0, float v0, float u1, float v1) {
-        glBegin(GL_QUADS);
-        glTexCoord2f(u0, v0); glVertex2f(x, y);
-        glTexCoord2f(u1, v0); glVertex2f(x + w, y);
-        glTexCoord2f(u1, v1); glVertex2f(x + w, y + h);
-        glTexCoord2f(u0, v1); glVertex2f(x, y + h);
-        glEnd();
-    }
-    
-    /**
-     * Renders a textured quad in NDC coordinates (for video rendering).
-     * UVs are flipped vertically for typical video texture orientation.
-     */
-    public static void blitNDC(float x1, float y1, float x2, float y2) {
-        glBegin(GL_QUADS);
-        glTexCoord2f(0, 1); glVertex2f(x1, y1);
-        glTexCoord2f(0, 0); glVertex2f(x1, y2);
-        glTexCoord2f(1, 0); glVertex2f(x2, y2);
-        glTexCoord2f(1, 1); glVertex2f(x2, y1);
-        glEnd();
+    public static void line(final float x1, final float y1, final float x2, final float y2) {
+        v(0, x1, y1, 0, 0, curR, curG, curB, curA);
+        v(1, x2, y2, 0, 0, curR, curG, curB, curA);
+        draw(GL11.GL_LINES, 2, false);
     }
 
-    // DIALOG RENDERING HELPERS
-    /**
-     * Renders a dialog background with border.
-     * Disables and re-enables GL_TEXTURE_2D automatically.
-     */
-    public static void dialogBox(float x, float y, float w, float h, Color borderColor, float borderWidth) {
-        glDisable(GL_TEXTURE_2D);
-        
-        // Background
+    public static void lineStrip(final float[] points) {
+        final int count = points.length / 2;
+        for (int i = 0; i < count; i++) {
+            v(i, points[i * 2], points[i * 2 + 1], 0, 0, curR, curG, curB, curA);
+        }
+        draw(GL11.GL_LINE_STRIP, count, false);
+    }
+
+    public static void lineLoop(final float[] points) {
+        final int count = points.length / 2;
+        for (int i = 0; i < count; i++) {
+            v(i, points[i * 2], points[i * 2 + 1], 0, 0, curR, curG, curB, curA);
+        }
+        draw(GL11.GL_LINE_LOOP, count, false);
+    }
+
+    // ──────────────── TEXTURED QUADS ────────────────
+
+    public static void blit(final float x, final float y, final float w, final float h) {
+        v(0, x,     y,     0, 0, curR, curG, curB, curA);
+        v(1, x + w, y,     1, 0, curR, curG, curB, curA);
+        v(2, x + w, y + h, 1, 1, curR, curG, curB, curA);
+        v(3, x,     y,     0, 0, curR, curG, curB, curA);
+        v(4, x + w, y + h, 1, 1, curR, curG, curB, curA);
+        v(5, x,     y + h, 0, 1, curR, curG, curB, curA);
+        draw(GL11.GL_TRIANGLES, 6, true);
+    }
+
+    public static void blit(final float x, final float y, final float w, final float h,
+                            final float u0, final float v0, final float u1, final float v1) {
+        v(0, x,     y,     u0, v0, curR, curG, curB, curA);
+        v(1, x + w, y,     u1, v0, curR, curG, curB, curA);
+        v(2, x + w, y + h, u1, v1, curR, curG, curB, curA);
+        v(3, x,     y,     u0, v0, curR, curG, curB, curA);
+        v(4, x + w, y + h, u1, v1, curR, curG, curB, curA);
+        v(5, x,     y + h, u0, v1, curR, curG, curB, curA);
+        draw(GL11.GL_TRIANGLES, 6, true);
+    }
+
+    public static void blitNDC(final float x1, final float y1, final float x2, final float y2) {
+        v(0, x1, y1, 0, 1, curR, curG, curB, curA);
+        v(1, x1, y2, 0, 0, curR, curG, curB, curA);
+        v(2, x2, y2, 1, 0, curR, curG, curB, curA);
+        v(3, x1, y1, 0, 1, curR, curG, curB, curA);
+        v(4, x2, y2, 1, 0, curR, curG, curB, curA);
+        v(5, x2, y1, 1, 1, curR, curG, curB, curA);
+        draw(GL11.GL_TRIANGLES, 6, true);
+    }
+
+    // ──────────────── DIALOG ────────────────
+
+    public static void dialogBox(final float x, final float y, final float w, final float h,
+                                  final Color borderColor, final float borderWidth) {
         fill(x, y, w, h, 0, 0, 0, 0.95f);
-        
-        // Border
         rect(x, y, w, h, borderColor, borderWidth);
-        
-        glEnable(GL_TEXTURE_2D);
     }
-    
-    /**
-     * Renders a dialog background with border using RGBA for border.
-     */
-    public static void dialogBox(float x, float y, float w, float h, 
-                                  float r, float g, float b, float a, float borderWidth) {
-        glDisable(GL_TEXTURE_2D);
-        
-        // Background
+
+    public static void dialogBox(final float x, final float y, final float w, final float h,
+                                  final float r, final float g, final float b, final float a,
+                                  final float borderWidth) {
         fill(x, y, w, h, 0, 0, 0, 0.95f);
-        
-        // Border
         rect(x, y, w, h, r, g, b, a, borderWidth);
-        
-        glEnable(GL_TEXTURE_2D);
     }
-    
-    // FADE OVERLAYS
-    /**
-     * Renders a left-side fade overlay for player UI.
-     */
-    public static void fadeLeft(float width, float height, float fadeWidth, float alpha) {
-        glBegin(GL_QUADS);
-        glColor4f(0, 0, 0, alpha);
-        glVertex2f(0, 0);
-        glVertex2f(0, height);
-        glColor4f(0, 0, 0, 0);
-        glVertex2f(fadeWidth, height);
-        glVertex2f(fadeWidth, 0);
-        glEnd();
+
+    // ──────────────── FADE OVERLAYS ────────────────
+
+    public static void fadeLeft(final float width, final float height, final float fadeWidth, final float alpha) {
+        v(0, 0,         0,      0, 0, 0, 0, 0, alpha);
+        v(1, 0,         height, 0, 0, 0, 0, 0, alpha);
+        v(2, fadeWidth,  height, 0, 0, 0, 0, 0, 0);
+        v(3, 0,         0,      0, 0, 0, 0, 0, alpha);
+        v(4, fadeWidth,  height, 0, 0, 0, 0, 0, 0);
+        v(5, fadeWidth,  0,      0, 0, 0, 0, 0, 0);
+        draw(GL11.GL_TRIANGLES, 6, false);
     }
-    
-    /**
-     * Renders a bottom fade overlay for controls.
-     */
-    public static void fadeBottom(float width, float height, float fadeHeight, float alpha) {
-        glBegin(GL_QUADS);
-        glColor4f(0, 0, 0, 0);
-        glVertex2f(0, height - fadeHeight);
-        glVertex2f(width, height - fadeHeight);
-        glColor4f(0, 0, 0, alpha);
-        glVertex2f(width, height);
-        glVertex2f(0, height);
-        glEnd();
+
+    public static void fadeBottom(final float width, final float height, final float fadeHeight, final float alpha) {
+        final float topY = height - fadeHeight;
+        v(0, 0,     topY,   0, 0, 0, 0, 0, 0);
+        v(1, width, topY,   0, 0, 0, 0, 0, 0);
+        v(2, width, height, 0, 0, 0, 0, 0, alpha);
+        v(3, 0,     topY,   0, 0, 0, 0, 0, 0);
+        v(4, width, height, 0, 0, 0, 0, 0, alpha);
+        v(5, 0,     height, 0, 0, 0, 0, 0, alpha);
+        draw(GL11.GL_TRIANGLES, 6, false);
     }
-    
-    // TEXTURE STATE HELPERS
-    public static void enableTextures() {
-        glEnable(GL_TEXTURE_2D);
-    }
-    
-    public static void disableTextures() {
-        glDisable(GL_TEXTURE_2D);
-    }
-    
-    public static void bindTexture(int textureId) {
-        glBindTexture(GL_TEXTURE_2D, textureId);
+
+    // ──────────────── TEXTURE STATE (NO-OPS IN CORE PROFILE) ────────────────
+
+    public static void enableTextures() { }
+
+    public static void disableTextures() { }
+
+    public static void bindTexture(final int textureId) {
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
     }
 }

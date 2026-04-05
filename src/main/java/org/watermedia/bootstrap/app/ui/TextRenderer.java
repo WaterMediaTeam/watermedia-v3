@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE;
 
 /**
  * Handles text rendering with character texture caching.
@@ -63,6 +64,20 @@ public final class TextRenderer {
             DrawTool.bindTexture(ct.textureId);
             DrawTool.blit(currentX, y, ct.width, ct.height);
             currentX += ct.width;
+        }
+    }
+
+    public void render(final String text, final float x, final float y, final Color color, final float scale) {
+        if (text == null || text.isEmpty()) return;
+        DrawTool.color(color);
+
+        float currentX = x;
+        for (final char c : text.toCharArray()) {
+            final CharTexture ct = this.getOrCreateCharTexture(c);
+            if (ct == null) continue;
+            DrawTool.bindTexture(ct.textureId);
+            DrawTool.blit(currentX, y, ct.width * scale, ct.height * scale);
+            currentX += ct.width * scale;
         }
     }
 
@@ -131,8 +146,8 @@ public final class TextRenderer {
         glBindTexture(GL_TEXTURE_2D, textureId);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
         final int[] pixels = new int[charW * charH];
         charImage.getRGB(0, 0, charW, charH, pixels, 0, charW);

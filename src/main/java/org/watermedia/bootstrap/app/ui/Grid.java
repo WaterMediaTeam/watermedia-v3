@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.ui;
 
+import org.lwjgl.opengl.GL11;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.tools.DrawTool;
 
@@ -10,7 +11,12 @@ import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
-import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL11.GL_SCISSOR_TEST;
+import static org.lwjgl.opengl.GL11.GL_VIEWPORT;
+import static org.lwjgl.opengl.GL11.glDisable;
+import static org.lwjgl.opengl.GL11.glEnable;
+import static org.lwjgl.opengl.GL11.glGetIntegerv;
+import static org.lwjgl.opengl.GL11.glScissor;
 
 /**
  * A grid layout component for displaying items as cards with borders,
@@ -518,11 +524,7 @@ public class Grid<T> {
             final int subWidth = (int) (text.width(sublabel) * sublabelScale);
             final float subX = x + (w - subWidth) / 2f;
 
-            glPushMatrix();
-            glTranslatef(subX, subY, 0);
-            glScalef(sublabelScale, sublabelScale, 1f);
-            text.render(sublabel, 0, 0, hasThumbnail ? Colors.DARK_GRAY : Colors.GRAY);
-            glPopMatrix();
+            text.render(sublabel, subX, subY, hasThumbnail ? Colors.DARK_GRAY : Colors.GRAY, sublabelScale);
         }
     }
 
@@ -619,16 +621,11 @@ public class Grid<T> {
 
             case CLEANUP -> {
                 DrawTool.color(r, g, b, 1f);
-                glLineWidth(2.5f);
-                glBegin(GL_LINES);
-                glVertex2f(cx, cy - half * 0.7f);
-                glVertex2f(cx, cy + half * 0.3f);
-                glEnd();
+                GL11.glLineWidth(2.5f);
+                DrawTool.line(cx, cy - half * 0.7f, cx, cy + half * 0.3f);
                 for (int i = -2; i <= 2; i++) {
-                    glBegin(GL_LINES);
-                    glVertex2f(cx + i * size * 0.1f, cy + half * 0.3f);
-                    glVertex2f(cx + i * size * 0.12f, cy + half * 0.7f);
-                    glEnd();
+                    DrawTool.line(cx + i * size * 0.1f, cy + half * 0.3f,
+                                  cx + i * size * 0.12f, cy + half * 0.7f);
                 }
             }
 
@@ -646,13 +643,9 @@ public class Grid<T> {
             case EXIT -> {
                 DrawTool.fillCircle(cx, cy, half * 0.75f, r * 0.2f, g * 0.2f, b * 0.2f, 0.5f);
                 DrawTool.color(r, g, b, 1f);
-                glLineWidth(3f);
-                glBegin(GL_LINES);
-                glVertex2f(cx - half * 0.35f, cy - half * 0.35f);
-                glVertex2f(cx + half * 0.35f, cy + half * 0.35f);
-                glVertex2f(cx + half * 0.35f, cy - half * 0.35f);
-                glVertex2f(cx - half * 0.35f, cy + half * 0.35f);
-                glEnd();
+                GL11.glLineWidth(3f);
+                DrawTool.line(cx - half * 0.35f, cy - half * 0.35f, cx + half * 0.35f, cy + half * 0.35f);
+                DrawTool.line(cx + half * 0.35f, cy - half * 0.35f, cx - half * 0.35f, cy + half * 0.35f);
             }
 
             case CUSTOM -> {
@@ -663,23 +656,19 @@ public class Grid<T> {
 
             case STATUS_READY -> {
                 DrawTool.color(r, g, b, 1f);
-                glLineWidth(3f);
-                glBegin(GL_LINE_STRIP);
-                glVertex2f(cx - half * 0.4f, cy + half * 0.05f);
-                glVertex2f(cx - half * 0.1f, cy + half * 0.35f);
-                glVertex2f(cx + half * 0.45f, cy - half * 0.35f);
-                glEnd();
+                GL11.glLineWidth(3f);
+                DrawTool.lineStrip(new float[] {
+                    cx - half * 0.4f,  cy + half * 0.05f,
+                    cx - half * 0.1f,  cy + half * 0.35f,
+                    cx + half * 0.45f, cy - half * 0.35f
+                });
             }
 
             case STATUS_ERROR -> {
                 DrawTool.color(r, g, b, 1f);
-                glLineWidth(3f);
-                glBegin(GL_LINES);
-                glVertex2f(cx - half * 0.35f, cy - half * 0.35f);
-                glVertex2f(cx + half * 0.35f, cy + half * 0.35f);
-                glVertex2f(cx + half * 0.35f, cy - half * 0.35f);
-                glVertex2f(cx - half * 0.35f, cy + half * 0.35f);
-                glEnd();
+                GL11.glLineWidth(3f);
+                DrawTool.line(cx - half * 0.35f, cy - half * 0.35f, cx + half * 0.35f, cy + half * 0.35f);
+                DrawTool.line(cx + half * 0.35f, cy - half * 0.35f, cx - half * 0.35f, cy + half * 0.35f);
             }
 
             case STATUS_LOADING -> {
@@ -699,14 +688,14 @@ public class Grid<T> {
 
             case STATUS_UNKNOWN -> {
                 DrawTool.color(r, g, b, 0.7f);
-                glLineWidth(2f);
-                glBegin(GL_LINE_LOOP);
+                GL11.glLineWidth(2f);
+                final float[] circle = new float[32];
                 for (int i = 0; i < 16; i++) {
                     final float angle = (float) (i * 2 * Math.PI / 16);
-                    glVertex2f(cx + (float) Math.cos(angle) * half * 0.4f,
-                               cy + (float) Math.sin(angle) * half * 0.4f);
+                    circle[i * 2] = cx + (float) Math.cos(angle) * half * 0.4f;
+                    circle[i * 2 + 1] = cy + (float) Math.sin(angle) * half * 0.4f;
                 }
-                glEnd();
+                DrawTool.lineLoop(circle);
                 DrawTool.fillCircle(cx, cy, size * 0.06f, r, g, b, 0.7f);
             }
 

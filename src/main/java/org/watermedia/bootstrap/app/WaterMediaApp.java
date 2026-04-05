@@ -55,6 +55,7 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.openal.AL10.*;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL12.GL_BGRA;
+import static org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
@@ -104,6 +105,9 @@ public class WaterMediaApp {
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
 
         ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
         if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
@@ -145,6 +149,7 @@ public class WaterMediaApp {
         glfwMakeContextCurrent(ctx.windowHandle);
         glfwSwapInterval(1);
         GL.createCapabilities();
+        DrawTool.init();
     }
 
     private static void initAudio() {
@@ -249,7 +254,6 @@ public class WaterMediaApp {
         }, 0);
 
         glClearColor(0, 0, 0, 1);
-        glEnable(GL_TEXTURE_2D);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -387,8 +391,8 @@ public class WaterMediaApp {
             glBindTexture(GL_TEXTURE_2D, ctx.bannerTextureId);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ctx.bannerWidth, ctx.bannerHeight,
                     0, GL_BGRA, GL_UNSIGNED_BYTE, bannerImage.frames()[0]);
@@ -627,6 +631,7 @@ public class WaterMediaApp {
 
     // CLEANUP
     private static void cleanup() {
+        DrawTool.cleanup();
         glfwFreeCallbacks(ctx.windowHandle);
         glfwDestroyWindow(ctx.windowHandle);
         glfwTerminate();
