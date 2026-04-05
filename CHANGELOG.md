@@ -5,6 +5,7 @@
 - 🛠️ Improved general FFMediaPlayer stability
 - ⚙️ Added: `GFXEngine`, a new abstract class for managing MediaPlayer texture buffers (preparation for Vulkan support)
 - ⚙️ Changed: `GLEngine` now extends `GFXEngine`
+- ⚙️ Changed: `MediaPlayer#texture` now returns a long (for OpenGL it can be casted to int for texture id, for Vulkan it will be a handle)
 - ⚙️ Changed: `GLEngine.Builder` constructor now requires `Thread` (render thread) and `Executor` (render thread executor)
 - ⚙️ Changed: `MediaPlayer` constructor now requires `GFXEngine` instead of `GLEngine`
 - ⚙️ Changed: `MediaPlayer` constructor no longer accepts `renderThread` or `renderThreadExecutor` (also changes `MRL#createPlayer()` signature)
