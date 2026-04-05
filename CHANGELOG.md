@@ -1,3 +1,17 @@
+# 📦 BREAKING UPDATE 3.0.0-beta.12
+- ✨ Improved 4K video performance on FFMediaPlayer
+- ✨ Redesigned WaterMedia App with a tile-based layout
+- ✨ Added audio slave support for FFMediaPlayer
+- 🛠️ Improved general FFMediaPlayer stability
+- ⚙️ Added: `GFXEngine`, a new abstract class for managing MediaPlayer texture buffers (preparation for Vulkan support)
+- ⚙️ Changed: `GLEngine` now extends `GFXEngine`
+- ⚙️ Changed: `GLEngine.Builder` constructor now requires `Thread` (render thread) and `Executor` (render thread executor)
+- ⚙️ Changed: `MediaPlayer` constructor now requires `GFXEngine` instead of `GLEngine`
+- ⚙️ Changed: `MediaPlayer` constructor no longer accepts `renderThread` or `renderThreadExecutor` (also changes `MRL#createPlayer()` signature)
+- ⚙️ Changed: Passing `null` as `GFXEngine` disables video rendering entirely instead of falling back to a default `GLEngine`
+- ⚙️ Removed: `video` flag on `MediaPlayer` — pass `null` as `GFXEngine` to disable video
+- 🐛 Fixed: Low framerate on FFMediaPlayer caused by certain muxing/encoding configurations
+
 # 📦 UPDATE 3.0.0-beta.11
 - ✨ Added: AppBootstrap.Sideloadable as a service interface to load watermedia's extensions/plugins on AppBootstrap initialization (standalone app)
 - 🐛 Fixed: wrong video playback speed on media with slaves
