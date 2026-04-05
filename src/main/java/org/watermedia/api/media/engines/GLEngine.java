@@ -38,32 +38,35 @@ public final class GLEngine extends GFXEngine {
     private static final int NUM_PBOS = 2;  // DOUBLE BUFFER PER PLANE
     private static final int MAX_PLANES = 3;
 
-    // GLSL 110 (OPENGL 2.0+, ALL GPUS FROM 2004+)
+    // GLSL 150 CORE (OPENGL 3.2+, REQUIRED BY MINECRAFT 1.17+)
     private static final String VERTEX_SHADER = """
-            #version 110
-            varying vec2 texCoord;
+            #version 150 core
+            in vec2 position;
+            in vec2 uv;
+            out vec2 texCoord;
             void main() {
-                texCoord = gl_MultiTexCoord0.xy;
-                gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+                texCoord = uv;
+                gl_Position = vec4(position, 0.0, 1.0);
             }
             """;
 
     // NV12/NV21 → RGB — BT.709 STUDIO RANGE (Y:16-235, UV:16-240)
-    // Y PLANE:  GL_LUMINANCE  — FULL RESOLUTION   — .r = Y
-    // UV PLANE: GL_LUMINANCE_ALPHA — HALF RES      — .r = first byte, .a = second byte
+    // Y PLANE:  GL_R8    — FULL RESOLUTION   — .r = Y
+    // UV PLANE: GL_RG8   — HALF RES           — .r = first byte, .g = second byte
     // uvSwap: 0.0 = NV12 (BYTE ORDER U,V), 1.0 = NV21 (BYTE ORDER V,U)
     private static final String FRAGMENT_NV = """
-            #version 110
-            varying vec2 texCoord;
+            #version 150 core
+            in vec2 texCoord;
+            out vec4 fragColor;
             uniform sampler2D yTex;
             uniform sampler2D uvTex;
             uniform float uvSwap;
             void main() {
-                float Y  = texture2D(yTex, texCoord).r * 1.16438 - 0.07306;
-                vec2 raw = texture2D(uvTex, texCoord).ra;
+                float Y  = texture(yTex, texCoord).r * 1.16438 - 0.07306;
+                vec2 raw = texture(uvTex, texCoord).rg;
                 float Cb = mix(raw.x, raw.y, uvSwap) * 1.13839 - 0.57143;
                 float Cr = mix(raw.y, raw.x, uvSwap) * 1.13839 - 0.57143;
-                gl_FragColor = vec4(
+                fragColor = vec4(
                     Y + 1.5748 * Cr,
                     Y - 0.1873 * Cb - 0.4681 * Cr,
                     Y + 1.8556 * Cb,
@@ -72,20 +75,21 @@ public final class GLEngine extends GFXEngine {
             """;
 
     // YUV 3-PLANAR → RGB — BT.709 STUDIO RANGE
-    // Y PLANE: GL_LUMINANCE — FULL RESOLUTION
-    // U PLANE: GL_LUMINANCE — CHROMA SUBSAMPLED
-    // V PLANE: GL_LUMINANCE — CHROMA SUBSAMPLED
+    // Y PLANE: GL_R8 — FULL RESOLUTION
+    // U PLANE: GL_R8 — CHROMA SUBSAMPLED
+    // V PLANE: GL_R8 — CHROMA SUBSAMPLED
     private static final String FRAGMENT_YUV3 = """
-            #version 110
-            varying vec2 texCoord;
+            #version 150 core
+            in vec2 texCoord;
+            out vec4 fragColor;
             uniform sampler2D yTex;
             uniform sampler2D uTex;
             uniform sampler2D vTex;
             void main() {
-                float Y  = texture2D(yTex, texCoord).r * 1.16438 - 0.07306;
-                float Cb = texture2D(uTex, texCoord).r * 1.13839 - 0.57143;
-                float Cr = texture2D(vTex, texCoord).r * 1.13839 - 0.57143;
-                gl_FragColor = vec4(
+                float Y  = texture(yTex, texCoord).r * 1.16438 - 0.07306;
+                float Cb = texture(uTex, texCoord).r * 1.13839 - 0.57143;
+                float Cr = texture(vTex, texCoord).r * 1.13839 - 0.57143;
+                fragColor = vec4(
                     Y + 1.5748 * Cr,
                     Y - 0.1873 * Cb - 0.4681 * Cr,
                     Y + 1.8556 * Cb,
@@ -111,6 +115,10 @@ public final class GLEngine extends GFXEngine {
 
     // FBO FOR YUV TO RGBA CONVERSION
     private int fbo = 0;
+
+    // FULLSCREEN QUAD (CORE PROFILE — NO IMMEDIATE MODE)
+    private int quadVAO = 0;
+    private int quadVBO = 0;
 
     // PER-PLANE PBO STATE
     // pbos[PLANE * NUM_PBOS + BUFFER_INDEX]
@@ -356,12 +364,12 @@ public final class GLEngine extends GFXEngine {
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_LUMINANCE, this.width, this.height, 0, GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, yAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, this.width, this.height, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, yAddr);
             this.checkGLError("NV Y texImage");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uvRowLen);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_LUMINANCE_ALPHA, uvW, uvH, 0, GL11.GL_LUMINANCE_ALPHA, GL11.GL_UNSIGNED_BYTE, uvAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RG8, uvW, uvH, 0, GL30.GL_RG, GL11.GL_UNSIGNED_BYTE, uvAddr);
             this.checkGLError("NV UV texImage");
 
             // SEED PBOs FOR NEXT FRAME
@@ -381,7 +389,7 @@ public final class GLEngine extends GFXEngine {
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height,
-                    GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, 0L);
+                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
             this.checkGLError("NV Y PBO texSub");
 
             // UV PLANE: GPU READ FROM PBO
@@ -389,7 +397,7 @@ public final class GLEngine extends GFXEngine {
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uvRowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, uvW, uvH,
-                    GL11.GL_LUMINANCE_ALPHA, GL11.GL_UNSIGNED_BYTE, 0L);
+                    GL30.GL_RG, GL11.GL_UNSIGNED_BYTE, 0L);
             this.checkGLError("NV UV PBO texSub");
 
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
@@ -464,17 +472,17 @@ public final class GLEngine extends GFXEngine {
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_LUMINANCE, this.width, this.height, 0, GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, yAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, this.width, this.height, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, yAddr);
             this.checkGLError("YUV3 Y texImage");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_LUMINANCE, chromaW, chromaH, 0, GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, uAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, chromaW, chromaH, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, uAddr);
             this.checkGLError("YUV3 U texImage");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_LUMINANCE, chromaW, chromaH, 0, GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, vAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, chromaW, chromaH, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, vAddr);
             this.checkGLError("YUV3 V texImage");
 
             this.seedPBO(0, ySize, yAddr);
@@ -495,21 +503,21 @@ public final class GLEngine extends GFXEngine {
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height,
-                    GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, 0L);
+                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
 
             // U
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uStride);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH,
-                    GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, 0L);
+                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
 
             // V
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vStride);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH,
-                    GL11.GL_LUMINANCE, GL11.GL_UNSIGNED_BYTE, 0L);
+                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
 
             this.checkGLError("YUV3 PBO texSub");
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
@@ -537,6 +545,8 @@ public final class GLEngine extends GFXEngine {
             return;
         }
         if (this.fbo != 0) { GL30.glDeleteFramebuffers(this.fbo); this.fbo = 0; }
+        if (this.quadVAO != 0) { GL30.glDeleteVertexArrays(this.quadVAO); this.quadVAO = 0; }
+        if (this.quadVBO != 0) { GL15.glDeleteBuffers(this.quadVBO); this.quadVBO = 0; }
         if (this.managedTexture != 0) { this.delTexture.accept(this.managedTexture); this.managedTexture = 0; }
         this.managedTextureW = 0;
         this.managedTextureH = 0;
@@ -551,6 +561,7 @@ public final class GLEngine extends GFXEngine {
     private void convertYUVToRGBA() {
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
+        this.initQuad();
 
         // REALLOCATE MANAGED TEXTURE ON SIZE CHANGE
         if (this.managedTextureW != this.width || this.managedTextureH != this.height) {
@@ -566,19 +577,12 @@ public final class GLEngine extends GFXEngine {
         final int[] savedViewport = new int[4];
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, savedViewport);
         final int savedFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+        final int savedVAO = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
 
         // BIND FBO
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.fbo);
         GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, this.managedTexture, 0);
         GL11.glViewport(0, 0, this.width, this.height);
-
-        // IDENTITY MATRICES FOR FULLSCREEN QUAD
-        GL11.glMatrixMode(GL11.GL_PROJECTION);
-        GL11.glPushMatrix();
-        GL11.glLoadIdentity();
-        GL11.glMatrixMode(GL11.GL_MODELVIEW);
-        GL11.glPushMatrix();
-        GL11.glLoadIdentity();
 
         // ACTIVATE SHADER + BIND PLANE TEXTURES
         switch (this.colorSpace) {
@@ -607,24 +611,18 @@ public final class GLEngine extends GFXEngine {
             default -> {}
         }
 
-        // FULLSCREEN QUAD
-        GL11.glBegin(GL11.GL_QUADS);
-        GL11.glTexCoord2f(0, 0); GL11.glVertex2f(-1, -1);
-        GL11.glTexCoord2f(1, 0); GL11.glVertex2f( 1, -1);
-        GL11.glTexCoord2f(1, 1); GL11.glVertex2f( 1,  1);
-        GL11.glTexCoord2f(0, 1); GL11.glVertex2f(-1,  1);
-        GL11.glEnd();
+        // DRAW FULLSCREEN QUAD VIA VAO
+        GL30.glBindVertexArray(this.quadVAO);
+        GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
+        GL30.glBindVertexArray(0);
         this.checkGLError("FBO convert quad");
 
         // RESTORE GL STATE
         GL20.glUseProgram(savedProgram);
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glMatrixMode(GL11.GL_PROJECTION);
-        GL11.glPopMatrix();
-        GL11.glMatrixMode(GL11.GL_MODELVIEW);
-        GL11.glPopMatrix();
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
         GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
+        GL30.glBindVertexArray(savedVAO);
     }
 
     // INTERNAL HELPERS
@@ -637,6 +635,37 @@ public final class GLEngine extends GFXEngine {
         this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
         this.bindTexture.accept(GL11.GL_TEXTURE_2D, 0);
         return tex;
+    }
+
+    private void initQuad() {
+        if (this.quadVAO != 0) return;
+        // POSITION (xy) + UV (st) — CLIP-SPACE FULLSCREEN QUAD (TWO TRIANGLES)
+        final float[] verts = {
+                // pos      uv
+                -1, -1,   0, 0,
+                1, -1,   1, 0,
+                1,  1,   1, 1,
+                -1, -1,   0, 0,
+                1,  1,   1, 1,
+                -1,  1,   0, 1,
+        };
+
+        this.quadVAO = GL30.glGenVertexArrays();
+        GL30.glBindVertexArray(this.quadVAO);
+
+        this.quadVBO = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.quadVBO);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, verts, GL15.GL_STATIC_DRAW);
+
+        // ATTRIBUTE 0 = position (vec2)
+        GL20.glEnableVertexAttribArray(0);
+        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 16, 0);
+        // ATTRIBUTE 1 = uv (vec2)
+        GL20.glEnableVertexAttribArray(1);
+        GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
+
+        GL30.glBindVertexArray(0);
+        this.checkGLError("initQuad");
     }
 
     private void initPBOs(final int planeCount) {
@@ -682,6 +711,9 @@ public final class GLEngine extends GFXEngine {
         final int prog = GL20.glCreateProgram();
         GL20.glAttachShader(prog, vert);
         GL20.glAttachShader(prog, frag);
+        // BIND ATTRIBUTE LOCATIONS BEFORE LINKING (MUST MATCH initQuad LAYOUT)
+        GL20.glBindAttribLocation(prog, 0, "position");
+        GL20.glBindAttribLocation(prog, 1, "uv");
         GL20.glLinkProgram(prog);
         if (GL20.glGetProgrami(prog, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
             LOGGER.error(IT, "LINK FAILED: {}", GL20.glGetProgramInfoLog(prog, 1024));
