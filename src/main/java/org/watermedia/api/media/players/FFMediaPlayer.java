@@ -20,7 +20,7 @@ import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.PacketQueue;
@@ -165,9 +165,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int perfAudioUploads;
     private int perfVideoRenders;
 
-    public FFMediaPlayer(final MRL.Source source,
-                         final GFXEngine gfx, final ALEngine al, final boolean audio) {
-        super(source, gfx, al, audio);
+    public FFMediaPlayer(final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
+        super(source, gfx, sfx);
     }
 
     // MEDIAPLAYER OVERRIDES
@@ -378,9 +377,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 } else {
                     this.renderDebtSec = Math.max(0, this.renderDebtSec - (frameDurSec - uploadSec));
                 }
-            }
-            // FALLBACK: sws_scale TO BGRA
-            else {
+            } else { // FALLBACK: sws_scale TO BGRA
                 if (!this.ensureFallbackResources(slot.width, slot.height, slot.format)) {
                     this.videoFrameQueue.next();
                     return false;
@@ -433,8 +430,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // COPIES AVFRAME PLANE DATA TO PERSISTENT BUFFERS, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
-    private void uploadNativePlanes(final AVFrame frame, final GFXEngine.ColorSpace cs,
-                                    final int width, final int height) {
+    private void uploadNativePlanes(final AVFrame frame, final GFXEngine.ColorSpace cs, final int width, final int height) {
         switch (cs) {
             case BGRA -> {
                 final int yStride = frame.linesize(0);
@@ -521,7 +517,7 @@ public final class FFMediaPlayer extends MediaPlayer {
      * Poll for the next audio frame. Non-blocking.
      */
     public boolean pollAudioFrame() {
-        if (this.audioFrameQueue == null || !this.audio || this.audioStreamIndex < 0) return false;
+        if (this.audioFrameQueue == null || this.sfx == null || this.audioStreamIndex < 0) return false;
 
         while (true) {
             final FrameQueue.Slot slot = this.audioFrameQueue.peek();
@@ -541,13 +537,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                     .asBuffer()
                     .clear();
 
-            if (!this.upload(audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS)) {
+            if (!this.sfx.upload(this.alSources, audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE)) {
                 if (this.clock.status() == Status.BUFFERING) {
                     LOGGER.debug(IT, "pollAudio: OpenAL FULL during BUFFERING — can't upload PTS={}ms", framePtsMs);
                 }
                 return false;
             }
 
+            this.sfx.play(this.alSources);
             this.audioFrameQueue.next();
             this.perfAudioUploads++;
 
@@ -591,7 +588,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.videoDecodeThread.setDaemon(true);
                 this.videoDecodeThread.start();
             }
-            if (this.audio && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+            if (this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
                 this.audioDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::audioDecodeLoop);
                 this.audioDecodeThread.setDaemon(true);
                 this.audioDecodeThread.start();
@@ -667,7 +664,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final long iterStart = System.nanoTime();
 
                 // AUDIO: UP TO 2 FRAMES PER ITERATION
-                if (this.audio && this.audioStreamIndex >= 0 && this.audioFrameQueue != null) {
+                if (this.sfx != null && this.audioStreamIndex >= 0 && this.audioFrameQueue != null) {
                     for (int i = 0; i < 2; i++) {
                         final FrameQueue.Slot aSlot = this.audioFrameQueue.peek();
                         if (aSlot == null) break;
@@ -693,7 +690,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final long afterVideo = System.nanoTime();
 
                 // AUDIO AGAIN AFTER VIDEO (CATCH AUDIO THAT BECAME DUE DURING VIDEO UPLOAD)
-                if (this.audio && this.audioStreamIndex >= 0 && this.audioFrameQueue != null) {
+                if (this.sfx != null && this.audioStreamIndex >= 0 && this.audioFrameQueue != null) {
                     for (int i = 0; i < 2; i++) {
                         final FrameQueue.Slot aSlot = this.audioFrameQueue.peek();
                         if (aSlot == null) break;
@@ -879,7 +876,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         final int slaveResult = avformat.av_read_frame(this.slaveFormatContext, slavePacket);
                         if (slaveResult >= 0) {
                             try {
-                                if (slavePacket.stream_index() == this.audioStreamIndex && this.audio) {
+                                if (slavePacket.stream_index() == this.audioStreamIndex && this.sfx != null) {
                                     if (!this.audioPacketQueue.put(slavePacket)) break;
                                     demuxAudioPackets++;
                                 }
@@ -950,7 +947,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                                 final int sr = avformat.av_read_frame(this.slaveFormatContext, slavePacket);
                                 if (sr >= 0) {
                                     try {
-                                        if (slavePacket.stream_index() == this.audioStreamIndex && this.audio) {
+                                        if (slavePacket.stream_index() == this.audioStreamIndex && this.sfx != null) {
                                             this.audioPacketQueue.put(slavePacket);
                                             demuxAudioPackets++;
                                         }
@@ -963,7 +960,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         }
                         demuxVideoPackets++;
                     } else if (!this.useAudioSlave
-                            && streamIndex == this.audioStreamIndex && this.audio) {
+                            && streamIndex == this.audioStreamIndex && this.sfx != null) {
                         if (!this.audioPacketQueue.put(packet)) break;
                         demuxAudioPackets++;
                     }
@@ -1213,7 +1210,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.videoDecodeThread.start();
         }
         if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive())
-                && this.audio && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+                && this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
             this.audioDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::audioDecodeLoop);
             this.audioDecodeThread.setDaemon(true);
             this.audioDecodeThread.start();
@@ -1225,7 +1222,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final long threshold = targetMs - this.clock.frameDurationMs();
         int maxDrain = 500;
         boolean videoReached = this.gfx == null || this.videoCodecContext == null;
-        boolean audioReached = !this.audio || this.audioCodecContext == null;
+        boolean audioReached = this.sfx == null || this.audioCodecContext == null;
 
         while (maxDrain-- > 0 && !Thread.currentThread().isInterrupted()
                 && !this.clock.hasSeekPending() && (!videoReached || !audioReached)) {
@@ -1345,7 +1342,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final var audioSlaves = this.source.audioSlaves();
             MRL.Slave audioSlave = null;
-            if (this.audio && !audioSlaves.isEmpty()) {
+            if (this.sfx != null && !audioSlaves.isEmpty()) {
                 audioSlave = audioSlaves.get(0);
             }
 
@@ -1387,7 +1384,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (codecType == avutil.AVMEDIA_TYPE_VIDEO && this.videoStreamIndex < 0 && this.gfx != null) {
                     this.videoStreamIndex = i;
                     this.videoTimeBase = av_q2d(stream.time_base());
-                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.audio && audioSlave == null) {
+                } else if (codecType == avutil.AVMEDIA_TYPE_AUDIO && this.audioStreamIndex < 0 && this.sfx != null && audioSlave == null) {
                     this.audioStreamIndex = i;
                     this.audioTimeBase = av_q2d(stream.time_base());
                 }
@@ -1604,7 +1601,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private boolean initAudio() {
-        if (!this.audio || this.audioStreamIndex < 0)
+        if (this.sfx == null || this.audioStreamIndex < 0)
             return false;
 
         final AVFormatContext audioContext = this.useAudioSlave ? this.slaveFormatContext : this.formatContext;

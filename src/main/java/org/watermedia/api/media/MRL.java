@@ -2,8 +2,8 @@ package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.media.platform.IPlatform;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
@@ -286,14 +286,14 @@ public final class MRL {
     /**
      * Creates the optimal MediaPlayer for the first available source.
      */
-    public MediaPlayer createPlayer(final GFXEngine gfxEngine, final ALEngine alEngine, final boolean audio) {
-        return this.createPlayer(0, gfxEngine, alEngine, audio);
+    public MediaPlayer createPlayer(final GFXEngine gfxEngine, final SFXEngine sfxEngine) {
+        return this.createPlayer(0, gfxEngine, sfxEngine);
     }
 
     /**
      * Creates a MediaPlayer for a specific source and quality.
      */
-    public MediaPlayer createPlayer(final int sourceIndex, final GFXEngine gfxEngine, final ALEngine alEngine, final boolean audio) {
+    public MediaPlayer createPlayer(final int sourceIndex, final GFXEngine gfxEngine, final SFXEngine sfxEngine) {
         final Source source = this.source(sourceIndex);
         if (source == null) {
             LOGGER.warn(IT, "Cannot create player: source {} not available for {}", sourceIndex, this.uri);
@@ -308,7 +308,7 @@ public final class MRL {
 
             if (FFMediaPlayer.loaded()) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
-                return new FFMediaPlayer(source, gfxEngine, alEngine, audio);
+                return new FFMediaPlayer(source, gfxEngine, sfxEngine);
             }
 
             LOGGER.error(IT, "No media backend available for: {}", this.uri);

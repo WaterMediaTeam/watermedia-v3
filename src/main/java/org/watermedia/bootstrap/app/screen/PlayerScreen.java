@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
@@ -67,7 +68,7 @@ public class PlayerScreen extends Screen {
 
         this.ctx.player = this.ctx.selectedMRL.createPlayer(
                 this.ctx.sourceSelectorIndex,
-                this.glEngineBuilder.build(), null, true
+                this.glEngineBuilder.build(), ALEngine.buildDefault()
         );
 
         if (this.ctx.player == null) {
@@ -359,6 +360,8 @@ public class PlayerScreen extends Screen {
             case GLFW_KEY_SPACE -> player.togglePlay();
             case GLFW_KEY_LEFT -> player.rewind();
             case GLFW_KEY_RIGHT -> player.foward();
+            case GLFW_KEY_U -> player.seekQuick(player.time() + 5_000);
+            case GLFW_KEY_Y -> player.seekQuick(player.time() - 5_000);
             case GLFW_KEY_S -> player.stop();
             case GLFW_KEY_UP -> player.volume(player.volume() + 5);
             case GLFW_KEY_DOWN -> player.volume(player.volume() - 5);

@@ -56,7 +56,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile long time = 0;
 
     public TxMediaPlayer(final MRL.Source source, final GFXEngine gfxEngine) {
-        super(source, gfxEngine, null, false);
+        super(source, gfxEngine, null);
     }
 
     // START / STOP / RELEASE
@@ -377,7 +377,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // STATE QUERIES
     @Override public Status status() { return this.status; }
     @Override public long time() { return this.time; }
-    @Override public float fps() { return 0; }
+    @Override public float fps() { return this.images.delay()[0]; }
     @Override public float speed() { return this.speed; }
     @Override public boolean liveSource() { return false; }
     @Override public boolean canSeek() { return this.animated && this.duration() > 0; }

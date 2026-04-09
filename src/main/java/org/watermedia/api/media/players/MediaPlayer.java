@@ -2,17 +2,13 @@ package org.watermedia.api.media.players;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.lwjgl.openal.AL10;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.engines.SFXEngine;
 
-import java.nio.ByteBuffer;
 import java.util.Objects;
-import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -25,9 +21,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // BASIC PROPERTIES
     protected final MRL.Source source;
     protected final GFXEngine gfx;
-    protected final ALEngine al;
+    protected final SFXEngine sfx;
     protected MRL.Quality quality = WaterMediaConfig.media.defaultQuality;
-    protected boolean audio;
 
     // AUDIO PROPERTIES
     protected final int alSources;
@@ -36,40 +31,33 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private float speed = 1.0f;
     private boolean muted = false;
 
-    public MediaPlayer(final MRL.Source source, final GFXEngine gfx, final ALEngine al, final boolean audio) {
+    public MediaPlayer(final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
         Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
+        if (gfx == null && sfx == null && !(this instanceof ServerMediaPlayer))
+            throw new IllegalStateException("MediaPlayer must have a valid GFX or SFX resource.");
         if (gfx == null)
             LOGGER.warn(IT, "GFXEngine is null — there will be no video output");
+        if (sfx == null)
+            LOGGER.warn(IT, "SFXEngine is null — there will be no audio output");
 
         // INIT PROPERTIES
         this.source = source;
         this.gfx = gfx;
-        this.al = al == null ? new ALEngine.Builder().build() : al;
-        this.audio = audio;
+        this.sfx = sfx;
 
         // INITIALIZE AUDIO (IF APPLICABLE)
-        this.alSources = audio ? this.al.genSource() : NO_TEXTURE;
+        this.alSources = this.sfx != null ? this.sfx.genSource() : NO_TEXTURE;
     }
 
-    protected boolean upload(final ByteBuffer data, final int format, final int samples, final int channels) {
-        if (!this.audio)
-            throw new IllegalStateException("MediaPlayer was built with no audio support");
-
-        // TODO: TEST IF FORMAT_STEREO8 SHOULD BE KEPT OR REPLACED WITH STEREO16
-        if (format != AL10.AL_FORMAT_STEREO8 && format != AL10.AL_FORMAT_STEREO16)
-            throw new IllegalArgumentException("Unsupported audio format: " + format);
-
-        if (channels != 2)
-            throw new IllegalArgumentException(channels == 1 ? "Mono format is not supported anymore." : "Unsupported channel count: " + channels);
-
-        // NON-BLOCKING: RETURNS FALSE IF OPENAL HAS NO BUFFER AVAILABLE
-        if (!this.al.uploadBuffer(this.alSources, data, format, samples)) {
-            return false;
-        }
-
-        // PLAY IF NOT ALREADY PLAYING
-        this.al.play(this.alSources);
-        return true;
+    /**
+     * Headless constructor for players that don't require audio or video output.
+     * Used by {@link ServerMediaPlayer} which only tracks time progression.
+     */
+    protected MediaPlayer() {
+        this.source = null;
+        this.gfx = null;
+        this.sfx = null;
+        this.alSources = NO_TEXTURE;
     }
 
     /**
@@ -95,7 +83,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Indicates if the media player has audio support enabled.
      * @return true if audio support is enabled, false otherwise.
      */
-    public boolean withAudio() { return this.audio; }
+    public boolean withAudio() { return this.sfx != null; }
 
     /**
      * Returns the width of the video in pixels.
@@ -143,7 +131,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public void volume(final int volume) {
         this.volume = MathUtil.clamp(volume, 0, 100) / 100f;
         this.muted = volume < 1;
-        this.al.volume(this.alSources, this.muted ? 0.0f : this.volume);
+        if (this.sfx != null) this.sfx.volume(this.alSources, this.muted ? 0.0f : this.volume);
     }
 
     /**
@@ -160,7 +148,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public void mute(final boolean mute) {
         this.muted = mute;
-        this.al.volume(this.alSources, mute ? 0.0f : this.volume);
+        if (this.sfx != null) this.sfx.volume(this.alSources, mute ? 0.0f : this.volume);
     }
 
     /**
@@ -222,10 +210,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if the operation was successful, false otherwise.
      */
     public boolean pause(final boolean paused) {
-        if (!this.audio) return false; // NOT SUCCESS, NO AUDIO
+        if (this.sfx == null) return false; // NOT SUCCESS, NO AUDIO
 
-        if (paused) this.al.pause(this.alSources);
-        else this.al.play(this.alSources);
+        if (paused) this.sfx.pause(this.alSources);
+        else this.sfx.play(this.alSources);
 
         return true;
     }
@@ -319,7 +307,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean speed(final float speed) {
         if (speed <= 0 || speed > 4.0f) return false;
         this.speed = speed;
-        this.al.speed(this.alSources, speed);
+        if (this.sfx != null) this.sfx.speed(this.alSources, speed);
         return true;
     }
 
@@ -422,8 +410,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * After calling this method, the media player should not be used again.
      */
     public void release() {
-        if (this.audio && this.alSources != NO_TEXTURE) {
-            this.al.release(this.alSources);
+        if (this.sfx != null && this.alSources != NO_TEXTURE) {
+            this.sfx.release(this.alSources);
         }
     }
 
