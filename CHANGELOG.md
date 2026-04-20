@@ -1,3 +1,12 @@
+# 📦 UPDATE 3.0.0.15 (BETA)
+- 🐛 Fixed: Seek spams internally triggered when loop is enabled
+- 🐛 Fixed: Logs doesn't show right jar version
+- ⚙️ Changed: Removed -beta suffix to avoid issues with the bad (neo)forge version parsing
+- ⚙️ Changed: ALEngine was refactored to match behavior with GLEngine
+- ⚙️ Changed: Added ALEngine.Builder() to build a engine instance (engines are player exclusive, do not resuse instances)
+- ⚙️ Changed: Added "defaultBuilder" to provide a default ALEngine builder with default settings
+- ✨ Added support to IEEE (Float and Double buffers)
+
 # 📦 UPDATE 3.0.0-beta.13
 - 🐛 Fixed: Crashes on GL context with CORE_PROFILE (specifically on Minecraft 1.17+)
 
