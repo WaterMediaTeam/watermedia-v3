@@ -15,7 +15,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
     protected static final int NO_SIZE = 0;
-    protected static final int NO_TEXTURE = -1; // THIS IS -1 BECAUSE ZERO REPRESENTS NULL
+    protected static final int NO_TEXTURE = 0;
     protected static final int NO_DURATION = 0;
 
     // BASIC PROPERTIES
@@ -25,7 +25,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected MRL.Quality quality = WaterMediaConfig.media.defaultQuality;
 
     // AUDIO PROPERTIES
-    protected final int alSources;
     private boolean repeat;
     private float volume = 1f;
     private float speed = 1.0f;
@@ -44,9 +43,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.source = source;
         this.gfx = gfx;
         this.sfx = sfx;
-
-        // INITIALIZE AUDIO (IF APPLICABLE)
-        this.alSources = this.sfx != null ? this.sfx.genSource() : NO_TEXTURE;
     }
 
     /**
@@ -57,7 +53,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.source = null;
         this.gfx = null;
         this.sfx = null;
-        this.alSources = NO_TEXTURE;
     }
 
     /**
@@ -89,25 +84,25 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Returns the width of the video in pixels.
      * @return the width of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
-    public final int width() { return this.gfx.width(); }
+    public final int width() { return this.gfx == null ? NO_SIZE : this.gfx.width(); }
 
     /**
      * Returns the height of the video in pixels.
      * @return the height of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
-    public final int height() { return this.gfx.height(); }
+    public final int height() { return this.gfx == null ? NO_SIZE : this.gfx.height(); }
 
     /**
      * Returns the texture ID used for rendering the video frames.
      * @return the texture ID, or 0 if not yet initialized.
      */
-    public long texture() { return this.gfx.texture(); }
+    public long texture() { return this.gfx == null ? NO_TEXTURE : this.gfx.texture(); }
 
     /**
      * Returns the OpenAL source ID used for audio playback.
      * @return the OpenAL source ID, or {@link MediaPlayer#NO_TEXTURE NO_TEXTURE} if audio is not supported.
      */
-    public int audioSource() { return this.alSources; }
+    public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_TEXTURE; }
 
     /**
      * Moves to the previous frame of the video.
@@ -131,7 +126,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public void volume(final int volume) {
         this.volume = MathUtil.clamp(volume, 0, 100) / 100f;
         this.muted = volume < 1;
-        if (this.sfx != null) this.sfx.volume(this.alSources, this.muted ? 0.0f : this.volume);
+        if (this.sfx != null) this.sfx.volume(this.muted ? 0.0f : this.volume);
     }
 
     /**
@@ -148,7 +143,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public void mute(final boolean mute) {
         this.muted = mute;
-        if (this.sfx != null) this.sfx.volume(this.alSources, mute ? 0.0f : this.volume);
+        if (this.sfx != null) this.sfx.volume(mute ? 0.0f : this.volume);
     }
 
     /**
@@ -212,8 +207,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean pause(final boolean paused) {
         if (this.sfx == null) return false; // NOT SUCCESS, NO AUDIO
 
-        if (paused) this.sfx.pause(this.alSources);
-        else this.sfx.play(this.alSources);
+        if (paused) this.sfx.pause();
+        else this.sfx.play();
 
         return true;
     }
@@ -307,7 +302,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean speed(final float speed) {
         if (speed <= 0 || speed > 4.0f) return false;
         this.speed = speed;
-        if (this.sfx != null) this.sfx.speed(this.alSources, speed);
+        if (this.sfx != null) this.sfx.speed(speed);
         return true;
     }
 
@@ -410,8 +405,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * After calling this method, the media player should not be used again.
      */
     public void release() {
-        if (this.sfx != null && this.alSources != NO_TEXTURE) {
-            this.sfx.release(this.alSources);
+        if (this.sfx != null) {
+            this.sfx.release();
         }
     }
 

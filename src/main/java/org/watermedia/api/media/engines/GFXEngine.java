@@ -90,7 +90,10 @@ public abstract class GFXEngine {
      */
     public enum ColorSpace {
         // SINGLE PLANE
+        RGB,
+        RGBA,
         BGRA,
+        GBRA,
         YUYV,
         YUYV2,
         // TWO PLANES (Y + interleaved chroma)
@@ -100,5 +103,9 @@ public abstract class GFXEngine {
         YUV420P,
         YUV422P,
         YUV444P,
+
+        YUVA420P,
+        YUVA422P,
+        YUVA444P,
     }
 }

@@ -88,7 +88,9 @@ public class MediaAPI {
 
         // LOAD ENGINES
         LOGGER.info(IT, "Starting media engines");
-        FFMediaPlayer.load(instance);
+        if (!FFMediaPlayer.load(instance)) {
+            LOGGER.error(IT, "Failed to load FFMediaPlayer engine");
+        }
 
         return true;
     }

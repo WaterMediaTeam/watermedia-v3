@@ -269,8 +269,8 @@ public final class GLEngine extends GFXEngine {
             LOGGER.warn(IT, "BGRA heap buffer too small: {} < {}", buffer.remaining(), dataSize);
             return;
         }
-        final long memAddr = MemoryUtil.memAddress(buffer);
-        if (memAddr == 0L) return;
+        final long addr = MemoryUtil.memAddress(buffer);
+        if (addr == 0L) return;
 
         this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.managedTexture);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
@@ -286,12 +286,11 @@ public final class GLEngine extends GFXEngine {
         if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
             // FIRST FRAME OR SIZE CHANGE: DIRECT SYNC UPLOAD + SEED PBO
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height,
-                    0, glFormat, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, memAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, addr);
             this.checkGLError("BGRA glTexImage2D");
 
             // SEED CURRENT PBO
-            this.seedPBO(0, dataSize, memAddr);
+            this.seedPBO(0, dataSize, addr);
             this.pboAllocSizes[0] = dataSize;
             this.pboWriteIdx = 0;
             this.pboReady = true;
@@ -301,12 +300,11 @@ public final class GLEngine extends GFXEngine {
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height,
-                    glFormat, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 0L);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, glFormat, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 0L);
             this.checkGLError("BGRA PBO texSubImage");
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
-            this.seedPBO(writeIdx, dataSize, memAddr);
+            this.seedPBO(writeIdx, dataSize, addr);
             this.pboWriteIdx = writeIdx;
         }
 

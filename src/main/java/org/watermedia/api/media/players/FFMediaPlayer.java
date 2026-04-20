@@ -15,7 +15,6 @@ import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
-import org.lwjgl.openal.AL10;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
@@ -25,6 +24,7 @@ import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -33,9 +33,11 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
+import java.util.function.BiFunction;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
 import static org.bytedeco.ffmpeg.global.avutil.*;
+import static org.bytedeco.ffmpeg.global.avutil.av_get_pix_fmt_name;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
@@ -51,12 +53,10 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
-    private static final ThreadFactory DEFAULT_THREAD_FACTORY = ThreadTool.createFactory("FFThread", Thread.NORM_PRIORITY);
+    private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
     private static boolean LOADED;
 
     // AUDIO OUTPUT FORMAT
-    private static final int AUDIO_SAMPLE_RATE = 48000;
-    private static final int AUDIO_CHANNELS = 2;
     private static final int AUDIO_SAMPLES = 2048;
 
     // THREADING
@@ -113,6 +113,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private boolean useAudioSlave = false;
 
     // THREADS
+    private final BiFunction<String, Runnable, Thread> factory = DEFAULT_THREAD_FACTORY.newFactory();
     private Thread lifecycleThread;
     private Thread demuxThread;
     private Thread videoDecodeThread;
@@ -150,11 +151,18 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // STARVATION DETECTION
     private long starvationStartMs;
+    private long lastStarvationRecoveryMs;
 
     // FORMAT CHANGE DETECTION (RENDER THREAD ONLY)
     private int lastFrameWidth;
     private int lastFrameHeight;
     private GFXEngine.ColorSpace lastColorSpace;
+
+    // AUDIO FORMAT NEGOTIATION
+    private boolean audioPassthrough;
+    private int audioOutputChannels;
+    private int audioOutputSampleRate;
+    private int audioOutputAvFormat;   // FFmpeg AV_SAMPLE_FMT_* for the resample output (unused when audioPassthrough=true)
 
     // ADAPTIVE FRAME DROPPING
     private double renderDebtSec;
@@ -177,7 +185,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
         final Thread oldThread = this.lifecycleThread;
 
-        this.lifecycleThread = DEFAULT_THREAD_FACTORY.newThread(() -> {
+        this.lifecycleThread = this.factory.apply("lifecycle", () -> {
             if (oldThread != null && !ThreadTool.join(oldThread)) {
                 return;
             }
@@ -304,6 +312,90 @@ public final class FFMediaPlayer extends MediaPlayer {
         };
     }
 
+    // MAPS AN FFMPEG SAMPLE FORMAT (PACKED OR PLANAR) TO THE CANONICAL SFXEngine.SampleType.
+    // PLANARNESS IS HANDLED SEPARATELY — THE CALLER CHECKS av_sample_fmt_is_planar DIRECTLY.
+    // RETURNS null IF THE FFMPEG FORMAT HAS NO PCM EQUIVALENT.
+    private static SFXEngine.SampleType toSampleType(final int avSampleFormat) {
+        if (avSampleFormat == AV_SAMPLE_FMT_U8  || avSampleFormat == AV_SAMPLE_FMT_U8P)  return SFXEngine.SampleType.U8;
+        if (avSampleFormat == AV_SAMPLE_FMT_S16 || avSampleFormat == AV_SAMPLE_FMT_S16P) return SFXEngine.SampleType.S16;
+        if (avSampleFormat == AV_SAMPLE_FMT_S32 || avSampleFormat == AV_SAMPLE_FMT_S32P) return SFXEngine.SampleType.S32;
+        if (avSampleFormat == AV_SAMPLE_FMT_FLT || avSampleFormat == AV_SAMPLE_FMT_FLTP) return SFXEngine.SampleType.FLT;
+        if (avSampleFormat == AV_SAMPLE_FMT_DBL || avSampleFormat == AV_SAMPLE_FMT_DBLP) return SFXEngine.SampleType.DBL;
+        return null;
+    }
+
+    // INVERSE OF toSampleType — MAPS CANONICAL SampleType BACK TO AN FFMPEG PACKED AV_SAMPLE_FMT_*
+    // USED TO CONFIGURE swr's out_sample_fmt WHEN RESAMPLING TO A CHOSEN TARGET TYPE.
+    private static int sampleTypeToAvFormat(final SFXEngine.SampleType type) {
+        return switch (type) {
+            case U8  -> avutil.AV_SAMPLE_FMT_U8;
+            case S16 -> avutil.AV_SAMPLE_FMT_S16;
+            case S32 -> avutil.AV_SAMPLE_FMT_S32;
+            case FLT -> avutil.AV_SAMPLE_FMT_FLT;
+            case DBL -> avutil.AV_SAMPLE_FMT_DBL;
+        };
+    }
+
+    // MEMBERSHIP CHECK FOR INT ARRAYS.
+    private static boolean contains(final int[] arr, final int value) {
+        for (final int v : arr) if (v == value) return true;
+        return false;
+    }
+
+    // EXTRACTS THE CHANNEL COUNT STORED IN MSB (byte 7) OF A SUPPORT ENTRY.
+    private static int channelsOf(final long entry) {
+        return DataTool.bytesAt(entry, 7) & 0xFF;
+    }
+
+    // CHECKS WHETHER THE TYPE AT typeIdx IS SUPPORTED IN THE GIVEN ENTRY.
+    // TYPE BYTES OCCUPY POSITIONS 6..0 (MAX 7 TYPES).
+    private static boolean typeOkAt(final long entry, final int typeIdx) {
+        if (typeIdx < 0 || typeIdx > 6) return false;
+        return DataTool.bytesAt(entry, 6 - typeIdx) == (byte) 0xFF;
+    }
+
+    // FINDS THE ENTRY MATCHING channels EXACTLY, OR 0 IF NONE.
+    // VALID ENTRIES HAVE channels > 0 IN THE MSB, SO 0 IS A SAFE "NOT FOUND" SENTINEL.
+    private static long entryFor(final long[] table, final int channels) {
+        for (final long e : table) if (channelsOf(e) == channels) return e;
+        return 0L;
+    }
+
+    // PICKS THE ENTRY WITH CHANNEL COUNT CLOSEST TO target. ON TIE, PREFERS THE LOWER COUNT
+    // (DOWNMIX IS MORE PREDICTABLE THAN UPMIX IN AUDIO PROCESSING).
+    private static long closestEntry(final long[] table, final int target) {
+        long best = table[0];
+        int bestCh = channelsOf(best);
+        int bestDiff = Math.abs(bestCh - target);
+        for (final long e : table) {
+            final int ch = channelsOf(e);
+            final int diff = Math.abs(ch - target);
+            if (diff < bestDiff || (diff == bestDiff && ch < bestCh)) {
+                best = e;
+                bestCh = ch;
+                bestDiff = diff;
+            }
+        }
+        return best;
+    }
+
+    // FINDS THE INDEX OF t IN types, OR -1.
+    private static int typeIndex(final SFXEngine.SampleType[] types, final SFXEngine.SampleType t) {
+        if (t == null) return -1;
+        for (int i = 0; i < types.length; i++) if (types[i] == t) return i;
+        return -1;
+    }
+
+    // PICKS A FALLBACK TYPE SUPPORTED AT entry. PREFERS S16 (UNIVERSAL) IF AVAILABLE.
+    private static SFXEngine.SampleType fallbackType(final SFXEngine.SampleType[] types, final long entry) {
+        final int s16Idx = typeIndex(types, SFXEngine.SampleType.S16);
+        if (s16Idx >= 0 && typeOkAt(entry, s16Idx)) return SFXEngine.SampleType.S16;
+        for (int i = 0; i < types.length; i++) {
+            if (typeOkAt(entry, i)) return types[i];
+        }
+        return null;
+    }
+
     /**
      * Poll for the next video frame. Non-blocking.
      * Call from the render/game thread in each tick.
@@ -326,13 +418,17 @@ public final class FFMediaPlayer extends MediaPlayer {
                 continue;
             }
 
-            // A/V SYNC
+            // A/V SYNC — SKIP TIMING CHECKS DURING BUFFERING SO THAT THE
+            // FIRST AVAILABLE FRAME CAN RECALIBRATE THE CLOCK (VIA clock.update)
+            // AND RESOLVE BUFFERING. WITHOUT THIS BYPASS, A TIMESTAMP GAP CAUSES
+            // FRAMES TO BE REJECTED AS "TOO EARLY" INDEFINITELY (CLOCK IS FROZEN).
+            final boolean buffering = this.clock.status() == Status.BUFFERING;
             final double clockSec = this.clock.time();
             final double frameSec = slot.ptsMs / 1000.0;
             final double diff = frameSec - clockSec;
 
-            if (diff > AV_SYNC_TOO_EARLY) return false;
-            if (diff < -(this.clock.skipThresholdMs() / 1000.0)) {
+            if (!buffering && diff > AV_SYNC_TOO_EARLY) return false;
+            if (!buffering && diff < -(this.clock.skipThresholdMs() / 1000.0)) {
                 this.videoFrameQueue.next();
                 this.totalSkippedFrames++;
                 continue;
@@ -395,8 +491,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 );
 
                 if (result <= 0) {
-                    LOGGER.error(IT, "sws_scale failed: result={}, fmt={}, size={}x{}",
-                            result, slot.format, slot.width, slot.height);
+                    LOGGER.error(IT, "sws_scale failed: result={}, fmt={}, size={}x{}", result, slot.format, slot.width, slot.height);
                     this.videoFrameQueue.next();
                     return false;
                 }
@@ -531,20 +626,21 @@ public final class FFMediaPlayer extends MediaPlayer {
             final long framePtsMs = slot.ptsMs;
             final int frameSerial = slot.serial;
 
-            final int dataSize = slot.frame.nb_samples() * AUDIO_CHANNELS * 2;
+            final int bytesPerSample = av_get_bytes_per_sample(slot.frame.format());
+            final int dataSize = slot.frame.nb_samples() * this.audioOutputChannels * bytesPerSample;
             final ByteBuffer audioData = slot.frame.data(0)
                     .limit(dataSize)
                     .asBuffer()
                     .clear();
 
-            if (!this.sfx.upload(this.alSources, audioData, AL10.AL_FORMAT_STEREO16, AUDIO_SAMPLE_RATE)) {
+            if (!this.sfx.upload(audioData)) {
                 if (this.clock.status() == Status.BUFFERING) {
                     LOGGER.debug(IT, "pollAudio: OpenAL FULL during BUFFERING — can't upload PTS={}ms", framePtsMs);
                 }
                 return false;
             }
 
-            this.sfx.play(this.alSources);
+            this.sfx.play();
             this.audioFrameQueue.next();
             this.perfAudioUploads++;
 
@@ -567,13 +663,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.clock.transition(Status.LOADING);
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
+            this.starvationStartMs = 0;
+            this.lastStarvationRecoveryMs = 0;
 
             this.videoPacketQueue = new PacketQueue(VIDEO_PACKET_QUEUE_BYTES);
             this.audioPacketQueue = new PacketQueue(AUDIO_PACKET_QUEUE_BYTES);
             this.videoFrameQueue = new FrameQueue(VIDEO_FRAME_QUEUE_SLOTS);
             this.audioFrameQueue = new FrameQueue(AUDIO_FRAME_QUEUE_SLOTS);
 
-            this.demuxThread = DEFAULT_THREAD_FACTORY.newThread(this::demuxLoop);
+            this.demuxThread = this.factory.apply("demux", this::demuxLoop);
             this.demuxThread.setDaemon(true);
             this.demuxThread.start();
 
@@ -584,12 +682,12 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             if (this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
-                this.videoDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::videoDecodeLoop);
+                this.videoDecodeThread = this.factory.apply("video", this::videoDecodeLoop);
                 this.videoDecodeThread.setDaemon(true);
                 this.videoDecodeThread.start();
             }
             if (this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
-                this.audioDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::audioDecodeLoop);
+                this.audioDecodeThread = this.factory.apply("audio", this::audioDecodeLoop);
                 this.audioDecodeThread.setDaemon(true);
                 this.audioDecodeThread.start();
             }
@@ -611,6 +709,13 @@ public final class FFMediaPlayer extends MediaPlayer {
                     final boolean vEmpty = this.videoFrameQueue == null || this.videoFrameQueue.isEmpty();
                     final boolean aEmpty = this.audioFrameQueue == null || this.audioFrameQueue.isEmpty();
                     if (vDone && aDone && vEmpty && aEmpty) {
+                        if (this.repeat()) {
+                            // ALL DATA CONSUMED — SEEK TO BEGINNING FOR REPEAT.
+                            // THIS TRIGGERS AFTER FULL DRAIN, NOT AT DEMUX EOF,
+                            // SO NO UNPROCESSED PACKETS ARE THROWN AWAY.
+                            this.clock.requestSeek(0, false);
+                            continue;
+                        }
                         this.clock.transition(Status.ENDED);
                         break;
                     }
@@ -717,18 +822,29 @@ public final class FFMediaPlayer extends MediaPlayer {
                             totalMs, audioMs, videoMs, this.clock.frameDurationMs());
                 }
 
+                // TRACK BUFFERING→PLAYING RECOVERY FOR STARVATION COOLDOWN
+                if (current == Status.BUFFERING && this.clock.status() == Status.PLAYING) {
+                    this.lastStarvationRecoveryMs = System.currentTimeMillis();
+                }
+
                 if (!didWork) {
-                    // STARVATION DETECTION
+                    // STARVATION DETECTION — TRANSITION TO BUFFERING INSTEAD OF SEEKING
+                    // A full seek (requestSeek) is destructive: it increments serial, flushes
+                    // queues, and performs av_seek_frame. This causes a feedback loop when
+                    // frames arrive in bursts (e.g., GC pauses, render lag in Minecraft).
+                    // Instead, just transition to BUFFERING — the pipeline is still running,
+                    // and clock.update() will transition back to PLAYING when frames arrive.
                     if (current == Status.PLAYING && !this.clock.isDemuxFinished()) {
+                        final long starvNowMs = System.currentTimeMillis();
                         final boolean starving =
                                 (this.videoFrameQueue == null || this.videoFrameQueue.isEmpty()) &&
                                         (this.audioFrameQueue == null || this.audioFrameQueue.isEmpty());
-                        if (starving) {
+                        if (starving && starvNowMs - this.lastStarvationRecoveryMs > STARVATION_THRESHOLD_MS * 4) {
                             if (this.starvationStartMs == 0) {
-                                this.starvationStartMs = System.currentTimeMillis();
-                            } else if (System.currentTimeMillis() - this.starvationStartMs > STARVATION_THRESHOLD_MS) {
+                                this.starvationStartMs = starvNowMs;
+                            } else if (starvNowMs - this.starvationStartMs > STARVATION_THRESHOLD_MS) {
                                 LOGGER.warn(IT, "Starvation — BUFFERING (clock={}ms)", this.clock.timeMs());
-                                this.clock.requestSeek(this.clock.timeMs(), false);
+                                this.clock.transition(Status.BUFFERING);
                                 this.starvationStartMs = 0;
                             }
                         } else {
@@ -811,8 +927,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                         if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                         if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
                     } else {
-                        this.videoPacketQueue.flush();
-                        this.audioPacketQueue.flush();
+                        // MUST use reset() NOT flush() — flush() doesn't clear the
+                        // 'finished' flag. After EOF→repeat, finish() was called,
+                        // and flush() alone leaves finished=true. Decode threads
+                        // then call get() on an empty+finished queue → null → exit
+                        // immediately, producing 0 frames. reset() clears both
+                        // 'finished' and 'aborted', making the queue reusable.
+                        this.videoPacketQueue.reset();
+                        this.audioPacketQueue.reset();
                     }
 
                     this.clock.setSerial(this.videoPacketQueue.serial());
@@ -832,12 +954,12 @@ public final class FFMediaPlayer extends MediaPlayer {
                             : ((targetMs < this.clock.timeMs()) ? avformat.AVSEEK_FLAG_BACKWARD : 0);
 
                     if (avformat.av_seek_frame(this.formatContext, -1, ffTs, flags) < 0) {
-                        LOGGER.error(IT, "Seek failed on main context (target={}ms)", targetMs);
-                        if (this.clock.pauseRequested()) {
-                            this.clock.transition(Status.PAUSED);
-                        } else {
-                            this.clock.transition(Status.PLAYING);
-                        }
+                        LOGGER.error(IT, "Seek failed on main context (target={}ms) — staying in BUFFERING, pipeline will recover from current position", targetMs);
+                        // DON'T transition to PLAYING with empty queues — that causes
+                        // immediate starvation → another seek → feedback loop.
+                        // Stay in BUFFERING; the demux continues from the current read
+                        // position, decode threads produce frames, and clock.update()
+                        // transitions BUFFERING→PLAYING when frames arrive.
                         this.ensureDecodeThreads();
                         continue;
                     }
@@ -900,26 +1022,23 @@ public final class FFMediaPlayer extends MediaPlayer {
                         LOGGER.info(IT, "Main context EOF after {} video packets (R: {}, S: {})",
                                 demuxVideoPackets, this.totalRenderedFrames, this.totalSkippedFrames);
                         if (this.videoPacketQueue != null) this.videoPacketQueue.finish();
-
-                        if (this.repeat() && slaveEof) {
-                            this.clock.requestSeek(0, false);
-                            continue;
-                        }
+                        // FOR NON-SLAVE AUDIO, AUDIO PACKETS COME FROM THE SAME FORMAT
+                        // CONTEXT — FINISH THE AUDIO QUEUE SO DECODE THREADS DRAIN CLEANLY.
+                        if (!this.useAudioSlave && this.audioPacketQueue != null) this.audioPacketQueue.finish();
                     }
                 }
 
-                // CHECK BOTH EOF
+                // CHECK BOTH EOF — SIGNAL DEMUX FINISHED AND WAIT FOR SEEK.
+                // THE CONSUMPTION LOOP HANDLES BOTH REPEAT AND ENDED AFTER
+                // ALL DECODED FRAMES HAVE BEEN DRAINED AND RENDERED.
+                // PREVIOUSLY, repeat() TRIGGERED requestSeek(0) HERE IMMEDIATELY,
+                // WHICH FLUSHED ALL UNPROCESSED PACKETS — CAUSING A RAPID
+                // EOF→SEEK→EOF LOOP WITH ALMOST NO FRAMES RENDERED.
                 if (mainEof && (slaveEof || !this.useAudioSlave)) {
-                    if (this.repeat()) {
-                        this.clock.requestSeek(0, false);
-                        continue;
-                    }
-
                     LOGGER.info(IT, "All contexts EOF (video: {}, audio: {})", demuxVideoPackets, demuxAudioPackets);
-                    if (!slaveEof && this.audioPacketQueue != null) this.audioPacketQueue.finish();
 
                     this.clock.signalDemuxFinished();
-                    LOGGER.info(IT, "Demux finished — consumption loop will set ENDED after drain");
+                    LOGGER.info(IT, "Demux finished — consumption loop will handle ENDED/repeat after drain");
 
                     while (!this.clock.hasSeekPending() && !Thread.currentThread().isInterrupted()) {
                         this.clock.awaitChange(0);
@@ -1084,10 +1203,12 @@ public final class FFMediaPlayer extends MediaPlayer {
                         if (!this.enqueueResampledAudio(tempFrame, ptsSec, packetSerial)) break;
                         framesProduced++;
 
-                        final long delay = swresample.swr_get_delay(this.swrContext, AUDIO_SAMPLE_RATE);
-                        if (delay > AUDIO_SAMPLES / 2) {
-                            if (!this.enqueueResamplerFlush(packetSerial)) break;
-                            framesProduced++;
+                        if (!this.audioPassthrough) {
+                            final long delay = swresample.swr_get_delay(this.swrContext, this.audioOutputSampleRate);
+                            if (delay > AUDIO_SAMPLES / 2) {
+                                if (!this.enqueueResamplerFlush(packetSerial)) break;
+                                framesProduced++;
+                            }
                         }
                     }
 
@@ -1108,10 +1229,20 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (slot == null) return false;
 
         av_frame_unref(slot.frame);
-        slot.frame.format(AV_SAMPLE_FMT_S16);
-        slot.frame.ch_layout().nb_channels(AUDIO_CHANNELS);
-        av_channel_layout_default(slot.frame.ch_layout(), AUDIO_CHANNELS);
-        slot.frame.sample_rate(AUDIO_SAMPLE_RATE);
+
+        if (this.audioPassthrough) {
+            av_frame_ref(slot.frame, srcFrame);
+            slot.ptsMs = (long) (ptsSec * 1000.0);
+            slot.durationMs = (long) ((double) srcFrame.nb_samples() / srcFrame.sample_rate() * 1000.0);
+            slot.serial = serial;
+            this.audioFrameQueue.push();
+            return true;
+        }
+
+        slot.frame.format(this.audioOutputAvFormat);
+        slot.frame.ch_layout().nb_channels(this.audioOutputChannels);
+        av_channel_layout_default(slot.frame.ch_layout(), this.audioOutputChannels);
+        slot.frame.sample_rate(this.audioOutputSampleRate);
         slot.frame.nb_samples(AUDIO_SAMPLES);
 
         if (av_frame_get_buffer(slot.frame, 0) < 0) {
@@ -1132,7 +1263,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         slot.frame.nb_samples(samplesConverted);
         slot.ptsMs = (long) (ptsSec * 1000.0);
-        slot.durationMs = (long) ((double) samplesConverted / AUDIO_SAMPLE_RATE * 1000.0);
+        slot.durationMs = (long) ((double) samplesConverted / this.audioOutputSampleRate * 1000.0);
         slot.serial = serial;
 
         this.audioFrameQueue.push();
@@ -1144,10 +1275,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (slot == null) return false;
 
         av_frame_unref(slot.frame);
-        slot.frame.format(AV_SAMPLE_FMT_S16);
-        slot.frame.ch_layout().nb_channels(AUDIO_CHANNELS);
-        av_channel_layout_default(slot.frame.ch_layout(), AUDIO_CHANNELS);
-        slot.frame.sample_rate(AUDIO_SAMPLE_RATE);
+        slot.frame.format(this.audioOutputAvFormat);
+        slot.frame.ch_layout().nb_channels(this.audioOutputChannels);
+        av_channel_layout_default(slot.frame.ch_layout(), this.audioOutputChannels);
+        slot.frame.sample_rate(this.audioOutputSampleRate);
         slot.frame.nb_samples(AUDIO_SAMPLES);
 
         if (av_frame_get_buffer(slot.frame, 0) < 0) return true;
@@ -1165,7 +1296,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         slot.frame.nb_samples(flushed);
         slot.ptsMs = this.clock.timeMs();
-        slot.durationMs = (long) ((double) flushed / AUDIO_SAMPLE_RATE * 1000.0);
+        slot.durationMs = (long) ((double) flushed / this.audioOutputSampleRate * 1000.0);
         slot.serial = serial;
 
         this.audioFrameQueue.push();
@@ -1203,15 +1334,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private void ensureDecodeThreads() {
-        if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive())
-                && this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
-            this.videoDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::videoDecodeLoop);
+        if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive()) && this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
+            this.videoDecodeThread = this.factory.apply("video", this::videoDecodeLoop);
             this.videoDecodeThread.setDaemon(true);
             this.videoDecodeThread.start();
         }
-        if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive())
-                && this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
-            this.audioDecodeThread = DEFAULT_THREAD_FACTORY.newThread(this::audioDecodeLoop);
+        if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive()) && this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+            this.audioDecodeThread = this.factory.apply("audio", this::audioDecodeLoop);
             this.audioDecodeThread.setDaemon(true);
             this.audioDecodeThread.start();
         }
@@ -1310,7 +1439,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         this.clock.transition(Status.LOADING);
 
-        this.demuxThread = DEFAULT_THREAD_FACTORY.newThread(this::demuxLoop);
+        this.demuxThread = this.factory.apply("demux", this::demuxLoop);
         this.demuxThread.setDaemon(true);
         this.demuxThread.start();
 
@@ -1493,21 +1622,18 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVCodecParameters codecpar = videoStream.codecpar();
         final int codecId = codecpar.codec_id();
 
-        final String codecName = avcodec_get_name(codecId).getString();
+        final String codecName = getString(avcodec_get_name(codecId), null);
         final AVCodecDescriptor descriptor = avcodec_descriptor_get(codecId);
-        final String codecLongName = descriptor != null ? descriptor.long_name().getString() : "unknown";
+        final String codecLongName = descriptor != null ? getString(descriptor.long_name(), "unknown") : "unknown";
         final long bitrate = codecpar.bit_rate();
         final int profile = codecpar.profile();
         final int level = codecpar.level();
         final int pixFmt = codecpar.format();
 
+        final var profilePointer = avcodec_profile_name(codecId, profile);
+        final var fmtNamePointer = av_get_pix_fmt_name(pixFmt);
         LOGGER.info(IT, "Video codec: {} ({}), bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
-                codecName, codecLongName,
-                bitrate > 0 ? bitrate / 1000 : "N/A",
-                avcodec.avcodec_profile_name(codecId, profile) != null
-                        ? avcodec.avcodec_profile_name(codecId, profile).getString() : profile,
-                level,
-                av_get_pix_fmt_name(pixFmt) != null ? av_get_pix_fmt_name(pixFmt).getString() : pixFmt);
+                codecName, codecLongName, bitrate > 0 ? bitrate / 1000 : "N/A", getString(profilePointer, profile), level, getString(fmtNamePointer, pixFmt));
 
         final AVCodec decoder = avcodec_find_decoder(codecId);
         if (decoder == null)
@@ -1526,8 +1652,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final int threads = pixels <= 921600
                     ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2073600
-                    ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3686400
-                    ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
+                                                        ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3686400
+                                                                                            ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
 
             this.videoCodecContext.thread_count(threads);
             this.videoCodecContext.thread_type(AVCodecContext.FF_THREAD_FRAME | AVCodecContext.FF_THREAD_SLICE);
@@ -1572,7 +1698,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
                         final BytePointer hwName = av_hwdevice_get_type_name(hw);
-                        LOGGER.info(IT, "Hardware decoder initialized: {}", hwName != null ? hwName.getString() : "unknown (" + hw + ")");
+                        LOGGER.info(IT, "Hardware decoder initialized: {}", getString(hwName, "unknown (" + hw + ")"));
                         IOTool.closeQuietly(hwName);
                         return true;
                     }
@@ -1616,13 +1742,14 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        final String audioCodecName = avcodec_get_name(codecId).getString();
+        final var audioCodecPointer = avcodec_get_name(codecId);
+        final var sampleNamePointer = av_get_sample_fmt_name(codecParams.format());
+        final String audioCodecName = getString(audioCodecPointer, null);
         LOGGER.info(IT, "Audio codec: {} (id={}), channels: {}, sample_rate: {}, format: {}",
                 audioCodecName, codecId,
                 codecParams.ch_layout().nb_channels(),
                 codecParams.sample_rate(),
-                av_get_sample_fmt_name(codecParams.format()) != null
-                        ? av_get_sample_fmt_name(codecParams.format()).getString() : codecParams.format());
+                getString(sampleNamePointer, codecParams.format()));
 
         this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
         if (this.audioCodecContext == null) {
@@ -1640,6 +1767,56 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
+        // NEGOTIATE AUDIO FORMAT WITH SFX ENGINE
+        final int srcFormat = codecParams.format();
+        final int srcChannels = codecParams.ch_layout().nb_channels();
+        final boolean srcPlanar = av_sample_fmt_is_planar(srcFormat) != 0;
+        final SFXEngine.SampleType srcType = toSampleType(srcFormat);
+
+        final long[] supCh = this.sfx.supportedChannels();
+        final SFXEngine.SampleType[] supTypes = this.sfx.supportedTypes();
+        final int typeIdx = typeIndex(supTypes, srcType);
+        final long exactEntry = entryFor(supCh, srcChannels);
+        final boolean exactCombinationOk = exactEntry != 0L && typeIdx >= 0 && typeOkAt(exactEntry, typeIdx);
+
+        this.audioOutputSampleRate = codecParams.sample_rate();
+
+        // PASSTHROUGH REQUIRES: INTERLEAVED SOURCE + (TYPE,CHANNELS) COMBINATION HONESTLY SUPPORTED
+        if (!srcPlanar && exactCombinationOk) {
+            this.audioPassthrough = true;
+            this.audioOutputChannels = srcChannels;
+            LOGGER.info(IT, "Audio passthrough: type={}, channels={}, rate={}", srcType, srcChannels, this.audioOutputSampleRate);
+            if (!this.sfx.setAudioFormat(srcType, srcChannels, this.audioOutputSampleRate)) {
+                LOGGER.error(IT, "SFX engine rejected passthrough format: type={}, ch={}, rate={}", srcType, srcChannels, this.audioOutputSampleRate);
+                return false;
+            }
+            return true;
+        }
+
+        // RESAMPLE — PICK TARGET FROM THE SUPPORT TABLE:
+        //   CHANNELS: exact match if possible, else closest supported count
+        //   TYPE:     preserve if supported AT TARGET CHANNEL COUNT, else fallback (prefers S16)
+        this.audioPassthrough = false;
+        final long targetEntry = exactEntry != 0L ? exactEntry : closestEntry(supCh, srcChannels);
+        this.audioOutputChannels = channelsOf(targetEntry);
+
+        final SFXEngine.SampleType outType;
+        if (typeIdx >= 0 && typeOkAt(targetEntry, typeIdx)) {
+            outType = srcType;
+        } else {
+            outType = fallbackType(supTypes, targetEntry);
+            if (outType == null) {
+                LOGGER.error(IT, "SFX engine exposes no supported types for {} channels", this.audioOutputChannels);
+                return false;
+            }
+        }
+        this.audioOutputAvFormat = sampleTypeToAvFormat(outType);
+
+        LOGGER.info(IT, "Audio resample ({}): {} {}ch {}Hz → {} {}ch {}Hz", srcPlanar ? "de-planarize only" : "format conversion",
+                getString(av_get_sample_fmt_name(srcFormat), srcFormat),
+                srcChannels, this.audioOutputSampleRate,
+                outType, this.audioOutputChannels, this.audioOutputSampleRate);
+
         this.swrContext = swresample.swr_alloc();
         if (this.swrContext == null) {
             LOGGER.error(IT, "Failed to allocate SWResampler context");
@@ -1650,22 +1827,22 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVChannelLayout outputLayout = new AVChannelLayout();
 
         try {
-            if (codecParams.ch_layout().nb_channels() > 0) {
+            if (srcChannels > 0) {
                 avutil.av_channel_layout_copy(inputLayout, codecParams.ch_layout());
             } else {
                 LOGGER.warn(IT, "Audio codec has no channel layout info, defaulting to stereo");
                 avutil.av_channel_layout_default(inputLayout, 2);
             }
 
-            avutil.av_channel_layout_default(outputLayout, AUDIO_CHANNELS);
+            avutil.av_channel_layout_default(outputLayout, this.audioOutputChannels);
 
             avutil.av_opt_set_chlayout(this.swrContext, "in_chlayout", inputLayout, 0);
-            avutil.av_opt_set_int(this.swrContext, "in_sample_rate", codecParams.sample_rate(), 0);
-            avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", codecParams.format(), 0);
+            avutil.av_opt_set_int(this.swrContext, "in_sample_rate", this.audioOutputSampleRate, 0);
+            avutil.av_opt_set_sample_fmt(this.swrContext, "in_sample_fmt", srcFormat, 0);
 
             avutil.av_opt_set_chlayout(this.swrContext, "out_chlayout", outputLayout, 0);
-            avutil.av_opt_set_int(this.swrContext, "out_sample_rate", AUDIO_SAMPLE_RATE, 0);
-            avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", avutil.AV_SAMPLE_FMT_S16, 0);
+            avutil.av_opt_set_int(this.swrContext, "out_sample_rate", this.audioOutputSampleRate, 0);
+            avutil.av_opt_set_sample_fmt(this.swrContext, "out_sample_fmt", sampleTypeToAvFormat(outType), 0);
 
             if (swresample.swr_init(this.swrContext) < 0) {
                 LOGGER.error(IT, "Failed to initialize SWResampler context");
@@ -1674,6 +1851,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             av_channel_layout_uninit(inputLayout);
             av_channel_layout_uninit(outputLayout);
+        }
+
+        if (!this.sfx.setAudioFormat(outType, this.audioOutputChannels, this.audioOutputSampleRate)) {
+            LOGGER.error(IT, "SFX engine rejected resample output format: type={}, ch={}, rate={}", outType, this.audioOutputChannels, this.audioOutputSampleRate);
+            return false;
         }
 
         return true;
@@ -1692,12 +1874,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                 swscale.SWS_FAST_BILINEAR, null, null, (double[]) null
         );
 
-        final String fmtName = av_get_pix_fmt_name(srcFormat) != null
-                ? av_get_pix_fmt_name(srcFormat).getString() : String.valueOf(srcFormat);
+        final var pointerName = av_get_pix_fmt_name(srcFormat);
+        final String fmtName = getString(pointerName, srcFormat);
 
         if (this.swsContext == null) {
-            LOGGER.error(IT, "Failed to create fallback SwsContext: {} ({}x{}) -> BGRA",
-                    fmtName, srcWidth, srcHeight);
+            LOGGER.error(IT, "Failed to create fallback SwsContext: {} ({}x{}) -> BGRA", fmtName, srcWidth, srcHeight);
         } else {
             this.swsInputFormat = srcFormat;
             LOGGER.info(IT, "Fallback SwsContext: {} ({}x{}) -> BGRA", fmtName, srcWidth, srcHeight);
@@ -1767,6 +1948,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // UTILITY
+    private static String getString(final BytePointer p, final Object orElse) { return !isNull(p) ? p.getString() : orElse != null ? String.valueOf(orElse) : null; }
+    private static String getString(final BytePointer p, final int orElse) { return !isNull(p) ? p.getString() : String.valueOf(orElse); }
     private static boolean isNull(final Pointer p) { return p == null || p.isNull(); }
 
     // STATIC
@@ -1776,7 +1959,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         LOGGER.info(IT, "Starting FFMPEG...");
         if (WaterMediaConfig.media.disableFFMPEG) {
             LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
-            return true;
+            return false;
         }
 
         try {
@@ -1805,9 +1988,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             try {
                 final BytePointer config = avformat.avformat_configuration();
-                if (config != null && !config.isNull()) {
-                    LOGGER.info(IT, "Configuration: {}", config.getString());
-                }
+                LOGGER.info(IT, "Configuration: {}", getString(config, "unavailable"));
             } catch (final Exception e) {
                 LOGGER.warn(IT, "Configuration: unavailable");
             }
@@ -1820,8 +2001,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
 
                 final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
-                if (hwName != null && !hwName.isNull()) {
-                    LOGGER.info(IT, "  • {}", hwName.getString());
+                final String hwNameStr = getString(hwName, null);
+                if (hwNameStr != null) {
+                    LOGGER.info(IT, "  • {}", hwNameStr);
                     hwCount++;
                 }
                 IOTool.closeQuietly(hwName);
@@ -1832,7 +2014,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             final BytePointer license = avformat.avformat_license();
-            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), license != null && !license.isNull() ? license.getString() : "unknown");
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), getString(license, "unknown"));
             IOTool.closeQuietly(license);
             return LOADED = true;
         } catch (final Throwable t) {
