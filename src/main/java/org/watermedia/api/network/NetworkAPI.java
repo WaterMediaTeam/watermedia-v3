@@ -64,7 +64,7 @@ public class NetworkAPI {
             }
             case WaterStreamHandler.HOST_GLOBAL -> {
                 String base = WaterStreamHandler.GLOBAL_SERVER;
-                if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+                base = base.substring(0, base.length() - 1);
                 yield base + path;
             }
             case WaterStreamHandler.HOST_LOCAL -> {
