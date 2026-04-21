@@ -1,10 +1,10 @@
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.decode.DecoderException;
-import org.watermedia.api.decode.formats.webp.riff.RiffChunk;
-import org.watermedia.api.decode.formats.webp.riff.RiffParser;
-import org.watermedia.api.decode.formats.webp.riff.WebPInfo;
+import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.decoders.webp.riff.RiffChunk;
+import org.watermedia.api.codecs.decoders.webp.riff.RiffParser;
+import org.watermedia.api.codecs.decoders.webp.riff.WebPInfo;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -243,7 +243,7 @@ public class RiffParserTest {
         buffer.flip();
 
         // SHOULD THROW EXCEPTION FOR TRUNCATED CHUNK
-        assertThrows(DecoderException.class, () -> RiffParser.parse(buffer),
+        assertThrows(XCodecException.class, () -> RiffParser.parse(buffer),
                 "Should throw exception for truncated VP8L chunk");
     }
 

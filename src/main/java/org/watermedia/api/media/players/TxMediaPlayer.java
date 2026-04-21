@@ -2,8 +2,8 @@ package org.watermedia.api.media.players;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.api.decode.DecoderAPI;
-import org.watermedia.api.decode.Image;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.tools.NetTool;
@@ -33,7 +33,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(TxMediaPlayer.class.getSimpleName());
 
     // DECODED DATA
-    private volatile Image images = null;
+    private volatile ImageData images = null;
     private volatile boolean animated = false;
 
     // STATUS
@@ -110,7 +110,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         try {
             // LOADING: FETCH + DECODE
             this.status = Status.LOADING;
-            final Image decoded = this.fetch();
+            final ImageData decoded = this.fetch();
             if (decoded == null) return;
 
             // BUFFERING: PREPARE GFX
@@ -264,7 +264,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // FETCH
-    private Image fetch() {
+    private ImageData fetch() {
         var uri = this.source.uri(this.quality);
         Request request = null;
 
@@ -295,7 +295,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                     throw new IllegalArgumentException("Invalid content type: " + type);
                 }
 
-                final Image result = DecoderAPI.decodeImage(in.readAllBytes());
+                final ImageData result = CodecsAPI.decodeImage(in.readAllBytes());
                 request.close();
 
                 if (result == null || result.frames() == null || result.frames().length == 0) {

@@ -21,8 +21,8 @@ import org.lwjgl.stb.STBVorbis;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.decode.DecoderAPI;
-import org.watermedia.api.decode.Image;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.Colors;
@@ -351,14 +351,14 @@ public class WaterMediaApp {
     private static void loadIcon() {
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
             final byte[] iconBytes = in.readAllBytes();
-            final Image iconImage = DecoderAPI.decodeImage(iconBytes);
-            if (iconImage == null || iconImage.frames().length == 0) return;
+            final ImageData iconImageData = CodecsAPI.decodeImage(iconBytes);
+            if (iconImageData == null || iconImageData.frames().length == 0) return;
 
-            final ByteBuffer iconBuffer = iconImage.frames()[0];
+            final ByteBuffer iconBuffer = iconImageData.frames()[0];
             iconBuffer.rewind();
 
-            final ByteBuffer buffer = MemoryUtil.memAlloc(iconImage.width() * iconImage.height() * 4);
-            for (int i = 0; i < iconImage.width() * iconImage.height(); i++) {
+            final ByteBuffer buffer = MemoryUtil.memAlloc(iconImageData.width() * iconImageData.height() * 4);
+            for (int i = 0; i < iconImageData.width() * iconImageData.height(); i++) {
                 final byte b = iconBuffer.get();
                 final byte g = iconBuffer.get();
                 final byte r = iconBuffer.get();
@@ -368,7 +368,7 @@ public class WaterMediaApp {
             buffer.flip();
 
             final GLFWImage.Buffer icons = GLFWImage.malloc(1);
-            icons.position(0).width(iconImage.width()).height(iconImage.height()).pixels(buffer);
+            icons.position(0).width(iconImageData.width()).height(iconImageData.height()).pixels(buffer);
             glfwSetWindowIcon(ctx.windowHandle, icons);
 
             icons.free();
@@ -381,11 +381,11 @@ public class WaterMediaApp {
     private static void loadBanner() {
         try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
             final byte[] bannerBytes = in.readAllBytes();
-            final Image bannerImage = DecoderAPI.decodeImage(bannerBytes);
-            if (bannerImage == null || bannerImage.frames().length == 0) return;
+            final ImageData bannerImageData = CodecsAPI.decodeImage(bannerBytes);
+            if (bannerImageData == null || bannerImageData.frames().length == 0) return;
 
-            ctx.bannerWidth = bannerImage.width();
-            ctx.bannerHeight = bannerImage.height();
+            ctx.bannerWidth = bannerImageData.width();
+            ctx.bannerHeight = bannerImageData.height();
             ctx.bannerTextureId = glGenTextures();
 
             glBindTexture(GL_TEXTURE_2D, ctx.bannerTextureId);
@@ -395,7 +395,7 @@ public class WaterMediaApp {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ctx.bannerWidth, ctx.bannerHeight,
-                    0, GL_BGRA, GL_UNSIGNED_BYTE, bannerImage.frames()[0]);
+                    0, GL_BGRA, GL_UNSIGNED_BYTE, bannerImageData.frames()[0]);
         } catch (final Exception e) {
             System.err.println("Failed to load banner: " + e.getMessage());
         }

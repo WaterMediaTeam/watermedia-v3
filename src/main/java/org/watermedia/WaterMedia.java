@@ -5,7 +5,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import me.srrapero720.waterconfig.WaterConfig;
-import org.watermedia.api.decode.DecoderAPI;
+import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
@@ -80,7 +80,7 @@ public class WaterMedia {
         }
 
         LOGGER.info(IT, "Starting Decoders API...");
-        if (!DecoderAPI.start(instance)) {
+        if (!CodecsAPI.start(instance)) {
             LOGGER.error(IT, "Failed to start Decoders API");
         }
 

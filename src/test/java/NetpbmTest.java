@@ -1,7 +1,7 @@
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.decode.formats.netpbm.NetpbmHeader;
+import org.watermedia.api.codecs.decoders.netpbm.NetpbmHeader;
 
 import java.io.File;
 import java.nio.ByteBuffer;

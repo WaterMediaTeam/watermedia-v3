@@ -1,7 +1,7 @@
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.decode.Image;
-import org.watermedia.api.decode.formats.webp.WEBP;
+import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.codecs.decoders.WEBP;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -215,7 +215,7 @@ public class WebPTest {
         final ByteBuffer imageData = ByteBuffer.wrap(new FileInputStream(imageFile).readAllBytes());
 
         // DECODE THE IMAGE
-        final Image result = assertDoesNotThrow(
+        final ImageData result = assertDoesNotThrow(
                 () -> decoder.decode(imageData),
                 "Decoding failed for: " + imageFile.getName()
         );
@@ -267,7 +267,7 @@ public class WebPTest {
         // DECODE WITH JAVA IMPLEMENTATION
         final WEBP decoder = new WEBP();
         final ByteBuffer imageData = ByteBuffer.wrap(new FileInputStream(imageFile).readAllBytes());
-        final Image javaResult = decoder.decode(imageData);
+        final ImageData javaResult = decoder.decode(imageData);
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
         final byte[] referenceRgba = loadReferenceData(imageFile, folderPath);
@@ -342,7 +342,7 @@ public class WebPTest {
         // DECODE WITH JAVA IMPLEMENTATION
         final WEBP decoder = new WEBP();
         final ByteBuffer imageData = ByteBuffer.wrap(new FileInputStream(imageFile).readAllBytes());
-        final Image javaResult = decoder.decode(imageData);
+        final ImageData javaResult = decoder.decode(imageData);
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
         final byte[] referenceRgba = loadReferenceData(imageFile, folderPath);

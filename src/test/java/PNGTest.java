@@ -1,7 +1,7 @@
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.decode.Image;
-import org.watermedia.api.decode.formats.png.PNG;
+import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.codecs.decoders.PNG;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -92,7 +92,7 @@ public class PNGTest {
 
         // NOTE: supported() leaves position after signature, which is where decode expects it
         // DECODE THE IMAGE
-        final Image result = assertDoesNotThrow(
+        final ImageData result = assertDoesNotThrow(
                 () -> decoder.decode(imageData),
                 "Decoding failed for: " + imageFile.getName()
         );
@@ -137,7 +137,7 @@ public class PNGTest {
         // VERIFY SIGNATURE (this moves position past signature where decode expects it)
         assertTrue(decoder.supported(imageData), "PNG signature not recognized");
 
-        final Image javaResult = decoder.decode(imageData);
+        final ImageData javaResult = decoder.decode(imageData);
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
         final byte[] referenceRgba = loadReferenceData(imageFile, folderPath);

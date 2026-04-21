@@ -1,9 +1,9 @@
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.decode.DecoderException;
-import org.watermedia.api.decode.formats.webp.common.BitReader;
-import org.watermedia.api.decode.formats.webp.lossless.HuffmanTable;
+import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.decoders.webp.common.BitReader;
+import org.watermedia.api.codecs.decoders.webp.lossless.HuffmanTable;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -45,7 +45,7 @@ public class HuffmanTableTest {
     /**
      * Verifies that a single symbol table returns the correct symbol without consuming bits.
      */
-    private void verifySingleSymbol(final int symbol) throws DecoderException {
+    private void verifySingleSymbol(final int symbol) throws XCodecException {
         // CREATE SINGLE SYMBOL TABLE
         final HuffmanTable table = HuffmanTable.simple(1, symbol, 0);
 
@@ -84,7 +84,7 @@ public class HuffmanTableTest {
     /**
      * Verifies that a two symbol table correctly reads 1-bit codes.
      */
-    private void verifyTwoSymbols(final int sym0, final int sym1) throws DecoderException {
+    private void verifyTwoSymbols(final int sym0, final int sym1) throws XCodecException {
         // CREATE TWO SYMBOL TABLE
         final HuffmanTable table = HuffmanTable.simple(2, sym0, sym1);
 
@@ -106,7 +106,7 @@ public class HuffmanTableTest {
      * Verifies canonical Huffman code generation follows the spec.
      */
     @Test
-    void testBuildFromCodeLengths() throws DecoderException {
+    void testBuildFromCodeLengths() throws XCodecException {
         // CREATE TABLE WITH SYMBOLS AT DIFFERENT CODE LENGTHS
         // SYMBOL 0: LENGTH 1 -> CODE 0
         // SYMBOL 1: LENGTH 2 -> CODE 10
@@ -131,7 +131,7 @@ public class HuffmanTableTest {
      * These edge cases should create valid single-symbol tables.
      */
     @Test
-    void testEdgeCaseCodeLengths() throws DecoderException {
+    void testEdgeCaseCodeLengths() throws XCodecException {
         // ALL ZERO CODE LENGTHS - SHOULD CREATE SINGLE SYMBOL 0 TABLE
         final int[] allZeros = new int[10];
         final HuffmanTable zeroTable = HuffmanTable.build(allZeros, 10);
@@ -154,7 +154,7 @@ public class HuffmanTableTest {
      * Verifies bit consumption is correct for mixed code lengths.
      */
     @Test
-    void testSequentialReads() throws DecoderException {
+    void testSequentialReads() throws XCodecException {
         // CREATE SIMPLE TWO-SYMBOL TABLE
         final HuffmanTable table = HuffmanTable.simple(2, 0, 1);
 
@@ -178,7 +178,7 @@ public class HuffmanTableTest {
      * This is similar to what 6.webp's meta GREEN table uses.
      */
     @Test
-    void testTwoSymbol2BitCodes() throws DecoderException {
+    void testTwoSymbol2BitCodes() throws XCodecException {
         // BUILD TABLE WITH 2 SYMBOLS, BOTH WITH 2-BIT CODES
         final int[] codeLengths = new int[280];
         codeLengths[0] = 2;
@@ -205,7 +205,7 @@ public class HuffmanTableTest {
      * Test that null/empty code lengths are handled gracefully.
      */
     @Test
-    void testNullCodeLengths() throws DecoderException {
+    void testNullCodeLengths() throws XCodecException {
         // NULL CODE LENGTHS SHOULD CREATE DEFAULT TABLE
         final HuffmanTable table = HuffmanTable.build(null, 10);
         assertNotNull(table, "Should handle null code lengths");
