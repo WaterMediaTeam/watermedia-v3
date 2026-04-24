@@ -68,7 +68,7 @@ public class NetTool {
             this.uri = uri;
             this.method = method;
             this.body = body;
-            this.connection = connectToHTTP(this.uri, method, body);
+            this.connection = connectToURI(this.uri, method, body);
         }
 
         public URI getUri() {
