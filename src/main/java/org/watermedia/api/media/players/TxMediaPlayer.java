@@ -96,11 +96,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public void release() {
         this.triggerStop = true;
-        if (this.lifecycleThread != null) {
-            this.lifecycleThread.interrupt();
-            ThreadTool.join(this.lifecycleThread);
-            this.lifecycleThread = null;
-        }
+        final Thread t = this.lifecycleThread;
+        this.lifecycleThread = null;
+        if (t != null) t.interrupt();
         this.images = null;
         super.release();
     }
