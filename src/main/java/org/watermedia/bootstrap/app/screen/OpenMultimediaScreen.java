@@ -55,7 +55,7 @@ public class OpenMultimediaScreen extends Screen {
         final String name = this.ctx.customUrlText.length() > 40
                 ? this.ctx.customUrlText.substring(0, 37) + "..."
                 : this.ctx.customUrlText;
-        this.ctx.customTests.add(new AppContext.TestURI(name, this.ctx.customUrlText));
+        this.ctx.customTests.add(new AppContext.TestURI(name, this.ctx.customUrlText, false));
         this.ctx.customUrlText = "";
         this.navigator.accept(HomeScreen.Action.BACK);
     }

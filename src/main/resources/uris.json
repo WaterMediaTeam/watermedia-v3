@@ -26,6 +26,11 @@
       {
         "name": "BILIBILI TEST",
         "uri": "https://www.bilibili.com/video/BV1Zt4y1C7s6/"
+      },
+      {
+        "name": "PORNHUB",
+        "uri": "https://es.pornhub.com/view_video.php?viewkey=69bd44574a5fc",
+        "debug": true
       }
     ]
   },

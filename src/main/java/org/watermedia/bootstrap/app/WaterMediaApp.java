@@ -47,6 +47,7 @@ import java.nio.ShortBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 
@@ -76,6 +77,15 @@ public class WaterMediaApp {
     public static void start(final Runnable task) {
         WaterMedia.start("WaterMediaApp", null, null, true);
         ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
+        if (!WaterMedia.LOGGER.isDebugEnabled()) {
+            for (int i = 0; i < ctx.uriGroups.length; i++) {
+                final AppContext.URIGroup group = ctx.uriGroups[i];
+                final AppContext.TestURI[] filtered = Arrays.stream(group.uris()).filter(u -> !u.debug()).toArray(AppContext.TestURI[]::new);
+                if (filtered.length != group.uris().length) {
+                    ctx.uriGroups[i] = new AppContext.URIGroup(group.name(), filtered);
+                }
+            }
+        }
 
         init();
         glfwShowWindow(ctx.windowHandle);

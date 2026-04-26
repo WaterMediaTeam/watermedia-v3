@@ -87,7 +87,7 @@ public final class AppContext implements Executor {
     public Runnable globalErrorOnClose;
 
     // RECORDS
-    public record TestURI(String name, String uri) {
+    public record TestURI(String name, String uri, boolean debug) {
     }
 
     public record URIGroup(String name, TestURI[] uris) {

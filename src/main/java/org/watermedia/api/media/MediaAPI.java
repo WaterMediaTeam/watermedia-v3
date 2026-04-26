@@ -83,6 +83,7 @@ public class MediaAPI {
         registerPlatform(new ImgurPlatform());
         registerPlatform(new KickPlatform());
         registerPlatform(new StreamablePlatform());
+        registerPlatform(new PornHubPlatform());
 //        registerPlatform(new WaterPlatform());
         registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
