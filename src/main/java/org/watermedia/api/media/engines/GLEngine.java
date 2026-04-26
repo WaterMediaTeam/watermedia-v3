@@ -74,6 +74,18 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
+    // GRAY8 → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
+    private static final String FRAGMENT_GRAY = """
+            #version 150 core
+            in vec2 texCoord;
+            out vec4 fragColor;
+            uniform sampler2D yTex;
+            void main() {
+                float luma = texture(yTex, texCoord).r;
+                fragColor = vec4(luma, luma, luma, 1.0);
+            }
+            """;
+
     // YUV 3-PLANAR → RGB — BT.709 STUDIO RANGE
     // Y PLANE: GL_R8 — FULL RESOLUTION
     // U PLANE: GL_R8 — CHROMA SUBSAMPLED
@@ -135,6 +147,10 @@ public final class GLEngine extends GFXEngine {
     private int uniformNVYTex = -1;
     private int uniformNVUVTex = -1;
     private int uniformNVSwap = -1;
+
+    // GRAY SHADER
+    private int shaderGray = 0;
+    private int uniformGrayTex = -1;
 
     // YUV3 SHADER (3-PLANAR)
     private int shaderYUV3 = 0;
@@ -217,6 +233,15 @@ public final class GLEngine extends GFXEngine {
 
         // COMPILE SHADERS FOR NEW FORMAT (LAZY — ONLY IF NOT ALREADY COMPILED)
         switch (colorSpace) {
+            case GRAY8 -> {
+                if (this.shaderGray == 0) {
+                    this.shaderGray = this.compileShader(VERTEX_SHADER, FRAGMENT_GRAY);
+                    if (this.shaderGray != 0) {
+                        this.uniformGrayTex = GL20.glGetUniformLocation(this.shaderGray, "yTex");
+                        LOGGER.info(IT, "Gray shader compiled (program={})", this.shaderGray);
+                    }
+                }
+            }
             case NV12, NV21 -> {
                 if (this.shaderNV == 0) {
                     this.shaderNV = this.compileShader(VERTEX_SHADER, FRAGMENT_NV);
@@ -239,13 +264,13 @@ public final class GLEngine extends GFXEngine {
                     }
                 }
             }
-            default -> {} // BGRA — NO SHADER NEEDED
+            default -> {} // BGRA, RGBA, RGB — NO SHADER NEEDED
         }
 
         LOGGER.info(IT, "Format set: {} {}x{} ({} planes)", colorSpace, width, height, this.activePlanes);
     }
 
-    // UPLOAD — SINGLE PLANE (BGRA)
+    // UPLOAD — SINGLE PLANE (BGRA, RGBA, RGB, GRAY8)
     @Override
     public void upload(final ByteBuffer buffer, final int stride) {
         if (buffer == null) return;
@@ -253,20 +278,31 @@ public final class GLEngine extends GFXEngine {
             this.renderThreadEx.execute(() -> this.upload(buffer, stride));
             return;
         }
-        // DIMENSION CHECK MUST BE HERE — ON THE RENDER THREAD.
-        // setVideoFormat DISPATCHES TO THIS THREAD TOO; IF CALLED FROM ANOTHER THREAD
-        // BEFORE US, width/height ARE 0 UNTIL THE RENDER THREAD PROCESSES setVideoFormat.
         if (this.width <= 0 || this.height <= 0) return;
 
+        // GRAY8: UPLOAD TO PLANE TEXTURE + FBO CONVERT (LIKE YUV PATH)
+        if (this.colorSpace == ColorSpace.GRAY8) {
+            this.uploadGray(buffer, stride);
+            return;
+        }
+
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
-        final int glFormat = (this.colorSpace == ColorSpace.BGRA) ? GL12.GL_BGRA : GL12.GL_RGBA;
-        final int bytesPerTexel = 4; // BGRA/RGBA
+
+        final int glFormat;
+        final int glType;
+        final int bytesPerTexel;
+        switch (this.colorSpace) {
+            case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
+            case RGB  -> { glFormat = GL11.GL_RGB;  glType = GL11.GL_UNSIGNED_BYTE;             bytesPerTexel = 3; }
+            default   -> { glFormat = GL11.GL_RGBA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
+        }
+
         final int rowLengthPixels = (stride == 0) ? 0 : stride / bytesPerTexel;
         final int effectiveStride = (stride == 0) ? this.width * bytesPerTexel : stride;
         final long dataSize = (long) effectiveStride * this.height;
 
         if (!buffer.isDirect() && buffer.remaining() < dataSize) {
-            LOGGER.warn(IT, "BGRA heap buffer too small: {} < {}", buffer.remaining(), dataSize);
+            LOGGER.warn(IT, "Single-plane heap buffer too small: {} < {}", buffer.remaining(), dataSize);
             return;
         }
         final long addr = MemoryUtil.memAddress(buffer);
@@ -278,41 +314,88 @@ public final class GLEngine extends GFXEngine {
         this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
 
-        // INIT PBOs LAZILY
         if (!this.pboInitialized) {
             this.initPBOs(1);
         }
 
         if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
-            // FIRST FRAME OR SIZE CHANGE: DIRECT SYNC UPLOAD + SEED PBO
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, addr);
-            this.checkGLError("BGRA glTexImage2D");
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
+            this.checkGLError("single-plane glTexImage2D");
 
-            // SEED CURRENT PBO
             this.seedPBO(0, dataSize, addr);
             this.pboAllocSizes[0] = dataSize;
             this.pboWriteIdx = 0;
             this.pboReady = true;
         } else {
-            // PBO PATH: GPU READS FROM CURRENT, CPU FILLS NEXT
             final int readIdx = this.pboWriteIdx;
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, glFormat, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 0L);
-            this.checkGLError("BGRA PBO texSubImage");
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, glFormat, glType, 0L);
+            this.checkGLError("single-plane PBO texSubImage");
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, dataSize, addr);
             this.pboWriteIdx = writeIdx;
         }
 
-        // CLEANUP
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
+    }
+
+    // UPLOAD — GRAY8 (R8 PLANE TEXTURE + FBO SHADER CONVERT)
+    private void uploadGray(final ByteBuffer buffer, final int stride) {
+        if (this.shaderGray == 0) return;
+        if (this.yTexture == 0) this.yTexture = this.newTexture();
+
+        final int effectiveStride = (stride == 0) ? this.width : stride;
+        final long dataSize = (long) effectiveStride * this.height;
+
+        final long addr = MemoryUtil.memAddress(buffer);
+        if (addr == 0L) return;
+
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
+
+        if (!this.pboInitialized) {
+            this.initPBOs(1);
+        }
+
+        if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, stride);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, this.width, this.height, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, addr);
+            this.checkGLError("GRAY8 texImage");
+
+            this.seedPBO(0, dataSize, addr);
+            this.pboAllocSizes[0] = dataSize;
+            this.pboWriteIdx = 0;
+            this.pboReady = true;
+        } else {
+            final int readIdx = this.pboWriteIdx;
+            final int writeIdx = (readIdx + 1) % NUM_PBOS;
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, stride);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
+            this.checkGLError("GRAY8 PBO texSub");
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+
+            this.seedPBO(writeIdx, dataSize, addr);
+            this.pboWriteIdx = writeIdx;
+        }
+
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
+        this.firstFrame = false;
+        this.convertYUVToRGBA();
     }
 
     // UPLOAD — TWO PLANES (NV12/NV21)
@@ -584,6 +667,12 @@ public final class GLEngine extends GFXEngine {
 
         // ACTIVATE SHADER + BIND PLANE TEXTURES
         switch (this.colorSpace) {
+            case GRAY8 -> {
+                GL20.glUseProgram(this.shaderGray);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+                GL20.glUniform1i(this.uniformGrayTex, 0);
+            }
             case NV12, NV21 -> {
                 GL20.glUseProgram(this.shaderNV);
                 GL13.glActiveTexture(GL13.GL_TEXTURE0);
@@ -752,6 +841,7 @@ public final class GLEngine extends GFXEngine {
     }
 
     private void releaseShaders() {
+        if (this.shaderGray != 0) { GL20.glDeleteProgram(this.shaderGray); this.shaderGray = 0; }
         if (this.shaderNV != 0) { GL20.glDeleteProgram(this.shaderNV); this.shaderNV = 0; }
         if (this.shaderYUV3 != 0) { GL20.glDeleteProgram(this.shaderYUV3); this.shaderYUV3 = 0; }
     }

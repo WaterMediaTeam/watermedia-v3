@@ -26,14 +26,13 @@ import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.HlsTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.Objects;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ThreadFactory;
 import java.util.function.BiFunction;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
@@ -130,6 +129,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private final MasterClock clock = new MasterClock();
     private volatile boolean qualityRequest = false;
     private volatile boolean ioAbortRequested = false;
+    private volatile Boolean hlsLiveSource;
     private Callback_Pointer interruptCallback;
 
     // FALLBACK RENDER BUFFERS (LAZY-INIT — ONLY WHEN sws_scale IS NEEDED)
@@ -155,6 +155,17 @@ public final class FFMediaPlayer extends MediaPlayer {
     // STARVATION DETECTION
     private long starvationStartMs;
     private long lastStarvationRecoveryMs;
+
+    // PTS DISCONTINUITY HANDLING (HLS AD STITCHING)
+    // TWITCH AND SIMILAR SERVICES INSERT ADS VIA #EXT-X-DISCONTINUITY.
+    // FFMPEG'S HLS DEMUXER DOESN'T ALWAYS NORMALIZE PTS ACROSS THESE
+    // BOUNDARIES — RAW PTS CAN JUMP BY HOURS (STREAM ELAPSED TIME).
+    // WE TRACK AN OFFSET PER STREAM TO KEEP PTS CONTINUOUS.
+    private static final double PTS_DISCONTINUITY_THRESHOLD = 10.0;
+    private volatile double videoPtsOffset;
+    private volatile double lastRawVideoPts = Double.NaN;
+    private volatile double audioPtsOffset;
+    private volatile double lastRawAudioPts = Double.NaN;
 
     // FORMAT CHANGE DETECTION (RENDER THREAD ONLY)
     private int lastFrameWidth;
@@ -268,7 +279,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     public Status status() { return this.clock.status(); }
 
     @Override
-    public boolean liveSource() { return !this.loading() && !isNull(this.formatContext) && this.formatContext.duration() == avutil.AV_NOPTS_VALUE; }
+    public boolean liveSource() {
+        final Boolean hls = this.hlsLiveSource;
+        if (hls != null) return hls;
+        return !this.loading() && !isNull(this.formatContext) && this.formatContext.duration() == avutil.AV_NOPTS_VALUE;
+    }
 
     @Override
     public boolean canSeek() { return !this.liveSource(); }
@@ -305,12 +320,15 @@ public final class FFMediaPlayer extends MediaPlayer {
     // MAPS AN FFMPEG PIXEL FORMAT TO A GFXENGINE COLORSPACE FOR NATIVE GPU UPLOAD. RETURNS NULL FOR FORMATS THAT REQUIRE SWS_SCALE FALLBACK (10-BIT, PACKED, ETC.)
     private static GFXEngine.ColorSpace mapPixelFormat(final int avPixFmt) {
         return switch (avPixFmt) {
-            case AV_PIX_FMT_YUV420P -> GFXEngine.ColorSpace.YUV420P;
-            case AV_PIX_FMT_YUV422P -> GFXEngine.ColorSpace.YUV422P;
-            case AV_PIX_FMT_YUV444P -> GFXEngine.ColorSpace.YUV444P;
+            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> GFXEngine.ColorSpace.YUV420P;
+            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> GFXEngine.ColorSpace.YUV422P;
+            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> GFXEngine.ColorSpace.YUV444P;
             case AV_PIX_FMT_NV12    -> GFXEngine.ColorSpace.NV12;
             case AV_PIX_FMT_NV21    -> GFXEngine.ColorSpace.NV21;
             case AV_PIX_FMT_BGRA    -> GFXEngine.ColorSpace.BGRA;
+            case AV_PIX_FMT_RGBA    -> GFXEngine.ColorSpace.RGBA;
+            case AV_PIX_FMT_RGB24   -> GFXEngine.ColorSpace.RGB;
+            case AV_PIX_FMT_GRAY8   -> GFXEngine.ColorSpace.GRAY8;
             default -> null; // NEEDS sws_scale FALLBACK
         };
     }
@@ -530,7 +548,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // COPIES AVFRAME PLANE DATA TO PERSISTENT BUFFERS, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
     private void uploadNativePlanes(final AVFrame frame, final GFXEngine.ColorSpace cs, final int width, final int height) {
         switch (cs) {
-            case BGRA -> {
+            case BGRA, RGBA, RGB, GRAY8 -> {
                 final int yStride = frame.linesize(0);
                 final long ySize = (long) yStride * height;
                 this.planeY = ensurePlane(this.planeY, ySize);
@@ -668,6 +686,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.totalRenderedFrames = 0;
             this.starvationStartMs = 0;
             this.lastStarvationRecoveryMs = 0;
+            this.videoPtsOffset = 0;
+            this.lastRawVideoPts = Double.NaN;
+            this.audioPtsOffset = 0;
+            this.lastRawAudioPts = Double.NaN;
+            this.hlsLiveSource = null;
 
             this.videoPacketQueue = new PacketQueue(VIDEO_PACKET_QUEUE_BYTES);
             this.audioPacketQueue = new PacketQueue(AUDIO_PACKET_QUEUE_BYTES);
@@ -839,9 +862,37 @@ public final class FFMediaPlayer extends MediaPlayer {
                     // and clock.update() will transition back to PLAYING when frames arrive.
                     if (current == Status.PLAYING && !this.clock.isDemuxFinished()) {
                         final long starvNowMs = System.currentTimeMillis();
-                        final boolean starving =
+                        final boolean queuesEmpty =
                                 (this.videoFrameQueue == null || this.videoFrameQueue.isEmpty()) &&
                                         (this.audioFrameQueue == null || this.audioFrameQueue.isEmpty());
+
+                        // ALSO DETECT UNREACHABLE FRAMES: QUEUES HAVE DATA BUT ALL
+                        // FRAMES ARE >10s AHEAD OF THE CLOCK. THIS HAPPENS FOR LIVE
+                        // HLS STREAMS WHERE PTS STARTS AT THE STREAM'S ELAPSED TIME
+                        // (E.G., 14890s) BUT THE CLOCK STARTS AT 0 AFTER clock.start().
+                        // WITHOUT THIS, THE PLAYER DEADLOCKS: FRAMES ARE "TOO EARLY"
+                        // BUT QUEUES AREN'T EMPTY SO STARVATION NEVER FIRES.
+                        boolean unreachable = false;
+                        if (!queuesEmpty) {
+                            final double clockSec = this.clock.time();
+                            unreachable = true;
+                            if (this.audioFrameQueue != null) {
+                                final FrameQueue.Slot a = this.audioFrameQueue.peek();
+                                if (a != null && a.serial == this.clock.serial()
+                                        && (a.ptsMs / 1000.0 - clockSec) <= PTS_DISCONTINUITY_THRESHOLD) {
+                                    unreachable = false;
+                                }
+                            }
+                            if (unreachable && this.videoFrameQueue != null) {
+                                final FrameQueue.Slot v = this.videoFrameQueue.peek();
+                                if (v != null && v.serial == this.clock.serial()
+                                        && (v.ptsMs / 1000.0 - clockSec) <= PTS_DISCONTINUITY_THRESHOLD) {
+                                    unreachable = false;
+                                }
+                            }
+                        }
+
+                        final boolean starving = queuesEmpty || unreachable;
                         if (starving && starvNowMs - this.lastStarvationRecoveryMs > STARVATION_THRESHOLD_MS * 4) {
                             if (this.starvationStartMs == 0) {
                                 this.starvationStartMs = starvNowMs;
@@ -953,16 +1004,27 @@ public final class FFMediaPlayer extends MediaPlayer {
                     }
 
                     final long ffTs = targetMs * 1000L;
-                    final int flags = precise ? avformat.AVSEEK_FLAG_BACKWARD
-                            : ((targetMs < this.clock.timeMs()) ? avformat.AVSEEK_FLAG_BACKWARD : 0);
+                    final int seekFlags = (targetMs < this.clock.timeMs()) ? avformat.AVSEEK_FLAG_BACKWARD : 0;
+                    boolean reopened = false;
 
-                    if (avformat.av_seek_frame(this.formatContext, -1, ffTs, flags) < 0) {
-                        LOGGER.error(IT, "Seek failed on main context (target={}ms) — staying in BUFFERING, pipeline will recover from current position", targetMs);
-                        // DON'T transition to PLAYING with empty queues — that causes
-                        // immediate starvation → another seek → feedback loop.
-                        // Stay in BUFFERING; the demux continues from the current read
-                        // position, decode threads produce frames, and clock.update()
-                        // transitions BUFFERING→PLAYING when frames arrive.
+                    int seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, seekFlags);
+                    if (seekResult < 0) {
+                        seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, seekFlags);
+                    }
+                    if (seekResult < 0 && seekFlags != 0) {
+                        seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
+                    }
+                    if (seekResult < 0 && this.reopenFormat()) {
+                        LOGGER.info(IT, "Seek to {}ms failed — reopened format from beginning", targetMs);
+                        reopened = true;
+                        seekResult = 0;
+                        if (targetMs > 0) {
+                            seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, 0);
+                            if (seekResult < 0) seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
+                        }
+                    }
+                    if (seekResult < 0) {
+                        LOGGER.error(IT, "Seek failed on main context (target={}ms, error={}) — staying in BUFFERING, pipeline will recover from current position", targetMs, seekResult);
                         this.ensureDecodeThreads();
                         continue;
                     }
@@ -974,10 +1036,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                     }
 
                     if (this.useAudioSlave && this.slaveFormatContext != null) {
-                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffTs, flags);
+                        avformat.avformat_seek_file(this.slaveFormatContext, -1, Long.MIN_VALUE, ffTs, ffTs, seekFlags);
                     }
 
-                    if (precise) {
+                    if (precise && !(reopened && targetMs == 0)) {
                         this.syncDrain(targetMs, packet, slavePacket);
                     }
 
@@ -1126,6 +1188,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (packetSerial != lastSerial) {
                         if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                         lastSerial = packetSerial;
+                        this.lastRawVideoPts = Double.NaN;
+                        this.videoPtsOffset = 0;
                     }
 
                     if (packetSerial != this.videoPacketQueue.serial()) continue;
@@ -1143,7 +1207,20 @@ public final class FFMediaPlayer extends MediaPlayer {
                             frameToQueue = hwTransfer;
                         }
 
-                        final double ptsSec = tempFrame.pts() * this.videoTimeBase;
+                        final double rawPtsSec = tempFrame.pts() * this.videoTimeBase;
+
+                        // PTS DISCONTINUITY DETECTION (HLS AD STITCHING)
+                        if (!Double.isNaN(this.lastRawVideoPts)) {
+                            final double jump = rawPtsSec - this.lastRawVideoPts;
+                            if (Math.abs(jump) > PTS_DISCONTINUITY_THRESHOLD) {
+                                final double expected = this.lastRawVideoPts + this.videoPtsOffset + this.clock.frameDurationSec();
+                                this.videoPtsOffset = expected - rawPtsSec;
+                                LOGGER.info(IT, "Video PTS discontinuity: jump={}s, new offset={}s", String.format("%.1f", jump), String.format("%.1f", this.videoPtsOffset));
+                            }
+                        }
+                        this.lastRawVideoPts = rawPtsSec;
+
+                        final double ptsSec = rawPtsSec + this.videoPtsOffset;
                         final long ptsMs = (long) (ptsSec * 1000.0);
 
                         final FrameQueue.Slot slot = this.videoFrameQueue.peekWritable();
@@ -1194,6 +1271,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (packetSerial != lastSerial) {
                         if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.audioCodecContext);
                         lastSerial = packetSerial;
+                        this.lastRawAudioPts = Double.NaN;
+                        this.audioPtsOffset = 0;
                     }
 
                     if (packetSerial != this.audioPacketQueue.serial()) continue;
@@ -1201,7 +1280,21 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (avcodec.avcodec_send_packet(this.audioCodecContext, packet) < 0) continue;
 
                     while (avcodec.avcodec_receive_frame(this.audioCodecContext, tempFrame) >= 0) {
-                        final double ptsSec = tempFrame.pts() * this.audioTimeBase;
+                        final double rawPtsSec = tempFrame.pts() * this.audioTimeBase;
+
+                        // PTS DISCONTINUITY DETECTION (HLS AD STITCHING)
+                        if (!Double.isNaN(this.lastRawAudioPts)) {
+                            final double jump = rawPtsSec - this.lastRawAudioPts;
+                            if (Math.abs(jump) > PTS_DISCONTINUITY_THRESHOLD) {
+                                final double audioDur = (double) tempFrame.nb_samples() / tempFrame.sample_rate();
+                                final double expected = this.lastRawAudioPts + this.audioPtsOffset + audioDur;
+                                this.audioPtsOffset = expected - rawPtsSec;
+                                LOGGER.info(IT, "Audio PTS discontinuity: jump={}s, new offset={}s", String.format("%.1f", jump), String.format("%.1f", this.audioPtsOffset));
+                            }
+                        }
+                        this.lastRawAudioPts = rawPtsSec;
+
+                        final double ptsSec = rawPtsSec + this.audioPtsOffset;
 
                         if (!this.enqueueResampledAudio(tempFrame, ptsSec, packetSerial)) break;
                         framesProduced++;
@@ -1426,8 +1519,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     private void handleQualitySwitch() {
         final long currentMs = this.clock.timeMs();
         final boolean wasPaused = this.clock.pauseRequested();
+        final boolean live = this.liveSource();
 
-        LOGGER.info(IT, "Switching quality to {} at {}ms", this.quality, currentMs);
+        LOGGER.info(IT, "Switching quality to {} at {}ms (live={})", this.quality, currentMs, live);
 
         this.clock.transition(Status.BUFFERING);
         this.stopThreads();
@@ -1435,6 +1529,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         this.totalSkippedFrames = 0;
         this.totalRenderedFrames = 0;
+
+        // RESET PTS DISCONTINUITY STATE FOR NEW PIPELINE
+        this.videoPtsOffset = 0;
+        this.lastRawVideoPts = Double.NaN;
+        this.audioPtsOffset = 0;
+        this.lastRawAudioPts = Double.NaN;
 
         this.videoPacketQueue.reset();
         this.audioPacketQueue.reset();
@@ -1458,13 +1558,71 @@ public final class FFMediaPlayer extends MediaPlayer {
             return;
         }
 
-        this.clock.requestSeek(currentMs, true);
+        if (live) {
+            // LIVE STREAMS: DON'T SEEK — FFMPEG STARTS AT THE LIVE EDGE.
+            // SEEKING TO currentMs FAILS ON LIVE HLS AND CAUSES A FEEDBACK LOOP.
+            // TRANSITION TO BUFFERING SO THE FIRST DECODED FRAME CALIBRATES THE CLOCK
+            // VIA clock.update() → BUFFERING→PLAYING. WITHOUT THIS, clock.start() SETS
+            // PLAYING AT PTS=0 AND STARVATION DETECTION FIRES BEFORE FRAMES ARRIVE.
+            this.clock.transition(Status.BUFFERING);
+            this.ensureDecodeThreads();
+        } else {
+            this.clock.requestSeek(currentMs, true);
+        }
 
         if (wasPaused) {
             this.clock.setPaused(true);
         }
 
         LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
+    }
+
+    private boolean reopenFormat() {
+        final var uri = this.source.uri(this.quality);
+        final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+
+        if (this.formatContext != null) {
+            avformat.avformat_close_input(this.formatContext);
+        }
+
+        this.formatContext = avformat.avformat_alloc_context();
+        if (this.interruptCallback != null) {
+            this.formatContext.interrupt_callback().callback(this.interruptCallback);
+        }
+
+        final AVDictionary options = new AVDictionary();
+        try {
+            av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
+                    "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
+                    "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
+            av_dict_set(options, "buffer_size", "33554432", 0);
+            av_dict_set(options, "rtbufsize", "15000000", 0);
+            av_dict_set(options, "http_persistent", "1", 0);
+            av_dict_set(options, "multiple_requests", "0", 0);
+            av_dict_set(options, "reconnect", "1", 0);
+            av_dict_set(options, "reconnect_streamed", "1", 0);
+            av_dict_set(options, "reconnect_delay_max", "5", 0);
+            av_dict_set(options, "timeout", "10000000", 0);
+            av_dict_set(options, "rtsp_transport", "tcp", 0);
+            av_dict_set(options, "max_delay", "5000000", 0);
+
+            if (avformat.avformat_open_input(this.formatContext, url, null, options) < 0) {
+                LOGGER.error(IT, "reopenFormat: failed to open input: {}", url);
+                return false;
+            }
+        } finally {
+            av_dict_free(options);
+        }
+
+        if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
+            LOGGER.error(IT, "reopenFormat: failed to find stream info");
+            return false;
+        }
+
+        if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
+        if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
+
+        return true;
     }
 
     // INIT
@@ -1518,6 +1676,22 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
                 LOGGER.error(IT, "Failed to find stream info");
                 return false;
+            }
+
+            final String fmtName = this.formatContext.iformat() != null ? this.formatContext.iformat().name().getString() : "";
+            if (url.contains(".m3u8") || fmtName.contains("hls")) {
+                var hlsResult = HlsTool.fetch(uri);
+                if (hlsResult instanceof final HlsTool.MasterResult master && !master.variants().isEmpty()) {
+                    final var resolved = uri.resolve(master.variants().get(0).uri());
+                    hlsResult = HlsTool.fetch(resolved);
+                }
+                if (hlsResult instanceof final HlsTool.MediaResult media) {
+                    this.hlsLiveSource = media.live();
+                    LOGGER.info(IT, "HLS probe: live={}, vod={}, totalDuration={}s", media.live(), media.vod(), media.totalDuration());
+                } else {
+                    this.hlsLiveSource = false;
+                    LOGGER.warn(IT, "HLS probe: inconclusive ({}), defaulting to VOD", hlsResult.getClass().getSimpleName());
+                }
             }
 
             for (int i = 0; i < this.formatContext.nb_streams(); i++) {
@@ -1669,8 +1843,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final int threads = pixels <= 921600
                     ? Math.min(2, MAX_DECODE_THREADS) : pixels <= 2073600
-                                                        ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3686400
-                                                                                            ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
+                    ? Math.min(4, MAX_DECODE_THREADS) : pixels <= 3686400
+                    ? Math.min(6, MAX_DECODE_THREADS) : MAX_DECODE_THREADS;
 
             this.videoCodecContext.thread_count(threads);
             this.videoCodecContext.thread_type(AVCodecContext.FF_THREAD_FRAME | AVCodecContext.FF_THREAD_SLICE);
@@ -1683,14 +1857,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
         }
 
-        // SET INITIAL DIMENSIONS — ACTUAL COLOR SPACE IS DETERMINED BY FIRST DECODED FRAME
-        // pollVideoFrame() CALLS gfx.setVideoFormat() WITH THE CORRECT FORMAT ON FIRST FRAME
         final int w = this.videoCodecContext.width();
         final int h = this.videoCodecContext.height();
-        this.gfx.setVideoFormat(GFXEngine.ColorSpace.BGRA, w, h);
-        this.lastColorSpace = GFXEngine.ColorSpace.BGRA;
-        this.lastFrameWidth = w;
-        this.lastFrameHeight = h;
+        final GFXEngine.ColorSpace initialCs = mapPixelFormat(this.videoCodecContext.pix_fmt());
+        if (initialCs != null) {
+            this.gfx.setVideoFormat(initialCs, w, h);
+            this.lastColorSpace = initialCs;
+            this.lastFrameWidth = w;
+            this.lastFrameHeight = h;
+        }
 
         return true;
     }

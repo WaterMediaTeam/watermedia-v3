@@ -49,6 +49,7 @@ public final class HlsTool {
         try {
             final var http = NetTool.connectToHTTP(uri, "GET", "*/*");
             http.setConnectTimeout(10_000);
+            http.setReadTimeout(10_000);
             http.setInstanceFollowRedirects(true);
             http.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
             http.setDoInput(true);
