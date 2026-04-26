@@ -19,6 +19,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected static final int NO_DURATION = 0;
 
     // BASIC PROPERTIES
+    protected final MRL mrl;
     protected final MRL.Source source;
     protected final GFXEngine gfx;
     protected final SFXEngine sfx;
@@ -30,7 +31,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private float speed = 1.0f;
     private boolean muted = false;
 
-    public MediaPlayer(final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
+    public MediaPlayer(final MRL mrl, final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
+
         Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
         if (gfx == null && sfx == null && !(this instanceof ServerMediaPlayer))
             throw new IllegalStateException("MediaPlayer must have a valid GFX or SFX resource.");
@@ -40,6 +42,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             LOGGER.warn(IT, "SFXEngine is null — there will be no audio output");
 
         // INIT PROPERTIES
+        this.mrl = mrl;
         this.source = source;
         this.gfx = gfx;
         this.sfx = sfx;
@@ -50,6 +53,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Used by {@link ServerMediaPlayer} which only tracks time progression.
      */
     protected MediaPlayer() {
+        this.mrl = null;
         this.source = null;
         this.gfx = null;
         this.sfx = null;

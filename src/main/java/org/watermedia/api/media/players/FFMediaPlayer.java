@@ -176,8 +176,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int perfAudioUploads;
     private int perfVideoRenders;
 
-    public FFMediaPlayer(final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
-        super(source, gfx, sfx);
+    public FFMediaPlayer(final MRL mrl, final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
+        super(mrl, source, gfx, sfx);
     }
 
     // MEDIAPLAYER OVERRIDES
@@ -1492,9 +1492,10 @@ public final class FFMediaPlayer extends MediaPlayer {
             final AVDictionary options = new AVDictionary();
 
             try {
+                LOGGER.debug("Referer: {}", uri.getScheme() + "://" + uri.getHost());
                 av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
                         "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                        "Referer: " + uri.getScheme() + "://" + uri.getHost() + "/\r\n", 0);
+                        "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);

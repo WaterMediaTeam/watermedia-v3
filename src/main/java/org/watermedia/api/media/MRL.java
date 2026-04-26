@@ -303,12 +303,12 @@ public final class MRL {
         try {
             if (source.type == MediaType.IMAGE) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
-                return new TxMediaPlayer(source, gfxEngine);
+                return new TxMediaPlayer(this, source, gfxEngine);
             }
 
             if (FFMediaPlayer.loaded()) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
-                return new FFMediaPlayer(source, gfxEngine, sfxEngine);
+                return new FFMediaPlayer(this, source, gfxEngine, sfxEngine);
             }
 
             LOGGER.error(IT, "No media backend available for: {}", this.uri);
@@ -327,7 +327,7 @@ public final class MRL {
     public MediaPlayer createThumbnailPlayer(final GFXEngine gfxEngine) {
         for (final Source src: this.sources()) {
             if (src.metadata() != null) {
-                final var player = src.metadata().createThumbnailPlayer(gfxEngine);
+                final var player = src.metadata().createThumbnailPlayer(this, gfxEngine);
                 if (player != null) {
                     LOGGER.debug(IT, "Created thumbnail player from metadata for: {}", src);
                     return player;
@@ -335,7 +335,7 @@ public final class MRL {
             }
             if (src.isImage()) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image as thumbnail: {}", src);
-                return new TxMediaPlayer(src, gfxEngine);
+                return new TxMediaPlayer(this, src, gfxEngine);
             }
             // TODO: VIDEO THUMBNAILS ARE EXPENSIVE TO CREATE, SO WE ONLY USE THEM AS A LAST RESORT
         }
@@ -516,11 +516,11 @@ public final class MRL {
             this(title, description, null, null, duration, null);
         }
 
-        public MediaPlayer createThumbnailPlayer(final GFXEngine gfxEngine) {
+        public MediaPlayer createThumbnailPlayer(final MRL mrl, final GFXEngine gfxEngine) {
             if (this.thumbnail == null) return null;
 
             final Source source = new Source(MediaType.IMAGE, this.thumbnail);
-            return new TxMediaPlayer(source, gfxEngine);
+            return new TxMediaPlayer(mrl, source, gfxEngine);
         }
     }
 

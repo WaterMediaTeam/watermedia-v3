@@ -55,8 +55,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     // TIME (LIFECYCLE THREAD WRITES, CALLER READS)
     private volatile long time = 0;
 
-    public TxMediaPlayer(final MRL.Source source, final GFXEngine gfxEngine) {
-        super(source, gfxEngine, null);
+    public TxMediaPlayer(final MRL mrl, final MRL.Source source, final GFXEngine gfxEngine) {
+        super(mrl, source, gfxEngine, null);
     }
 
     // START / STOP / RELEASE
