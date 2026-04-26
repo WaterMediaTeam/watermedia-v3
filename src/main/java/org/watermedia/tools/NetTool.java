@@ -30,6 +30,7 @@ public class NetTool {
         conn.setReadTimeout(15000);
         conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
         conn.setRequestProperty("Accept", accept);
+        conn.setRequestProperty("Referer", uri.getScheme() + "://" + uri.getHost());
         if (conn instanceof final HttpURLConnection http) {
             http.setRequestMethod(method);
             http.setInstanceFollowRedirects(true);
