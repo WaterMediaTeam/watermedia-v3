@@ -268,7 +268,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public Status status() { return this.clock.status(); }
 
     @Override
-    public boolean liveSource() { return !isNull(this.formatContext) && this.formatContext.duration() == avutil.AV_NOPTS_VALUE; }
+    public boolean liveSource() { return !this.loading() && !isNull(this.formatContext) && this.formatContext.duration() == avutil.AV_NOPTS_VALUE; }
 
     @Override
     public boolean canSeek() { return !this.liveSource(); }
