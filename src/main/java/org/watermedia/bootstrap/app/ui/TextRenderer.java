@@ -58,7 +58,7 @@ public final class TextRenderer {
         DrawTool.color(color);
 
         int currentX = x;
-        for (final char c : text.toCharArray()) {
+        for (final char c: text.toCharArray()) {
             final CharTexture ct = this.getOrCreateCharTexture(c);
             if (ct == null) continue;
             DrawTool.bindTexture(ct.textureId);
@@ -72,7 +72,7 @@ public final class TextRenderer {
         DrawTool.color(color);
 
         float currentX = x;
-        for (final char c : text.toCharArray()) {
+        for (final char c: text.toCharArray()) {
             final CharTexture ct = this.getOrCreateCharTexture(c);
             if (ct == null) continue;
             DrawTool.bindTexture(ct.textureId);
@@ -84,7 +84,7 @@ public final class TextRenderer {
     public int width(final String text) {
         if (text == null || text.isEmpty()) return 0;
         int width = 0;
-        for (final char c : text.toCharArray()) {
+        for (final char c: text.toCharArray()) {
             final CharTexture ct = this.getOrCreateCharTexture(c);
             if (ct != null) width += ct.width;
         }
@@ -106,7 +106,7 @@ public final class TextRenderer {
 
         final StringBuilder sb = new StringBuilder();
         int currentW = 0;
-        for (final char c : text.toCharArray()) {
+        for (final char c: text.toCharArray()) {
             final CharTexture ct = this.getOrCreateCharTexture(c);
             if (ct == null) continue;
             if (currentW + ct.width + ellipsisW > maxWidth) break;

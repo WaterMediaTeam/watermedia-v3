@@ -32,7 +32,7 @@ public class HuffmanTableTest {
         // TEST VARIOUS SINGLE SYMBOL VALUES
         final int[] symbols = {0, 1, 42, 127, 255};
 
-        for (final int symbol : symbols) {
+        for (final int symbol: symbols) {
             tests.add(dynamicTest(
                     "Single symbol [" + symbol + "]",
                     () -> verifySingleSymbol(symbol)

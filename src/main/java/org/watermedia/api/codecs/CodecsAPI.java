@@ -35,7 +35,7 @@ public class CodecsAPI {
      * @return a {@link ImageData} instance with a raw decoded image, the resulting buffers are in BGRA
      */
     public static ImageData decodeImage(final ByteBuffer buffer) {
-        for (final ImageCodec imageCodec : IMAGE_CODECS) {
+        for (final ImageCodec imageCodec: IMAGE_CODECS) {
             if (imageCodec.supported(buffer)) {
                 try {
                     return imageCodec.decode(buffer);

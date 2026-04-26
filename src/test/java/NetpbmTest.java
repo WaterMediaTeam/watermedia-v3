@@ -16,7 +16,7 @@ public class NetpbmTest {
         final java.util.List<DynamicTest> tests = new java.util.ArrayList<>();
 
         if (files != null) {
-            for (final File file : files) {
+            for (final File file: files) {
                 tests.add(DynamicTest.dynamicTest("Parse " + file.getName(), () -> {
                     try {
                         final byte[] fileData = Files.readAllBytes(file.toPath());

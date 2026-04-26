@@ -58,7 +58,7 @@ public class PNGTest {
 
         final List<DynamicTest> tests = new ArrayList<>();
 
-        for (final File imageFile : imageFiles) {
+        for (final File imageFile: imageFiles) {
             final String baseName = imageFile.getName();
 
             // TEST 1: VERIFY DECODING SUCCEEDS

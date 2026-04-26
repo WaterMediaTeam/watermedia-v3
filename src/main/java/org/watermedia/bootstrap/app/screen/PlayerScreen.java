@@ -242,7 +242,7 @@ public class PlayerScreen extends Screen {
         final int contentH = lineH + 15 + (this.ctx.availableQualities.length * lineH);
         int contentW = 0;
 
-        for (final MRL.Quality q : this.ctx.availableQualities) {
+        for (final MRL.Quality q: this.ctx.availableQualities) {
             contentW = Math.max(contentW, this.text.width("> " + q.name() + " (" + q.threshold + "p)"));
         }
 

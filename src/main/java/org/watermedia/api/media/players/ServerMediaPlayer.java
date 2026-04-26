@@ -215,7 +215,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     private static void tick() {
-        for (final ServerMediaPlayer player : ACTIVE) {
+        for (final ServerMediaPlayer player: ACTIVE) {
             try {
                 player.update();
             } catch (final Throwable t) {

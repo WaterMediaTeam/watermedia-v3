@@ -78,7 +78,7 @@ public class MRLSelectorScreen extends Screen {
         if (this.ctx.selectedGroup != null) {
             this.grid.clear();
             this.grid.title("Select Media - " + this.ctx.selectedGroup.name());
-            for (final AppContext.TestURI uri : this.ctx.selectedGroup.uris()) {
+            for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
                 this.grid.item(uri);
             }
         }
@@ -93,7 +93,7 @@ public class MRLSelectorScreen extends Screen {
     private void updateThumbnailPlayers() {
         if (this.ctx.selectedGroup == null) return;
 
-        for (final AppContext.TestURI uri : this.ctx.selectedGroup.uris()) {
+        for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
             final String name = uri.name();
             if (this.thumbnailAttempted.contains(name)) continue;
 
@@ -120,7 +120,7 @@ public class MRLSelectorScreen extends Screen {
     }
 
     private void releaseThumbnailPlayers() {
-        for (final MediaPlayer player : this.thumbnailPlayers.values()) {
+        for (final MediaPlayer player: this.thumbnailPlayers.values()) {
             player.release();
         }
         this.thumbnailPlayers.clear();

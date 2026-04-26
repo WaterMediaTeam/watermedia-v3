@@ -29,7 +29,7 @@ public class NetworkAPI {
         if (query == null || query.isEmpty()) return Map.of();
 
         final var result = new HashMap<String, String>();
-        for (final var param : query.split("&")) {
+        for (final var param: query.split("&")) {
             final var pair = param.split("=", 2);
             final var key = URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
             final var value = pair.length > 1 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "";

@@ -170,7 +170,7 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) {
         buf.put(nameBytes);
         buf.put((byte) 0);
         buf.put((byte) this.sampleDepth);
-        for (final SPLTEntry entry : this.entries) {
+        for (final SPLTEntry entry: this.entries) {
             if (this.sampleDepth == 8) {
                 buf.put((byte) entry.red());
                 buf.put((byte) entry.green());

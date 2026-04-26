@@ -521,7 +521,7 @@ public final class VP8LossyDecoder {
 
     private static int readExtra(final VP8BoolDecoder br, final int[] probs) throws XCodecException {
         int v = 0;
-        for (final int prob : probs) {
+        for (final int prob: probs) {
             if (prob == 0) break;
             v = (v << 1) | (br.readBool(prob) ? 1 : 0);
         }

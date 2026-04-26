@@ -20,7 +20,7 @@ public enum NetpbmType {
     }
 
     public static NetpbmType fromVersion(final String version) {
-        for (final NetpbmType type : values()) {
+        for (final NetpbmType type: values()) {
             if (type.version.equals(version))
                 return type;
         }

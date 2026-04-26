@@ -133,7 +133,7 @@ public class Grid<T> {
     }
 
     public Grid<T> items(final List<T> list) {
-        for (final T item : list) {
+        for (final T item: list) {
             this.item(item);
         }
         return this;
@@ -265,7 +265,7 @@ public class Grid<T> {
         int currentRow = 0;
         int itemIdx = 0;
 
-        for (final GridEntry<T> entry : this.entries) {
+        for (final GridEntry<T> entry: this.entries) {
             if (entry.header()) {
                 // FINISH PARTIAL ROW IF ITEMS EXIST
                 if (currentCol > 0) {

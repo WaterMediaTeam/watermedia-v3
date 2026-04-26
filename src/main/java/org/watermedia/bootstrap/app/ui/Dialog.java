@@ -168,7 +168,7 @@ public class Dialog {
         }
 
         // CONTENT
-        for (final ContentLine line : this.contentLines) {
+        for (final ContentLine line: this.contentLines) {
             renderer.render(line.text, this.bounds.x() + this.padding, y, line.color);
             y += lineH;
         }
@@ -216,7 +216,7 @@ public class Dialog {
         }
 
         // CONTENT LINES
-        for (final ContentLine line : this.contentLines) {
+        for (final ContentLine line: this.contentLines) {
             contentH += lineH;
             contentW = Math.max(contentW, text.width(line.text));
         }

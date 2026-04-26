@@ -49,7 +49,7 @@ public interface NetpbmDecoder {
                 int a = hasAlpha && (depth >= 4) ? this.readSample(data, maxVal) : 255;
 
                 // SKIP EXTRA PLANES
-                for (int d = (hasAlpha ? 4 : 3); d < depth; d++) this.readSample(data, maxVal);
+                for (int d = (hasAlpha ? 4: 3); d < depth; d++) this.readSample(data, maxVal);
 
                 r = (r * 255) / maxVal;
                 g = (g * 255) / maxVal;

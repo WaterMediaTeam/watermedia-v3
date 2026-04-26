@@ -102,7 +102,7 @@ public class WebPTest {
 
         final List<DynamicTest> tests = new ArrayList<>();
 
-        for (final File imageFile : imageFiles) {
+        for (final File imageFile: imageFiles) {
             final String baseName = imageFile.getName();
 
             // TEST 1: VERIFY DECODING SUCCEEDS
@@ -142,7 +142,7 @@ public class WebPTest {
 
         final List<DynamicTest> tests = new ArrayList<>();
 
-        for (final File imageFile : imageFiles) {
+        for (final File imageFile: imageFiles) {
             final String baseName = imageFile.getName();
 
             // ONLY DECODE TEST FOR ANIMATED (DWEBP DOESN'T SUPPORT ANIMATED)
@@ -184,7 +184,7 @@ public class WebPTest {
 
         final List<DynamicTest> tests = new ArrayList<>();
 
-        for (final File imageFile : imageFiles) {
+        for (final File imageFile: imageFiles) {
             // CREATE TWO TESTS PER FILE: DECODE TEST AND DATA COMPARISON TEST
             final String baseName = imageFile.getName();
 

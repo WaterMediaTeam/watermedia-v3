@@ -69,7 +69,7 @@ public record HIST(int[] frequencies) {
 
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(this.frequencies.length * 2).order(ByteOrder.BIG_ENDIAN);
-        for (final int freq : this.frequencies) {
+        for (final int freq: this.frequencies) {
             buf.putShort((short) freq);
         }
         return buf.array();

@@ -120,7 +120,7 @@ public class RiffParserTest {
         if (losslessDir.exists()) {
             final File[] files = losslessDir.listFiles((dir, name) -> name.endsWith(".webp"));
             if (files != null) {
-                for (final File file : files) {
+                for (final File file: files) {
                     tests.add(dynamicTest(
                             "Parse lossless [" + file.getName() + "]",
                             () -> testParseLosslessFile(file)
@@ -134,7 +134,7 @@ public class RiffParserTest {
         if (lossyDir.exists()) {
             final File[] files = lossyDir.listFiles((dir, name) -> name.endsWith(".webp"));
             if (files != null) {
-                for (final File file : files) {
+                for (final File file: files) {
                     tests.add(dynamicTest(
                             "Parse lossy [" + file.getName() + "]",
                             () -> testParseLossyFile(file)
@@ -148,7 +148,7 @@ public class RiffParserTest {
         if (animatedDir.exists()) {
             final File[] files = animatedDir.listFiles((dir, name) -> name.endsWith(".webp"));
             if (files != null) {
-                for (final File file : files) {
+                for (final File file: files) {
                     tests.add(dynamicTest(
                             "Parse animated [" + file.getName() + "]",
                             () -> testParseAnimatedFile(file)
@@ -220,7 +220,7 @@ public class RiffParserTest {
         assertTrue(frames.size() > 1, "Animated file should have multiple frames");
 
         // VERIFY FRAME PROPERTIES
-        for (final var frame : frames) {
+        for (final var frame: frames) {
             assertTrue(frame.width() > 0, "Frame width should be positive");
             assertTrue(frame.height() > 0, "Frame height should be positive");
             assertTrue(frame.duration() >= 0, "Frame duration should be non-negative");

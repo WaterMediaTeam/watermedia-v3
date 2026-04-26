@@ -71,7 +71,7 @@ public class Selector<T> {
     }
 
     public Selector<T> items(final List<T> items) {
-        for (final T item : items) {
+        for (final T item: items) {
             this.entries.add(new Entry<>(null, item, false));
         }
         return this;
@@ -228,7 +228,7 @@ public class Selector<T> {
 
         // FIND THE SELECTED ITEM'S POSITION
         int selectableIdx = 0;
-        for (final Entry<T> entry : this.entries) {
+        for (final Entry<T> entry: this.entries) {
             if (entry.header) {
                 y += 5 + lineH;
             } else {
@@ -315,7 +315,7 @@ public class Selector<T> {
         // ENTRIES
         int selectableIdx = 0;
         int itemNumber = 1;
-        for (final Entry<T> entry : this.entries) {
+        for (final Entry<T> entry: this.entries) {
             if (entry.header) {
                 // SECTION HEADER
                 y += 5;
@@ -388,7 +388,7 @@ public class Selector<T> {
 
         if (this.title != null) height += lineH + 10;
 
-        for (final Entry<T> entry : this.entries) {
+        for (final Entry<T> entry: this.entries) {
             if (entry.header) {
                 height += lineH + 5;
             } else {
@@ -400,7 +400,7 @@ public class Selector<T> {
 
         int width = this.minWidth;
         int itemNumber = 1;
-        for (final Entry<T> entry : this.entries) {
+        for (final Entry<T> entry: this.entries) {
             if (!entry.header) {
                 final String label = entry.label != null ? entry.label : this.labelProvider.apply(entry.item);
                 final String status = this.statusProvider != null ? " " + this.statusProvider.apply(entry.item) : "";

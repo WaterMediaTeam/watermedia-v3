@@ -341,7 +341,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // MEMBERSHIP CHECK FOR INT ARRAYS.
     private static boolean contains(final int[] arr, final int value) {
-        for (final int v : arr) if (v == value) return true;
+        for (final int v: arr) if (v == value) return true;
         return false;
     }
 
@@ -360,7 +360,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // FINDS THE ENTRY MATCHING channels EXACTLY, OR 0 IF NONE.
     // VALID ENTRIES HAVE channels > 0 IN THE MSB, SO 0 IS A SAFE "NOT FOUND" SENTINEL.
     private static long entryFor(final long[] table, final int channels) {
-        for (final long e : table) if (channelsOf(e) == channels) return e;
+        for (final long e: table) if (channelsOf(e) == channels) return e;
         return 0L;
     }
 
@@ -370,7 +370,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         long best = table[0];
         int bestCh = channelsOf(best);
         int bestDiff = Math.abs(bestCh - target);
-        for (final long e : table) {
+        for (final long e: table) {
             final int ch = channelsOf(e);
             final int diff = Math.abs(ch - target);
             if (diff < bestDiff || (diff == bestDiff && ch < bestCh)) {

@@ -310,7 +310,7 @@ public class WaterMediaApp {
                 .clearButtons();
 
         // SPLIT MESSAGE INTO LINES
-        for (final String line : ctx.globalErrorMessage.split("\n")) {
+        for (final String line: ctx.globalErrorMessage.split("\n")) {
             errorDialog.addLine(line);
         }
 

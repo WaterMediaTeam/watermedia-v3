@@ -78,7 +78,7 @@ public final class VP8LDecoder {
 
             // FIND MAX META PREFIX CODE
             int maxCode = 0;
-            for (final int code : metaPrefixImage) {
+            for (final int code: metaPrefixImage) {
                 final int meta = ((code >> 8) & 0xFF) | ((code >> 16) & 0xFF) << 8;
                 maxCode = Math.max(maxCode, meta);
             }

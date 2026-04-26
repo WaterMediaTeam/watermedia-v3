@@ -58,7 +58,7 @@ public class Group extends Element {
     public void render(final TextRenderer renderer, final int windowW, final int windowH) {
         if (!this.visible) return;
 
-        for (final Element child : this.children) {
+        for (final Element child: this.children) {
             if (child.visible()) {
                 child.render(renderer, windowW, windowH);
             }
@@ -71,7 +71,7 @@ public class Group extends Element {
         int y = startY + this.paddingY;
         int maxWidth = 0;
 
-        for (final Element child : this.children) {
+        for (final Element child: this.children) {
             final Dimension childBounds = child.calculateBounds(text, x, y);
             child.bounds(childBounds);
             maxWidth = Math.max(maxWidth, childBounds.width());
@@ -87,7 +87,7 @@ public class Group extends Element {
     public boolean handleClick(final double mx, final double my) {
         if (!this.visible || !this.enabled) return false;
 
-        for (final Element child : this.children) {
+        for (final Element child: this.children) {
             if (child.handleClick(mx, my)) return true;
         }
         return false;
@@ -98,7 +98,7 @@ public class Group extends Element {
         if (!this.visible || !this.enabled) return false;
 
         boolean anyHovered = false;
-        for (final Element child : this.children) {
+        for (final Element child: this.children) {
             if (child.handleHover(mx, my)) anyHovered = true;
         }
         return anyHovered;

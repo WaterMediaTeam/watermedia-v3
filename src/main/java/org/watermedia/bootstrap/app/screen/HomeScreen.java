@@ -92,7 +92,7 @@ public class HomeScreen extends Screen {
     private void openGroup(final AppContext.URIGroup group) {
         this.ctx.selectedGroup = group;
         this.ctx.groupMRLs.clear();
-        for (final AppContext.TestURI testUri : group.uris()) {
+        for (final AppContext.TestURI testUri: group.uris()) {
             this.ctx.groupMRLs.put(testUri.name(), MediaAPI.getMRL(testUri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);
@@ -103,7 +103,7 @@ public class HomeScreen extends Screen {
         this.ctx.selectedGroup = new AppContext.URIGroup("Custom Tests",
                 this.ctx.customTests.toArray(new AppContext.TestURI[0]));
         this.ctx.groupMRLs.clear();
-        for (final AppContext.TestURI uri : this.ctx.customTests) {
+        for (final AppContext.TestURI uri: this.ctx.customTests) {
             this.ctx.groupMRLs.put(uri.name(), MediaAPI.getMRL(uri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);

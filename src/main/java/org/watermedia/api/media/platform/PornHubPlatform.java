@@ -51,7 +51,7 @@ public class PornHubPlatform implements IPlatform {
 
             final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
 
-            for (final MediaDefinition def : flashVars.mediaDefinitions) {
+            for (final MediaDefinition def: flashVars.mediaDefinitions) {
                 if (def.videoUrl == null || def.videoUrl.isEmpty()) continue;
                 if (def.videoUrl.contains("pornhub.com")) continue; // NOT A CDN LINK MEANS 4K VIDEO, CANNOT BE OBTAINED
 

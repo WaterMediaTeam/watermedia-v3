@@ -105,7 +105,7 @@ public class AppBootstrap {
             System.out.println("[OK] WaterMedia Binaries found");
 
             // COLLECT DEPS
-            for (final String[] dep : DEPS) {
+            for (final String[] dep: DEPS) {
                 final Path p = LIBS_DIR.resolve(dep[0]);
                 if (Files.exists(p)) {
                     jars.add(p);
@@ -117,7 +117,7 @@ public class AppBootstrap {
 
             final String nat = "natives-" + IOTool.getPlatformClassifier();
             System.out.println("Platform: " + nat);
-            for (final String mod : NATIVES) {
+            for (final String mod: NATIVES) {
                 final String fn = mod + "-3.3.6-" + nat + ".jar";
                 final Path p = LIBS_DIR.resolve(fn);
                 if (Files.exists(p)) {
@@ -129,7 +129,7 @@ public class AppBootstrap {
             }
 
             // DOWNLOAD
-            for (final String[] dep : toDownload) {
+            for (final String[] dep: toDownload) {
                 final Path d = LIBS_DIR.resolve(dep[0]);
                 download(MAVEN + dep[1], d);
                 jars.add(d);
@@ -181,7 +181,7 @@ public class AppBootstrap {
         // INCLUDE ANY URLS FROM PARENT CLASSLOADERS
         for (ClassLoader cl = Thread.currentThread().getContextClassLoader(); cl != null; cl = cl.getParent()) {
             if (cl instanceof final URLClassLoader u) {
-                for (final URL url : u.getURLs()) {
+                for (final URL url: u.getURLs()) {
                     try {
                         cp.add(Path.of(url.toURI()).toString());
                     } catch (final Exception ignored) {}
@@ -202,7 +202,7 @@ public class AppBootstrap {
     private static Path findLocalJar(final String prefix) {
         final File[] files = new File("").getAbsoluteFile().listFiles();
         if (files != null) {
-            for (final File f : files) {
+            for (final File f: files) {
                 if (f.getName().startsWith(prefix) && f.getName().endsWith(".jar")) return f.toPath();
             }
         }
