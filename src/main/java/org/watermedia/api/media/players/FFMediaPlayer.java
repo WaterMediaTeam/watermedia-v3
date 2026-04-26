@@ -4,6 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
 import org.bytedeco.ffmpeg.avformat.*;
+import org.bytedeco.ffmpeg.avformat.AVIOInterruptCB.Callback_Pointer;
 import org.bytedeco.ffmpeg.avutil.*;
 import org.bytedeco.ffmpeg.swresample.*;
 import org.bytedeco.ffmpeg.swscale.*;
@@ -128,6 +129,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     // STATUS + SYNCHRONIZATION
     private final MasterClock clock = new MasterClock();
     private volatile boolean qualityRequest = false;
+    private volatile boolean ioAbortRequested = false;
+    private Callback_Pointer interruptCallback;
 
     // FALLBACK RENDER BUFFERS (LAZY-INIT — ONLY WHEN sws_scale IS NEEDED)
     private AVFrame scaledFrame;
@@ -1305,6 +1308,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // THREAD MANAGEMENT
     private void stopThreads() {
+        this.ioAbortRequested = true;
         if (this.videoPacketQueue != null) this.videoPacketQueue.abort();
         if (this.audioPacketQueue != null) this.audioPacketQueue.abort();
         if (this.videoFrameQueue != null) this.videoFrameQueue.abort();
@@ -1476,6 +1480,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             this.formatContext = avformat.avformat_alloc_context();
+            this.ioAbortRequested = false;
+            this.interruptCallback = new Callback_Pointer() {
+                @Override
+                public int call(final Pointer opaque) {
+                    return FFMediaPlayer.this.ioAbortRequested ? 1 : 0;
+                }
+            };
+            this.formatContext.interrupt_callback().callback(this.interruptCallback);
+
             final AVDictionary options = new AVDictionary();
 
             try {
@@ -1557,6 +1570,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         final var slaveUrl = slaveUri.getScheme().contains("file") ? slaveUri.getPath().substring(1) : slaveUri.toString();
 
         this.slaveFormatContext = avformat.avformat_alloc_context();
+        if (this.interruptCallback != null) {
+            this.slaveFormatContext.interrupt_callback().callback(this.interruptCallback);
+        }
         final AVDictionary slaveOptions = new AVDictionary();
 
         try {
@@ -1928,6 +1944,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.slaveFormatContext = null;
         }
         this.useAudioSlave = false;
+        this.interruptCallback = null;
 
         if (this.scaledFrame != null) {
             avutil.av_frame_free(this.scaledFrame);
