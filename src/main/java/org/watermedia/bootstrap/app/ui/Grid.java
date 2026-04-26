@@ -561,6 +561,7 @@ public class Grid<T> {
 
     // MOUSE HANDLING
     public boolean handleHover(final double mx, final double my) {
+        if (this.cellPosX.length != this.selectableItems.size()) return false;
         for (int i = 0; i < this.selectableItems.size(); i++) {
             final float sx = this.cellPosX[i];
             final float sy = this.startY + this.cellPosY[i] - this.scrollOffset;
@@ -578,6 +579,7 @@ public class Grid<T> {
     }
 
     public boolean handleClick(final double mx, final double my) {
+        if (this.cellPosX.length != this.selectableItems.size()) return false;
         for (int i = 0; i < this.selectableItems.size(); i++) {
             final float sx = this.cellPosX[i];
             final float sy = this.startY + this.cellPosY[i] - this.scrollOffset;
