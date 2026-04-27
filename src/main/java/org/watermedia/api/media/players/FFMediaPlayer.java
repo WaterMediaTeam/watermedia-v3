@@ -64,7 +64,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // QUEUE CAPACITIES
     private static final long VIDEO_PACKET_QUEUE_BYTES = 16L * 1024 * 1024;
-    private static final long AUDIO_PACKET_QUEUE_BYTES = 128L * 1024 * 1024;
+    private static final long AUDIO_PACKET_QUEUE_BYTES = 8L * 1024 * 1024;
     private static final int VIDEO_FRAME_QUEUE_SLOTS = 3;
     private static final int AUDIO_FRAME_QUEUE_SLOTS = 9;
 
