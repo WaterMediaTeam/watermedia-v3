@@ -27,8 +27,10 @@ import static org.watermedia.WaterMedia.LOGGER;
  * All uploads must happen on the render thread (OpenGL context is thread-bound).
  * If called from another thread, the work is dispatched via {@code renderThreadEx}.
  * <p>
- * Supports BGRA direct upload, NV12/NV21 (2-planar), and YUV420P/YUV422P/YUV444P (3-planar).
- * YUV formats are converted to RGBA on the GPU via FBO + shader pass.
+ * Supports direct upload (BGRA, RGBA, RGB), packed YUV (YUYV/UYVY), semi-planar (NV12/NV21/P010),
+ * planar YUV (420P/422P/444P), planar YUVA (with alpha), and grayscale (GRAY).
+ * All YUV/GRAY formats are converted to RGBA on the GPU via FBO + shader pass.
+ * High bit depths (10/12/16/32-bit) are supported via GL_R16/GL_RG16/GL_R32F textures.
  * The developer always sees a single RGBA texture from {@link #texture()}.
  */
 public final class GLEngine extends GFXEngine {
@@ -36,7 +38,7 @@ public final class GLEngine extends GFXEngine {
 
     // PBO CONFIGURATION
     private static final int NUM_PBOS = 2;  // DOUBLE BUFFER PER PLANE
-    private static final int MAX_PLANES = 3;
+    private static final int MAX_PLANES = 4;
 
     // GLSL 150 CORE (OPENGL 3.2+, REQUIRED BY MINECRAFT 1.17+)
     private static final String VERTEX_SHADER = """
@@ -50,9 +52,9 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // NV12/NV21 → RGB — BT.709 STUDIO RANGE (Y:16-235, UV:16-240)
-    // Y PLANE:  GL_R8    — FULL RESOLUTION   — .r = Y
-    // UV PLANE: GL_RG8   — HALF RES           — .r = first byte, .g = second byte
+    // NV12/NV21/P010/P016 → RGB — BT.709 STUDIO RANGE
+    // Y PLANE:  GL_R8/R16    — FULL RESOLUTION   — .r = Y
+    // UV PLANE: GL_RG8/RG16  — HALF RES           — .r = first byte, .g = second byte
     // uvSwap: 0.0 = NV12 (BYTE ORDER U,V), 1.0 = NV21 (BYTE ORDER V,U)
     private static final String FRAGMENT_NV = """
             #version 150 core
@@ -61,9 +63,10 @@ public final class GLEngine extends GFXEngine {
             uniform sampler2D yTex;
             uniform sampler2D uvTex;
             uniform float uvSwap;
+            uniform float bitScale;
             void main() {
-                float Y  = texture(yTex, texCoord).r * 1.16438 - 0.07306;
-                vec2 raw = texture(uvTex, texCoord).rg;
+                float Y  = texture(yTex, texCoord).r * bitScale * 1.16438 - 0.07306;
+                vec2 raw = texture(uvTex, texCoord).rg * bitScale;
                 float Cb = mix(raw.x, raw.y, uvSwap) * 1.13839 - 0.57143;
                 float Cr = mix(raw.y, raw.x, uvSwap) * 1.13839 - 0.57143;
                 fragColor = vec4(
@@ -74,22 +77,20 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // GRAY8 → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
+    // GRAY → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
     private static final String FRAGMENT_GRAY = """
             #version 150 core
             in vec2 texCoord;
             out vec4 fragColor;
             uniform sampler2D yTex;
+            uniform float bitScale;
             void main() {
-                float luma = texture(yTex, texCoord).r;
+                float luma = texture(yTex, texCoord).r * bitScale;
                 fragColor = vec4(luma, luma, luma, 1.0);
             }
             """;
 
     // YUV 3-PLANAR → RGB — BT.709 STUDIO RANGE
-    // Y PLANE: GL_R8 — FULL RESOLUTION
-    // U PLANE: GL_R8 — CHROMA SUBSAMPLED
-    // V PLANE: GL_R8 — CHROMA SUBSAMPLED
     private static final String FRAGMENT_YUV3 = """
             #version 150 core
             in vec2 texCoord;
@@ -97,10 +98,62 @@ public final class GLEngine extends GFXEngine {
             uniform sampler2D yTex;
             uniform sampler2D uTex;
             uniform sampler2D vTex;
+            uniform float bitScale;
             void main() {
-                float Y  = texture(yTex, texCoord).r * 1.16438 - 0.07306;
-                float Cb = texture(uTex, texCoord).r * 1.13839 - 0.57143;
-                float Cr = texture(vTex, texCoord).r * 1.13839 - 0.57143;
+                float Y  = texture(yTex, texCoord).r * bitScale * 1.16438 - 0.07306;
+                float Cb = texture(uTex, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float Cr = texture(vTex, texCoord).r * bitScale * 1.13839 - 0.57143;
+                fragColor = vec4(
+                    Y + 1.5748 * Cr,
+                    Y - 0.1873 * Cb - 0.4681 * Cr,
+                    Y + 1.8556 * Cb,
+                    1.0);
+            }
+            """;
+
+    // YUVA 4-PLANAR → RGBA — BT.709 STUDIO RANGE + ALPHA
+    private static final String FRAGMENT_YUVA = """
+            #version 150 core
+            in vec2 texCoord;
+            out vec4 fragColor;
+            uniform sampler2D yTex;
+            uniform sampler2D uTex;
+            uniform sampler2D vTex;
+            uniform sampler2D aTex;
+            uniform float bitScale;
+            void main() {
+                float Y  = texture(yTex, texCoord).r * bitScale * 1.16438 - 0.07306;
+                float Cb = texture(uTex, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float Cr = texture(vTex, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float A  = texture(aTex, texCoord).r * bitScale;
+                fragColor = vec4(
+                    Y + 1.5748 * Cr,
+                    Y - 0.1873 * Cb - 0.4681 * Cr,
+                    Y + 1.8556 * Cb,
+                    A);
+            }
+            """;
+
+    // YUYV/UYVY PACKED YUV422 → RGB — BT.709 STUDIO RANGE
+    // PACKED TEXTURE IS RGBA8 AT (WIDTH/2, HEIGHT): EACH TEXEL = ONE PIXEL PAIR
+    private static final String FRAGMENT_YUYV = """
+            #version 150 core
+            in vec2 texCoord;
+            out vec4 fragColor;
+            uniform sampler2D packedTex;
+            uniform float outputWidth;
+            uniform float uvSwap;
+            void main() {
+                vec4 packed = texture(packedTex, texCoord);
+                float pixelX = texCoord.x * outputWidth;
+                float isOdd = mod(floor(pixelX), 2.0);
+                float Y0 = mix(packed.r, packed.g, uvSwap);
+                float Cb = mix(packed.g, packed.r, uvSwap);
+                float Y1 = mix(packed.b, packed.a, uvSwap);
+                float Cr = mix(packed.a, packed.b, uvSwap);
+                float Y = mix(Y0, Y1, isOdd) * 1.16438 - 0.07306;
+                Cb = Cb * 1.13839 - 0.57143;
+                Cr = Cr * 1.13839 - 0.57143;
                 fragColor = vec4(
                     Y + 1.5748 * Cr,
                     Y - 0.1873 * Cb - 0.4681 * Cr,
@@ -142,27 +195,52 @@ public final class GLEngine extends GFXEngine {
     private final long[] pboAllocSizes = new long[MAX_PLANES];
     private boolean firstFrame = true;
 
-    // NV SHADER (NV12/NV21)
-    private int shaderNV = 0;
-    private int uniformNVYTex = -1;
-    private int uniformNVUVTex = -1;
-    private int uniformNVSwap = -1;
+    // BIT DEPTH DERIVED STATE (SET IN setVideoFormat)
+    private int bytesPerSample = 1;
+    private float bitScale = 1.0f;
+    private int glInternalR = GL30.GL_R8;    // R8 / R16 / R32F
+    private int glInternalRG = GL30.GL_RG8;  // RG8 / RG16
+    private int glType = GL11.GL_UNSIGNED_BYTE; // UNSIGNED_BYTE / UNSIGNED_SHORT / FLOAT
 
     // GRAY SHADER
     private int shaderGray = 0;
     private int uniformGrayTex = -1;
+    private int uniformGrayBitScale = -1;
+
+    // NV SHADER (NV12/NV21/P010/P016)
+    private int shaderNV = 0;
+    private int uniformNVYTex = -1;
+    private int uniformNVUVTex = -1;
+    private int uniformNVSwap = -1;
+    private int uniformNVBitScale = -1;
 
     // YUV3 SHADER (3-PLANAR)
     private int shaderYUV3 = 0;
     private int uniformYUV3YTex = -1;
     private int uniformYUV3UTex = -1;
     private int uniformYUV3VTex = -1;
+    private int uniformYUV3BitScale = -1;
 
-    // PLANE TEXTURES (YUV ONLY — BGRA WRITES DIRECTLY TO managedTexture)
+    // YUVA SHADER (4-PLANAR WITH ALPHA)
+    private int shaderYUVA = 0;
+    private int uniformYUVAYTex = -1;
+    private int uniformYUVAUTex = -1;
+    private int uniformYUVAVTex = -1;
+    private int uniformYUVAATex = -1;
+    private int uniformYUVABitScale = -1;
+
+    // YUYV SHADER (PACKED YUV422)
+    private int shaderYUYV = 0;
+    private int uniformYUYVTex = -1;
+    private int uniformYUYVWidth = -1;
+    private int uniformYUYVSwap = -1;
+
+    // PLANE TEXTURES (YUV ONLY — BGRA/RGBA/RGB WRITE DIRECTLY TO managedTexture)
     private int yTexture = 0;
     private int uvTexture = 0;  // NV12/NV21
-    private int uTexture = 0;   // 3-PLANAR
-    private int vTexture = 0;   // 3-PLANAR
+    private int uTexture = 0;   // 3/4-PLANAR
+    private int vTexture = 0;   // 3/4-PLANAR
+    private int aTexture = 0;   // 4-PLANAR (YUVA)
 
     private GLEngine(final Thread renderThread, final Executor renderThreadEx,
                      final IntSupplier genTexture, final BindConsumer bindTexture,
@@ -206,9 +284,9 @@ public final class GLEngine extends GFXEngine {
      * The managed texture is kept but reallocated on next upload if dimensions changed.
      */
     @Override
-    public void setVideoFormat(final ColorSpace colorSpace, final int width, final int height) {
+    public void setVideoFormat(final ColorSpace colorSpace, final int width, final int height, final int bitsPerComponent) {
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.setVideoFormat(colorSpace, width, height));
+            this.renderThreadEx.execute(() -> this.setVideoFormat(colorSpace, width, height, bitsPerComponent));
             return;
         }
 
@@ -221,23 +299,64 @@ public final class GLEngine extends GFXEngine {
         this.pboReady = false;
         this.firstFrame = true;
 
+        // DERIVE BIT DEPTH STATE
+        switch (bitsPerComponent) {
+            case 10 -> {
+                this.bytesPerSample = 2;
+                this.bitScale = 65535.0f / 1023.0f;
+                this.glInternalR = GL30.GL_R16;
+                this.glInternalRG = GL30.GL_RG16;
+                this.glType = GL11.GL_UNSIGNED_SHORT;
+            }
+            case 12 -> {
+                this.bytesPerSample = 2;
+                this.bitScale = 65535.0f / 4095.0f;
+                this.glInternalR = GL30.GL_R16;
+                this.glInternalRG = GL30.GL_RG16;
+                this.glType = GL11.GL_UNSIGNED_SHORT;
+            }
+            case 16 -> {
+                this.bytesPerSample = 2;
+                this.bitScale = 1.0f;
+                this.glInternalR = GL30.GL_R16;
+                this.glInternalRG = GL30.GL_RG16;
+                this.glType = GL11.GL_UNSIGNED_SHORT;
+            }
+            case 32 -> {
+                this.bytesPerSample = 4;
+                this.bitScale = 1.0f;
+                this.glInternalR = GL30.GL_R32F;
+                this.glInternalRG = GL30.GL_RG16F; // CLOSEST FOR 32-BIT FLOAT PAIRS
+                this.glType = GL11.GL_FLOAT;
+            }
+            default -> { // 8-BIT
+                this.bytesPerSample = 1;
+                this.bitScale = 1.0f;
+                this.glInternalR = GL30.GL_R8;
+                this.glInternalRG = GL30.GL_RG8;
+                this.glType = GL11.GL_UNSIGNED_BYTE;
+            }
+        }
+
         // DETERMINE PLANE COUNT FOR NEW FORMAT
         this.activePlanes = switch (colorSpace) {
             case NV12, NV21 -> 2;
             case YUV420P, YUV422P, YUV444P -> 3;
-            default -> 1; // BGRA, YUYV
+            case YUVA420P, YUVA422P, YUVA444P -> 4;
+            default -> 1;
         };
 
         // UPDATE BASE STATE
-        super.setVideoFormat(colorSpace, width, height);
+        super.setVideoFormat(colorSpace, width, height, bitsPerComponent);
 
         // COMPILE SHADERS FOR NEW FORMAT (LAZY — ONLY IF NOT ALREADY COMPILED)
         switch (colorSpace) {
-            case GRAY8 -> {
+            case GRAY -> {
                 if (this.shaderGray == 0) {
                     this.shaderGray = this.compileShader(VERTEX_SHADER, FRAGMENT_GRAY);
                     if (this.shaderGray != 0) {
                         this.uniformGrayTex = GL20.glGetUniformLocation(this.shaderGray, "yTex");
+                        this.uniformGrayBitScale = GL20.glGetUniformLocation(this.shaderGray, "bitScale");
                         LOGGER.info(IT, "Gray shader compiled (program={})", this.shaderGray);
                     }
                 }
@@ -249,6 +368,7 @@ public final class GLEngine extends GFXEngine {
                         this.uniformNVYTex = GL20.glGetUniformLocation(this.shaderNV, "yTex");
                         this.uniformNVUVTex = GL20.glGetUniformLocation(this.shaderNV, "uvTex");
                         this.uniformNVSwap = GL20.glGetUniformLocation(this.shaderNV, "uvSwap");
+                        this.uniformNVBitScale = GL20.glGetUniformLocation(this.shaderNV, "bitScale");
                         LOGGER.info(IT, "NV shader compiled (program={})", this.shaderNV);
                     }
                 }
@@ -260,17 +380,42 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUV3YTex = GL20.glGetUniformLocation(this.shaderYUV3, "yTex");
                         this.uniformYUV3UTex = GL20.glGetUniformLocation(this.shaderYUV3, "uTex");
                         this.uniformYUV3VTex = GL20.glGetUniformLocation(this.shaderYUV3, "vTex");
+                        this.uniformYUV3BitScale = GL20.glGetUniformLocation(this.shaderYUV3, "bitScale");
                         LOGGER.info(IT, "YUV3 shader compiled (program={})", this.shaderYUV3);
+                    }
+                }
+            }
+            case YUVA420P, YUVA422P, YUVA444P -> {
+                if (this.shaderYUVA == 0) {
+                    this.shaderYUVA = this.compileShader(VERTEX_SHADER, FRAGMENT_YUVA);
+                    if (this.shaderYUVA != 0) {
+                        this.uniformYUVAYTex = GL20.glGetUniformLocation(this.shaderYUVA, "yTex");
+                        this.uniformYUVAUTex = GL20.glGetUniformLocation(this.shaderYUVA, "uTex");
+                        this.uniformYUVAVTex = GL20.glGetUniformLocation(this.shaderYUVA, "vTex");
+                        this.uniformYUVAATex = GL20.glGetUniformLocation(this.shaderYUVA, "aTex");
+                        this.uniformYUVABitScale = GL20.glGetUniformLocation(this.shaderYUVA, "bitScale");
+                        LOGGER.info(IT, "YUVA shader compiled (program={})", this.shaderYUVA);
+                    }
+                }
+            }
+            case YUYV, YUYV2 -> {
+                if (this.shaderYUYV == 0) {
+                    this.shaderYUYV = this.compileShader(VERTEX_SHADER, FRAGMENT_YUYV);
+                    if (this.shaderYUYV != 0) {
+                        this.uniformYUYVTex = GL20.glGetUniformLocation(this.shaderYUYV, "packedTex");
+                        this.uniformYUYVWidth = GL20.glGetUniformLocation(this.shaderYUYV, "outputWidth");
+                        this.uniformYUYVSwap = GL20.glGetUniformLocation(this.shaderYUYV, "uvSwap");
+                        LOGGER.info(IT, "YUYV shader compiled (program={})", this.shaderYUYV);
                     }
                 }
             }
             default -> {} // BGRA, RGBA, RGB — NO SHADER NEEDED
         }
 
-        LOGGER.info(IT, "Format set: {} {}x{} ({} planes)", colorSpace, width, height, this.activePlanes);
+        LOGGER.info(IT, "Format set: {} {}x{} ({} planes, {}bpc)", colorSpace, width, height, this.activePlanes, bitsPerComponent);
     }
 
-    // UPLOAD — SINGLE PLANE (BGRA, RGBA, RGB, GRAY8)
+    // UPLOAD — SINGLE PLANE (BGRA, RGBA, RGB, GRAY, YUYV)
     @Override
     public void upload(final ByteBuffer buffer, final int stride) {
         if (buffer == null) return;
@@ -280,12 +425,19 @@ public final class GLEngine extends GFXEngine {
         }
         if (this.width <= 0 || this.height <= 0) return;
 
-        // GRAY8: UPLOAD TO PLANE TEXTURE + FBO CONVERT (LIKE YUV PATH)
-        if (this.colorSpace == ColorSpace.GRAY8) {
+        // GRAY: R-FORMAT PLANE TEXTURE + FBO CONVERT
+        if (this.colorSpace == ColorSpace.GRAY) {
             this.uploadGray(buffer, stride);
             return;
         }
 
+        // YUYV/UYVY: PACKED RGBA HALF-WIDTH TEXTURE + FBO CONVERT
+        if (this.colorSpace == ColorSpace.YUYV || this.colorSpace == ColorSpace.YUYV2) {
+            this.uploadPacked(buffer, stride);
+            return;
+        }
+
+        // DIRECT TO MANAGED TEXTURE (BGRA, RGBA, RGB)
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
 
         final int glFormat;
@@ -293,8 +445,20 @@ public final class GLEngine extends GFXEngine {
         final int bytesPerTexel;
         switch (this.colorSpace) {
             case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
-            case RGB  -> { glFormat = GL11.GL_RGB;  glType = GL11.GL_UNSIGNED_BYTE;             bytesPerTexel = 3; }
-            default   -> { glFormat = GL11.GL_RGBA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
+            case RGB  -> {
+                if (this.bitsPerComponent > 8) {
+                    glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 6;
+                } else {
+                    glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_BYTE; bytesPerTexel = 3;
+                }
+            }
+            default -> {
+                if (this.bitsPerComponent == 16) {
+                    glFormat = GL11.GL_RGBA; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 8;
+                } else {
+                    glFormat = GL11.GL_RGBA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4;
+                }
+            }
         }
 
         final int rowLengthPixels = (stride == 0) ? 0 : stride / bytesPerTexel;
@@ -346,12 +510,13 @@ public final class GLEngine extends GFXEngine {
         this.firstFrame = false;
     }
 
-    // UPLOAD — GRAY8 (R8 PLANE TEXTURE + FBO SHADER CONVERT)
+    // UPLOAD — GRAY (R-FORMAT PLANE TEXTURE + FBO SHADER CONVERT)
     private void uploadGray(final ByteBuffer buffer, final int stride) {
         if (this.shaderGray == 0) return;
         if (this.yTexture == 0) this.yTexture = this.newTexture();
 
-        final int effectiveStride = (stride == 0) ? this.width : stride;
+        final int rowLen = (stride == 0) ? this.width : stride / this.bytesPerSample;
+        final int effectiveStride = (stride == 0) ? this.width * this.bytesPerSample : stride;
         final long dataSize = (long) effectiveStride * this.height;
 
         final long addr = MemoryUtil.memAddress(buffer);
@@ -368,9 +533,9 @@ public final class GLEngine extends GFXEngine {
         if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, stride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, this.width, this.height, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, addr);
-            this.checkGLError("GRAY8 texImage");
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, this.width, this.height, 0, GL11.GL_RED, this.glType, addr);
+            this.checkGLError("GRAY texImage");
 
             this.seedPBO(0, dataSize, addr);
             this.pboAllocSizes[0] = dataSize;
@@ -381,10 +546,10 @@ public final class GLEngine extends GFXEngine {
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, stride);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
-            this.checkGLError("GRAY8 PBO texSub");
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
+            this.checkGLError("GRAY PBO texSub");
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, dataSize, addr);
@@ -395,10 +560,69 @@ public final class GLEngine extends GFXEngine {
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
-        this.convertYUVToRGBA();
+        this.convertToRGBA();
     }
 
-    // UPLOAD — TWO PLANES (NV12/NV21)
+    // UPLOAD — YUYV/UYVY PACKED (RGBA8 HALF-WIDTH TEXTURE + FBO CONVERT)
+    private void uploadPacked(final ByteBuffer buffer, final int stride) {
+        if (this.shaderYUYV == 0) return;
+        if (this.yTexture == 0) {
+            this.yTexture = this.newTexture();
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+            this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        }
+
+        final int halfW = this.width / 2;
+        final int bytesPerTexel = 4; // RGBA8 = 4 bytes per pixel pair
+        final int rowLenPixels = (stride == 0) ? 0 : stride / bytesPerTexel;
+        final int effectiveStride = (stride == 0) ? halfW * bytesPerTexel : stride;
+        final long dataSize = (long) effectiveStride * this.height;
+
+        final long addr = MemoryUtil.memAddress(buffer);
+        if (addr == 0L) return;
+
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
+        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLenPixels);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
+
+        if (!this.pboInitialized) {
+            this.initPBOs(1);
+        }
+
+        if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, halfW, this.height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, addr);
+            this.checkGLError("YUYV texImage");
+
+            this.seedPBO(0, dataSize, addr);
+            this.pboAllocSizes[0] = dataSize;
+            this.pboWriteIdx = 0;
+            this.pboReady = true;
+        } else {
+            final int readIdx = this.pboWriteIdx;
+            final int writeIdx = (readIdx + 1) % NUM_PBOS;
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, halfW, this.height, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 0L);
+            this.checkGLError("YUYV PBO texSub");
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+
+            this.seedPBO(writeIdx, dataSize, addr);
+            this.pboWriteIdx = writeIdx;
+        }
+
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
+        this.firstFrame = false;
+        this.convertToRGBA();
+    }
+
+    // UPLOAD — TWO PLANES (NV12/NV21/P010/P016)
     @Override
     public void upload(final ByteBuffer yBuffer, final int yStride, final ByteBuffer uvBuffer, final int uvStride) {
         if (yBuffer == null || uvBuffer == null) return;
@@ -415,12 +639,12 @@ public final class GLEngine extends GFXEngine {
         final int uvW = this.width / 2;
         final int uvH = this.height / 2;
 
-        // Y: GL_LUMINANCE, 1 byte/texel → rowLength = stride (bytes = texels)
-        // UV: GL_LUMINANCE_ALPHA, 2 bytes/texel → rowLength = stride / 2
-        final int uvRowLen = (uvStride == 0) ? 0 : uvStride / 2;
+        // ROW LENGTH IN TEXELS: Y = 1 component, UV = 2 components
+        final int yRowLen = (yStride == 0) ? 0 : yStride / this.bytesPerSample;
+        final int uvRowLen = (uvStride == 0) ? 0 : uvStride / (2 * this.bytesPerSample);
 
-        final int effectiveYStride = (yStride == 0) ? this.width : yStride;
-        final int effectiveUVStride = (uvStride == 0) ? this.width : uvStride; // NV12 UV row = width bytes
+        final int effectiveYStride = (yStride == 0) ? this.width * this.bytesPerSample : yStride;
+        final int effectiveUVStride = (uvStride == 0) ? this.width * this.bytesPerSample : uvStride;
 
         final long ySize = (long) effectiveYStride * this.height;
         final long uvSize = (long) effectiveUVStride * uvH;
@@ -433,27 +657,24 @@ public final class GLEngine extends GFXEngine {
         this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
 
-        // INIT PBOs LAZILY
         if (!this.pboInitialized) {
             this.initPBOs(2);
         }
 
         if (this.firstFrame || !this.pboReady
                 || this.pboAllocSizes[0] != ySize || this.pboAllocSizes[1] != uvSize) {
-            // DIRECT SYNC UPLOAD + SEED PBOs
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, this.width, this.height, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, yAddr);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, this.width, this.height, 0, GL11.GL_RED, this.glType, yAddr);
             this.checkGLError("NV Y texImage");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uvRowLen);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RG8, uvW, uvH, 0, GL30.GL_RG, GL11.GL_UNSIGNED_BYTE, uvAddr);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalRG, uvW, uvH, 0, GL30.GL_RG, this.glType, uvAddr);
             this.checkGLError("NV UV texImage");
 
-            // SEED PBOs FOR NEXT FRAME
             this.seedPBO(0, ySize, yAddr);
             this.seedPBO(NUM_PBOS, uvSize, uvAddr);
             this.pboAllocSizes[0] = ySize;
@@ -461,40 +682,33 @@ public final class GLEngine extends GFXEngine {
             this.pboWriteIdx = 0;
             this.pboReady = true;
         } else {
-            // PBO PATH
             final int readIdx = this.pboWriteIdx;
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
-            // Y PLANE: GPU READ FROM PBO
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height,
-                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
             this.checkGLError("NV Y PBO texSub");
 
-            // UV PLANE: GPU READ FROM PBO
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uvRowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, uvW, uvH,
-                    GL30.GL_RG, GL11.GL_UNSIGNED_BYTE, 0L);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, uvW, uvH, GL30.GL_RG, this.glType, 0L);
             this.checkGLError("NV UV PBO texSub");
 
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
-            // CPU FILL NEXT PBOs
             this.seedPBO(writeIdx, ySize, yAddr);
             this.seedPBO(NUM_PBOS + writeIdx, uvSize, uvAddr);
             this.pboWriteIdx = writeIdx;
         }
 
-        // CLEANUP + FBO CONVERT
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
-        this.convertYUVToRGBA();
+        this.convertToRGBA();
     }
 
     // UPLOAD — THREE PLANES (YUV420P/422P/444P)
@@ -514,7 +728,6 @@ public final class GLEngine extends GFXEngine {
         if (this.uTexture == 0) this.uTexture = this.newTexture();
         if (this.vTexture == 0) this.vTexture = this.newTexture();
 
-        // COMPUTE CHROMA DIMENSIONS
         final int chromaW, chromaH;
         switch (this.colorSpace) {
             case YUV422P -> { chromaW = this.width / 2; chromaH = this.height; }
@@ -522,10 +735,13 @@ public final class GLEngine extends GFXEngine {
             default /* YUV420P */ -> { chromaW = this.width / 2; chromaH = this.height / 2; }
         }
 
-        // LUMINANCE: 1 byte/texel → rowLength = stride in bytes
-        final int effY = (yStride == 0) ? this.width : yStride;
-        final int effU = (uStride == 0) ? chromaW : uStride;
-        final int effV = (vStride == 0) ? chromaW : vStride;
+        final int yRowLen = (yStride == 0) ? this.width : yStride / this.bytesPerSample;
+        final int uRowLen = (uStride == 0) ? chromaW : uStride / this.bytesPerSample;
+        final int vRowLen = (vStride == 0) ? chromaW : vStride / this.bytesPerSample;
+
+        final int effY = (yStride == 0) ? this.width * this.bytesPerSample : yStride;
+        final int effU = (uStride == 0) ? chromaW * this.bytesPerSample : uStride;
+        final int effV = (vStride == 0) ? chromaW * this.bytesPerSample : vStride;
 
         final long ySize = (long) effY * this.height;
         final long uSize = (long) effU * chromaH;
@@ -548,22 +764,21 @@ public final class GLEngine extends GFXEngine {
                 || this.pboAllocSizes[0] != ySize
                 || this.pboAllocSizes[1] != uSize
                 || this.pboAllocSizes[2] != vSize) {
-            // DIRECT SYNC UPLOAD + SEED PBOs
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, this.width, this.height, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, yAddr);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, this.width, this.height, 0, GL11.GL_RED, this.glType, yAddr);
             this.checkGLError("YUV3 Y texImage");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, chromaW, chromaH, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, uAddr);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, chromaW, chromaH, 0, GL11.GL_RED, this.glType, uAddr);
             this.checkGLError("YUV3 U texImage");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vStride);
-            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R8, chromaW, chromaH, 0, GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, vAddr);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, chromaW, chromaH, 0, GL11.GL_RED, this.glType, vAddr);
             this.checkGLError("YUV3 V texImage");
 
             this.seedPBO(0, ySize, yAddr);
@@ -575,47 +790,171 @@ public final class GLEngine extends GFXEngine {
             this.pboWriteIdx = 0;
             this.pboReady = true;
         } else {
-            // PBO PATH
             final int readIdx = this.pboWriteIdx;
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
-            // Y
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yStride);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height,
-                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
 
-            // U
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uStride);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uRowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH,
-                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
 
-            // V
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vStride);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vRowLen);
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
-            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH,
-                    GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, 0L);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
 
             this.checkGLError("YUV3 PBO texSub");
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
-            // CPU FILL NEXT PBOs
             this.seedPBO(writeIdx, ySize, yAddr);
             this.seedPBO(NUM_PBOS + writeIdx, uSize, uAddr);
             this.seedPBO(2 * NUM_PBOS + writeIdx, vSize, vAddr);
             this.pboWriteIdx = writeIdx;
         }
 
-        // CLEANUP + FBO CONVERT
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
-        this.convertYUVToRGBA();
+        this.convertToRGBA();
+    }
+
+    // UPLOAD — FOUR PLANES (YUVA420P/422P/444P)
+    @Override
+    public void upload(final ByteBuffer yBuffer, final int yStride,
+                       final ByteBuffer uBuffer, final int uStride,
+                       final ByteBuffer vBuffer, final int vStride,
+                       final ByteBuffer aBuffer, final int aStride) {
+        if (yBuffer == null || uBuffer == null || vBuffer == null || aBuffer == null) return;
+        if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
+            this.renderThreadEx.execute(() -> this.upload(yBuffer, yStride, uBuffer, uStride, vBuffer, vStride, aBuffer, aStride));
+            return;
+        }
+        if (this.width <= 0 || this.height <= 0) return;
+        if (this.shaderYUVA == 0) return;
+
+        if (this.yTexture == 0) this.yTexture = this.newTexture();
+        if (this.uTexture == 0) this.uTexture = this.newTexture();
+        if (this.vTexture == 0) this.vTexture = this.newTexture();
+        if (this.aTexture == 0) this.aTexture = this.newTexture();
+
+        final int chromaW, chromaH;
+        switch (this.colorSpace) {
+            case YUVA422P -> { chromaW = this.width / 2; chromaH = this.height; }
+            case YUVA444P -> { chromaW = this.width; chromaH = this.height; }
+            default /* YUVA420P */ -> { chromaW = this.width / 2; chromaH = this.height / 2; }
+        }
+
+        final int yRowLen = (yStride == 0) ? this.width : yStride / this.bytesPerSample;
+        final int uRowLen = (uStride == 0) ? chromaW : uStride / this.bytesPerSample;
+        final int vRowLen = (vStride == 0) ? chromaW : vStride / this.bytesPerSample;
+        final int aRowLen = (aStride == 0) ? this.width : aStride / this.bytesPerSample;
+
+        final int effY = (yStride == 0) ? this.width * this.bytesPerSample : yStride;
+        final int effU = (uStride == 0) ? chromaW * this.bytesPerSample : uStride;
+        final int effV = (vStride == 0) ? chromaW * this.bytesPerSample : vStride;
+        final int effA = (aStride == 0) ? this.width * this.bytesPerSample : aStride;
+
+        final long ySize = (long) effY * this.height;
+        final long uSize = (long) effU * chromaH;
+        final long vSize = (long) effV * chromaH;
+        final long aSize = (long) effA * this.height;
+
+        final long yAddr = MemoryUtil.memAddress(yBuffer);
+        final long uAddr = MemoryUtil.memAddress(uBuffer);
+        final long vAddr = MemoryUtil.memAddress(vBuffer);
+        final long aAddr = MemoryUtil.memAddress(aBuffer);
+        if (yAddr == 0L || uAddr == 0L || vAddr == 0L || aAddr == 0L) return;
+
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
+
+        if (!this.pboInitialized) {
+            this.initPBOs(4);
+        }
+
+        if (this.firstFrame || !this.pboReady
+                || this.pboAllocSizes[0] != ySize
+                || this.pboAllocSizes[1] != uSize
+                || this.pboAllocSizes[2] != vSize
+                || this.pboAllocSizes[3] != aSize) {
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, this.width, this.height, 0, GL11.GL_RED, this.glType, yAddr);
+            this.checkGLError("YUVA Y texImage");
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, chromaW, chromaH, 0, GL11.GL_RED, this.glType, uAddr);
+            this.checkGLError("YUVA U texImage");
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, chromaW, chromaH, 0, GL11.GL_RED, this.glType, vAddr);
+            this.checkGLError("YUVA V texImage");
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.aTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, aRowLen);
+            GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, this.width, this.height, 0, GL11.GL_RED, this.glType, aAddr);
+            this.checkGLError("YUVA A texImage");
+
+            this.seedPBO(0, ySize, yAddr);
+            this.seedPBO(NUM_PBOS, uSize, uAddr);
+            this.seedPBO(2 * NUM_PBOS, vSize, vAddr);
+            this.seedPBO(3 * NUM_PBOS, aSize, aAddr);
+            this.pboAllocSizes[0] = ySize;
+            this.pboAllocSizes[1] = uSize;
+            this.pboAllocSizes[2] = vSize;
+            this.pboAllocSizes[3] = aSize;
+            this.pboWriteIdx = 0;
+            this.pboReady = true;
+        } else {
+            final int readIdx = this.pboWriteIdx;
+            final int writeIdx = (readIdx + 1) % NUM_PBOS;
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uRowLen);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vRowLen);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
+
+            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.aTexture);
+            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, aRowLen);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[3 * NUM_PBOS + readIdx]);
+            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
+
+            this.checkGLError("YUVA PBO texSub");
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+
+            this.seedPBO(writeIdx, ySize, yAddr);
+            this.seedPBO(NUM_PBOS + writeIdx, uSize, uAddr);
+            this.seedPBO(2 * NUM_PBOS + writeIdx, vSize, vAddr);
+            this.seedPBO(3 * NUM_PBOS + writeIdx, aSize, aAddr);
+            this.pboWriteIdx = writeIdx;
+        }
+
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
+        this.firstFrame = false;
+        this.convertToRGBA();
     }
 
     // RELEASE
@@ -637,14 +976,12 @@ public final class GLEngine extends GFXEngine {
         this.firstFrame = true;
     }
 
-    // YUV TO RGBA FBO CONVERSION
-    // RENDERS YUV PLANE TEXTURES THROUGH THE APPROPRIATE SHADER INTO MANAGEDTEXTURE VIA FBO. AFTER THIS CALL, MANAGEDTEXTURE CONTAINS THE RGBA RESULT READY FOR NORMAL BINDING.
-    private void convertYUVToRGBA() {
+    // FBO CONVERSION — RENDERS PLANE TEXTURES THROUGH SHADER INTO managedTexture
+    private void convertToRGBA() {
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
         this.initQuad();
 
-        // REALLOCATE MANAGED TEXTURE ON SIZE CHANGE
         if (this.managedTextureW != this.width || this.managedTextureH != this.height) {
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.managedTexture);
             GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
@@ -653,25 +990,23 @@ public final class GLEngine extends GFXEngine {
             this.managedTextureH = this.height;
         }
 
-        // SAVE GL STATE
         final int savedProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         final int[] savedViewport = new int[4];
         GL11.glGetIntegerv(GL11.GL_VIEWPORT, savedViewport);
         final int savedFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
         final int savedVAO = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
 
-        // BIND FBO
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.fbo);
         GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, this.managedTexture, 0);
         GL11.glViewport(0, 0, this.width, this.height);
 
-        // ACTIVATE SHADER + BIND PLANE TEXTURES
         switch (this.colorSpace) {
-            case GRAY8 -> {
+            case GRAY -> {
                 GL20.glUseProgram(this.shaderGray);
                 GL13.glActiveTexture(GL13.GL_TEXTURE0);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformGrayTex, 0);
+                GL20.glUniform1f(this.uniformGrayBitScale, this.bitScale);
             }
             case NV12, NV21 -> {
                 GL20.glUseProgram(this.shaderNV);
@@ -682,6 +1017,7 @@ public final class GLEngine extends GFXEngine {
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
                 GL20.glUniform1i(this.uniformNVUVTex, 1);
                 GL20.glUniform1f(this.uniformNVSwap, this.colorSpace == ColorSpace.NV21 ? 1.0f : 0.0f);
+                GL20.glUniform1f(this.uniformNVBitScale, this.bitScale);
             }
             case YUV420P, YUV422P, YUV444P -> {
                 GL20.glUseProgram(this.shaderYUV3);
@@ -694,17 +1030,40 @@ public final class GLEngine extends GFXEngine {
                 GL13.glActiveTexture(GL13.GL_TEXTURE2);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
                 GL20.glUniform1i(this.uniformYUV3VTex, 2);
+                GL20.glUniform1f(this.uniformYUV3BitScale, this.bitScale);
+            }
+            case YUVA420P, YUVA422P, YUVA444P -> {
+                GL20.glUseProgram(this.shaderYUVA);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+                GL20.glUniform1i(this.uniformYUVAYTex, 0);
+                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
+                GL20.glUniform1i(this.uniformYUVAUTex, 1);
+                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
+                GL20.glUniform1i(this.uniformYUVAVTex, 2);
+                GL13.glActiveTexture(GL13.GL_TEXTURE3);
+                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.aTexture);
+                GL20.glUniform1i(this.uniformYUVAATex, 3);
+                GL20.glUniform1f(this.uniformYUVABitScale, this.bitScale);
+            }
+            case YUYV, YUYV2 -> {
+                GL20.glUseProgram(this.shaderYUYV);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
+                GL20.glUniform1i(this.uniformYUYVTex, 0);
+                GL20.glUniform1f(this.uniformYUYVWidth, (float) this.width);
+                GL20.glUniform1f(this.uniformYUYVSwap, this.colorSpace == ColorSpace.YUYV2 ? 1.0f : 0.0f);
             }
             default -> {}
         }
 
-        // DRAW FULLSCREEN QUAD VIA VAO
         GL30.glBindVertexArray(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
         GL30.glBindVertexArray(0);
         this.checkGLError("FBO convert quad");
 
-        // RESTORE GL STATE
         GL20.glUseProgram(savedProgram);
         GL13.glActiveTexture(GL13.GL_TEXTURE0);
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
@@ -726,14 +1085,12 @@ public final class GLEngine extends GFXEngine {
 
     private void initQuad() {
         if (this.quadVAO != 0) return;
-        // POSITION (xy) + UV (st) — CLIP-SPACE FULLSCREEN QUAD (TWO TRIANGLES)
         final float[] verts = {
-                // pos      uv
                 -1, -1,   0, 0,
-                1, -1,   1, 0,
-                1,  1,   1, 1,
+                 1, -1,   1, 0,
+                 1,  1,   1, 1,
                 -1, -1,   0, 0,
-                1,  1,   1, 1,
+                 1,  1,   1, 1,
                 -1,  1,   0, 1,
         };
 
@@ -744,10 +1101,8 @@ public final class GLEngine extends GFXEngine {
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.quadVBO);
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, verts, GL15.GL_STATIC_DRAW);
 
-        // ATTRIBUTE 0 = position (vec2)
         GL20.glEnableVertexAttribArray(0);
         GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 16, 0);
-        // ATTRIBUTE 1 = uv (vec2)
         GL20.glEnableVertexAttribArray(1);
         GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
 
@@ -756,7 +1111,6 @@ public final class GLEngine extends GFXEngine {
     }
 
     private void initPBOs(final int planeCount) {
-        // GENERATE PBOs FOR active planes × NUM_PBOS
         final int count = planeCount * NUM_PBOS;
         final int[] ids = new int[count];
         GL15.glGenBuffers(ids);
@@ -798,7 +1152,6 @@ public final class GLEngine extends GFXEngine {
         final int prog = GL20.glCreateProgram();
         GL20.glAttachShader(prog, vert);
         GL20.glAttachShader(prog, frag);
-        // BIND ATTRIBUTE LOCATIONS BEFORE LINKING (MUST MATCH initQuad LAYOUT)
         GL20.glBindAttribLocation(prog, 0, "position");
         GL20.glBindAttribLocation(prog, 1, "uv");
         GL20.glLinkProgram(prog);
@@ -822,12 +1175,12 @@ public final class GLEngine extends GFXEngine {
         if (this.uvTexture != 0) { this.delTexture.accept(this.uvTexture); this.uvTexture = 0; }
         if (this.uTexture != 0) { this.delTexture.accept(this.uTexture); this.uTexture = 0; }
         if (this.vTexture != 0) { this.delTexture.accept(this.vTexture); this.vTexture = 0; }
+        if (this.aTexture != 0) { this.delTexture.accept(this.aTexture); this.aTexture = 0; }
     }
 
     private void releasePBOs() {
         if (!this.pboInitialized) return;
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-        // DELETE ALL PBOs THAT WERE GENERATED
         final int count = this.activePlanes * NUM_PBOS;
         if (count > 0) {
             final int[] toDelete = new int[count];
@@ -844,6 +1197,8 @@ public final class GLEngine extends GFXEngine {
         if (this.shaderGray != 0) { GL20.glDeleteProgram(this.shaderGray); this.shaderGray = 0; }
         if (this.shaderNV != 0) { GL20.glDeleteProgram(this.shaderNV); this.shaderNV = 0; }
         if (this.shaderYUV3 != 0) { GL20.glDeleteProgram(this.shaderYUV3); this.shaderYUV3 = 0; }
+        if (this.shaderYUVA != 0) { GL20.glDeleteProgram(this.shaderYUVA); this.shaderYUVA = 0; }
+        if (this.shaderYUYV != 0) { GL20.glDeleteProgram(this.shaderYUYV); this.shaderYUYV = 0; }
     }
 
     private void checkGLError(final String op) {

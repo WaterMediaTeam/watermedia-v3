@@ -143,6 +143,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private ByteBuffer planeY;
     private ByteBuffer planeU; // ALSO USED FOR UV IN NV12/NV21
     private ByteBuffer planeV;
+    private ByteBuffer planeA;
 
     // TIMES
     private double videoTimeBase;
@@ -171,6 +172,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int lastFrameWidth;
     private int lastFrameHeight;
     private GFXEngine.ColorSpace lastColorSpace;
+    private int lastBitsPerComponent;
 
     // AUDIO FORMAT NEGOTIATION
     private boolean audioPassthrough;
@@ -316,20 +318,66 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     public boolean isHwAccel() { return !isNull(this.hwDeviceCtx); }
 
-    // FORMAT MAPPING — NATIVE YUV SUPPORT
-    // MAPS AN FFMPEG PIXEL FORMAT TO A GFXENGINE COLORSPACE FOR NATIVE GPU UPLOAD. RETURNS NULL FOR FORMATS THAT REQUIRE SWS_SCALE FALLBACK (10-BIT, PACKED, ETC.)
-    private static GFXEngine.ColorSpace mapPixelFormat(final int avPixFmt) {
+    // FORMAT MAPPING — NATIVE GPU UPLOAD
+    private record PixFmtMapping(GFXEngine.ColorSpace cs, int bits) {}
+
+    private static PixFmtMapping mapPixelFormat(final int avPixFmt) {
         return switch (avPixFmt) {
-            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> GFXEngine.ColorSpace.YUV420P;
-            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> GFXEngine.ColorSpace.YUV422P;
-            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> GFXEngine.ColorSpace.YUV444P;
-            case AV_PIX_FMT_NV12    -> GFXEngine.ColorSpace.NV12;
-            case AV_PIX_FMT_NV21    -> GFXEngine.ColorSpace.NV21;
-            case AV_PIX_FMT_BGRA    -> GFXEngine.ColorSpace.BGRA;
-            case AV_PIX_FMT_RGBA    -> GFXEngine.ColorSpace.RGBA;
-            case AV_PIX_FMT_RGB24   -> GFXEngine.ColorSpace.RGB;
-            case AV_PIX_FMT_GRAY8   -> GFXEngine.ColorSpace.GRAY8;
-            default -> null; // NEEDS sws_scale FALLBACK
+            // 8-BIT PLANAR YUV
+            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 8);
+            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 8);
+            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 8);
+            // 8-BIT SEMI-PLANAR
+            case AV_PIX_FMT_NV12 -> new PixFmtMapping(GFXEngine.ColorSpace.NV12, 8);
+            case AV_PIX_FMT_NV21 -> new PixFmtMapping(GFXEngine.ColorSpace.NV21, 8);
+            // 8-BIT PACKED RGB
+            case AV_PIX_FMT_BGRA  -> new PixFmtMapping(GFXEngine.ColorSpace.BGRA, 8);
+            case AV_PIX_FMT_RGBA  -> new PixFmtMapping(GFXEngine.ColorSpace.RGBA, 8);
+            case AV_PIX_FMT_RGB24 -> new PixFmtMapping(GFXEngine.ColorSpace.RGB, 8);
+            // 8-BIT GRAYSCALE
+            case AV_PIX_FMT_GRAY8 -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 8);
+            // 8-BIT PACKED YUV
+            case AV_PIX_FMT_YUYV422 -> new PixFmtMapping(GFXEngine.ColorSpace.YUYV, 8);
+            case AV_PIX_FMT_UYVY422 -> new PixFmtMapping(GFXEngine.ColorSpace.YUYV2, 8);
+            // 8-BIT YUVA (4-PLANE)
+            case AV_PIX_FMT_YUVA420P -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA420P, 8);
+            case AV_PIX_FMT_YUVA422P -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 8);
+            case AV_PIX_FMT_YUVA444P -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 8);
+            // 10-BIT PLANAR YUV
+            case AV_PIX_FMT_YUV420P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 10);
+            case AV_PIX_FMT_YUV422P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 10);
+            case AV_PIX_FMT_YUV444P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 10);
+            // 10-BIT YUVA
+            case AV_PIX_FMT_YUVA420P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA420P, 10);
+            case AV_PIX_FMT_YUVA422P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 10);
+            case AV_PIX_FMT_YUVA444P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 10);
+            // 12-BIT PLANAR YUV
+            case AV_PIX_FMT_YUV420P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 12);
+            case AV_PIX_FMT_YUV422P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 12);
+            case AV_PIX_FMT_YUV444P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 12);
+            // 12-BIT YUVA
+            case AV_PIX_FMT_YUVA422P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 12);
+            case AV_PIX_FMT_YUVA444P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 12);
+            // 16-BIT PLANAR YUV
+            case AV_PIX_FMT_YUV420P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 16);
+            case AV_PIX_FMT_YUV422P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 16);
+            case AV_PIX_FMT_YUV444P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 16);
+            // 16-BIT YUVA
+            case AV_PIX_FMT_YUVA420P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA420P, 16);
+            case AV_PIX_FMT_YUVA422P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 16);
+            case AV_PIX_FMT_YUVA444P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 16);
+            // P010/P016 — LEFT-SHIFTED 10/16-BIT NV12, MAP AS 16-BIT (bitScale=1.0 IS CORRECT)
+            case AV_PIX_FMT_P010LE -> new PixFmtMapping(GFXEngine.ColorSpace.NV12, 16);
+            case AV_PIX_FMT_P016LE -> new PixFmtMapping(GFXEngine.ColorSpace.NV12, 16);
+            // HIGH-BIT GRAYSCALE
+            case AV_PIX_FMT_GRAY10LE  -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 10);
+            case AV_PIX_FMT_GRAY12LE  -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 12);
+            case AV_PIX_FMT_GRAY16LE  -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 16);
+            case AV_PIX_FMT_GRAYF32LE -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 32);
+            // 16-BIT PACKED RGB
+            case AV_PIX_FMT_RGB48LE  -> new PixFmtMapping(GFXEngine.ColorSpace.RGB, 16);
+            case AV_PIX_FMT_RGBA64LE -> new PixFmtMapping(GFXEngine.ColorSpace.RGBA, 16);
+            default -> null;
         };
     }
 
@@ -468,17 +516,20 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             // DETERMINE UPLOAD PATH
-            GFXEngine.ColorSpace cs = mapPixelFormat(slot.format);
-            final boolean fallback = (cs == null);
-            if (fallback) cs = GFXEngine.ColorSpace.BGRA;
+            final PixFmtMapping mapping = mapPixelFormat(slot.format);
+            final boolean fallback = (mapping == null);
+            final GFXEngine.ColorSpace cs = fallback ? GFXEngine.ColorSpace.BGRA : mapping.cs;
+            final int bits = fallback ? 8 : mapping.bits;
 
             // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine
-            if (cs != this.lastColorSpace || slot.width != this.lastFrameWidth || slot.height != this.lastFrameHeight) {
-                this.gfx.setVideoFormat(cs, slot.width, slot.height);
+            if (cs != this.lastColorSpace || bits != this.lastBitsPerComponent
+                    || slot.width != this.lastFrameWidth || slot.height != this.lastFrameHeight) {
+                this.gfx.setVideoFormat(cs, slot.width, slot.height, bits);
                 this.lastColorSpace = cs;
+                this.lastBitsPerComponent = bits;
                 this.lastFrameWidth = slot.width;
                 this.lastFrameHeight = slot.height;
-                LOGGER.info(IT, "GFX format: {} {}x{} (fallback={})", cs, slot.width, slot.height, fallback);
+                LOGGER.info(IT, "GFX format: {} {}x{} {}bit (fallback={})", cs, slot.width, slot.height, bits, fallback);
             }
 
             // NATIVE YUV UPLOAD (NO sws_scale)
@@ -548,7 +599,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // COPIES AVFRAME PLANE DATA TO PERSISTENT BUFFERS, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
     private void uploadNativePlanes(final AVFrame frame, final GFXEngine.ColorSpace cs, final int width, final int height) {
         switch (cs) {
-            case BGRA, RGBA, RGB, GRAY8 -> {
+            case BGRA, RGBA, RGB, GRAY, YUYV, YUYV2 -> {
                 final int yStride = frame.linesize(0);
                 final long ySize = (long) yStride * height;
                 this.planeY = ensurePlane(this.planeY, ySize);
@@ -581,6 +632,26 @@ public final class FFMediaPlayer extends MediaPlayer {
                 copyPlane(frame.data(1), uSize, this.planeU);
                 copyPlane(frame.data(2), vSize, this.planeV);
                 this.gfx.upload(this.planeY, yStride, this.planeU, uStride, this.planeV, vStride);
+            }
+            case YUVA420P, YUVA422P, YUVA444P -> {
+                final int chromaH = (cs == GFXEngine.ColorSpace.YUVA420P) ? height / 2 : height;
+                final int yStride = frame.linesize(0);
+                final int uStride = frame.linesize(1);
+                final int vStride = frame.linesize(2);
+                final int aStride = frame.linesize(3);
+                final long ySize = (long) yStride * height;
+                final long uSize = (long) uStride * chromaH;
+                final long vSize = (long) vStride * chromaH;
+                final long aSize = (long) aStride * height;
+                this.planeY = ensurePlane(this.planeY, ySize);
+                this.planeU = ensurePlane(this.planeU, uSize);
+                this.planeV = ensurePlane(this.planeV, vSize);
+                this.planeA = ensurePlane(this.planeA, aSize);
+                copyPlane(frame.data(0), ySize, this.planeY);
+                copyPlane(frame.data(1), uSize, this.planeU);
+                copyPlane(frame.data(2), vSize, this.planeV);
+                copyPlane(frame.data(3), aSize, this.planeA);
+                this.gfx.upload(this.planeY, yStride, this.planeU, uStride, this.planeV, vStride, this.planeA, aStride);
             }
             default -> LOGGER.warn(IT, "Unsupported native upload: {}", cs);
         }
@@ -1859,10 +1930,11 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final int w = this.videoCodecContext.width();
         final int h = this.videoCodecContext.height();
-        final GFXEngine.ColorSpace initialCs = mapPixelFormat(this.videoCodecContext.pix_fmt());
-        if (initialCs != null) {
-            this.gfx.setVideoFormat(initialCs, w, h);
-            this.lastColorSpace = initialCs;
+        final PixFmtMapping initialMapping = mapPixelFormat(this.videoCodecContext.pix_fmt());
+        if (initialMapping != null) {
+            this.gfx.setVideoFormat(initialMapping.cs, w, h, initialMapping.bits);
+            this.lastColorSpace = initialMapping.cs;
+            this.lastBitsPerComponent = initialMapping.bits;
             this.lastFrameWidth = w;
             this.lastFrameHeight = h;
         }
@@ -2131,7 +2203,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.planeY = null;
         this.planeU = null;
         this.planeV = null;
+        this.planeA = null;
         this.lastColorSpace = null;
+        this.lastBitsPerComponent = 0;
 
         this.videoStreamIndex = -1;
         this.audioStreamIndex = -1;
