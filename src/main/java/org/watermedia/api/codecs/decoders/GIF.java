@@ -189,15 +189,16 @@ public class GIF extends ImageCodec {
                         if (srcIdx >= indexes.length) return;
 
                         final int colorIndex = indexes[srcIdx++];
-                        if (colorIndex == transparentIndex) continue;
-
                         final int destX = id.left() + x;
                         final int destY = id.top() + y;
-
-                        if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height() &&
-                                colorIndex < colorTable.colors().length) {
-                            canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
+                        if (colorIndex == transparentIndex) {
+                            if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height())
+                                canvas[destY * lsd.width() + destX] = 0x00000000;
+                            continue;
                         }
+
+                        if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height() && colorIndex < colorTable.colors().length)
+                            canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
                     }
                 }
             }
