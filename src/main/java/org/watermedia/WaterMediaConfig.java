@@ -55,6 +55,19 @@ public class WaterMediaConfig {
         @Comment("Adds this path to the discovery path")
         @Comment("Path must not be the fat ffmpeg.exe file")
         public Path customFFMPEGPath = new File("").toPath();
+
+        @Spec.Field
+        @Comment("Platform-specific settings")
+        public final Platforms platforms = new Platforms();
+    }
+
+    @Spec(value = "platforms", disableStatic = true)
+    public final static class Platforms {
+        @Spec.Field
+        @Comment("BiliBili session cookie for authenticated access")
+        @Comment("Without it only 360p/480p are available, with a free account up to 1080p, VIP up to 8K")
+        @Comment("Value should look like: SESSDATA=abc123; bili_jct=def456; DedeUserID=789")
+        public String biliBiliCookie = "";
     }
 
     @Spec(value = "network", disableStatic = true)

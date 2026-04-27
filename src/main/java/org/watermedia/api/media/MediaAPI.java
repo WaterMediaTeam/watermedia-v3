@@ -87,7 +87,7 @@ public class MediaAPI {
         registerPlatform(new LightshotPlatform());
         registerPlatform(new TwitchPlatform());
         registerPlatform(new TwitterPlatform());
-//        registerPlatform(new WaterPlatform());
+        registerPlatform(new BiliBiliPlatform());
         registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
         // LOAD ENGINES

@@ -1833,7 +1833,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVDictionary slaveOptions = new AVDictionary();
 
         try {
-            av_dict_set(slaveOptions, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n", 0);
+            av_dict_set(slaveOptions, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
+                    "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
             av_dict_set(slaveOptions, "reconnect", "1", 0);
             av_dict_set(slaveOptions, "reconnect_streamed", "1", 0);
             av_dict_set(slaveOptions, "reconnect_delay_max", "5", 0);
