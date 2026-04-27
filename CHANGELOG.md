@@ -1,3 +1,18 @@
+# 📦 UPDATE 3.0.0.16 (BETA)
+- ✨ Added back [orange page] platform support with quality and metadata support
+- ✨ Added back Lightshot (prnt.sc) platform support
+- ✨ Added back Twitter(x) platform support with multi-source, quality and metadata support
+- ✨ Added BiliBili platform support with quality and metadata
+  - To unlock high quality, you must configure your cookie on "watermedia.toml" config file
+- ✨ Added GPU procesing for more color formats and support for videos with 10, 12, 16 and 32 bytes per pixel
+- 🐛 Fixed: GIF decoder doesn't decode alpha properly
+- 🐛 Fixed: GIF decoder sometimes shows garbage pixels
+- 🐛 Fixed: Non HTTP connections (file or ftp) fails on opening any MRL
+- 🐛 Fixed: FFMPEG Players hanging on release
+- 🐛 Fixed: JVM crash when release is invoked opening a MRL
+- ⚙️ Changed: FFMediaPlayer#liveSource no longer flickers to true when media is still loading
+- ⚙️ Breaking Change: added MRL as an argument on MediaPlayer constructor (also changes MRL.Source#createThumbnailPlayer signature)
+
 # 📦 UPDATE 3.0.0.15 (BETA)
 - 🐛 Fixed: Seek spams internally triggered when loop is enabled
 - 🐛 Fixed: Logs doesn't show right jar version
