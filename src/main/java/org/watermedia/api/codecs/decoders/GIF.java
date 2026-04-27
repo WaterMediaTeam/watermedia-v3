@@ -93,6 +93,8 @@ public class GIF extends ImageCodec {
         int repeatCount = ImageData.NO_REPEAT;
 
         GraphicExtension currentGce = null;
+        GraphicExtension previousGce = null;
+        ImageDescriptor previousId = null;
         int[] previousFrame = null;
         int backgroundColor = OPAQUE_BLACK;
 
@@ -122,10 +124,18 @@ public class GIF extends ImageCodec {
                     // DECOMPRESS LZW DATA
                     final int[] decompressedIndices = this.decompress(id, buffer);
 
-                    // PREPARE CANVAS WITH DISPOSAL METHOD
-                    final int[] currentFramePixels = frames.isEmpty()
-                            ? this.createNewCanvas(lsd.width(), lsd.height(), backgroundColor)
-                            : this.disposal(previousFrame, currentGce, lsd, backgroundColor, id);
+                    // WHEN TRANSPARENCY IS ACTIVE, BACKGROUND MUST BE FULLY TRANSPARENT
+                    // OTHERWISE GIF BACKGROUND AREAS RENDER AS OPAQUE BLACK
+                    final int[] currentFramePixels;
+                    if (frames.isEmpty()) {
+                        final int initBg = (currentGce != null && currentGce.transparentColorFlag()) ? 0x00000000 : backgroundColor;
+                        currentFramePixels = this.createNewCanvas(lsd.width(), lsd.height(), initBg);
+                    } else {
+                        // DISPOSAL USES PREVIOUS FRAME'S GCE (DISPOSAL METHOD) AND IMAGE DESCRIPTOR (REGION TO CLEAR)
+                        // GIF SPEC: DISPOSAL METHOD INDICATES WHAT TO DO WITH THE CANVAS AFTER DISPLAYING THE FRAME
+                        final int disposalBg = (previousGce != null && previousGce.transparentColorFlag()) ? 0x00000000 : backgroundColor;
+                        currentFramePixels = this.disposal(previousFrame, previousGce, lsd, disposalBg, previousId);
+                    }
 
                     // RENDER DECOMPRESSED DATA TO CANVAS
                     this.renderImage(decompressedIndices, currentFramePixels, id, lsd, activeColorTable, currentGce);
@@ -144,6 +154,9 @@ public class GIF extends ImageCodec {
                             ? (long) currentGce.delayTime() * DELAY_TIME_MULTIPLIER : DEFAULT_FRAME_DELAY;
                     delays.add(delay);
 
+                    // SAVE CURRENT FRAME'S METADATA FOR DISPOSAL ON NEXT FRAME
+                    previousGce = currentGce;
+                    previousId = id;
                     currentGce = null;
                 }
 
@@ -191,14 +204,14 @@ public class GIF extends ImageCodec {
                         final int colorIndex = indexes[srcIdx++];
                         final int destX = id.left() + x;
                         final int destY = id.top() + y;
-                        if (colorIndex == transparentIndex) {
-                            if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height())
-                                canvas[destY * lsd.width() + destX] = 0x00000000;
-                            continue;
-                        }
 
-                        if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height() && colorIndex < colorTable.colors().length)
-                            canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
+                        if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height()) {
+                            if (colorIndex == transparentIndex) {
+                                canvas[destY * lsd.width() + destX] = 0x00000000;
+                            } else if (colorIndex < colorTable.colors().length) {
+                                canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
+                            }
+                        }
                     }
                 }
             }
@@ -209,13 +222,15 @@ public class GIF extends ImageCodec {
                     if (srcIdx >= indexes.length) return;
 
                     final int colorIndex = indexes[srcIdx++];
-                    if (colorIndex == transparentIndex) continue;
-
                     final int destX = id.left() + x;
                     final int destY = id.top() + y;
 
-                    if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height() && colorIndex < colorTable.colors().length) {
-                        canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
+                    if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height()) {
+                        if (colorIndex == transparentIndex) {
+                            canvas[destY * lsd.width() + destX] = 0x00000000;
+                        } else if (colorIndex < colorTable.colors().length) {
+                            canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
+                        }
                     }
                 }
             }
