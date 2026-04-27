@@ -8,6 +8,7 @@ import org.watermedia.api.media.platform.IPlatform;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.net.URI;
@@ -140,8 +141,8 @@ public final class MRL {
                 }
             }
 
-
             if (result != null && result.size() > 0) {
+                if (DataTool.contains(null, result.sources())) throw new IllegalArgumentException("[INTERNAL] Sources list cannot contain null entries");
                 this.sources = result.sources();
                 this.expiresAt = result.expires();
                 this.ready = true;
