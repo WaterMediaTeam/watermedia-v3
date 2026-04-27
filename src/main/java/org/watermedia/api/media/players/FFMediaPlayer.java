@@ -1075,14 +1075,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                     }
 
                     final long ffTs = targetMs * 1000L;
-                    final int seekFlags = (targetMs < this.clock.timeMs()) ? avformat.AVSEEK_FLAG_BACKWARD : 0;
+                    final int seekFlags = avformat.AVSEEK_FLAG_BACKWARD;
                     boolean reopened = false;
 
-                    int seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, seekFlags);
+                    int seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, seekFlags);
                     if (seekResult < 0) {
-                        seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, seekFlags);
+                        seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, seekFlags);
                     }
-                    if (seekResult < 0 && seekFlags != 0) {
+                    if (seekResult < 0) {
                         seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
                     }
                     if (seekResult < 0 && this.reopenFormat()) {
@@ -1090,8 +1090,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                         reopened = true;
                         seekResult = 0;
                         if (targetMs > 0) {
-                            seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, 0);
-                            if (seekResult < 0) seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
+                            seekResult = avformat.av_seek_frame(this.formatContext, -1, ffTs, 0);
+                            if (seekResult < 0) seekResult = avformat.avformat_seek_file(this.formatContext, -1, Long.MIN_VALUE, ffTs, ffTs, 0);
                         }
                     }
                     if (seekResult < 0) {
@@ -1107,7 +1107,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     }
 
                     if (this.useAudioSlave && this.slaveFormatContext != null) {
-                        avformat.avformat_seek_file(this.slaveFormatContext, -1, Long.MIN_VALUE, ffTs, ffTs, seekFlags);
+                        avformat.av_seek_frame(this.slaveFormatContext, -1, ffTs, seekFlags);
                     }
 
                     if (precise && !(reopened && targetMs == 0)) {
@@ -1540,12 +1540,23 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (readRes < 0) break;
                 try {
                     final int idx = packet.stream_index();
-                    if (idx == this.videoStreamIndex && !videoReached) {
-                        videoReached = this.drainDecode(this.videoCodecContext, packet, drainFrame,
-                                this.videoTimeBase, threshold);
-                    } else if (idx == this.audioStreamIndex && !audioReached) {
-                        audioReached = this.drainDecode(this.audioCodecContext, packet, drainFrame,
-                                this.audioTimeBase, threshold);
+                    if (idx == this.videoStreamIndex) {
+                        if (!videoReached) {
+                            videoReached = this.drainDecode(this.videoCodecContext, packet, drainFrame,
+                                    this.videoTimeBase, threshold);
+                        } else {
+                            // threshold already met — still feed codec to keep DPB intact
+                            avcodec.avcodec_send_packet(this.videoCodecContext, packet);
+                            while (avcodec.avcodec_receive_frame(this.videoCodecContext, drainFrame) >= 0) { }
+                        }
+                    } else if (idx == this.audioStreamIndex) {
+                        if (!audioReached) {
+                            audioReached = this.drainDecode(this.audioCodecContext, packet, drainFrame,
+                                    this.audioTimeBase, threshold);
+                        } else {
+                            avcodec.avcodec_send_packet(this.audioCodecContext, packet);
+                            while (avcodec.avcodec_receive_frame(this.audioCodecContext, drainFrame) >= 0) { }
+                        }
                     }
                 } finally {
                     avcodec.av_packet_unref(packet);
