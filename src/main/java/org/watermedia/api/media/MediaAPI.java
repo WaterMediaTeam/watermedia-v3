@@ -88,6 +88,9 @@ public class MediaAPI {
         registerPlatform(new TwitchPlatform());
         registerPlatform(new TwitterPlatform());
         registerPlatform(new BiliBiliPlatform());
+        registerPlatform(new DrivePlatform());
+        registerPlatform(new DropboxPlatform());
+        registerPlatform(new MediaFirePlatform());
         registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
         // LOAD ENGINES
