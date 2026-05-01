@@ -16,7 +16,7 @@ public class DefaultPlatform implements IPlatform {
     }
 
     @Override
-    public boolean validate(URI uri) {
+    public boolean validate(final URI uri) {
         return true; // DEFAULT
     }
 
