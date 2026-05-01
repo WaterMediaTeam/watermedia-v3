@@ -87,6 +87,7 @@ public class MediaAPI {
         registerPlatform(new LightshotPlatform());
         registerPlatform(new TwitchPlatform());
         registerPlatform(new TwitterPlatform());
+        registerPlatform(new BlueskyPlatform());
         registerPlatform(new BiliBiliPlatform());
         registerPlatform(new DrivePlatform());
         registerPlatform(new DropboxPlatform());
