@@ -92,6 +92,7 @@ public class MediaAPI {
         registerPlatform(new DropboxPlatform());
         registerPlatform(new MediaFirePlatform());
         registerPlatform(new SendvidPlatform());
+        registerPlatform(new OdyseePlatform());
         registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
         // LOAD ENGINES
