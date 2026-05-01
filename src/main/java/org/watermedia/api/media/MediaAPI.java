@@ -93,6 +93,7 @@ public class MediaAPI {
         registerPlatform(new MediaFirePlatform());
         registerPlatform(new SendvidPlatform());
         registerPlatform(new OdyseePlatform());
+        registerPlatform(new VidLiiPlatform());
         registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
         // LOAD ENGINES
