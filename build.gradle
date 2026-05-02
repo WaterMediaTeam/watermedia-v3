@@ -83,6 +83,7 @@ dependencies {
     library "org.lwjgl:lwjgl-glfw:$opengl_version"
     library "org.lwjgl:lwjgl-stb:$opengl_version"
     library "org.lwjgl:lwjgl-openal:$openal_version"
+    library "org.joml:joml:$joml_version"
 
     // TEST DEPENDENCIES
     testImplementation(platform('org.junit:junit-bom:6.0.2'))
