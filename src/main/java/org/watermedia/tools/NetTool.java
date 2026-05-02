@@ -17,6 +17,9 @@ import static java.net.HttpURLConnection.HTTP_UNAVAILABLE;
 
 public class NetTool {
 
+    // TODO: replace with per-source custom headers in MRL.Source
+    public static final String BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
     // CAST TO HTTP
     public static HttpURLConnection connectToHTTP(final URI uri, final String method, final String accept) throws IOException {
         return (HttpURLConnection) connectToURI(uri, method, accept);

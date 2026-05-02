@@ -46,12 +46,16 @@ public final class HlsTool {
     }
 
     public static Result fetch(final URI uri) {
+        return fetch(uri, WaterMedia.USER_AGENT);
+    }
+
+    public static Result fetch(final URI uri, String userAgent) {
         try {
             final var http = NetTool.connectToHTTP(uri, "GET", "*/*");
             http.setConnectTimeout(10_000);
             http.setReadTimeout(10_000);
             http.setInstanceFollowRedirects(true);
-            http.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
+            http.setRequestProperty("User-Agent", userAgent);
             http.setDoInput(true);
             NetTool.validateHTTP200(http.getResponseCode(), uri);
 

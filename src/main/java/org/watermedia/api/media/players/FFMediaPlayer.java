@@ -25,10 +25,7 @@ import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.binaries.WaterMediaBinaries;
-import org.watermedia.tools.DataTool;
-import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.IOTool;
-import org.watermedia.tools.ThreadTool;
+import org.watermedia.tools.*;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -54,8 +51,6 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
-    // TODO: replace with per-source custom headers in MRL.Source
-    private static final String BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     private static boolean LOADED;
 
     // AUDIO OUTPUT FORMAT
@@ -2325,7 +2320,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     private static String buildTikTokHeaders(final java.net.URI mrlUri) {
         final StringBuilder sb = new StringBuilder();
-        sb.append("User-Agent: ").append(BROWSER_UA).append("\r\n");
+        sb.append("User-Agent: ").append(NetTool.BROWSER_UA).append("\r\n");
         sb.append("Accept: */*\r\n");
         sb.append("Referer: ").append(mrlUri).append("\r\n");
         final String cookies = org.watermedia.api.media.platform.TikTokPlatform.cdnCookies;

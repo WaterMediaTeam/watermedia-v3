@@ -96,6 +96,7 @@ public class MediaAPI {
         registerPlatform(new OdyseePlatform());
         registerPlatform(new VidLiiPlatform());
         registerPlatform(new TikTokPlatform());
+        registerPlatform(new DTubePlatform());
         registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
 
         // LOAD ENGINES
