@@ -54,6 +54,8 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
+    // TODO: replace with per-source custom headers in MRL.Source
+    private static final String BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     private static boolean LOADED;
 
     // AUDIO OUTPUT FORMAT
@@ -1674,9 +1676,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final AVDictionary options = new AVDictionary();
         try {
-            av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
-                    "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                    "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
+            // TODO: replace hardcoded TikTok check with per-source custom headers in MRL.Source
+            av_dict_set(options, "headers", isTikTok(this.mrl.uri)
+                    ? buildTikTokHeaders(this.mrl.uri)
+                    : "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
+                      "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
+                      "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
             av_dict_set(options, "buffer_size", "33554432", 0);
             av_dict_set(options, "rtbufsize", "15000000", 0);
             av_dict_set(options, "http_persistent", "1", 0);
@@ -1688,8 +1693,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             av_dict_set(options, "rtsp_transport", "tcp", 0);
             av_dict_set(options, "max_delay", "5000000", 0);
 
-            if (avformat.avformat_open_input(this.formatContext, url, null, options) < 0) {
-                LOGGER.error(IT, "reopenFormat: failed to open input: {}", url);
+            final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
+            if (ret < 0) {
+                final byte[] buf = new byte[256];
+                av_strerror(ret, buf, buf.length);
+                LOGGER.error(IT, "reopenFormat: failed to open input ({}): {}", new String(buf).trim(), url);
                 return false;
             }
         } finally {
@@ -1733,9 +1741,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             try {
                 LOGGER.debug("Referer: {}", uri.getScheme() + "://" + uri.getHost());
-                av_dict_set(options, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
-                        "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                        "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
+                // TODO: replace hardcoded TikTok check with per-source custom headers in MRL.Source
+                av_dict_set(options, "headers", isTikTok(this.mrl.uri)
+                        ? buildTikTokHeaders(this.mrl.uri)
+                        : "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
+                          "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
+                          "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
@@ -1747,8 +1758,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                 av_dict_set(options, "rtsp_transport", "tcp", 0);
                 av_dict_set(options, "max_delay", "5000000", 0);
 
-                if (avformat.avformat_open_input(this.formatContext, url, null, options) < 0) {
-                    LOGGER.error(IT, "Failed to open input: {}", url);
+                final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
+                if (ret < 0) {
+                    final byte[] buf = new byte[256];
+                    av_strerror(ret, buf, buf.length);
+                    LOGGER.error(IT, "Failed to open input ({}): {}", new String(buf).trim(), url);
                     return false;
                 }
             } finally {
@@ -2303,4 +2317,21 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     public static boolean loaded() { return LOADED; }
+
+    private static boolean isTikTok(final java.net.URI uri) {
+        final String host = uri.getHost();
+        return host != null && (host.equals("www.tiktok.com") || host.equals("tiktok.com") || host.equals("m.tiktok.com"));
+    }
+
+    private static String buildTikTokHeaders(final java.net.URI mrlUri) {
+        final StringBuilder sb = new StringBuilder();
+        sb.append("User-Agent: ").append(BROWSER_UA).append("\r\n");
+        sb.append("Accept: */*\r\n");
+        sb.append("Referer: ").append(mrlUri).append("\r\n");
+        final String cookies = org.watermedia.api.media.platform.TikTokPlatform.cdnCookies;
+        if (cookies != null) {
+            sb.append("Cookie: ").append(cookies).append("\r\n");
+        }
+        return sb.toString();
+    }
 }

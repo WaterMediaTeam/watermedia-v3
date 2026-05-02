@@ -429,6 +429,10 @@ public final class MRL {
             this.threshold = threshold;
         }
 
+        public static Quality of(final int resolution) {
+            return of(resolution, resolution);
+        }
+
         /**
          * Determines quality from video dimensions.
          *
