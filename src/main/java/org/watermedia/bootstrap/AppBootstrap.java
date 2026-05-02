@@ -96,16 +96,11 @@ public class AppBootstrap {
         launchArgs = args;
         if (System.getProperty(APP_FLAG) != null) {
             try {
-                final int command = WaterMediaApp.start(() -> {
+                WaterMediaApp.start(() -> {
                     WaterMediaApp.log("Launched with embedded WaterMedia App Bootstrap");
                     WaterMediaApp.log("Searching for sideloadable extensions...");
                     ServiceLoader.load(Extension.class).forEach(Extension::load);
                 });
-                switch (command) {
-                    case 1 -> {
-                        // DELETE ALL JARS
-                    }
-                }
             } catch (final Throwable e) {
                 showError(e);
             }
