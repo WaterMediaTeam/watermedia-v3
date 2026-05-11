@@ -24,6 +24,8 @@ import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.PacketQueue;
+import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.MediaQuality;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
 
@@ -168,7 +170,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // FORMAT CHANGE DETECTION (RENDER THREAD ONLY)
     private int lastFrameWidth;
     private int lastFrameHeight;
-    private GFXEngine.ColorSpace lastColorSpace;
+    private ColorSpace lastColorSpace;
     private int lastBitsPerComponent;
 
     // AUDIO FORMAT NEGOTIATION
@@ -186,8 +188,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int perfAudioUploads;
     private int perfVideoRenders;
 
-    public FFMediaPlayer(final MRL mrl, final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
-        super(mrl, source, gfx, sfx);
+    public FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
+        super(mrl, sourceIndex, gfx, sfx);
     }
 
     // MEDIAPLAYER OVERRIDES
@@ -266,7 +268,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean foward() { return this.skipTime(5000); }
+    public boolean forward() { return this.skipTime(5000); }
 
     @Override
     public boolean rewind() { return this.skipTime(-5000); }
@@ -294,7 +296,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     public long duration() { return (isNull(this.formatContext) || this.liveSource()) ? NO_DURATION : this.formatContext.duration() / 1000; }
 
     @Override
-    public void quality(final MRL.Quality quality) {
+    public void quality(final MediaQuality quality) {
         super.quality(quality);
         if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
             this.qualityRequest = true;
@@ -316,64 +318,64 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean isHwAccel() { return !isNull(this.hwDeviceCtx); }
 
     // FORMAT MAPPING — NATIVE GPU UPLOAD
-    private record PixFmtMapping(GFXEngine.ColorSpace cs, int bits) {}
+    private record PixFmtMapping(ColorSpace cs, int bits) {}
 
     private static PixFmtMapping mapPixelFormat(final int avPixFmt) {
         return switch (avPixFmt) {
             // 8-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 8);
-            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 8);
-            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 8);
+            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> new PixFmtMapping(ColorSpace.YUV420P, 8);
+            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> new PixFmtMapping(ColorSpace.YUV422P, 8);
+            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> new PixFmtMapping(ColorSpace.YUV444P, 8);
             // 8-BIT SEMI-PLANAR
-            case AV_PIX_FMT_NV12 -> new PixFmtMapping(GFXEngine.ColorSpace.NV12, 8);
-            case AV_PIX_FMT_NV21 -> new PixFmtMapping(GFXEngine.ColorSpace.NV21, 8);
+            case AV_PIX_FMT_NV12 -> new PixFmtMapping(ColorSpace.NV12, 8);
+            case AV_PIX_FMT_NV21 -> new PixFmtMapping(ColorSpace.NV21, 8);
             // 8-BIT PACKED RGB
-            case AV_PIX_FMT_BGRA  -> new PixFmtMapping(GFXEngine.ColorSpace.BGRA, 8);
-            case AV_PIX_FMT_RGBA  -> new PixFmtMapping(GFXEngine.ColorSpace.RGBA, 8);
-            case AV_PIX_FMT_RGB24 -> new PixFmtMapping(GFXEngine.ColorSpace.RGB, 8);
+            case AV_PIX_FMT_BGRA  -> new PixFmtMapping(ColorSpace.BGRA, 8);
+            case AV_PIX_FMT_RGBA  -> new PixFmtMapping(ColorSpace.RGBA, 8);
+            case AV_PIX_FMT_RGB24 -> new PixFmtMapping(ColorSpace.RGB, 8);
             // 8-BIT GRAYSCALE
-            case AV_PIX_FMT_GRAY8 -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 8);
+            case AV_PIX_FMT_GRAY8 -> new PixFmtMapping(ColorSpace.GRAY, 8);
             // 8-BIT PACKED YUV
-            case AV_PIX_FMT_YUYV422 -> new PixFmtMapping(GFXEngine.ColorSpace.YUYV, 8);
-            case AV_PIX_FMT_UYVY422 -> new PixFmtMapping(GFXEngine.ColorSpace.YUYV2, 8);
+            case AV_PIX_FMT_YUYV422 -> new PixFmtMapping(ColorSpace.YUYV, 8);
+            case AV_PIX_FMT_UYVY422 -> new PixFmtMapping(ColorSpace.YUYV2, 8);
             // 8-BIT YUVA (4-PLANE)
-            case AV_PIX_FMT_YUVA420P -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA420P, 8);
-            case AV_PIX_FMT_YUVA422P -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 8);
-            case AV_PIX_FMT_YUVA444P -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 8);
+            case AV_PIX_FMT_YUVA420P -> new PixFmtMapping(ColorSpace.YUVA420P, 8);
+            case AV_PIX_FMT_YUVA422P -> new PixFmtMapping(ColorSpace.YUVA422P, 8);
+            case AV_PIX_FMT_YUVA444P -> new PixFmtMapping(ColorSpace.YUVA444P, 8);
             // 10-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 10);
-            case AV_PIX_FMT_YUV422P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 10);
-            case AV_PIX_FMT_YUV444P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 10);
+            case AV_PIX_FMT_YUV420P10LE -> new PixFmtMapping(ColorSpace.YUV420P, 10);
+            case AV_PIX_FMT_YUV422P10LE -> new PixFmtMapping(ColorSpace.YUV422P, 10);
+            case AV_PIX_FMT_YUV444P10LE -> new PixFmtMapping(ColorSpace.YUV444P, 10);
             // 10-BIT YUVA
-            case AV_PIX_FMT_YUVA420P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA420P, 10);
-            case AV_PIX_FMT_YUVA422P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 10);
-            case AV_PIX_FMT_YUVA444P10LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 10);
+            case AV_PIX_FMT_YUVA420P10LE -> new PixFmtMapping(ColorSpace.YUVA420P, 10);
+            case AV_PIX_FMT_YUVA422P10LE -> new PixFmtMapping(ColorSpace.YUVA422P, 10);
+            case AV_PIX_FMT_YUVA444P10LE -> new PixFmtMapping(ColorSpace.YUVA444P, 10);
             // 12-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 12);
-            case AV_PIX_FMT_YUV422P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 12);
-            case AV_PIX_FMT_YUV444P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 12);
+            case AV_PIX_FMT_YUV420P12LE -> new PixFmtMapping(ColorSpace.YUV420P, 12);
+            case AV_PIX_FMT_YUV422P12LE -> new PixFmtMapping(ColorSpace.YUV422P, 12);
+            case AV_PIX_FMT_YUV444P12LE -> new PixFmtMapping(ColorSpace.YUV444P, 12);
             // 12-BIT YUVA
-            case AV_PIX_FMT_YUVA422P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 12);
-            case AV_PIX_FMT_YUVA444P12LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 12);
+            case AV_PIX_FMT_YUVA422P12LE -> new PixFmtMapping(ColorSpace.YUVA422P, 12);
+            case AV_PIX_FMT_YUVA444P12LE -> new PixFmtMapping(ColorSpace.YUVA444P, 12);
             // 16-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV420P, 16);
-            case AV_PIX_FMT_YUV422P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV422P, 16);
-            case AV_PIX_FMT_YUV444P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUV444P, 16);
+            case AV_PIX_FMT_YUV420P16LE -> new PixFmtMapping(ColorSpace.YUV420P, 16);
+            case AV_PIX_FMT_YUV422P16LE -> new PixFmtMapping(ColorSpace.YUV422P, 16);
+            case AV_PIX_FMT_YUV444P16LE -> new PixFmtMapping(ColorSpace.YUV444P, 16);
             // 16-BIT YUVA
-            case AV_PIX_FMT_YUVA420P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA420P, 16);
-            case AV_PIX_FMT_YUVA422P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA422P, 16);
-            case AV_PIX_FMT_YUVA444P16LE -> new PixFmtMapping(GFXEngine.ColorSpace.YUVA444P, 16);
+            case AV_PIX_FMT_YUVA420P16LE -> new PixFmtMapping(ColorSpace.YUVA420P, 16);
+            case AV_PIX_FMT_YUVA422P16LE -> new PixFmtMapping(ColorSpace.YUVA422P, 16);
+            case AV_PIX_FMT_YUVA444P16LE -> new PixFmtMapping(ColorSpace.YUVA444P, 16);
             // P010/P016 — LEFT-SHIFTED 10/16-BIT NV12, MAP AS 16-BIT (bitScale=1.0 IS CORRECT)
-            case AV_PIX_FMT_P010LE -> new PixFmtMapping(GFXEngine.ColorSpace.NV12, 16);
-            case AV_PIX_FMT_P016LE -> new PixFmtMapping(GFXEngine.ColorSpace.NV12, 16);
+            case AV_PIX_FMT_P010LE -> new PixFmtMapping(ColorSpace.NV12, 16);
+            case AV_PIX_FMT_P016LE -> new PixFmtMapping(ColorSpace.NV12, 16);
             // HIGH-BIT GRAYSCALE
-            case AV_PIX_FMT_GRAY10LE  -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 10);
-            case AV_PIX_FMT_GRAY12LE  -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 12);
-            case AV_PIX_FMT_GRAY16LE  -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 16);
-            case AV_PIX_FMT_GRAYF32LE -> new PixFmtMapping(GFXEngine.ColorSpace.GRAY, 32);
+            case AV_PIX_FMT_GRAY10LE  -> new PixFmtMapping(ColorSpace.GRAY, 10);
+            case AV_PIX_FMT_GRAY12LE  -> new PixFmtMapping(ColorSpace.GRAY, 12);
+            case AV_PIX_FMT_GRAY16LE  -> new PixFmtMapping(ColorSpace.GRAY, 16);
+            case AV_PIX_FMT_GRAYF32LE -> new PixFmtMapping(ColorSpace.GRAY, 32);
             // 16-BIT PACKED RGB
-            case AV_PIX_FMT_RGB48LE  -> new PixFmtMapping(GFXEngine.ColorSpace.RGB, 16);
-            case AV_PIX_FMT_RGBA64LE -> new PixFmtMapping(GFXEngine.ColorSpace.RGBA, 16);
+            case AV_PIX_FMT_RGB48LE  -> new PixFmtMapping(ColorSpace.RGB, 16);
+            case AV_PIX_FMT_RGBA64LE -> new PixFmtMapping(ColorSpace.RGBA, 16);
             default -> null;
         };
     }
@@ -515,7 +517,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             // DETERMINE UPLOAD PATH
             final PixFmtMapping mapping = mapPixelFormat(slot.format);
             final boolean fallback = (mapping == null);
-            final GFXEngine.ColorSpace cs = fallback ? GFXEngine.ColorSpace.BGRA : mapping.cs;
+            final ColorSpace cs = fallback ? ColorSpace.BGRA : mapping.cs;
             final int bits = fallback ? 8 : mapping.bits;
 
             // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine
@@ -594,7 +596,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // COPIES AVFRAME PLANE DATA TO PERSISTENT BUFFERS, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
-    private void uploadNativePlanes(final AVFrame frame, final GFXEngine.ColorSpace cs, final int width, final int height) {
+    private void uploadNativePlanes(final AVFrame frame, final ColorSpace cs, final int width, final int height) {
         switch (cs) {
             case BGRA, RGBA, RGB, GRAY, YUYV, YUYV2 -> {
                 final int yStride = frame.linesize(0);
@@ -615,7 +617,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.gfx.upload(this.planeY, yStride, this.planeU, uvStride);
             }
             case YUV420P, YUV422P, YUV444P -> {
-                final int chromaH = (cs == GFXEngine.ColorSpace.YUV420P) ? height / 2 : height;
+                final int chromaH = (cs == ColorSpace.YUV420P) ? height / 2 : height;
                 final int yStride = frame.linesize(0);
                 final int uStride = frame.linesize(1);
                 final int vStride = frame.linesize(2);
@@ -631,7 +633,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.gfx.upload(this.planeY, yStride, this.planeU, uStride, this.planeV, vStride);
             }
             case YUVA420P, YUVA422P, YUVA444P -> {
-                final int chromaH = (cs == GFXEngine.ColorSpace.YUVA420P) ? height / 2 : height;
+                final int chromaH = (cs == ColorSpace.YUVA420P) ? height / 2 : height;
                 final int yStride = frame.linesize(0);
                 final int uStride = frame.linesize(1);
                 final int vStride = frame.linesize(2);
@@ -1658,6 +1660,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     private boolean reopenFormat() {
         final var uri = this.source.uri(this.quality);
+        super.quality(this.source.qualityOf(uri));
+
         final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
 
         if (this.formatContext != null) {
@@ -1671,12 +1675,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final AVDictionary options = new AVDictionary();
         try {
-            // TODO: replace hardcoded TikTok check with per-source custom headers in MRL.Source
-            av_dict_set(options, "headers", isTikTok(this.mrl.uri)
-                    ? buildTikTokHeaders(this.mrl.uri)
-                    : "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
-                      "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                      "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
+            av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
             av_dict_set(options, "buffer_size", "33554432", 0);
             av_dict_set(options, "rtbufsize", "15000000", 0);
             av_dict_set(options, "http_persistent", "1", 0);
@@ -1714,10 +1713,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     private boolean init() {
         try {
             final var uri = this.source.uri(this.quality);
+            super.quality(this.source.qualityOf(uri));
+            LOGGER.debug(IT, "Quality switchoff {}", this.quality);
             final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
 
             final var audioSlaves = this.source.audioSlaves();
-            MRL.Slave audioSlave = null;
+            MRL.SlaveEntry audioSlave = null;
             if (this.sfx != null && !audioSlaves.isEmpty()) {
                 audioSlave = audioSlaves.get(0);
             }
@@ -1736,12 +1737,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             try {
                 LOGGER.debug("Referer: {}", uri.getScheme() + "://" + uri.getHost());
-                // TODO: replace hardcoded TikTok check with per-source custom headers in MRL.Source
-                av_dict_set(options, "headers", isTikTok(this.mrl.uri)
-                        ? buildTikTokHeaders(this.mrl.uri)
-                        : "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
-                          "Accept: video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8\r\n" +
-                          "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
+                av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
@@ -1826,8 +1822,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    private boolean initAudioSlave(final MRL.Slave slave) {
-        final var slaveUri = slave.uri(this.quality);
+    private boolean initAudioSlave(final MRL.SlaveEntry slave) {
+        final var slaveUri = slave.uri();
         if (slaveUri == null) {
             LOGGER.error(IT, "Audio slave has no URI for quality {}", this.quality);
             return false;
@@ -1842,8 +1838,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVDictionary slaveOptions = new AVDictionary();
 
         try {
-            av_dict_set(slaveOptions, "headers", "User-Agent: " + WaterMedia.USER_AGENT + "\r\n" +
-                    "Referer: " + this.mrl.uri.getScheme() + "://" + this.mrl.uri.getHost() + "/\r\n", 0);
+            av_dict_set(slaveOptions, "headers", this.source.headers().toRawString(), 0);
             av_dict_set(slaveOptions, "reconnect", "1", 0);
             av_dict_set(slaveOptions, "reconnect_streamed", "1", 0);
             av_dict_set(slaveOptions, "reconnect_delay_max", "5", 0);
@@ -1951,6 +1946,14 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final int w = this.videoCodecContext.width();
         final int h = this.videoCodecContext.height();
+
+        if (this.quality == MediaQuality.UNKNOWN) {
+            final var realQuality = MediaQuality.of(w, h);
+            this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
+            LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(this.quality), this.quality, realQuality);
+            this.quality = realQuality;
+        }
+
         final PixFmtMapping initialMapping = mapPixelFormat(this.videoCodecContext.pix_fmt());
         if (initialMapping != null) {
             this.gfx.setVideoFormat(initialMapping.cs, w, h, initialMapping.bits);
@@ -2312,21 +2315,4 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     public static boolean loaded() { return LOADED; }
-
-    private static boolean isTikTok(final java.net.URI uri) {
-        final String host = uri.getHost();
-        return host != null && (host.equals("www.tiktok.com") || host.equals("tiktok.com") || host.equals("m.tiktok.com"));
-    }
-
-    private static String buildTikTokHeaders(final java.net.URI mrlUri) {
-        final StringBuilder sb = new StringBuilder();
-        sb.append("User-Agent: ").append(NetTool.BROWSER_UA).append("\r\n");
-        sb.append("Accept: */*\r\n");
-        sb.append("Referer: ").append(mrlUri).append("\r\n");
-        final String cookies = org.watermedia.api.media.platform.TikTokPlatform.cdnCookies;
-        if (cookies != null) {
-            sb.append("Cookie: ").append(cookies).append("\r\n");
-        }
-        return sb.toString();
-    }
 }

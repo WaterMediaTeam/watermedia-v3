@@ -1,12 +1,15 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
-import com.google.gson.Gson;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -15,13 +18,13 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public class SendvidPlatform implements IPlatform {
     public static final String NAME = "Sendvid";
+    private static final Marker IT = MarkerManager.getMarker(SendvidPlatform.class.getSimpleName());
     private static final String STATUS_API = "https://sendvid.com/api/v1/videos/%s/status.json";
     private static final Pattern PATTERN_SOURCE = Pattern.compile("var\\s+video_source\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_POSTER = Pattern.compile("var\\s+video_poster\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_DURATION = Pattern.compile("var\\s+video_duration\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_VALIDTO = Pattern.compile("[?&]validto=(\\d+)");
     private static final int MAX_QUEUE = 2;
-    private static final Gson GSON = new Gson();
 
     @Override
     public String name() { return NAME; }
@@ -33,7 +36,7 @@ public class SendvidPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         final String path = uri.getPath();
         if (path == null || path.length() < 2) {
             throw new IllegalArgumentException("Invalid Sendvid URL: " + uri);
@@ -50,11 +53,10 @@ public class SendvidPlatform implements IPlatform {
             this.waitForReady(statusUri, videoId);
         }
 
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "text/html");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
+        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
 
-            final String html = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            final String html = req.readAllAsString();
 
             final Matcher sourceMatcher = PATTERN_SOURCE.matcher(html);
             if (!sourceMatcher.find()) {
@@ -62,7 +64,6 @@ public class SendvidPlatform implements IPlatform {
             }
 
             final URI videoUri = new URI(sourceMatcher.group(1));
-            final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO).uri(videoUri);
 
             URI thumbnailUri = null;
             final Matcher posterMatcher = PATTERN_POSTER.matcher(html);
@@ -76,7 +77,7 @@ public class SendvidPlatform implements IPlatform {
                 durationMs = (long) (Double.parseDouble(durationMatcher.group(1)) * 1000);
             }
 
-            sourceBuilder.metadata(new MRL.Metadata(null, null, thumbnailUri, null, durationMs, null));
+            final Metadata metadata = new Metadata(null, null, null, durationMs, null);
 
             Instant expires = null;
             final Matcher validtoMatcher = PATTERN_VALIDTO.matcher(videoUri.toString());
@@ -84,20 +85,18 @@ public class SendvidPlatform implements IPlatform {
                 expires = Instant.ofEpochSecond(Long.parseLong(validtoMatcher.group(1)));
             }
 
-            return new Result(expires, sourceBuilder.build());
-        } finally {
-            conn.disconnect();
+            final var entry = new DataSource(MediaType.VIDEO, thumbnailUri, metadata,
+                    RequestHeaders.defaults(uri),
+                    new DataQuality[] {new DataQuality(videoUri, 0, 0)},
+                    null, null);
+            return new PlatformData(expires, entry);
         }
     }
 
     private StatusResponse fetchStatus(final URI statusUri) throws Exception {
-        final HttpURLConnection conn = NetTool.connectToHTTP(statusUri, "GET", "application/json");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), statusUri);
-            final String json = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            return GSON.fromJson(json, StatusResponse.class);
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(statusUri).method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + statusUri);
+            return req.json(StatusResponse.class);
         }
     }
 

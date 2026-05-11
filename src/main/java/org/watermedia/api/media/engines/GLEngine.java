@@ -3,15 +3,10 @@ package org.watermedia.api.media.engines;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.glfw.GLFW;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL12;
-import org.lwjgl.opengl.GL13;
-import org.lwjgl.opengl.GL15;
-import org.lwjgl.opengl.GL20;
-import org.lwjgl.opengl.GL21;
-import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.util.ColorSpace;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -168,6 +163,10 @@ public final class GLEngine extends GFXEngine {
     private final TexParamConsumer texParameter;
     private final BindConsumer pixelStore;
     private final IntConsumer delTexture;
+    private final IntConsumer activeTexture;
+    private final IntConsumer bindVertexArray;
+    private final BindConsumer bindFrameBuffer;
+    private final BindConsumer bindBuffer;
 
     // THREAD CONTEXT (OPENGL-SPECIFIC)
     private final Thread renderThread;
@@ -245,7 +244,9 @@ public final class GLEngine extends GFXEngine {
     private GLEngine(final Thread renderThread, final Executor renderThreadEx,
                      final IntSupplier genTexture, final BindConsumer bindTexture,
                      final TexParamConsumer texParameter, final BindConsumer pixelStore,
-                     final IntConsumer delTexture) {
+                     final IntConsumer delTexture, final IntConsumer activeTexture,
+                     final IntConsumer bindVertexArray, final BindConsumer bindFrameBuffer,
+                     final BindConsumer bindBuffer) {
         WaterMedia.checkIsClientSideOrThrow(GLEngine.class);
         if (genTexture == null || bindTexture == null || texParameter == null
                 || pixelStore == null || delTexture == null) {
@@ -258,6 +259,11 @@ public final class GLEngine extends GFXEngine {
         this.texParameter = texParameter;
         this.pixelStore = pixelStore;
         this.delTexture = delTexture;
+        this.activeTexture = activeTexture;
+        this.bindVertexArray = bindVertexArray;
+        this.bindFrameBuffer = bindFrameBuffer;
+        this.bindBuffer = bindBuffer;
+
         // VALIDATE THREAD PAIR
         if (renderThreadEx != null) {
             renderThreadEx.execute(() -> {
@@ -483,7 +489,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
             this.checkGLError("single-plane glTexImage2D");
 
@@ -495,16 +501,16 @@ public final class GLEngine extends GFXEngine {
             final int readIdx = this.pboWriteIdx;
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, glFormat, glType, 0L);
             this.checkGLError("single-plane PBO texSubImage");
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, dataSize, addr);
             this.pboWriteIdx = writeIdx;
         }
 
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
@@ -531,7 +537,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLen);
             GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, this.glInternalR, this.width, this.height, 0, GL11.GL_RED, this.glType, addr);
@@ -547,16 +553,16 @@ public final class GLEngine extends GFXEngine {
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
             this.checkGLError("GRAY PBO texSub");
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, dataSize, addr);
             this.pboWriteIdx = writeIdx;
         }
 
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
@@ -592,7 +598,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         if (this.firstFrame || !this.pboReady || this.pboAllocSizes[0] != dataSize) {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, halfW, this.height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, addr);
             this.checkGLError("YUYV texImage");
@@ -606,16 +612,16 @@ public final class GLEngine extends GFXEngine {
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, halfW, this.height, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 0L);
             this.checkGLError("YUYV PBO texSub");
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, dataSize, addr);
             this.pboWriteIdx = writeIdx;
         }
 
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
@@ -663,7 +669,7 @@ public final class GLEngine extends GFXEngine {
 
         if (this.firstFrame || !this.pboReady
                 || this.pboAllocSizes[0] != ySize || this.pboAllocSizes[1] != uvSize) {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
@@ -687,24 +693,24 @@ public final class GLEngine extends GFXEngine {
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
             this.checkGLError("NV Y PBO texSub");
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uvRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, uvW, uvH, GL30.GL_RG, this.glType, 0L);
             this.checkGLError("NV UV PBO texSub");
 
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, ySize, yAddr);
             this.seedPBO(NUM_PBOS + writeIdx, uvSize, uvAddr);
             this.pboWriteIdx = writeIdx;
         }
 
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
@@ -764,7 +770,7 @@ public final class GLEngine extends GFXEngine {
                 || this.pboAllocSizes[0] != ySize
                 || this.pboAllocSizes[1] != uSize
                 || this.pboAllocSizes[2] != vSize) {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
@@ -795,21 +801,21 @@ public final class GLEngine extends GFXEngine {
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
 
             this.checkGLError("YUV3 PBO texSub");
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, ySize, yAddr);
             this.seedPBO(NUM_PBOS + writeIdx, uSize, uAddr);
@@ -817,7 +823,7 @@ public final class GLEngine extends GFXEngine {
             this.pboWriteIdx = writeIdx;
         }
 
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
@@ -884,7 +890,7 @@ public final class GLEngine extends GFXEngine {
                 || this.pboAllocSizes[1] != uSize
                 || this.pboAllocSizes[2] != vSize
                 || this.pboAllocSizes[3] != aSize) {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
@@ -922,26 +928,26 @@ public final class GLEngine extends GFXEngine {
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, yRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, uRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, vRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[2 * NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, chromaW, chromaH, GL11.GL_RED, this.glType, 0L);
 
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.aTexture);
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, aRowLen);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[3 * NUM_PBOS + readIdx]);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[3 * NUM_PBOS + readIdx]);
             GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, this.width, this.height, GL11.GL_RED, this.glType, 0L);
 
             this.checkGLError("YUVA PBO texSub");
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
             this.seedPBO(writeIdx, ySize, yAddr);
             this.seedPBO(NUM_PBOS + writeIdx, uSize, uAddr);
@@ -950,7 +956,7 @@ public final class GLEngine extends GFXEngine {
             this.pboWriteIdx = writeIdx;
         }
 
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
@@ -996,24 +1002,24 @@ public final class GLEngine extends GFXEngine {
         final int savedFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
         final int savedVAO = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
 
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.fbo);
+        this.bindFrameBuffer.accept(GL30.GL_FRAMEBUFFER, this.fbo);
         GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, this.managedTexture, 0);
         GL11.glViewport(0, 0, this.width, this.height);
 
         switch (this.colorSpace) {
             case GRAY -> {
                 GL20.glUseProgram(this.shaderGray);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.activeTexture.accept(GL13.GL_TEXTURE0);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformGrayTex, 0);
                 GL20.glUniform1f(this.uniformGrayBitScale, this.bitScale);
             }
             case NV12, NV21 -> {
                 GL20.glUseProgram(this.shaderNV);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.activeTexture.accept(GL13.GL_TEXTURE0);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformNVYTex, 0);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                this.activeTexture.accept(GL13.GL_TEXTURE1);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
                 GL20.glUniform1i(this.uniformNVUVTex, 1);
                 GL20.glUniform1f(this.uniformNVSwap, this.colorSpace == ColorSpace.NV21 ? 1.0f : 0.0f);
@@ -1021,36 +1027,36 @@ public final class GLEngine extends GFXEngine {
             }
             case YUV420P, YUV422P, YUV444P -> {
                 GL20.glUseProgram(this.shaderYUV3);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.activeTexture.accept(GL13.GL_TEXTURE0);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformYUV3YTex, 0);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                this.activeTexture.accept(GL13.GL_TEXTURE1);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
                 GL20.glUniform1i(this.uniformYUV3UTex, 1);
-                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                this.activeTexture.accept(GL13.GL_TEXTURE2);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
                 GL20.glUniform1i(this.uniformYUV3VTex, 2);
                 GL20.glUniform1f(this.uniformYUV3BitScale, this.bitScale);
             }
             case YUVA420P, YUVA422P, YUVA444P -> {
                 GL20.glUseProgram(this.shaderYUVA);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.activeTexture.accept(GL13.GL_TEXTURE0);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformYUVAYTex, 0);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                this.activeTexture.accept(GL13.GL_TEXTURE1);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uTexture);
                 GL20.glUniform1i(this.uniformYUVAUTex, 1);
-                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                this.activeTexture.accept(GL13.GL_TEXTURE2);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.vTexture);
                 GL20.glUniform1i(this.uniformYUVAVTex, 2);
-                GL13.glActiveTexture(GL13.GL_TEXTURE3);
+                this.activeTexture.accept(GL13.GL_TEXTURE3);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.aTexture);
                 GL20.glUniform1i(this.uniformYUVAATex, 3);
                 GL20.glUniform1f(this.uniformYUVABitScale, this.bitScale);
             }
             case YUYV, YUYV2 -> {
                 GL20.glUseProgram(this.shaderYUYV);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                this.activeTexture.accept(GL13.GL_TEXTURE0);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformYUYVTex, 0);
                 GL20.glUniform1f(this.uniformYUYVWidth, (float) this.width);
@@ -1059,16 +1065,16 @@ public final class GLEngine extends GFXEngine {
             default -> {}
         }
 
-        GL30.glBindVertexArray(this.quadVAO);
+        this.bindVertexArray.accept(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
-        GL30.glBindVertexArray(0);
+        this.bindVertexArray.accept(0);
         this.checkGLError("FBO convert quad");
 
         GL20.glUseProgram(savedProgram);
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, savedFbo);
+        this.activeTexture.accept(GL13.GL_TEXTURE0);
+        this.bindFrameBuffer.accept(GL30.GL_FRAMEBUFFER, savedFbo);
         GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
-        GL30.glBindVertexArray(savedVAO);
+        this.bindVertexArray.accept(savedVAO);
     }
 
     // INTERNAL HELPERS
@@ -1095,10 +1101,10 @@ public final class GLEngine extends GFXEngine {
         };
 
         this.quadVAO = GL30.glGenVertexArrays();
-        GL30.glBindVertexArray(this.quadVAO);
+        this.bindVertexArray.accept(this.quadVAO);
 
         this.quadVBO = GL15.glGenBuffers();
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.quadVBO);
+        this.bindBuffer.accept(GL15.GL_ARRAY_BUFFER, this.quadVBO);
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, verts, GL15.GL_STATIC_DRAW);
 
         GL20.glEnableVertexAttribArray(0);
@@ -1106,7 +1112,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glEnableVertexAttribArray(1);
         GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
 
-        GL30.glBindVertexArray(0);
+        this.bindVertexArray.accept(0);
         this.checkGLError("initQuad");
     }
 
@@ -1124,9 +1130,9 @@ public final class GLEngine extends GFXEngine {
     private void seedPBO(final int pboArrayIndex, final long sizeBytes, final long dataAddress) {
         final int pboId = this.pbos[pboArrayIndex];
         if (pboId == 0) return;
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, pboId);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, pboId);
         GL15.nglBufferData(GL21.GL_PIXEL_UNPACK_BUFFER, sizeBytes, dataAddress, GL15.GL_STREAM_DRAW);
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
     }
 
     private int compileShader(final String vertSrc, final String fragSrc) {
@@ -1180,7 +1186,7 @@ public final class GLEngine extends GFXEngine {
 
     private void releasePBOs() {
         if (!this.pboInitialized) return;
-        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         final int count = this.activePlanes * NUM_PBOS;
         if (count > 0) {
             final int[] toDelete = new int[count];
@@ -1226,6 +1232,10 @@ public final class GLEngine extends GFXEngine {
         private TexParamConsumer texParameter = GL11::glTexParameteri;
         private BindConsumer pixelStore = GL11::glPixelStorei;
         private IntConsumer delTexture = GL11::glDeleteTextures;
+        private IntConsumer activeTexture = GL13::glActiveTexture;
+        private IntConsumer bindVertexArray = GL30::glBindVertexArray;
+        private BindConsumer bindFrameBuffer = GL30::glBindFramebuffer;
+        private BindConsumer bindBuffer = GL15::glBindBuffer;
 
         public Builder(final Thread renderThread, final Executor renderThreadEx) {
             this.renderThread = renderThread;
@@ -1237,11 +1247,19 @@ public final class GLEngine extends GFXEngine {
         public Builder setTexParameter(final TexParamConsumer f) { this.texParameter = f; return this; }
         public Builder setPixelStore(final BindConsumer f) { this.pixelStore = f; return this; }
         public Builder setDelTexture(final IntConsumer f) { this.delTexture = f; return this; }
+        public Builder setActiveTexture(final IntConsumer f) { this.activeTexture = f; return this; }
+        public Builder setBindVertexArray(final IntConsumer f) { this.bindVertexArray = f; return this; }
+        public Builder setBindFrameBuffer(final BindConsumer f) { this.bindFrameBuffer = f; return this; }
+        public Builder setBindBuffer(final BindConsumer f) { this.bindBuffer = f; return this; }
+
 
         public GLEngine build() {
             return new GLEngine(this.renderThread, this.renderThreadEx,
-                    this.genTexture, this.bindTexture, this.texParameter,
-                    this.pixelStore, this.delTexture);
+                    this.genTexture, this.bindTexture,
+                    this.texParameter, this.pixelStore,
+                    this.delTexture, this.activeTexture,
+                    this.bindVertexArray, this.bindFrameBuffer,
+                    this.bindBuffer);
         }
     }
 

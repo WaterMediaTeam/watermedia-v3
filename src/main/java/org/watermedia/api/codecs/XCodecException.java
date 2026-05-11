@@ -7,15 +7,15 @@ public class XCodecException extends IOException {
         super();
     }
 
-    public XCodecException(String message) {
+    public XCodecException(final String message) {
         super(message);
     }
 
-    public XCodecException(String message, Throwable cause) {
+    public XCodecException(final String message, final Throwable cause) {
         super(message, cause);
     }
 
-    public XCodecException(Throwable cause) {
+    public XCodecException(final Throwable cause) {
         super(cause);
     }
 }

@@ -20,7 +20,7 @@ import java.util.concurrent.Executors;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.network.NetworkAPI.*;
 
-public class NetServer {
+public class NetworkServer {
     private static final String ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private static final int ID_LENGTH = 8;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -34,20 +34,20 @@ public class NetServer {
 
             final HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
 
-            server.createContext("/upload", NetServer::handleUpload);
-            server.createContext("/", NetServer::handleRoot);
+            server.createContext("/upload", NetworkServer::handleUpload);
+            server.createContext("/", NetworkServer::handleRoot);
 
             server.setExecutor(Executors.newCachedThreadPool());
             server.start();
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop(0);
-                LOGGER.info(IT, "NetServer stopped");
+                LOGGER.info(IT, "Network server stopped");
             }));
 
-            LOGGER.info(IT, "NetServer started on port {} - storage: {}", port, storageDir);
+            LOGGER.info(IT, "Network server started on port {} - storage: {}", port, storageDir);
         } catch (final Exception e) {
-            LOGGER.error(IT, "Failed to start NetServer", e);
+            LOGGER.error(IT, "Failed to start network server", e);
         }
     }
 
@@ -91,14 +91,22 @@ public class NetServer {
             }
 
             final long maxBytes = WaterMediaConfig.network.maxUploadSizeMB * 1024L * 1024L;
-            final long contentLength = Long.parseLong(exchange.getRequestHeaders().getFirst("Content-Length"));
+            final String contentLengthHeader = exchange.getRequestHeaders().getFirst("Content-Length");
+            final long contentLength;
+            try {
+                contentLength = contentLengthHeader != null ? Long.parseLong(contentLengthHeader) : -1L;
+            } catch (final NumberFormatException nfe) {
+                LOGGER.warn(IT, "Bad Content-Length header: {}", contentLengthHeader);
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
+                return;
+            }
 
             if (contentLength <= 0) {
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
                 return;
             }
 
-            if (contentLength > maxBytes) {
+            if (maxBytes > 0 && contentLength > maxBytes) {
                 LOGGER.warn(IT, "Upload rejected: {} bytes exceeds max size of {} MB", contentLength, WaterMediaConfig.network.maxUploadSizeMB);
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_ENTITY_TOO_LARGE, -1);
                 return;
@@ -109,9 +117,17 @@ public class NetServer {
             Files.createDirectory(idDir);
             final Path targetFile = idDir.resolve(filename);
 
-            try (final var in = new BufferedInputStream(exchange.getRequestBody());
-                 final var ou = new BufferedOutputStream(Files.newOutputStream(targetFile))) {
-                in.transferTo(ou);
+            try {
+                try (final var in = new BufferedInputStream(exchange.getRequestBody());
+                     final var ou = new BufferedOutputStream(Files.newOutputStream(targetFile))) {
+                    in.transferTo(ou);
+                }
+            } catch (final IOException e) {
+                // CLEANUP PARTIAL UPLOAD: drop the half-written file and its dir
+                LOGGER.warn(IT, "Upload aborted mid-transfer for ID '{}': {}", id, e.getMessage());
+                try { Files.deleteIfExists(targetFile); } catch (final IOException ignored) {}
+                try { Files.deleteIfExists(idDir); } catch (final IOException ignored) {}
+                throw e;
             }
 
             final byte[] response = id.getBytes(StandardCharsets.UTF_8);
@@ -234,6 +250,61 @@ public class NetServer {
                     in.transferTo(ou);
                 }
             }
+        }
+    }
+
+    /**
+     * Tracks the progress of a file upload to a WaterMedia server.
+     * Returned by {@link NetworkAPI#upload} methods.
+     * All getters are thread-safe and can be polled from any thread.
+     */
+    public static class UploadStatus {
+        private final long totalBytes;
+        private volatile long uploadedBytes;
+        private volatile long speed;
+        private volatile String id;
+        private volatile boolean complete;
+        private volatile boolean failed;
+        private volatile String error;
+
+        UploadStatus(final long totalBytes) {
+            this.totalBytes = totalBytes;
+        }
+
+        public long totalBytes() { return this.totalBytes; }
+        public long uploadedBytes() { return this.uploadedBytes; }
+
+        /** Current upload speed in bytes per second */
+        public long speed() { return this.speed; }
+
+        /** Server-assigned ID, null until upload completes */
+        public String id() { return this.id; }
+
+        public boolean isComplete() { return this.complete; }
+        public boolean isFailed() { return this.failed; }
+        public String error() { return this.error; }
+
+        /** Upload progress from 0.0 to 100.0 */
+        public double percentage() {
+            return this.totalBytes > 0 ? (this.uploadedBytes * 100.0) / this.totalBytes : 0;
+        }
+
+        /** Formatted speed string (e.g. "1.5 MB/s") */
+        public String displaySpeed() {
+            return NetworkAPI.displaySpeed(this.speed);
+        }
+
+        void setUploadedBytes(final long bytes) { this.uploadedBytes = bytes; }
+        void setSpeed(final long speed) { this.speed = speed; }
+
+        void complete(final String id) {
+            this.id = id;
+            this.complete = true;
+        }
+
+        void fail(final String error) {
+            this.error = error;
+            this.failed = true;
         }
     }
 }

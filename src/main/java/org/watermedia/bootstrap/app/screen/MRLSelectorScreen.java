@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
@@ -9,6 +10,7 @@ import org.watermedia.bootstrap.app.ui.Grid;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.DrawTool;
 
+import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -46,22 +48,22 @@ public class MRLSelectorScreen extends Screen {
                 .iconProvider(uri -> {
                     final MRL mrl = ctx.groupMRLs.get(uri.name());
                     if (mrl == null) return Grid.Icon.STATUS_NULL;
-                    if (mrl.error()) return Grid.Icon.STATUS_ERROR;
+                    if (mrl.hasError()) return Grid.Icon.STATUS_ERROR;
                     if (mrl.ready()) return Grid.Icon.STATUS_READY;
-                    if (mrl.busy()) return Grid.Icon.STATUS_LOADING;
+                    if (!mrl.ready()) return Grid.Icon.STATUS_LOADING;
                     return Grid.Icon.STATUS_UNKNOWN;
                 })
                 .iconColorProvider(uri -> {
                     final MRL mrl = ctx.groupMRLs.get(uri.name());
                     if (mrl == null) return Colors.GRAY;
-                    if (mrl.error()) return Colors.RED;
+                    if (mrl.hasError()) return Colors.RED;
                     if (mrl.ready()) return Colors.GREEN;
-                    if (mrl.busy()) return Colors.BLUE;
+                    if (!mrl.ready()) return Colors.BLUE;
                     return Colors.GRAY;
                 })
                 .borderColorProvider(uri -> {
                     final MRL mrl = ctx.groupMRLs.get(uri.name());
-                    if (mrl != null && mrl.error()) return Colors.RED;
+                    if (mrl != null && mrl.hasError()) return Colors.RED;
                     return Colors.BLUE;
                 })
                 .thumbnailProvider(uri -> this.thumbnailPlayers.get(uri.name()))
@@ -99,17 +101,48 @@ public class MRLSelectorScreen extends Screen {
 
             final MRL mrl = this.ctx.groupMRLs.get(name);
             if (mrl == null) continue;
-            if (!mrl.ready() && !mrl.error()) continue; // STILL LOADING, WAIT
+            if (!mrl.ready()) continue; // STILL LOADING, WAIT
 
-            // MARK AS ATTEMPTED SO WE DON'T RETRY EVERY FRAME
+            if (mrl.hasError()) {
+                this.thumbnailAttempted.add(name);
+                continue;
+            }
+
+            final var sources = mrl.sources();
+            if (sources.isEmpty()) {
+                this.thumbnailAttempted.add(name);
+                continue;
+            }
+
+            MediaPlayer player = null;
+            boolean pendingThumbnail = false;
+
+            // TRY THUMBNAIL URI FIRST
+            for (final MRL.Source src : sources) {
+                final URI thumbnailUri = src.thumbnail();
+                if (thumbnailUri == null) continue;
+                final MRL thumbnailMrl = org.watermedia.api.media.MediaAPI.getMRL(thumbnailUri.toString());
+                if (!thumbnailMrl.ready()) {
+                    pendingThumbnail = true;
+                    break;
+                }
+                player = MediaAPI.createPlayer(thumbnailMrl, this.glEngineBuilder::build, () -> null);
+                if (player != null) break;
+            }
+
+            if (pendingThumbnail) continue; // RETRY NEXT FRAME
+
+            // FALLBACK: USE FIRST IMAGE SOURCE DIRECTLY
+            if (player == null) {
+                for (int i = 0; i < sources.size(); i++) {
+                    if (sources.get(i).isImage()) {
+                        player = MediaAPI.createPlayer(mrl, i, this.glEngineBuilder::build, () -> null);
+                        break;
+                    }
+                }
+            }
+
             this.thumbnailAttempted.add(name);
-
-            if (mrl.error()) continue; // NO THUMBNAIL FOR ERRORED MRLs
-
-            final MRL.Source[] sources = mrl.sources();
-            if (sources.length == 0) continue;
-
-            final MediaPlayer player = mrl.createThumbnailPlayer(this.glEngineBuilder.build());
 
             if (player != null) {
                 player.repeat(true);
@@ -136,7 +169,7 @@ public class MRLSelectorScreen extends Screen {
             return;
         }
 
-        if (this.ctx.selectedMRL.error()) {
+        if (this.ctx.selectedMRL.hasError()) {
             this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
             return;
         }
@@ -149,7 +182,7 @@ public class MRLSelectorScreen extends Screen {
             return;
         }
 
-        if (this.ctx.selectedMRL.busy()) {
+        if (!this.ctx.selectedMRL.ready()) {
             this.loading = true;
             this.loadStartTime = System.currentTimeMillis();
             this.pendingUri = uri;
@@ -162,8 +195,9 @@ public class MRLSelectorScreen extends Screen {
     }
 
     private void proceedWithMRL() {
-        this.ctx.availableSources = this.ctx.selectedMRL.sources();
-        if (this.ctx.availableSources == null || this.ctx.availableSources.length == 0) return;
+        final var sourcesList = this.ctx.selectedMRL.sources();
+        this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
+        if (this.ctx.availableSources.length == 0) return;
 
         if (this.ctx.availableSources.length == 1) {
             this.ctx.sourceSelectorIndex = 0;
@@ -190,7 +224,7 @@ public class MRLSelectorScreen extends Screen {
             return;
         }
 
-        if (this.ctx.selectedMRL.error()) {
+        if (this.ctx.selectedMRL.hasError()) {
             this.loading = false;
             this.pendingUri = null;
             this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);

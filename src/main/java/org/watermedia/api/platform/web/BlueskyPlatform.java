@@ -1,15 +1,19 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.watermedia.api.media.MRL;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.NetTool;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -24,6 +28,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public class BlueskyPlatform implements IPlatform {
     public static final String NAME = "Bluesky";
+    private static final Marker IT = MarkerManager.getMarker(BlueskyPlatform.class.getSimpleName());
     private static final String API_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread";
     private static final String BLOB_URL_TMPL = "%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s";
     private static final String PLC_DIRECTORY_URL = "https://plc.directory/%s";
@@ -50,27 +55,28 @@ public class BlueskyPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         final String[] parsed = parseUri(uri);
         final String handle = parsed[0];
         final String postId = parsed[1];
 
         LOGGER.debug(IT, "Fetching Bluesky post '{}' by '{}'", postId, handle);
         final JsonObject post = fetchPost(handle, postId);
+        final RequestHeaders headers = RequestHeaders.defaults(uri);
 
-        final List<MRL.Source> sources = new ArrayList<>(2);
+        final List<DataSource> entries = new ArrayList<>(2);
         final JsonObject embed = getObj(post, "embed");
         final JsonObject record = getObj(post, "record");
 
         // Direct embed (app.bsky.embed.video#view or app.bsky.embed.images#view)
-        extractVideo(sources, post, embed, getObj(record, "embed"), postId);
-        extractImages(sources, post, embed, postId);
+        extractVideo(entries, post, embed, getObj(record, "embed"), postId, headers);
+        extractImages(entries, post, embed, postId, headers);
 
         // RecordWithMedia (app.bsky.embed.recordWithMedia#view) — media in embed.media
         if (embed != null && embed.has("media")) {
             final JsonObject mediaEmbed = getObj(embed, "media");
-            extractVideo(sources, post, mediaEmbed, getObj(record, "embed", "media"), postId);
-            extractImages(sources, post, mediaEmbed, postId);
+            extractVideo(entries, post, mediaEmbed, getObj(record, "embed", "media"), postId, headers);
+            extractImages(entries, post, mediaEmbed, postId, headers);
         }
 
         // Quoted post (app.bsky.embed.record#view) — media in nested post's embeds
@@ -82,32 +88,32 @@ public class BlueskyPlatform implements IPlatform {
                     final JsonArray embeds = embedsEl.getAsJsonArray();
                     if (!embeds.isEmpty() && embeds.get(0).isJsonObject()) {
                         final JsonObject nestedEmbed = embeds.get(0).getAsJsonObject();
-                        extractVideo(sources, nestedPost, nestedEmbed,
-                                getObj(nestedPost, "value", "embed"), postId);
-                        extractImages(sources, nestedPost, nestedEmbed, postId);
+                        extractVideo(entries, nestedPost, nestedEmbed,
+                                getObj(nestedPost, "value", "embed"), postId, headers);
+                        extractImages(entries, nestedPost, nestedEmbed, postId, headers);
                     }
                 }
             }
         }
 
-        if (sources.isEmpty()) {
+        if (entries.isEmpty()) {
             throw new IllegalStateException("No media found in Bluesky post: " + uri);
         }
 
-        return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sources.toArray(MRL.Source[]::new));
+        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entries.toArray(DataSource[]::new));
     }
 
-    private void extractVideo(final List<MRL.Source> sources, final JsonObject postCtx,
-                              final JsonObject embedView, final JsonObject recordEmbed, final String postId) {
+    private void extractVideo(final List<DataSource> entries, final JsonObject postCtx,
+                              final JsonObject embedView, final JsonObject recordEmbed, final String postId,
+                              final RequestHeaders headers) {
         if (embedView == null || !embedView.has("playlist")) return;
 
         final String playlist = getStr(embedView, "playlist");
         if (playlist == null) return;
 
         final URI playlistUri = URI.create(playlist);
-        final MRL.SourceBuilder builder = MRL.sourceBuilder(MRL.MediaType.VIDEO);
+        final List<DataQuality> variants = new ArrayList<>();
 
-        boolean hasQualities = false;
         try {
             final var hlsResult = HlsTool.fetch(playlistUri);
             if (hlsResult instanceof final HlsTool.MasterResult master) {
@@ -117,18 +123,18 @@ public class BlueskyPlatform implements IPlatform {
                     if (!variantUri.isAbsolute()) {
                         variantUri = playlistUri.resolve(variantUri);
                     }
-                    builder.quality(MRL.Quality.of(variant.width(), variant.height()), variantUri);
-                    hasQualities = true;
+                    variants.add(new DataQuality(variantUri, variant.width(), variant.height()));
                 }
             }
         } catch (final Exception e) {
             LOGGER.warn(IT, "HLS fetch failed for '{}': {}", postId, e.getMessage());
         }
-        if (!hasQualities) {
-            builder.uri(playlistUri);
+        if (variants.isEmpty()) {
+            variants.add(new DataQuality(playlistUri, 0, 0));
         }
 
         // Subtitle tracks via blob endpoint
+        final List<DataSlave> subSlaves = new ArrayList<>();
         final String did = getStr(postCtx, "author", "did");
         if (did != null && recordEmbed != null && recordEmbed.has("captions")) {
             try {
@@ -142,8 +148,7 @@ public class BlueskyPlatform implements IPlatform {
                                 ? cap.get("lang").getAsString() : "und";
                         final String fileCid = getStr(cap, "file", "ref", "$link");
                         if (fileCid == null) continue;
-                        builder.subtitleSlave(lang, URI.create(String.format(BLOB_URL_TMPL,
-                                endpoint, enc(did), enc(fileCid))));
+                        subSlaves.add(new DataSlave(lang, lang, URI.create(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)))));
                     }
                 }
             } catch (final Exception e) {
@@ -164,19 +169,22 @@ public class BlueskyPlatform implements IPlatform {
                 ? truncateTitle(text, 72)
                 : "Bluesky video #" + postId;
 
-        builder.metadata(new MRL.Metadata(
+        final URI thumbnail = thumbnailUrl != null ? URI.create(thumbnailUrl) : null;
+        final Metadata metadata = new Metadata(
                 title, text,
-                thumbnailUrl != null ? URI.create(thumbnailUrl) : null,
                 indexedAt != null ? parseInstant(indexedAt) : null,
                 0,
                 displayName != null ? displayName : authorHandle
-        ));
+        );
 
-        sources.add(builder.build());
+        entries.add(new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
+                variants.toArray(DataQuality[]::new),
+                null, subSlaves.isEmpty() ? null : subSlaves));
     }
 
-    private void extractImages(final List<MRL.Source> sources, final JsonObject postCtx,
-                               final JsonObject embedView, final String postId) {
+    private void extractImages(final List<DataSource> entries, final JsonObject postCtx,
+                               final JsonObject embedView, final String postId,
+                               final RequestHeaders headers) {
         if (embedView == null || !embedView.has("images")) return;
 
         final JsonElement imagesEl = embedView.get("images");
@@ -202,21 +210,19 @@ public class BlueskyPlatform implements IPlatform {
             final JsonObject aspectRatio = getObj(img, "aspectRatio");
             final int width = aspectRatio != null ? getInt(aspectRatio, "width") : 0;
             final int height = aspectRatio != null ? getInt(aspectRatio, "height") : 0;
-            final MRL.Quality quality = width > 0 && height > 0
-                    ? MRL.Quality.of(width, height) : MRL.Quality.UNKNOWN;
 
             final String thumb = getStr(img, "thumb");
 
-            sources.add(MRL.sourceBuilder(MRL.MediaType.IMAGE)
-                    .quality(quality, URI.create(fullsize))
-                    .metadata(new MRL.Metadata(
-                            title, text,
-                            thumb != null ? URI.create(thumb) : null,
-                            indexedAt != null ? parseInstant(indexedAt) : null,
-                            0,
-                            displayName != null ? displayName : authorHandle
-                    ))
-                    .build());
+            final URI imgThumb = thumb != null ? URI.create(thumb) : null;
+            final Metadata imgMetadata = new Metadata(
+                    title, text,
+                    indexedAt != null ? parseInstant(indexedAt) : null,
+                    0,
+                    displayName != null ? displayName : authorHandle
+            );
+            entries.add(new DataSource(MediaType.IMAGE, imgThumb, imgMetadata, headers,
+                    new DataQuality[] {new DataQuality(URI.create(fullsize), width, height)},
+                    null, null));
         }
     }
 
@@ -224,15 +230,11 @@ public class BlueskyPlatform implements IPlatform {
         final String atUri = "at://" + handle + "/app.bsky.feed.post/" + postId;
         final URI apiUri = URI.create(API_URL + "?uri=" + enc(atUri) + "&depth=0&parentHeight=0");
 
-        final HttpURLConnection conn = NetTool.connectToHTTP(apiUri, "GET", "application/json");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), apiUri);
-            final String response = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            return JsonParser.parseString(response).getAsJsonObject()
+        try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + apiUri);
+            return JsonParser.parseString(req.readAllAsString()).getAsJsonObject()
                     .getAsJsonObject("thread")
                     .getAsJsonObject("post");
-        } finally {
-            conn.disconnect();
         }
     }
 
@@ -242,12 +244,10 @@ public class BlueskyPlatform implements IPlatform {
                     ? "https://" + did.substring(8) + "/.well-known/did.json"
                     : String.format(PLC_DIRECTORY_URL, did);
 
-            final HttpURLConnection conn = NetTool.connectToHTTP(URI.create(url), "GET", "application/json");
-            try {
-                if (conn.getResponseCode() != 200) return DEFAULT_PDS;
+            try (final NetRequest req = NetRequest.create(URI.create(url)).method("GET").accept("application/json").send()) {
+                if (req.statusCode() != 200) return DEFAULT_PDS;
 
-                final String response = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                final JsonObject doc = JsonParser.parseString(response).getAsJsonObject();
+                final JsonObject doc = JsonParser.parseString(req.readAllAsString()).getAsJsonObject();
 
                 if (doc.has("service") && doc.get("service").isJsonArray()) {
                     for (final JsonElement el : doc.getAsJsonArray("service")) {
@@ -259,8 +259,6 @@ public class BlueskyPlatform implements IPlatform {
                         }
                     }
                 }
-            } finally {
-                conn.disconnect();
             }
         } catch (final Exception e) {
             LOGGER.warn(IT, "Service endpoint resolution failed for '{}': {}", did, e.getMessage());

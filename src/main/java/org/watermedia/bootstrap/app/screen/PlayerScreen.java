@@ -1,9 +1,11 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Colors;
 import org.watermedia.bootstrap.app.ui.Dialog;
@@ -66,9 +68,10 @@ public class PlayerScreen extends Screen {
 
         this.ctx.releasePlayer();
 
-        this.ctx.player = this.ctx.selectedMRL.createPlayer(
+        this.ctx.player = MediaAPI.createPlayer(
+                this.ctx.selectedMRL,
                 this.ctx.sourceSelectorIndex,
-                this.glEngineBuilder.build(), ALEngine.buildDefault()
+                this.glEngineBuilder::build, ALEngine::buildDefault
         );
 
         if (this.ctx.player == null) {
@@ -182,7 +185,7 @@ public class PlayerScreen extends Screen {
                 : this.ctx.formatTime(player.time()) + " / " + this.ctx.formatTime(duration);
         y = this.renderLabel("Time:", timeValue, 15, y);
         y = this.renderLabel("Volume:", player.volume() + "%", 15, y);
-        y = this.renderLabel("Quality:", this.ctx.selectedQuality.name(), 15, y);
+        y = this.renderLabel("Quality:", player.quality().name(), 15, y);
         y = this.renderLabel("Speed:", String.format("%.2f", player.speed()) + "x", 15, y);
         y = this.renderLabel("Live:", player.liveSource() ? "Yes" : "No", 15, y);
 
@@ -191,12 +194,11 @@ public class PlayerScreen extends Screen {
         y = this.renderLabel("--- Metadata ---", null, 15, y);
 
         if (this.ctx.selectedSource != null && this.ctx.selectedSource.metadata() != null) {
-            final MRL.Metadata meta = this.ctx.selectedSource.metadata();
+            final Metadata meta = this.ctx.selectedSource.metadata();
             y = this.renderLabel("Title:", this.text.truncate(meta.title(), 35), 15, y);
             y = this.renderLabel("Author:", this.text.truncate(meta.author(), 35), 15, y);
-            y = this.renderLabel("Duration:", meta.duration() > 0 ? this.ctx.formatTime(meta.duration()) : "Unknown", 15, y);
-            if (meta.publishedAt() != null) {
-                this.renderLabel("Published:", this.text.truncate(meta.publishedAt().toString(), 30), 15, y);
+            if (meta.postedAt() != null) {
+                this.renderLabel("Published:", this.text.truncate(meta.postedAt().toString(), 30), 15, y);
             }
         } else {
             this.text.render("Unavailable", 15, y, Colors.GRAY);
@@ -219,7 +221,7 @@ public class PlayerScreen extends Screen {
         final var qualities = this.ctx.selectedSource.availableQualities();
         if (qualities == null || qualities.isEmpty()) return;
 
-        this.ctx.availableQualities = qualities.toArray(new MRL.Quality[0]);
+        this.ctx.availableQualities = qualities.toArray(new MediaQuality[0]);
         Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(q -> q.threshold));
 
         // FIND CURRENT QUALITY INDEX
@@ -242,7 +244,7 @@ public class PlayerScreen extends Screen {
         final int contentH = lineH + 15 + (this.ctx.availableQualities.length * lineH);
         int contentW = 0;
 
-        for (final MRL.Quality q: this.ctx.availableQualities) {
+        for (final MediaQuality q: this.ctx.availableQualities) {
             contentW = Math.max(contentW, this.text.width("> " + q.name() + " (" + q.threshold + "p)"));
         }
 
@@ -259,7 +261,7 @@ public class PlayerScreen extends Screen {
         y += lineH + 15;
 
         for (int i = 0; i < this.ctx.availableQualities.length; i++) {
-            final MRL.Quality q = this.ctx.availableQualities[i];
+            final MediaQuality q = this.ctx.availableQualities[i];
             final boolean selected = (i == this.qualitySelectedIndex);
             final String line = (selected ? "> " : "  ") + q.name() + " (" + q.threshold + "p)";
             this.text.render(line, this.qualityDialogBounds.x() + padding, y, selected ? Colors.BLUE : Colors.GRAY);
@@ -359,7 +361,7 @@ public class PlayerScreen extends Screen {
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openQualityDialog();
             case GLFW_KEY_SPACE -> player.togglePlay();
             case GLFW_KEY_LEFT -> player.rewind();
-            case GLFW_KEY_RIGHT -> player.foward();
+            case GLFW_KEY_RIGHT -> player.forward();
             case GLFW_KEY_U -> player.seekQuick(player.time() + 5_000);
             case GLFW_KEY_Y -> player.seekQuick(player.time() - 5_000);
             case GLFW_KEY_S -> player.stop();

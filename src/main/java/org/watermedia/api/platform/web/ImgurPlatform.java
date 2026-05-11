@@ -1,15 +1,15 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +34,7 @@ public class ImgurPlatform implements IPlatform {
     public boolean validate(final URI uri) { return "imgur.com".equalsIgnoreCase(uri.getHost()); }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         final var path = uri.getPath();
         final var fragment = uri.getFragment();
 
@@ -46,13 +46,13 @@ public class ImgurPlatform implements IPlatform {
         final var pathSplit = path.substring(1).split("/");
         // CLEAN ID (REMOVE EXTENSION OR EXTRA PARAMS IF ANY)
         final var idSplit = pathSplit[pathSplit.length - 1].split("-");
-        
+
         final var tag = fragment != null && fragment.length() > 4 ? fragment.substring("#/t/".length()) : null;
         final var id = idSplit[idSplit.length - 1];
 
         if (isGallery) {
-            final String requestUrl = isTagGallery 
-                    ? String.format(TAG_GALLERY_URL, tag, id) 
+            final String requestUrl = isTagGallery
+                    ? String.format(TAG_GALLERY_URL, tag, id)
                     : String.format(GALLERY_URL, id);
 
             final String json = this.fetch(requestUrl);
@@ -63,14 +63,14 @@ public class ImgurPlatform implements IPlatform {
             }
 
             final Gallery data = res.data();
-            final List<MRL.Source> sources = new ArrayList<>();
-            
+            final List<DataSource> entries = new ArrayList<>();
+
             // ITERATE OVER GALLERY IMAGES
             for (final Image img: data.images()) {
-                sources.add(this.buildSourceFromImage(img, data.title(), data.accountUrl()));
+                entries.add(this.buildEntryFromImage(img, data.title(), data.accountUrl(), uri));
             }
 
-            return new Result(null, sources.toArray(MRL.Source[]::new));
+            return new PlatformData(null, entries.toArray(DataSource[]::new));
 
         } else {
             // SIMPLE IMAGE
@@ -83,15 +83,13 @@ public class ImgurPlatform implements IPlatform {
             }
 
             final Image img = res.data();
-            final MRL.Source source = this.buildSourceFromImage(img, img.title(), img.accountUrl());
-            
-            return new Result(null, source);
+            return new PlatformData(null, this.buildEntryFromImage(img, img.title(), img.accountUrl(), uri));
         }
     }
 
-    private MRL.Source buildSourceFromImage(final Image img, final String fallbackTitle, final String accountUrl) {
+    private DataSource buildEntryFromImage(final Image img, final String fallbackTitle, final String accountUrl, final URI mrlUri) {
         // PARSE MIME TYPE
-        final MRL.MediaType type = MRL.MediaType.of(img.type());
+        final MediaType type = MediaType.of(img.type());
 
         // FIX: IMGUR SAYS "image/gif" BUT PROVIDES AN mp4 LINK — TREAT AS VIDEO
         final String link = switch (type) {
@@ -107,42 +105,23 @@ public class ImgurPlatform implements IPlatform {
         final String title = img.title() != null ? img.title() : fallbackTitle;
         final String desc = img.description();
         final Instant date = Instant.ofEpochSecond(img.datetime());
-        
-        final MRL.Metadata metadata = new MRL.Metadata(
-                title,
-                desc,
-                null, // THUMBNAIL EXTRACTION NOT IMPLEMENTED (IMGUR USES id + 's'.jpg)
-                date,
-                0, // DURATION UNKNOWN FOR IMAGES
-                accountUrl
-        );
+
+        final Metadata metadata = new Metadata(title, desc, date, 0, accountUrl);
 
         try {
-            return MRL.sourceBuilder(type)
-                    .quality(MRL.Quality.of(img.width, img.height), new URI(link))
-                    .metadata(metadata)
-                    .build();
+            return new DataSource(type, null, metadata,
+                    RequestHeaders.defaults(mrlUri),
+                    new DataQuality[] {new DataQuality(new URI(link), img.width, img.height)},
+                    null, null);
         } catch (final Exception e) {
-            // URI SYNTAX EXCEPTION HANDLING
             throw new RuntimeException("Invalid URI received from Imgur: " + link, e);
         }
     }
 
     private String fetch(final String urlString) throws IOException {
-        final URI uri = URI.create(urlString);
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "application/json");
-        
-        try {
-            final int code = conn.getResponseCode();
-            if (code == HttpURLConnection.HTTP_OK) {
-                try (final InputStream in = conn.getInputStream()) {
-                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-                }
-            } else {
-                throw new IOException("Imgur API responded with code: " + code);
-            }
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(URI.create(urlString)).method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new IOException("Imgur API responded with code: " + req.statusCode());
+            return req.readAllAsString();
         }
     }
 

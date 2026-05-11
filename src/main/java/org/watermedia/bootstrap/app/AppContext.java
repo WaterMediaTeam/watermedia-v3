@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app;
 import com.google.gson.Gson;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
 import java.io.File;
@@ -59,8 +60,8 @@ public final class AppContext implements Executor {
     public String selectedMRLName = "";
     public MRL.Source[] availableSources;
     public MRL.Source selectedSource;
-    public MRL.Quality[] availableQualities;
-    public MRL.Quality selectedQuality = MRL.Quality.HIGHER;
+    public MediaQuality[] availableQualities;
+    public MediaQuality selectedQuality = MediaQuality.HIGHER;
     public int sourceSelectorIndex;
 
     // PLAYER

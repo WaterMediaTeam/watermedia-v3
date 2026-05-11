@@ -6,8 +6,8 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.tools.NetTool;
-import org.watermedia.tools.NetTool.Request;
+import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -55,8 +55,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     // TIME (LIFECYCLE THREAD WRITES, CALLER READS)
     private volatile long time = 0;
 
-    public TxMediaPlayer(final MRL mrl, final MRL.Source source, final GFXEngine gfxEngine) {
-        super(mrl, source, gfxEngine, null);
+    public TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine) {
+        super(mrl, sourceIndex, gfxEngine, null);
     }
 
     // START / STOP / RELEASE
@@ -115,7 +115,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.status = Status.BUFFERING;
             this.images = decoded;
             this.animated = decoded.frames().length > 1;
-            this.gfx.setVideoFormat(GFXEngine.ColorSpace.BGRA, decoded.width(), decoded.height());
+            this.gfx.setVideoFormat(ColorSpace.BGRA, decoded.width(), decoded.height());
 
             // UPLOAD FIRST FRAME IMMEDIATELY
             this.gfx.upload(decoded.frames()[0], 0);
@@ -263,53 +263,29 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // FETCH
     private ImageData fetch() {
-        var uri = this.source.uri(this.quality);
-        Request request = null;
+        final URI uri = this.source.uri(this.quality);
+        super.quality(this.source.qualityOf(uri));
 
-        for (int redirects = 0; redirects < 6; redirects++) {
-            try {
-                request = new Request(uri, "GET", null);
-                final int code = request.getResponseCode();
-                final String type = request.getContentType();
+        try (final NetRequest req = NetRequest.create(uri).method("GET").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
 
-                if (code >= 300 && code < 400) {
-                    final String location = request.getHeader("Location");
-                    request.close();
-                    LOGGER.warn(IT, "Redirect: {} → {}", uri, location);
-                    uri = URI.create(location);
-                    if (redirects == 5) throw new IOException("Too many redirects");
-                    continue;
-                }
+            final String type = req.contentType();
+            if (type == null || !type.startsWith("image/")) {
+                throw new IllegalArgumentException("Invalid content type: " + type);
+            }
 
-                final InputStream in = request.getInputStream();
-                if (in == null) {
-                    request.close();
-                    throw new IOException("No input stream (code " + code + ")");
-                }
-
-                NetTool.validateHTTP200(code, uri);
-                if (type == null || !type.startsWith("image/")) {
-                    request.close();
-                    throw new IllegalArgumentException("Invalid content type: " + type);
-                }
-
+            try (final InputStream in = req.getInputStream()) {
                 final ImageData result = CodecsAPI.decodeImage(in.readAllBytes());
-                request.close();
-
                 if (result == null || result.frames() == null || result.frames().length == 0) {
                     throw new IOException("No frames decoded from: " + this.source);
                 }
                 return result;
-            } catch (final Exception e) {
-                LOGGER.error(IT, "Fetch failed: {}", this.source, e);
-                if (request != null) request.close();
-                this.status = Status.ERROR;
-                return null;
             }
+        } catch (final Exception e) {
+            LOGGER.error(IT, "Fetch failed: {}", this.source, e);
+            this.status = Status.ERROR;
+            return null;
         }
-
-        this.status = Status.ERROR;
-        return null;
     }
 
     // CONTROLS
@@ -353,7 +329,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     public boolean skipTime(final long time) { return this.seek(this.time + time); }
 
     @Override
-    public boolean foward() { return this.skipTime(1000); }
+    public boolean forward() { return this.skipTime(1000); }
 
     @Override
     public boolean rewind() { return this.skipTime(-1000); }
@@ -375,7 +351,13 @@ public final class TxMediaPlayer extends MediaPlayer {
     // STATE QUERIES
     @Override public Status status() { return this.status; }
     @Override public long time() { return this.time; }
-    @Override public float fps() { return this.images.delay()[0]; }
+    @Override public float fps() {
+        final ImageData img = this.images;
+        if (img == null) return 0f;
+        final long[] delays = img.delay();
+        if (delays == null || delays.length == 0 || delays[0] <= 0) return 0f;
+        return 1000f / delays[0];
+    }
     @Override public float speed() { return this.speed; }
     @Override public boolean liveSource() { return false; }
     @Override public boolean canSeek() { return this.animated && this.duration() > 0; }

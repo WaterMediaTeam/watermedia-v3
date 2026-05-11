@@ -4,6 +4,8 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.util.NetRequest;
 
 import org.watermedia.tools.ThreadTool;
 
@@ -11,79 +13,26 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.Map;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class NetworkAPI {
+public class NetworkAPI extends WaterMediaAPI {
     static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
+    private static final String STEP_MIME = "MIME registry";
+    private static final String STEP_SERVER = "FileServer";
     public static final String PROTOCOL_WATER = "water";
     public static final String X_WATERMEDIA_ID = "X-WaterMedia-Id";
     public static final String X_WATERMEDIA_TOKEN = "X-WaterMedia-Token";
     public static final String X_WATERMEDIA_FILENAME = "X-WaterMedia-Filename";
 
-    private static final WaterStreamHandler WATER_HANDLER = new WaterStreamHandler();
-
-    public static Map<String, String> parseQuery(final String query) {
-        if (query == null || query.isEmpty()) return Map.of();
-
-        final var result = new HashMap<String, String>();
-        for (final var param: query.split("&")) {
-            final var pair = param.split("=", 2);
-            final var key = URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
-            final var value = pair.length > 1 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "";
-            result.put(key, value);
-        }
-        return result;
-    }
-
-    /**
-     * Creates a URL using the {@code water://} protocol with the registered handler.
-     * Use this when you need to create water:// URLs programmatically.
-     * @param url full water:// URL string (e.g. "water://local/textures/img.png")
-     * @return the parsed URL bound to the WaterStreamHandler
-     */
-    public static URL waterURL(final String url) throws MalformedURLException {
-        return new URL(null, url, WATER_HANDLER);
-    }
-
-    public static String parseWaterURL(final URI url) throws Exception {
-        if (!PROTOCOL_WATER.equals(url.getScheme())) {
-            throw new IllegalArgumentException("URL must use water:// protocol");
-        }
-
-        final String host = url.getHost();
-        final String path = url.getPath();
-
-        return switch (host) {
-            case WaterStreamHandler.HOST_REMOTE -> {
-                String base = WaterMediaConfig.network.remoteHost;
-                if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-                yield base + path;
-            }
-            case WaterStreamHandler.HOST_GLOBAL -> {
-                String base = WaterStreamHandler.GLOBAL_SERVER;
-                base = base.substring(0, base.length() - 1);
-                yield base + path;
-            }
-            case WaterStreamHandler.HOST_LOCAL -> {
-                String p = path;
-                if (p.startsWith("/")) p = p.substring(1);
-                yield WaterMedia.cwd().resolve(p).toString();
-            }
-            default -> throw new IllegalArgumentException("Unknown water:// host: " + host);
-        };
-    }
-
     /**
      * Uploads a file to the remote WaterMedia server in a background thread.
-     * The returned {@link UploadStatus} is updated as the upload progresses.
+     * The returned {@link NetworkServer.UploadStatus} is updated as the upload progresses.
      * @param file the file to upload
      * @return status tracker for the upload (poll for progress)
      */
-    public static UploadStatus upload(final File file) {
-        final UploadStatus status = new UploadStatus(file.length());
+    public static NetworkServer.UploadStatus upload(final File file) {
+        final NetworkServer.UploadStatus status = new NetworkServer.UploadStatus(file.length());
 
         ThreadTool.createStarted("WaterMedia-Upload-" + file.getName(), () -> doUpload(file, status));
 
@@ -95,21 +44,26 @@ public class NetworkAPI {
      * @param files the files to upload
      * @return one status tracker per file
      */
-    public static UploadStatus[] upload(final File... files) {
-        final UploadStatus[] statuses = new UploadStatus[files.length];
+    public static NetworkServer.UploadStatus[] upload(final File... files) {
+        final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[files.length];
         for (int i = 0; i < files.length; i++) {
             statuses[i] = upload(files[i]);
         }
         return statuses;
     }
 
-    private static void doUpload(final File file, final UploadStatus status) {
+    private static void doUpload(final File file, final NetworkServer.UploadStatus status) {
         try {
             String base = WaterMediaConfig.network.remoteHost;
             if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
 
-            final URL url = new URL(base + "/upload");
+            // Streaming uploads with byte-level progress are out of scope for NetRequest,
+            // so we drive HttpURLConnection directly — but use URI.toURL() to avoid the
+            // deprecated new URL(String) constructor.
+            final URL url = URI.create(base + "/upload").toURL();
             final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(WaterMediaConfig.network.requestTimeoutMs);
+            conn.setReadTimeout(WaterMediaConfig.network.requestTimeoutMs);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);
@@ -175,21 +129,49 @@ public class NetworkAPI {
         return String.format("%.1f GB/s", bytesPerSecond / (1024.0 * 1024 * 1024));
     }
 
-    public static boolean start(final WaterMedia instance) {
-        // REGISTER water:// PROTOCOL HANDLER (WORKS ON BOTH CLIENT AND SERVER)
-        try {
-            URL.setURLStreamHandlerFactory(protocol -> PROTOCOL_WATER.equals(protocol) ? new WaterStreamHandler() : null);
-            LOGGER.info(IT, "Registered water:// protocol handler");
-        } catch (final Error e) {
-            LOGGER.warn(IT, "Could not register water:// factory (already set?): {} — use NetworkAPI.waterURL() instead", e.getMessage());
-        }
+
+    private boolean fileServerEnabled;
+
+    @Override
+    public String name() {
+        return NetworkAPI.class.getSimpleName();
+    }
+
+    @Override
+    public void load(final WaterMedia instance) {
+        this.fileServerEnabled = WaterMediaConfig.network.forceEnableServer
+                || (!instance.clientSide && WaterMediaConfig.network.enableServer);
+        this.steps = 1 + (this.fileServerEnabled ? 1 : 0);
+        this.step = 0;
+        this.stepName = "";
+    }
+
+    @Override
+    public boolean start(final WaterMedia instance) {
+        // EXTEND THE PLATFORM FILE NAME MAP WITH MIME TYPES JAVA DOES NOT KNOW ABOUT
+        // (webp, apng, NETPBM variants, mkv, opus, etc). Java's content-types.properties
+        // ships a tiny set; without this, URLConnection.guessContentTypeFromName() returns
+        // null for most modern media and platform code mis-classifies the resource.
+        this.step++;
+        this.stepName = STEP_MIME;
+        NetRequest.installExtraMimeTypes();
 
         // SERVER ONLY STARTS ON SERVER-SIDE WHEN ENABLED IN CONFIG
-        LOGGER.info(IT, "Network server is {}enabled on this environment", (WaterMediaConfig.network.forceEnableServer || WaterMediaConfig.network.enableServer) ? "" : "NOT ");
-        if (WaterMediaConfig.network.forceEnableServer || (!instance.clientSide && WaterMediaConfig.network.enableServer)) {
-            NetServer.start(WaterMediaConfig.network.serverPort, instance);
+        LOGGER.info(IT, "Network server is {}enabled on this environment", this.fileServerEnabled ? "" : "NOT ");
+        if (this.fileServerEnabled) {
+            this.step++;
+            this.stepName = STEP_SERVER;
+            NetworkServer.start(WaterMediaConfig.network.serverPort, instance);
         }
 
         return true;
+    }
+
+    @Override
+    public void release(final WaterMedia instance) {
+        this.step = 0;
+        this.steps = 0;
+        this.stepName = "";
+        this.fileServerEnabled = false;
     }
 }

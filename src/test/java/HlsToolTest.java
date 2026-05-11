@@ -243,7 +243,7 @@ public class HlsToolTest {
         void testVideoGroupName() {
             final String content = """
                 #EXTM3U
-                #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="chunked",NAME="1080p60 (source)",AUTOSELECT=YES,DEFAULT=YES
+                #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="chunked",NAME="1080p60 (uri)",AUTOSELECT=YES,DEFAULT=YES
                 #EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=1920x1080,VIDEO="chunked"
                 chunked.m3u8
                 """;
@@ -255,7 +255,7 @@ public class HlsToolTest {
             final Variant variant = master.variants().get(0);
 
             assertEquals("chunked", variant.videoGroup());
-            assertEquals("1080p60 (source)", variant.name());
+            assertEquals("1080p60 (uri)", variant.name());
         }
 
         @Test
@@ -911,7 +911,7 @@ public class HlsToolTest {
 
     @Nested
     @DisplayName("Result Types")
-    class ResultTypeTests {
+    class PlatformDataTypeTests {
 
         @Test
         @DisplayName("Result sealed interface permits only defined types")

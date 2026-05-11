@@ -14,7 +14,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * This player does not produce any audio or video output. It calculates time
  * progression purely from the system clock, allowing multiple clients to
- * synchronize their playback position against a single authoritative source.
+ * synchronize their playback position against a single authoritative uri.
  * <p>
  * All instances share a single daemon thread that periodically checks for
  * end-of-media conditions (repeat or transition to {@link Status#ENDED}).
@@ -142,7 +142,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean foward() {
+    public boolean forward() {
         return skipTime(5000);
     }
 

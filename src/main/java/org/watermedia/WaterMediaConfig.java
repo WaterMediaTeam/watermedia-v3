@@ -3,7 +3,7 @@ package org.watermedia;
 import me.srrapero720.waterconfig.WaterConfig;
 import me.srrapero720.waterconfig.api.annotations.*;
 import me.srrapero720.waterconfig.impl.fields.StringField;
-import org.watermedia.api.media.MRL;
+import org.watermedia.api.util.MediaQuality;
 
 import java.io.File;
 import java.nio.file.Path;
@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 public class WaterMediaConfig {
 
     @Spec.Field
-    @Comment("DecodersAPI settings")
+    @Comment("CodecsAPI settings")
     public static final Decoders decoders = new Decoders();
 
     @Spec.Field
@@ -31,7 +31,8 @@ public class WaterMediaConfig {
         public boolean pngFailOnCorruptedData = true;
 
         @Spec.Field
-        @Comment("Disposal")
+        @Comment("Use the PNG bKGD chunk as the disposal background colour")
+        @Comment("When false, transparent disposal is used (recommended for compositing).")
         public boolean pngUseBKGDChunk = false;
     }
 
@@ -39,7 +40,7 @@ public class WaterMediaConfig {
     public final static class Media {
         @Spec.Field
         @Comment("Default quality for streaming media without a specified quality")
-        public MRL.Quality defaultQuality = MRL.Quality.HIGHER;
+        public MediaQuality defaultQuality = MediaQuality.HIGHER;
 
         @Spec.Field
         @Comment("Disables FFMPEG engine (AT ALL)")
@@ -68,6 +69,11 @@ public class WaterMediaConfig {
         @Comment("Without it only 360p/480p are available, with a free account up to 1080p, VIP up to 8K")
         @Comment("Value should look like: SESSDATA=abc123; bili_jct=def456; DedeUserID=789")
         public String biliBiliCookie = "";
+
+        @Spec.Field
+        @Comment("Allow resolving streams/videos marked as mature content (e.g. Kick).")
+        @Comment("When false, mature streams throw and never reach the player.")
+        public boolean allowMatureContent = false;
     }
 
     @Spec(value = "network", disableStatic = true)
@@ -106,5 +112,20 @@ public class WaterMediaConfig {
         @Comment("The password to access the server, change this every time you have to update your server and the client to prevent external access and bandwidth abuse")
         @Comment("Used on server-side and client-side")
         public String token = "watermedia_default_token_change_it";
+
+        @Spec.Field
+        @Comment("Default connect/read timeout for NetworkRequest, in milliseconds")
+        @NumberConditions(minInt = 1000, maxInt = 600_000)
+        public int requestTimeoutMs = 15_000;
+
+        @Spec.Field
+        @Comment("Maximum number of redirect hops NetworkRequest will follow before aborting")
+        @NumberConditions(minInt = 0, maxInt = 50)
+        public int maxRedirects = 10;
+
+        @Spec.Field
+        @Comment("Hard cap (in bytes) for NetworkRequest text/JSON bodies — anything larger throws")
+        @NumberConditions(minInt = 1024, math = true)
+        public int maxTextBytes = (1024 * 1024) * 16;
     }
 }

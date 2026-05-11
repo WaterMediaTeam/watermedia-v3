@@ -1,5 +1,7 @@
 package org.watermedia.api.media.engines;
 
+import org.watermedia.api.util.ColorSpace;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -109,34 +111,4 @@ public abstract class GFXEngine {
      * Releases all GPU resources. The engine is unusable after this call.
      */
     public abstract void release();
-
-    /**
-     * Pixel layouts supported by the engine.
-     * <p>
-     * Single-plane formats go through {@link #upload(ByteBuffer, int)}.
-     * Two-plane formats go through the 2-buffer overload.
-     * Three-plane formats go through the 3-buffer overload.
-     * Four-plane formats go through the 4-buffer overload.
-     */
-    public enum ColorSpace {
-        // SINGLE PLANE
-        GRAY,
-        RGB,
-        RGBA,
-        BGRA,
-        GBRA,
-        YUYV,
-        YUYV2,
-        // TWO PLANES (Y + interleaved chroma)
-        NV12,
-        NV21,
-        // THREE PLANES (Y + U + V)
-        YUV420P,
-        YUV422P,
-        YUV444P,
-        // FOUR PLANES (Y + U + V + A)
-        YUVA420P,
-        YUVA422P,
-        YUVA444P,
-    }
 }

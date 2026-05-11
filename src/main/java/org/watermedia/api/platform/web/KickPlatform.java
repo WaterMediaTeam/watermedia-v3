@@ -1,28 +1,34 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
-import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
-import org.watermedia.api.media.MRL;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.NetTool;
 
-import java.io.*;
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class KickPlatform implements IPlatform {
     public static final String NAME = "Kick";
+    private static final Marker IT = MarkerManager.getMarker(KickPlatform.class.getSimpleName());
     private static final String VIDEO_API = "https://kick.com/api/v2/video/%s";
     private static final String CHANNELS_API = "https://kick.com/api/v2/channels/%s";
     private static final DateTimeFormatter DATE_PATTERN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final Gson GSON = new Gson();
 
     @Override
     public String name() { return "Kick"; }
@@ -33,7 +39,7 @@ public class KickPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         final var path = uri.getPath().substring(1).split("/");
 
         if (path.length == 1) { // ASSUME IT WAS A CHANNEL NAME
@@ -45,34 +51,36 @@ public class KickPlatform implements IPlatform {
             if (channel.is_banned)
                 throw new IllegalStateException("Streamer " + path[0] + " is banned");
 
-            if (channel.livestream.is_mature) // TODO: ADD OPTION TO ALLOW MATURE CONTENT
+            if (channel.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
                 throw new IllegalStateException("Streamer " + path[0] + " is marked as mature content");
 
             // INIT
-            final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
             final var r = HlsTool.fetch(channel.url);
 
             // BASIC METADATA
-            sourceBuilder.metadata(new MRL.Metadata(
+            final Metadata metadata = new Metadata(
                     channel.user.username,
                     channel.livestream.session_title,
-                    channel.user.profile_pic,
                     LocalDateTime.parse(channel.livestream.start_time, DATE_PATTERN).toInstant(ZoneOffset.UTC),
                     0,
-                    channel.user.username)
-            );
+                    channel.user.username);
 
+            final List<DataQuality> variants = new ArrayList<>();
             if (r instanceof final HlsTool.MasterResult master) {
                 for (final var variant: master.variants()) {
-                    sourceBuilder.quality(MRL.Quality.of(variant.width(), variant.height()), URI.create(variant.uri()));
+                    variants.add(new DataQuality(URI.create(variant.uri()), variant.width(), variant.height()));
                 }
             } else {
-                LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate source with high quality as default");
-                sourceBuilder.quality(MRL.Quality.MEDIUM, channel.url);
+                LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate uri with high quality as default");
+                variants.add(new DataQuality(channel.url, 0, 0));
             }
 
             // WE MAKE IT EXPIRES EVERY 30 SECONDS BECAUSE... I AM REALLY NOT SURE IF THE LINKS EVEN EXPIRES
-            return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
+            final var entry = new DataSource(MediaType.VIDEO, channel.user.profile_pic, metadata,
+                    RequestHeaders.defaults(uri),
+                    variants.toArray(DataQuality[]::new),
+                    null, null);
+            return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
 
         } else {
             if (!path[0].equalsIgnoreCase("video"))
@@ -82,58 +90,52 @@ public class KickPlatform implements IPlatform {
             final Video video = this.getVideoInfo(id);
 
             if (video.livestream == null || video.url == null)
-                throw new IllegalStateException("Video " + id + " source is unavailable");
+                throw new IllegalStateException("Video " + id + " uri is unavailable");
 
             if (video.livestream.channel.is_banned)
                 throw new IllegalStateException("Streamer " + video.livestream.channel.user.username + " is banned");
 
-            if (video.livestream.is_mature) // TODO: ADD AN OPTION TO SUPPORT MATURE CONTENT
+            if (video.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
                 throw new IllegalStateException("Video is marked as mature content");
 
-            final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
             final var r = HlsTool.fetch(uri);
 
-            sourceBuilder.metadata(new MRL.Metadata(
+            final Metadata vodMetadata = new Metadata(
                     video.livestream.channel.user.username,
                     video.livestream.session_title,
-                    video.livestream.channel.user.profile_pic,
                     LocalDateTime.parse(video.livestream.start_time, DATE_PATTERN).toInstant(ZoneOffset.UTC),
                     video.livestream.duration,
-                    video.livestream.channel.user.username)
-            );
+                    video.livestream.channel.user.username);
 
+            final List<DataQuality> vodVariants = new ArrayList<>();
             if (r instanceof final HlsTool.MasterResult master) {
                 for (final var variant: master.variants()) {
-                    sourceBuilder.quality(MRL.Quality.of(variant.width(), variant.height()), URI.create(variant.uri()));
+                    vodVariants.add(new DataQuality(URI.create(variant.uri()), variant.width(), variant.height()));
                 }
             } else {
-                LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate source with high quality as default");
-                sourceBuilder.quality(MRL.Quality.MEDIUM, video.url);
+                LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate uri with high quality as default");
+                vodVariants.add(new DataQuality(video.url, 0, 0));
             }
 
-            return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
+            final var entry = new DataSource(MediaType.VIDEO, video.livestream.channel.user.profile_pic, vodMetadata,
+                    RequestHeaders.defaults(uri),
+                    vodVariants.toArray(DataQuality[]::new),
+                    null, null);
+            return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
         }
     }
 
     private Channel getChannelInfo(final String channel) throws Exception {
-        try (final InputStreamReader in = new InputStreamReader(this.getInputStream(new URI(String.format(CHANNELS_API, channel))))) {
-            return GSON.fromJson(in, Channel.class);
+        try (final NetRequest req = NetRequest.create(URI.create(String.format(CHANNELS_API, channel))).method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + req.uri());
+            return req.json(Channel.class);
         }
     }
 
     private Video getVideoInfo(final String videoId) throws Exception {
-        try (final InputStreamReader in = new InputStreamReader(this.getInputStream(new URI(String.format(VIDEO_API, videoId))))) {
-            return GSON.fromJson(in, Video.class);
-        }
-    }
-
-    private InputStream getInputStream(final URI uri) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "application/json");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
-            return new ByteArrayInputStream(conn.getInputStream().readAllBytes());
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(URI.create(String.format(VIDEO_API, videoId))).method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + req.uri());
+            return req.json(Video.class);
         }
     }
 
@@ -150,7 +152,7 @@ public class KickPlatform implements IPlatform {
 
     }
 
-    private record Video(int id, Livestream livestream, @SerializedName("source") URI url) {
+    private record Video(int id, Livestream livestream, @SerializedName("uri") URI url) {
 
     }
 }

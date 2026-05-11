@@ -1,11 +1,12 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,11 +24,10 @@ public class VidLiiPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "text/html");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
-            final String html = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    public PlatformData getData(final URI uri) throws Exception {
+        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            final String html = req.readAllAsString();
 
             final Matcher matcher = VIDEO_SRC_PATTERN.matcher(html);
             if (!matcher.find()) {
@@ -37,9 +37,11 @@ public class VidLiiPlatform implements IPlatform {
             final String videoPath = matcher.group(1);
             final URI videoUri = new URI("https://www.vidlii.com" + videoPath);
 
-            return new Result(null, new MRL.Source(MRL.MediaType.VIDEO, videoUri));
-        } finally {
-            conn.disconnect();
+            final var entry = new DataSource(MediaType.VIDEO, null, null,
+                    RequestHeaders.defaults(uri),
+                    new DataQuality[] {new DataQuality(videoUri, 0, 0)},
+                    null, null);
+            return new PlatformData(null, entry);
         }
     }
 }

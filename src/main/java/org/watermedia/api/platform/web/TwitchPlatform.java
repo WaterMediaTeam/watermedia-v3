@@ -1,18 +1,20 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.watermedia.api.media.MRL;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.NetTool;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +33,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class TwitchPlatform implements IPlatform {
+    private static final Marker IT = MarkerManager.getMarker(TwitchPlatform.class.getSimpleName());
     // TWITCH GQL ENDPOINT AND USHER CDN URLS
     private static final String GQL_URL = "https://gql.twitch.tv/gql";
     private static final String LIVE_URL = "https://usher.ttvnw.net/api/channel/hls/%s.m3u8";
@@ -74,7 +77,7 @@ public class TwitchPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         final String host = uri.getHost();
         final String path = uri.getPath();
         final String query = uri.getQuery();
@@ -122,45 +125,43 @@ public class TwitchPlatform implements IPlatform {
 
     // --- CONTENT-TYPE HANDLERS ---
 
-    private Result getStreamSources(final String channel) throws Exception {
-        // TODO: HTTP 403 DIFFERENTIATION REQUIRES NETTOOL TO CAPTURE ERROR RESPONSE BODIES.
-        // SAMPLE APPROACH — ADD HttpErrorException(int code, String body) TO NETTOOL, THEN:
-        //   try { hlsResult = HlsTool.fetch(...); }
-        //   catch (HttpErrorException e) {
-        //       if (e.code == 403) {
-        //           JsonObject err = JsonParser.parseString(e.body).getAsJsonArray().get(0).getAsJsonObject();
-        //           String errCode = err.has("error_code") ? err.get("error_code").getAsString() : null;
-        //           if ("vod_manifest_restricted".equals(errCode) || "unauthorized_entitlements".equals(errCode))
-        //               throw new IOException("Subscriber-only content: " + channel);
-        //       }
-        //       throw e;
-        //   }
-        final var sourceBuilder = this.fetchHlsSources(channel, false);
+    private PlatformData getStreamSources(final String channel) throws Exception {
+        final DataQuality[] variants = this.fetchHlsVariants(channel, false);
 
+        Metadata metadata = null;
+        URI thumbnail = null;
         try {
-            final MRL.Metadata metadata = this.fetchStreamMetadata(channel);
-            if (metadata != null) sourceBuilder.metadata(metadata);
+            final MetadataWithThumbnail mwt = this.fetchStreamMetadata(channel);
+            if (mwt != null) { metadata = mwt.metadata; thumbnail = mwt.thumbnail; }
         } catch (final Exception e) {
             LOGGER.warn(IT, "Stream metadata fetch failed for '{}': {}", channel, e.getMessage());
         }
 
-        return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
+        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new DataSource(MediaType.VIDEO, thumbnail, metadata,
+                        RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
+                        variants, null, null));
     }
 
-    private Result getVodSources(final String vodId) throws Exception {
-        final var sourceBuilder = this.fetchHlsSources(vodId, true);
+    private PlatformData getVodSources(final String vodId) throws Exception {
+        final DataQuality[] variants = this.fetchHlsVariants(vodId, true);
 
+        Metadata metadata = null;
+        URI thumbnail = null;
         try {
-            final MRL.Metadata metadata = this.fetchVodMetadata(vodId);
-            if (metadata != null) sourceBuilder.metadata(metadata);
+            final MetadataWithThumbnail mwt = this.fetchVodMetadata(vodId);
+            if (mwt != null) { metadata = mwt.metadata; thumbnail = mwt.thumbnail; }
         } catch (final Exception e) {
             LOGGER.warn(IT, "VOD metadata fetch failed for '{}': {}", vodId, e.getMessage());
         }
 
-        return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
+        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new DataSource(MediaType.VIDEO, thumbnail, metadata,
+                        RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
+                        variants, null, null));
     }
 
-    private Result getClipSources(final String slug) throws Exception {
+    private PlatformData getClipSources(final String slug) throws Exception {
         final JsonObject clip = this.fetchClipData(slug);
         if (clip == null) throw new IOException("Clip not found or no longer available: " + slug);
 
@@ -172,31 +173,28 @@ public class TwitchPlatform implements IPlatform {
         final String accessQuery = "sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
                 + "&token=" + URLEncoder.encode(token, StandardCharsets.UTF_8);
 
-        final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
-        boolean hasQualities = false;
+        final List<DataQuality> clipVariants = new ArrayList<>();
 
         final JsonArray assets = clip.getAsJsonArray("assets");
         if (assets != null && !assets.isEmpty()) {
             final JsonObject asset = assets.get(0).getAsJsonObject();
-            final JsonArray qualities = asset.getAsJsonArray("videoQualities");
-            if (qualities != null) {
-                for (final JsonElement qe : qualities) {
+            final JsonArray videoQualities = asset.getAsJsonArray("videoQualities");
+            if (videoQualities != null) {
+                for (final JsonElement qe : videoQualities) {
                     final JsonObject q = qe.getAsJsonObject();
                     final String sourceUrl = jsonString(q, "sourceURL");
                     final int height = jsonInt(q, "quality", 0);
                     if (sourceUrl != null && height > 0) {
                         final String separator = sourceUrl.contains("?") ? "&" : "?";
-                        sourceBuilder.quality(
-                                MRL.Quality.of(height * 16 / 9, height),
-                                URI.create(sourceUrl + separator + accessQuery)
-                        );
-                        hasQualities = true;
+                        clipVariants.add(new DataQuality(
+                                URI.create(sourceUrl + separator + accessQuery),
+                                0, height));
                     }
                 }
             }
         }
 
-        if (!hasQualities) throw new IOException("No video qualities found for clip: " + slug);
+        if (clipVariants.isEmpty()) throw new IOException("No video qualities found for clip: " + slug);
 
         final String title = jsonString(clip, "title");
         final int duration = jsonInt(clip, "durationSeconds", 0);
@@ -219,13 +217,23 @@ public class TwitchPlatform implements IPlatform {
             catch (final Exception ignored) {}
         }
 
-        sourceBuilder.metadata(new MRL.Metadata(title, null, thumbnailUri, publishedAt, duration, author));
-        return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
+        final Metadata clipMetadata = new Metadata(title, null, publishedAt, duration, author);
+        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new DataSource(MediaType.VIDEO, thumbnailUri, clipMetadata,
+                        RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
+                        clipVariants.toArray(DataQuality[]::new), null, null));
     }
 
     // --- HLS FETCHING ---
 
-    private MRL.SourceBuilder fetchHlsSources(final String id, final boolean isVod) throws IOException {
+    /**
+     * Resolves the channel/VOD master playlist to a list of {@link DataQuality} carrying
+     * the real {@code width}/{@code height} reported by each HLS rendition tag. Falls
+     * back to a single {@code (0, 0)} variant pointing at the master URL when the
+     * playlist is not a master (MRL will mark it UNKNOWN and FFMediaPlayer will
+     * upgrade it after probing the stream).
+     */
+    private DataQuality[] fetchHlsVariants(final String id, final boolean isVod) throws IOException {
         final String playlistUrl = this.buildPlaylistUrl(id, isVod);
 
         final var hlsResult = HlsTool.fetch(URI.create(playlistUrl));
@@ -233,16 +241,14 @@ public class TwitchPlatform implements IPlatform {
             throw new IOException("Failed to fetch Twitch " + (isVod ? "VOD" : "stream") + " playlist: " + error.message());
         }
 
-        final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
         if (hlsResult instanceof final HlsTool.MasterResult master) {
+            final List<DataQuality> variants = new ArrayList<>(master.variants().size());
             for (final var variant : master.variants()) {
-                sourceBuilder.quality(MRL.Quality.of(variant.width(), variant.height()), URI.create(variant.uri()));
+                variants.add(new DataQuality(URI.create(variant.uri()), variant.width(), variant.height()));
             }
-        } else {
-            sourceBuilder.uri(URI.create(playlistUrl));
+            return variants.toArray(DataQuality[]::new);
         }
-
-        return sourceBuilder;
+        return new DataQuality[] { new DataQuality(URI.create(playlistUrl), 0, 0) };
     }
 
     private String buildPlaylistUrl(final String id, final boolean isVod) throws IOException {
@@ -288,9 +294,11 @@ public class TwitchPlatform implements IPlatform {
         return token;
     }
 
+    private record MetadataWithThumbnail(Metadata metadata, URI thumbnail) {}
+
     // --- METADATA ---
 
-    private MRL.Metadata fetchStreamMetadata(final String channel) {
+    private MetadataWithThumbnail fetchStreamMetadata(final String channel) {
         try {
             final List<Map<String, Object>> batch = new ArrayList<>(3);
 
@@ -368,14 +376,14 @@ public class TwitchPlatform implements IPlatform {
                 title = title + " (rerun)";
             }
 
-            return new MRL.Metadata(title, null, thumbnailUri, createdAt, 0, displayName);
+            return new MetadataWithThumbnail(new Metadata(title, null, createdAt, 0, displayName), thumbnailUri);
         } catch (final Exception e) {
             LOGGER.warn(IT, "Failed to fetch stream metadata for '{}': {}", channel, e.getMessage());
             return null;
         }
     }
 
-    private MRL.Metadata fetchVodMetadata(final String vodId) {
+    private MetadataWithThumbnail fetchVodMetadata(final String vodId) {
         try {
             final Map<String, Object> vars = new HashMap<>();
             vars.put("channelLogin", "");
@@ -410,15 +418,15 @@ public class TwitchPlatform implements IPlatform {
             }
 
             Instant publishedAt = null;
-            final String publishedStr = jsonString(video, "publishedAt");
+            final String publishedStr = jsonString(video, "postedAt");
             if (publishedStr != null) {
                 try { publishedAt = Instant.parse(publishedStr); }
                 catch (final Exception ignored) {}
             }
 
-            return new MRL.Metadata(
-                    title != null ? title : "Untitled Broadcast",
-                    description, thumbnailUri, publishedAt, duration, author
+            return new MetadataWithThumbnail(
+                    new Metadata(title != null ? title : "Untitled Broadcast", description, publishedAt, duration, author),
+                    thumbnailUri
             );
         } catch (final Exception e) {
             LOGGER.warn(IT, "Failed to fetch VOD metadata for '{}': {}", vodId, e.getMessage());
@@ -445,19 +453,15 @@ public class TwitchPlatform implements IPlatform {
     // --- GQL HELPERS ---
 
     private String gqlPost(final Object body) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(URI.create(GQL_URL), "POST", "application/json");
-        conn.setDoOutput(true);
-        conn.setRequestProperty("Client-ID", CLIENT_ID);
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        try {
-            try (final OutputStream os = conn.getOutputStream()) {
-                os.write(GSON.toJson(body).getBytes(StandardCharsets.UTF_8));
-            }
-            try (final InputStream is = conn.getInputStream()) {
-                return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            }
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(URI.create(GQL_URL))
+                .method("POST")
+                .accept("application/json")
+                .contentType("application/json; charset=utf-8")
+                .header("Client-ID", CLIENT_ID)
+                .body(GSON.toJson(body))
+                .send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for Twitch GQL");
+            return req.readAllAsString();
         }
     }
 

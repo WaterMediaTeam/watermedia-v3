@@ -1,13 +1,15 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.regex.Matcher;
@@ -29,17 +31,16 @@ public class OdyseePlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         final String path = uri.getRawPath();
         if (path == null || path.length() < 2) {
             throw new IllegalArgumentException("Invalid Odysee URL: " + uri);
         }
 
         final URI embedUri = new URI("https://odysee.com/%24/embed/" + path.substring(1));
-        final HttpURLConnection conn = NetTool.connectToHTTP(embedUri, "GET", "text/html");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), embedUri);
-            final String html = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        try (final NetRequest req = NetRequest.create(embedUri).method("GET").accept("text/html").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + embedUri);
+            final String html = req.readAllAsString();
 
             final Matcher matcher = JSON_LD_PATTERN.matcher(html);
             if (!matcher.find()) {
@@ -73,12 +74,13 @@ public class OdyseePlatform implements IPlatform {
                 author = jsonString(video.getAsJsonObject("author"), "name");
             }
 
-            final MRL.Metadata metadata = new MRL.Metadata(title, description, thumbnail, publishedAt, durationMs, author);
-            final MRL.Source source = new MRL.Source(MRL.MediaType.VIDEO, videoUri, metadata);
+            final Metadata metadata = new Metadata(title, description, publishedAt, durationMs, author);
+            final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
+                    RequestHeaders.defaults(uri),
+                    new DataQuality[] {new DataQuality(videoUri, 0, 0)},
+                    null, null);
 
-            return new Result(null, source);
-        } finally {
-            conn.disconnect();
+            return new PlatformData(null, entry);
         }
     }
 

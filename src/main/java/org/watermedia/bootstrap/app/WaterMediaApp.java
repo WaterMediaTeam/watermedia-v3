@@ -21,8 +21,6 @@ import org.lwjgl.stb.STBVorbis;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.codecs.CodecsAPI;
-import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.Colors;
@@ -32,9 +30,11 @@ import org.watermedia.tools.DrawTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
+import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
+import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.InputStream;
 import java.net.URI;
@@ -75,7 +75,27 @@ public class WaterMediaApp {
     static { initLogging(); }
 
     public static void start(final Runnable task) {
-        WaterMedia.start("WaterMediaApp", null, null, true);
+        // PHASE 1 — get the window on screen ASAP. Window creation, GL setup,
+        // text renderer, and icon/banner decoding (via ImageIO so they don't
+        // need CodecsAPI yet). Audio is deferred to phase 3 so AppBootstrap's
+        // countdown end → visible window has the shortest possible gap.
+        initWindow();
+        ctx.text = new TextRenderer();
+        ctx.text.margin(6);
+        loadIcon();
+        loadBanner();
+        glfwShowWindow(ctx.windowHandle);
+
+        // PHASE 2 — show the loading splash and run WaterMedia.start() in the
+        // background. The splash polls WaterMedia.step()/steps()/currentAPI()
+        // each frame to drive the two progress bars and renders the banner on
+        // top so the screen isn't empty during init.
+        final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx);
+        runLoadingPhase(loadingScreen);
+
+        // PHASE 3 — final init that depends on WaterMedia (or that we delayed
+        // to keep phase 1 fast).
+        initAudio();
         ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
         if (!WaterMedia.LOGGER.isDebugEnabled()) {
             for (int i = 0; i < ctx.uriGroups.length; i++) {
@@ -86,12 +106,49 @@ public class WaterMediaApp {
                 }
             }
         }
-
-        init();
-        glfwShowWindow(ctx.windowHandle);
+        initScreens();
+        initErrorDialog();
         task.run();
         mainLoop();
         cleanup();
+    }
+
+    private static void runLoadingPhase(final LoadingScreen loadingScreen) {
+        final java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        final Thread loader = ThreadTool.createStarted("WaterMedia-Init", () -> {
+            try {
+                WaterMedia.start("WaterMediaApp", null, null, true);
+            } catch (final Throwable t) {
+                failure.set(t);
+            }
+        });
+
+        ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
+        }, 0);
+        glClearColor(0, 0, 0, 1);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        while (loader.isAlive() && running && !glfwWindowShouldClose(ctx.windowHandle)) {
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            loadingScreen.render(ctx.windowWidth, ctx.windowHeight);
+            glfwSwapBuffers(ctx.windowHandle);
+            glfwPollEvents();
+            ctx.mouseClicked = false; // discard input collected during loading
+        }
+
+        try {
+            loader.join();
+        } catch (final InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+
+        final Throwable t = failure.get();
+        if (t != null) {
+            if (t instanceof RuntimeException re) throw re;
+            if (t instanceof Error err) throw err;
+            throw new RuntimeException(t);
+        }
     }
 
     public static void log(final String message) {
@@ -99,14 +156,6 @@ public class WaterMediaApp {
     }
 
     // INITIALIZATION
-    private static void init() {
-        initWindow();
-        initAudio();
-        initResources();
-        initScreens();
-        initErrorDialog();
-    }
-
     private static void initWindow() {
         GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
@@ -173,20 +222,13 @@ public class WaterMediaApp {
         loadSoundClick();
     }
 
-    private static void initResources() {
-        ctx.text = new TextRenderer();
-        ctx.text.margin(6);
-        loadIcon();
-        loadBanner();
-    }
-
     private static void initScreens() {
         final HomeScreen homeScreen = new HomeScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
         consoleScreen = new ConsoleScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
 
         screens.register("home", homeScreen);
         screens.register("mrl", new MRLSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
-        screens.register("source", new SourceSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
+        screens.register("uri", new SourceSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("player", new PlayerScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction, homeScreen));
         screens.register("console", consoleScreen);
@@ -224,7 +266,7 @@ public class WaterMediaApp {
 
             case MRL_SELECTOR -> screens.navigate("mrl");
 
-            case SOURCE_SELECTOR -> screens.navigate("source");
+            case SOURCE_SELECTOR -> screens.navigate("uri");
 
             case PLAYER -> {
                 // CHECK FFMPEG AVAILABILITY FIRST
@@ -258,15 +300,8 @@ public class WaterMediaApp {
         }
     }
 
-    // MAIN LOOP
+    // MAIN LOOP — GL state was already configured during the loading phase.
     private static void mainLoop() {
-        ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
-        }, 0);
-
-        glClearColor(0, 0, 0, 1);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -358,27 +393,18 @@ public class WaterMediaApp {
     }
 
     // RESOURCE LOADING
+    // Icon and banner are decoded with ImageIO so they're available before
+    // CodecsAPI loads — this lets the loading splash render the banner.
     private static void loadIcon() {
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
-            final byte[] iconBytes = in.readAllBytes();
-            final ImageData iconImageData = CodecsAPI.decodeImage(iconBytes);
-            if (iconImageData == null || iconImageData.frames().length == 0) return;
+            final BufferedImage img = ImageIO.read(in);
+            if (img == null) return;
 
-            final ByteBuffer iconBuffer = iconImageData.frames()[0];
-            iconBuffer.rewind();
-
-            final ByteBuffer buffer = MemoryUtil.memAlloc(iconImageData.width() * iconImageData.height() * 4);
-            for (int i = 0; i < iconImageData.width() * iconImageData.height(); i++) {
-                final byte b = iconBuffer.get();
-                final byte g = iconBuffer.get();
-                final byte r = iconBuffer.get();
-                final byte a = iconBuffer.get();
-                buffer.put(r).put(g).put(b).put(a);
-            }
-            buffer.flip();
+            final int w = img.getWidth(), h = img.getHeight();
+            final ByteBuffer buffer = argbToRgbaBuffer(img);
 
             final GLFWImage.Buffer icons = GLFWImage.malloc(1);
-            icons.position(0).width(iconImageData.width()).height(iconImageData.height()).pixels(buffer);
+            icons.position(0).width(w).height(h).pixels(buffer);
             glfwSetWindowIcon(ctx.windowHandle, icons);
 
             icons.free();
@@ -390,12 +416,11 @@ public class WaterMediaApp {
 
     private static void loadBanner() {
         try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
-            final byte[] bannerBytes = in.readAllBytes();
-            final ImageData bannerImageData = CodecsAPI.decodeImage(bannerBytes);
-            if (bannerImageData == null || bannerImageData.frames().length == 0) return;
+            final BufferedImage img = ImageIO.read(in);
+            if (img == null) return;
 
-            ctx.bannerWidth = bannerImageData.width();
-            ctx.bannerHeight = bannerImageData.height();
+            ctx.bannerWidth = img.getWidth();
+            ctx.bannerHeight = img.getHeight();
             ctx.bannerTextureId = glGenTextures();
 
             glBindTexture(GL_TEXTURE_2D, ctx.bannerTextureId);
@@ -404,11 +429,28 @@ public class WaterMediaApp {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+            final ByteBuffer buffer = argbToRgbaBuffer(img);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ctx.bannerWidth, ctx.bannerHeight,
-                    0, GL_BGRA, GL_UNSIGNED_BYTE, bannerImageData.frames()[0]);
+                    0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+            MemoryUtil.memFree(buffer);
         } catch (final Exception e) {
             System.err.println("Failed to load banner: " + e.getMessage());
         }
+    }
+
+    private static ByteBuffer argbToRgbaBuffer(final BufferedImage img) {
+        final int w = img.getWidth(), h = img.getHeight();
+        final int[] argb = new int[w * h];
+        img.getRGB(0, 0, w, h, argb, 0, w);
+        final ByteBuffer buffer = MemoryUtil.memAlloc(w * h * 4);
+        for (final int p : argb) {
+            buffer.put((byte) ((p >> 16) & 0xFF)); // R
+            buffer.put((byte) ((p >> 8) & 0xFF));  // G
+            buffer.put((byte) (p & 0xFF));         // B
+            buffer.put((byte) ((p >> 24) & 0xFF)); // A
+        }
+        buffer.flip();
+        return buffer;
     }
 
     private static void loadSoundClick() {
@@ -658,7 +700,7 @@ public class WaterMediaApp {
         }
 
         final ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
-        builder.setStatusLevel(Level.DEBUG);
+        builder.setStatusLevel(Level.WARN);
 
         final AppenderComponentBuilder console = builder.newAppender("Console", "Console")
                 .addAttribute("target", ConsoleAppender.Target.SYSTEM_OUT);

@@ -1,16 +1,22 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -21,7 +27,8 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class TikTokPlatform implements IPlatform {
-    private static final String BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    private static final Marker IT = MarkerManager.getMarker(TikTokPlatform.class.getSimpleName());
+    private static final String TIKTOK_REFERER = "https://www.tiktok.com/";
 
     private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("/video/(\\d+)");
     private static final Pattern EMBED_ID_PATTERN = Pattern.compile("/embed(?:/v2)?/(\\d+)");
@@ -47,7 +54,7 @@ public class TikTokPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(URI uri) throws Exception {
+    public PlatformData getData(URI uri) throws Exception {
         final String host = uri.getHost();
         if ("vm.tiktok.com".equals(host) || "vt.tiktok.com".equals(host)) {
             uri = resolveRedirect(uri);
@@ -160,7 +167,7 @@ public class TikTokPlatform implements IPlatform {
     }
 
     // RESULT BUILDING
-    private Result buildResult(final JsonObject awemeDetail, final String videoId) {
+    private PlatformData buildResult(final JsonObject awemeDetail, final String videoId) {
         final JsonObject video = awemeDetail.getAsJsonObject("video");
         if (video == null) {
             throw new IllegalStateException("No video object found for TikTok video " + videoId);
@@ -181,40 +188,50 @@ public class TikTokPlatform implements IPlatform {
         final URI thumbnail = findThumbnail(awemeDetail, video);
         final String author = extractAuthor(awemeDetail);
 
-        final MRL.Metadata metadata = new MRL.Metadata(title, desc, thumbnail, publishedAt, duration, author);
-        final MRL.SourceBuilder builder = MRL.sourceBuilder(MRL.MediaType.VIDEO);
-        builder.metadata(metadata);
-
-        boolean hasFormats = false;
+        final Metadata metadata = new Metadata(title, desc, publishedAt, duration, author);
+        final List<DataQuality> variants = new ArrayList<>();
 
         if (video.has("bitrateInfo") && video.get("bitrateInfo").isJsonArray()) {
-            hasFormats = parseBitrateInfo(builder, video.getAsJsonArray("bitrateInfo"), video);
+            parseBitrateInfo(variants, video.getAsJsonArray("bitrateInfo"), video);
         }
 
-        if (!hasFormats) {
-            final URI playUri = extractAddrUri(video, "playAddr");
-            if (playUri != null) {
-                builder.quality(MRL.Quality.UNKNOWN, playUri);
-                hasFormats = true;
-            }
-        }
-
-        if (!hasFormats) {
-            final URI downloadUri = extractAddrUri(video, "downloadAddr");
-            if (downloadUri == null) {
+        if (variants.isEmpty()) {
+            URI fallback = extractAddrUri(video, "playAddr");
+            if (fallback == null) fallback = extractAddrUri(video, "downloadAddr");
+            if (fallback == null) {
                 throw new IllegalStateException("No playable video URLs found for TikTok video " + videoId);
             }
-            builder.quality(MRL.Quality.UNKNOWN, downloadUri);
+            // No reliable dimensions on this fallback — let FFMediaPlayer probe and re-bucket.
+            variants.add(new DataQuality(fallback, 0, 0));
         }
 
-        return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), builder.build());
+        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new DataSource(MediaType.VIDEO, thumbnail, metadata,
+                        cdnHeaders(), variants.toArray(DataQuality[]::new), null, null));
     }
 
-    // FORMAT PARSING
-    private boolean parseBitrateInfo(final MRL.SourceBuilder builder, final JsonArray bitrateInfos, final JsonObject video) {
+    /**
+     * TikTok CDN URLs are signed but reject requests without a browser UA, the original
+     * page Referer, and the WAF cookies captured during the HTML scrape. FFmpeg replays
+     * these on every segment fetch, so we stamp them onto the {@link DataSource}.
+     */
+    private static RequestHeaders cdnHeaders() {
+        final RequestHeaders h = new RequestHeaders()
+                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                .set("Accept", "*/*")
+                .set("Referer", TIKTOK_REFERER);
+        final String c = cdnCookies;
+        if (c != null && !c.isEmpty()) h.set("Cookie", c);
+        return h;
+    }
+
+    // FORMAT PARSING — picks the real dimensions reported by PlayAddr.Width/Height
+    // first; falls back to the height encoded in UrlKey (e.g. "..._720p_...") when
+    // PlayAddr omits them; finally to the parent video's width/height. MRL handles
+    // bucket mapping — we do not pre-collapse here.
+    private void parseBitrateInfo(final List<DataQuality> out, final JsonArray bitrateInfos, final JsonObject video) {
         final int playWidth = video.has("width") ? video.get("width").getAsInt() : 0;
         final int playHeight = video.has("height") ? video.get("height").getAsInt() : 0;
-        boolean added = false;
 
         for (int i = 0; i < bitrateInfos.size(); i++) {
             final JsonObject info = bitrateInfos.get(i).getAsJsonObject();
@@ -225,30 +242,25 @@ public class TikTokPlatform implements IPlatform {
             if (url == null) continue;
 
             final String urlKey = jsonString(playAddr, "UrlKey");
-            MRL.Quality quality = MRL.Quality.UNKNOWN;
-
             if (urlKey != null) {
                 final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
+                if (keyMatcher.find() && "bytevc2".equals(keyMatcher.group(1))) continue;
+            }
+
+            int w = playAddr.has("Width") ? playAddr.get("Width").getAsInt() : 0;
+            int h = playAddr.has("Height") ? playAddr.get("Height").getAsInt() : 0;
+
+            if (h <= 0 && urlKey != null) {
+                final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
                 if (keyMatcher.find()) {
-                    final String codec = keyMatcher.group(1);
-                    if ("bytevc2".equals(codec)) continue;
-                    quality = MRL.Quality.of(Integer.parseInt(keyMatcher.group(2)));
+                    try { h = Integer.parseInt(keyMatcher.group(2)); }
+                    catch (final NumberFormatException ignored) {}
                 }
             }
+            if (w <= 0 && h <= 0) { w = playWidth; h = playHeight; }
 
-            if (quality == MRL.Quality.UNKNOWN) {
-                final int w = playAddr.has("Width") ? playAddr.get("Width").getAsInt() : playWidth;
-                final int h = playAddr.has("Height") ? playAddr.get("Height").getAsInt() : playHeight;
-                if (w > 0 && h > 0) {
-                    quality = MRL.Quality.of(w, h);
-                }
-            }
-
-            builder.quality(quality, url);
-            added = true;
+            out.add(new DataQuality(url, w, h));
         }
-
-        return added;
     }
 
     private static URI pickBestUrl(final JsonObject playAddr) {
@@ -365,31 +377,28 @@ public class TikTokPlatform implements IPlatform {
         return itemInfo.getAsJsonObject("itemStruct");
     }
 
-    // TODO: replace with per-source custom headers in MRL.Source
-    public static volatile String cdnCookies;
+    /** Captured WAF cookies — needed alongside the browser UA when streaming the CDN URL. */
+    private static volatile String cdnCookies;
 
     // HTTP
     private static String fetchWebpage(final URI uri, final String cookies) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "text/html,application/xhtml+xml,*/*");
-        conn.setRequestProperty("User-Agent", BROWSER_UA);
-        conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
-        conn.setRequestProperty("Referer", "https://www.tiktok.com/");
-        conn.setInstanceFollowRedirects(true);
-        if (cookies != null) {
-            conn.setRequestProperty("Cookie", cookies);
-        }
+        final NetRequest.Builder builder = NetRequest.create(uri)
+                .method("GET")
+                .accept("text/html,application/xhtml+xml,*/*")
+                .userAgent(NetRequest.UserAgent.GENERIC)
+                .referer(TIKTOK_REFERER)
+                .header("Accept-Language", "en-US,en;q=0.9");
+        if (cookies != null) builder.header("Cookie", cookies);
 
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
-            captureCookies(conn);
-            return new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = builder.send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            captureCookies(req);
+            return req.readAllAsString();
         }
     }
 
-    private static void captureCookies(final HttpURLConnection conn) {
-        final var setCookies = conn.getHeaderFields().get("Set-Cookie");
+    private static void captureCookies(final NetRequest req) {
+        final List<String> setCookies = req.responseHeaders().getAll("Set-Cookie");
         if (setCookies == null || setCookies.isEmpty()) return;
 
         final StringBuilder sb = new StringBuilder();
@@ -406,19 +415,14 @@ public class TikTokPlatform implements IPlatform {
     }
 
     private static URI resolveRedirect(final URI shortUri) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(shortUri, "GET", "*/*");
-        conn.setRequestProperty("User-Agent", BROWSER_UA);
-        conn.setInstanceFollowRedirects(false);
-
-        try {
-            final int code = conn.getResponseCode();
-            if (code == HttpURLConnection.HTTP_MOVED_TEMP || code == HttpURLConnection.HTTP_MOVED_PERM || code == 303) {
-                final String location = conn.getHeaderField("Location");
-                if (location != null) return URI.create(location);
-            }
-            return shortUri;
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(shortUri)
+                .method("GET")
+                .accept("*/*")
+                .userAgent(NetRequest.UserAgent.GENERIC)
+                .maxRedirects(0)
+                .send()) {
+            final String location = req.header("Location");
+            return location != null ? URI.create(location) : shortUri;
         }
     }
 

@@ -7,6 +7,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.engines.SFXEngine;
+import org.watermedia.api.util.MediaQuality;
 
 import java.util.Objects;
 
@@ -16,14 +17,16 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
     protected static final int NO_SIZE = 0;
     protected static final int NO_TEXTURE = 0;
+    protected static final int NO_SOURCE = 0;
     protected static final int NO_DURATION = 0;
 
     // BASIC PROPERTIES
     protected final MRL mrl;
+    protected final int sourceIndex;
     protected final MRL.Source source;
     protected final GFXEngine gfx;
     protected final SFXEngine sfx;
-    protected MRL.Quality quality = WaterMediaConfig.media.defaultQuality;
+    protected MediaQuality quality = WaterMediaConfig.media.defaultQuality;
 
     // AUDIO PROPERTIES
     private boolean repeat;
@@ -31,9 +34,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private float speed = 1.0f;
     private boolean muted = false;
 
-    public MediaPlayer(final MRL mrl, final MRL.Source source, final GFXEngine gfx, final SFXEngine sfx) {
-
-        Objects.requireNonNull(source, "MediaPlayer must have a valid media resource locator. (mrl)");
+    public MediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
+        Objects.requireNonNull(mrl, "MediaPlayer must have a valid MRL");
+        final MRL.Source resolved = mrl.source(sourceIndex);
+        Objects.requireNonNull(resolved, "Source at index " + sourceIndex + " is not available");
         if (gfx == null && sfx == null && !(this instanceof ServerMediaPlayer))
             throw new IllegalStateException("MediaPlayer must have a valid GFX or SFX resource.");
         if (gfx == null)
@@ -43,7 +47,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
         // INIT PROPERTIES
         this.mrl = mrl;
-        this.source = source;
+        this.sourceIndex = sourceIndex;
+        this.source = resolved;
         this.gfx = gfx;
         this.sfx = sfx;
     }
@@ -54,6 +59,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     protected MediaPlayer() {
         this.mrl = null;
+        this.sourceIndex = -1;
         this.source = null;
         this.gfx = null;
         this.sfx = null;
@@ -65,12 +71,12 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * and switch to the new quality while maintaining the current timestamp.
      * @param quality the new quality to use
      */
-    public void quality(final MRL.Quality quality) {
+    public void quality(final MediaQuality quality) {
         if (quality == null) throw new IllegalArgumentException("Quality cannot be null.");
         this.quality = quality;
     }
 
-    public MRL.Quality quality() { return this.quality; }
+    public MediaQuality quality() { return this.quality; }
 
     /**
      * Indicates if the media player has video support enabled.
@@ -104,9 +110,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Returns the OpenAL source ID used for audio playback.
-     * @return the OpenAL source ID, or {@link MediaPlayer#NO_TEXTURE NO_TEXTURE} if audio is not supported.
+     * @return the OpenAL source ID, or {@link MediaPlayer#NO_SOURCE NO_SOURCE} if audio is not supported.
      */
-    public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_TEXTURE; }
+    public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_SOURCE; }
 
     /**
      * Moves to the previous frame of the video.
@@ -123,9 +129,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Sets the volume of the audio playback.
      * The volume is clamped between 0 (mute) and 100 (maximum volume).
-     * Setting the volume to 0 will also mute the audio.
-     * @param volume the desired volume level (0-100), mute status is set to false if volume is greater than 0
-     *               but will not be set mute to true if volume is set to 0
+     * Setting the volume to 0 implicitly mutes the audio; any value &gt;= 1 unmutes it.
+     * @param volume the desired volume level (0-100)
      */
     public void volume(final int volume) {
         this.volume = MathUtil.clamp(volume, 0, 100) / 100f;
@@ -165,7 +170,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * If the media is in an error state, it will attempt to recover and start playback.
      * <p>If the media is loading or buffering, it will wait until the media is ready before starting playback.</p>
      * If the media is ended, it will restart playback from the beginning.
-     * <p>If the media source is invalid, it will log an error and not start playback.</p>
+     * <p>If the media uri is invalid, it will log an error and not start playback.</p>
      * This method is non-blocking and returns immediately.
      */
     public abstract void start();
@@ -180,7 +185,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * <p>If the media is loading or buffering,
      * it will wait until the media is ready before starting playback in a paused state.</p>
      * If the media is ended, it will restart playback from the beginning and remain paused.
-     * <p>If the media source is invalid, it will log an error and not start playback.</p>
+     * <p>If the media uri is invalid, it will log an error and not start playback.</p>
      * This method is non-blocking and returns immediately.
      * @implNote This method is equivalent to calling {@link #start()} followed by {@link #pause()}.
      * @see MediaPlayer#start()
@@ -269,7 +274,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Skips forward 5 seconds in the media.
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean foward();
+    public abstract boolean forward();
 
     /**
      * Skips backward 5 seconds in the media.
@@ -384,9 +389,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean error() { return this.status() == Status.ERROR; }
 
     /**
-     * Indicates if the media source is a live stream.
+     * Indicates if the media uri is a live stream.
      * Live streams typically do not support seeking and have an indefinite duration.
-     * @return true if the media source is a live stream, false otherwise.
+     * @return true if the media uri is a live stream, false otherwise.
      */
     public abstract boolean liveSource();
 

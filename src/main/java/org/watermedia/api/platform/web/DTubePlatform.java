@@ -1,14 +1,20 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
-import org.watermedia.api.media.MRL;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.NetTool;
 
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,6 +22,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public class DTubePlatform implements IPlatform {
     public static final String NAME = "D.tube";
+    private static final Marker IT = MarkerManager.getMarker(DTubePlatform.class.getSimpleName());
 
     private static final String ORIGIN = "https://d.tube";
     private static final Pattern VIDEO_URL = Pattern.compile("video_url:\\s*\"([^\"]+)\"");
@@ -36,16 +43,13 @@ public class DTubePlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "text/html");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
-            final String html = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    public PlatformData getData(final URI uri) throws Exception {
+        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            final String html = req.readAllAsString();
 
             final String videoUrl = extractRequired(html, VIDEO_URL, "video_url", uri);
             final URI hlsUri = new URI(videoUrl);
-
-            final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
 
             final String title = extract(html, TITLE);
             final String description = extract(html, DESCRIPTION);
@@ -62,44 +66,47 @@ public class DTubePlatform implements IPlatform {
             }
 
             final String author = extract(html, USERNAME);
+            final Metadata metadata = new Metadata(title, description, publishedAt, duration, author);
 
-            sourceBuilder.metadata(new MRL.Metadata(title, description, thumbnail, publishedAt, duration, author));
-
+            final List<DataQuality> variants = new ArrayList<>();
             final var r = fetchHls(hlsUri);
             if (r instanceof final HlsTool.MasterResult master) {
                 for (final var variant : master.variants()) {
-                    sourceBuilder.quality(MRL.Quality.of(variant.width(), variant.height()), hlsUri.resolve(variant.uri()));
+                    variants.add(new DataQuality(hlsUri.resolve(variant.uri()), variant.width(), variant.height()));
                 }
             } else if (r instanceof final HlsTool.ErrorResult error) {
                 LOGGER.warn(IT, "Failed to parse D.tube HLS playlist: {}, falling back to direct URL", error.message());
-                sourceBuilder.quality(MRL.Quality.MEDIUM, hlsUri);
+                variants.add(new DataQuality(hlsUri, 0, 0));
             } else {
-                sourceBuilder.quality(MRL.Quality.MEDIUM, hlsUri);
+                variants.add(new DataQuality(hlsUri, 0, 0));
             }
 
-            return new Result(Instant.now().plus(30, ChronoUnit.MINUTES), sourceBuilder.build());
-        } finally {
-            conn.disconnect();
+            // D.tube CDN demands a browser UA + d.tube origin/referer
+            final RequestHeaders headers = RequestHeaders.defaults(uri)
+                    .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                    .set("Referer", ORIGIN + "/")
+                    .set("Origin", ORIGIN);
+
+            final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
+                    headers,
+                    variants.toArray(DataQuality[]::new),
+                    null, null);
+            return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
         }
     }
 
     private static HlsTool.Result fetchHls(final URI uri) {
-        try {
-            final var http = NetTool.connectToHTTP(uri, "GET", "application/vnd.apple.mpegurl");
-            http.setRequestProperty("User-Agent", NetTool.BROWSER_UA);
-            http.setRequestProperty("Referer", ORIGIN + "/");
-            http.setRequestProperty("Origin", ORIGIN);
-            http.setConnectTimeout(10_000);
-            http.setReadTimeout(10_000);
-            http.setInstanceFollowRedirects(true);
-
-            try {
-                NetTool.validateHTTP200(http.getResponseCode(), uri);
-                final var response = http.getInputStream().readAllBytes();
-                return HlsTool.parse(new String(response, StandardCharsets.UTF_8), uri.toString());
-            } finally {
-                http.disconnect();
-            }
+        try (final NetRequest req = NetRequest.create(uri)
+                .method("GET")
+                .accept("application/vnd.apple.mpegurl")
+                .userAgent(NetRequest.UserAgent.GENERIC)
+                .referer(ORIGIN + "/")
+                .header("Origin", ORIGIN)
+                .connectTimeout(10_000)
+                .readTimeout(10_000)
+                .send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            return HlsTool.parse(req.readAllAsString(), uri.toString());
         } catch (final Exception e) {
             return new HlsTool.ErrorResult("Fetch error: " + e.getMessage(), e);
         }

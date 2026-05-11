@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
+import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Selector;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
@@ -31,9 +32,9 @@ public class SourceSelectorScreen extends Screen {
                     return text.padOrTruncate(title, 35);
                 })
                 .statusProvider(src -> {
-                    final MRL.Quality best = src.availableQualities().stream()
+                    final MediaQuality best = src.availableQualities().stream()
                             .max(Comparator.comparingInt(q -> q.threshold))
-                            .orElse(MRL.Quality.UNKNOWN);
+                            .orElse(MediaQuality.UNKNOWN);
                     return "[" + best.name() + "] [" + src.type().name() + "]";
                 })
                 .onSelect(this::handleSelect)

@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
+import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.Colors;
@@ -83,8 +84,9 @@ public class OpenMultimediaScreen extends Screen {
 
         if (this.ctx.selectedMRL.ready()) {
             this.loading = false;
-            this.ctx.availableSources = this.ctx.selectedMRL.sources();
-            if (this.ctx.availableSources == null || this.ctx.availableSources.length == 0) {
+            final var sourcesList = this.ctx.selectedMRL.sources();
+            this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
+            if (this.ctx.availableSources.length == 0) {
                 this.ctx.showError("No Sources", "No sources available for this URL", null);
                 this.ctx.selectedMRL = null;
                 return;
@@ -97,7 +99,7 @@ public class OpenMultimediaScreen extends Screen {
             return;
         }
 
-        if (this.ctx.selectedMRL.error()) {
+        if (this.ctx.selectedMRL.hasError()) {
             this.loading = false;
             this.ctx.showError("Load Error", "Failed to load URL: Error", null);
             this.ctx.selectedMRL = null;

@@ -1,15 +1,16 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
-import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,11 +21,11 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public class TwitterPlatform implements IPlatform {
     public static final String NAME = "Twitter";
+    private static final Marker IT = MarkerManager.getMarker(TwitterPlatform.class.getSimpleName());
     private static final String API_URL = "https://cdn.syndication.twimg.com/tweet-result?id=%s&token=%s&lang=en";
     private static final String API_TOKEN = "watermedia-java-x-access-token";
     private static final Pattern ID_PATTERN = Pattern.compile("status/(\\d+)$");
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile("/(\\d{2,5})x(\\d{2,5})/");
-    private static final Gson GSON = new Gson();
 
     @Override
     public String name() { return NAME; }
@@ -39,7 +40,7 @@ public class TwitterPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
+    public PlatformData getData(final URI uri) throws Exception {
         String path = uri.getPath();
         if (path.endsWith("/")) path = path.substring(0, path.length() - 1);
 
@@ -60,43 +61,49 @@ public class TwitterPlatform implements IPlatform {
         final String title = tweet.user != null ? tweet.user.name : tweet.text;
         final String author = tweet.user != null ? tweet.user.screenName : null;
 
-        final List<MRL.Source> sources = new ArrayList<>(tweet.mediaDetails.length);
+        final RequestHeaders headers = RequestHeaders.defaults(uri);
+        final List<DataSource> entries = new ArrayList<>(tweet.mediaDetails.length);
         for (int i = 0; i < tweet.mediaDetails.length; i++) {
             try {
-                final MRL.Source source = this.buildSource(tweet, tweet.mediaDetails[i], title, author);
-                if (source != null) sources.add(source);
+                final DataSource entry = this.buildEntry(tweet, tweet.mediaDetails[i], title, author, headers);
+                if (entry != null) entries.add(entry);
             } catch (final Exception e) {
-                LOGGER.warn(IT, "Failed to build source for media {} of tweet '{}': {}", i, tweetId, e.getMessage());
+                LOGGER.warn(IT, "Failed to build entry for media {} of tweet '{}': {}", i, tweetId, e.getMessage());
             }
         }
 
-        if (sources.isEmpty())
+        if (entries.isEmpty())
             throw new IllegalStateException("All media sources failed to load for tweet '" + tweetId + "'");
 
-        LOGGER.debug(IT, "Loaded {} source(s) for tweet '{}'", sources.size(), tweetId);
-        return new Result(null, sources.toArray(MRL.Source[]::new));
+        LOGGER.debug(IT, "Loaded {} entry(es) for tweet '{}'", entries.size(), tweetId);
+        return new PlatformData(null, entries.toArray(DataSource[]::new));
     }
 
-    private MRL.Source buildSource(final Tweet tweet, final MediaDetail media, final String title, final String author) {
+    private DataSource buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final RequestHeaders headers) {
         if ("photo".equals(media.type)) {
-            return MRL.sourceBuilder(MRL.MediaType.IMAGE)
-                    .quality(MRL.Quality.of(media.originalInfo.width, media.originalInfo.height), URI.create(media.mediaUrlHttps))
-                    .metadata(new MRL.Metadata(title, tweet.text, null, Instant.parse(tweet.createdAt), 0, author))
-                    .build();
+            final Metadata metadata = new Metadata(title, tweet.text, Instant.parse(tweet.createdAt), 0, author);
+            return new DataSource(MediaType.IMAGE, null, metadata, headers,
+                    new DataQuality[] {new DataQuality(URI.create(media.mediaUrlHttps), media.originalInfo.width, media.originalInfo.height)},
+                    null, null);
         }
 
         if ("video".equals(media.type)) {
-            final MRL.SourceBuilder builder = MRL.sourceBuilder(MRL.MediaType.VIDEO)
-                    .metadata(new MRL.Metadata(title, tweet.text, URI.create(media.mediaUrlHttps), Instant.parse(tweet.createdAt), media.videoInfo.durationMillis, author));
+            final URI thumbnail = URI.create(media.mediaUrlHttps);
+            final Metadata metadata = new Metadata(title, tweet.text, Instant.parse(tweet.createdAt), media.videoInfo.durationMillis, author);
 
+            final List<DataQuality> variants = new ArrayList<>();
             for (final var variant: media.videoInfo.variants) {
                 final var resMatcher = RESOLUTION_PATTERN.matcher(variant.url);
                 if (!resMatcher.find()) continue;
-
-                builder.quality(MRL.Quality.of(Integer.parseInt(resMatcher.group(1)), Integer.parseInt(resMatcher.group(2))), URI.create(variant.url));
+                variants.add(new DataQuality(URI.create(variant.url),
+                        Integer.parseInt(resMatcher.group(1)), Integer.parseInt(resMatcher.group(2))));
             }
 
-            return builder.build();
+            if (variants.isEmpty()) return null;
+
+            return new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
+                    variants.toArray(DataQuality[]::new),
+                    null, null);
         }
 
         LOGGER.warn(IT, "Unsupported media type '{}', skipping", media.type);
@@ -105,15 +112,9 @@ public class TwitterPlatform implements IPlatform {
 
     private Tweet fetchTweet(final String tweetId) throws IOException {
         final URI apiUri = URI.create(String.format(API_URL, tweetId, API_TOKEN));
-        final HttpURLConnection conn = NetTool.connectToHTTP(apiUri, "GET", "application/json");
-
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), apiUri);
-            try (final InputStream in = conn.getInputStream()) {
-                return GSON.fromJson(new String(in.readAllBytes(), StandardCharsets.UTF_8), Tweet.class);
-            }
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + apiUri);
+            return req.json(Tweet.class);
         }
     }
 

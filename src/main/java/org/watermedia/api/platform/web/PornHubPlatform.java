@@ -1,16 +1,17 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
-import org.watermedia.WaterMedia;
-import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,50 +30,40 @@ public class PornHubPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "text/html");
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
+    public PlatformData getData(final URI uri) throws Exception {
+        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
 
-            final String html;
-            try (final InputStream in = conn.getInputStream()) {
-                html = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            }
-
+            final String html = req.readAllAsString();
             final Matcher matcher = FLASHVARS_PATTERN.matcher(html);
             if (!matcher.find()) throw new IllegalStateException("No flashvars found on page");
 
-            final String json = matcher.group(1);
-
-            final FlashVars flashVars = GSON.fromJson(json, FlashVars.class);
+            final FlashVars flashVars = GSON.fromJson(matcher.group(1), FlashVars.class);
 
             if (flashVars.mediaDefinitions == null || flashVars.mediaDefinitions.length == 0)
                 throw new IllegalStateException("No media definitions found");
 
-            final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.VIDEO);
+            final List<DataQuality> variants = new ArrayList<>();
 
             for (final MediaDefinition def: flashVars.mediaDefinitions) {
                 if (def.videoUrl == null || def.videoUrl.isEmpty()) continue;
                 if (def.videoUrl.contains("pornhub.com")) continue; // NOT A CDN LINK MEANS 4K VIDEO, CANNOT BE OBTAINED
 
-
-                sourceBuilder.quality(MRL.Quality.of(def.width, def.height), new URI(def.videoUrl));
+                variants.add(new DataQuality(new URI(def.videoUrl), def.width, def.height));
             }
 
+            URI thumbnail = null;
+            Metadata metadata = null;
             if (flashVars.video_title != null) {
-                sourceBuilder.metadata(new MRL.Metadata(
-                        flashVars.video_title,
-                        null,
-                        flashVars.image_url != null ? URI.create(flashVars.image_url) : null,
-                        null,
-                        flashVars.video_duration * 1000L,
-                        null
-                ));
+                thumbnail = flashVars.image_url != null ? URI.create(flashVars.image_url) : null;
+                metadata = new Metadata(flashVars.video_title, null, null, flashVars.video_duration * 1000L, null);
             }
 
-            return new Result(null, sourceBuilder.build());
-        } finally {
-            conn.disconnect();
+            final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
+                    RequestHeaders.defaults(uri),
+                    variants.toArray(DataQuality[]::new),
+                    null, null);
+            return new PlatformData(null, entry);
         }
     }
 

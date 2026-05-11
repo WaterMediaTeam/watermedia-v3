@@ -1,9 +1,11 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
-import java.net.HttpURLConnection;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -26,13 +28,11 @@ public class MediaFirePlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(final URI uri) throws Exception {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "text/html");
+    public PlatformData getData(final URI uri) throws Exception {
+        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
 
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
-
-            final String html = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            final String html = req.readAllAsString();
             final Matcher popsokMatcher = PATTERN_POPSOK.matcher(html);
             final Matcher dataScrambledMatcher = PATTERN_DATA_SCRAMBLED.matcher(html);
 
@@ -46,10 +46,11 @@ public class MediaFirePlatform implements IPlatform {
                 throw new IllegalStateException("No download link found in MediaFire page: " + uri);
             }
 
-            final var sourceBuilder = new MRL.SourceBuilder(MRL.MediaType.UNKNOWN).uri(downloadUri);
-            return new Result(null, sourceBuilder.build());
-        } finally {
-            conn.disconnect();
+            final var entry = new DataSource(MediaType.UNKNOWN, null, null,
+                    RequestHeaders.defaults(uri),
+                    new DataQuality[] {new DataQuality(downloadUri, 0, 0)},
+                    null, null);
+            return new PlatformData(null, entry);
         }
     }
 }

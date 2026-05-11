@@ -3,108 +3,102 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.platform.*;
+import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.players.TxMediaPlayer;
+import org.watermedia.api.util.MediaType;
 
 import java.io.File;
-import java.net.FileNameMap;
 import java.net.URI;
-import java.net.URLConnection;
-import java.util.LinkedList;
+import java.util.function.Supplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class MediaAPI {
+public class MediaAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
-    static final LinkedList<IPlatform> PLATFORMS = new LinkedList<>() {
-        @Override
-        public void push(final IPlatform platform) {
-            LOGGER.info(IT, "Registering {} platform support", platform.name());
-            // ENSURE UNIQUENESS
-            if (this.contains(platform)) throw new IllegalStateException("Platform already registered: " + platform.name());
-            // ENSURE DEFAULT IS LAST
-            if (platform.getClass() == DefaultPlatform.class) {
-                this.addLast(platform);
-                return;
-            }
-            super.push(platform);
-        }
-    };
 
     /**
      * Gets or creates an MRL for the given URI.
      * If cached and not expired, returns immediately.
-     * Otherwise, starts async loading via IPlatform.
+     * Otherwise, starts async loading via the platform API.
      *
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
      */
     public static MRL getMRL(final String uri) {
         final File f = new File(uri);
-        return MRL.get(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
+        return MRL.getMRL(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
     }
 
-    public static void registerPlatform(IPlatform platform, Class<? extends IPlatform> override) {
-        if (override == null || override == DefaultPlatform.class) {
-            registerPlatform(platform);
-            return;
+    public static MRL getMRL(final URI uri) {
+        return MRL.getMRL(uri);
+    }
+
+    public static MediaPlayer createPlayer(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
+        return createPlayer(mrl, 0, gfx, sfx);
+    }
+
+    public static MediaPlayer createPlayer(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
+        final MRL.Source source = mrl.source(sourceIndex);
+        if (source == null) {
+            LOGGER.warn(IT, "Cannot create player: uri {} not available for {}", sourceIndex, mrl.uri);
+            return null;
         }
-        PLATFORMS.removeIf(p -> p.getClass() == override);
-        registerPlatform(platform);
+
+        try {
+            if (source.type() == MediaType.IMAGE) {
+                LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
+                return new TxMediaPlayer(mrl, sourceIndex, gfx.get());
+            }
+
+            if (FFMediaPlayer.loaded()) {
+                LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
+                return new FFMediaPlayer(mrl, sourceIndex, gfx.get(), sfx.get());
+            }
+
+            LOGGER.error(IT, "No media backend available for: {}", mrl.uri);
+        } catch (final Throwable t) {
+            LOGGER.error(IT, "Failed to create player for: {}", mrl.uri, t);
+        }
+        return null;
     }
 
-    public static void registerPlatform(IPlatform platform) {
-        PLATFORMS.push(platform);
+    @Override
+    public String name() {
+        return MediaAPI.class.getSimpleName();
     }
 
-    public static boolean start(final WaterMedia instance) {
+    @Override
+    public void load(final WaterMedia instance) {
+        this.steps = instance.clientSide ? 1 : 0; // FFMPEG
+        this.step = 0;
+        this.stepName = "";
+    }
+
+    @Override
+    public boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
             LOGGER.warn(IT, "Media API refuses to load on server-side");
             return false;
         }
 
-        final FileNameMap map = URLConnection.getFileNameMap();
-        URLConnection.setFileNameMap(fileName -> {
-            final String contentType = map.getContentTypeFor(fileName);
-            if (contentType != null)
-                return contentType;
-
-            // ADD CUSTOM TYPES HERE
-            if (fileName.endsWith(".pam"))
-                return "image/x-portable-arbitrarymap";
-
-            LOGGER.warn("Unknown file type for {}", fileName);
-            return null;
-        });
-
-        // REGISTER PLATFORMS
-        LOGGER.info(IT, "Registering supported platforms");
-        registerPlatform(new YoutubePlatform());
-        registerPlatform(new ImgurPlatform());
-        registerPlatform(new KickPlatform());
-        registerPlatform(new StreamablePlatform());
-        registerPlatform(new PornHubPlatform());
-        registerPlatform(new LightshotPlatform());
-        registerPlatform(new TwitchPlatform());
-        registerPlatform(new TwitterPlatform());
-        registerPlatform(new BlueskyPlatform());
-        registerPlatform(new BiliBiliPlatform());
-        registerPlatform(new DrivePlatform());
-        registerPlatform(new DropboxPlatform());
-        registerPlatform(new MediaFirePlatform());
-        registerPlatform(new SendvidPlatform());
-        registerPlatform(new OdyseePlatform());
-        registerPlatform(new VidLiiPlatform());
-        registerPlatform(new TikTokPlatform());
-        registerPlatform(new DTubePlatform());
-        registerPlatform(new DefaultPlatform()); // DEFAULT — ALWAYS RETURNS SOMETHING
-
-        // LOAD ENGINES
+        this.step++;
+        this.stepName = "FFMPEG";
         LOGGER.info(IT, "Starting media engines");
         if (!FFMediaPlayer.load(instance)) {
             LOGGER.error(IT, "Failed to load FFMediaPlayer engine");
         }
 
         return true;
+    }
+
+    @Override
+    public void release(final WaterMedia instance) {
+        this.step = 0;
+        this.steps = 0;
+        this.stepName = "";
     }
 }

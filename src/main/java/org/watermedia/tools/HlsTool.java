@@ -1,17 +1,14 @@
 package org.watermedia.tools;
 
 import org.watermedia.WaterMedia;
+import org.watermedia.api.util.NetRequest;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -49,19 +46,16 @@ public final class HlsTool {
         return fetch(uri, WaterMedia.USER_AGENT);
     }
 
-    public static Result fetch(final URI uri, String userAgent) {
-        try {
-            final var http = NetTool.connectToHTTP(uri, "GET", "*/*");
-            http.setConnectTimeout(10_000);
-            http.setReadTimeout(10_000);
-            http.setInstanceFollowRedirects(true);
-            http.setRequestProperty("User-Agent", userAgent);
-            http.setDoInput(true);
-            NetTool.validateHTTP200(http.getResponseCode(), uri);
-
-            final var response = http.getInputStream().readAllBytes();
-            return parse(new String(response, StandardCharsets.UTF_8), uri.toString());
-
+    public static Result fetch(final URI uri, final String userAgent) {
+        try (final NetRequest req = NetRequest.create(uri)
+                .method("GET")
+                .accept("*/*")
+                .header("User-Agent", userAgent)
+                .connectTimeout(10_000)
+                .readTimeout(10_000)
+                .send()) {
+            if (req.statusCode() != 200) return new ErrorResult("HTTP " + req.statusCode() + " for " + uri, null);
+            return parse(req.readAllAsString(), uri.toString());
         } catch (final Exception e) {
             return new ErrorResult("Fetch error: " + e.getMessage(), e);
         }

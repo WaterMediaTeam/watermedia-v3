@@ -1,27 +1,45 @@
-package org.watermedia.api.media.platform;
+package org.watermedia.api.platform.web;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.media.MRL;
-import org.watermedia.tools.NetTool;
+import org.watermedia.api.platform.*;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.Metadata;
+import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.NetRequest;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.EnumSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class BiliBiliPlatform implements IPlatform {
+    private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     private static final String REFERER = "https://www.bilibili.com/";
-    private static final String BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+    /**
+     * BiliBili rejects non-browser UAs and requires a bilibili.com Referer; CDN URLs
+     * additionally need the user's session cookie when fetching premium qualities.
+     */
+    private static RequestHeaders headers() {
+        final RequestHeaders h = new RequestHeaders()
+                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                .set("Accept", "*/*")
+                .set("Referer", REFERER);
+        final String c = WaterMediaConfig.media.platforms.biliBiliCookie;
+        if (c != null && !c.isEmpty()) h.set("Cookie", c);
+        return h;
+    }
 
     private static final String VIDEO_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid=%s";
     private static final String VIDEO_PLAYURL_API = "https://api.bilibili.com/x/player/playurl?bvid=%s&cid=%d&fnval=4048";
@@ -55,7 +73,7 @@ public class BiliBiliPlatform implements IPlatform {
     }
 
     @Override
-    public Result getSources(URI uri) throws Exception {
+    public PlatformData getData(URI uri) throws Exception {
         if ("b23.tv".equalsIgnoreCase(uri.getHost())) {
             uri = resolveRedirect(uri);
         }
@@ -74,7 +92,7 @@ public class BiliBiliPlatform implements IPlatform {
     }
 
     // VIDEO
-    private Result getVideoSources(final URI uri) throws Exception {
+    private PlatformData getVideoSources(final URI uri) throws Exception {
         final String url = uri.toString();
 
         final Matcher bvidMatcher = BVID_PATTERN.matcher(url);
@@ -109,12 +127,12 @@ public class BiliBiliPlatform implements IPlatform {
         final JsonObject playData = fetchJson(URI.create(String.format(VIDEO_PLAYURL_API, bvid, cid)), "data");
 
         final String fullTitle = partName != null ? title + " - " + partName : title;
-        final MRL.Metadata metadata = new MRL.Metadata(fullTitle, desc, thumbnail, publishedAt, duration, author);
-        return this.buildResult(playData, metadata);
+        final Metadata metadata = new Metadata(fullTitle, desc, publishedAt, duration, author);
+        return this.buildResult(playData, metadata, thumbnail);
     }
 
     // BANGUMI
-    private Result getBangumiSources(final URI uri) throws Exception {
+    private PlatformData getBangumiSources(final URI uri) throws Exception {
         final String url = uri.toString();
 
         String epId = null;
@@ -175,12 +193,12 @@ public class BiliBiliPlatform implements IPlatform {
         final String fullTitle = epTitle != null ? seasonTitle + " - " + epTitle : seasonTitle;
         final String desc = jsonString(result, "evaluate");
         final URI thumbnail = epCover != null ? epCover : jsonUri(result, "cover");
-        final MRL.Metadata metadata = new MRL.Metadata(fullTitle, desc, thumbnail, null, epDurationMs / 1000, null);
-        return this.buildResult(playResult, metadata);
+        final Metadata metadata = new Metadata(fullTitle, desc, null, epDurationMs / 1000, null);
+        return this.buildResult(playResult, metadata, thumbnail);
     }
 
     // LIVE
-    private Result getLiveSources(final URI uri) throws Exception {
+    private PlatformData getLiveSources(final URI uri) throws Exception {
         final Matcher roomMatcher = LIVE_ROOM_PATTERN.matcher(uri.toString());
         if (!roomMatcher.find()) throw new IllegalArgumentException("No room ID found in URL: " + uri);
         final String roomId = roomMatcher.group(1);
@@ -228,17 +246,16 @@ public class BiliBiliPlatform implements IPlatform {
         if (durl == null || durl.isEmpty()) throw new IllegalStateException("No live stream URL available");
 
         final String streamUrl = durl.get(0).getAsJsonObject().get("url").getAsString();
-        final MRL.Metadata metadata = new MRL.Metadata(title, null, thumbnail, null, 0, author);
-        final MRL.Source source = new MRL.Source(MRL.MediaType.VIDEO, URI.create(streamUrl), metadata);
+        final Metadata metadata = new Metadata(title, null, null, 0, author);
+        final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
+                new DataQuality[] {new DataQuality(URI.create(streamUrl), 0, 0)},
+                null, null);
 
-        return new Result(Instant.now().plus(10, ChronoUnit.MINUTES), source);
+        return new PlatformData(Instant.now().plus(10, ChronoUnit.MINUTES), entry);
     }
 
     // DASH / DURL PARSING
-    private Result buildResult(final JsonObject data, final MRL.Metadata metadata) {
-        final MRL.SourceBuilder builder = MRL.sourceBuilder(MRL.MediaType.VIDEO);
-        builder.metadata(metadata);
-
+    private PlatformData buildResult(final JsonObject data, final Metadata metadata, final URI thumbnail) {
         if (data.has("dash") && !data.get("dash").isJsonNull()) {
             final JsonObject dash = data.getAsJsonObject("dash");
             final JsonArray videoStreams = dash.has("video") ? dash.getAsJsonArray("video") : null;
@@ -246,55 +263,68 @@ public class BiliBiliPlatform implements IPlatform {
 
             if (videoStreams != null && !videoStreams.isEmpty()) {
                 final JsonArray supportFormats = data.getAsJsonArray("support_formats");
-                parseDashVideo(builder, videoStreams, supportFormats);
+                final List<DataQuality> variants = parseDashVideo(videoStreams, supportFormats);
 
+                List<DataSlave> audioSlaves = null;
                 if (audioStreams != null && !audioStreams.isEmpty()) {
-                    builder.audioSlave(URI.create(audioStreams.get(0).getAsJsonObject().get("baseUrl").getAsString()));
+                    audioSlaves = List.of(new DataSlave(null, null, URI.create(audioStreams.get(0).getAsJsonObject().get("baseUrl").getAsString())));
                 }
 
-                return new Result(Instant.now().plus(90, ChronoUnit.MINUTES), builder.build());
+                return new PlatformData(Instant.now().plus(90, ChronoUnit.MINUTES),
+                        new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
+                                variants.toArray(DataQuality[]::new), audioSlaves, null));
             }
         }
 
         if (data.has("durl")) {
             final JsonArray durl = data.getAsJsonArray("durl");
             if (durl != null && !durl.isEmpty()) {
-                builder.quality(MRL.Quality.UNKNOWN, URI.create(durl.get(0).getAsJsonObject().get("url").getAsString()));
-                return new Result(Instant.now().plus(90, ChronoUnit.MINUTES), builder.build());
+                // FLV/MP4 fallback: no per-rendition dimensions, let FFMediaPlayer probe.
+                final DataQuality flat = new DataQuality(
+                        URI.create(durl.get(0).getAsJsonObject().get("url").getAsString()), 0, 0);
+                return new PlatformData(Instant.now().plus(90, ChronoUnit.MINUTES),
+                        new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
+                                new DataQuality[] { flat }, null, null));
             }
         }
 
         throw new IllegalStateException("No playable streams found in BiliBili API response");
     }
 
-    private static void parseDashVideo(final MRL.SourceBuilder builder, final JsonArray videoStreams, final JsonArray supportFormats) {
-        final EnumSet<MRL.Quality> registered = EnumSet.noneOf(MRL.Quality.class);
+    /**
+     * Builds the variant list directly from the DASH response. When BiliBili
+     * reports {@code support_formats} (the bucket index) we walk it once and
+     * pick the best codec stream per bucket — no duplicates by construction.
+     * Without it, every stream is emitted as-is and MRL collapses overlaps
+     * when bucketing dimensions into qualities.
+     * <p>
+     * Width/height from the stream itself win when present; we fall back to
+     * the nominal BiliBili height (see {@link #biliHeight(int)}).
+     */
+    private static List<DataQuality> parseDashVideo(final JsonArray videoStreams, final JsonArray supportFormats) {
+        final List<DataQuality> out = new ArrayList<>();
 
         if (supportFormats != null && !supportFormats.isEmpty()) {
             for (int i = 0; i < supportFormats.size(); i++) {
                 final int qualityId = supportFormats.get(i).getAsJsonObject().get("quality").getAsInt();
-                final MRL.Quality quality = mapQuality(qualityId);
-                if (registered.contains(quality)) continue;
-
                 final JsonObject stream = findBestCodecStream(videoStreams, qualityId);
-                if (stream != null) {
-                    builder.quality(quality, URI.create(stream.get("baseUrl").getAsString()));
-                    registered.add(quality);
-                }
+                if (stream != null) out.add(toVariant(stream, qualityId));
             }
         } else {
             for (int i = 0; i < videoStreams.size(); i++) {
-                final int qualityId = videoStreams.get(i).getAsJsonObject().get("id").getAsInt();
-                final MRL.Quality quality = mapQuality(qualityId);
-                if (registered.contains(quality)) continue;
-
-                final JsonObject stream = findBestCodecStream(videoStreams, qualityId);
-                if (stream != null) {
-                    builder.quality(quality, URI.create(stream.get("baseUrl").getAsString()));
-                    registered.add(quality);
-                }
+                final JsonObject stream = videoStreams.get(i).getAsJsonObject();
+                final int qualityId = stream.has("id") ? stream.get("id").getAsInt() : 0;
+                out.add(toVariant(stream, qualityId));
             }
         }
+        return out;
+    }
+
+    private static DataQuality toVariant(final JsonObject stream, final int qualityId) {
+        final int w = stream.has("width") && !stream.get("width").isJsonNull() ? stream.get("width").getAsInt() : 0;
+        int h = stream.has("height") && !stream.get("height").isJsonNull() ? stream.get("height").getAsInt() : 0;
+        if (h <= 0) h = biliHeight(qualityId);
+        return new DataQuality(URI.create(stream.get("baseUrl").getAsString()), w, h);
     }
 
     // AVC (H.264) > HEVC (H.265) > AV1
@@ -321,33 +351,35 @@ public class BiliBiliPlatform implements IPlatform {
         return best;
     }
 
-    private static MRL.Quality mapQuality(final int biliQuality) {
+    /**
+     * Nominal vertical resolution for a BiliBili {@code quality} id, used only
+     * as a fallback when the DASH stream omits its own {@code height}. These
+     * are BiliBili's documented buckets, not MRL's enum.
+     */
+    private static int biliHeight(final int biliQuality) {
         return switch (biliQuality) {
-            case 127 -> MRL.Quality.Q8K;
-            case 126, 125, 120 -> MRL.Quality.HIGHEST;
-            case 116, 112, 80 -> MRL.Quality.HIGH;
-            case 74, 64 -> MRL.Quality.MEDIUM;
-            case 32 -> MRL.Quality.LOW;
-            case 16 -> MRL.Quality.LOWER;
-            case 6 -> MRL.Quality.LOWEST;
-            default -> MRL.Quality.UNKNOWN;
+            case 127 -> 4320;            // 8K
+            case 126, 125, 120 -> 2160;  // 4K HDR / Dolby / 4K
+            case 116, 112, 80 -> 1080;   // 1080P60 / 1080P+ / 1080P
+            case 74, 64 -> 720;          // 720P60 / 720P
+            case 32 -> 480;
+            case 16 -> 360;
+            case 6 -> 240;
+            default -> 0;
         };
     }
 
     // FETCH
     private static JsonObject fetchJson(final URI uri, final String dataKey) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(uri, "GET", "application/json");
-        conn.setRequestProperty("User-Agent", BROWSER_UA);
-        conn.setRequestProperty("Referer", REFERER);
+        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").accept("application/json")
+                .userAgent(NetRequest.UserAgent.GENERIC)
+                .referer(REFERER);
         final String c = WaterMediaConfig.media.platforms.biliBiliCookie;
-        if (c != null && !c.isEmpty()) {
-            conn.setRequestProperty("Cookie", c);
-        }
+        if (c != null && !c.isEmpty()) builder.header("Cookie", c);
 
-        try {
-            NetTool.validateHTTP200(conn.getResponseCode(), uri);
-            final String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            final JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+        try (final NetRequest req = builder.send()) {
+            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            final JsonObject json = JsonParser.parseString(req.readAllAsString()).getAsJsonObject();
 
             if (json.has("code") && json.get("code").getAsInt() != 0) {
                 final String msg = json.has("message") ? json.get("message").getAsString() : "code " + json.get("code").getAsInt();
@@ -359,8 +391,6 @@ public class BiliBiliPlatform implements IPlatform {
             }
 
             return json.getAsJsonObject(dataKey);
-        } finally {
-            conn.disconnect();
         }
     }
 
@@ -375,18 +405,9 @@ public class BiliBiliPlatform implements IPlatform {
     }
 
     private static URI resolveRedirect(final URI shortUri) throws IOException {
-        final HttpURLConnection conn = NetTool.connectToHTTP(shortUri, "GET", "*/*");
-        conn.setInstanceFollowRedirects(false);
-
-        try {
-            final int code = conn.getResponseCode();
-            if (code == HttpURLConnection.HTTP_MOVED_TEMP || code == HttpURLConnection.HTTP_MOVED_PERM) {
-                final String location = conn.getHeaderField("Location");
-                if (location != null) return URI.create(location);
-            }
-            return shortUri;
-        } finally {
-            conn.disconnect();
+        try (final NetRequest req = NetRequest.create(shortUri).method("GET").accept("*/*").maxRedirects(0).send()) {
+            final String location = req.header("Location");
+            return location != null ? URI.create(location) : shortUri;
         }
     }
 }
