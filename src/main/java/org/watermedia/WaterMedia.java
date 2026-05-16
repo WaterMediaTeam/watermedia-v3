@@ -96,7 +96,7 @@ public class WaterMedia {
 
         // PRE-LOAD: each API computes its own step count up-front so progress UIs
         // can read steps() before any work begins.
-        for (final WaterMediaAPI api : APIS) {
+        for (final WaterMediaAPI api: APIS) {
             api.load(instance);
         }
 
@@ -144,6 +144,40 @@ public class WaterMedia {
      */
     public static int steps() {
         return APIS.size();
+    }
+
+    /**
+     * Sum of every API work unit. APIs that do not publish inner work still
+     * count as one unit so the boot bar always has a finite target.
+     */
+    public static int totalWorkSteps() {
+        int total = 0;
+        for (final WaterMediaAPI api: APIS) {
+            total += Math.max(1, api.steps());
+        }
+        return Math.max(1, total);
+    }
+
+    /**
+     * Completed boot work units across all registered APIs.
+     */
+    public static int completedWorkSteps() {
+        final WaterMediaAPI current = currentAPI;
+        if (current == null) return 0;
+
+        int completed = 0;
+        for (int i = 0; i < APIS.size(); i++) {
+            final WaterMediaAPI api = APIS.get(i);
+            final int apiSteps = Math.max(1, api.steps());
+            if (api == current) {
+                completed += Math.min(apiSteps, Math.max(0, api.step()));
+                break;
+            }
+            if (currentStep > i + 1) {
+                completed += apiSteps;
+            }
+        }
+        return completed;
     }
 
     /**

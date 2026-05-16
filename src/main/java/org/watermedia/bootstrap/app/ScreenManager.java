@@ -70,6 +70,12 @@ public class ScreenManager {
         }
     }
 
+    public void handleChar(final int codepoint) {
+        if (this.current != null) {
+            this.current.handleChar(codepoint);
+        }
+    }
+
     public void handleMouseMove(final double mx, final double my) {
         if (this.current != null) {
             this.current.handleMouseMove(mx, my);
@@ -90,5 +96,9 @@ public class ScreenManager {
 
     public String currentInstructions() {
         return this.current != null ? this.current.instructions() : "";
+    }
+
+    public boolean wantsContinuousRender() {
+        return this.current != null && this.current.wantsContinuousRender();
     }
 }

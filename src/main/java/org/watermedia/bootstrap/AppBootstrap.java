@@ -82,6 +82,16 @@ public class AppBootstrap {
     private static BootstrapWindow window;
     private static String[] launchArgs = {};
 
+    private static class BootstrapScan {
+        private final List<Path> jars = new ArrayList<>();
+        private final List<String[]> toDownload = new ArrayList<>();
+        private boolean binariesFound;
+
+        private boolean ready() {
+            return this.binariesFound && this.toDownload.isEmpty();
+        }
+    }
+
     // LOGGER — \r clears the GUI console line; ANSI codes color both GUI and terminal
     private static void info(final String msg) { System.out.println("\r" + ANSI_GREEN + msg + ANSI_RESET); }
     private static void warn(final String msg) { System.out.println("\r" + ANSI_YELLOW + msg + ANSI_RESET); }
@@ -108,81 +118,111 @@ public class AppBootstrap {
         }
 
         try {
-            window = new BootstrapWindow();
-            info("WATERMeDIA: App Bootstrap - On: " + OS);
-            info("Dependencies directory: " + LIBS_DIR);
-            info("=============================================");
-            Files.createDirectories(LIBS_DIR);
-
-            final List<Path> jars = new ArrayList<>();
-            final List<String[]> toDownload = new ArrayList<>();
-
-            // FIND BINARIES
-            final Path binaries = findLocalJar("wm_binaries");
-            boolean classpath = false;
-            try {
-                Class.forName("org.watermedia.binaries.WaterMediaBinaries");
-                classpath = true;
-            } catch (final ClassNotFoundException ignored) {}
-
-            if (binaries == null && !classpath) {
-                showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
+            final BootstrapScan quickScan = scanBootstrap(false);
+            if (quickScan.ready()) {
+                relaunch(quickScan.jars, args);
                 return;
             }
-            if (binaries != null) jars.add(binaries);
-            info("[OK] WaterMedia Binaries found");
 
-            // COLLECT DEPS
-            for (final String[] dep : DEPS) {
-                final Path p = LIBS_DIR.resolve(dep[0]);
-                if (Files.exists(p)) {
-                    jars.add(p);
-                    info("[FOUND] " + dep[0]);
-                } else {
-                    toDownload.add(dep);
-                }
-            }
-
-            // COLLECT NATIVES
-            for (final String mod: NATIVES) {
-                final String fn = mod + "-3.3.6-natives-" + OS + ".jar";
-                final Path p = LIBS_DIR.resolve(fn);
-                if (Files.exists(p)) {
-                    jars.add(p);
-                    info("[FOUND] " + fn);
-                } else {
-                    toDownload.add(new String[]{fn, "org/lwjgl/" + mod + "/3.3.6/" + fn});
-                }
-            }
-
-            // DOWNLOAD MISSING
-            for (final String[] dep: toDownload) {
-                final Path d = LIBS_DIR.resolve(dep[0]);
-                download(MAVEN + dep[1], d);
-                jars.add(d);
-            }
-
-            jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
-
-            // SEARCH FOR EXTENSIONS
-            final File[] files = new File("").getAbsoluteFile().listFiles();
-            if (files != null) {
-                info("=== Searching for extensions in " + new File("").getAbsolutePath());
-                for (final File f : files) {
-                    final String name = f.getName().toLowerCase();
-                    if ((name.startsWith("watermedia_") || name.startsWith("wm_") || name.startsWith("waterm_") || name.startsWith("wmedia_")) && f.getName().endsWith(".jar")) {
-                        jars.add(f.getAbsoluteFile().toPath());
-                        info("[FOUND] Extension: " + f.getName());
-                    }
-                }
-            }
-
-            waitForLaunch();
-            info("Launching...");
-            window.dispose();
-            relaunch(jars, args);
+            launchWithConsole(args);
         } catch (final Exception e) {
             showError(e);
+        }
+    }
+
+    private static void launchWithConsole(final String[] args) throws Exception {
+        window = new BootstrapWindow();
+        info("WATERMeDIA: App Bootstrap - On: " + OS);
+        info("Dependencies directory: " + LIBS_DIR);
+        info("=============================================");
+        Files.createDirectories(LIBS_DIR);
+
+        final BootstrapScan scan = scanBootstrap(true);
+        if (!scan.binariesFound) {
+            showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
+            return;
+        }
+
+        // DOWNLOAD MISSING
+        for (final String[] dep: scan.toDownload) {
+            final Path d = LIBS_DIR.resolve(dep[0]);
+            download(MAVEN + dep[1], d);
+        }
+
+        final BootstrapScan launchScan = scanBootstrap(false);
+        if (!launchScan.ready()) {
+            showError("Some dependencies are still missing after bootstrap scan.");
+            return;
+        }
+
+        waitForLaunch();
+        info("Launching...");
+        window.dispose();
+        relaunch(launchScan.jars, args);
+    }
+
+    private static BootstrapScan scanBootstrap(final boolean log) throws Exception {
+        final BootstrapScan scan = new BootstrapScan();
+
+        // FIND BINARIES
+        final Path binaries = findLocalJar("wm_binaries");
+        final boolean classpath = hasBinariesOnClasspath();
+        scan.binariesFound = binaries != null || classpath;
+        if (binaries != null) scan.jars.add(binaries);
+        if (log) {
+            if (scan.binariesFound) info("[OK] WaterMedia Binaries found");
+            else warn("[MISSING] WaterMedia Binaries JAR");
+        }
+
+        // COLLECT DEPS
+        for (final String[] dep: DEPS) {
+            final Path p = LIBS_DIR.resolve(dep[0]);
+            if (Files.isRegularFile(p)) {
+                scan.jars.add(p);
+                if (log) info("[FOUND] " + dep[0]);
+            } else {
+                scan.toDownload.add(dep);
+                if (log) warn("[MISSING] " + dep[0]);
+            }
+        }
+
+        // COLLECT NATIVES
+        for (final String mod: NATIVES) {
+            final String fn = mod + "-3.3.6-natives-" + OS + ".jar";
+            final Path p = LIBS_DIR.resolve(fn);
+            if (Files.isRegularFile(p)) {
+                scan.jars.add(p);
+                if (log) info("[FOUND] " + fn);
+            } else {
+                scan.toDownload.add(new String[]{fn, "org/lwjgl/" + mod + "/3.3.6/" + fn});
+                if (log) warn("[MISSING] " + fn);
+            }
+        }
+
+        scan.jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
+
+        // SEARCH FOR EXTENSIONS
+        final File[] files = new File("").getAbsoluteFile().listFiles();
+        if (files != null) {
+            if (log) info("=== Searching for extensions in " + new File("").getAbsolutePath());
+            for (final File f: files) {
+                final String name = f.getName().toLowerCase();
+                if ((name.startsWith("watermedia_") || name.startsWith("wm_") || name.startsWith("waterm_") || name.startsWith("wmedia_")) && f.getName().endsWith(".jar")) {
+                    scan.jars.add(f.getAbsoluteFile().toPath());
+                    if (log) info("[FOUND] Extension: " + f.getName());
+                }
+            }
+        }
+
+        return scan;
+    }
+
+    private static boolean hasBinariesOnClasspath() {
+        try {
+            Class.forName("org.watermedia.binaries.WaterMediaBinaries", false, AppBootstrap.class.getClassLoader());
+            return true;
+        } catch (final ClassNotFoundException ignored) {
+            return false;
         }
     }
 
@@ -217,7 +257,7 @@ public class AppBootstrap {
 
         for (ClassLoader cl = Thread.currentThread().getContextClassLoader(); cl != null; cl = cl.getParent()) {
             if (cl instanceof final URLClassLoader u) {
-                for (final URL url : u.getURLs()) {
+                for (final URL url: u.getURLs()) {
                     try {
                         cp.add(Path.of(url.toURI()).toString());
                     } catch (final Exception ignored) {}
@@ -236,7 +276,7 @@ public class AppBootstrap {
     private static Path findLocalJar(final String prefix) {
         final File[] files = new File("").getAbsoluteFile().listFiles();
         if (files != null) {
-            for (final File f : files) {
+            for (final File f: files) {
                 if (f.getName().startsWith(prefix) && f.getName().endsWith(".jar")) return f.toPath();
             }
         }
@@ -295,7 +335,7 @@ public class AppBootstrap {
             g.setFont(FONT);
             final int lh = g.getFontMetrics().getHeight();
             int y = PAD + g.getFontMetrics().getAscent();
-            for (final String line : lines) {
+            for (final String line: lines) {
                 g.drawString(line, PAD, y);
                 y += lh;
             }

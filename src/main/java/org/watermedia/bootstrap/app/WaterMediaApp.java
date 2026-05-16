@@ -23,10 +23,12 @@ import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.bootstrap.app.screen.*;
-import org.watermedia.bootstrap.app.ui.Colors;
-import org.watermedia.bootstrap.app.ui.Dialog;
+import org.watermedia.bootstrap.app.ui.AppChrome;
+import org.watermedia.bootstrap.app.ui.AppTheme;
+import org.watermedia.bootstrap.app.ui.Dimension;
+import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
-import org.watermedia.tools.DrawTool;
+import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -36,6 +38,7 @@ import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -54,9 +57,6 @@ import java.util.Date;
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.openal.AL10.*;
-import static org.lwjgl.opengl.GL11.*;
-import static org.lwjgl.opengl.GL12.GL_BGRA;
-import static org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
@@ -66,11 +66,17 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 public class WaterMediaApp {
     private static final AppContext ctx = new AppContext();
     private static final ScreenManager screens = new ScreenManager();
-    private static final Dialog errorDialog = new Dialog();
-
-    private static ConsoleScreen consoleScreen;
 
     private static boolean running = true;
+    private static boolean maximized;
+    private static boolean draggingTitlebar;
+    private static boolean exitConfirmVisible;
+    private static int dragOffsetX;
+    private static int dragOffsetY;
+    private static Dimension exitConfirmCancelBounds = Dimension.ZERO;
+    private static Dimension exitConfirmExitBounds = Dimension.ZERO;
+    private static Dimension exitConfirmCloseBounds = Dimension.ZERO;
+    private static Dimension errorDialogActionBounds = Dimension.ZERO;
 
     static { initLogging(); }
 
@@ -83,19 +89,20 @@ public class WaterMediaApp {
         ctx.text = new TextRenderer();
         ctx.text.margin(6);
         loadIcon();
+        loadDuckFrames();
         loadBanner();
         glfwShowWindow(ctx.windowHandle);
 
-        // PHASE 2 — show the loading splash and run WaterMedia.start() in the
-        // background. The splash polls WaterMedia.step()/steps()/currentAPI()
-        // each frame to drive the two progress bars and renders the banner on
-        // top so the screen isn't empty during init.
+        // PHASE 2 — show the loading splash, initialize the app-side audio
+        // output, then run WaterMedia.start() in the background. The splash
+        // polls WaterMedia progress each frame and renders the boot stack.
         final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx);
+        renderLoadingFrame(loadingScreen);
+        initAudio();
         runLoadingPhase(loadingScreen);
 
         // PHASE 3 — final init that depends on WaterMedia (or that we delayed
         // to keep phase 1 fast).
-        initAudio();
         ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
         if (!WaterMedia.LOGGER.isDebugEnabled()) {
             for (int i = 0; i < ctx.uriGroups.length; i++) {
@@ -107,7 +114,6 @@ public class WaterMediaApp {
             }
         }
         initScreens();
-        initErrorDialog();
         task.run();
         mainLoop();
         cleanup();
@@ -125,16 +131,12 @@ public class WaterMediaApp {
 
         ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
         }, 0);
-        glClearColor(0, 0, 0, 1);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        RenderSystem.configureFrameState();
 
+        final FrameLimiter loadingLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         while (loader.isAlive() && running && !glfwWindowShouldClose(ctx.windowHandle)) {
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            loadingScreen.render(ctx.windowWidth, ctx.windowHeight);
-            glfwSwapBuffers(ctx.windowHandle);
-            glfwPollEvents();
-            ctx.mouseClicked = false; // discard input collected during loading
+            loadingLimiter.syncBeforeFrame();
+            renderLoadingFrame(loadingScreen);
         }
 
         try {
@@ -143,12 +145,23 @@ public class WaterMediaApp {
             Thread.currentThread().interrupt();
         }
 
+        ctx.backendsLoading = false;
+        renderLoadingFrame(loadingScreen);
+
         final Throwable t = failure.get();
         if (t != null) {
             if (t instanceof RuntimeException re) throw re;
             if (t instanceof Error err) throw err;
             throw new RuntimeException(t);
         }
+    }
+
+    private static void renderLoadingFrame(final LoadingScreen loadingScreen) {
+        RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
+        loadingScreen.render(ctx.windowWidth, ctx.windowHeight);
+        glfwSwapBuffers(ctx.windowHandle);
+        glfwPollEvents();
+        ctx.mouseClicked = false; // discard input collected during loading
     }
 
     public static void log(final String message) {
@@ -163,6 +176,8 @@ public class WaterMediaApp {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
         glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -170,25 +185,51 @@ public class WaterMediaApp {
 
         ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
         if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
+        maximized = true;
 
         // CALLBACKS
         glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
+        glfwSetCharCallback(ctx.windowHandle, WaterMediaApp::handleCharInput);
         glfwSetCursorPosCallback(ctx.windowHandle, (w, x, y) -> {
             ctx.mouseX = x;
             ctx.mouseY = y;
+            ctx.requestRender();
+            if (draggingTitlebar) {
+                try (final MemoryStack stack = stackPush()) {
+                    final IntBuffer wx = stack.mallocInt(1);
+                    final IntBuffer wy = stack.mallocInt(1);
+                    glfwGetWindowPos(ctx.windowHandle, wx, wy);
+                    glfwSetWindowPos(ctx.windowHandle,
+                            wx.get(0) + (int) x - dragOffsetX,
+                            wy.get(0) + (int) y - dragOffsetY);
+                }
+            }
         });
         glfwSetMouseButtonCallback(ctx.windowHandle, (w, button, action, mods) -> {
-            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) ctx.mouseClicked = true;
+            if (button != GLFW_MOUSE_BUTTON_LEFT) return;
+            ctx.requestRender();
+            if (action == GLFW_PRESS) {
+                if (ctx.mouseY < AppChrome.TITLEBAR_H && !AppChrome.isTitlebarControl(ctx.mouseX, ctx.windowWidth)) {
+                    draggingTitlebar = true;
+                    dragOffsetX = (int) ctx.mouseX;
+                    dragOffsetY = (int) ctx.mouseY;
+                }
+            } else if (action == GLFW_RELEASE) {
+                draggingTitlebar = false;
+                ctx.mouseClicked = true;
+            }
         });
         glfwSetScrollCallback(ctx.windowHandle, (w, xOffset, yOffset) -> {
             if (!ctx.hasError()) {
                 screens.handleScroll(yOffset);
             }
+            ctx.requestRender();
         });
         glfwSetWindowSizeCallback(ctx.windowHandle, (w, width, height) -> {
             ctx.windowWidth = width;
             ctx.windowHeight = height;
-            glViewport(0, 0, width, height);
+            RenderSystem.viewport(width, height);
+            ctx.requestRender();
         });
 
         // CENTER WINDOW
@@ -199,57 +240,61 @@ public class WaterMediaApp {
             ctx.windowWidth = pWidth.get(0);
             ctx.windowHeight = pHeight.get(0);
 
-            final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-            glfwSetWindowPos(ctx.windowHandle,
-                    (vidmode.width() - ctx.windowWidth) / 2,
-                    (vidmode.height() - ctx.windowHeight) / 2);
+            if (!maximized) {
+                final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+                glfwSetWindowPos(ctx.windowHandle,
+                        (vidmode.width() - ctx.windowWidth) / 2,
+                        (vidmode.height() - ctx.windowHeight) / 2);
+            }
         }
 
         glfwMakeContextCurrent(ctx.windowHandle);
         glfwSwapInterval(1);
         GL.createCapabilities();
-        DrawTool.init();
+        RenderSystem.init();
+        RenderSystem.configureFrameState();
     }
 
     private static void initAudio() {
-        final long device = ALC10.alcOpenDevice((ByteBuffer) null);
-        if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
-        final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
-        ALC10.alcMakeContextCurrent(context);
-        ALC.createCapabilities(device);
-        AL.createCapabilities(ALC.createCapabilities(device));
+        ctx.audioReady = false;
+        ctx.audioError = false;
+        try {
+            final long device = ALC10.alcOpenDevice((ByteBuffer) null);
+            if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
+            final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
+            ALC10.alcMakeContextCurrent(context);
+            ALC.createCapabilities(device);
+            AL.createCapabilities(ALC.createCapabilities(device));
 
-        loadSoundClick();
+            loadSoundClick();
+            ctx.audioReady = true;
+        } catch (final RuntimeException e) {
+            ctx.audioError = true;
+            throw e;
+        }
     }
 
     private static void initScreens() {
         final HomeScreen homeScreen = new HomeScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
-        consoleScreen = new ConsoleScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
 
         screens.register("home", homeScreen);
         screens.register("mrl", new MRLSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
-        screens.register("uri", new SourceSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("player", new PlayerScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction, homeScreen));
-        screens.register("console", consoleScreen);
+        screens.register("settings", new SettingsScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
 
         screens.navigate("home");
     }
 
-    private static void initErrorDialog() {
-        errorDialog.minWidth(400)
-                .minHeight(120)
-                .onSelectionChanged(ctx::playSelectionSound);
-    }
-
     private static void navigateAction(final HomeScreen.Action action) {
+        ctx.requestRender();
         if (action == null) {
             screens.backToHome();
             return;
         }
 
         switch (action) {
-            case EXIT -> running = false;
+            case EXIT -> exitConfirmVisible = true;
 
             case BACK -> screens.backToHome();
 
@@ -266,7 +311,11 @@ public class WaterMediaApp {
 
             case MRL_SELECTOR -> screens.navigate("mrl");
 
-            case SOURCE_SELECTOR -> screens.navigate("uri");
+            case SETTINGS -> {
+                if (WaterMedia.LOGGER.isDebugEnabled()) {
+                    screens.navigate("settings");
+                }
+            }
 
             case PLAYER -> {
                 // CHECK FFMPEG AVAILABILITY FIRST
@@ -280,30 +329,79 @@ public class WaterMediaApp {
             }
 
             case UPLOAD_LOGS -> {
-                // CHECK MINECRAFT CONTEXT FIRST
                 if (!AppContext.IN_MODS) {
-                    ctx.showError("Feature Unavailable",
-                            "Upload logs is only available when\nrunning in Minecraft context.\n\nPlace this JAR in the mods folder\nand run Minecraft.",
-                            null);
+                    ctx.uploadDialogVisible = false;
                     return;
                 }
-                consoleScreen.open("Upload Log Files", screens::backToHome);
-                screens.navigate("console");
-                ThreadTool.createStarted("UploadLogs", WaterMediaApp::performUploadLogs);
+                if (!ctx.uploadDialogVisible) {
+                    openUploadLogsDialog();
+                    scanUploadLogFiles();
+                    return;
+                }
+                if (ctx.uploadDialogWorking) {
+                    ctx.uploadDialogVisible = true;
+                    return;
+                }
+                if (ctx.uploadDialogStage <= 1) {
+                    if (!hasUploadCandidate()) return;
+                    ctx.uploadDialogWorking = true;
+                    ThreadTool.createStarted("UploadLogs", WaterMediaApp::performUploadLogs);
+                } else if (ctx.uploadDialogStage == 2) {
+                    if (!hasUploadedLog()) return;
+                    ThreadTool.createStarted("UploadLogsIssue", WaterMediaApp::generateUploadIssueReport);
+                } else {
+                    ThreadTool.createStarted("UploadLogsOpenGithub", WaterMediaApp::openUploadIssuePage);
+                }
             }
 
             case CLEANUP -> {
-                consoleScreen.open("Cleanup", () -> running = false);
-                screens.navigate("console");
-                ThreadTool.createStarted("Cleanup", WaterMediaApp::performCleanup);
+                if (!ctx.cleanupDialogVisible) {
+                    openCleanupDialog();
+                    scanCleanupCache();
+                    return;
+                }
+                if (ctx.cleanupDialogWorking) {
+                    ctx.cleanupDialogVisible = true;
+                    return;
+                }
+                if (ctx.cleanupDialogStage <= 1) {
+                    if (ctx.cleanupFileCount <= 0) return;
+                    ctx.cleanupDialogWorking = true;
+                    ThreadTool.createStarted("CleanupCache", WaterMediaApp::performCacheCleanup);
+                } else {
+                    ctx.cleanupDialogVisible = false;
+                    scanCleanupCache();
+                }
             }
         }
     }
 
     // MAIN LOOP — GL state was already configured during the loading phase.
     private static void mainLoop() {
+        final FrameLimiter frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
+        ctx.requestRender();
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            final boolean continuous = screens.wantsContinuousRender();
+            if (continuous) {
+                frameLimiter.syncBeforeFrame();
+                glfwPollEvents();
+            } else if (!ctx.renderRequested()) {
+                glfwWaitEventsTimeout(frameLimiter.idleTimeoutSeconds());
+            } else {
+                glfwPollEvents();
+            }
+
+            handleFrameInput();
+            ctx.processExecutor();
+
+            if (!continuous && !ctx.consumeRenderRequest()) {
+                continue;
+            }
+            if (!continuous) {
+                frameLimiter.syncBeforeFrame();
+            }
+
+            RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
 
             screens.render(ctx.windowWidth, ctx.windowHeight);
 
@@ -311,79 +409,200 @@ public class WaterMediaApp {
             if (ctx.hasError()) {
                 renderErrorDialog();
             }
+            if (exitConfirmVisible) {
+                renderExitConfirmDialog();
+            }
 
             renderBottomBar();
 
+            RenderSystem.flush();
             glfwSwapBuffers(ctx.windowHandle);
-            glfwPollEvents();
-
-            // HANDLE INPUT — ERROR DIALOG TAKES PRIORITY
-            if (ctx.hasError()) {
-                errorDialog.handleHover(ctx.mouseX, ctx.mouseY);
-                if (ctx.mouseClicked) {
-                    ctx.mouseClicked = false;
-                    errorDialog.handleClick(ctx.mouseX, ctx.mouseY);
-                }
-            } else {
-                screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
-                if (ctx.mouseClicked) {
-                    ctx.mouseClicked = false;
-                    screens.handleMouseClick(ctx.mouseX, ctx.mouseY);
-                }
-            }
-
-            ctx.processExecutor();
         }
 
         ctx.releasePlayer();
     }
 
-    private static void renderErrorDialog() {
-        errorDialog.title(ctx.globalErrorTitle)
-                .borderColor(Colors.RED)
-                .clearContent()
-                .clearButtons();
-
-        // SPLIT MESSAGE INTO LINES
-        for (final String line: ctx.globalErrorMessage.split("\n")) {
-            errorDialog.addLine(line);
+    private static void handleFrameInput() {
+        if (exitConfirmVisible) {
+            if (ctx.mouseClicked) {
+                ctx.mouseClicked = false;
+                if (exitConfirmExitBounds.contains(ctx.mouseX, ctx.mouseY)) {
+                    running = false;
+                } else if (exitConfirmCancelBounds.contains(ctx.mouseX, ctx.mouseY) || exitConfirmCloseBounds.contains(ctx.mouseX, ctx.mouseY)) {
+                    exitConfirmVisible = false;
+                }
+            }
+        } else if (ctx.mouseClicked && AppChrome.handleTitlebarClick(ctx.mouseX, ctx.mouseY, ctx.windowWidth,
+                () -> glfwIconifyWindow(ctx.windowHandle),
+                () -> {
+                    if (maximized) {
+                        glfwRestoreWindow(ctx.windowHandle);
+                    } else {
+                        glfwMaximizeWindow(ctx.windowHandle);
+                    }
+                    maximized = !maximized;
+                },
+                () -> running = false)) {
+            ctx.mouseClicked = false;
+        } else if (ctx.hasError()) {
+            if (ctx.mouseClicked) {
+                ctx.mouseClicked = false;
+                if (errorDialogActionBounds.contains(ctx.mouseX, ctx.mouseY)) {
+                    ctx.clearError();
+                }
+            }
+        } else {
+            screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
+            if (ctx.mouseClicked) {
+                ctx.mouseClicked = false;
+                screens.handleMouseClick(ctx.mouseX, ctx.mouseY);
+            }
         }
+    }
 
-        errorDialog.addButton("OK", ctx::clearError);
-        errorDialog.centerIn(ctx.text, ctx.windowWidth, ctx.windowHeight);
-        errorDialog.show();
-        errorDialog.render(ctx.text, ctx.windowWidth, ctx.windowHeight);
+    private static void renderErrorDialog() {
+        renderInfoDialog(ctx.globalErrorTitle == null ? "ERROR" : ctx.globalErrorTitle.toUpperCase(),
+                ctx.globalErrorMessage == null ? "" : ctx.globalErrorMessage,
+                "OK", "ENTER", AppTheme.RED);
+    }
+
+    private static void renderExitConfirmDialog() {
+        final int dialogW = Math.min(560, ctx.windowWidth - 64);
+        final int dialogH = 230;
+        final Dimension dialog = Dimension.centered(ctx.windowWidth, ctx.windowHeight, dialogW, dialogH);
+        final int x = dialog.x();
+        final int y = dialog.y();
+        final int titleH = 58;
+        RenderSystem.setupOrtho(ctx.windowWidth, ctx.windowHeight);
+        RenderSystem.fill(0, 0, ctx.windowWidth, ctx.windowHeight, 0f, 0f, 0f, 0.58f);
+        RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.55f);
+        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, AppTheme.RED, 0.25f);
+        RenderSystem.fill(x, y, dialogW, dialogH, AppTheme.alpha(AppTheme.BG_1, 248));
+        RenderSystem.rect(x, y, dialogW, dialogH, AppTheme.RED, 1.5f);
+        RenderSystem.fill(x, y, dialogW, titleH, AppTheme.alpha(AppTheme.BG_2, 244));
+        RenderSystem.lineH(x, y + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
+        ctx.text.render("EXIT WATERMEDIA", x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeight(0.66f)) / 2f), AppTheme.RED, 0.66f);
+        exitConfirmCloseBounds = new Dimension(x + dialogW - 48, y + 14, 30, 30);
+        AppChrome.dialogCloseButton(exitConfirmCloseBounds, exitConfirmCloseBounds.contains(ctx.mouseX, ctx.mouseY));
+        PixelIcon.draw("warn", x + 28, y + 88, 26, AppTheme.RED);
+        ctx.text.render("CONFIRM EXIT", x + 68, y + 84, AppTheme.TEXT, 0.72f);
+        ctx.text.render("Press ENTER to close the app or ESC to return.", x + 68, y + 116, AppTheme.TEXT_SOFT, 0.56f);
+        exitConfirmCancelBounds = new Dimension(x + 24, y + dialogH - 58, 150, 36);
+        exitConfirmExitBounds = new Dimension(x + dialogW - 174, y + dialogH - 58, 150, 36);
+        renderDialogAction(exitConfirmCancelBounds, "CANCEL", "ESC", "x", AppTheme.TEXT_SOFT);
+        renderDialogAction(exitConfirmExitBounds, "EXIT", "ENTER", "x", AppTheme.RED);
+        RenderSystem.restoreProjection();
+    }
+
+    private static void renderInfoDialog(final String title, final String message, final String buttonLabel,
+                                         final String hotkey, final Color accent) {
+        final int dialogW = Math.min(640, ctx.windowWidth - 64);
+        final String[] lines = message.split("\n");
+        final int dialogH = Math.min(Math.max(220, 134 + lines.length * 26), ctx.windowHeight - 72);
+        final Dimension dialog = Dimension.centered(ctx.windowWidth, ctx.windowHeight, dialogW, dialogH);
+        final int x = dialog.x();
+        final int y = dialog.y();
+        final int titleH = 58;
+        RenderSystem.setupOrtho(ctx.windowWidth, ctx.windowHeight);
+        RenderSystem.fill(0, 0, ctx.windowWidth, ctx.windowHeight, 0f, 0f, 0f, 0.58f);
+        RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.55f);
+        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, accent, 0.25f);
+        RenderSystem.fill(x, y, dialogW, dialogH, AppTheme.alpha(AppTheme.BG_1, 248));
+        RenderSystem.rect(x, y, dialogW, dialogH, accent, 1.5f);
+        RenderSystem.fill(x, y, dialogW, titleH, AppTheme.alpha(AppTheme.BG_2, 244));
+        RenderSystem.lineH(x, y + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
+        ctx.text.render(title, x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeight(0.66f)) / 2f), accent, 0.66f);
+        PixelIcon.draw("warn", x + 28, y + 84, 28, accent);
+        int lineY = y + 86;
+        for (final String line : lines) {
+            ctx.text.render(line, x + 72, lineY, AppTheme.TEXT_SOFT, 0.58f);
+            lineY += 26;
+        }
+        final Dimension ok = new Dimension(x + dialogW - 174, y + dialogH - 58, 150, 36);
+        errorDialogActionBounds = ok;
+        renderDialogAction(ok, buttonLabel, hotkey, "check", accent);
+        RenderSystem.restoreProjection();
+    }
+
+    private static void renderDialogAction(final Dimension bounds, final String label, final String hotkey,
+                                           final String icon, final Color accent) {
+        final boolean hover = bounds.contains(ctx.mouseX, ctx.mouseY);
+        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                hover ? AppTheme.alpha(accent, 52) : AppTheme.BG_2);
+        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), accent, 1.2f);
+        PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, accent);
+        ctx.text.render(label, bounds.x() + 32,
+                bounds.y() + Math.max(0, (bounds.height() - ctx.text.glyphHeight(0.60f)) / 2f),
+                accent, 0.60f);
+        final float keyScale = 0.48f;
+        final int keyW = ctx.text.width(hotkey, keyScale) + 12;
+        final int keyH = 20;
+        final int keyX = bounds.right() - keyW - 8;
+        final int keyY = bounds.y() + (bounds.height() - keyH) / 2;
+        RenderSystem.rect(keyX, keyY, keyW, keyH, AppTheme.STROKE, 1f);
+        ctx.text.render(hotkey, keyX + 6, keyY + Math.max(0, (keyH - ctx.text.glyphHeight(keyScale)) / 2f),
+                AppTheme.TEXT_FAINT, keyScale);
     }
 
     private static void renderBottomBar() {
-        DrawTool.setupOrtho(ctx.windowWidth, ctx.windowHeight);
+        final String instructions = exitConfirmVisible ? "ENTER: Exit | ESC: Cancel"
+                : ctx.hasError() ? "ENTER/ESC: Close"
+                : screens.currentInstructions() + " | C: CRT " + (AppChrome.crtEnabled() ? "ON" : "OFF");
+        AppChrome.footer(ctx.text, ctx, ctx.windowWidth, ctx.windowHeight, instructions, -1f);
+    }
 
-        // SEEKBAR
-        final int seekbarY = ctx.windowHeight - 82;
-        float progress = 1f;
-        if (ctx.player != null && ctx.player.duration() > 0) {
-            progress = Math.min(1f, Math.max(0f, (float) ctx.player.time() / ctx.player.duration()));
-        }
+    private static void openUploadLogsDialog() {
+        ctx.uploadDialogVisible = true;
+        ctx.uploadDialogWorking = false;
+        ctx.uploadDialogDone = false;
+        ctx.uploadDialogError = false;
+        ctx.uploadUploadsDone = false;
+        ctx.uploadIssueCopied = false;
+        ctx.uploadIssueOpened = false;
+        ctx.uploadDialogStage = 1;
+        ctx.uploadDialogStatus = "SCAN";
+        ctx.uploadIssueUrl = "github.com/watermedia/issues/new";
+        ctx.uploadDialogFiles.clear();
+    }
 
-        DrawTool.disableTextures();
-        DrawTool.fill(0, seekbarY, ctx.windowWidth, 4, 0.15f, 0.15f, 0.15f, 1f);
-        DrawTool.fill(0, seekbarY, ctx.windowWidth * progress, 4, 0.31f, 0.71f, 1f, 1f);
-        DrawTool.enableTextures();
-
-        // INSTRUCTIONS — SHOW ERROR DIALOG INSTRUCTIONS IF ERROR IS PRESENT
-        final String instructions = ctx.hasError() ? "ENTER/ESC: Close" : screens.currentInstructions();
-        ctx.text.render(instructions, AppContext.PADDING, ctx.windowHeight - 60, Colors.GRAY);
-
-        DrawTool.restoreProjection();
+    private static void openCleanupDialog() {
+        ctx.cleanupDialogVisible = true;
+        ctx.cleanupDialogWorking = false;
+        ctx.cleanupDialogDone = false;
+        ctx.cleanupDialogError = false;
+        ctx.cleanupDialogStage = 1;
+        ctx.cleanupDialogState = "SCAN";
+        ctx.cleanupFileCount = 0;
+        ctx.cleanupSizeLabel = "0 B";
+        ctx.cleanupProgress = 0;
     }
 
     // INPUT HANDLING
     private static void handleKeyInput(final long window, final int key, final int scancode, final int action, final int mods) {
-        if (action != GLFW_RELEASE) return;
+        ctx.requestRender();
+        ctx.ctrlDown = (mods & GLFW_MOD_CONTROL) != 0
+                || glfwGetKey(ctx.windowHandle, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
+                || glfwGetKey(ctx.windowHandle, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+
+        if (action == GLFW_RELEASE && key == GLFW_KEY_C) {
+            AppChrome.toggleCrt();
+            return;
+        }
+
+        if (exitConfirmVisible) {
+            if (action == GLFW_RELEASE) {
+                if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
+                    running = false;
+                } else if (key == GLFW_KEY_ESCAPE) {
+                    exitConfirmVisible = false;
+                }
+            }
+            return;
+        }
 
         // ERROR DIALOG TAKES PRIORITY
         if (ctx.hasError()) {
-            if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE) {
+            if (action == GLFW_RELEASE && (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE)) {
                 ctx.clearError();
             }
             return;
@@ -392,11 +611,18 @@ public class WaterMediaApp {
         screens.handleKey(key, action);
     }
 
+    private static void handleCharInput(final long window, final int codepoint) {
+        ctx.requestRender();
+        if (ctx.hasError()) return;
+        screens.handleChar(codepoint);
+    }
+
     // RESOURCE LOADING
     // Icon and banner are decoded with ImageIO so they're available before
     // CodecsAPI loads — this lets the loading splash render the banner.
     private static void loadIcon() {
-        try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
+        try (final InputStream in = openFirstResource("pack.png", "icon.png")) {
+            if (in == null) return;
             final BufferedImage img = ImageIO.read(in);
             if (img == null) return;
 
@@ -409,9 +635,61 @@ public class WaterMediaApp {
 
             icons.free();
             MemoryUtil.memFree(buffer);
+
+            final ByteBuffer textureBuffer = argbToRgbaBuffer(img);
+            ctx.iconWidth = w;
+            ctx.iconHeight = h;
+            ctx.iconTextureId = RenderSystem.createTexture(w, h, textureBuffer);
+            MemoryUtil.memFree(textureBuffer);
+
+            final TextureData glow = createGlowTexture(img, new Color(110, 168, 255), 12, 0.72f);
+            ctx.iconGlowTextureId = glow.textureId();
+            ctx.iconGlowWidth = glow.width();
+            ctx.iconGlowHeight = glow.height();
         } catch (final Exception e) {
             System.err.println("Failed to load window icon: " + e.getMessage());
         }
+    }
+
+    private static void loadDuckFrames() {
+        final java.util.ArrayList<Integer> frames = new java.util.ArrayList<>();
+        int frameWidth = 0;
+        int frameHeight = 0;
+
+        for (int i = 0; ; i++) {
+            final String resource = String.format("assets/duck/%02d.png", i);
+            final InputStream stream = IOTool.jarOpenFile(resource);
+            if (stream == null) break;
+
+            try (stream) {
+                final BufferedImage img = ImageIO.read(stream);
+                if (img == null) continue;
+                if (frameWidth <= 0 || frameHeight <= 0) {
+                    frameWidth = img.getWidth();
+                    frameHeight = img.getHeight();
+                }
+
+                final ByteBuffer buffer = argbToRgbaBuffer(img);
+                frames.add(RenderSystem.createTexture(img.getWidth(), img.getHeight(), buffer));
+                MemoryUtil.memFree(buffer);
+            } catch (final Exception e) {
+                System.err.println("Failed to load duck frame " + resource + ": " + e.getMessage());
+            }
+        }
+
+        ctx.duckFrameTextureIds = frames.stream().mapToInt(Integer::intValue).toArray();
+        ctx.duckFrameWidth = frameWidth;
+        ctx.duckFrameHeight = frameHeight;
+    }
+
+    private static InputStream openFirstResource(final String... names) {
+        for (final String name: names) {
+            try {
+                return IOTool.jarOpenFile(name);
+            } catch (final Exception ignored) {
+            }
+        }
+        return null;
     }
 
     private static void loadBanner() {
@@ -421,21 +699,95 @@ public class WaterMediaApp {
 
             ctx.bannerWidth = img.getWidth();
             ctx.bannerHeight = img.getHeight();
-            ctx.bannerTextureId = glGenTextures();
-
-            glBindTexture(GL_TEXTURE_2D, ctx.bannerTextureId);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
             final ByteBuffer buffer = argbToRgbaBuffer(img);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ctx.bannerWidth, ctx.bannerHeight,
-                    0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+            ctx.bannerTextureId = RenderSystem.createTexture(ctx.bannerWidth, ctx.bannerHeight, buffer);
             MemoryUtil.memFree(buffer);
+
+            final TextureData glow = createGlowTexture(img, new Color(110, 168, 255), 48, 0.8f);
+            ctx.bannerGlowTextureId = glow.textureId();
+            ctx.bannerGlowWidth = glow.width();
+            ctx.bannerGlowHeight = glow.height();
         } catch (final Exception e) {
             System.err.println("Failed to load banner: " + e.getMessage());
         }
+    }
+
+    private static TextureData createGlowTexture(final BufferedImage source, final Color color,
+                                                 final int radius, final float strength) {
+        final BufferedImage glow = createAlphaGlow(source, color, radius, strength);
+        final ByteBuffer buffer = argbToRgbaBuffer(glow);
+        final int textureId = RenderSystem.createTexture(glow.getWidth(), glow.getHeight(), buffer);
+        MemoryUtil.memFree(buffer);
+        return new TextureData(textureId, glow.getWidth(), glow.getHeight());
+    }
+
+    private static BufferedImage createAlphaGlow(final BufferedImage source, final Color color,
+                                                final int radius, final float strength) {
+        final int pad = Math.max(1, radius * 3);
+        final int w = source.getWidth() + pad * 2;
+        final int h = source.getHeight() + pad * 2;
+        int[] alpha = new int[w * h];
+
+        // EXTRAE SOLO LA SILUETA ALFA PARA QUE EL GLOW RESPETE PNGS TRANSPARENTES.
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                alpha[(y + pad) * w + x + pad] = (source.getRGB(x, y) >>> 24) & 0xFF;
+            }
+        }
+
+        for (int i = 0; i < 3; i++) {
+            alpha = boxBlur(alpha, w, h, radius);
+        }
+
+        final int[] pixels = new int[w * h];
+        final int rgb = color.getRGB() & 0x00FFFFFF;
+        for (int i = 0; i < alpha.length; i++) {
+            final int a = Math.min(255, Math.round(alpha[i] * strength));
+            pixels[i] = (a << 24) | rgb;
+        }
+
+        final BufferedImage glow = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        glow.setRGB(0, 0, w, h, pixels, 0, w);
+        return glow;
+    }
+
+    private static int[] boxBlur(final int[] source, final int w, final int h, final int radius) {
+        final int[] horizontal = new int[w * h];
+        final int[] output = new int[w * h];
+        final int window = radius * 2 + 1;
+
+        // DOS PASADAS CON VENTANA DESLIZANTE: O(W*H) EN VEZ DE O(W*H*R).
+        for (int y = 0; y < h; y++) {
+            int sum = 0;
+            for (int x = -radius; x <= radius; x++) {
+                sum += source[y * w + clamp(x, 0, w - 1)];
+            }
+            for (int x = 0; x < w; x++) {
+                horizontal[y * w + x] = sum / window;
+                final int removeX = clamp(x - radius, 0, w - 1);
+                final int addX = clamp(x + radius + 1, 0, w - 1);
+                sum += source[y * w + addX] - source[y * w + removeX];
+            }
+        }
+
+        for (int x = 0; x < w; x++) {
+            int sum = 0;
+            for (int y = -radius; y <= radius; y++) {
+                sum += horizontal[clamp(y, 0, h - 1) * w + x];
+            }
+            for (int y = 0; y < h; y++) {
+                output[y * w + x] = sum / window;
+                final int removeY = clamp(y - radius, 0, h - 1);
+                final int addY = clamp(y + radius + 1, 0, h - 1);
+                sum += horizontal[addY * w + x] - horizontal[removeY * w + x];
+            }
+        }
+        return output;
+    }
+
+    private static int clamp(final int value, final int min, final int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private static ByteBuffer argbToRgbaBuffer(final BufferedImage img) {
@@ -443,7 +795,7 @@ public class WaterMediaApp {
         final int[] argb = new int[w * h];
         img.getRGB(0, 0, w, h, argb, 0, w);
         final ByteBuffer buffer = MemoryUtil.memAlloc(w * h * 4);
-        for (final int p : argb) {
+        for (final int p: argb) {
             buffer.put((byte) ((p >> 16) & 0xFF)); // R
             buffer.put((byte) ((p >> 8) & 0xFF));  // G
             buffer.put((byte) (p & 0xFF));         // B
@@ -488,125 +840,287 @@ public class WaterMediaApp {
         }
     }
 
-    // CONSOLE OPERATIONS
-    private static void performUploadLogs() {
-        try {
-            consoleScreen.info("=== Upload Log Files ===");
-            consoleScreen.print("");
+    private record TextureData(int textureId, int width, int height) {
+    }
 
-            final Path cwd = Path.of("").toAbsolutePath();
-            final Path logsDir = cwd.getParent().resolve("logs");
-            final Path crashDir = cwd.getParent().resolve("crash-reports");
+    // BACKGROUND OPERATIONS
+    private static void scanUploadLogFiles() {
+        ctx.uploadDialogStage = 1;
+        ctx.uploadDialogStatus = "SCAN";
+        ctx.uploadDialogError = false;
+        ctx.uploadDialogDone = false;
+        ctx.uploadDialogFiles.clear();
 
-            consoleScreen.print("Working directory: " + cwd);
-            consoleScreen.print("Logs directory: " + logsDir);
-            consoleScreen.print("");
+        final Path baseDir = uploadBaseDir();
+        final Path logsDir = baseDir.resolve("logs");
+        final Path crashDir = baseDir.resolve("crash-reports");
+        final Path crashReport = findLatestCrashReport(crashDir);
 
-            final Path latestLog = logsDir.resolve("latest.log");
-            final Path wmLog = logsDir.resolve("watermedia-app.log");
-            final Path crashReport = findLatestCrashReport(crashDir);
+        addScannedUploadFile("latest.log", logsDir.resolve("latest.log"));
+        addScannedUploadFile(crashReport != null ? crashReport.getFileName().toString() : "crash-reports", crashReport != null ? crashReport : crashDir);
+        addScannedUploadFile("watermedia-app.log", logsDir.resolve("watermedia-app.log"));
+        ctx.requestRender();
+    }
 
-            consoleScreen.info("--- Reading files ---");
-            final String latestContent = readFileStatus(latestLog, "latest.log");
-            final String wmContent = readFileStatus(wmLog, "watermedia-app.log");
-            final String crashContent = crashReport != null ? readFileStatus(crashReport, crashReport.getFileName().toString()) : null;
-
-            if (crashReport == null) {
-                consoleScreen.print("crash-reports: No crash reports found", Colors.GRAY);
-            }
-
-            consoleScreen.print("");
-            consoleScreen.info("--- Uploading to mclo.gs ---");
-
-            final String latestUrl = latestContent != null ? uploadToMclogs(latestContent, "latest.log") : null;
-            final String wmUrl = wmContent != null ? uploadToMclogs(wmContent, "watermedia-app.log") : null;
-            final String crashUrl = crashContent != null ? uploadToMclogs(crashContent, crashReport.getFileName().toString()) : null;
-
-            consoleScreen.print("");
-
-            if (latestUrl != null || wmUrl != null) {
-                consoleScreen.info("--- Generating issue report ---");
-                final String issueText = generateIssueTemplate(latestUrl, wmUrl, crashUrl);
-
-                try {
-                    final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-                    clipboard.setContents(new StringSelection(issueText), null);
-                    consoleScreen.success("Issue template copied to clipboard!");
-                } catch (final Exception e) {
-                    consoleScreen.error("Failed to copy to clipboard: " + e.getMessage());
+    private static void addScannedUploadFile(final String name, final Path path) {
+        final AppContext.UploadFileEntry entry = new AppContext.UploadFileEntry(name, path);
+        if (path != null && Files.isRegularFile(path)) {
+            try {
+                entry.present = true;
+                entry.valid = true;
+                final long size = Files.size(path);
+                entry.sizeLabel = formatBytes(size);
+                if (size > 10L * 1024L * 1024L || exceedsLineLimit(path, 25_000)) {
+                    entry.valid = false;
+                    entry.state = "INVALID";
+                    ctx.uploadDialogError = true;
+                } else {
+                    entry.state = "READ OK";
                 }
-
-                consoleScreen.print("");
-                consoleScreen.print("Opening GitHub issues page...", Colors.YELLOW);
-
-                try {
-                    Desktop.getDesktop().browse(URI.create("https://github.com/WaterMediaTeam/watermedia/issues/new"));
-                    consoleScreen.success("Browser opened!");
-                    consoleScreen.success("Please open a github issue and paste the content of your clipboard");
-                } catch (final Exception e) {
-                    consoleScreen.error("Failed to open browser: " + e.getMessage());
-                    consoleScreen.print("Please manually go to: https://github.com/WaterMediaTeam/watermedia/issues/new");
-                }
-            } else {
-                consoleScreen.error("No files were uploaded successfully.");
+            } catch (final IOException e) {
+                entry.present = false;
+                entry.valid = false;
+                entry.state = "READ ERROR";
+                entry.sizeLabel = "-";
+                ctx.uploadDialogError = true;
             }
+        } else {
+            entry.present = false;
+            entry.valid = false;
+            entry.state = "NOT FOUND";
+            entry.sizeLabel = "-";
+        }
+        ctx.uploadDialogFiles.add(entry);
+    }
 
-            consoleScreen.waitForKey();
-        } catch (final Exception e) {
-            consoleScreen.error("Unexpected error: " + e.getMessage());
-            consoleScreen.waitForKey();
+    private static boolean exceedsLineLimit(final Path path, final int maxLines) throws IOException {
+        try (final var lines = Files.lines(path, StandardCharsets.UTF_8)) {
+            return lines.limit(maxLines + 1L).count() > maxLines;
         }
     }
 
-    private static void performCleanup() {
+    private static void performUploadLogs() {
         try {
-            consoleScreen.info("=== Cleanup ===");
-            consoleScreen.print("");
+            ctx.uploadDialogStage = 2;
+            setUploadStatus("UPLOAD");
+            ctx.uploadDialogError = false;
+            ctx.uploadDialogDone = false;
+            ctx.uploadUploadsDone = false;
 
-            final Path wmPath = WaterMedia.cwd();
-            final Path tmpDir = WaterMedia.tmp();
-
-            consoleScreen.print("WaterMedia path: " + wmPath);
-            consoleScreen.print("");
-            consoleScreen.info("--- Cleaning tmp folder ---");
-
-            final var dirs = tmpDir.toFile().listFiles();
-            if (dirs == null) {
-                consoleScreen.print("No tmp folder found", Colors.GRAY);
-                consoleScreen.print("");
-                consoleScreen.info("--- Cleanup complete ---");
-                consoleScreen.print("Application will close after this.");
-                consoleScreen.waitForKey();
-                return;
+            boolean anyUploaded = false;
+            for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+                if (!isUploadable(entry)) continue;
+                entry.state = "UPLOADING";
+                entry.progress = 18;
+                final String content = readUploadContent(entry);
+                if (content == null) continue;
+                entry.progress = 64;
+                final String url = uploadToMclogs(content, entry);
+                anyUploaded |= url != null;
             }
 
-            final int tmpCount = IOTool.count(tmpDir.toFile());
-            final int tmpDeleted = IOTool.delete(tmpDir.toFile());
-
-            if (tmpDeleted > 0) {
-                if (tmpDeleted == tmpCount) {
-                    consoleScreen.success("Tmp folder cleaned successfully (" + tmpDeleted + " items removed)");
-                } else {
-                    consoleScreen.success("Tmp folder deleted almost successfully (" + tmpDeleted + " items removed - " + (tmpCount - tmpDeleted) + " items failed)");
-                }
+            if (anyUploaded) {
+                setUploadStatus("REPORT READY");
+                ctx.uploadUploadsDone = !ctx.uploadDialogError && uploadsComplete();
             } else {
-                consoleScreen.error("Failed to delete tmp folder");
+                setUploadStatus("ERROR");
+                ctx.uploadDialogError = true;
             }
-
-            final int tmpDeleteScheduled = IOTool.deleteSchedule(tmpDir.toFile());
-            if (tmpDeleteScheduled > 0) {
-                consoleScreen.info("Additional " + tmpDeleteScheduled + " items scheduled for deletion on exit.");
-            } else {
-                consoleScreen.print("No additional items scheduled for deletion.", Colors.YELLOW);
-            }
-
-            consoleScreen.print("");
-            consoleScreen.info("--- Cleanup complete ---");
-            consoleScreen.print("Application will close after this.");
-            consoleScreen.waitForKey();
         } catch (final Exception e) {
-            consoleScreen.error("Unexpected error: " + e.getMessage());
-            consoleScreen.waitForKey();
+            setUploadStatus("ERROR");
+            ctx.uploadDialogError = true;
+        } finally {
+            ctx.uploadDialogWorking = false;
+            ctx.uploadDialogDone = false;
+            ctx.requestRender();
+        }
+    }
+
+    private static void generateUploadIssueReport() {
+        try {
+            ctx.uploadDialogWorking = true;
+            ctx.uploadDialogStage = 3;
+            ctx.uploadDialogStatus = "SUCCESS";
+            ctx.uploadDialogError = false;
+
+            final String issueText = generateIssueTemplate(
+                    uploadedUrl("latest.log"),
+                    uploadedUrl("watermedia-app.log"),
+                    firstUploadedCrashUrl()
+            );
+            ctx.uploadIssueUrl = buildGithubIssueUrl(issueText);
+
+            try {
+                final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+                clipboard.setContents(new StringSelection(issueText), null);
+                ctx.uploadIssueCopied = true;
+            } catch (final Exception e) {
+                ctx.uploadDialogError = true;
+                ctx.uploadDialogStatus = "ERROR";
+            }
+
+            openUploadIssuePage();
+            ctx.uploadDialogDone = !ctx.uploadDialogError;
+        } finally {
+            ctx.uploadDialogWorking = false;
+            ctx.requestRender();
+        }
+    }
+
+    private static void openUploadIssuePage() {
+        try {
+            final String url = ctx.uploadIssueUrl != null && ctx.uploadIssueUrl.startsWith("https://")
+                    ? ctx.uploadIssueUrl
+                    : buildGithubIssueUrl("");
+            Desktop.getDesktop().browse(URI.create(url));
+            ctx.uploadIssueOpened = true;
+        } catch (final Exception e) {
+            ctx.uploadDialogError = true;
+            ctx.uploadDialogStatus = "ERROR";
+        }
+    }
+
+    private static String buildGithubIssueUrl(final String body) {
+        return "https://github.com/WaterMediaTeam/watermedia/issues/new"
+                + "?title=" + java.net.URLEncoder.encode("WATERMeDIA Generated Issue", StandardCharsets.UTF_8)
+                + "&body=" + java.net.URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
+    }
+
+    private static Path uploadBaseDir() {
+        final Path cwd = Path.of("").toAbsolutePath();
+        return AppContext.IN_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
+    }
+
+    private static void setUploadStatus(final String status) {
+        ctx.uploadDialogStatus = status;
+        ctx.requestRender();
+    }
+
+    private static boolean hasUploadCandidate() {
+        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            if (isUploadable(entry)) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasUploadedLog() {
+        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            if (entry.uploaded) return true;
+        }
+        return false;
+    }
+
+    private static boolean uploadsComplete() {
+        boolean hadUploadable = false;
+        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            if (!entry.present || !entry.valid) continue;
+            hadUploadable = true;
+            if (!entry.uploaded) return false;
+        }
+        return hadUploadable;
+    }
+
+    private static boolean isUploadable(final AppContext.UploadFileEntry entry) {
+        return entry.present && entry.valid && !entry.uploaded && !"FAILED".equals(entry.state) && !"READ ERROR".equals(entry.state);
+    }
+
+    private static String readUploadContent(final AppContext.UploadFileEntry entry) {
+        try {
+            return Files.readString(entry.path, StandardCharsets.UTF_8);
+        } catch (final Exception e) {
+            entry.state = "READ ERROR";
+            entry.progress = 0;
+            ctx.uploadDialogError = true;
+            return null;
+        }
+    }
+
+    private static String uploadedUrl(final String name) {
+        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            if (entry.name.equalsIgnoreCase(name) && entry.uploaded) return entry.url;
+        }
+        return null;
+    }
+
+    private static String firstUploadedCrashUrl() {
+        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log") && entry.uploaded) {
+                return entry.url;
+            }
+        }
+        return null;
+    }
+
+    private static String formatBytes(final long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        final double kb = bytes / 1024.0;
+        if (kb < 1024.0) return String.format(java.util.Locale.ROOT, "%.1f KB", kb);
+        return String.format(java.util.Locale.ROOT, "%.1f MB", kb / 1024.0);
+    }
+
+    private static void scanCleanupCache() {
+        ctx.cleanupDialogStage = 1;
+        ctx.cleanupDialogDone = false;
+        ctx.cleanupDialogError = false;
+        ctx.cleanupProgress = 0;
+
+        final long[] stats = cleanupCacheStats();
+        ctx.cleanupFileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
+        ctx.cleanupSizeLabel = formatBytes(stats[1]);
+        if (!ctx.cleanupDialogError) {
+            ctx.cleanupDialogState = stats[0] > 0 ? "FOUND" : "EMPTY";
+        }
+        ctx.requestRender();
+    }
+
+    private static long[] cleanupCacheStats() {
+        final Path cache = cleanupCacheDir();
+        final long[] stats = new long[2];
+        if (!Files.exists(cache)) return stats;
+        try (final var stream = Files.walk(cache)) {
+            stream.filter(Files::isRegularFile).forEach(path -> {
+                stats[0]++;
+                try {
+                    stats[1] += Files.size(path);
+                } catch (final IOException ignored) {
+                }
+            });
+        } catch (final IOException e) {
+            ctx.cleanupDialogError = true;
+            ctx.cleanupDialogState = "ERROR";
+        }
+        return stats;
+    }
+
+    private static Path cleanupCacheDir() {
+        return WaterMedia.tmp().resolve("cache");
+    }
+
+    private static void performCacheCleanup() {
+        try {
+            ctx.cleanupDialogStage = 2;
+            ctx.cleanupDialogState = "CLEANING";
+            ctx.cleanupDialogError = false;
+            ctx.cleanupDialogDone = false;
+            ctx.cleanupProgress = 12;
+            ctx.requestRender();
+
+            final Path cache = cleanupCacheDir();
+            if (Files.exists(cache)) {
+                IOTool.delete(cache.toFile());
+            }
+            Files.createDirectories(cache);
+
+            ctx.cleanupProgress = 100;
+            ctx.cleanupDialogState = "CLEANED";
+            ctx.cleanupDialogDone = true;
+        } catch (final Exception e) {
+            ctx.cleanupProgress = 0;
+            ctx.cleanupDialogState = "ERROR";
+            ctx.cleanupDialogError = true;
+        } finally {
+            ctx.cleanupDialogWorking = false;
+            ctx.requestRender();
         }
     }
 
@@ -626,22 +1140,7 @@ public class WaterMediaApp {
         }
     }
 
-    private static String readFileStatus(final Path path, final String name) {
-        if (!Files.exists(path)) {
-            consoleScreen.print(name + ": NOT FOUND", Colors.RED);
-            return null;
-        }
-        try {
-            final String content = Files.readString(path, StandardCharsets.UTF_8);
-            consoleScreen.success(name + ": Read OK (" + content.length() + " bytes)");
-            return content;
-        } catch (final Exception e) {
-            consoleScreen.error(name + ": FAILED TO READ - " + e.getMessage());
-            return null;
-        }
-    }
-
-    private static String uploadToMclogs(final String content, final String name) {
+    private static String uploadToMclogs(final String content, final AppContext.UploadFileEntry entry) {
         try {
             final HttpClient client = HttpClient.newHttpClient();
             final HttpRequest request = HttpRequest.newBuilder()
@@ -656,13 +1155,20 @@ public class WaterMediaApp {
                 final JsonObject json = AppContext.GSON.fromJson(response.body(), JsonObject.class);
                 if (json.get("success").getAsBoolean()) {
                     final String url = json.get("url").getAsString();
-                    consoleScreen.success(name + ": Uploaded -> " + url);
+                    entry.url = url;
+                    entry.uploaded = true;
+                    entry.progress = 100;
+                    entry.state = "UPLOADED";
                     return url;
                 }
             }
-            consoleScreen.error(name + ": Upload failed (HTTP " + response.statusCode() + ")");
+            entry.progress = 0;
+            entry.state = "FAILED";
+            ctx.uploadDialogError = true;
         } catch (final Exception e) {
-            consoleScreen.error(name + ": Upload failed - " + e.getMessage());
+            entry.progress = 0;
+            entry.state = "FAILED";
+            ctx.uploadDialogError = true;
         }
         return null;
     }
@@ -683,7 +1189,7 @@ public class WaterMediaApp {
 
     // CLEANUP
     private static void cleanup() {
-        DrawTool.cleanup();
+        RenderSystem.cleanup();
         glfwFreeCallbacks(ctx.windowHandle);
         glfwDestroyWindow(ctx.windowHandle);
         glfwTerminate();

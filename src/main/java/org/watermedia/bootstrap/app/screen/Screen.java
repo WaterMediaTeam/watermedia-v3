@@ -22,6 +22,10 @@ public abstract class Screen {
 
     public abstract String instructions();
 
+    public boolean wantsContinuousRender() {
+        return false;
+    }
+
     public void onEnter() {
     }
 
@@ -35,6 +39,9 @@ public abstract class Screen {
     }
 
     protected void onKeyRelease(final int key) {
+    }
+
+    public void handleChar(final int codepoint) {
     }
 
     public void handleMouseMove(final double mx, final double my) {

@@ -10,9 +10,12 @@ import java.io.File;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 
+import static org.lwjgl.glfw.GLFW.glfwPostEmptyEvent;
 import static org.lwjgl.openal.AL10.alSourcePlay;
 import static org.lwjgl.openal.AL10.alSourceStop;
 
@@ -37,11 +40,14 @@ public final class AppContext implements Executor {
     public int windowWidth = 1280;
     public int windowHeight = 720;
     public long windowHandle;
+    private final AtomicBoolean renderRequested = new AtomicBoolean(true);
 
     // MOUSE
     public double mouseX;
     public double mouseY;
     public boolean mouseClicked;
+    public boolean ctrlDown;
+    public boolean selectionSoundEnabled = true;
 
     // TEXT RENDERER
     public TextRenderer text;
@@ -66,21 +72,56 @@ public final class AppContext implements Executor {
 
     // PLAYER
     public MediaPlayer player;
-    public boolean playerEscPressed;
 
     // BANNER
     public int bannerTextureId = -1;
     public int bannerWidth;
     public int bannerHeight;
+    public int bannerGlowTextureId = -1;
+    public int bannerGlowWidth;
+    public int bannerGlowHeight;
+    public int iconTextureId = -1;
+    public int iconWidth;
+    public int iconHeight;
+    public int iconGlowTextureId = -1;
+    public int iconGlowWidth;
+    public int iconGlowHeight;
+    public int[] duckFrameTextureIds = new int[0];
+    public int duckFrameWidth;
+    public int duckFrameHeight;
+    public boolean backendsLoading = true;
 
     // AUDIO
     public int soundBuffer = -1;
     public int soundSource = -1;
+    public boolean audioReady;
+    public boolean audioError;
 
-    // DIALOG STATE
-    public String finishedReason = "";
-    public boolean finishedWasError;
     public String customUrlText = "";
+
+    // UPLOAD LOGS DIALOG STATE
+    public volatile boolean uploadDialogVisible;
+    public volatile boolean uploadDialogWorking;
+    public volatile boolean uploadDialogDone;
+    public volatile boolean uploadDialogError;
+    public volatile boolean uploadUploadsDone;
+    public volatile boolean uploadIssueCopied;
+    public volatile boolean uploadIssueOpened;
+    public volatile int uploadDialogStage = 1;
+    public volatile String uploadDialogStatus = "READY";
+    public volatile String uploadIssueUrl = "github.com/watermedia/issues/new";
+    public final List<UploadFileEntry> uploadDialogFiles = new CopyOnWriteArrayList<>();
+
+    // CLEANUP CACHE DIALOG STATE
+    public volatile boolean cleanupDialogVisible;
+    public volatile boolean cleanupDialogWorking;
+    public volatile boolean cleanupDialogDone;
+    public volatile boolean cleanupDialogError;
+    public volatile int cleanupDialogStage = 1;
+    public volatile int cleanupFileCount;
+    public volatile String cleanupSizeLabel = "0 B";
+    public volatile String cleanupDialogState = "READY";
+    public volatile int cleanupProgress;
 
     // GLOBAL ERROR DIALOG
     public String globalErrorTitle;
@@ -94,16 +135,57 @@ public final class AppContext implements Executor {
     public record URIGroup(String name, TestURI[] uris) {
     }
 
-    @Override
-    public void execute(final Runnable task) {
-        if (task != null) this.executor.add(task);
+    public static final class UploadFileEntry {
+        public final String name;
+        public final java.nio.file.Path path;
+        public volatile String sizeLabel = "-";
+        public volatile String state = "PENDING";
+        public volatile String url = "";
+        public volatile int progress;
+        public volatile boolean present;
+        public volatile boolean valid;
+        public volatile boolean uploaded;
+
+        public UploadFileEntry(final String name, final java.nio.file.Path path) {
+            this.name = name;
+            this.path = path;
+        }
     }
 
-    public void processExecutor() {
+    @Override
+    public void execute(final Runnable task) {
+        if (task != null) {
+            this.executor.add(task);
+            this.requestRender();
+        }
+    }
+
+    public void requestRender() {
+        this.renderRequested.set(true);
+        if (this.windowHandle != 0L) {
+            glfwPostEmptyEvent();
+        }
+    }
+
+    public boolean renderRequested() {
+        return this.renderRequested.get();
+    }
+
+    public boolean consumeRenderRequest() {
+        return this.renderRequested.getAndSet(false);
+    }
+
+    public boolean processExecutor() {
+        boolean processed = false;
         while (!this.executor.isEmpty()) {
             final Runnable task = this.executor.poll();
-            if (task != null) task.run();
+            if (task != null) {
+                task.run();
+                processed = true;
+            }
         }
+        if (processed) this.requestRender();
+        return processed;
     }
 
     public String formatTime(final long ms) {
@@ -115,11 +197,6 @@ public final class AppContext implements Executor {
         this.groupMRLs.clear();
     }
 
-    public void clearSourceState() {
-        this.availableSources = null;
-        this.selectedSource = null;
-    }
-
     public void releasePlayer() {
         if (this.player != null) {
             this.player.stop();
@@ -129,7 +206,7 @@ public final class AppContext implements Executor {
     }
 
     public void playSelectionSound() {
-        if (this.soundSource > 0) {
+        if (this.selectionSoundEnabled && this.soundSource > 0) {
             alSourceStop(this.soundSource);
             alSourcePlay(this.soundSource);
         }

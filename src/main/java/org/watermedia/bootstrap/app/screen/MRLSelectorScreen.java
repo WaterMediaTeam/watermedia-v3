@@ -4,15 +4,30 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.players.TxMediaPlayer;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.WaterMedia;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.ui.AppChrome;
+import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Colors;
-import org.watermedia.bootstrap.app.ui.Grid;
+import org.watermedia.bootstrap.app.ui.Dimension;
+import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
-import org.watermedia.tools.DrawTool;
+import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.tools.ThreadTool;
 
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -22,53 +37,33 @@ import static org.lwjgl.glfw.GLFW.*;
  */
 public class MRLSelectorScreen extends Screen {
 
+    private static final long LOAD_TIMEOUT_MS = 30000L;
+
     private final Consumer<HomeScreen.Action> navigator;
-    private final Grid<AppContext.TestURI> grid;
-    private boolean loading;
+    private volatile boolean loading;
+    private volatile int loadGeneration;
     private long loadStartTime;
     private AppContext.TestURI pendingUri;
     private GLEngine.Builder glEngineBuilder;
+    private int selectedIndex;
+    private int scrollOffset;
+    private String searchText = "";
+    private boolean searchFocused;
+    private Dimension searchBounds = Dimension.ZERO;
+    private Dimension copyBounds = Dimension.ZERO;
+    private Dimension playBounds = Dimension.ZERO;
+    private final List<Dimension> rowBounds = new ArrayList<>();
+    private final List<Integer> rowIndices = new ArrayList<>();
 
     // THUMBNAIL PLAYERS KEYED BY MRL NAME
     private final Map<String, MediaPlayer> thumbnailPlayers = new LinkedHashMap<>();
-    private final java.util.Set<String> thumbnailAttempted = new java.util.HashSet<>();
+    private final Set<String> thumbnailAttempted = new HashSet<>();
+    private final Set<String> thumbnailSubscriptions = new HashSet<>();
+    private final Set<String> groupSubscriptions = new HashSet<>();
 
     public MRLSelectorScreen(final TextRenderer text, final AppContext ctx, final Consumer<HomeScreen.Action> navigator) {
         super(text, ctx);
         this.navigator = navigator;
-
-        this.grid = new Grid<AppContext.TestURI>()
-                .columns(6)
-                .cellHeight(120)
-                .cellGap(10)
-                .borderWidth(4f)
-                .innerPadding(10)
-                .labelProvider(AppContext.TestURI::name)
-                .sublabelProvider(AppContext.TestURI::uri)
-                .iconProvider(uri -> {
-                    final MRL mrl = ctx.groupMRLs.get(uri.name());
-                    if (mrl == null) return Grid.Icon.STATUS_NULL;
-                    if (mrl.hasError()) return Grid.Icon.STATUS_ERROR;
-                    if (mrl.ready()) return Grid.Icon.STATUS_READY;
-                    if (!mrl.ready()) return Grid.Icon.STATUS_LOADING;
-                    return Grid.Icon.STATUS_UNKNOWN;
-                })
-                .iconColorProvider(uri -> {
-                    final MRL mrl = ctx.groupMRLs.get(uri.name());
-                    if (mrl == null) return Colors.GRAY;
-                    if (mrl.hasError()) return Colors.RED;
-                    if (mrl.ready()) return Colors.GREEN;
-                    if (!mrl.ready()) return Colors.BLUE;
-                    return Colors.GRAY;
-                })
-                .borderColorProvider(uri -> {
-                    final MRL mrl = ctx.groupMRLs.get(uri.name());
-                    if (mrl != null && mrl.hasError()) return Colors.RED;
-                    return Colors.BLUE;
-                })
-                .thumbnailProvider(uri -> this.thumbnailPlayers.get(uri.name()))
-                .onSelect(this::handleSelect)
-                .onSelectionChanged(ctx::playSelectionSound);
 
         this.glEngineBuilder = new GLEngine.Builder(Thread.currentThread(), this.ctx);
     }
@@ -76,27 +71,73 @@ public class MRLSelectorScreen extends Screen {
     @Override
     public void onEnter() {
         this.loading = false;
+        this.loadGeneration++;
         this.pendingUri = null;
-        if (this.ctx.selectedGroup != null) {
-            this.grid.clear();
-            this.grid.title("Select Media - " + this.ctx.selectedGroup.name());
-            for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
-                this.grid.item(uri);
-            }
-        }
+        this.selectedIndex = 0;
+        this.scrollOffset = 0;
+        this.searchFocused = false;
+        this.groupSubscriptions.clear();
+        this.thumbnailSubscriptions.clear();
+        this.subscribeGroupMRLs();
     }
 
     @Override
     public void onExit() {
+        this.loading = false;
+        this.loadGeneration++;
+        this.pendingUri = null;
         this.releaseThumbnailPlayers();
     }
 
-    // CALLED EACH FRAME TO CREATE THUMBNAIL PLAYERS FOR MRLS THAT JUST BECAME READY.
-    private void updateThumbnailPlayers() {
+    private void subscribeGroupMRLs() {
         if (this.ctx.selectedGroup == null) return;
+        for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
+            final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+            if (mrl != null && !mrl.ready() && this.groupSubscriptions.add(uri.name())) {
+                mrl.subscribe(done -> this.ctx.requestRender());
+            }
+        }
+    }
+
+    private void subscribeThumbnailMRL(final URI uri, final MRL mrl) {
+        if (uri == null || mrl == null || mrl.ready()) return;
+        if (this.thumbnailSubscriptions.add(uri.toString())) {
+            mrl.subscribe(done -> this.ctx.requestRender());
+        }
+    }
+
+    private void scheduleLoadTimeout(final int generation) {
+        final long deadline = this.loadStartTime + LOAD_TIMEOUT_MS;
+        ThreadTool.createStarted("MRLSelectorLoadTimeout", () -> {
+            final long wait = Math.max(0L, deadline - System.currentTimeMillis());
+            ThreadTool.sleep(wait);
+            if (this.loading && this.loadGeneration == generation) {
+                this.ctx.requestRender();
+            }
+        });
+    }
+
+    private void releaseInactiveThumbnailPlayers(final Set<String> activeNames) {
+        final Iterator<Map.Entry<String, MediaPlayer>> it = this.thumbnailPlayers.entrySet().iterator();
+        while (it.hasNext()) {
+            final Map.Entry<String, MediaPlayer> entry = it.next();
+            if (activeNames.contains(entry.getKey())) continue;
+            entry.getValue().release();
+            it.remove();
+            this.thumbnailAttempted.remove(entry.getKey());
+        }
+    }
+
+    // Keeps preview players scoped to entries the selector is currently showing.
+    private void updateThumbnailPlayers(final Set<String> activeNames) {
+        if (this.ctx.selectedGroup == null) return;
+
+        this.releaseInactiveThumbnailPlayers(activeNames);
 
         for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
             final String name = uri.name();
+            if (!activeNames.contains(name)) continue;
+            if (this.thumbnailPlayers.containsKey(name)) continue;
             if (this.thumbnailAttempted.contains(name)) continue;
 
             final MRL mrl = this.ctx.groupMRLs.get(name);
@@ -118,14 +159,16 @@ public class MRLSelectorScreen extends Screen {
             boolean pendingThumbnail = false;
 
             // TRY THUMBNAIL URI FIRST
-            for (final MRL.Source src : sources) {
+            for (final MRL.Source src: sources) {
                 final URI thumbnailUri = src.thumbnail();
                 if (thumbnailUri == null) continue;
                 final MRL thumbnailMrl = org.watermedia.api.media.MediaAPI.getMRL(thumbnailUri.toString());
                 if (!thumbnailMrl.ready()) {
                     pendingThumbnail = true;
+                    this.subscribeThumbnailMRL(thumbnailUri, thumbnailMrl);
                     break;
                 }
+                if (thumbnailMrl.hasError()) continue;
                 player = MediaAPI.createPlayer(thumbnailMrl, this.glEngineBuilder::build, () -> null);
                 if (player != null) break;
             }
@@ -158,6 +201,8 @@ public class MRLSelectorScreen extends Screen {
         }
         this.thumbnailPlayers.clear();
         this.thumbnailAttempted.clear();
+        this.thumbnailSubscriptions.clear();
+        this.groupSubscriptions.clear();
     }
 
     private void handleSelect(final int index, final AppContext.TestURI uri) {
@@ -184,8 +229,12 @@ public class MRLSelectorScreen extends Screen {
 
         if (!this.ctx.selectedMRL.ready()) {
             this.loading = true;
+            this.loadGeneration++;
             this.loadStartTime = System.currentTimeMillis();
             this.pendingUri = uri;
+            this.ctx.selectedMRL.subscribe(done -> this.ctx.requestRender());
+            this.scheduleLoadTimeout(this.loadGeneration);
+            this.ctx.requestRender();
             return;
         }
 
@@ -199,47 +248,45 @@ public class MRLSelectorScreen extends Screen {
         this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
         if (this.ctx.availableSources.length == 0) return;
 
-        if (this.ctx.availableSources.length == 1) {
-            this.ctx.sourceSelectorIndex = 0;
-            this.ctx.selectedSource = this.ctx.availableSources[0];
-            this.ctx.playerEscPressed = false;
-            this.navigator.accept(HomeScreen.Action.PLAYER);
-        } else {
-            this.ctx.sourceSelectorIndex = 0;
-            this.navigator.accept(HomeScreen.Action.SOURCE_SELECTOR);
-        }
+        this.ctx.sourceSelectorIndex = 0;
+        this.ctx.selectedSource = this.ctx.availableSources[0];
+        this.navigator.accept(HomeScreen.Action.PLAYER);
     }
 
     private void checkLoadingState() {
         if (this.ctx.selectedMRL == null) {
             this.loading = false;
+            this.loadGeneration++;
             this.pendingUri = null;
-            return;
-        }
-
-        if (this.ctx.selectedMRL.ready()) {
-            this.loading = false;
-            this.pendingUri = null;
-            this.proceedWithMRL();
             return;
         }
 
         if (this.ctx.selectedMRL.hasError()) {
             this.loading = false;
+            this.loadGeneration++;
             this.pendingUri = null;
             this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
             return;
         }
 
-        if (System.currentTimeMillis() - this.loadStartTime > 30000) {
+        if (this.ctx.selectedMRL.ready()) {
             this.loading = false;
+            this.loadGeneration++;
+            this.pendingUri = null;
+            this.proceedWithMRL();
+            return;
+        }
+
+        if (System.currentTimeMillis() - this.loadStartTime >= LOAD_TIMEOUT_MS) {
+            this.loading = false;
+            this.loadGeneration++;
             this.pendingUri = null;
             this.ctx.showError("Load Error", "MRL loading timed out", null);
         }
     }
 
     private void renderLoadingDialog(final int windowW, final int windowH) {
-        DrawTool.setupOrtho(windowW, windowH);
+        RenderSystem.setupOrtho(windowW, windowH);
 
         final int dots = (int) ((System.currentTimeMillis() / 500) % 4);
         final String loadingText = "Loading" + ".".repeat(dots);
@@ -256,7 +303,7 @@ public class MRLSelectorScreen extends Screen {
         final int dialogX = (windowW - dialogW) / 2;
         final int dialogY = (windowH - dialogH) / 2;
 
-        DrawTool.dialogBox(dialogX, dialogY, dialogW, dialogH, Colors.BLUE, 3);
+        RenderSystem.dialogBox(dialogX, dialogY, dialogW, dialogH, Colors.BLUE, 3);
 
         int y = dialogY + padding;
         this.text.render(loadingText, dialogX + padding, y, Colors.BLUE);
@@ -267,12 +314,29 @@ public class MRLSelectorScreen extends Screen {
 
         this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY);
 
-        DrawTool.restoreProjection();
+        RenderSystem.restoreProjection();
     }
 
     private void goBack() {
         this.ctx.clearGroupState();
         this.navigator.accept(HomeScreen.Action.BACK);
+    }
+
+    @Override
+    public boolean wantsContinuousRender() {
+        return AppChrome.crtEnabled() || this.loading || this.searchFocused || this.hasActiveAnimatedThumbnail();
+    }
+
+    private boolean hasActiveAnimatedThumbnail() {
+        for (final MediaPlayer player: this.thumbnailPlayers.values()) {
+            if (player == null || player.error() || player.stopped() || player.ended()) continue;
+            if (player instanceof TxMediaPlayer) {
+                if (player.duration() > 0L && !player.paused()) return true;
+            } else if (!player.paused()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -283,45 +347,262 @@ public class MRLSelectorScreen extends Screen {
             this.checkLoadingState();
         }
 
-        this.updateThumbnailPlayers();
+        this.subscribeGroupMRLs();
 
-        DrawTool.setupOrtho(windowW, windowH);
+        final String groupName = this.ctx.selectedGroup != null ? this.ctx.selectedGroup.name() : "";
+        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Select media", groupName, "v" + WaterMedia.VERSION);
 
-        final int y = this.renderBanner(windowW, windowH) + 10;
-        final int maxHeight = windowH - 100 - y;
-        final int availableWidth = windowW - AppContext.PADDING * 2;
-
-        this.grid.maxHeight(maxHeight);
-        this.grid.calculateBounds(this.text, AppContext.PADDING, y, availableWidth);
-        this.grid.render(this.text, windowW, windowH);
-
-        DrawTool.restoreProjection();
+        this.renderSelectorLayout(windowW, windowH);
 
         if (this.loading) {
             this.renderLoadingDialog(windowW, windowH);
         }
     }
 
-    private int renderBanner(final int windowW, final int windowH) {
-        if (this.ctx.bannerTextureId <= 0) return AppContext.PADDING;
+    private void renderSelectorLayout(final int windowW, final int windowH) {
+        final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
+        if (uris.length == 0) return;
+        final List<Integer> visible = this.visibleIndices(uris);
+        if (visible.isEmpty()) {
+            this.selectedIndex = 0;
+        } else if (!visible.contains(this.selectedIndex)) {
+            this.selectedIndex = visible.get(0);
+        }
 
-        final int targetH = Math.min(Math.max(125, (int) (windowH * 0.17f)), windowH - 200);
-        final float scale = (float) targetH / this.ctx.bannerHeight;
-        final int renderH = (int) (this.ctx.bannerHeight * scale);
-        final int renderW = (int) (this.ctx.bannerWidth * scale);
+        final int top = AppChrome.contentTop();
+        final int bottom = AppChrome.contentBottom(windowH);
+        final int leftW = Math.min(380, Math.max(320, windowW / 3));
+        final int rowH = 66;
+        final int listX = 0;
+        final int listY = top;
+        final int listH = bottom - top;
+        final int searchH = 44;
+        final int rowsY = listY + searchH + 44;
+        final int visibleRows = Math.max(1, (listY + listH - rowsY) / rowH);
+        final int selectedPos = Math.max(0, visible.indexOf(this.selectedIndex));
+        if (selectedPos < this.scrollOffset) this.scrollOffset = selectedPos;
+        if (selectedPos >= this.scrollOffset + visibleRows) this.scrollOffset = selectedPos - visibleRows + 1;
+        this.scrollOffset = Math.max(0, Math.min(Math.max(0, visible.size() - visibleRows), this.scrollOffset));
+        this.updateThumbnailPlayers(this.activeThumbnailNames(uris, visible, visibleRows));
 
-        final int bannerX = (windowW - renderW) / 2;
+        RenderSystem.setupOrtho(windowW, windowH);
+        RenderSystem.fill(listX, listY, leftW, listH, AppTheme.alpha(AppTheme.BG_1, 150));
+        RenderSystem.lineV(leftW, listY, listH, AppTheme.STROKE_BRIGHT, 1f);
+        this.searchBounds = new Dimension(12, listY + 8, leftW - 24, 30);
+        RenderSystem.fill(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(), AppTheme.BG_2);
+        RenderSystem.rect(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(),
+                this.searchFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
+        if (this.searchFocused) RenderSystem.glowRect(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(), 0f, AppTheme.NEON, 0.24f);
+        final float searchScale = 0.58f;
+        final int searchTextX = this.searchBounds.x() + 30;
+        final int searchTextY = this.searchBounds.y() + Math.max(0, (this.searchBounds.height() - this.text.glyphHeight(searchScale)) / 2);
+        PixelIcon.draw("search", this.searchBounds.x() + 8, this.searchBounds.y() + (this.searchBounds.height() - 14) / 2, 14, AppTheme.TEXT_FAINT);
+        this.text.render(this.searchText.isEmpty() ? "filter..." : this.searchText,
+                searchTextX, searchTextY,
+                this.searchText.isEmpty() ? AppTheme.TEXT_FAINT : AppTheme.TEXT, searchScale);
+        if (this.searchFocused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
+            final int textW = this.searchText.isEmpty() ? 0 : this.text.width(this.searchText, searchScale);
+            final int caretX = Math.min(this.searchBounds.right() - 8, searchTextX + textW + (this.searchText.isEmpty() ? -5 : 1));
+            RenderSystem.fill(caretX, searchTextY, 2, this.text.glyphHeight(searchScale), AppTheme.NEON_LIGHT);
+        }
+        AppChrome.sectionHead(this.text, this.ctx.selectedGroup.name(), visible.size() + " items", 14, listY + searchH + 8);
+        this.renderFailedTag(leftW, listY + searchH + 8);
 
-        DrawTool.bindTexture(this.ctx.bannerTextureId);
-        DrawTool.color(1, 1, 1, 1);
-        DrawTool.blit(bannerX, AppContext.PADDING, renderW, renderH);
+        this.rowBounds.clear();
+        this.rowIndices.clear();
+        for (int i = 0; i < visibleRows && i + this.scrollOffset < visible.size(); i++) {
+            final int index = visible.get(i + this.scrollOffset);
+            final AppContext.TestURI uri = uris[index];
+            final Dimension row = new Dimension(8, rowsY + i * rowH, leftW - 16, rowH - 6);
+            this.rowBounds.add(row);
+            this.rowIndices.add(index);
+            this.renderMediaRow(uri, index, row, index == this.selectedIndex, windowW, windowH);
+        }
 
-        final int lineY = AppContext.PADDING + renderH + 15;
-        DrawTool.disableTextures();
-        DrawTool.lineH(0, lineY, windowW, 0.31f, 0.71f, 1f, 1f, 4);
-        DrawTool.enableTextures();
+        final int previewX = leftW + 18;
+        final int previewW = windowW - previewX - 18;
+        final int stackMargin = 18;
+        final int stackGap = 16;
+        final int panelH = Math.min(112, Math.max(96, (bottom - top) / 5));
+        final int previewH = Math.max(220, bottom - top - panelH - stackGap - stackMargin * 2);
+        final int stackH = previewH + stackGap + panelH;
+        final int previewY = top + Math.max(0, (bottom - top - stackH) / 2);
+        final AppContext.TestURI selected = uris[this.selectedIndex];
+        AppChrome.tvFrame(previewX, previewY, previewW, previewH, true);
+        this.renderSelectedPreview(selected, previewX + 8, previewY + 8, previewW - 16, previewH - 16, windowW, windowH);
 
-        return lineY + 20;
+        final int panelY = previewY + previewH + stackGap;
+        AppChrome.panel(previewX, panelY, previewW, panelH, false);
+        AppChrome.amberTriangle(previewX - 1, panelY - 1, 10, true);
+        AppChrome.amberTriangle(previewX + previewW - 9, panelY + panelH - 9, 10, false);
+        final MRL mrl = this.ctx.groupMRLs.get(selected.name());
+        final String title = this.text.truncateToWidth(selected.name().toUpperCase(), previewW - 410, 0.76f);
+        this.text.render(title, previewX + 16, panelY + 14, AppTheme.NEON_LIGHT, 0.76f);
+        final MediaType type = this.firstMediaType(mrl);
+        if (type != null) {
+            AppChrome.mediaTypeTag(this.text, previewX + 28 + this.text.width(title, 0.76f), panelY + 12, type);
+        }
+        this.text.render(this.text.truncateToWidth(selected.uri(), previewW - 270, 0.58f),
+                previewX + 16, panelY + 42, AppTheme.TEXT_SOFT, 0.58f);
+        final String status = mrl == null ? "NULL" : mrl.hasError() ? "ERROR" : mrl.ready() ? "READY" : "LOADING";
+        final java.awt.Color statusColor = mrl == null ? AppTheme.TEXT_FAINT : mrl.hasError() ? AppTheme.RED : mrl.ready() ? AppTheme.GREEN : AppTheme.NEON;
+        final String quality = this.bestQuality(mrl);
+        final int statusPipY = panelY + 72;
+        AppChrome.statusPip(previewX + 18, statusPipY, 10, statusColor, true);
+        this.text.render(quality + " - " + status, previewX + 36,
+                statusPipY + (10 - this.text.glyphHeight(0.58f)) / 2f, statusColor, 0.58f);
+        this.copyBounds = new Dimension(previewX + previewW - 314, panelY + 34, 154, 38);
+        this.playBounds = new Dimension(previewX + previewW - 148, panelY + 34, 130, 38);
+        this.renderPanelButton("copy", "COPY LINK", null, this.copyBounds, AppTheme.NEON_LIGHT, mrl != null);
+        this.renderPanelButton("play", "PLAY", "ENTER", this.playBounds, AppTheme.GREEN, mrl != null && mrl.ready() && !mrl.hasError());
+        RenderSystem.restoreProjection();
+    }
+
+    private Set<String> activeThumbnailNames(final AppContext.TestURI[] uris,
+                                             final List<Integer> visible,
+                                             final int visibleRows) {
+        final Set<String> active = new LinkedHashSet<>();
+        if (this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
+            active.add(uris[this.selectedIndex].name());
+        }
+        for (int i = 0; i < visibleRows && i + this.scrollOffset < visible.size(); i++) {
+            final int index = visible.get(i + this.scrollOffset);
+            if (index >= 0 && index < uris.length) active.add(uris[index].name());
+        }
+        return active;
+    }
+
+    private void renderFailedTag(final int rightEdge, final int sectionY) {
+        int failed = 0;
+        for (final MRL mrl: this.ctx.groupMRLs.values()) {
+            if (mrl != null && mrl.hasError()) failed++;
+        }
+        final String label = failed + " FAILED";
+        final int tagW = AppChrome.tagWidth(this.text, label);
+        AppChrome.tag(this.text, rightEdge - tagW - 18, sectionY + 2, label, failed > 0 ? AppTheme.RED : AppTheme.TEXT_FAINT);
+    }
+
+    private List<Integer> visibleIndices(final AppContext.TestURI[] uris) {
+        final List<Integer> visible = new ArrayList<>();
+        final String q = this.searchText == null ? "" : this.searchText.trim().toLowerCase();
+        for (int i = 0; i < uris.length; i++) {
+            if (q.isEmpty() || uris[i].name().toLowerCase().contains(q) || uris[i].uri().toLowerCase().contains(q)) {
+                visible.add(i);
+            }
+        }
+        return visible;
+    }
+
+    private void renderMediaRow(final AppContext.TestURI uri, final int index, final Dimension row,
+                                final boolean selected, final int windowW, final int windowH) {
+        final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+        final java.awt.Color stateColor = mrl == null ? AppTheme.TEXT_FAINT : mrl.hasError() ? AppTheme.RED : mrl.ready() ? AppTheme.GREEN : AppTheme.NEON;
+        if (selected) {
+            RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
+                    AppTheme.NEON.getRed() / 255f, AppTheme.NEON.getGreen() / 255f, AppTheme.NEON.getBlue() / 255f, 0.10f);
+            RenderSystem.rect(row.x(), row.y(), row.width(), row.height(), AppTheme.NEON, 1f);
+            RenderSystem.glowRect(row.x(), row.y(), row.width(), row.height(), 0f, AppTheme.NEON, 0.20f);
+        }
+        AppChrome.tvFrame(row.x() + 6, row.y() + 8, 70, 46, selected);
+        this.renderThumbnailContent(uri, row.x() + 12, row.y() + 14, 58, 34, windowH, true);
+        final int textX = row.x() + 88;
+        final int statusX = row.right() - 19;
+        final int maxTextW = Math.max(40, statusX - textX - 14);
+        this.text.render(this.text.truncateToWidth(uri.name().toUpperCase(), maxTextW, 0.66f),
+                textX, row.y() + 12, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, 0.66f);
+        this.text.render(this.text.truncateToWidth(uri.uri(), maxTextW, 0.48f),
+                textX, row.y() + 34, AppTheme.TEXT_FAINT, 0.48f);
+        AppChrome.statusPip(statusX, row.y() + 25, 8, stateColor, false);
+    }
+
+    private void renderSelectedPreview(final AppContext.TestURI uri, final int x, final int y,
+                                       final int w, final int h, final int windowW, final int windowH) {
+        this.renderThumbnailContent(uri, x, y, w, h, windowH, false);
+    }
+
+    private void renderThumbnailContent(final AppContext.TestURI uri, final int x, final int y,
+                                        final int w, final int h, final int windowH, final boolean mini) {
+        final MediaPlayer player = this.thumbnailPlayers.get(uri.name());
+        if (player != null && player.texture() > 0 && player.width() > 0 && player.height() > 0) {
+            RenderSystem.clip(x, y, w, h, windowH);
+            RenderSystem.bindTexture((int) player.texture());
+            RenderSystem.color(1f, 1f, 1f, 1f);
+            final float imgAspect = (float) player.width() / player.height();
+            final float boxAspect = (float) w / h;
+            float bw = w;
+            float bh = h;
+            float bx = x;
+            float by = y;
+            if (imgAspect > boxAspect) {
+                bw = h * imgAspect;
+                bx = x + (w - bw) / 2f;
+            } else {
+                bh = w / imgAspect;
+                by = y + (h - bh) / 2f;
+            }
+            RenderSystem.blit(bx, by, bw, bh);
+            RenderSystem.clearClip();
+            AppChrome.crtOverlay(x, y, w, h, windowH);
+        } else {
+            final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+            RenderSystem.fill(x, y, w, h, AppTheme.BG_0);
+            if (mini && (mrl == null || !mrl.hasError())) {
+                AppChrome.crtOverlay(x, y, w, h, windowH);
+                return;
+            }
+            final String label = mrl != null && mrl.hasError() ? (mini ? "error" : "ERROR") : mrl != null && mrl.ready() ? "[ media preview ]" : "LOADING...";
+            final java.awt.Color color = mrl != null && mrl.hasError() ? AppTheme.RED : mrl != null && mrl.ready() ? AppTheme.TEXT_SOFT : AppTheme.NEON;
+            if (!mini && mrl != null && mrl.hasError()) {
+                PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, AppTheme.RED);
+            }
+            final float scale = mini ? 0.44f : 0.72f;
+            final float textY = mini
+                    ? y + (h - this.text.glyphHeight(scale)) / 2f
+                    : y + h / 2f - this.text.lineHeight(scale) / 2f + 22;
+            this.text.render(label, x + (w - this.text.width(label, scale)) / 2,
+                    textY, color, scale);
+            AppChrome.crtOverlay(x, y, w, h, windowH);
+        }
+    }
+
+    private void renderPanelButton(final String icon, final String label, final String hotkey, final Dimension bounds,
+                                   final java.awt.Color color, final boolean enabled) {
+        final java.awt.Color actual = enabled ? color : AppTheme.TEXT_FAINT;
+        final boolean hover = enabled && bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
+        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 84) : AppTheme.alpha(AppTheme.BG_2, 220));
+        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), actual, 2f);
+        if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, actual, 0.18f);
+        final float scale = 0.74f;
+        final int iconSize = 15;
+        PixelIcon.draw(icon, bounds.x() + 11, bounds.y() + (bounds.height() - iconSize) / 2, iconSize, actual);
+        this.text.renderBold(label, bounds.x() + 34,
+                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(scale)) / 2f),
+                actual, scale);
+        if (hotkey != null) {
+            final int keyW = this.text.width(hotkey, 0.46f) + 12;
+            final int keyH = 20;
+            final int keyX = bounds.right() - keyW - 8;
+            final int keyY = bounds.y() + (bounds.height() - keyH) / 2;
+            RenderSystem.rect(keyX, keyY, keyW, keyH, AppTheme.STROKE, 1f);
+            this.text.render(hotkey, keyX + 6,
+                    keyY + Math.max(0, (keyH - this.text.glyphHeight(0.46f)) / 2f),
+                    AppTheme.TEXT_FAINT, 0.46f);
+        }
+    }
+
+    private MediaType firstMediaType(final MRL mrl) {
+        if (mrl == null || !mrl.ready() || mrl.hasError() || mrl.sources().isEmpty()) return null;
+        return mrl.sources().get(0).type();
+    }
+
+    private String bestQuality(final MRL mrl) {
+        if (mrl == null || !mrl.ready() || mrl.hasError() || mrl.sources().isEmpty()) return "UNKNOWN";
+        return mrl.sources().stream()
+                .flatMap(source -> source.availableQualities().stream())
+                .max(java.util.Comparator.comparingInt(q -> q.threshold))
+                .orElse(org.watermedia.api.util.MediaQuality.UNKNOWN)
+                .name();
     }
 
     @Override
@@ -329,37 +610,117 @@ public class MRLSelectorScreen extends Screen {
         if (this.loading) {
             if (key == GLFW_KEY_ESCAPE) {
                 this.loading = false;
+                this.loadGeneration++;
                 this.pendingUri = null;
             }
             return;
         }
 
         switch (key) {
-            case GLFW_KEY_UP -> this.grid.moveUp();
-            case GLFW_KEY_DOWN -> this.grid.moveDown();
-            case GLFW_KEY_LEFT -> this.grid.moveLeft();
-            case GLFW_KEY_RIGHT -> this.grid.moveRight();
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.grid.confirm();
-            case GLFW_KEY_ESCAPE -> this.goBack();
+            case GLFW_KEY_SLASH -> this.searchFocused = true;
+            case GLFW_KEY_BACKSPACE -> {
+                if (this.searchFocused && !this.searchText.isEmpty()) {
+                    this.searchText = this.searchText.substring(0, this.searchText.length() - 1);
+                    this.scrollOffset = 0;
+                }
+            }
+            case GLFW_KEY_UP -> this.moveSelection(-1);
+            case GLFW_KEY_DOWN -> this.moveSelection(1);
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
+                if (this.searchFocused) {
+                    this.searchFocused = false;
+                    return;
+                }
+                final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
+                if (uris.length > 0) this.handleSelect(this.selectedIndex, uris[this.selectedIndex]);
+            }
+            case GLFW_KEY_ESCAPE -> {
+                if (this.searchFocused) {
+                    this.searchFocused = false;
+                    if (!this.searchText.isEmpty()) {
+                        this.searchText = "";
+                        this.scrollOffset = 0;
+                    }
+                } else {
+                    this.goBack();
+                }
+            }
         }
+    }
+
+    private void moveSelection(final int delta) {
+        if (this.ctx.selectedGroup == null || this.ctx.selectedGroup.uris().length == 0) return;
+        final List<Integer> visible = this.visibleIndices(this.ctx.selectedGroup.uris());
+        if (visible.isEmpty()) return;
+        final int pos = Math.max(0, visible.indexOf(this.selectedIndex));
+        this.selectedIndex = visible.get(Math.max(0, Math.min(visible.size() - 1, pos + delta)));
+        this.ctx.playSelectionSound();
+    }
+
+    @Override
+    public void handleChar(final int codepoint) {
+        if (!this.searchFocused || this.loading) return;
+        if (codepoint < 32 || codepoint == 127) return;
+        this.searchText += new String(Character.toChars(codepoint));
+        this.scrollOffset = 0;
     }
 
     @Override
     public void handleMouseMove(final double mx, final double my) {
         if (this.loading) return;
-        this.grid.handleHover(mx, my);
+        if (this.searchBounds.contains(mx, my)) {
+            this.searchFocused = true;
+            return;
+        }
+        for (int i = 0; i < this.rowBounds.size(); i++) {
+            if (this.rowBounds.get(i).contains(mx, my)) {
+                final int index = this.rowIndices.get(i);
+                if (index != this.selectedIndex) {
+                    this.selectedIndex = index;
+                    this.ctx.playSelectionSound();
+                }
+                return;
+            }
+        }
     }
 
     @Override
     public void handleMouseClick(final double mx, final double my) {
         if (this.loading) return;
-        this.grid.handleClick(mx, my);
+        if (this.searchBounds.contains(mx, my)) {
+            this.searchFocused = true;
+            return;
+        }
+        this.searchFocused = false;
+        final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
+        if (this.copyBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(uris[this.selectedIndex].uri()), null);
+            this.ctx.playSelectionSound();
+            return;
+        }
+        if (this.playBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
+            this.handleSelect(this.selectedIndex, uris[this.selectedIndex]);
+            return;
+        }
+        for (int i = 0; i < this.rowBounds.size(); i++) {
+            if (this.rowBounds.get(i).contains(mx, my)) {
+                final int index = this.rowIndices.get(i);
+                if (index >= 0 && index < uris.length) {
+                    this.selectedIndex = index;
+                    this.handleSelect(index, uris[index]);
+                }
+                return;
+            }
+        }
     }
 
     @Override
     public void handleScroll(final double yOffset) {
         if (this.loading) return;
-        this.grid.handleScroll(yOffset);
+        if (this.ctx.selectedGroup == null) return;
+        final int visibleRows = Math.max(1, this.rowBounds.size());
+        final int max = Math.max(0, this.visibleIndices(this.ctx.selectedGroup.uris()).size() - visibleRows);
+        this.scrollOffset = Math.max(0, Math.min(max, this.scrollOffset + (int) (-yOffset)));
     }
 
     @Override

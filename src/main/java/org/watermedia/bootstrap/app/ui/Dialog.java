@@ -1,6 +1,6 @@
 package org.watermedia.bootstrap.app.ui;
 
-import org.watermedia.tools.DrawTool;
+import org.watermedia.bootstrap.app.render.RenderSystem;
 
 import java.awt.*;
 import java.util.ArrayList;
@@ -155,8 +155,8 @@ public class Dialog {
     public void render(final TextRenderer renderer, final int windowW, final int windowH) {
         if (!this.visible) return;
 
-        DrawTool.setupOrtho(windowW, windowH);
-        DrawTool.dialogBox(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height(), this.borderColor, BORDER_WIDTH);
+        RenderSystem.setupOrtho(windowW, windowH);
+        RenderSystem.dialogBox(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height(), this.borderColor, BORDER_WIDTH);
 
         int y = this.bounds.y() + this.padding;
         final int lineH = renderer.lineHeight();
@@ -201,7 +201,7 @@ public class Dialog {
             }
         }
 
-        DrawTool.restoreProjection();
+        RenderSystem.restoreProjection();
     }
 
     public Dimension centerIn(final TextRenderer text, final int windowW, final int windowH) {
