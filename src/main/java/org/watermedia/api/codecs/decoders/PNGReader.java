@@ -104,16 +104,30 @@ public class PNGReader extends ImageReader {
     private int framesDelivered;
     private final ImageData.Scan scan;
 
-    // CANVAS / OUTPUT
-    private int[][] outputBuffer;    // composited canvas (ARGB)
-    private int[][] previousBuffer;  // lazily saved canvas for DISPOSE_OP_PREVIOUS
-    private int[][] frameBuffer;     // reusable APNG frame decode target
+    // CANVAS / OUTPUT (1-D ARGB INT BUFFERS, STRIDE = canvasWidth)
+    private int canvasWidth;
+    private int canvasHeight;
+    private int[] outputBuffer;      // composited canvas (ARGB)
+    private int[] previousBuffer;    // lazily saved canvas for DISPOSE_OP_PREVIOUS
+    private int[] frameBuffer;       // reusable APNG frame decode target
     private ByteBuffer directOut;    // BGRA result, reused
     private IntBuffer directOutInts;
+
+    // ROW SCRATCH
     private byte[] passCurrentRow = new byte[0];
     private byte[] passPreviousRow = new byte[0];
+
+    // INFLATE
     private final Inflater inflater = new Inflater();
     private boolean inflaterClosed;
+    private byte[] decompressed = new byte[0]; // reused across frames
+
+    // PRECOMPUTED HOT-PATH INVARIANTS (computed in constructor)
+    private ColorType colorType;
+    private int depth;
+    private int bytesPerPixel;
+    private int[] indexedARGB;       // 256-entry palette LUT (ARGB with tRNS alpha baked in)
+    private int trnsR8 = -1, trnsG8 = -1, trnsB8 = -1, trnsGray8 = -1;
 
     public PNGReader(final ByteBuffer data) throws IOException {
         super(data);
@@ -124,16 +138,25 @@ public class PNGReader extends ImageReader {
         if (this.ihdr == null) throw new XCodecException("Missing IHDR chunk");
 
         this.gammaLUT = buildGammaLUT(this.gamma, this.srgb, this.cicp);
-        this.outputBuffer = new int[this.ihdr.height()][this.ihdr.width()];
-        this.directOut = ByteBuffer.allocateDirect(this.ihdr.width() * this.ihdr.height() * 4).order(ByteOrder.LITTLE_ENDIAN);
+        this.canvasWidth = this.ihdr.width();
+        this.canvasHeight = this.ihdr.height();
+        this.colorType = ColorType.of(this.ihdr.colorType());
+        this.depth = this.ihdr.depth();
+        this.bytesPerPixel = this.ihdr.bytesPerPixel();
+
+        final int pixelCount = this.canvasWidth * this.canvasHeight;
+        this.outputBuffer = new int[pixelCount];
+        this.directOut = ByteBuffer.allocateDirect(pixelCount * 4).order(ByteOrder.LITTLE_ENDIAN);
         this.directOutInts = this.directOut.asIntBuffer();
 
         // INIT CANVAS WITH BKGD OR TRANSPARENT
         if (this.bkgd != null) {
-            this.fillBuffer(this.outputBuffer, this.ihdr.width(), this.ihdr.height(), this.bkgdToARGB(this.bkgd, this.ihdr.depth(), this.plte));
-        } else {
-            this.clearBuffer(this.outputBuffer, this.ihdr.width(), this.ihdr.height());
+            Arrays.fill(this.outputBuffer, this.bkgdToARGB(this.bkgd, this.depth, this.plte));
         }
+        // else: zero-init from `new int[...]`
+
+        this.computeTrnsScaled();
+        this.precomputeIndexedLUT();
     }
 
     @Override public int width() { return this.ihdr.width(); }
@@ -219,31 +242,34 @@ public class PNGReader extends ImageReader {
                 : this.ihdr;
 
         // DECODE
-        final byte[] decompressed = this.inflate(compressed, frameIhdr);
+        final int decompressedLen = this.inflate(compressed, frameIhdr);
+        final byte[] decompressedBuf = this.decompressed;
 
-        final int[][] framePixels = this.decodeData(
-                decompressed,
-                frameIhdr,
-                fctl != null ? this.frameBuffer() : this.outputBuffer,
-                this.plte,
-                this.trns
-        );
+        final int[] framePixels = (fctl != null) ? this.frameBuffer() : this.outputBuffer;
+        this.decodeData(decompressedBuf, decompressedLen, frameIhdr, framePixels);
 
-        if (this.gammaLUT != null) applyGammaCorrection(framePixels, this.gammaLUT);
-        if (this.bkgd != null) this.flattenAlpha(framePixels, this.bkgd, this.ihdr.depth(), this.plte);
+        if (this.gammaLUT != null) {
+            applyGammaCorrection(framePixels, frameIhdr.width(), frameIhdr.height(), this.canvasWidth, this.gammaLUT);
+        }
+        if (this.bkgd != null) {
+            this.flattenAlpha(framePixels, frameIhdr.width(), frameIhdr.height(), this.canvasWidth,
+                    this.bkgd, this.depth, this.plte);
+        }
 
         if (fctl != null) {
             // APNG: composite onto canvas with blend/dispose
             if ((fctl.dispose() & 0xFF) == FCTL.DISPOSE_OP_PREVIOUS) {
-                this.copyBuffer(this.outputBuffer, this.previousBuffer(), this.ihdr.width(), this.ihdr.height());
+                final int[] prev = this.previousBuffer();
+                System.arraycopy(this.outputBuffer, 0, prev, 0, this.outputBuffer.length);
             }
             this.applyBlendOp(this.outputBuffer, framePixels, fctl);
             this.currentDelay = fctl.delayMillis();
-            this.toBGRAInto(this.outputBuffer, this.ihdr.width(), this.ihdr.height(), this.directOut);
-            this.applyDispose(this.outputBuffer, this.previousBuffer, fctl, this.bkgd, this.ihdr.depth(), this.plte, this.ihdr.width(), this.ihdr.height());
+            this.writeBGRA(this.outputBuffer);
+            this.applyDispose(this.outputBuffer, this.previousBuffer, fctl,
+                    this.bkgd, this.depth, this.plte, this.canvasWidth, this.canvasHeight);
         } else {
             this.currentDelay = 0L;
-            this.toBGRAInto(this.outputBuffer, this.ihdr.width(), this.ihdr.height(), this.directOut);
+            this.writeBGRA(this.outputBuffer);
         }
 
         this.framesDelivered++;
@@ -346,7 +372,7 @@ public class PNGReader extends ImageReader {
         }
     }
 
-    // ----- DECODE HELPERS (preserved from legacy PNG decoder) -----
+    // ----- DECODE HELPERS -----
 
     private void storePngText(final Map<String, List<String>> target, final String key, final String keyword, final String value) {
         if (keyword == null || keyword.isBlank() || value == null || value.isBlank()) return;
@@ -385,41 +411,47 @@ public class PNGReader extends ImageReader {
         return lut;
     }
 
-    private static void applyGammaCorrection(final int[][] pixels, final float[] lut) {
-        for (int y = 0; y < pixels.length; y++) {
-            for (int x = 0; x < pixels[y].length; x++) {
-                final int argb = pixels[y][x];
-                final int a = (argb >> 24) & 0xFF;
-                final int r = (argb >> 16) & 0xFF;
-                final int g = (argb >> 8) & 0xFF;
+    private static void applyGammaCorrection(final int[] pixels, final int w, final int h, final int stride, final float[] lut) {
+        for (int y = 0; y < h; y++) {
+            final int rowBase = y * stride;
+            for (int x = 0; x < w; x++) {
+                final int argb = pixels[rowBase + x];
+                final int a = (argb >>> 24) & 0xFF;
+                final int r = (argb >>> 16) & 0xFF;
+                final int g = (argb >>> 8) & 0xFF;
                 final int b = argb & 0xFF;
-                pixels[y][x] = (a << 24) | (Math.round(lut[r] * 255) << 16) | (Math.round(lut[g] * 255) << 8) | Math.round(lut[b] * 255);
+                pixels[rowBase + x] = (a << 24)
+                        | (Math.round(lut[r] * 255) << 16)
+                        | (Math.round(lut[g] * 255) << 8)
+                        | Math.round(lut[b] * 255);
             }
         }
     }
 
-    private void flattenAlpha(final int[][] pixels, final BKGD bkgd, final int depth, final PLTE plte) {
+    private void flattenAlpha(final int[] pixels, final int w, final int h, final int stride,
+                              final BKGD bkgd, final int depth, final PLTE plte) {
         final int bgColor = this.bkgdToARGB(bkgd, depth, plte);
         final int bgR = (bgColor >> 16) & 0xFF;
         final int bgG = (bgColor >> 8) & 0xFF;
         final int bgB = bgColor & 0xFF;
 
-        for (int y = 0; y < pixels.length; y++) {
-            for (int x = 0; x < pixels[y].length; x++) {
-                final int argb = pixels[y][x];
-                final int alpha = (argb >> 24) & 0xFF;
+        for (int y = 0; y < h; y++) {
+            final int rowBase = y * stride;
+            for (int x = 0; x < w; x++) {
+                final int argb = pixels[rowBase + x];
+                final int alpha = (argb >>> 24) & 0xFF;
                 if (alpha == 255) continue;
                 if (alpha == 0) {
-                    pixels[y][x] = 0xFF000000 | (bgR << 16) | (bgG << 8) | bgB;
+                    pixels[rowBase + x] = 0xFF000000 | (bgR << 16) | (bgG << 8) | bgB;
                     continue;
                 }
-                final int srcR = (argb >> 16) & 0xFF;
-                final int srcG = (argb >> 8) & 0xFF;
+                final int srcR = (argb >>> 16) & 0xFF;
+                final int srcG = (argb >>> 8) & 0xFF;
                 final int srcB = argb & 0xFF;
                 final int outR = ((srcR * alpha) + (bgR * (255 - alpha))) / 255;
                 final int outG = ((srcG * alpha) + (bgG * (255 - alpha))) / 255;
                 final int outB = ((srcB * alpha) + (bgB * (255 - alpha))) / 255;
-                pixels[y][x] = 0xFF000000 | (outR << 16) | (outG << 8) | outB;
+                pixels[rowBase + x] = 0xFF000000 | (outR << 16) | (outG << 8) | outB;
             }
         }
     }
@@ -429,16 +461,28 @@ public class PNGReader extends ImageReader {
         return bkgd.toRGB8(depth);
     }
 
-    private void fillBuffer(final int[][] buffer, final int width, final int height, final int color) {
-        for (int y = 0; y < height; y++) Arrays.fill(buffer[y], 0, width, color);
+    private void computeTrnsScaled() {
+        if (this.trns == null) return;
+        switch (this.colorType) {
+            case GREYSCALE -> this.trnsGray8 = scaleTo8Bit(this.trns.gray(), this.depth);
+            case TRUECOLOR -> {
+                this.trnsR8 = scaleTo8Bit(this.trns.red(), this.depth);
+                this.trnsG8 = scaleTo8Bit(this.trns.green(), this.depth);
+                this.trnsB8 = scaleTo8Bit(this.trns.blue(), this.depth);
+            }
+            default -> { /* indexed handled via LUT, alpha-types ignore tRNS */ }
+        }
     }
 
-    private void clearBuffer(final int[][] buffer, final int width, final int height) {
-        for (int y = 0; y < height; y++) Arrays.fill(buffer[y], 0, width, 0);
-    }
-
-    private void copyBuffer(final int[][] src, final int[][] dst, final int width, final int height) {
-        for (int y = 0; y < height; y++) System.arraycopy(src[y], 0, dst[y], 0, width);
+    private void precomputeIndexedLUT() {
+        if (this.colorType != ColorType.INDEXED || this.plte == null) return;
+        final int[] palette = this.plte.colors();
+        this.indexedARGB = new int[256];
+        for (int i = 0; i < 256; i++) {
+            final int rgb = (i < palette.length) ? palette[i] : 0;
+            final int alpha = (this.trns != null) ? this.trns.getAlpha(i) : 255;
+            this.indexedARGB[i] = (alpha << 24) | (rgb & 0x00FFFFFF);
+        }
     }
 
     private void validateIHDR(final IHDR ihdr) throws XCodecException {
@@ -467,36 +511,48 @@ public class PNGReader extends ImageReader {
         if (ihdr.interlace() != 0 && ihdr.interlace() != 1) throw new XCodecException("Unknown interlace method: " + ihdr.interlace());
     }
 
-    private byte[] inflate(final List<ChunkSlice> compressed, final IHDR ihdr) throws IOException {
+    /** Inflates compressed chunks into {@link #decompressed}; returns the number of valid bytes. */
+    private int inflate(final List<ChunkSlice> compressed, final IHDR ihdr) throws IOException {
         final Inflater inflater = this.inflater;
         inflater.reset();
-        byte[] output = new byte[Math.max(32, this.expectedInflatedBytes(ihdr))];
+        final int expected = this.expectedInflatedBytes(ihdr);
+        byte[] output = this.decompressed;
+        if (output.length < Math.max(32, expected)) {
+            output = new byte[Math.max(32, expected)];
+            this.decompressed = output;
+        }
         int outputSize = 0;
         try {
             for (final ChunkSlice chunk: compressed) {
                 if (chunk.length() <= 0) continue;
                 inflater.setInput(chunk.data(), chunk.offset(), chunk.length());
                 while (true) {
-                    if (outputSize == output.length) output = growInflateOutput(output);
+                    if (outputSize == output.length) {
+                        output = growInflateOutput(output);
+                        this.decompressed = output;
+                    }
                     final int len = inflater.inflate(output, outputSize, output.length - outputSize);
                     if (len > 0) {
                         outputSize += len;
                         continue;
                     }
-                    if (inflater.finished()) return outputSize == output.length ? output : Arrays.copyOf(output, outputSize);
+                    if (inflater.finished()) return outputSize;
                     if (inflater.needsDictionary()) throw new XCodecException("PNG uses unsupported compression dictionary");
                     if (inflater.needsInput()) break;
                     throw new XCodecException("Invalid compressed data stream");
                 }
             }
             while (true) {
-                if (outputSize == output.length) output = growInflateOutput(output);
+                if (outputSize == output.length) {
+                    output = growInflateOutput(output);
+                    this.decompressed = output;
+                }
                 final int len = inflater.inflate(output, outputSize, output.length - outputSize);
                 if (len > 0) {
                     outputSize += len;
                     continue;
                 }
-                if (inflater.finished()) return outputSize == output.length ? output : Arrays.copyOf(output, outputSize);
+                if (inflater.finished()) return outputSize;
                 if (inflater.needsDictionary()) throw new XCodecException("PNG uses unsupported compression dictionary");
                 if (inflater.needsInput()) throw new XCodecException("Incomplete compressed data");
                 throw new XCodecException("Invalid compressed data stream");
@@ -508,13 +564,13 @@ public class PNGReader extends ImageReader {
 
     private int expectedInflatedBytes(final IHDR ihdr) {
         if (ihdr.interlace() == 0) {
-            return (this.scanlineBytes(ihdr.width(), ihdr) + 1) * ihdr.height();
+            return (this.scanlineBytes(ihdr.width()) + 1) * ihdr.height();
         }
         int total = 0;
         for (int pass = 0; pass < 7; pass++) {
             final int pw = this.passDimension(ihdr.width(), ADAM7_X_START[pass], ADAM7_X_STEP[pass]);
             final int ph = this.passDimension(ihdr.height(), ADAM7_Y_START[pass], ADAM7_Y_STEP[pass]);
-            if (pw > 0 && ph > 0) total += (this.scanlineBytes(pw, ihdr) + 1) * ph;
+            if (pw > 0 && ph > 0) total += (this.scanlineBytes(pw) + 1) * ph;
         }
         return total;
     }
@@ -523,27 +579,26 @@ public class PNGReader extends ImageReader {
         return Arrays.copyOf(output, output.length + Math.max(8192, output.length >> 1));
     }
 
-    private int[][] decodeData(final byte[] data, final IHDR ihdr, final int[][] pixels, final PLTE plte, final TRNS trns) throws IOException {
+    private void decodeData(final byte[] data, final int dataLength, final IHDR ihdr, final int[] pixels) throws IOException {
         final int width = ihdr.width();
         final int height = ihdr.height();
-        final int bpp = ihdr.bytesPerPixel();
+        final int stride = this.canvasWidth;
 
         if (ihdr.interlace() == 0) {
-            this.decodePass(data, 0, pixels, 0, 0, 1, 1, width, height, ihdr, plte, trns, bpp);
+            this.decodePass(data, dataLength, 0, pixels, stride, 0, 0, 1, 1, width, height);
         } else {
             int dataOffset = 0;
             for (int pass = 0; pass < 7; pass++) {
                 final int pw = this.passDimension(width, ADAM7_X_START[pass], ADAM7_X_STEP[pass]);
                 final int ph = this.passDimension(height, ADAM7_Y_START[pass], ADAM7_Y_STEP[pass]);
                 if (pw > 0 && ph > 0) {
-                    dataOffset = this.decodePass(data, dataOffset, pixels,
+                    dataOffset = this.decodePass(data, dataLength, dataOffset, pixels, stride,
                             ADAM7_X_START[pass], ADAM7_Y_START[pass],
                             ADAM7_X_STEP[pass], ADAM7_Y_STEP[pass],
-                            pw, ph, ihdr, plte, trns, bpp);
+                            pw, ph);
                 }
             }
         }
-        return pixels;
     }
 
     private int passDimension(final int dim, final int start, final int step) {
@@ -551,28 +606,31 @@ public class PNGReader extends ImageReader {
         return (dim - start + step - 1) / step;
     }
 
-    private int decodePass(final byte[] data, final int dataOffset, final int[][] pixels,
+    private int decodePass(final byte[] data, final int dataLength, final int dataOffset,
+                           final int[] pixels, final int stride,
                            final int xStart, final int yStart, final int xStep, final int yStep,
-                           final int passWidth, final int passHeight,
-                           final IHDR ihdr, final PLTE plte, final TRNS trns, final int bpp) throws IOException {
-        final int scanlineBytes = this.scanlineBytes(passWidth, ihdr);
+                           final int passWidth, final int passHeight) throws IOException {
+        final int scanlineBytes = this.scanlineBytes(passWidth);
         this.ensurePassRowCapacity(scanlineBytes);
         byte[] currentRow = this.passCurrentRow;
         byte[] previousRow = this.passPreviousRow;
         Arrays.fill(previousRow, 0, scanlineBytes, (byte) 0);
         int offset = dataOffset;
+        final int bpp = this.bytesPerPixel;
+        final int imageWidth = this.ihdr.width();
 
         for (int passY = 0; passY < passHeight; passY++) {
-            if (offset >= data.length) throw new XCodecException("Unexpected end of image data");
+            if (offset >= dataLength) throw new XCodecException("Unexpected end of image data");
             final int filterType = data[offset++] & 0xFF;
-            if (offset + scanlineBytes > data.length) throw new XCodecException("Unexpected end of image data");
+            if (offset + scanlineBytes > dataLength) throw new XCodecException("Unexpected end of image data");
             System.arraycopy(data, offset, currentRow, 0, scanlineBytes);
             offset += scanlineBytes;
 
-            this.unfilterRow(currentRow, previousRow, filterType, bpp);
+            unfilterRow(currentRow, previousRow, scanlineBytes, filterType, bpp);
 
             final int imageY = yStart + passY * yStep;
-            this.decodeRowPixels(currentRow, pixels, imageY, xStart, xStep, passWidth, ihdr, plte, trns);
+            final int rowBase = imageY * stride;
+            this.writeRowPixels(currentRow, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
 
             final byte[] tmp = previousRow;
             previousRow = currentRow;
@@ -588,139 +646,280 @@ public class PNGReader extends ImageReader {
         if (this.passPreviousRow.length < scanlineBytes) this.passPreviousRow = new byte[scanlineBytes];
     }
 
-    private int scanlineBytes(final int width, final IHDR ihdr) {
-        final int depth = ihdr.depth();
-        final ColorType ct = ColorType.of(ihdr.colorType());
-        final int samples = switch (ct) {
+    private int scanlineBytes(final int width) {
+        final int samples = switch (this.colorType) {
             case GREYSCALE, INDEXED -> 1;
             case TRUECOLOR -> 3;
             case GREYSCALE_ALPHA -> 2;
             case TRUECOLOR_ALPHA -> 4;
             case FORBIDDEN_1, FORBIDDEN_5 -> 1;
         };
-        final int bitsPerPixel = samples * depth;
+        final int bitsPerPixel = samples * this.depth;
         return (width * bitsPerPixel + 7) / 8;
     }
 
-    private void unfilterRow(final byte[] currentRow, final byte[] previousRow, final int filterType, final int bpp) throws IOException {
-        final int length = currentRow.length;
+    private static void unfilterRow(final byte[] currentRow, final byte[] previousRow, final int length,
+                                    final int filterType, final int bpp) throws IOException {
         switch (filterType) {
-            case FILTER_NONE -> {}
+            case FILTER_NONE -> { /* no-op */ }
             case FILTER_SUB -> {
                 for (int i = bpp; i < length; i++) {
-                    final int a = currentRow[i - bpp] & 0xFF;
-                    currentRow[i] = (byte) ((currentRow[i] & 0xFF) + a);
+                    currentRow[i] = (byte) (currentRow[i] + currentRow[i - bpp]);
                 }
             }
             case FILTER_UP -> {
                 for (int i = 0; i < length; i++) {
-                    final int b = previousRow[i] & 0xFF;
-                    currentRow[i] = (byte) ((currentRow[i] & 0xFF) + b);
+                    currentRow[i] = (byte) (currentRow[i] + previousRow[i]);
                 }
             }
             case FILTER_AVERAGE -> {
-                for (int i = 0; i < length; i++) {
-                    final int a = (i >= bpp) ? (currentRow[i - bpp] & 0xFF) : 0;
+                for (int i = 0; i < bpp; i++) {
+                    final int b = previousRow[i] & 0xFF;
+                    currentRow[i] = (byte) ((currentRow[i] & 0xFF) + (b >> 1));
+                }
+                for (int i = bpp; i < length; i++) {
+                    final int a = currentRow[i - bpp] & 0xFF;
                     final int b = previousRow[i] & 0xFF;
                     currentRow[i] = (byte) ((currentRow[i] & 0xFF) + ((a + b) >> 1));
                 }
             }
             case FILTER_PAETH -> {
-                for (int i = 0; i < length; i++) {
-                    final int a = (i >= bpp) ? (currentRow[i - bpp] & 0xFF) : 0;
+                // Initial bpp bytes have no 'a' or 'c' neighbour (treated as 0); reduces to Up.
+                for (int i = 0; i < bpp; i++) {
                     final int b = previousRow[i] & 0xFF;
-                    final int c = (i >= bpp) ? (previousRow[i - bpp] & 0xFF) : 0;
-                    currentRow[i] = (byte) ((currentRow[i] & 0xFF) + this.paethPredictor(a, b, c));
+                    currentRow[i] = (byte) ((currentRow[i] & 0xFF) + b);
+                }
+                for (int i = bpp; i < length; i++) {
+                    final int a = currentRow[i - bpp] & 0xFF;
+                    final int b = previousRow[i] & 0xFF;
+                    final int c = previousRow[i - bpp] & 0xFF;
+                    final int p = a + b - c;
+                    final int pa = p > a ? p - a : a - p;
+                    final int pb = p > b ? p - b : b - p;
+                    final int pc = p > c ? p - c : c - p;
+                    final int pr = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+                    currentRow[i] = (byte) ((currentRow[i] & 0xFF) + pr);
                 }
             }
             default -> throw new XCodecException("Unknown filter type: " + filterType);
         }
     }
 
-    private int paethPredictor(final int a, final int b, final int c) {
-        final int p = a + b - c;
-        final int pa = Math.abs(p - a);
-        final int pb = Math.abs(p - b);
-        final int pc = Math.abs(p - c);
-        if (pa <= pb && pa <= pc) return a;
-        if (pb <= pc) return b;
-        return c;
+    /** Dispatches to a specialised row writer based on the precomputed colour type / depth. */
+    private void writeRowPixels(final byte[] row, final int[] pixels, final int rowBase,
+                                final int xStart, final int xStep, final int passWidth, final int imageWidth) throws IOException {
+        if (this.depth == 8) {
+            switch (this.colorType) {
+                case TRUECOLOR_ALPHA -> writeRow8TruecolorAlpha(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
+                case TRUECOLOR -> writeRow8Truecolor(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth,
+                        this.trnsR8, this.trnsG8, this.trnsB8);
+                case INDEXED -> writeRow8Indexed(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth, this.indexedARGB);
+                case GREYSCALE -> writeRow8Greyscale(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth, this.trnsGray8);
+                case GREYSCALE_ALPHA -> writeRow8GreyscaleAlpha(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
+                case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + this.ihdr.colorType());
+            }
+            return;
+        }
+        // Generic slow path for depth 1, 2, 4, 16
+        this.writeRowGeneric(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
     }
 
-    private void decodeRowPixels(final byte[] row, final int[][] pixels, final int y, final int xStart, final int xStep,
-                                 final int passWidth, final IHDR ihdr, final PLTE plte, final TRNS trns) throws IOException {
-        final int depth = ihdr.depth();
-        final ColorType ct = ColorType.of(ihdr.colorType());
-        final int imageWidth = ihdr.width();
+    private static void writeRow8TruecolorAlpha(final byte[] row, final int[] pixels, final int rowBase,
+                                                final int xStart, final int xStep, final int passWidth, final int imageWidth) {
+        int src = 0;
+        if (xStep == 1) {
+            final int dstStart = rowBase + xStart;
+            final int limit = Math.min(passWidth, imageWidth - xStart);
+            for (int i = 0; i < limit; i++) {
+                final int r = row[src] & 0xFF;
+                final int g = row[src + 1] & 0xFF;
+                final int b = row[src + 2] & 0xFF;
+                final int a = row[src + 3] & 0xFF;
+                src += 4;
+                pixels[dstStart + i] = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+        } else {
+            int x = xStart;
+            for (int i = 0; i < passWidth; i++) {
+                if (x >= imageWidth) break;
+                final int r = row[src] & 0xFF;
+                final int g = row[src + 1] & 0xFF;
+                final int b = row[src + 2] & 0xFF;
+                final int a = row[src + 3] & 0xFF;
+                src += 4;
+                pixels[rowBase + x] = (a << 24) | (r << 16) | (g << 8) | b;
+                x += xStep;
+            }
+        }
+    }
+
+    private static void writeRow8Truecolor(final byte[] row, final int[] pixels, final int rowBase,
+                                           final int xStart, final int xStep, final int passWidth, final int imageWidth,
+                                           final int trnsR, final int trnsG, final int trnsB) {
+        final boolean hasTrns = trnsR >= 0;
+        int src = 0;
+        if (xStep == 1) {
+            final int dstStart = rowBase + xStart;
+            final int limit = Math.min(passWidth, imageWidth - xStart);
+            for (int i = 0; i < limit; i++) {
+                final int r = row[src] & 0xFF;
+                final int g = row[src + 1] & 0xFF;
+                final int b = row[src + 2] & 0xFF;
+                src += 3;
+                final int alpha = (hasTrns && r == trnsR && g == trnsG && b == trnsB) ? 0 : 255;
+                pixels[dstStart + i] = (alpha << 24) | (r << 16) | (g << 8) | b;
+            }
+        } else {
+            int x = xStart;
+            for (int i = 0; i < passWidth; i++) {
+                if (x >= imageWidth) break;
+                final int r = row[src] & 0xFF;
+                final int g = row[src + 1] & 0xFF;
+                final int b = row[src + 2] & 0xFF;
+                src += 3;
+                final int alpha = (hasTrns && r == trnsR && g == trnsG && b == trnsB) ? 0 : 255;
+                pixels[rowBase + x] = (alpha << 24) | (r << 16) | (g << 8) | b;
+                x += xStep;
+            }
+        }
+    }
+
+    private static void writeRow8Indexed(final byte[] row, final int[] pixels, final int rowBase,
+                                         final int xStart, final int xStep, final int passWidth, final int imageWidth,
+                                         final int[] lut) throws IOException {
+        if (lut == null) throw new XCodecException("Indexed-color image without PLTE");
+        if (xStep == 1) {
+            final int dstStart = rowBase + xStart;
+            final int limit = Math.min(passWidth, imageWidth - xStart);
+            for (int i = 0; i < limit; i++) {
+                pixels[dstStart + i] = lut[row[i] & 0xFF];
+            }
+        } else {
+            int x = xStart;
+            for (int i = 0; i < passWidth; i++) {
+                if (x >= imageWidth) break;
+                pixels[rowBase + x] = lut[row[i] & 0xFF];
+                x += xStep;
+            }
+        }
+    }
+
+    private static void writeRow8Greyscale(final byte[] row, final int[] pixels, final int rowBase,
+                                           final int xStart, final int xStep, final int passWidth, final int imageWidth,
+                                           final int trnsGray) {
+        final boolean hasTrns = trnsGray >= 0;
+        if (xStep == 1) {
+            final int dstStart = rowBase + xStart;
+            final int limit = Math.min(passWidth, imageWidth - xStart);
+            for (int i = 0; i < limit; i++) {
+                final int gray = row[i] & 0xFF;
+                final int alpha = (hasTrns && gray == trnsGray) ? 0 : 255;
+                pixels[dstStart + i] = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+            }
+        } else {
+            int x = xStart;
+            for (int i = 0; i < passWidth; i++) {
+                if (x >= imageWidth) break;
+                final int gray = row[i] & 0xFF;
+                final int alpha = (hasTrns && gray == trnsGray) ? 0 : 255;
+                pixels[rowBase + x] = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                x += xStep;
+            }
+        }
+    }
+
+    private static void writeRow8GreyscaleAlpha(final byte[] row, final int[] pixels, final int rowBase,
+                                                final int xStart, final int xStep, final int passWidth, final int imageWidth) {
+        int src = 0;
+        if (xStep == 1) {
+            final int dstStart = rowBase + xStart;
+            final int limit = Math.min(passWidth, imageWidth - xStart);
+            for (int i = 0; i < limit; i++) {
+                final int gray = row[src] & 0xFF;
+                final int alpha = row[src + 1] & 0xFF;
+                src += 2;
+                pixels[dstStart + i] = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+            }
+        } else {
+            int x = xStart;
+            for (int i = 0; i < passWidth; i++) {
+                if (x >= imageWidth) break;
+                final int gray = row[src] & 0xFF;
+                final int alpha = row[src + 1] & 0xFF;
+                src += 2;
+                pixels[rowBase + x] = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                x += xStep;
+            }
+        }
+    }
+
+    /** Generic fallback for depths 1, 2, 4, 16 (rare). */
+    private void writeRowGeneric(final byte[] row, final int[] pixels, final int rowBase,
+                                 final int xStart, final int xStep, final int passWidth, final int imageWidth) throws IOException {
+        final int d = this.depth;
+        final ColorType ct = this.colorType;
         int bitOffset = 0;
 
         for (int passX = 0; passX < passWidth; passX++) {
             final int x = xStart + passX * xStep;
             if (x >= imageWidth) break;
 
-            pixels[y][x] = switch (ct) {
+            pixels[rowBase + x] = switch (ct) {
                 case GREYSCALE -> {
-                    int gray = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    gray = this.scaleTo8Bit(gray, depth);
+                    int gray = extractSample(row, bitOffset, d); bitOffset += d;
+                    gray = scaleTo8Bit(gray, d);
                     int alpha = 255;
-                    if (trns != null && gray == trns.gray()) alpha = 0;
+                    if (this.trns != null && gray == this.trns.gray()) alpha = 0;
                     yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
                 }
                 case TRUECOLOR -> {
-                    int r = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    int g = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    int b = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    r = this.scaleTo8Bit(r, depth);
-                    g = this.scaleTo8Bit(g, depth);
-                    b = this.scaleTo8Bit(b, depth);
+                    int r = extractSample(row, bitOffset, d); bitOffset += d;
+                    int g = extractSample(row, bitOffset, d); bitOffset += d;
+                    int b = extractSample(row, bitOffset, d); bitOffset += d;
+                    final int rRaw = r, gRaw = g, bRaw = b;
+                    r = scaleTo8Bit(r, d); g = scaleTo8Bit(g, d); b = scaleTo8Bit(b, d);
                     int alpha = 255;
-                    if (trns != null && r == this.scaleTo8Bit(trns.red(), depth)
-                            && g == this.scaleTo8Bit(trns.green(), depth)
-                            && b == this.scaleTo8Bit(trns.blue(), depth)) alpha = 0;
+                    if (this.trns != null && rRaw == this.trns.red() && gRaw == this.trns.green() && bRaw == this.trns.blue()) alpha = 0;
                     yield (alpha << 24) | (r << 16) | (g << 8) | b;
                 }
                 case INDEXED -> {
-                    final int index = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    if (plte == null) throw new XCodecException("Indexed-color image without PLTE");
-                    final int rgb = plte.getColor(index);
-                    final int alpha = (trns != null) ? trns.getAlpha(index) : 255;
-                    yield (alpha << 24) | rgb;
+                    final int index = extractSample(row, bitOffset, d); bitOffset += d;
+                    if (this.indexedARGB == null) throw new XCodecException("Indexed-color image without PLTE");
+                    yield this.indexedARGB[index];
                 }
                 case GREYSCALE_ALPHA -> {
-                    int gray = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    int alpha = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    gray = this.scaleTo8Bit(gray, depth);
-                    alpha = this.scaleTo8Bit(alpha, depth);
+                    int gray = extractSample(row, bitOffset, d); bitOffset += d;
+                    int alpha = extractSample(row, bitOffset, d); bitOffset += d;
+                    gray = scaleTo8Bit(gray, d);
+                    alpha = scaleTo8Bit(alpha, d);
                     yield (alpha << 24) | (gray << 16) | (gray << 8) | gray;
                 }
                 case TRUECOLOR_ALPHA -> {
-                    int r = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    int g = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    int b = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    int alpha = this.extractSample(row, bitOffset, depth); bitOffset += depth;
-                    r = this.scaleTo8Bit(r, depth);
-                    g = this.scaleTo8Bit(g, depth);
-                    b = this.scaleTo8Bit(b, depth);
-                    alpha = this.scaleTo8Bit(alpha, depth);
+                    int r = extractSample(row, bitOffset, d); bitOffset += d;
+                    int g = extractSample(row, bitOffset, d); bitOffset += d;
+                    int b = extractSample(row, bitOffset, d); bitOffset += d;
+                    int alpha = extractSample(row, bitOffset, d); bitOffset += d;
+                    r = scaleTo8Bit(r, d); g = scaleTo8Bit(g, d); b = scaleTo8Bit(b, d);
+                    alpha = scaleTo8Bit(alpha, d);
                     yield (alpha << 24) | (r << 16) | (g << 8) | b;
                 }
-                case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + ihdr.colorType());
+                case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + this.ihdr.colorType());
             };
         }
     }
 
-    private int extractSample(final byte[] row, final int bitOffset, final int depth) {
-        final int byteOffset = bitOffset / 8;
+    private static int extractSample(final byte[] row, final int bitOffset, final int depth) {
+        final int byteOffset = bitOffset >> 3;
         if (depth >= 8) {
             if (depth == 8) return row[byteOffset] & 0xFF;
             return ((row[byteOffset] & 0xFF) << 8) | (row[byteOffset + 1] & 0xFF);
         }
-        final int bitInByte = 8 - (bitOffset % 8) - depth;
+        final int bitInByte = 8 - (bitOffset & 7) - depth;
         final int mask = (1 << depth) - 1;
         return (row[byteOffset] >> bitInByte) & mask;
     }
 
-    private int scaleTo8Bit(final int value, final int depth) {
+    private static int scaleTo8Bit(final int value, final int depth) {
         if (depth == 8) return value;
         if (depth == 16) return value >> 8;
         if (depth == 1) return value * 255;
@@ -729,92 +928,108 @@ public class PNGReader extends ImageReader {
         return value;
     }
 
-    private void toBGRAInto(final int[][] pixels, final int width, final int height, final ByteBuffer dst) {
-        dst.clear();
+    private void writeBGRA(final int[] pixels) {
+        this.directOut.clear();
         this.directOutInts.clear();
-        for (int y = 0; y < height; y++) {
-            this.directOutInts.put(pixels[y], 0, width);
-        }
-        dst.position(0).limit(width * height * 4);
+        this.directOutInts.put(pixels, 0, this.canvasWidth * this.canvasHeight);
+        this.directOut.position(0).limit(this.canvasWidth * this.canvasHeight * 4);
     }
 
-    private void applyDispose(final int[][] outputBuffer, final int[][] previousBuffer, final FCTL fctl,
-                              final BKGD bkgd, final int depth, final PLTE plte, final int canvasWidth, final int canvasHeight) {
+    private void applyDispose(final int[] outputBuffer, final int[] previousBuffer, final FCTL fctl,
+                              final BKGD bkgd, final int depth, final PLTE plte,
+                              final int canvasWidth, final int canvasHeight) {
         final int disposeOp = fctl.dispose() & 0xFF;
         final int xOff = fctl.xOffset();
         final int yOff = fctl.yOffset();
-        final int fw = fctl.width();
-        final int fh = fctl.height();
+        final int fw = Math.min(fctl.width(), canvasWidth - xOff);
+        final int fh = Math.min(fctl.height(), canvasHeight - yOff);
+        if (fw <= 0 || fh <= 0) return;
 
         switch (disposeOp) {
-            case FCTL.DISPOSE_OP_NONE -> {}
+            case FCTL.DISPOSE_OP_NONE -> { /* leave canvas as-is */ }
             case FCTL.DISPOSE_OP_BACKGROUND -> {
                 final int bg = (bkgd != null) ? this.bkgdToARGB(bkgd, depth, plte) : 0x00000000;
-                for (int y = yOff; y < yOff + fh && y < canvasHeight; y++) {
-                    for (int x = xOff; x < xOff + fw && x < canvasWidth; x++) {
-                        outputBuffer[y][x] = bg;
-                    }
+                for (int y = 0; y < fh; y++) {
+                    final int rowBase = (yOff + y) * canvasWidth + xOff;
+                    Arrays.fill(outputBuffer, rowBase, rowBase + fw, bg);
                 }
             }
             case FCTL.DISPOSE_OP_PREVIOUS -> {
                 if (previousBuffer == null) return;
-                for (int y = yOff; y < yOff + fh && y < canvasHeight; y++) {
-                    for (int x = xOff; x < xOff + fw && x < canvasWidth; x++) {
-                        outputBuffer[y][x] = previousBuffer[y][x];
-                    }
+                for (int y = 0; y < fh; y++) {
+                    final int rowBase = (yOff + y) * canvasWidth + xOff;
+                    System.arraycopy(previousBuffer, rowBase, outputBuffer, rowBase, fw);
                 }
             }
         }
     }
 
-    private int[][] frameBuffer() {
+    private int[] frameBuffer() {
         if (this.frameBuffer == null) {
-            this.frameBuffer = new int[this.ihdr.height()][this.ihdr.width()];
+            this.frameBuffer = new int[this.canvasWidth * this.canvasHeight];
         }
         return this.frameBuffer;
     }
 
-    private int[][] previousBuffer() {
+    private int[] previousBuffer() {
         if (this.previousBuffer == null) {
-            this.previousBuffer = new int[this.ihdr.height()][this.ihdr.width()];
+            this.previousBuffer = new int[this.canvasWidth * this.canvasHeight];
         }
         return this.previousBuffer;
     }
 
-    private void applyBlendOp(final int[][] outputBuffer, final int[][] framePixels, final FCTL fctl) {
+    private void applyBlendOp(final int[] outputBuffer, final int[] framePixels, final FCTL fctl) {
         final int blendOp = fctl.blend() & 0xFF;
         final int xOff = fctl.xOffset();
         final int yOff = fctl.yOffset();
-        final int fw = fctl.width();
-        final int fh = fctl.height();
+        final int fw = Math.min(fctl.width(), this.canvasWidth - xOff);
+        final int fh = Math.min(fctl.height(), this.canvasHeight - yOff);
+        if (fw <= 0 || fh <= 0) return;
+        final int stride = this.canvasWidth;
 
-        for (int y = 0; y < fh; y++) {
-            final int outY = yOff + y;
-            if (outY >= outputBuffer.length) break;
-            for (int x = 0; x < fw; x++) {
-                final int outX = xOff + x;
-                if (outX >= outputBuffer[0].length) break;
-                final int srcARGB = framePixels[y][x];
-                switch (blendOp) {
-                    case FCTL.BLEND_OP_SOURCE -> outputBuffer[outY][outX] = srcARGB;
-                    case FCTL.BLEND_OP_OVER -> outputBuffer[outY][outX] = this.alphaComposite(srcARGB, outputBuffer[outY][outX]);
-                    default -> {
-                        outputBuffer[outY][outX] = srcARGB;
-                        LOGGER.warn(IT, "Unknown blend operation: {}", blendOp);
+        switch (blendOp) {
+            case FCTL.BLEND_OP_SOURCE -> {
+                for (int y = 0; y < fh; y++) {
+                    final int srcBase = y * stride;
+                    final int dstBase = (yOff + y) * stride + xOff;
+                    System.arraycopy(framePixels, srcBase, outputBuffer, dstBase, fw);
+                }
+            }
+            case FCTL.BLEND_OP_OVER -> {
+                for (int y = 0; y < fh; y++) {
+                    final int srcBase = y * stride;
+                    final int dstBase = (yOff + y) * stride + xOff;
+                    for (int x = 0; x < fw; x++) {
+                        final int src = framePixels[srcBase + x];
+                        final int alpha = (src >>> 24) & 0xFF;
+                        if (alpha == 255) {
+                            outputBuffer[dstBase + x] = src;
+                        } else if (alpha != 0) {
+                            outputBuffer[dstBase + x] = alphaComposite(src, outputBuffer[dstBase + x]);
+                        }
+                        // alpha == 0 → leave destination untouched
                     }
+                }
+            }
+            default -> {
+                LOGGER.warn(IT, "Unknown blend operation: {}", blendOp);
+                for (int y = 0; y < fh; y++) {
+                    final int srcBase = y * stride;
+                    final int dstBase = (yOff + y) * stride + xOff;
+                    System.arraycopy(framePixels, srcBase, outputBuffer, dstBase, fw);
                 }
             }
         }
     }
 
-    private int alphaComposite(final int srcARGB, final int dstARGB) {
-        final int srcA = (srcARGB >> 24) & 0xFF;
-        final int srcR = (srcARGB >> 16) & 0xFF;
-        final int srcG = (srcARGB >> 8) & 0xFF;
+    private static int alphaComposite(final int srcARGB, final int dstARGB) {
+        final int srcA = (srcARGB >>> 24) & 0xFF;
+        final int srcR = (srcARGB >>> 16) & 0xFF;
+        final int srcG = (srcARGB >>> 8) & 0xFF;
         final int srcB = srcARGB & 0xFF;
-        final int dstA = (dstARGB >> 24) & 0xFF;
-        final int dstR = (dstARGB >> 16) & 0xFF;
-        final int dstG = (dstARGB >> 8) & 0xFF;
+        final int dstA = (dstARGB >>> 24) & 0xFF;
+        final int dstR = (dstARGB >>> 16) & 0xFF;
+        final int dstG = (dstARGB >>> 8) & 0xFF;
         final int dstB = dstARGB & 0xFF;
         final int srcRA = srcR * srcA, srcGA = srcG * srcA, srcBA = srcB * srcA;
         final int dstRA = dstR * dstA, dstGA = dstG * dstA, dstBA = dstB * dstA;
@@ -823,9 +1038,9 @@ public class PNGReader extends ImageReader {
         int outR = (srcRA + ((dstRA * (255 - srcA)) / 255)) / outA;
         int outG = (srcGA + ((dstGA * (255 - srcA)) / 255)) / outA;
         int outB = (srcBA + ((dstBA * (255 - srcA)) / 255)) / outA;
-        outR = Math.min(255, Math.max(0, outR));
-        outG = Math.min(255, Math.max(0, outG));
-        outB = Math.min(255, Math.max(0, outB));
+        if (outR > 255) outR = 255; else if (outR < 0) outR = 0;
+        if (outG > 255) outG = 255; else if (outG < 0) outG = 0;
+        if (outB > 255) outB = 255; else if (outB < 0) outB = 0;
         return (outA << 24) | (outR << 16) | (outG << 8) | outB;
     }
 
