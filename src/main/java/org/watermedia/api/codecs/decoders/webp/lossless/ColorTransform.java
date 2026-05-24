@@ -7,37 +7,37 @@ public final class ColorTransform {
 
     // APPLY INVERSE COLOR TRANSFORM
     public static void inverse(final int[] pixels, final int width, final int height, final int[] transforms, final int blockBits) {
+        if (width == 0 || height == 0) return;
         final int blockSize = 1 << blockBits;
         final int blocksPerRow = (width + blockSize - 1) / blockSize;
 
         for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                final int pos = y * width + x;
-                final int pixel = pixels[pos];
+            final int rowOff = (y >> blockBits) * blocksPerRow;
+            final int yOff = y * width;
 
-                // GET TRANSFORM ELEMENT FOR THIS BLOCK
-                final int blockX = x >> blockBits;
-                final int blockY = y >> blockBits;
-                final int transform = transforms[blockY * blocksPerRow + blockX];
+            for (int blockX = 0; blockX < blocksPerRow; blockX++) {
+                final int transform = transforms[rowOff + blockX];
+                final byte greenToRed = (byte) (transform & 0xFF);
+                final byte greenToBlue = (byte) ((transform >> 8) & 0xFF);
+                final byte redToBlue = (byte) ((transform >> 16) & 0xFF);
+                final int xStart = blockX << blockBits;
+                final int xEnd = Math.min(width, xStart + blockSize);
 
-                // EXTRACT TRANSFORM COMPONENTS FROM ARGB
-                // STORED AS: A=255, R=red_to_blue, G=green_to_blue, B=green_to_red
-                final int greenToRed = (byte) (transform & 0xFF);
-                final int greenToBlue = (byte) ((transform >> 8) & 0xFF);
-                final int redToBlue = (byte) ((transform >> 16) & 0xFF);
+                for (int x = xStart; x < xEnd; x++) {
+                    final int pos = yOff + x;
+                    final int pixel = pixels[pos];
 
-                // EXTRACT PIXEL COMPONENTS
-                final int a = (pixel >> 24) & 0xFF;
-                final int r = (pixel >> 16) & 0xFF;
-                final int g = (pixel >> 8) & 0xFF;
-                final int b = pixel & 0xFF;
+                    final int a = pixel & 0xFF000000;
+                    final int r = (pixel >> 16) & 0xFF;
+                    final int g = (pixel >> 8) & 0xFF;
+                    final int b = pixel & 0xFF;
 
-                // APPLY INVERSE TRANSFORM (ADD DELTAS)
-                final int newR = (r + colorTransformDelta((byte) greenToRed, (byte) g)) & 0xFF;
-                int newB = (b + colorTransformDelta((byte) greenToBlue, (byte) g)) & 0xFF;
-                newB = (newB + colorTransformDelta((byte) redToBlue, (byte) newR)) & 0xFF;
+                    final int newR = (r + ((greenToRed * (byte) g) >> 5)) & 0xFF;
+                    int newB = (b + ((greenToBlue * (byte) g) >> 5)) & 0xFF;
+                    newB = (newB + ((redToBlue * (byte) newR) >> 5)) & 0xFF;
 
-                pixels[pos] = (a << 24) | (newR << 16) | (g << 8) | newB;
+                    pixels[pos] = a | (newR << 16) | (g << 8) | newB;
+                }
             }
         }
     }

@@ -14,13 +14,15 @@ import java.nio.ByteOrder;
  * read(2) with bits [b0, b1] returns b0 | (b1 << 1)
  */
 public final class BitReader {
+    public static final int MAX_BURST_BITS = 24;
+
     private final ByteBuffer buf;
-    private int bitBuf;      // Accumulated bits buffer
-    private int bitsAvail;   // Number of available bits in buffer
+    private long bitBuf;     // LSB-aligned accumulator, low `bitsAvail` bits valid
+    private int bitsAvail;
 
     public BitReader(final ByteBuffer buffer) {
         this.buf = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
-        this.bitBuf = 0;
+        this.bitBuf = 0L;
         this.bitsAvail = 0;
     }
 
@@ -29,14 +31,22 @@ public final class BitReader {
         slice.position(off);
         slice.limit(off + len);
         this.buf = slice.slice().order(ByteOrder.LITTLE_ENDIAN);
-        this.bitBuf = 0;
+        this.bitBuf = 0L;
         this.bitsAvail = 0;
     }
 
-    // ENSURE AT LEAST 'BITS' BITS ARE AVAILABLE IN THE BUFFER. LOADS MORE BYTES FROM THE STREAM IF NEEDED. RETURNS ACTUAL NUMBER OF BITS AVAILABLE (MAY BE LESS THAN REQUESTED IF EOF).
+    // ENSURE AT LEAST 'BITS' BITS ARE AVAILABLE. PREFERS BATCHED 32-BIT REFILL WHEN POSSIBLE,
+    // FALLS BACK TO BYTE-BY-BYTE NEAR EOF. RETURNS ACTUAL BITS AVAILABLE (MAY BE LESS THAN
+    // REQUESTED IF EOF).
     private int ensureBits(final int bits) {
+        if (this.bitsAvail >= bits) return this.bitsAvail;
+        while (this.bitsAvail <= 32 && this.buf.remaining() >= 4) {
+            final long word = this.buf.getInt() & 0xFFFFFFFFL;
+            this.bitBuf |= word << this.bitsAvail;
+            this.bitsAvail += 32;
+        }
         while (this.bitsAvail < bits && this.buf.hasRemaining()) {
-            this.bitBuf |= (this.buf.get() & 0xFF) << this.bitsAvail;
+            this.bitBuf |= ((long) (this.buf.get() & 0xFF)) << this.bitsAvail;
             this.bitsAvail += 8;
         }
         return this.bitsAvail;
@@ -49,14 +59,12 @@ public final class BitReader {
      */
     public int peek(final int bits) throws XCodecException {
         if (bits == 0) return 0;
-        if (bits > 24) throw new XCodecException("Cannot peek more than 24 bits at once");
+        if (bits > MAX_BURST_BITS) throw new XCodecException("Cannot peek more than 24 bits at once");
 
         final int available = this.ensureBits(bits);
+        if (available == 0) return 0;
         final int actualBits = Math.min(bits, available);
-        if (actualBits == 0) {
-            return 0;  // No bits available
-        }
-        return this.bitBuf & ((1 << actualBits) - 1);
+        return (int) (this.bitBuf & ((1L << actualBits) - 1L));
     }
 
     /**
@@ -65,14 +73,14 @@ public final class BitReader {
      */
     public int read(final int bits) throws XCodecException {
         if (bits == 0) return 0;
-        if (bits > 24) throw new XCodecException("Cannot read more than 24 bits at once");
+        if (bits > MAX_BURST_BITS) throw new XCodecException("Cannot read more than 24 bits at once");
 
         final int available = this.ensureBits(bits);
         if (available < bits) {
             throw new XCodecException("Unexpected end of data: needed " + bits + " bits, only " + available + " available");
         }
 
-        final int result = this.bitBuf & ((1 << bits) - 1);
+        final int result = (int) (this.bitBuf & ((1L << bits) - 1L));
         this.bitBuf >>>= bits;
         this.bitsAvail -= bits;
         return result;
@@ -82,7 +90,12 @@ public final class BitReader {
      * Read single bit as boolean.
      */
     public boolean readBool() throws XCodecException {
-        return this.read(1) == 1;
+        if (this.bitsAvail == 0) this.ensureBits(1);
+        if (this.bitsAvail == 0) throw new XCodecException("Unexpected end of data: needed 1 bit, only 0 available");
+        final boolean result = (this.bitBuf & 1L) != 0L;
+        this.bitBuf >>>= 1;
+        this.bitsAvail -= 1;
+        return result;
     }
 
     /**
@@ -105,9 +118,32 @@ public final class BitReader {
             this.bitBuf >>>= bits;
             this.bitsAvail -= bits;
         } else {
-            // Need to read more
             this.read(bits);
         }
+    }
+
+    /**
+     * Drop N already-available bits without bounds checking.
+     * MUST be paired with a successful {@link #peek(int)} that returned at least {@code bits} bits.
+     */
+    public void consume(final int bits) {
+        this.bitBuf >>>= bits;
+        this.bitsAvail -= bits;
+    }
+
+    /**
+     * Number of bits currently buffered without touching the underlying ByteBuffer.
+     */
+    public int bitsAvail() {
+        return this.bitsAvail;
+    }
+
+    /**
+     * Make sure the accumulator has at least the requested number of bits when possible.
+     * Returns the actual bits available (may be less than requested at EOF).
+     */
+    public int prefetch(final int bits) {
+        return this.ensureBits(bits);
     }
 
     public void readBytes(final byte[] dest, final int off, final int len) {
@@ -116,7 +152,7 @@ public final class BitReader {
     }
 
     public void flushBits() {
-        this.bitBuf = 0;
+        this.bitBuf = 0L;
         this.bitsAvail = 0;
     }
 
@@ -130,7 +166,7 @@ public final class BitReader {
     }
 
     public String bitPosition() {
-        return "bytes=" + this.buf.remaining() + ",bitsAvail=" + this.bitsAvail + ",bitBuf=0x" + Integer.toHexString(this.bitBuf);
+        return "bytes=" + this.buf.remaining() + ",bitsAvail=" + this.bitsAvail + ",bitBuf=0x" + Long.toHexString(this.bitBuf);
     }
 
     public int position() {
