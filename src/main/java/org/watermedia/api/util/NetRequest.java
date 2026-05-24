@@ -8,8 +8,8 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.IOTool;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -53,7 +53,7 @@ public class NetRequest implements AutoCloseable {
      * {@code URLConnection.guessContentTypeFromName(...)} returning a sensible value.
      */
     private static final Map<String, String> EXTRA_MIME_TYPES = DataTool.arrayMapper(new String[] {
-            // IMAGE — codecs decoded by WaterMedia's CodecsAPI
+            // IMAGE: CODECS DECODED BY WATERMEDIA'S CODECS API
             "apng", "image/apng",
             "webp", "image/webp",
             "jfif", "image/jpeg",
@@ -61,7 +61,7 @@ public class NetRequest implements AutoCloseable {
             "pgm",  "image/x-portable-graymap",
             "ppm",  "image/x-portable-pixmap",
             "pam",  "image/x-portable-arbitrarymap",
-            // IMAGE — not supported yet
+            // IMAGE: NOT SUPPORTED YET
             "bmp",  "image/bmp",
             "tif",  "image/tiff",
             "tiff", "image/tiff",
@@ -287,16 +287,7 @@ public class NetRequest implements AutoCloseable {
     }
 
     private static String readBounded(final InputStream is, final int max) throws IOException {
-        final byte[] buf = new byte[8192];
-        final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        int total = 0;
-        int read;
-        while ((read = is.read(buf)) != -1) {
-            total += read;
-            if (total > max) throw new IOException("Body exceeds " + max + " bytes");
-            out.write(buf, 0, read);
-        }
-        return out.toString(StandardCharsets.UTF_8);
+        return new String(IOTool.readLimited(is, max, -1L), StandardCharsets.UTF_8);
     }
 
     public static final class Builder {
@@ -409,7 +400,7 @@ public class NetRequest implements AutoCloseable {
             conn.setReadTimeout(this.readTimeout);
 
             if (conn instanceof final HttpURLConnection http) {
-                http.setInstanceFollowRedirects(false); // manual redirects (allows cross-protocol)
+                http.setInstanceFollowRedirects(false); // MANUAL REDIRECTS ALLOW CROSS-PROTOCOL SWITCHES
                 http.setRequestMethod(this.method);
                 effective.writeTo(http);
 
@@ -421,7 +412,7 @@ public class NetRequest implements AutoCloseable {
                     }
                 }
             }
-            // FTP and file:// fall through; HTTP-only headers and method don't apply.
+            // FTP AND FILE URLS FALL THROUGH; HTTP-ONLY HEADERS AND METHOD DO NOT APPLY.
             return conn;
         }
 
