@@ -17,6 +17,11 @@ import static org.watermedia.api.codecs.decoders.webp.lossy.VP8Tables.*;
 // COEFFICIENT TYPES: 0=Y_AFTER_Y2, 1=Y2, 2=UV, 3=Y_I4X4
 public final class VP8LossyDecoder {
     static final Marker IT = MarkerManager.getMarker(VP8LossyDecoder.class.getSimpleName());
+    private static final byte[] TOP_BORDER_16 = fillBorder(16, 127);
+    private static final byte[] LEFT_BORDER_16 = fillBorder(16, 129);
+    private static final byte[] TOP_BORDER_8 = fillBorder(8, 127);
+    private static final byte[] LEFT_BORDER_8 = fillBorder(8, 129);
+    private static final byte[] LEFT_BORDER_4 = fillBorder(4, 129);
 
     public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
         final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
@@ -276,6 +281,17 @@ public final class VP8LossyDecoder {
         final int[] topNzV = new int[mbW * 2];
         final int[] topNzDc = new int[mbW];
         final short[] coeffs = new short[16];
+        final short[] y2dcScratch = new short[16];
+        final int[] whtTmp = new int[16];
+        final int[] dctTmp = new int[16];
+        final byte[] aboveY = new byte[16];
+        final byte[] leftY = new byte[16];
+        final byte[] aboveU = new byte[8];
+        final byte[] leftU = new byte[8];
+        final byte[] aboveV = new byte[8];
+        final byte[] leftV = new byte[8];
+        final byte[] subAbove = new byte[8];
+        final byte[] subLeft = new byte[4];
 
         // RFC6386 SECTION 11.3 - SUBBLOCK MODE CONTEXT
         final SubMode[] topSubModes = new SubMode[mbW * 4];
@@ -357,16 +373,22 @@ public final class VP8LossyDecoder {
                 // GET PREDICTION CONTEXT PIXELS
                 // LIBWEBP BORDER VALUES: 127 FOR TOP (mbY=0), 129 FOR LEFT (mbX=0)
                 final boolean hasAbove = mbY > 0, hasLeft = mbX > 0;
-                final byte[] aboveY = hasAbove ? getAbove(yPln, yOff, yStr, 16) : borderFill(16, 127);
-                final byte[] leftY = hasLeft ? getLeft(yPln, yOff, yStr, 16) : borderFill(16, 129);
+                if (hasAbove) getAbove(yPln, yOff, yStr, 16, aboveY);
+                else System.arraycopy(TOP_BORDER_16, 0, aboveY, 0, 16);
+                if (hasLeft) getLeft(yPln, yOff, yStr, 16, leftY);
+                else System.arraycopy(LEFT_BORDER_16, 0, leftY, 0, 16);
                 final int tlY = hasAbove ? (hasLeft ? (yPln[yOff - yStr - 1] & 0xFF) : 129) : 127;
 
-                final byte[] aboveU = hasAbove ? getAbove(uPln, uvOff, uvStr, 8) : borderFill(8, 127);
-                final byte[] leftU = hasLeft ? getLeft(uPln, uvOff, uvStr, 8) : borderFill(8, 129);
+                if (hasAbove) getAbove(uPln, uvOff, uvStr, 8, aboveU);
+                else System.arraycopy(TOP_BORDER_8, 0, aboveU, 0, 8);
+                if (hasLeft) getLeft(uPln, uvOff, uvStr, 8, leftU);
+                else System.arraycopy(LEFT_BORDER_8, 0, leftU, 0, 8);
                 final int tlU = hasAbove ? (hasLeft ? (uPln[uvOff - uvStr - 1] & 0xFF) : 129) : 127;
 
-                final byte[] aboveV = hasAbove ? getAbove(vPln, uvOff, uvStr, 8) : borderFill(8, 127);
-                final byte[] leftV = hasLeft ? getLeft(vPln, uvOff, uvStr, 8) : borderFill(8, 129);
+                if (hasAbove) getAbove(vPln, uvOff, uvStr, 8, aboveV);
+                else System.arraycopy(TOP_BORDER_8, 0, aboveV, 0, 8);
+                if (hasLeft) getLeft(vPln, uvOff, uvStr, 8, leftV);
+                else System.arraycopy(LEFT_BORDER_8, 0, leftV, 0, 8);
                 final int tlV = hasAbove ? (hasLeft ? (vPln[uvOff - uvStr - 1] & 0xFF) : 129) : 127;
 
                 // RFC6386 SECTION 12 - INTRAFRAME PREDICTION
@@ -377,10 +399,12 @@ public final class VP8LossyDecoder {
                         for (int i = 0; i < 4; i++) {
                             final int sOff = yOff + j * 4 * yStr + i * 4;
                             final boolean rightEdge = (i == 3) && (mbX == mbW - 1);
-                            final byte[] sAbove = (mbY > 0 || j > 0) ? getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, j, i, yOff) : borderFill(8, 127);
-                            final byte[] sLeft = (mbX > 0 || i > 0) ? getLeft(yPln, sOff, yStr, 4) : borderFill(4, 129);
+                            if (mbY > 0 || j > 0) getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, j, i, yOff, subAbove);
+                            else System.arraycopy(TOP_BORDER_8, 0, subAbove, 0, 8);
+                            if (mbX > 0 || i > 0) getLeft(yPln, sOff, yStr, 4, subLeft);
+                            else System.arraycopy(LEFT_BORDER_4, 0, subLeft, 0, 4);
                             final int sTl = subTl(mbX, mbY, i, j, yPln, sOff, yStr);
-                            predict4(subModes[j * 4 + i], yPln, sOff, yStr, sAbove, sLeft, sTl);
+                            predict4(subModes[j * 4 + i], yPln, sOff, yStr, subAbove, subLeft, sTl);
                         }
                 }
 
@@ -389,7 +413,7 @@ public final class VP8LossyDecoder {
 
                 // RFC6386 SECTION 13 - DCT COEFFICIENT DECODING
                 if (!skip) {
-                    short[] y2dc = null;
+                    boolean hasY2dc = false;
 
                     if (!isI4x4) {
                         final int ctx = leftNzDc + topNzDc[mbX];
@@ -398,8 +422,8 @@ public final class VP8LossyDecoder {
                         leftNzDc = nz > 0 ? 1 : 0;
                         topNzDc[mbX] = leftNzDc;
                         if (nz > 0) {
-                            y2dc = new short[16];
-                            inverseWHT(coeffs, y2dc);
+                            inverseWHT(coeffs, y2dcScratch, whtTmp);
+                            hasY2dc = true;
                         }
                     }
 
@@ -412,18 +436,20 @@ public final class VP8LossyDecoder {
 
                             if (isI4x4) {
                                 final boolean rightEdge = (i == 3) && (mbX == mbW - 1);
-                                final byte[] sAbove = (mbY > 0 || j > 0) ? getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, j, i, yOff) : borderFill(8, 127);
-                                final byte[] sLeft = (mbX > 0 || i > 0) ? getLeft(yPln, sOff, yStr, 4) : borderFill(4, 129);
+                                if (mbY > 0 || j > 0) getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, j, i, yOff, subAbove);
+                                else System.arraycopy(TOP_BORDER_8, 0, subAbove, 0, 8);
+                                if (mbX > 0 || i > 0) getLeft(yPln, sOff, yStr, 4, subLeft);
+                                else System.arraycopy(LEFT_BORDER_4, 0, subLeft, 0, 4);
                                 final int sTl = subTl(mbX, mbY, i, j, yPln, sOff, yStr);
-                                predict4(subModes[j * 4 + i], yPln, sOff, yStr, sAbove, sLeft, sTl);
+                                predict4(subModes[j * 4 + i], yPln, sOff, yStr, subAbove, subLeft, sTl);
                             }
 
                             final int ctx = ((leftNzY >> j) & 1) + topNzY[mbX * 4 + i];
                             Arrays.fill(coeffs, (short) 0);
-                            if (y2dc != null) coeffs[0] = y2dc[j * 4 + i];
+                            if (hasY2dc) coeffs[0] = y2dcScratch[j * 4 + i];
                             final int nz = decodeCoeffs(tbr, coeffs, st.coeffProbs, yType, firstCoef, y1Dc, y1Ac, ctx);
-                            if (nz > 0 || (y2dc != null && y2dc[j * 4 + i] != 0))
-                                inverseDCT(coeffs, yPln, sOff, yStr);
+                            if (nz > 0 || (hasY2dc && y2dcScratch[j * 4 + i] != 0))
+                                inverseDCT(coeffs, yPln, sOff, yStr, dctTmp);
                             leftNzY = (leftNzY & ~(1 << j)) | ((nz > 0 ? 1 : 0) << j);
                             topNzY[mbX * 4 + i] = nz > 0 ? 1 : 0;
                         }
@@ -433,7 +459,7 @@ public final class VP8LossyDecoder {
                             final int ctx = ((leftNzU >> j) & 1) + topNzU[mbX * 2 + i];
                             Arrays.fill(coeffs, (short) 0);
                             final int nz = decodeCoeffs(tbr, coeffs, st.coeffProbs, 2, 0, uvDc, uvAc, ctx);
-                            if (nz > 0) inverseDCT(coeffs, uPln, uvOff + j * 4 * uvStr + i * 4, uvStr);
+                            if (nz > 0) inverseDCT(coeffs, uPln, uvOff + j * 4 * uvStr + i * 4, uvStr, dctTmp);
                             leftNzU = (leftNzU & ~(1 << j)) | ((nz > 0 ? 1 : 0) << j);
                             topNzU[mbX * 2 + i] = nz > 0 ? 1 : 0;
                         }
@@ -443,7 +469,7 @@ public final class VP8LossyDecoder {
                             final int ctx = ((leftNzV >> j) & 1) + topNzV[mbX * 2 + i];
                             Arrays.fill(coeffs, (short) 0);
                             final int nz = decodeCoeffs(tbr, coeffs, st.coeffProbs, 2, 0, uvDc, uvAc, ctx);
-                            if (nz > 0) inverseDCT(coeffs, vPln, uvOff + j * 4 * uvStr + i * 4, uvStr);
+                            if (nz > 0) inverseDCT(coeffs, vPln, uvOff + j * 4 * uvStr + i * 4, uvStr, dctTmp);
                             leftNzV = (leftNzV & ~(1 << j)) | ((nz > 0 ? 1 : 0) << j);
                             topNzV[mbX * 2 + i] = nz > 0 ? 1 : 0;
                         }
@@ -544,8 +570,7 @@ public final class VP8LossyDecoder {
     }
 
     // RFC6386 SECTION 14 - DCT/WHT INVERSION
-    private static void inverseWHT(final short[] in, final short[] out) {
-        final int[] t = new int[16];
+    private static void inverseWHT(final short[] in, final short[] out, final int[] t) {
 
         for (int i = 0; i < 4; i++) {
             final int a1 = in[i] + in[12 + i];
@@ -574,8 +599,7 @@ public final class VP8LossyDecoder {
         }
     }
 
-    private static void inverseDCT(final short[] c, final byte[] dst, final int off, final int str) {
-        final int[] t = new int[16];
+    private static void inverseDCT(final short[] c, final byte[] dst, final int off, final int str, final int[] t) {
 
         for (int i = 0; i < 4; i++) {
             final int c0 = c[i], c1 = c[4 + i], c2 = c[8 + i], c3 = c[12 + i];
@@ -612,10 +636,10 @@ public final class VP8LossyDecoder {
 
     // RFC6386 SECTION 12 - INTRAFRAME PREDICTION
     // LIBWEBP BORDER VALUES: 127 FOR TOP ROW (mbY=0), 129 FOR LEFT COLUMN (mbX=0)
-    private static byte[] borderFill(final int sz, final int val) {
-        final byte[] r = new byte[sz];
-        Arrays.fill(r, (byte) val);
-        return r;
+    private static byte[] fillBorder(final int sz, final int val) {
+        final byte[] border = new byte[sz];
+        Arrays.fill(border, (byte) val);
+        return border;
     }
 
     // COMPUTE TOP-LEFT PIXEL FOR I4X4 SUBBLOCK, MATCHING LIBWEBP BORDER INIT
@@ -627,35 +651,29 @@ public final class VP8LossyDecoder {
         return 129;                 // LEFT BORDER (mbX=0, i=0)
     }
 
-    private static byte[] getAbove(final byte[] pln, final int off, final int str, final int sz) {
-        final byte[] r = new byte[sz];
-        System.arraycopy(pln, off - str, r, 0, sz);
-        return r;
+    private static void getAbove(final byte[] pln, final int off, final int str, final int sz, final byte[] out) {
+        System.arraycopy(pln, off - str, out, 0, sz);
     }
 
-    private static byte[] getAbove8Sub(final byte[] pln, final int off, final int str, final boolean rightEdgeMB, final int mbY, final int sbRow, final int sbCol, final int yOff) {
-        final byte[] r = new byte[8];
-        System.arraycopy(pln, off - str, r, 0, 4);
+    private static void getAbove8Sub(final byte[] pln, final int off, final int str, final boolean rightEdgeMB, final int mbY, final int sbRow, final int sbCol, final int yOff, final byte[] out) {
+        System.arraycopy(pln, off - str, out, 0, 4);
 
         if (sbCol == 3) {
             if (mbY == 0) {
-                r[4] = r[5] = r[6] = r[7] = 127;
+                out[4] = out[5] = out[6] = out[7] = 127;
             } else if (!rightEdgeMB) {
-                System.arraycopy(pln, yOff - str + 16, r, 4, 4);
+                System.arraycopy(pln, yOff - str + 16, out, 4, 4);
             } else {
                 final byte val = pln[yOff - str + 15];
-                r[4] = r[5] = r[6] = r[7] = val;
+                out[4] = out[5] = out[6] = out[7] = val;
             }
         } else {
-            System.arraycopy(pln, off - str + 4, r, 4, 4);
+            System.arraycopy(pln, off - str + 4, out, 4, 4);
         }
-        return r;
     }
 
-    private static byte[] getLeft(final byte[] pln, final int off, final int str, final int sz) {
-        final byte[] r = new byte[sz];
-        for (int i = 0; i < sz; i++) r[i] = pln[off + i * str - 1];
-        return r;
+    private static void getLeft(final byte[] pln, final int off, final int str, final int sz, final byte[] out) {
+        for (int i = 0; i < sz; i++) out[i] = pln[off + i * str - 1];
     }
 
     private static void predict16(final MBMode mode, final byte[] dst, final int off, final int str,
@@ -768,12 +786,17 @@ public final class VP8LossyDecoder {
             fill(dst, off, str, 4, (byte) 128);
             return;
         }
-        final byte[] s = new byte[4];
-        s[0] = (byte) avg3(tl, above[0] & 0xFF, above[1] & 0xFF);
-        s[1] = (byte) avg3(above[0] & 0xFF, above[1] & 0xFF, above[2] & 0xFF);
-        s[2] = (byte) avg3(above[1] & 0xFF, above[2] & 0xFF, above[3] & 0xFF);
-        s[3] = (byte) avg3(above[2] & 0xFF, above[3] & 0xFF, above.length > 4 ? (above[4] & 0xFF) : (above[3] & 0xFF));
-        for (int y = 0; y < 4; y++) System.arraycopy(s, 0, dst, off + y * str, 4);
+        final byte s0 = (byte) avg3(tl, above[0] & 0xFF, above[1] & 0xFF);
+        final byte s1 = (byte) avg3(above[0] & 0xFF, above[1] & 0xFF, above[2] & 0xFF);
+        final byte s2 = (byte) avg3(above[1] & 0xFF, above[2] & 0xFF, above[3] & 0xFF);
+        final byte s3 = (byte) avg3(above[2] & 0xFF, above[3] & 0xFF, above.length > 4 ? (above[4] & 0xFF) : (above[3] & 0xFF));
+        for (int y = 0; y < 4; y++) {
+            final int row = off + y * str;
+            dst[row] = s0;
+            dst[row + 1] = s1;
+            dst[row + 2] = s2;
+            dst[row + 3] = s3;
+        }
     }
 
     private static void predHE4(final byte[] dst, final int off, final int str, final byte[] left, final int tl) {
@@ -781,12 +804,14 @@ public final class VP8LossyDecoder {
             fill(dst, off, str, 4, (byte) 128);
             return;
         }
-        final byte[] s = new byte[4];
-        s[0] = (byte) avg3(tl, left[0] & 0xFF, left[1] & 0xFF);
-        s[1] = (byte) avg3(left[0] & 0xFF, left[1] & 0xFF, left[2] & 0xFF);
-        s[2] = (byte) avg3(left[1] & 0xFF, left[2] & 0xFF, left[3] & 0xFF);
-        s[3] = (byte) avg3(left[2] & 0xFF, left[3] & 0xFF, left[3] & 0xFF);
-        for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) dst[off + y * str + x] = s[y];
+        final byte s0 = (byte) avg3(tl, left[0] & 0xFF, left[1] & 0xFF);
+        final byte s1 = (byte) avg3(left[0] & 0xFF, left[1] & 0xFF, left[2] & 0xFF);
+        final byte s2 = (byte) avg3(left[1] & 0xFF, left[2] & 0xFF, left[3] & 0xFF);
+        final byte s3 = (byte) avg3(left[2] & 0xFF, left[3] & 0xFF, left[3] & 0xFF);
+        for (int x = 0; x < 4; x++) dst[off + x] = s0;
+        for (int x = 0; x < 4; x++) dst[off + str + x] = s1;
+        for (int x = 0; x < 4; x++) dst[off + 2 * str + x] = s2;
+        for (int x = 0; x < 4; x++) dst[off + 3 * str + x] = s3;
     }
 
     private static void predLD4(final byte[] dst, final int off, final int str, final byte[] above) {
@@ -794,14 +819,14 @@ public final class VP8LossyDecoder {
             fill(dst, off, str, 4, (byte) 128);
             return;
         }
-        final int[] a = new int[8];
-        for (int i = 0; i < Math.min(8, above.length); i++) a[i] = above[i] & 0xFF;
-        final int last = above[Math.min(7, above.length - 1)] & 0xFF;
-        for (int i = above.length; i < 8; i++) a[i] = last;
         for (int y = 0; y < 4; y++)
             for (int x = 0; x < 4; x++) {
                 final int idx = x + y;
-                dst[off + y * str + x] = (byte) avg3(a[idx], a[Math.min(idx + 1, 7)], a[Math.min(idx + 2, 7)]);
+                dst[off + y * str + x] = (byte) avg3(
+                        aboveSample(above, idx),
+                        aboveSample(above, idx + 1),
+                        aboveSample(above, idx + 2)
+                );
             }
     }
 
@@ -810,12 +835,22 @@ public final class VP8LossyDecoder {
             fill(dst, off, str, 4, (byte) 128);
             return;
         }
-        final int[] p = {left[3] & 0xFF, left[2] & 0xFF, left[1] & 0xFF, left[0] & 0xFF, tl,
-                above[0] & 0xFF, above[1] & 0xFF, above[2] & 0xFF, above[3] & 0xFF};
+        final int l0 = left[0] & 0xFF;
+        final int l1 = left[1] & 0xFF;
+        final int l2 = left[2] & 0xFF;
+        final int l3 = left[3] & 0xFF;
+        final int a0 = above[0] & 0xFF;
+        final int a1 = above[1] & 0xFF;
+        final int a2 = above[2] & 0xFF;
+        final int a3 = above[3] & 0xFF;
         for (int y = 0; y < 4; y++)
             for (int x = 0; x < 4; x++) {
                 final int idx = 3 - y + x;
-                dst[off + y * str + x] = (byte) avg3(p[idx], p[idx + 1], p[Math.min(idx + 2, 8)]);
+                dst[off + y * str + x] = (byte) avg3(
+                        rdSample(idx, l0, l1, l2, l3, tl, a0, a1, a2, a3),
+                        rdSample(idx + 1, l0, l1, l2, l3, tl, a0, a1, a2, a3),
+                        rdSample(Math.min(idx + 2, 8), l0, l1, l2, l3, tl, a0, a1, a2, a3)
+                );
             }
     }
 
@@ -933,6 +968,26 @@ public final class VP8LossyDecoder {
 
     private static int avg3(final int a, final int b, final int c) {
         return (a + 2 * b + c + 2) >> 2;
+    }
+
+    private static int aboveSample(final byte[] above, final int idx) {
+        final int pos = Math.min(idx, above.length - 1);
+        return above[pos] & 0xFF;
+    }
+
+    private static int rdSample(final int idx, final int l0, final int l1, final int l2, final int l3,
+                                final int tl, final int a0, final int a1, final int a2, final int a3) {
+        return switch (idx) {
+            case 0 -> l3;
+            case 1 -> l2;
+            case 2 -> l1;
+            case 3 -> l0;
+            case 4 -> tl;
+            case 5 -> a0;
+            case 6 -> a1;
+            case 7 -> a2;
+            default -> a3;
+        };
     }
 
     // RFC6386 SECTION 15 - LOOP FILTER

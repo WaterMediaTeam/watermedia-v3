@@ -1,5 +1,6 @@
 package org.watermedia.api.codecs;
 
+import org.jetbrains.annotations.NotNull;
 import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
@@ -17,7 +18,16 @@ import java.util.Arrays;
 public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
     public static final int NO_REPEAT = -1;
-    public static final long[] NO_DELAY = new long[] { 1L };
+    public static final long[] NO_DELAY = new long[] { 0L };
+
+    /**
+     * Lightweight scan result produced by an {@link ImageReader} at construction time.
+     * Carries the animation shape (frame count, per-frame delays, total duration, loop count)
+     * without holding any decoded pixel data.
+     */
+    public record Scan(int frameCount, long[] delays, long duration, int loopCount) {
+        public static final Scan STATIC = new Scan(1, NO_DELAY, 0L, NO_REPEAT);
+    }
 
     public ImageData {
         if (frames == null || frames.length == 0) {
@@ -29,8 +39,8 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
         if (delay == null || delay.length != frames.length) {
             throw new IllegalArgumentException("Delay array must match the number of frames");
         }
-        if (duration <= 0) {
-            throw new IllegalArgumentException("Total duration must be positive");
+        if (duration < 0) {
+            throw new IllegalArgumentException("Total duration must not be negative");
         }
         if (repeat < NO_REPEAT) {
             throw new IllegalArgumentException("Repeat must be NO_REPEAT (-1) or REPEAT_FOREVER (0) or a positive integer");
@@ -49,6 +59,7 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
         return this.duration;
     }
 
+    @NotNull
     @Override
     public String toString() {
         return "Image{" +

@@ -61,7 +61,7 @@ public class BlueskyPlatform implements IPlatform {
         final String postId = parsed[1];
 
         LOGGER.debug(IT, "Fetching Bluesky post '{}' by '{}'", postId, handle);
-        final JsonObject post = fetchPost(handle, postId);
+        final JsonObject post = this.fetchPost(handle, postId);
         final RequestHeaders headers = RequestHeaders.defaults(uri);
 
         final List<DataSource> entries = new ArrayList<>(2);
@@ -69,14 +69,14 @@ public class BlueskyPlatform implements IPlatform {
         final JsonObject record = getObj(post, "record");
 
         // Direct embed (app.bsky.embed.video#view or app.bsky.embed.images#view)
-        extractVideo(entries, post, embed, getObj(record, "embed"), postId, headers);
-        extractImages(entries, post, embed, postId, headers);
+        this.extractVideo(entries, post, embed, getObj(record, "embed"), postId, headers);
+        this.extractImages(entries, post, embed, postId, headers);
 
         // RecordWithMedia (app.bsky.embed.recordWithMedia#view) — media in embed.media
         if (embed != null && embed.has("media")) {
             final JsonObject mediaEmbed = getObj(embed, "media");
-            extractVideo(entries, post, mediaEmbed, getObj(record, "embed", "media"), postId, headers);
-            extractImages(entries, post, mediaEmbed, postId, headers);
+            this.extractVideo(entries, post, mediaEmbed, getObj(record, "embed", "media"), postId, headers);
+            this.extractImages(entries, post, mediaEmbed, postId, headers);
         }
 
         // Quoted post (app.bsky.embed.record#view) — media in nested post's embeds
@@ -88,9 +88,9 @@ public class BlueskyPlatform implements IPlatform {
                     final JsonArray embeds = embedsEl.getAsJsonArray();
                     if (!embeds.isEmpty() && embeds.get(0).isJsonObject()) {
                         final JsonObject nestedEmbed = embeds.get(0).getAsJsonObject();
-                        extractVideo(entries, nestedPost, nestedEmbed,
+                        this.extractVideo(entries, nestedPost, nestedEmbed,
                                 getObj(nestedPost, "value", "embed"), postId, headers);
-                        extractImages(entries, nestedPost, nestedEmbed, postId, headers);
+                        this.extractImages(entries, nestedPost, nestedEmbed, postId, headers);
                     }
                 }
             }
@@ -117,7 +117,7 @@ public class BlueskyPlatform implements IPlatform {
         try {
             final var hlsResult = HlsTool.fetch(playlistUri);
             if (hlsResult instanceof final HlsTool.MasterResult master) {
-                for (final var variant : master.variants()) {
+                for (final var variant: master.variants()) {
                     if (variant.width() <= 0 || variant.height() <= 0) continue;
                     URI variantUri = URI.create(variant.uri());
                     if (!variantUri.isAbsolute()) {
@@ -138,10 +138,10 @@ public class BlueskyPlatform implements IPlatform {
         final String did = getStr(postCtx, "author", "did");
         if (did != null && recordEmbed != null && recordEmbed.has("captions")) {
             try {
-                final String endpoint = resolveServiceEndpoint(did);
+                final String endpoint = this.resolveServiceEndpoint(did);
                 final JsonElement captionsEl = recordEmbed.get("captions");
                 if (captionsEl.isJsonArray()) {
-                    for (final JsonElement capEl : captionsEl.getAsJsonArray()) {
+                    for (final JsonElement capEl: captionsEl.getAsJsonArray()) {
                         if (!capEl.isJsonObject()) continue;
                         final JsonObject cap = capEl.getAsJsonObject();
                         final String lang = cap.has("lang") && !cap.get("lang").isJsonNull()
@@ -200,7 +200,7 @@ public class BlueskyPlatform implements IPlatform {
                 ? truncateTitle(text, 72)
                 : "Bluesky image #" + postId;
 
-        for (final JsonElement imgEl : imagesEl.getAsJsonArray()) {
+        for (final JsonElement imgEl: imagesEl.getAsJsonArray()) {
             if (!imgEl.isJsonObject()) continue;
             final JsonObject img = imgEl.getAsJsonObject();
 
@@ -250,7 +250,7 @@ public class BlueskyPlatform implements IPlatform {
                 final JsonObject doc = JsonParser.parseString(req.readAllAsString()).getAsJsonObject();
 
                 if (doc.has("service") && doc.get("service").isJsonArray()) {
-                    for (final JsonElement el : doc.getAsJsonArray("service")) {
+                    for (final JsonElement el: doc.getAsJsonArray("service")) {
                         if (!el.isJsonObject()) continue;
                         final JsonObject svc = el.getAsJsonObject();
                         if ("AtprotoPersonalDataServer".equals(getStr(svc, "type"))) {
@@ -303,7 +303,7 @@ public class BlueskyPlatform implements IPlatform {
 
     private static JsonObject getObj(final JsonObject obj, final String... keys) {
         JsonObject current = obj;
-        for (final String key : keys) {
+        for (final String key: keys) {
             if (current == null || !current.has(key) || !current.get(key).isJsonObject()) return null;
             current = current.getAsJsonObject(key);
         }

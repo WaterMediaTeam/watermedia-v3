@@ -14,19 +14,22 @@ public class PPMDecoder implements NetpbmDecoder {
     public ImageData decode(final ByteBuffer data, final NetpbmHeader header) throws XCodecException {
         final int width = header.width;
         final int height = header.height;
-        final int maxVal = header.maxVal;
 
         final ByteBuffer frame = ByteBuffer.allocateDirect(width * height * 4);
         frame.order(ByteOrder.nativeOrder());
+        this.decodeInto(data, header, frame);
 
+        return new ImageData(new ByteBuffer[] { frame }, header.width, header.height, ImageData.NO_DELAY, ImageData.NO_REPEAT);
+    }
+
+    @Override
+    public void decodeInto(final ByteBuffer data, final NetpbmHeader header, final ByteBuffer frame) throws XCodecException {
+        frame.clear();
         try {
-            this.decodeColor(data, width, height, 3, maxVal, frame, false);
+            this.decodeColor(data, header.width, header.height, 3, header.maxVal, frame, false);
         } catch (final Exception e) {
             throw new XCodecException("Failed to decode PPM image", e);
         }
-
         frame.flip();
-
-        return new ImageData(new ByteBuffer[] { frame }, header.width, header.height, ImageData.NO_DELAY, ImageData.NO_REPEAT);
     }
 }

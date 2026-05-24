@@ -62,6 +62,28 @@ public abstract class GFXEngine {
     public abstract long texture();
 
     /**
+     * Whether this engine can keep a small animated image as one texture per frame.
+     * Engines that return false keep using {@link #upload(ByteBuffer, int)} each frame.
+     */
+    public boolean supportsFrameTextures() { return false; }
+
+    /**
+     * Uploads a complete frame set as dedicated textures.
+     * <p>
+     * This is an optional fast path for small animated images. The default implementation
+     * reports unsupported so custom engines remain source-compatible.
+     * @param frames decoded direct frame buffers in the current {@link #colorSpace}
+     * @param stride row stride in bytes, or 0 for tightly-packed rows
+     * @return true when the engine accepted the frame set
+     */
+    public boolean uploadFrameTextures(final ByteBuffer[] frames, final int stride) { return false; }
+
+    /**
+     * Selects which preloaded frame texture is exposed by {@link #texture()}.
+     */
+    public void useFrameTexture(final int frameIndex) {}
+
+    /**
      * Uploads a single-plane frame (BGRA, RGBA, RGB, GRAY, YUYV).
      * @param buffer  direct ByteBuffer pointing to native pixel data
      * @param stride  row stride in <b>bytes</b>, or 0 for tightly-packed rows

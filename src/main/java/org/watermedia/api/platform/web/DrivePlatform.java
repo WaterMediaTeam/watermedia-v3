@@ -55,7 +55,7 @@ public class DrivePlatform implements IPlatform {
         }
 
         // FALLBACK: DIRECT DOWNLOAD URL
-        return getDataFromDownload(fileId, uri);
+        return this.getDataFromDownload(fileId, uri);
     }
 
     private PlatformData getDataFromDownload(final String fileId, final URI original) throws Exception {

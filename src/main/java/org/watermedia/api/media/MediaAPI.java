@@ -9,6 +9,7 @@ import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
+import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.util.MediaType;
 
 import java.io.File;
@@ -73,7 +74,7 @@ public class MediaAPI extends WaterMediaAPI {
 
     @Override
     public void load(final WaterMedia instance) {
-        this.steps = instance.clientSide ? 1 : 0; // FFMPEG
+        this.steps = instance.clientSide ? 2 : 0; // CACHE + FFMPEG
         this.step = 0;
         this.stepName = "";
     }
@@ -83,6 +84,14 @@ public class MediaAPI extends WaterMediaAPI {
         if (!instance.clientSide) {
             LOGGER.warn(IT, "Media API refuses to load on server-side");
             return false;
+        }
+
+        this.step++;
+        this.stepName = "CACHE";
+        try {
+            NetworkCache.start(instance.tmp.resolve("cache"));
+        } catch (final Exception e) {
+            LOGGER.warn(IT, "Failed to initialize media network cache", e);
         }
 
         this.step++;
@@ -100,5 +109,6 @@ public class MediaAPI extends WaterMediaAPI {
         this.step = 0;
         this.steps = 0;
         this.stepName = "";
+        NetworkCache.release();
     }
 }

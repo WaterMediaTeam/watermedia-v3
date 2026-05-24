@@ -1,5 +1,9 @@
 package org.watermedia.api.codecs.common.png;
 
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 
 /**
@@ -31,20 +35,56 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
     /**
      * Reads a complete chunk from the buffer
      */
-    public static CHUNK read(final ByteBuffer buffer) {
-        final int length = buffer.getInt();
-
-        // VALIDATE LENGTH
-        if (length < 0) {
-            throw new IllegalArgumentException("Invalid chunk length: " + length);
+    public static CHUNK read(final ByteBuffer buffer) throws IOException {
+        try {
+            if (buffer.remaining() < 8) throw new EOFException("Unexpected EOF while reading chunk header");
+            final int length = buffer.getInt();
+            if (length < 0) throw new IOException("Invalid chunk length: " + length);
+            if (buffer.remaining() < length + 4) {
+                throw new EOFException("Unexpected EOF while reading chunk data");
+            }
+            final int type = buffer.getInt();
+            final byte[] data = new byte[length];
+            buffer.get(data, 0, length);
+            final int crc = buffer.getInt();
+            return new CHUNK(length, type, data, crc);
+        } catch (final BufferUnderflowException e) {
+            throw new EOFException("Unexpected EOF while reading chunk");
         }
+    }
 
-        final int type = buffer.getInt();
+    /**
+     * Reads a complete chunk from a stream (length + type + data + crc), big-endian.
+     * Pulls only the bytes required by this chunk; the stream is left positioned at the next chunk.
+     */
+    public static CHUNK read(final InputStream in) throws IOException {
+        final int length = readIntBE(in);
+        if (length < 0) {
+            throw new IOException("Invalid chunk length: " + length);
+        }
+        final int type = readIntBE(in);
         final byte[] data = new byte[length];
-        buffer.get(data, 0, length);
-        final int crc = buffer.getInt();
-
+        readFully(in, data, 0, length);
+        final int crc = readIntBE(in);
         return new CHUNK(length, type, data, crc);
+    }
+
+    private static int readIntBE(final InputStream in) throws IOException {
+        final int b1 = in.read();
+        final int b2 = in.read();
+        final int b3 = in.read();
+        final int b4 = in.read();
+        if ((b1 | b2 | b3 | b4) < 0) throw new EOFException("Unexpected EOF while reading chunk header");
+        return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
+    }
+
+    private static void readFully(final InputStream in, final byte[] dst, final int off, final int len) throws IOException {
+        int read = 0;
+        while (read < len) {
+            final int n = in.read(dst, off + read, len - read);
+            if (n < 0) throw new EOFException("Unexpected EOF while reading chunk data (" + read + "/" + len + ")");
+            read += n;
+        }
     }
 
     /**

@@ -23,6 +23,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
+import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.api.util.ColorSpace;
 import org.watermedia.api.util.MediaQuality;
@@ -30,7 +31,10 @@ import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
 
 import java.io.File;
+import java.io.IOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.function.BiFunction;
 
@@ -54,6 +58,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
     private static boolean LOADED;
+    private static boolean ERROR;
 
     // AUDIO OUTPUT FORMAT
     private static final int AUDIO_SAMPLES = 2048;
@@ -81,8 +86,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             AV_HWDEVICE_TYPE_CUDA,          // NVIDIA
             AV_HWDEVICE_TYPE_QSV,           // INTEL
             //  OS DEDICATED HARDWARE
-            AV_HWDEVICE_TYPE_D3D12VA,       // WINDOWS DIRECTX 12
             AV_HWDEVICE_TYPE_D3D11VA,       // WINDOWS DIRECTX 11
+            AV_HWDEVICE_TYPE_D3D12VA,       // WINDOWS DIRECTX 12
             AV_HWDEVICE_TYPE_VIDEOTOOLBOX,  // MACOS
             AV_HWDEVICE_TYPE_VAAPI,         // LINUX VA-API
             AV_HWDEVICE_TYPE_VDPAU,         // LINUX VDPAU
@@ -1658,11 +1663,44 @@ public final class FFMediaPlayer extends MediaPlayer {
         LOGGER.info(IT, "Successfully switched quality to {}", this.quality);
     }
 
+    private String resolveInputUrl(final URI uri, final boolean allowCache) {
+        if (allowCache && this.shouldUseFFmpegCache(uri)) {
+            try {
+                final NetworkCache.CachedFile cached = NetworkCache.readFile(
+                        uri,
+                        this.source.headers(),
+                        "video/*,audio/*,application/octet-stream,*/*",
+                        Math.max(1L, WaterMediaConfig.media.ffmpegNetworkCacheMaxBytesMB) * 1024L * 1024L,
+                        WaterMediaConfig.media.ffmpegNetworkCache);
+                if (cached != null) {
+                    LOGGER.debug(IT, "{} FFMediaPlayer cache entry for {}", cached.cached() ? "Using" : "Stored", uri);
+                    return cached.path().toAbsolutePath().toString();
+                }
+            } catch (final IOException e) {
+                LOGGER.debug(IT, "FFMediaPlayer cache bypass for {}: {}", uri, e.getMessage());
+            }
+        }
+        return uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+    }
+
+    private boolean shouldUseFFmpegCache(final URI uri) {
+        if (!WaterMediaConfig.media.ffmpegNetworkCache) return false;
+        if (uri == null) return false;
+
+        final String scheme = uri.getScheme();
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) return false;
+
+        final String path = uri.getPath();
+        if (path == null) return true;
+        final String lower = path.toLowerCase(java.util.Locale.ROOT);
+        return !lower.endsWith(".m3u8") && !lower.endsWith(".mpd");
+    }
+
     private boolean reopenFormat() {
         final var uri = this.source.uri(this.quality);
         super.quality(this.source.qualityOf(uri));
 
-        final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+        final String url = this.resolveInputUrl(uri, true);
 
         if (this.formatContext != null) {
             avformat.avformat_close_input(this.formatContext);
@@ -1715,7 +1753,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             final var uri = this.source.uri(this.quality);
             super.quality(this.source.qualityOf(uri));
             LOGGER.debug(IT, "Quality switchoff {}", this.quality);
-            final var url = uri.getScheme().contains("file") ? uri.getPath().substring(1) : uri.toString();
+            final String url = this.resolveInputUrl(uri, true);
 
             final var audioSlaves = this.source.audioSlaves();
             MRL.SlaveEntry audioSlave = null;
@@ -1829,7 +1867,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             return false;
         }
 
-        final var slaveUrl = slaveUri.getScheme().contains("file") ? slaveUri.getPath().substring(1) : slaveUri.toString();
+        final String slaveUrl = this.resolveInputUrl(slaveUri, true);
 
         this.slaveFormatContext = avformat.avformat_alloc_context();
         if (this.interruptCallback != null) {
@@ -2310,9 +2348,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             return LOADED = true;
         } catch (final Throwable t) {
             LOGGER.error(IT, "Failed to load FFMPEG", t);
+            ERROR = true;
             return false;
         }
     }
 
     public static boolean loaded() { return LOADED; }
+    public static boolean loadError() { return ERROR; }
 }

@@ -8,6 +8,15 @@ import java.nio.ByteBuffer;
 public interface NetpbmDecoder {
     ImageData decode(ByteBuffer data, NetpbmHeader header) throws XCodecException;
 
+    default void decodeInto(final ByteBuffer data, final NetpbmHeader header, final ByteBuffer frame) throws XCodecException {
+        final ImageData decoded = this.decode(data, header);
+        final ByteBuffer src = decoded.frames()[0];
+        src.position(0);
+        frame.clear();
+        frame.put(src);
+        frame.flip();
+    }
+
     default int readSample(final ByteBuffer data, final int maxVal) {
         return maxVal < 256 ? (data.get() & 0xFF) : (data.getShort() & 0xFFFF);
     }
@@ -56,7 +65,7 @@ public interface NetpbmDecoder {
                 b = (b * 255) / maxVal;
                 a = (a * 255) / maxVal;
 
-                frame.put((byte) b).put((byte) g).put((byte) r).put((byte) 255).put((byte) a);
+                frame.put((byte) b).put((byte) g).put((byte) r).put((byte) a);
             }
         }
     }

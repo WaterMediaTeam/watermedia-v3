@@ -38,4 +38,8 @@ public enum NetpbmType {
     public ImageData decode(final ByteBuffer data, final NetpbmHeader header) throws XCodecException {
         return this.decoder.decode(data, header);
     }
+
+    public void decodeInto(final ByteBuffer data, final NetpbmHeader header, final ByteBuffer frame) throws XCodecException {
+        this.decoder.decodeInto(data, header, frame);
+    }
 }

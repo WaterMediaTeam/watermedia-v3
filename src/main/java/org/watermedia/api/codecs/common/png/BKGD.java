@@ -1,7 +1,5 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.decoders.PNG;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -45,7 +43,7 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) {
         if (type != SIGNATURE)
             throw new IllegalArgumentException("Invalid chunk type for bKGD: 0x" + Integer.toHexString(type));
 
-        return switch (PNG.ColorType.of(colorType)) {
+        return switch (ColorType.of(colorType)) {
             case GREYSCALE, GREYSCALE_ALPHA -> {
                 if (length != 2)
                     throw new IllegalArgumentException("bKGD for greyscale must be 2 bytes, got " + length);
@@ -81,7 +79,7 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) {
         final byte[] data = chunk.data();
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
 
-        return switch (PNG.ColorType.of(colorType)) {
+        return switch (ColorType.of(colorType)) {
             case GREYSCALE, GREYSCALE_ALPHA -> {
                 if (data.length != 2) {
                     throw new IllegalArgumentException("bKGD for greyscale must be 2 bytes");

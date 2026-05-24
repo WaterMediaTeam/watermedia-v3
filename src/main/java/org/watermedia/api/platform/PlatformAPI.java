@@ -116,7 +116,7 @@ public class PlatformAPI extends WaterMediaAPI {
         }
 
         LOGGER.info(IT, "Registering supported platforms");
-        for (final IPlatform platform : this.pendingPlatforms) {
+        for (final IPlatform platform: this.pendingPlatforms) {
             this.step++;
             this.stepName = platform.getClass().getSimpleName();
             register(platform);

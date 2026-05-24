@@ -1,7 +1,7 @@
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
+import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.codecs.decoders.PNG;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -82,20 +82,14 @@ public class PNGTest {
      * Verifies basic properties of the decoded image.
      */
     private void testDecodeSucceeds(final File imageFile) throws Exception {
-        final PNG decoder = new PNG();
         final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
-        final ByteBuffer imageData = ByteBuffer.wrap(fileBytes);
 
-        // VERIFY PNG SIGNATURE IS RECOGNIZED
-        assertTrue(decoder.supported(imageData),
-                "PNG signature not recognized for: " + imageFile.getName());
-
-        // NOTE: supported() leaves position after signature, which is where decode expects it
-        // DECODE THE IMAGE
+        // DECODE VIA CodecsAPI (which sniffs the magic bytes itself)
         final ImageData result = assertDoesNotThrow(
-                () -> decoder.decode(imageData),
+                () -> CodecsAPI.decodeImage(fileBytes),
                 "Decoding failed for: " + imageFile.getName()
         );
+        assertNotNull(result, "PNG signature not recognized for: " + imageFile.getName());
 
         // VERIFY BASIC PROPERTIES
         assertNotNull(result, "Decoded image is null");
@@ -129,15 +123,10 @@ public class PNGTest {
      * For animated PNGs, only the first frame is compared since PAM doesn't support animation.
      */
     private void testDataMatchesReference(final File imageFile, final String folderPath) throws Exception {
-        // DECODE WITH JAVA IMPLEMENTATION
-        final PNG decoder = new PNG();
+        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI
         final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
-        final ByteBuffer imageData = ByteBuffer.wrap(fileBytes);
-
-        // VERIFY SIGNATURE (this moves position past signature where decode expects it)
-        assertTrue(decoder.supported(imageData), "PNG signature not recognized");
-
-        final ImageData javaResult = decoder.decode(imageData);
+        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes);
+        assertNotNull(javaResult, "PNG signature not recognized");
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
         final byte[] referenceRgba = loadReferenceData(imageFile, folderPath);

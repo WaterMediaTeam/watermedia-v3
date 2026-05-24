@@ -1,7 +1,7 @@
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
+import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.codecs.decoders.WEBP;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -211,14 +211,14 @@ public class WebPTest {
      * For animated files, also verifies multiple frames are produced.
      */
     private void testDecodeSucceeds(final File imageFile, final boolean expectAnimated) throws Exception {
-        final WEBP decoder = new WEBP();
-        final ByteBuffer imageData = ByteBuffer.wrap(new FileInputStream(imageFile).readAllBytes());
+        final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
 
-        // DECODE THE IMAGE
+        // DECODE THE IMAGE VIA CodecsAPI (which sniffs the magic bytes itself)
         final ImageData result = assertDoesNotThrow(
-                () -> decoder.decode(imageData),
+                () -> CodecsAPI.decodeImage(fileBytes),
                 "Decoding failed for: " + imageFile.getName()
         );
+        assertNotNull(result, "WEBP signature not recognized for: " + imageFile.getName());
 
         // VERIFY BASIC PROPERTIES
         assertNotNull(result, "Decoded image is null");
@@ -264,10 +264,10 @@ public class WebPTest {
      * This test verifies the output is within acceptable bounds rather than pixel-perfect.
      */
     private void testLossySimilarity(final File imageFile, final String folderPath) throws Exception {
-        // DECODE WITH JAVA IMPLEMENTATION
-        final WEBP decoder = new WEBP();
-        final ByteBuffer imageData = ByteBuffer.wrap(new FileInputStream(imageFile).readAllBytes());
-        final ImageData javaResult = decoder.decode(imageData);
+        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI
+        final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
+        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes);
+        assertNotNull(javaResult, "WEBP signature not recognized");
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
         final byte[] referenceRgba = loadReferenceData(imageFile, folderPath);
@@ -339,10 +339,10 @@ public class WebPTest {
      * Uses pre-generated .pam reference files for comparison.
      */
     private void testDataMatchesReference(final File imageFile, final int tolerance, final String folderPath) throws Exception {
-        // DECODE WITH JAVA IMPLEMENTATION
-        final WEBP decoder = new WEBP();
-        final ByteBuffer imageData = ByteBuffer.wrap(new FileInputStream(imageFile).readAllBytes());
-        final ImageData javaResult = decoder.decode(imageData);
+        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI
+        final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
+        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes);
+        assertNotNull(javaResult, "WEBP signature not recognized");
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
         final byte[] referenceRgba = loadReferenceData(imageFile, folderPath);

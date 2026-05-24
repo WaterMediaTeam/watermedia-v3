@@ -1,7 +1,5 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.decoders.PNG;
-
 import java.nio.ByteBuffer;
 
 /**
@@ -58,7 +56,7 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
         if (type != SIGNATURE)
             throw new IllegalArgumentException("Invalid chunk type for sBIT: 0x" + Integer.toHexString(type));
 
-        return switch (PNG.ColorType.of(colorType)) {
+        return switch (ColorType.of(colorType)) {
             case GREYSCALE -> {
                 if (length != 1)
                     throw new IllegalArgumentException("sBIT for greyscale must be 1 byte, got " + length);
@@ -105,7 +103,7 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
 
         final byte[] data = chunk.data();
 
-        return switch (PNG.ColorType.of(colorType)) {
+        return switch (ColorType.of(colorType)) {
             case GREYSCALE -> {
                 if (data.length != 1) {
                     throw new IllegalArgumentException("sBIT for greyscale must be 1 byte");

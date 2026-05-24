@@ -31,6 +31,12 @@ public class WaterMediaConfig {
         public boolean pngFailOnCorruptedData = true;
 
         @Spec.Field
+        @Comment("Hard cap (in MB) for image downloads consumed by TxMediaPlayer")
+        @Comment("Sources above this limit are aborted before full buffering")
+        @NumberConditions(minInt = 1, math = true)
+        public int maxImageSourceBytesMB = 128;
+
+        @Spec.Field
         @Comment("Use the PNG bKGD chunk as the disposal background colour")
         @Comment("When false, transparent disposal is used (recommended for compositing).")
         public boolean pngUseBKGDChunk = false;
@@ -51,6 +57,25 @@ public class WaterMediaConfig {
         @Comment("Increment this value if you find YouTube videos with slow playback")
         @NumberConditions(minInt = 1, maxInt = 12)
         public int ffmpegSlavePacketReads = 3;
+
+        @Spec.Field
+        @Comment("Animated images with this many frames or fewer are uploaded as one GL texture per frame")
+        @Comment("Set to 0 to force TxMediaPlayer to stream animated image frames into a single texture")
+        @NumberConditions(minInt = 0, maxInt = 64)
+        public int txMultiTextureFrameThreshold = 5;
+    
+        @Spec.Field
+        @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
+        public boolean txNetworkCache = true;
+
+        @Spec.Field
+        @Comment("Enables the on-disk HTTP media cache used by FFMediaPlayer for small files")
+        public boolean ffmpegNetworkCache = true;
+
+        @Spec.Field
+        @Comment("Maximum FFMediaPlayer network response size to cache, in megabytes")
+        @NumberConditions(minInt = 1, math = true)
+        public int ffmpegNetworkCacheMaxBytesMB = 10;
 
         @Spec.Field
         @Comment("Adds this path to the discovery path")

@@ -176,6 +176,8 @@ public final class GLEngine extends GFXEngine {
     private int managedTexture = 0;
     private int managedTextureW = 0;
     private int managedTextureH = 0;
+    private int[] frameTextures = new int[0];
+    private volatile int activeFrameTexture = -1;
 
     // FBO FOR YUV TO RGBA CONVERSION
     private int fbo = 0;
@@ -277,7 +279,56 @@ public final class GLEngine extends GFXEngine {
     // PUBLIC API
     @Override
     public long texture() {
+        final int[] textures = this.frameTextures;
+        final int frame = this.activeFrameTexture;
+        if (frame >= 0 && frame < textures.length) return textures[frame];
         return this.managedTexture;
+    }
+
+    @Override
+    public boolean supportsFrameTextures() {
+        return true;
+    }
+
+    @Override
+    public boolean uploadFrameTextures(final ByteBuffer[] frames, final int stride) {
+        if (frames == null || frames.length == 0) return false;
+        if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
+            this.renderThreadEx.execute(() -> this.uploadFrameTextures(frames, stride));
+            return true;
+        }
+        if (this.width <= 0 || this.height <= 0) return false;
+        if (!this.directTextureUploadSupported()) return false;
+
+        this.releaseFrameTextures();
+        this.releasePBOs();
+        this.firstFrame = true;
+
+        final int[] textures = new int[frames.length];
+        for (int i = 0; i < frames.length; i++) {
+            final ByteBuffer frame = frames[i];
+            if (frame == null || !frame.isDirect()) {
+                this.deleteTextures(textures);
+                return false;
+            }
+            textures[i] = this.newTexture();
+            if (!this.uploadDirectTexture(textures[i], frame, stride)) {
+                this.deleteTextures(textures);
+                return false;
+            }
+        }
+
+        this.frameTextures = textures;
+        this.activeFrameTexture = 0;
+        this.firstFrame = false;
+        return true;
+    }
+
+    @Override
+    public void useFrameTexture(final int frameIndex) {
+        final int[] textures = this.frameTextures;
+        if (frameIndex < 0 || frameIndex >= textures.length) return;
+        this.activeFrameTexture = frameIndex;
     }
 
     public boolean hasGLContext() {
@@ -297,6 +348,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         // RELEASE PLANE-SPECIFIC RESOURCES
+        this.releaseFrameTextures();
         this.releasePlaneTextures();
         this.releasePBOs();
 
@@ -430,6 +482,7 @@ public final class GLEngine extends GFXEngine {
             return;
         }
         if (this.width <= 0 || this.height <= 0) return;
+        this.releaseFrameTextures();
 
         // GRAY: R-FORMAT PLANE TEXTURE + FBO CONVERT
         if (this.colorSpace == ColorSpace.GRAY) {
@@ -973,6 +1026,7 @@ public final class GLEngine extends GFXEngine {
         if (this.fbo != 0) { GL30.glDeleteFramebuffers(this.fbo); this.fbo = 0; }
         if (this.quadVAO != 0) { GL30.glDeleteVertexArrays(this.quadVAO); this.quadVAO = 0; }
         if (this.quadVBO != 0) { GL15.glDeleteBuffers(this.quadVBO); this.quadVBO = 0; }
+        this.releaseFrameTextures();
         if (this.managedTexture != 0) { this.delTexture.accept(this.managedTexture); this.managedTexture = 0; }
         this.managedTextureW = 0;
         this.managedTextureH = 0;
@@ -1078,6 +1132,76 @@ public final class GLEngine extends GFXEngine {
     }
 
     // INTERNAL HELPERS
+    private boolean directTextureUploadSupported() {
+        return switch (this.colorSpace) {
+            case BGRA, RGBA, RGB -> true;
+            default -> false;
+        };
+    }
+
+    private boolean uploadDirectTexture(final int texture, final ByteBuffer buffer, final int stride) {
+        final int glFormat;
+        final int glType;
+        final int bytesPerTexel;
+        switch (this.colorSpace) {
+            case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
+            case RGB -> {
+                if (this.bitsPerComponent > 8) {
+                    glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 6;
+                } else {
+                    glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_BYTE; bytesPerTexel = 3;
+                }
+            }
+            default -> {
+                if (this.bitsPerComponent == 16) {
+                    glFormat = GL11.GL_RGBA; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 8;
+                } else {
+                    glFormat = GL11.GL_RGBA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4;
+                }
+            }
+        }
+
+        final int rowLengthPixels = (stride == 0) ? 0 : stride / bytesPerTexel;
+        final int effectiveStride = (stride == 0) ? this.width * bytesPerTexel : stride;
+        final long dataSize = (long) effectiveStride * this.height;
+        if (buffer.remaining() < dataSize) {
+            LOGGER.warn(IT, "Preloaded frame buffer too small: {} < {}", buffer.remaining(), dataSize);
+            return false;
+        }
+
+        final long addr = MemoryUtil.memAddress(buffer);
+        if (addr == 0L) return false;
+
+        this.bindTexture.accept(GL11.GL_TEXTURE_2D, texture);
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
+        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLengthPixels);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
+        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+
+        GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
+        this.checkGLError("preloaded frame glTexImage2D");
+
+        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
+        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
+        return true;
+    }
+
+    private void deleteTextures(final int[] textures) {
+        if (textures == null) return;
+        for (final int texture: textures) {
+            if (texture != 0) this.delTexture.accept(texture);
+        }
+    }
+
+    private void releaseFrameTextures() {
+        final int[] textures = this.frameTextures;
+        if (textures.length == 0) return;
+        this.deleteTextures(textures);
+        this.frameTextures = new int[0];
+        this.activeFrameTexture = -1;
+    }
+
     private int newTexture() {
         final int tex = this.genTexture.getAsInt();
         this.bindTexture.accept(GL11.GL_TEXTURE_2D, tex);

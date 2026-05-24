@@ -1,7 +1,5 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.decoders.PNG;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -63,7 +61,7 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     }
 
     public int bytesPerPixel() {
-        final int samplesPerPixel = switch (PNG.ColorType.of(this.colorType)) {
+        final int samplesPerPixel = switch (ColorType.of(this.colorType)) {
             case GREYSCALE -> 1;
             case TRUECOLOR -> 3;
             case INDEXED -> 1;

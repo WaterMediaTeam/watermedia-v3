@@ -180,7 +180,7 @@ public class TwitchPlatform implements IPlatform {
             final JsonObject asset = assets.get(0).getAsJsonObject();
             final JsonArray videoQualities = asset.getAsJsonArray("videoQualities");
             if (videoQualities != null) {
-                for (final JsonElement qe : videoQualities) {
+                for (final JsonElement qe: videoQualities) {
                     final JsonObject q = qe.getAsJsonObject();
                     final String sourceUrl = jsonString(q, "sourceURL");
                     final int height = jsonInt(q, "quality", 0);
@@ -243,7 +243,7 @@ public class TwitchPlatform implements IPlatform {
 
         if (hlsResult instanceof final HlsTool.MasterResult master) {
             final List<DataQuality> variants = new ArrayList<>(master.variants().size());
-            for (final var variant : master.variants()) {
+            for (final var variant: master.variants()) {
                 variants.add(new DataQuality(URI.create(variant.uri()), variant.width(), variant.height()));
             }
             return variants.toArray(DataQuality[]::new);
@@ -489,7 +489,7 @@ public class TwitchPlatform implements IPlatform {
 
     private static String queryParam(final String query, final String key) {
         if (query == null) return null;
-        for (final String param : query.split("&")) {
+        for (final String param: query.split("&")) {
             final String[] kv = param.split("=", 2);
             if (kv.length == 2 && kv[0].equals(key)) return kv[1];
         }

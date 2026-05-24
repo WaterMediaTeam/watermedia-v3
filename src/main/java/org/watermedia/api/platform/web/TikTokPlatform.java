@@ -32,10 +32,7 @@ public class TikTokPlatform implements IPlatform {
 
     private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("/video/(\\d+)");
     private static final Pattern EMBED_ID_PATTERN = Pattern.compile("/embed(?:/v2)?/(\\d+)");
-    private static final Pattern UNIVERSAL_DATA_PATTERN = Pattern.compile(
-            "<script[^>]+id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\"[^>]*>\\s*(\\{.*?})\\s*</script>",
-            Pattern.DOTALL
-    );
+    private static final Pattern UNIVERSAL_DATA_PATTERN = Pattern.compile("<script[^>]+id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\"[^>]*>\\s*(\\{.*?})\\s*</script>", Pattern.DOTALL);
     private static final Pattern URL_KEY_PATTERN = Pattern.compile("v[^_]+_([^_]+)_(\\d+)p_(\\d+)");
 
     @Override
@@ -294,7 +291,7 @@ public class TikTokPlatform implements IPlatform {
         }
 
         if (element.isJsonArray()) {
-            for (final JsonElement item : element.getAsJsonArray()) {
+            for (final JsonElement item: element.getAsJsonArray()) {
                 if (item.isJsonObject()) {
                     final URI src = toUri(jsonString(item.getAsJsonObject(), "src"));
                     if (src != null) return src;
@@ -321,7 +318,7 @@ public class TikTokPlatform implements IPlatform {
 
     // METADATA EXTRACTION
     private static URI findThumbnail(final JsonObject awemeDetail, final JsonObject video) {
-        for (final String key : new String[]{"originCover", "cover", "thumbnail"}) {
+        for (final String key: new String[]{"originCover", "cover", "thumbnail"}) {
             URI uri = jsonUri(video, key);
             if (uri != null) return uri;
             uri = jsonUri(awemeDetail, key);
@@ -331,7 +328,7 @@ public class TikTokPlatform implements IPlatform {
     }
 
     private static String extractAuthor(final JsonObject awemeDetail) {
-        for (final String key : new String[]{"author", "authorInfo"}) {
+        for (final String key: new String[]{"author", "authorInfo"}) {
             if (awemeDetail.has(key) && awemeDetail.get(key).isJsonObject()) {
                 final JsonObject obj = awemeDetail.getAsJsonObject(key);
                 final String nickname = jsonString(obj, "nickname");
@@ -402,7 +399,7 @@ public class TikTokPlatform implements IPlatform {
         if (setCookies == null || setCookies.isEmpty()) return;
 
         final StringBuilder sb = new StringBuilder();
-        for (final String header : setCookies) {
+        for (final String header: setCookies) {
             final String nameValue = header.split(";", 2)[0].trim();
             if (nameValue.isEmpty()) continue;
             if (!sb.isEmpty()) sb.append("; ");

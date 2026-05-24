@@ -71,7 +71,7 @@ public class DTubePlatform implements IPlatform {
             final List<DataQuality> variants = new ArrayList<>();
             final var r = fetchHls(hlsUri);
             if (r instanceof final HlsTool.MasterResult master) {
-                for (final var variant : master.variants()) {
+                for (final var variant: master.variants()) {
                     variants.add(new DataQuality(hlsUri.resolve(variant.uri()), variant.width(), variant.height()));
                 }
             } else if (r instanceof final HlsTool.ErrorResult error) {

@@ -166,7 +166,7 @@ public final class MRL {
             final DataSource entry = entries[i];
             if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
             final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
-            for (final DataQuality v : entry.variants()) {
+            for (final DataQuality v: entry.variants()) {
                 qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
             }
             sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
@@ -179,7 +179,7 @@ public final class MRL {
     private static List<SlaveEntry> toSlaves(final List<DataSlave> slaves) {
         if (slaves == null || slaves.isEmpty()) return null;
         final List<SlaveEntry> out = new ArrayList<>(slaves.size());
-        for (final DataSlave s : slaves) {
+        for (final DataSlave s: slaves) {
             out.add(new SlaveEntry(s.name(), s.lang(), s.uri()));
         }
         return out;
@@ -409,7 +409,7 @@ public final class MRL {
 
         public MediaQuality qualityOf(final URI uri) {
             if (uri == null) return null;
-            for (final var q : this.qualities.entrySet()) {
+            for (final var q: this.qualities.entrySet()) {
                 if (uri.equals(q.getValue())) {
                     return q.getKey();
                 }
