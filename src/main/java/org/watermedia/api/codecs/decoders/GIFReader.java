@@ -71,7 +71,7 @@ public class GIFReader extends ImageReader {
     private final ScreenDescriptor lsd;
     private final ColorTable globalColorTable;
     private final ImageMetadata metadata = new ImageMetadata();
-    private final List<GifApplicationExtension> applicationExtensions = new ArrayList<>();
+    private final List<GifExtension> extensions = new ArrayList<>();
 
     // CANVAS STATE
     private final int[] canvas;            // current composited canvas
@@ -110,8 +110,10 @@ public class GIFReader extends ImageReader {
         // GLOBAL COLOR TABLE (optional)
         if (this.lsd.globalColorTableFlag()) {
             final int gctSize = 1 << (this.lsd.globalColorTableSize() + 1);
-            final byte[] gctBytes = readExactly(this.data, gctSize * 3);
-            this.globalColorTable = ColorTable.read(gctSize, ByteBuffer.wrap(gctBytes).order(LE));
+            if (this.data.remaining() < gctSize * 3) {
+                throw new EOFException("Unexpected EOF in global color table");
+            }
+            this.globalColorTable = ColorTable.read(gctSize, this.data);
         } else {
             this.globalColorTable = null;
         }
@@ -192,8 +194,10 @@ public class GIFReader extends ImageReader {
         ColorTable activeColorTable = this.globalColorTable;
         if (id.localColorTableFlag()) {
             final int lctSize = id.getLocalColorTableSize();
-            final byte[] lctBytes = readExactly(this.data, lctSize * 3);
-            activeColorTable = ColorTable.read(lctSize, ByteBuffer.wrap(lctBytes).order(LE));
+            if (this.data.remaining() < lctSize * 3) {
+                throw new EOFException("Unexpected EOF in local color table");
+            }
+            activeColorTable = ColorTable.read(lctSize, this.data);
         }
         if (activeColorTable == null) {
             throw new XCodecException("No color table available for image frame.");
@@ -266,52 +270,116 @@ public class GIFReader extends ImageReader {
     private void renderImage(final byte[] indexes, final int pixelCount, final int[] canvas, final ImageDescriptor id,
                              final ScreenDescriptor lsd, final ColorTable colorTable, final GraphicExtension gce) {
         final int transparentIndex = (gce != null && gce.transparentColorFlag()) ? gce.transparentColorIndex() : -1;
-        int srcIdx = 0;
+        final int[] colors = colorTable.colors();
+        final int colorLen = colors.length;
+        final int canvasWidth = lsd.width();
+        final int canvasHeight = lsd.height();
+        final int idLeft = id.left();
+        final int idTop = id.top();
+        final int idWidth = id.width();
+        final int idHeight = id.height();
+
+        // Fast path: image descriptor covers the whole canvas exactly — no per-pixel clipping.
+        if (!id.interlacedFlag()
+                && idLeft == 0 && idTop == 0
+                && idWidth == canvasWidth && idHeight == canvasHeight) {
+            if (transparentIndex < 0) {
+                for (int i = 0; i < pixelCount; i++) {
+                    final int ci = indexes[i] & 0xFF;
+                    if (ci < colorLen) canvas[i] = colors[ci];
+                }
+            } else {
+                for (int i = 0; i < pixelCount; i++) {
+                    final int ci = indexes[i] & 0xFF;
+                    if (ci == transparentIndex) continue;
+                    if (ci < colorLen) canvas[i] = colors[ci];
+                }
+            }
+            return;
+        }
+
+        // General path: hoist clip rect once instead of per-pixel checks.
+        final int clipXStart = Math.max(0, idLeft);
+        final int clipYStart = Math.max(0, idTop);
+        final int clipXEnd = Math.min(canvasWidth, idLeft + idWidth);
+        final int clipYEnd = Math.min(canvasHeight, idTop + idHeight);
+        final boolean rowFullyVisible = (idLeft >= 0) && (idLeft + idWidth <= canvasWidth);
+
         if (id.interlacedFlag()) {
+            int srcIdx = 0;
             for (int pass = 0; pass < PASS_STARTS.length; pass++) {
-                for (int y = PASS_STARTS[pass]; y < id.height(); y += PASS_INCREMENTS[pass]) {
-                    for (int x = 0; x < id.width(); x++) {
-                        if (srcIdx >= pixelCount) return;
-                        final int colorIndex = indexes[srcIdx++] & 0xFF;
-                        if (colorIndex == transparentIndex) continue;
-                        final int destX = id.left() + x;
-                        final int destY = id.top() + y;
-                        if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height()
-                                && colorIndex < colorTable.colors().length) {
-                            canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
-                        }
-                    }
+                final int passStart = PASS_STARTS[pass];
+                final int passInc = PASS_INCREMENTS[pass];
+                for (int y = passStart; y < idHeight; y += passInc) {
+                    srcIdx = this.blitRow(indexes, srcIdx, idWidth, idLeft, idTop + y,
+                            canvas, canvasWidth, clipXStart, clipXEnd, clipYStart, clipYEnd,
+                            rowFullyVisible, colors, colorLen, transparentIndex);
+                    if (srcIdx >= pixelCount) return;
                 }
             }
         } else {
-            for (int y = 0; y < id.height(); y++) {
-                for (int x = 0; x < id.width(); x++) {
-                    if (srcIdx >= pixelCount) return;
-                    final int colorIndex = indexes[srcIdx++] & 0xFF;
-                    if (colorIndex == transparentIndex) continue;
-                    final int destX = id.left() + x;
-                    final int destY = id.top() + y;
-                    if (destX >= 0 && destX < lsd.width() && destY >= 0 && destY < lsd.height()
-                            && colorIndex < colorTable.colors().length) {
-                        canvas[destY * lsd.width() + destX] = colorTable.colors()[colorIndex];
-                    }
-                }
+            int srcIdx = 0;
+            for (int y = 0; y < idHeight; y++) {
+                srcIdx = this.blitRow(indexes, srcIdx, idWidth, idLeft, idTop + y,
+                        canvas, canvasWidth, clipXStart, clipXEnd, clipYStart, clipYEnd,
+                        rowFullyVisible, colors, colorLen, transparentIndex);
+                if (srcIdx >= pixelCount) return;
             }
         }
+    }
+
+    private int blitRow(final byte[] indexes, int srcIdx, final int idWidth,
+                        final int idLeft, final int canvasY,
+                        final int[] canvas, final int canvasWidth,
+                        final int clipXStart, final int clipXEnd,
+                        final int clipYStart, final int clipYEnd,
+                        final boolean rowFullyVisible,
+                        final int[] colors, final int colorLen,
+                        final int transparentIndex) {
+        if (canvasY < clipYStart || canvasY >= clipYEnd) {
+            return srcIdx + idWidth;
+        }
+        final int rowOff = canvasY * canvasWidth;
+        if (rowFullyVisible) {
+            if (transparentIndex < 0) {
+                for (int x = 0; x < idWidth; x++) {
+                    final int ci = indexes[srcIdx++] & 0xFF;
+                    if (ci < colorLen) canvas[rowOff + idLeft + x] = colors[ci];
+                }
+            } else {
+                for (int x = 0; x < idWidth; x++) {
+                    final int ci = indexes[srcIdx++] & 0xFF;
+                    if (ci == transparentIndex) continue;
+                    if (ci < colorLen) canvas[rowOff + idLeft + x] = colors[ci];
+                }
+            }
+            return srcIdx;
+        }
+        // Partial horizontal clip: skip leading/trailing pixels that fall outside the canvas.
+        for (int x = 0; x < idWidth; x++) {
+            final int canvasX = idLeft + x;
+            if (canvasX < clipXStart || canvasX >= clipXEnd) { srcIdx++; continue; }
+            final int ci = indexes[srcIdx++] & 0xFF;
+            if (ci == transparentIndex) continue;
+            if (ci < colorLen) canvas[rowOff + canvasX] = colors[ci];
+        }
+        return srcIdx;
     }
 
     private void applyDisposal(final GraphicExtension gce, final int background, final ImageDescriptor id) {
         final int disposal = gce != null ? gce.disposalMethod() : 0;
         if (disposal == 2) {
-            // RESTORE TO BACKGROUND for the previous frame's rect.
-            for (int y = 0; y < id.height(); y++) {
-                for (int x = 0; x < id.width(); x++) {
-                    final int cx = id.left() + x;
-                    final int cy = id.top() + y;
-                    if (cx >= 0 && cx < this.lsd.width() && cy >= 0 && cy < this.lsd.height()) {
-                        this.canvas[cy * this.lsd.width() + cx] = background;
-                    }
-                }
+            // RESTORE TO BACKGROUND for the previous frame's rect — bulk-fill each clipped row.
+            final int canvasWidth = this.lsd.width();
+            final int canvasHeight = this.lsd.height();
+            final int xStart = Math.max(0, id.left());
+            final int yStart = Math.max(0, id.top());
+            final int xEnd = Math.min(canvasWidth, id.left() + id.width());
+            final int yEnd = Math.min(canvasHeight, id.top() + id.height());
+            if (xStart >= xEnd || yStart >= yEnd) return;
+            for (int y = yStart; y < yEnd; y++) {
+                final int rowOff = y * canvasWidth;
+                Arrays.fill(this.canvas, rowOff + xStart, rowOff + xEnd, background);
             }
         } else if (disposal == 3 && this.restoreFrame != null) {
             System.arraycopy(this.restoreFrame, 0, this.canvas, 0, this.canvas.length);
@@ -344,61 +412,64 @@ public class GIFReader extends ImageReader {
         int top = 0;
         int pi = 0;
         int dataPos = 0;
+        int pixelsLeft = expectedSize;
 
-        for (int i = 0; i < expectedSize; ) {
-            if (top == 0) {
-                if (bits < codeSize) {
-                    if (dataPos >= dataLength) break;
-                    datum += (data[dataPos++] & 0xFF) << bits;
-                    bits += 8;
-                    continue;
-                }
-                int code = datum & codeMask;
-                datum >>= codeSize;
-                bits -= codeSize;
-
-                if (code > available || code == endOfInfoCode) break;
-                if (code == clearCode) {
-                    codeSize = lzwMinCodeSize + 1;
-                    codeMask = (1 << codeSize) - 1;
-                    available = clearCode + 2;
-                    oldCode = -1;
-                    continue;
-                }
-                if (oldCode == -1) {
-                    pixelStack[top++] = suffix[code];
-                    oldCode = code;
-                    first = code;
-                    continue;
-                }
-                final int inCode = code;
-                if (code == available) {
-                    pixelStack[top++] = (byte) first;
-                    code = oldCode;
-                }
-                while (code > clearCode) {
-                    if (top >= MAX_STACK_SIZE) throw new XCodecException("LZW stack overflow");
-                    pixelStack[top++] = suffix[code];
-                    code = prefix[code];
-                }
-                first = suffix[code] & 0xFF;
-                if (available >= MAX_STACK_SIZE) {
-                    pixelStack[top++] = (byte) first;
-                } else {
-                    pixelStack[top++] = (byte) first;
-                    prefix[available] = (short) oldCode;
-                    suffix[available] = (byte) first;
-                    available++;
-                    if (((available & codeMask) == 0) && (available < MAX_STACK_SIZE)) {
-                        codeSize++;
-                        codeMask += available;
-                    }
-                }
-                oldCode = inCode;
+        outer:
+        while (pixelsLeft > 0) {
+            // Drain pending stack first — this is the most common hot path.
+            while (top > 0) {
+                output[pi++] = pixelStack[--top];
+                if (--pixelsLeft == 0) break outer;
             }
-            top--;
-            output[pi++] = pixelStack[top];
-            i++;
+
+            // Read enough bits for the next code.
+            while (bits < codeSize) {
+                if (dataPos >= dataLength) break outer;
+                datum += (data[dataPos++] & 0xFF) << bits;
+                bits += 8;
+            }
+            int code = datum & codeMask;
+            datum >>>= codeSize;
+            bits -= codeSize;
+
+            if (code > available || code == endOfInfoCode) break;
+            if (code == clearCode) {
+                codeSize = lzwMinCodeSize + 1;
+                codeMask = (1 << codeSize) - 1;
+                available = clearCode + 2;
+                oldCode = -1;
+                continue;
+            }
+            if (oldCode == -1) {
+                pixelStack[top++] = suffix[code];
+                oldCode = code;
+                first = code;
+                continue;
+            }
+            final int inCode = code;
+            if (code == available) {
+                pixelStack[top++] = (byte) first;
+                code = oldCode;
+            }
+            while (code > clearCode) {
+                if (top >= MAX_STACK_SIZE) throw new XCodecException("LZW stack overflow");
+                pixelStack[top++] = suffix[code];
+                code = prefix[code];
+            }
+            first = suffix[code] & 0xFF;
+            if (available >= MAX_STACK_SIZE) {
+                pixelStack[top++] = (byte) first;
+            } else {
+                pixelStack[top++] = (byte) first;
+                prefix[available] = (short) oldCode;
+                suffix[available] = (byte) first;
+                available++;
+                if (((available & codeMask) == 0) && (available < MAX_STACK_SIZE)) {
+                    codeSize++;
+                    codeMask += available;
+                }
+            }
+            oldCode = inCode;
         }
         return output;
     }
@@ -470,8 +541,8 @@ public class GIFReader extends ImageReader {
 
     private void storeApplicationExtension(final byte[] header, final byte[] data) {
         final String id = new String(header, StandardCharsets.ISO_8859_1).trim();
-        this.applicationExtensions.add(new GifApplicationExtension(id, data));
-        this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, this.applicationExtensions);
+        this.extensions.add(new GifExtension(id, data));
+        this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, this.extensions);
     }
 
     // ----- SUB-BLOCK I/O -----
@@ -544,9 +615,9 @@ public class GIFReader extends ImageReader {
                     currentDelay = delayCs > 0 ? (long) delayCs * DELAY_TIME_MULTIPLIER : DEFAULT_FRAME_DELAY;
                     buffer.position(buffer.position() + 6);
                 } else if (label == APPLICATION_EXTENSION_LABEL) {
-                    loopCount = scanApplicationExtension(buffer, loopCount);
+                    loopCount = scan$extension(buffer, loopCount);
                 } else {
-                    scanSkipSubBlocks(buffer);
+                    scan$skipSubBlocks(buffer);
                 }
             } else if (introducer == IMAGE_SEPARATOR) {
                 if (buffer.remaining() < 9) break;
@@ -561,7 +632,7 @@ public class GIFReader extends ImageReader {
                 }
                 if (!buffer.hasRemaining()) break;
                 buffer.position(buffer.position() + 1); // LZW minimum code size
-                scanSkipSubBlocks(buffer);
+                scan$skipSubBlocks(buffer);
                 delays.add(currentDelay);
                 currentDelay = DEFAULT_FRAME_DELAY;
             } else {
@@ -579,7 +650,7 @@ public class GIFReader extends ImageReader {
         return new ImageData.Scan(delayArray.length, delayArray, total, loopCount);
     }
 
-    private static int scanApplicationExtension(final ByteBuffer buffer, final int fallbackLoopCount) {
+    private static int scan$extension(final ByteBuffer buffer, final int fallbackLoopCount) {
         if (!buffer.hasRemaining()) return fallbackLoopCount;
         final int blockSize = buffer.get() & 0xFF;
         if (buffer.remaining() < blockSize) return fallbackLoopCount;
@@ -601,11 +672,11 @@ public class GIFReader extends ImageReader {
                 }
             }
         }
-        scanSkipSubBlocks(buffer);
+        scan$skipSubBlocks(buffer);
         return loopCount;
     }
 
-    private static void scanSkipSubBlocks(final ByteBuffer buffer) {
+    private static void scan$skipSubBlocks(final ByteBuffer buffer) {
         while (buffer.hasRemaining()) {
             final int size = buffer.get() & 0xFF;
             if (size == 0) return;
@@ -640,5 +711,5 @@ public class GIFReader extends ImageReader {
         return v;
     }
 
-    public record GifApplicationExtension(String identifier, byte[] data) {}
+    public record GifExtension(String identifier, byte[] data) {}
 }

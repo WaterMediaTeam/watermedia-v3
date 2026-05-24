@@ -33,6 +33,8 @@ public class DecoderPerformanceTest {
     private static final List<BenchmarkCase> CASES = List.of(
             new BenchmarkCase("JPEG", Path.of("src", "test", "resources", "netpbm", "reference.jpg")),
             new BenchmarkCase("GIF", Path.of("src", "test", "resources", "gif", "1.gif")),
+            new BenchmarkCase("GIF ALPHA", Path.of("src", "test", "resources", "gif", "2.gif")),
+            new BenchmarkCase("GIF LARGE", Path.of("src", "test", "resources", "gif", "3.gif")),
             new BenchmarkCase("PNG", Path.of("src", "test", "resources", "png", "1.png")),
             new BenchmarkCase("WEBP_LOSSLESS", Path.of("src", "test", "resources", "webp", "lossless", "1.webp")),
             new BenchmarkCase("WEBP_ANIMATED", Path.of("src", "test", "resources", "webp", "animated", "1.webp")),

@@ -15,20 +15,22 @@ public record ColorTable(int size, int[] colors) {
     }
 
     public static ColorTable read(int size, ByteBuffer buffer) {
-        if (buffer.remaining() < size * 3) {
+        final int byteCount = size * 3;
+        if (buffer.remaining() < byteCount) {
             throw new IllegalArgumentException("Buffer does not contain enough data for Color Table. " +
-                    "Expected " + (size * 3) + " bytes, but only " + buffer.remaining() + " available");
+                    "Expected " + byteCount + " bytes, but only " + buffer.remaining() + " available");
         }
 
-        final int[] colorTable = new int[size];
-        for (int i = 0; i < size; i++) {
-            final int r = Byte.toUnsignedInt(buffer.get());
-            final int g = Byte.toUnsignedInt(buffer.get());
-            final int b = Byte.toUnsignedInt(buffer.get());
+        final byte[] raw = new byte[byteCount];
+        buffer.get(raw);
 
-            // BGRA format for little-endian ByteBuffer
-            // When written with putInt(), bytes are arranged as: B G R A in memory
-            colorTable[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        final int[] colorTable = new int[size];
+        for (int i = 0, p = 0; i < size; i++, p += 3) {
+            // BGRA layout when consumed via IntBuffer over little-endian direct buffer
+            colorTable[i] = 0xFF000000
+                    | ((raw[p]     & 0xFF) << 16)
+                    | ((raw[p + 1] & 0xFF) << 8)
+                    | (raw[p + 2] & 0xFF);
         }
 
         return new ColorTable(size, colorTable);
