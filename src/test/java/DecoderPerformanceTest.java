@@ -37,6 +37,9 @@ public class DecoderPerformanceTest {
             new BenchmarkCase("GIF LARGE", Path.of("src", "test", "resources", "gif", "3.gif")),
             new BenchmarkCase("PNG", Path.of("src", "test", "resources", "png", "1.png")),
             new BenchmarkCase("WEBP_LOSSLESS", Path.of("src", "test", "resources", "webp", "lossless", "1.webp")),
+            new BenchmarkCase("WEBP_LOSSY_SMALL", Path.of("src", "test", "resources", "webp", "lossy", "1.webp")),
+            new BenchmarkCase("WEBP_LOSSY_MED", Path.of("src", "test", "resources", "webp", "lossy", "3.webp")),
+            new BenchmarkCase("WEBP_LOSSY_LARGE", Path.of("src", "test", "resources", "webp", "lossy", "6.webp")),
             new BenchmarkCase("WEBP_ANIMATED", Path.of("src", "test", "resources", "webp", "animated", "1.webp")),
             new BenchmarkCase("NETPBM_PPM", Path.of("src", "test", "resources", "netpbm", "test.ppm")),
             new BenchmarkCase("NETPBM_PAM_RGBA", Path.of("src", "test", "resources", "netpbm", "rgba.pam"))

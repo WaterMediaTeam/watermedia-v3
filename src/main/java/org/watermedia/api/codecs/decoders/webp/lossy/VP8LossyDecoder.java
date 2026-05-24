@@ -1116,16 +1116,6 @@ public final class VP8LossyDecoder {
         return v < -128 ? -128 : (Math.min(v, 127));
     }
 
-    private static int commonAdj(final boolean useOuter, final int p1, final int[] p0, final int[] q0, final int q1) {
-        // LIBWEBP: a = 3*(q0-p0) + sclip1(p1-q1); a1 = sclip2((a+4)>>3); a2 = sclip2((a+3)>>3)
-        final int a = (useOuter ? clampS8(p1 - q1) : 0) + 3 * (q0[0] - p0[0]);
-        final int a1 = clampS8((a + 4) >> 3);
-        final int a2 = clampS8((a + 3) >> 3);
-        q0[0] = MathUtil.clip255(q0[0] - a1);
-        p0[0] = MathUtil.clip255(p0[0] + a2);
-        return a1;
-    }
-
     private static void filterSubV(final byte[] p, final int off, final int str, final int len, final int iLim, final int eLim, final int hevThr) {
         for (int i = 0; i < len; i++) {
             final int idx = off + i * str;
@@ -1133,13 +1123,15 @@ public final class VP8LossyDecoder {
             final int q0 = p[idx] & 0xFF, q1 = p[idx + 1] & 0xFF, q2 = p[idx + 2] & 0xFF, q3 = p[idx + 3] & 0xFF;
             if (filterYes(iLim, eLim, p3, p2, p1, p0, q0, q1, q2, q3)) {
                 final boolean hv = hev(hevThr, p1, p0, q0, q1);
-                final int[] p0a = {p0}, q0a = {q0};
-                final int a = (commonAdj(hv, p1, p0a, q0a, q1) + 1) >> 1;
-                p[idx - 1] = (byte) p0a[0];
-                p[idx] = (byte) q0a[0];
+                final int a = (hv ? clampS8(p1 - q1) : 0) + 3 * (q0 - p0);
+                final int a1 = clampS8((a + 4) >> 3);
+                final int a2 = clampS8((a + 3) >> 3);
+                p[idx - 1] = (byte) MathUtil.clip255(p0 + a2);
+                p[idx] = (byte) MathUtil.clip255(q0 - a1);
                 if (!hv) {
-                    p[idx - 2] = (byte) MathUtil.clip255(p1 + a);
-                    p[idx + 1] = (byte) MathUtil.clip255(q1 - a);
+                    final int a3 = (a1 + 1) >> 1;
+                    p[idx - 2] = (byte) MathUtil.clip255(p1 + a3);
+                    p[idx + 1] = (byte) MathUtil.clip255(q1 - a3);
                 }
             }
         }
@@ -1152,13 +1144,15 @@ public final class VP8LossyDecoder {
             final int q0 = p[idx] & 0xFF, q1 = p[idx + str] & 0xFF, q2 = p[idx + 2 * str] & 0xFF, q3 = p[idx + 3 * str] & 0xFF;
             if (filterYes(iLim, eLim, p3, p2, p1, p0, q0, q1, q2, q3)) {
                 final boolean hv = hev(hevThr, p1, p0, q0, q1);
-                final int[] p0a = {p0}, q0a = {q0};
-                final int a = (commonAdj(hv, p1, p0a, q0a, q1) + 1) >> 1;
-                p[idx - str] = (byte) p0a[0];
-                p[idx] = (byte) q0a[0];
+                final int a = (hv ? clampS8(p1 - q1) : 0) + 3 * (q0 - p0);
+                final int a1 = clampS8((a + 4) >> 3);
+                final int a2 = clampS8((a + 3) >> 3);
+                p[idx - str] = (byte) MathUtil.clip255(p0 + a2);
+                p[idx] = (byte) MathUtil.clip255(q0 - a1);
                 if (!hv) {
-                    p[idx - 2 * str] = (byte) MathUtil.clip255(p1 + a);
-                    p[idx + str] = (byte) MathUtil.clip255(q1 - a);
+                    final int a3 = (a1 + 1) >> 1;
+                    p[idx - 2 * str] = (byte) MathUtil.clip255(p1 + a3);
+                    p[idx + str] = (byte) MathUtil.clip255(q1 - a3);
                 }
             }
         }
@@ -1183,10 +1177,11 @@ public final class VP8LossyDecoder {
                     p[idx - 3] = (byte) MathUtil.clip255((p2 - 128 + a) + 128);
                     p[idx + 2] = (byte) MathUtil.clip255((q2 - 128 - a) + 128);
                 } else {
-                    final int[] p0a = {p0}, q0a = {q0};
-                    commonAdj(true, p1, p0a, q0a, q1);
-                    p[idx - 1] = (byte) p0a[0];
-                    p[idx] = (byte) q0a[0];
+                    final int a = clampS8(p1 - q1) + 3 * (q0 - p0);
+                    final int a1 = clampS8((a + 4) >> 3);
+                    final int a2 = clampS8((a + 3) >> 3);
+                    p[idx - 1] = (byte) MathUtil.clip255(p0 + a2);
+                    p[idx] = (byte) MathUtil.clip255(q0 - a1);
                 }
             }
         }
@@ -1211,10 +1206,11 @@ public final class VP8LossyDecoder {
                     p[idx - 3 * str] = (byte) MathUtil.clip255((p2 - 128 + a) + 128);
                     p[idx + 2 * str] = (byte) MathUtil.clip255((q2 - 128 - a) + 128);
                 } else {
-                    final int[] p0a = {p0}, q0a = {q0};
-                    commonAdj(true, p1, p0a, q0a, q1);
-                    p[idx - str] = (byte) p0a[0];
-                    p[idx] = (byte) q0a[0];
+                    final int a = clampS8(p1 - q1) + 3 * (q0 - p0);
+                    final int a1 = clampS8((a + 4) >> 3);
+                    final int a2 = clampS8((a + 3) >> 3);
+                    p[idx - str] = (byte) MathUtil.clip255(p0 + a2);
+                    p[idx] = (byte) MathUtil.clip255(q0 - a1);
                 }
             }
         }

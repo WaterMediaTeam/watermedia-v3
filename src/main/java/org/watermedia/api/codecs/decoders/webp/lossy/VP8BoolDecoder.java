@@ -44,31 +44,36 @@ final class VP8BoolDecoder {
         final int split = 1 + (((this.range - 1) * prob) >> 8);
         final int bigSplit = split << 8;
 
+        int r;
+        int v = this.val;
         final boolean bit;
-        if (this.val >= bigSplit) {
-            // ENCODED A 1 - ADJUST RANGE AND VALUE
+        if (v >= bigSplit) {
             bit = true;
-            this.range -= split;
-            this.val -= bigSplit;
+            r = this.range - split;
+            v -= bigSplit;
         } else {
-            // ENCODED A 0 - REDUCE RANGE ONLY
             bit = false;
-            this.range = split;
+            r = split;
         }
 
-        // RENORMALIZE: WHILE RANGE < 128, DOUBLE IT AND SHIFT IN NEW BITS
-        while (this.range < 128) {
-            this.val <<= 1;
-            this.range <<= 1;
-
-            if (++this.bitCnt == 8) {
-                this.bitCnt = 0;
+        // RENORMALIZE: BATCH THE SHIFT INSTEAD OF LOOPING ONE BIT AT A TIME.
+        // shift = number of left shifts needed so that range >= 128.
+        if (r < 128) {
+            final int shift = Integer.numberOfLeadingZeros(r) - 24;
+            r <<= shift;
+            v <<= shift;
+            int bc = this.bitCnt + shift;
+            // bc can be at most 7 + 7 = 14, so at most one byte refill is needed.
+            if (bc >= 8) {
+                bc -= 8;
                 if (this.buf.hasRemaining()) {
-                    this.val |= (this.buf.get() & 0xFF);
+                    v |= (this.buf.get() & 0xFF) << bc;
                 }
-                // IF NO MORE BYTES, ZEROS ARE SHIFTED IN
             }
+            this.bitCnt = bc;
         }
+        this.range = r;
+        this.val = v;
         return bit;
     }
 
