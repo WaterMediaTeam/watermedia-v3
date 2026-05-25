@@ -88,6 +88,7 @@ public class MediaAPI extends WaterMediaAPI {
 
         this.step++;
         this.stepName = "CACHE";
+        LOGGER.info(IT, "Starting media network cache");
         try {
             NetworkCache.start(instance.tmp.resolve("cache"));
         } catch (final Exception e) {

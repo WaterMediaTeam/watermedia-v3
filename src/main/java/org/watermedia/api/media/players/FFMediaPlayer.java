@@ -2309,11 +2309,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
 
             LOGGER.info(IT, "=== FFMPEG Build Info ===");
-            LOGGER.info(IT, "avformat: {}", avformat.avformat_version());
-            LOGGER.info(IT, "avcodec:  {}", avcodec.avcodec_version());
-            LOGGER.info(IT, "avutil:   {}", avutil.avutil_version());
-            LOGGER.info(IT, "swscale:  {}", swscale.swscale_version());
-            LOGGER.info(IT, "swresample: {}", swresample.swresample_version());
+            LOGGER.info(IT, "• avformat: {}", avformat.avformat_version());
+            LOGGER.info(IT, "• avcodec:  {}", avcodec.avcodec_version());
+            LOGGER.info(IT, "• avutil:   {}", avutil.avutil_version());
+            LOGGER.info(IT, "• swscale:  {}", swscale.swscale_version());
+            LOGGER.info(IT, "• swresample: {}", swresample.swresample_version());
 
             try {
                 final BytePointer config = avformat.avformat_configuration();
@@ -2332,7 +2332,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
                 final String hwNameStr = getString(hwName, null);
                 if (hwNameStr != null) {
-                    LOGGER.info(IT, "  • {}", hwNameStr);
+                    LOGGER.info(IT, "• {}", hwNameStr);
                     hwCount++;
                 }
                 IOTool.closeQuietly(hwName);
