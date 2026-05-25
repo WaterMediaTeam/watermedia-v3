@@ -96,7 +96,7 @@ public abstract class ImageReader implements Closeable {
     /**
      * Pre-generated animation summary computed during construction. Animated formats walk the
      * container chunk structure (without decoding pixel data) to populate this; static formats
-     * return {@link ImageData.Scan#STATIC}.
+     * return {@link ImageData.Scan#EMPTY}.
      */
     public abstract ImageData.Scan scan();
 
@@ -181,28 +181,6 @@ public abstract class ImageReader implements Closeable {
      * @throws IOException on I/O error or malformed bitstream
      */
     public abstract ByteBuffer next() throws IOException;
-
-    /**
-     * Legacy alias for callers still using the old pull contract.
-     */
-    @Deprecated
-    public boolean nextFrame() throws IOException {
-        if (!this.hasNext()) return false;
-        this.next();
-        return true;
-    }
-
-    /** Legacy alias for the last decoded frame. */
-    @Deprecated
-    public ByteBuffer frame() {
-        return this.currentFrame;
-    }
-
-    /** Legacy alias for the delay (ms) of the most recently decoded frame. */
-    @Deprecated
-    public long frameDelay() {
-        return this.currentDelay;
-    }
 
     @Override
     public void close() throws IOException {

@@ -465,17 +465,17 @@ public class WEBPReader extends ImageReader {
 
     private static ImageData.Scan scan(final ByteBuffer source) {
         final ByteBuffer buffer = source.slice().order(LE);
-        if (buffer.remaining() < 8) return ImageData.Scan.STATIC;
+        if (buffer.remaining() < 8) return ImageData.Scan.EMPTY;
 
         final int firstFourCC = buffer.getInt();
         final int firstSize = buffer.getInt();
-        if (firstFourCC != RiffChunk.VP8X) return ImageData.Scan.STATIC;
-        if (firstSize < 10 || buffer.remaining() < firstSize) return ImageData.Scan.STATIC;
+        if (firstFourCC != RiffChunk.VP8X) return ImageData.Scan.EMPTY;
+        if (firstSize < 10 || buffer.remaining() < firstSize) return ImageData.Scan.EMPTY;
 
         final int vp8xPos = buffer.position();
         final boolean animated = (buffer.get(vp8xPos) & 0x02) != 0;
         buffer.position(vp8xPos + paddedSize(firstSize));
-        if (!animated) return ImageData.Scan.STATIC;
+        if (!animated) return ImageData.Scan.EMPTY;
 
         final List<Long> delays = new ArrayList<>();
         int loopCount = ImageData.NO_REPEAT;
@@ -497,7 +497,7 @@ public class WEBPReader extends ImageReader {
             buffer.position(Math.min(next, buffer.limit()));
         }
 
-        if (delays.size() <= 1) return ImageData.Scan.STATIC;
+        if (delays.size() <= 1) return ImageData.Scan.EMPTY;
         final long[] delayArray = new long[delays.size()];
         long total = 0L;
         for (int i = 0; i < delayArray.length; i++) {

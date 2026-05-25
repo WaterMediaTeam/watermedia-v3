@@ -587,7 +587,7 @@ public class GIFReader extends ImageReader {
         int loopCount = ImageData.NO_REPEAT;
         long currentDelay = DEFAULT_FRAME_DELAY;
 
-        if (buffer.remaining() < ScreenDescriptor.SIGNATURE_SIZE) return ImageData.Scan.STATIC;
+        if (buffer.remaining() < ScreenDescriptor.SIGNATURE_SIZE) return ImageData.Scan.EMPTY;
 
         final int packed = buffer.get(buffer.position() + 4) & 0xFF;
         final boolean gctFlag = (packed & 0x80) != 0;
@@ -595,7 +595,7 @@ public class GIFReader extends ImageReader {
         buffer.position(buffer.position() + ScreenDescriptor.SIGNATURE_SIZE);
         if (gctFlag) {
             final int bytes = 3 * (1 << (gctSizeBits + 1));
-            if (buffer.remaining() < bytes) return ImageData.Scan.STATIC;
+            if (buffer.remaining() < bytes) return ImageData.Scan.EMPTY;
             buffer.position(buffer.position() + bytes);
         }
 
@@ -640,7 +640,7 @@ public class GIFReader extends ImageReader {
             }
         }
 
-        if (delays.size() <= 1) return ImageData.Scan.STATIC;
+        if (delays.size() <= 1) return ImageData.Scan.EMPTY;
         final long[] delayArray = new long[delays.size()];
         long total = 0L;
         for (int i = 0; i < delayArray.length; i++) {

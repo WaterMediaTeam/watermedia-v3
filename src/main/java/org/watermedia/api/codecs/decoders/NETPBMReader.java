@@ -52,7 +52,7 @@ public class NETPBMReader extends ImageReader {
     @Override public int width() { return this.header.width; }
     @Override public int height() { return this.header.height; }
     @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
-    @Override public ImageData.Scan scan() { return ImageData.Scan.STATIC; }
+    @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
     @Override public boolean variableFrameRate() { return false; }
 
     @Override

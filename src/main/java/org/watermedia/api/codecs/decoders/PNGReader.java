@@ -1075,7 +1075,7 @@ public class PNGReader extends ImageReader {
         }
 
         final int frameCount = declaredFrameCount > 0 ? declaredFrameCount : delays.size();
-        if (frameCount <= 1 || delays.isEmpty()) return ImageData.Scan.STATIC;
+        if (frameCount <= 1 || delays.isEmpty()) return ImageData.Scan.EMPTY;
 
         final long[] delayArray = new long[delays.size()];
         for (int i = 0; i < delayArray.length; i++) delayArray[i] = delays.get(i);

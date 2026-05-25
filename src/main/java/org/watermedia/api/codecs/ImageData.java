@@ -26,7 +26,7 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
      * without holding any decoded pixel data.
      */
     public record Scan(int frameCount, long[] delays, long duration, int loopCount) {
-        public static final Scan STATIC = new Scan(1, NO_DELAY, 0L, NO_REPEAT);
+        public static final Scan EMPTY = new Scan(1, NO_DELAY, 0L, NO_REPEAT);
     }
 
     public ImageData {

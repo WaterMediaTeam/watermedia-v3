@@ -44,7 +44,7 @@ public class ScanTest {
     @Test
     void staticPngScanIsTheStaticSingleton() throws IOException {
         try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(STATIC_PNG_BYTES))) {
-            assertSame(ImageData.Scan.STATIC, reader.scan(),
+            assertSame(ImageData.Scan.EMPTY, reader.scan(),
                     "static PNGs should reuse the STATIC scan singleton");
         }
     }
