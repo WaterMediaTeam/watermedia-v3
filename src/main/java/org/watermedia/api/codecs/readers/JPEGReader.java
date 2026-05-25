@@ -41,16 +41,41 @@ public class JPEGReader extends ImageReader {
             53, 60, 61, 54, 47, 55, 62, 63
     };
 
-    private static final double[] IDCT_SCALE = {
-            1.0 / Math.sqrt(2.0), 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
-    };
-    private static final double[][] IDCT_COS = new double[8][8];
+    // INTEGER IDCT CONSTANTS (libjpeg "islow" style, 13-bit fixed-point)
+    private static final int CONST_BITS = 13;
+    private static final int PASS1_BITS = 2;
+    private static final int PASS1_SHIFT = CONST_BITS - PASS1_BITS;
+    private static final int PASS1_ROUND = 1 << (PASS1_SHIFT - 1);
+    private static final int PASS2_SHIFT = CONST_BITS + PASS1_BITS + 3;
+    private static final int PASS2_ROUND = 1 << (PASS2_SHIFT - 1);
+    private static final int FIX_0_298631336 = 2446;
+    private static final int FIX_0_390180644 = 3196;
+    private static final int FIX_0_541196100 = 4433;
+    private static final int FIX_0_765366865 = 6270;
+    private static final int FIX_0_899976223 = 7373;
+    private static final int FIX_1_175875602 = 9633;
+    private static final int FIX_1_501321110 = 12299;
+    private static final int FIX_1_847759065 = 15137;
+    private static final int FIX_1_961570560 = 16069;
+    private static final int FIX_2_053119869 = 16819;
+    private static final int FIX_2_562915447 = 20995;
+    private static final int FIX_3_072711026 = 25172;
+
+    // PRECOMPUTED YCbCr -> RGB CONTRIBUTIONS (BT.601, libjpeg jdcolor.c LAYOUT, ABSORB -128 OFFSET).
+    // R/B TABLES STORE THE FINAL PER-PIXEL INTEGER CONTRIBUTION; G TABLES STORE 16-BIT FIXED-POINT,
+    // SUMMED THEN SHIFTED. ROUNDING BIAS LIVES IN CB_TO_G SO THE SUM ROUNDS-TO-NEAREST.
+    private static final int[] CR_TO_R = new int[256];
+    private static final int[] CB_TO_B = new int[256];
+    private static final int[] CR_TO_G = new int[256];
+    private static final int[] CB_TO_G = new int[256];
 
     static {
-        for (int x = 0; x < 8; x++) {
-            for (int u = 0; u < 8; u++) {
-                IDCT_COS[x][u] = Math.cos(((2 * x + 1) * u * Math.PI) / 16.0);
-            }
+        for (int i = 0; i < 256; i++) {
+            final int v = i - 128;
+            CR_TO_R[i] = (int) Math.round(1.402 * v);
+            CB_TO_B[i] = (int) Math.round(1.772 * v);
+            CR_TO_G[i] = (int) Math.round(-0.71414 * v * 65536.0);
+            CB_TO_G[i] = (int) Math.round(-0.34414 * v * 65536.0) + (1 << 15);
         }
     }
 
@@ -74,10 +99,6 @@ public class JPEGReader extends ImageReader {
     private int[] planeStrides = { 0 };
     private boolean delivered;
     private int eobRun;
-
-    public JPEGReader(final ByteBuffer data) throws IOException {
-        this(data, null);
-    }
 
     public JPEGReader(final ByteBuffer data, final PixelFormat requestedFormat) throws IOException {
         super(data, requestedFormat);
@@ -155,9 +176,9 @@ public class JPEGReader extends ImageReader {
     }
 
     private void readFrame(final int marker) throws IOException {
-        final int length = readSegmentLength();
+        final int length = this.readSegmentLength();
         if (length < 8) throw new XCodecException("Truncated JPEG frame header");
-        final int end = checkedSegmentEnd(length);
+        final int end = this.checkedSegmentEnd(length);
         final int precision = readU8(this.data);
         if (precision != 8) throw new XCodecException("Unsupported JPEG precision: " + precision);
 
@@ -198,7 +219,7 @@ public class JPEGReader extends ImageReader {
     }
 
     private void readQuantTables() throws IOException {
-        final int length = readSegmentLength();
+        final int length = this.readSegmentLength();
         int remaining = length - 2;
         while (remaining > 0) {
             final int info = readU8(this.data);
@@ -220,7 +241,7 @@ public class JPEGReader extends ImageReader {
     }
 
     private void readHuffmanTables() throws IOException {
-        final int length = readSegmentLength();
+        final int length = this.readSegmentLength();
         int remaining = length - 2;
         while (remaining > 0) {
             final int info = readU8(this.data);
@@ -246,15 +267,15 @@ public class JPEGReader extends ImageReader {
     }
 
     private void readRestartInterval() throws IOException {
-        final int length = readSegmentLength();
+        final int length = this.readSegmentLength();
         if (length != 4) throw new XCodecException("Invalid JPEG DRI segment length");
         this.restartInterval = readU16(this.data);
     }
 
     private Scan readScanHeader() throws IOException {
         if (this.components == null) throw new XCodecException("JPEG scan before frame header");
-        final int length = readSegmentLength();
-        final int end = checkedSegmentEnd(length);
+        final int length = this.readSegmentLength();
+        final int end = this.checkedSegmentEnd(length);
         final int count = readU8(this.data);
         if (count <= 0 || count > this.components.length) throw new XCodecException("Invalid JPEG scan component count");
 
@@ -555,53 +576,165 @@ public class JPEGReader extends ImageReader {
         final int sampleWidth = component.blocksX * 8;
         final int sampleHeight = component.blocksY * 8;
         component.samples = new byte[sampleWidth * sampleHeight];
-        final double[] temp = new double[64];
-        final int[] out = new int[64];
+        final int[] tmp = new int[64];
         for (int by = 0; by < component.blocksY; by++) {
             for (int bx = 0; bx < component.blocksX; bx++) {
                 final int block = component.blockOffset(bx, by);
-                this.idct(component.coefficients, block, quant, temp, out);
-                for (int y = 0; y < 8; y++) {
-                    final int dst = (by * 8 + y) * sampleWidth + bx * 8;
-                    for (int x = 0; x < 8; x++) component.samples[dst + x] = (byte) out[y * 8 + x];
-                }
+                final int dst = by * 8 * sampleWidth + bx * 8;
+                idct(component.coefficients, block, quant, tmp, component.samples, dst, sampleWidth);
             }
         }
     }
 
-    private void idct(final int[] coefficients, final int block, final int[] quant,
-                      final double[] temp, final int[] out) {
-        boolean dcOnly = true;
-        for (int i = 1; i < 64; i++) {
-            if (coefficients[block + i] != 0) {
-                dcOnly = false;
-                break;
+    // INTEGER IDCT (libjpeg "islow"): ROW PASS THEN COLUMN PASS WITH INLINED DEQUANTIZATION.
+    // ROW PASS WRITES TO 64-INT SCRATCH; COLUMN PASS LEVEL-SHIFTS BY 128, CLAMPS, AND WRITES BYTES DIRECTLY.
+    private static void idct(final int[] coef, final int block, final int[] quant,
+                             final int[] tmp, final byte[] dst, final int dstOff, final int dstStride) {
+        // FAST PATH: ENTIRE BLOCK IS DC ONLY (FLAT 8x8)
+        if (isDcOnly(coef, block)) {
+            final int dc = clamp(((coef[block] * quant[0] + 4) >> 3) + 128);
+            final byte b = (byte) dc;
+            for (int y = 0; y < 8; y++) {
+                final int row = dstOff + y * dstStride;
+                dst[row]     = b; dst[row + 1] = b; dst[row + 2] = b; dst[row + 3] = b;
+                dst[row + 4] = b; dst[row + 5] = b; dst[row + 6] = b; dst[row + 7] = b;
             }
-        }
-        if (dcOnly) {
-            Arrays.fill(out, clamp((int) Math.round((coefficients[block] * quant[0]) / 8.0 + 128.0)));
             return;
         }
 
-        for (int v = 0; v < 8; v++) {
-            final int row = v * 8;
-            for (int x = 0; x < 8; x++) {
-                double sum = 0.0;
-                for (int u = 0; u < 8; u++) {
-                    sum += IDCT_SCALE[u] * coefficients[block + row + u] * quant[row + u] * IDCT_COS[x][u];
-                }
-                temp[row + x] = sum;
+        // ROW PASS
+        for (int row = 0; row < 8; row++) {
+            final int b = block + row * 8;
+            final int q = row * 8;
+
+            // FAST ROW PATH: ALL AC IN ROW ARE ZERO -> CONSTANT ROW
+            if (coef[b + 1] == 0 && coef[b + 2] == 0 && coef[b + 3] == 0 &&
+                coef[b + 4] == 0 && coef[b + 5] == 0 && coef[b + 6] == 0 && coef[b + 7] == 0) {
+                final int dcval = (coef[b] * quant[q]) << PASS1_BITS;
+                final int o = row * 8;
+                tmp[o]     = dcval; tmp[o + 1] = dcval; tmp[o + 2] = dcval; tmp[o + 3] = dcval;
+                tmp[o + 4] = dcval; tmp[o + 5] = dcval; tmp[o + 6] = dcval; tmp[o + 7] = dcval;
+                continue;
             }
+
+            int z2 = coef[b + 2] * quant[q + 2];
+            int z3 = coef[b + 6] * quant[q + 6];
+            int z1 = (z2 + z3) * FIX_0_541196100;
+            int tmp2 = z1 + z3 * (-FIX_1_847759065);
+            int tmp3 = z1 + z2 * FIX_0_765366865;
+
+            z2 = coef[b] * quant[q];
+            z3 = coef[b + 4] * quant[q + 4];
+            int tmp0 = (z2 + z3) << CONST_BITS;
+            int tmp1 = (z2 - z3) << CONST_BITS;
+
+            final int tmp10 = tmp0 + tmp3;
+            final int tmp13 = tmp0 - tmp3;
+            final int tmp11 = tmp1 + tmp2;
+            final int tmp12 = tmp1 - tmp2;
+
+            tmp0 = coef[b + 7] * quant[q + 7];
+            tmp1 = coef[b + 5] * quant[q + 5];
+            tmp2 = coef[b + 3] * quant[q + 3];
+            tmp3 = coef[b + 1] * quant[q + 1];
+
+            z1 = tmp0 + tmp3;
+            z2 = tmp1 + tmp2;
+            z3 = tmp0 + tmp2;
+            int z4 = tmp1 + tmp3;
+            final int z5 = (z3 + z4) * FIX_1_175875602;
+
+            tmp0 *= FIX_0_298631336;
+            tmp1 *= FIX_2_053119869;
+            tmp2 *= FIX_3_072711026;
+            tmp3 *= FIX_1_501321110;
+            z1 *= -FIX_0_899976223;
+            z2 *= -FIX_2_562915447;
+            z3 *= -FIX_1_961570560;
+            z4 *= -FIX_0_390180644;
+
+            z3 += z5;
+            z4 += z5;
+
+            tmp0 += z1 + z3;
+            tmp1 += z2 + z4;
+            tmp2 += z2 + z3;
+            tmp3 += z1 + z4;
+
+            final int o = row * 8;
+            tmp[o]     = (tmp10 + tmp3 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 7] = (tmp10 - tmp3 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 1] = (tmp11 + tmp2 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 6] = (tmp11 - tmp2 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 2] = (tmp12 + tmp1 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 5] = (tmp12 - tmp1 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 3] = (tmp13 + tmp0 + PASS1_ROUND) >> PASS1_SHIFT;
+            tmp[o + 4] = (tmp13 - tmp0 + PASS1_ROUND) >> PASS1_SHIFT;
         }
-        for (int y = 0; y < 8; y++) {
-            for (int x = 0; x < 8; x++) {
-                double sum = 0.0;
-                for (int v = 0; v < 8; v++) {
-                    sum += IDCT_SCALE[v] * temp[v * 8 + x] * IDCT_COS[y][v];
-                }
-                out[y * 8 + x] = clamp((int) Math.round(sum * 0.25 + 128.0));
-            }
+
+        // COLUMN PASS: WRITES INTO dst[] APPLYING LEVEL SHIFT +128 AND CLAMP TO 0..255
+        for (int col = 0; col < 8; col++) {
+            int z2 = tmp[2 * 8 + col];
+            int z3 = tmp[6 * 8 + col];
+            int z1 = (z2 + z3) * FIX_0_541196100;
+            int tmp2 = z1 + z3 * (-FIX_1_847759065);
+            int tmp3 = z1 + z2 * FIX_0_765366865;
+
+            z2 = tmp[col];
+            z3 = tmp[4 * 8 + col];
+            int tmp0 = (z2 + z3) << CONST_BITS;
+            int tmp1 = (z2 - z3) << CONST_BITS;
+
+            final int tmp10 = tmp0 + tmp3;
+            final int tmp13 = tmp0 - tmp3;
+            final int tmp11 = tmp1 + tmp2;
+            final int tmp12 = tmp1 - tmp2;
+
+            tmp0 = tmp[7 * 8 + col];
+            tmp1 = tmp[5 * 8 + col];
+            tmp2 = tmp[3 * 8 + col];
+            tmp3 = tmp[8 + col];
+
+            z1 = tmp0 + tmp3;
+            z2 = tmp1 + tmp2;
+            z3 = tmp0 + tmp2;
+            int z4 = tmp1 + tmp3;
+            final int z5 = (z3 + z4) * FIX_1_175875602;
+
+            tmp0 *= FIX_0_298631336;
+            tmp1 *= FIX_2_053119869;
+            tmp2 *= FIX_3_072711026;
+            tmp3 *= FIX_1_501321110;
+            z1 *= -FIX_0_899976223;
+            z2 *= -FIX_2_562915447;
+            z3 *= -FIX_1_961570560;
+            z4 *= -FIX_0_390180644;
+
+            z3 += z5;
+            z4 += z5;
+
+            tmp0 += z1 + z3;
+            tmp1 += z2 + z4;
+            tmp2 += z2 + z3;
+            tmp3 += z1 + z4;
+
+            int base = dstOff + col;
+            dst[base]                 = (byte) clamp(((tmp10 + tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 7] = (byte) clamp(((tmp10 - tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride]     = (byte) clamp(((tmp11 + tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 6] = (byte) clamp(((tmp11 - tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 2] = (byte) clamp(((tmp12 + tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 5] = (byte) clamp(((tmp12 - tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 3] = (byte) clamp(((tmp13 + tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 4] = (byte) clamp(((tmp13 - tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
         }
+    }
+
+    private static boolean isDcOnly(final int[] coef, final int block) {
+        for (int i = 1; i < 64; i++) {
+            if (coef[block + i] != 0) return false;
+        }
+        return true;
     }
 
     private void writeNative() throws XCodecException {
@@ -633,42 +766,70 @@ public class JPEGReader extends ImageReader {
     }
 
     private void writePlane(final Component component, final int width, final int height) {
+        final byte[] src = component.samples;
+        final int srcStride = component.blocksX * 8;
+        // FAST PATH: NO PADDING IN SAMPLE BUFFER -> SINGLE BULK COPY
+        if (srcStride == width) {
+            this.directOut.put(src, 0, width * height);
+            return;
+        }
+        // ROW-BY-ROW BULK COPY (CHEAPER THAN PUT-BY-BYTE)
         for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                this.directOut.put((byte) component.sampleRaw(x, y));
-            }
+            this.directOut.put(src, y * srcStride, width);
         }
     }
 
     private void writeGrayscaleBgra() {
         final Component yComponent = this.components[0];
+        final byte[] src = yComponent.samples;
+        final int stride = yComponent.blocksX * 8;
+        final ByteBuffer out = this.directOut;
         for (int y = 0; y < this.height; y++) {
+            final int row = y * stride;
             for (int x = 0; x < this.width; x++) {
-                final int gray = yComponent.sample(x, y, this.maxH, this.maxV);
-                this.directOut.put((byte) gray);
-                this.directOut.put((byte) gray);
-                this.directOut.put((byte) gray);
-                this.directOut.put((byte) 0xFF);
+                final int g = src[row + x] & 0xFF;
+                // BGRA LITTLE-ENDIAN: BYTE 0=B, 1=G, 2=R, 3=A
+                out.putInt(0xFF000000 | (g << 16) | (g << 8) | g);
             }
         }
     }
 
     private void writeColorBgra() {
-        final Component yComponent = this.components[0];
-        final Component cbComponent = this.components[1];
-        final Component crComponent = this.components[2];
+        final Component yc = this.components[0];
+        final Component cbc = this.components[1];
+        final Component crc = this.components[2];
+        final byte[] ySrc = yc.samples;
+        final byte[] cbSrc = cbc.samples;
+        final byte[] crSrc = crc.samples;
+        final int yStride = yc.blocksX * 8;
+        final int cbStride = cbc.blocksX * 8;
+        final int crStride = crc.blocksX * 8;
+
+        // PRECOMPUTE PER-DESTINATION-COLUMN CHROMA SAMPLE INDICES (REMOVES MUL/DIV/MIN PER PIXEL)
+        final int[] cbX = new int[this.width];
+        final int[] crX = new int[this.width];
+        final int cbSampleW = cbc.blocksX * 8;
+        final int crSampleW = crc.blocksX * 8;
+        for (int x = 0; x < this.width; x++) {
+            cbX[x] = Math.min(cbSampleW - 1, (x * cbc.h) / this.maxH);
+            crX[x] = Math.min(crSampleW - 1, (x * crc.h) / this.maxH);
+        }
+
+        final ByteBuffer out = this.directOut;
+        final int cbSampleH = cbc.blocksY * 8;
+        final int crSampleH = crc.blocksY * 8;
         for (int y = 0; y < this.height; y++) {
+            final int yRow = y * yStride;
+            final int cbRow = Math.min(cbSampleH - 1, (y * cbc.v) / this.maxV) * cbStride;
+            final int crRow = Math.min(crSampleH - 1, (y * crc.v) / this.maxV) * crStride;
             for (int x = 0; x < this.width; x++) {
-                final int yy = yComponent.sample(x, y, this.maxH, this.maxV);
-                final int cb = cbComponent.sample(x, y, this.maxH, this.maxV) - 128;
-                final int cr = crComponent.sample(x, y, this.maxH, this.maxV) - 128;
-                final int r = clamp((int) Math.round(yy + 1.402 * cr));
-                final int g = clamp((int) Math.round(yy - 0.34414 * cb - 0.71414 * cr));
-                final int b = clamp((int) Math.round(yy + 1.772 * cb));
-                this.directOut.put((byte) b);
-                this.directOut.put((byte) g);
-                this.directOut.put((byte) r);
-                this.directOut.put((byte) 0xFF);
+                final int yy = ySrc[yRow + x] & 0xFF;
+                final int cb = cbSrc[cbRow + cbX[x]] & 0xFF;
+                final int cr = crSrc[crRow + crX[x]] & 0xFF;
+                final int r = clamp(yy + CR_TO_R[cr]);
+                final int g = clamp(yy + ((CB_TO_G[cb] + CR_TO_G[cr]) >> 16));
+                final int b = clamp(yy + CB_TO_B[cb]);
+                out.putInt(0xFF000000 | (r << 16) | (g << 8) | b);
             }
         }
     }
@@ -681,7 +842,7 @@ public class JPEGReader extends ImageReader {
     }
 
     private void skipSegment() throws IOException {
-        final int length = readSegmentLength();
+        final int length = this.readSegmentLength();
         skip(this.data, length - 2);
     }
 
@@ -785,29 +946,18 @@ public class JPEGReader extends ImageReader {
         int blockOffset(final int x, final int y) {
             return (y * this.blocksX + x) * 64;
         }
-
-        int sample(final int x, final int y, final int maxH, final int maxV) {
-            final int sampleWidth = this.blocksX * 8;
-            final int sampleHeight = this.blocksY * 8;
-            final int sx = Math.min(sampleWidth - 1, (x * this.h) / maxH);
-            final int sy = Math.min(sampleHeight - 1, (y * this.v) / maxV);
-            return this.samples[sy * sampleWidth + sx] & 0xFF;
-        }
-
-        int sampleRaw(final int x, final int y) {
-            final int sampleWidth = this.blocksX * 8;
-            final int sampleHeight = this.blocksY * 8;
-            final int sx = Math.min(sampleWidth - 1, x);
-            final int sy = Math.min(sampleHeight - 1, y);
-            return this.samples[sy * sampleWidth + sx] & 0xFF;
-        }
     }
 
+    private static final int LUT_BITS = 8;
+    private static final int LUT_SIZE = 1 << LUT_BITS;
+
     private static final class HuffmanTable {
-        private final int[] minCode = new int[17];
         private final int[] maxCode = new int[18];
         private final int[] valueOffset = new int[17];
         private final int[] values;
+        // PER-PREFIX FAST LOOKUP: ENTRY 0 = NO MATCH (CODE LONGER THAN LUT_BITS),
+        // OTHERWISE (LENGTH << 8) | SYMBOL.  LENGTH IN 1..LUT_BITS, SYMBOL IN 0..255.
+        private final int[] lut = new int[LUT_SIZE];
 
         HuffmanTable(final int[] counts, final int[] values) {
             this.values = values;
@@ -817,9 +967,18 @@ public class JPEGReader extends ImageReader {
             for (int length = 1; length <= 16; length++) {
                 final int count = counts[length];
                 if (count > 0) {
-                    this.minCode[length] = code;
                     this.maxCode[length] = code + count - 1;
                     this.valueOffset[length] = index - code;
+                    // FILL LOOKUP TABLE FOR CODES THAT FIT IN LUT_BITS
+                    if (length <= LUT_BITS) {
+                        for (int n = 0; n < count; n++) {
+                            final int sym = values[index + n] & 0xFF;
+                            final int entry = (length << 8) | sym;
+                            final int prefix = (code + n) << (LUT_BITS - length);
+                            final int suffixes = 1 << (LUT_BITS - length);
+                            for (int s = 0; s < suffixes; s++) this.lut[prefix | s] = entry;
+                        }
+                    }
                     index += count;
                     code += count;
                 }
@@ -828,10 +987,20 @@ public class JPEGReader extends ImageReader {
             this.maxCode[17] = Integer.MAX_VALUE;
         }
 
-        int decode(final EntropyReader reader) throws IOException {
+        int decode(final EntropyReader r) throws IOException {
+            if (r.bitCount < LUT_BITS) r.refill();
+            if (r.bitCount >= LUT_BITS) {
+                final int peek = (int) (r.bitBuf >>> (r.bitCount - LUT_BITS)) & (LUT_SIZE - 1);
+                final int entry = this.lut[peek];
+                if (entry != 0) {
+                    r.bitCount -= entry >>> 8;
+                    return entry & 0xFF;
+                }
+            }
+            // SLOW PATH: WALK BIT-BY-BIT (FOR CODES > LUT_BITS OR LOW BUFFER STATE NEAR EOF)
             int code = 0;
             for (int length = 1; length <= 16; length++) {
-                code = (code << 1) | reader.readBit();
+                code = (code << 1) | r.readBit();
                 if (code <= this.maxCode[length]) return this.values[this.valueOffset[length] + code];
             }
             throw new XCodecException("Invalid JPEG Huffman code");
@@ -840,27 +1009,55 @@ public class JPEGReader extends ImageReader {
 
     private static final class EntropyReader {
         private final ByteBuffer input;
-        private int bits;
-        private int bitCount;
+        long bitBuf;
+        int bitCount;
         private int pendingMarker = -1;
 
         EntropyReader(final ByteBuffer input) {
             this.input = input;
         }
 
+        // FAST REFILL: ACCUMULATES UP TO 32 BITS INTO bitBuf. STOPS AT TRUNCATION OR EMBEDDED MARKER.
+        void refill() throws IOException {
+            while (this.bitCount <= 24) {
+                if (this.pendingMarker >= 0 || !this.input.hasRemaining()) return;
+                final int v = this.input.get() & 0xFF;
+                if (v == 0xFF) {
+                    int marker;
+                    do {
+                        if (!this.input.hasRemaining()) throw new EOFException("Truncated JPEG entropy stream");
+                        marker = this.input.get() & 0xFF;
+                    } while (marker == 0xFF);
+                    if (marker != 0x00) {
+                        this.pendingMarker = marker;
+                        return;
+                    }
+                    // STUFFED 0xFF00 -> EMIT REAL 0xFF
+                    this.bitBuf = (this.bitBuf << 8) | 0xFF;
+                } else {
+                    this.bitBuf = (this.bitBuf << 8) | v;
+                }
+                this.bitCount += 8;
+            }
+        }
+
         int readBit() throws IOException {
             if (this.bitCount == 0) {
-                this.bits = this.readEntropyByte();
-                this.bitCount = 8;
+                this.refill();
+                if (this.bitCount == 0) throw new EOFException("Unexpected JPEG marker FF" + hex(this.pendingMarker) + " in entropy stream");
             }
             this.bitCount--;
-            return (this.bits >>> this.bitCount) & 1;
+            return (int) (this.bitBuf >>> this.bitCount) & 1;
         }
 
         int readBits(final int count) throws IOException {
-            int value = 0;
-            for (int i = 0; i < count; i++) value = (value << 1) | this.readBit();
-            return value;
+            if (count == 0) return 0;
+            if (this.bitCount < count) {
+                this.refill();
+                if (this.bitCount < count) throw new EOFException("Unexpected JPEG marker FF" + hex(this.pendingMarker) + " in entropy stream");
+            }
+            this.bitCount -= count;
+            return (int) (this.bitBuf >>> this.bitCount) & ((1 << count) - 1);
         }
 
         int receiveExtend(final int count) throws IOException {
@@ -872,6 +1069,7 @@ public class JPEGReader extends ImageReader {
 
         int finishScan() throws IOException {
             this.bitCount = 0;
+            this.bitBuf = 0L;
             if (this.pendingMarker >= 0) {
                 final int marker = this.pendingMarker;
                 this.pendingMarker = -1;
@@ -893,6 +1091,7 @@ public class JPEGReader extends ImageReader {
 
         void consumeRestart() throws IOException {
             this.bitCount = 0;
+            this.bitBuf = 0L;
             int marker = -1;
             if (this.pendingMarker >= 0) {
                 marker = this.pendingMarker;
@@ -909,25 +1108,6 @@ public class JPEGReader extends ImageReader {
                 }
             }
             if (!isRestart(marker)) throw new XCodecException("Expected JPEG restart marker");
-        }
-
-        private int readEntropyByte() throws IOException {
-            if (this.pendingMarker >= 0) throw new EOFException("Unexpected JPEG marker in entropy stream");
-            while (this.input.hasRemaining()) {
-                final int value = readU8(this.input);
-                if (value != 0xFF) return value;
-
-                int marker;
-                do {
-                    if (!this.input.hasRemaining()) throw new EOFException("Truncated JPEG entropy stream");
-                    marker = readU8(this.input);
-                } while (marker == 0xFF);
-
-                if (marker == 0x00) return 0xFF;
-                this.pendingMarker = marker;
-                throw new EOFException("Unexpected JPEG marker FF" + hex(marker) + " in entropy stream");
-            }
-            throw new EOFException("Truncated JPEG entropy stream");
         }
     }
 }

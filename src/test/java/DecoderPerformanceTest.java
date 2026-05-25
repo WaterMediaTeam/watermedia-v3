@@ -31,7 +31,11 @@ public class DecoderPerformanceTest {
     private static final List<String> REPORT_LINES = new ArrayList<>();
 
     private static final List<BenchmarkCase> CASES = List.of(
-            new BenchmarkCase("JPEG", Path.of("src", "test", "resources", "jpeg", "1.jpg")),
+            new BenchmarkCase("JPEG_GRAY", Path.of("src", "test", "resources", "jpeg", "1.jpg")),
+            new BenchmarkCase("JPEG_420", Path.of("src", "test", "resources", "jpeg", "2.jpg")),
+            new BenchmarkCase("JPEG_422", Path.of("src", "test", "resources", "jpeg", "3.jpg")),
+            new BenchmarkCase("JPEG_444", Path.of("src", "test", "resources", "jpeg", "4.jpg")),
+            new BenchmarkCase("JPEG_444_APPX", Path.of("src", "test", "resources", "jpeg", "5.jpg")),
             new BenchmarkCase("GIF", Path.of("src", "test", "resources", "gif", "1.gif")),
             new BenchmarkCase("GIF ALPHA", Path.of("src", "test", "resources", "gif", "2.gif")),
             new BenchmarkCase("GIF LARGE", Path.of("src", "test", "resources", "gif", "3.gif")),
