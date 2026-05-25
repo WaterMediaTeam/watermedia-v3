@@ -93,7 +93,7 @@ public class CodecsAPI extends WaterMediaAPI {
         }
         if (DataTool.startsWith(source, start, JPEG_HEADER)) {
             source.position(start + JPEG_HEADER.length);
-            return new JPEGReader(source);
+            return new JPEGReader(source, requestedFormat);
         }
         if (DataTool.startsWith(source, start, GIF87_HEADER) || DataTool.startsWith(source, start, GIF89_HEADER)) {
             source.position(start + GIF89_HEADER.length);

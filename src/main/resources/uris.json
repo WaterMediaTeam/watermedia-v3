@@ -181,6 +181,27 @@
     ]
   },
   {
+    "name": "JPEG format",
+    "uris": [
+      {
+        "name": "#1 WHITE BUILDING",
+        "uri": "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg"
+      },
+      {
+        "name": "#2 KID WITH PARROTS",
+        "uri": "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg422jfif.jpg"
+      },
+      {
+        "name": "#3 GRAYSCALE FLOWER",
+        "uri": "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg400jfif.jpg"
+      },
+      {
+        "name": "#5 GRADIENT",
+        "uri": "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg444.jpg"
+      }
+    ]
+  },
+  {
     "name": "Video formats",
     "uris": [
       {

@@ -83,7 +83,7 @@ public class CodecsAPIContractTest {
                 new Fixture("GIF", Path.of("src/test/resources/gif/1.gif"), 6),
                 new Fixture("WEBP", Path.of("src/test/resources/webp/lossless/1.webp"), 12),
                 new Fixture("NETPBM", Path.of("src/test/resources/netpbm/test.ppm"), 2),
-                new Fixture("JPEG", Path.of("src/test/resources/netpbm/reference.jpg"), 2)
+                new Fixture("JPEG", Path.of("src/test/resources/jpeg/1.jpg"), 2)
         )) {
             final ByteBuffer data = ByteBuffer.wrap(Files.readAllBytes(fixture.path()));
 
@@ -111,7 +111,7 @@ public class CodecsAPIContractTest {
 
     @Test
     void emptyMetadataFieldsReturnNull() throws Exception {
-        final byte[] jpeg = Files.readAllBytes(Path.of("src/test/resources/netpbm/reference.jpg"));
+        final byte[] jpeg = Files.readAllBytes(Path.of("src/test/resources/jpeg/1.jpg"));
         try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(jpeg))) {
             final ImageMetadata metadata = reader.metadata();
 

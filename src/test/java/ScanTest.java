@@ -84,14 +84,12 @@ public class ScanTest {
             assertEquals(scan.duration(), Arrays.stream(scan.delays()).sum(),
                     resource + ": scan duration must equal the sum of its per-frame delays");
 
-            int frameIndex = 0;
-            while (reader.hasNext()) {
-                reader.next();
-                assertEquals(scan.delays()[frameIndex], reader.frameDelay(),
-                        resource + ": streamed delay for frame " + frameIndex + " must match scan");
-                frameIndex++;
+            final ImageData image = reader.readAll();
+            for (int frameIndex = 0; frameIndex < image.delay().length; frameIndex++) {
+                assertEquals(scan.delays()[frameIndex], image.delay()[frameIndex],
+                        resource + ": decoded delay for frame " + frameIndex + " must match scan");
             }
-            assertEquals(scan.frameCount(), frameIndex,
+            assertEquals(scan.frameCount(), image.frames().length,
                     resource + ": streamed frame count must match scan");
         }
     }
