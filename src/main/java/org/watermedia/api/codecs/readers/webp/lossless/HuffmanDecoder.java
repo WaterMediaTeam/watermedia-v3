@@ -19,7 +19,7 @@ public final class HuffmanDecoder {
     // READ A SINGLE HUFFMAN TABLE FROM BITSTREAM
     public static HuffmanTable readTable(final BitReader reader, final int alphabetSize) throws XCodecException {
         final boolean isSimple = reader.readBool();
-        LOGGER.debug(IT, "readTable: alphabetSize={}, isSimple={}", alphabetSize, isSimple);
+        LOGGER.trace(IT, "readTable: alphabetSize={}, isSimple={}", alphabetSize, isSimple);
 
         if (isSimple) {
             return readSimpleCode(reader, alphabetSize);
@@ -36,17 +36,17 @@ public final class HuffmanDecoder {
         // DISTANCE: 40
         final int greenSize = 256 + 24 + colorCacheSize;
 
-        LOGGER.debug(IT, "readGroup: before GREEN: {}", reader.bitPosition());
+        LOGGER.trace(IT, "readGroup: before GREEN: {}", reader.bitPosition());
         final HuffmanTable green = readTable(reader, greenSize);
-        LOGGER.debug(IT, "readGroup: before RED: {}", reader.bitPosition());
+        LOGGER.trace(IT, "readGroup: before RED: {}", reader.bitPosition());
         final HuffmanTable red = readTable(reader, 256);
-        LOGGER.debug(IT, "readGroup: before BLUE: {}", reader.bitPosition());
+        LOGGER.trace(IT, "readGroup: before BLUE: {}", reader.bitPosition());
         final HuffmanTable blue = readTable(reader, 256);
-        LOGGER.debug(IT, "readGroup: before ALPHA: {}", reader.bitPosition());
+        LOGGER.trace(IT, "readGroup: before ALPHA: {}", reader.bitPosition());
         final HuffmanTable alpha = readTable(reader, 256);
-        LOGGER.debug(IT, "readGroup: before DIST: {}", reader.bitPosition());
+        LOGGER.trace(IT, "readGroup: before DIST: {}", reader.bitPosition());
         final HuffmanTable dist = readTable(reader, 40);
-        LOGGER.debug(IT, "readGroup: after DIST: {}", reader.bitPosition());
+        LOGGER.trace(IT, "readGroup: after DIST: {}", reader.bitPosition());
 
         return new HuffmanGroup(green, red, blue, alpha, dist);
     }
@@ -77,18 +77,18 @@ public final class HuffmanDecoder {
             }
         }
 
-        LOGGER.debug(IT, "readSimpleCode: alphabetSize={}, numSymbols={}, is8Bits={}, sym0={}, sym1={}",
+        LOGGER.trace(IT, "readSimpleCode: alphabetSize={}, numSymbols={}, is8Bits={}, sym0={}, sym1={}",
                 alphabetSize, numSymbols, is8Bits, sym0, sym1);
 
         return HuffmanTable.simple(numSymbols, sym0, sym1);
     }
 
     private static HuffmanTable readNormalCode(final BitReader reader, final int alphabetSize) throws XCodecException {
-        LOGGER.debug(IT, "readNormalCode: alphabetSize={}, remaining={}", alphabetSize, reader.remaining());
+        LOGGER.trace(IT, "readNormalCode: alphabetSize={}, remaining={}", alphabetSize, reader.remaining());
 
         // READ NUMBER OF CODE LENGTH CODES
         final int numCodeLengthCodes = reader.read(4) + 4;
-        LOGGER.debug(IT, "  numCodeLengthCodes={}", numCodeLengthCodes);
+        LOGGER.trace(IT, "  numCodeLengthCodes={}", numCodeLengthCodes);
 
         // READ CODE LENGTH CODE LENGTHS
         final int[] codeLengthCodeLengths = new int[19];
@@ -98,7 +98,7 @@ public final class HuffmanDecoder {
 
         // BUILD CODE LENGTH HUFFMAN TABLE
         final HuffmanTable codeLengthTable = HuffmanTable.build(codeLengthCodeLengths, 19);
-        LOGGER.debug(IT, "  codeLengthTable: {}", codeLengthTable.debugInfo());
+        LOGGER.trace(IT, "  codeLengthTable: {}", codeLengthTable.debugInfo());
 
         // READ MAX SYMBOL
         final int maxSymbol;
@@ -107,14 +107,14 @@ public final class HuffmanDecoder {
             final int lengthNBits = reader.read(3);
             final int lengthBits = 2 + 2 * lengthNBits;
             maxSymbol = 2 + reader.read(lengthBits);
-            LOGGER.debug(IT, "  lengthNBits={}, lengthBits={}, maxSymbol={}", lengthNBits, lengthBits, maxSymbol);
+            LOGGER.trace(IT, "  lengthNBits={}, lengthBits={}, maxSymbol={}", lengthNBits, lengthBits, maxSymbol);
             if (maxSymbol > alphabetSize) {
-                LOGGER.debug(IT, "  ERROR: maxSymbol={} > alphabetSize={}", maxSymbol, alphabetSize);
+                LOGGER.trace(IT, "  ERROR: maxSymbol={} > alphabetSize={}", maxSymbol, alphabetSize);
                 throw new XCodecException("Max symbol exceeds alphabet size");
             }
         } else {
             maxSymbol = alphabetSize;
-            LOGGER.debug(IT, "  maxSymbol={} (default)", maxSymbol);
+            LOGGER.trace(IT, "  maxSymbol={} (default)", maxSymbol);
         }
 
         // READ CODE LENGTHS
@@ -126,7 +126,7 @@ public final class HuffmanDecoder {
         int symbol = 0;
         int tokensRemaining = maxSymbol;
 
-        LOGGER.debug(IT, "  Reading code lengths, maxSymbol={}, position before: {}", maxSymbol, reader.bitPosition());
+        LOGGER.trace(IT, "  Reading code lengths, maxSymbol={}, position before: {}", maxSymbol, reader.bitPosition());
         while (symbol < alphabetSize && tokensRemaining > 0) {
             tokensRemaining--;
             final int code = codeLengthTable.read(reader);
@@ -173,7 +173,7 @@ public final class HuffmanDecoder {
                 symbolCount++;
             }
         }
-        LOGGER.debug(IT, "  symbolCount={}, position after: {}", symbolCount, reader.bitPosition());
+        LOGGER.trace(IT, "  symbolCount={}, position after: {}", symbolCount, reader.bitPosition());
 
         return HuffmanTable.build(codeLengths, alphabetSize);
     }

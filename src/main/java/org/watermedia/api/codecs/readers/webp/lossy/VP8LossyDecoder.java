@@ -438,7 +438,7 @@ public final class VP8LossyDecoder {
                 st.mbIsI4x4[mbIdx] = isI4x4 ? 1 : 0;
                 st.mbFInner[mbIdx] = (isI4x4 || !skip) ? 1 : 0;
 
-                // LOGGER.debug(IT, "MB({},{}) seg={} skip={} i4x4={} yMode={} uvMode={}", mbX, mbY, seg, skip, isI4x4, yMode, uvMode);
+                LOGGER.trace(IT, "MB({},{}) seg={} skip={} i4x4={} yMode={} uvMode={}", mbX, mbY, seg, skip, isI4x4, yMode, uvMode);
 
                 final int yOff = mbY * 16 * yStr + mbX * 16;
                 final int uvOff = mbY * 8 * uvStr + mbX * 8;

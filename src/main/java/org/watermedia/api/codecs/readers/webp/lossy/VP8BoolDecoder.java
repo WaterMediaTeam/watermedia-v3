@@ -32,7 +32,7 @@ final class VP8BoolDecoder {
         this.range = 255;  // INITIAL RANGE IS FULL
         this.bitCnt = 0;   // NO BITS SHIFTED OUT YET
 
-        LOGGER.debug(IT, "Init: val=0x{}, range={}", Integer.toHexString(this.val), this.range);
+        LOGGER.trace(IT, "Init: val=0x{}, range={}", Integer.toHexString(this.val), this.range);
     }
 
     // RFC6386 SECTION 7.3 - READ_BOOL IMPLEMENTATION
@@ -89,7 +89,7 @@ final class VP8BoolDecoder {
         for (int i = 0; i < n; i++) {
             r = (r << 1) | (this.readBool() ? 1 : 0);
         }
-        LOGGER.debug(IT, "readLit({}): {}", n, r);
+        LOGGER.trace(IT, "readLit({}): {}", n, r);
         return r;
     }
 

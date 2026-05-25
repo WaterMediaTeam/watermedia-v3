@@ -21,7 +21,7 @@ public final class VP8LDecoder {
 
     // DECODE VP8L BITSTREAM TO ARGB PIXELS
     public static int[] decode(final BitReader reader, final int width, final int height) throws XCodecException {
-        LOGGER.debug(IT, "Starting decode: {}x{}", width, height);
+        LOGGER.trace(IT, "Starting decode: {}x{}", width, height);
 
         // PARSE TRANSFORMS
         final List<Transform> transforms = new ArrayList<>();
@@ -29,9 +29,9 @@ public final class VP8LDecoder {
 
         while (reader.readBool()) {
             final Transform.Type type = Transform.typeof(reader.read(2));
-            LOGGER.debug(IT, "Reading transform type: {}", type);
+            LOGGER.trace(IT, "Reading transform type: {}", type);
             final Transform transform = readTransform(reader, type, currentWidth, height);
-            LOGGER.debug(IT, "Transform read complete, remaining bytes: {}", reader.remaining());
+            LOGGER.trace(IT, "Transform read complete, remaining bytes: {}", reader.remaining());
             transforms.add(transform);
 
             // COLOR INDEXING MAY REDUCE WIDTH
@@ -44,17 +44,17 @@ public final class VP8LDecoder {
             }
         }
 
-        LOGGER.debug(IT, "No more transforms, position: {}", reader.bitPosition());
+        LOGGER.trace(IT, "No more transforms, position: {}", reader.bitPosition());
 
         // READ COLOR CACHE INFO
         int colorCacheBits = 0;
         ColorCache colorCache = null;
         if (reader.readBool()) {
             colorCacheBits = reader.read(4);
-            LOGGER.debug(IT, "Main color cache bits: {}", colorCacheBits);
+            LOGGER.trace(IT, "Main color cache bits: {}", colorCacheBits);
             colorCache = new ColorCache(colorCacheBits);
         } else {
-            LOGGER.debug(IT, "No main color cache");
+            LOGGER.trace(IT, "No main color cache");
         }
         final int colorCacheSize = (colorCache != null) ? colorCache.size() : 0;
 
@@ -69,12 +69,12 @@ public final class VP8LDecoder {
             metaBits = reader.read(3) + 2;
             metaWidth = (currentWidth + (1 << metaBits) - 1) >> metaBits;
             final int metaHeight = (height + (1 << metaBits) - 1) >> metaBits;
-            LOGGER.debug(IT, "Meta prefix: bits={}, size={}x{}, remaining bytes: {}", metaBits, metaWidth, metaHeight, reader.remaining());
+            LOGGER.trace(IT, "Meta prefix: bits={}, size={}x{}, remaining bytes: {}", metaBits, metaWidth, metaHeight, reader.remaining());
 
             // DECODE ENTROPY IMAGE
-            LOGGER.debug(IT, "Decoding meta prefix image...");
+            LOGGER.trace(IT, "Decoding meta prefix image...");
             metaPrefixImage = decodeImage(reader, metaWidth, metaHeight, 0, null);
-            LOGGER.debug(IT, "Meta prefix image decoded, remaining bytes: {}", reader.remaining());
+            LOGGER.trace(IT, "Meta prefix image decoded, remaining bytes: {}", reader.remaining());
 
             // FIND MAX META PREFIX CODE
             int maxCode = 0;
@@ -151,7 +151,7 @@ public final class VP8LDecoder {
     // DECODE SUB-IMAGE (FOR TRANSFORMS AND ENTROPY IMAGE)
     private static int[] decodeImage(final BitReader reader, final int width, final int height,
                                      final int colorCacheBits, final ColorCache cache) throws XCodecException {
-        LOGGER.debug(IT, "decodeImage: {}x{}, position: {}", width, height, reader.bitPosition());
+        LOGGER.trace(IT, "decodeImage: {}x{}, position: {}", width, height, reader.bitPosition());
 
         // NO META PREFIX FOR SUB-IMAGES
         int colorCacheSize = (colorCacheBits > 0) ? (1 << colorCacheBits) : 0;
@@ -160,26 +160,26 @@ public final class VP8LDecoder {
         ColorCache subCache = null;
         if (reader.readBool()) {
             final int bits = reader.read(4);
-            LOGGER.debug(IT, "Sub-image color cache bits: {}", bits);
+            LOGGER.trace(IT, "Sub-image color cache bits: {}", bits);
 
             if (bits >= 1 && bits <= 11) {
                 subCache = new ColorCache(bits);
                 colorCacheSize = subCache.size();
             }
         } else {
-            LOGGER.debug(IT, "Sub-image has no color cache");
+            LOGGER.trace(IT, "Sub-image has no color cache");
         }
 
-        LOGGER.debug(IT, "Reading huffman group, colorCacheSize={}", colorCacheSize);
+        LOGGER.trace(IT, "Reading huffman group, colorCacheSize={}", colorCacheSize);
         final HuffmanGroup group = HuffmanDecoder.readGroup(reader, colorCacheSize);
-        LOGGER.debug(IT, "Huffman group read, remaining bytes: {}", reader.remaining());
+        LOGGER.trace(IT, "Huffman group read, remaining bytes: {}", reader.remaining());
 
-        LOGGER.debug(IT, "Decoding {} pixels...", width * height);
-        LOGGER.debug(IT, "Before pixel decode: {}", reader.bitPosition());
-        LOGGER.debug(IT, "First pixel GREEN table info: {}", group.green().debugInfo());
+        LOGGER.trace(IT, "Decoding {} pixels...", width * height);
+        LOGGER.trace(IT, "Before pixel decode: {}", reader.bitPosition());
+        LOGGER.trace(IT, "First pixel GREEN table info: {}", group.green().debugInfo());
         final int[] result = decodeImageData(reader, width, height, new HuffmanGroup[]{group},
                 null, 0, 0, subCache);
-        LOGGER.debug(IT, "Pixels decoded, position: {}", reader.bitPosition());
+        LOGGER.trace(IT, "Pixels decoded, position: {}", reader.bitPosition());
         return result;
     }
 

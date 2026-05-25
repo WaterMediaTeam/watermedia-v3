@@ -171,6 +171,10 @@ public class WEBPReader extends ImageReader {
             this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
             this.directOutInts = this.directOut.asIntBuffer();
         }
+
+        LOGGER.debug(IT, "WEBP opened: {}x{} codec={} animated={} alpha={} output={} frames={}",
+                this.canvasWidth, this.canvasHeight, RiffChunk.fourCCString(this.bitstreamFourCC),
+                this.animated, this.hasAlpha, this.outputFormat, this.scan.frameCount());
     }
 
     // CHOOSE THE BUFFER LAYOUT WE'LL DELIVER. ANIMATED FRAMES AND ANY EXPLICIT BGRA REQUEST FORCE
@@ -273,6 +277,9 @@ public class WEBPReader extends ImageReader {
     // ----- DECODE -----
 
     private void decodeStaticFrame() throws IOException {
+        LOGGER.debug(IT, "Decoding static {} frame {}x{} (alpha chunk={}, output={})",
+                RiffChunk.fourCCString(this.bitstreamFourCC), this.canvasWidth, this.canvasHeight,
+                this.alphData != null, this.outputFormat);
         if (this.outputFormat == PixelFormat.YUV420P) {
             this.decodeStaticFrameYuv();
             return;
@@ -347,6 +354,10 @@ public class WEBPReader extends ImageReader {
             off = body + paddedSize(sz);
         }
         if (subVp8Off < 0 || subVp8Len <= 0) throw new XCodecException("ANMF without VP8/VP8L sub-chunk");
+
+        LOGGER.debug(IT, "Decoding ANMF: codec={} pos=({},{}) size={}x{} duration={}ms blend={} dispose={} alpha={}",
+                RiffChunk.fourCCString(subVp8FourCC), frameX * 2, frameY * 2, frameW, frameH,
+                duration, blend, dispose, subAlphOff >= 0);
 
         final int[] framePixels = this.decodeBitstreamToArgb(
                 anmf, subVp8Off, subVp8Len, subVp8FourCC,
