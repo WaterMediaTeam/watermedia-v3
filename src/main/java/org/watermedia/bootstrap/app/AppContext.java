@@ -40,6 +40,7 @@ public final class AppContext implements Executor {
     public int windowWidth = 1280;
     public int windowHeight = 720;
     public long windowHandle;
+    public boolean windowMaximized;
     private final AtomicBoolean renderRequested = new AtomicBoolean(true);
 
     // MOUSE

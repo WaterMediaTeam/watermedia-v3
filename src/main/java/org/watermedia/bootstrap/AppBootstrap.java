@@ -107,8 +107,8 @@ public class AppBootstrap {
         if (System.getProperty(APP_FLAG) != null) {
             try {
                 WaterMediaApp.start(() -> {
-                    WaterMediaApp.log("Launched with embedded WaterMedia App Bootstrap");
-                    WaterMediaApp.log("Searching for sideloadable extensions...");
+                    WaterMediaApp.log("Launched with embedded WaterMediaApp Bootstrap");
+                    WaterMediaApp.log("Searching for extensions...");
                     ServiceLoader.load(Extension.class).forEach(Extension::load);
                 });
             } catch (final Throwable e) {

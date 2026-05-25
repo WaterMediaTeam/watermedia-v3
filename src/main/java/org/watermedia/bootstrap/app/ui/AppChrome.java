@@ -76,7 +76,12 @@ public final class AppChrome {
             if (i == 0) {
                 RenderSystem.lineH(cx - 5, 17, 10, color, 1f);
             } else if (i == 1) {
-                RenderSystem.rect(cx - 5, 9, 10, 10, color, 1f);
+                if (ctx.windowMaximized) {
+                    RenderSystem.rect(cx - 7, 11, 9, 8, color, 1f);
+                    RenderSystem.rect(cx - 3, 8, 9, 8, color, 1f);
+                } else {
+                    RenderSystem.rect(cx - 5, 9, 10, 10, color, 1f);
+                }
             } else {
                 PixelIcon.draw("x", cx - 6, 8, 12, color);
             }

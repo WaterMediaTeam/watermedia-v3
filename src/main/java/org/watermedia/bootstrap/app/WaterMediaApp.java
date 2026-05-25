@@ -186,6 +186,7 @@ public class WaterMediaApp {
         ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
         if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
         maximized = true;
+        ctx.windowMaximized = true;
 
         // CALLBACKS
         glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
@@ -210,9 +211,12 @@ public class WaterMediaApp {
             ctx.requestRender();
             if (action == GLFW_PRESS) {
                 if (ctx.mouseY < AppChrome.TITLEBAR_H && !AppChrome.isTitlebarControl(ctx.mouseX, ctx.windowWidth)) {
+                    final boolean restored = restoreForTitlebarDrag();
                     draggingTitlebar = true;
-                    dragOffsetX = (int) ctx.mouseX;
-                    dragOffsetY = (int) ctx.mouseY;
+                    if (!restored) {
+                        dragOffsetX = (int) ctx.mouseX;
+                        dragOffsetY = (int) ctx.mouseY;
+                    }
                 }
             } else if (action == GLFW_RELEASE) {
                 draggingTitlebar = false;
@@ -229,6 +233,11 @@ public class WaterMediaApp {
             ctx.windowWidth = width;
             ctx.windowHeight = height;
             RenderSystem.viewport(width, height);
+            ctx.requestRender();
+        });
+        glfwSetWindowMaximizeCallback(ctx.windowHandle, (w, isMaximized) -> {
+            maximized = isMaximized;
+            ctx.windowMaximized = maximized;
             ctx.requestRender();
         });
 
@@ -253,6 +262,38 @@ public class WaterMediaApp {
         GL.createCapabilities();
         RenderSystem.init();
         RenderSystem.configureFrameState();
+    }
+
+    private static boolean restoreForTitlebarDrag() {
+        if (!maximized) return false;
+        try (final MemoryStack stack = stackPush()) {
+            final IntBuffer winX = stack.mallocInt(1);
+            final IntBuffer winY = stack.mallocInt(1);
+            glfwGetWindowPos(ctx.windowHandle, winX, winY);
+
+            final double globalCursorX = winX.get(0) + ctx.mouseX;
+            final double globalCursorY = winY.get(0) + ctx.mouseY;
+            final double xRatio = ctx.windowWidth <= 0 ? 0.5d : Math.max(0d, Math.min(1d, ctx.mouseX / ctx.windowWidth));
+
+            glfwRestoreWindow(ctx.windowHandle);
+            maximized = false;
+            ctx.windowMaximized = false;
+
+            final IntBuffer restoredW = stack.mallocInt(1);
+            final IntBuffer restoredH = stack.mallocInt(1);
+            glfwGetWindowSize(ctx.windowHandle, restoredW, restoredH);
+            final int newW = restoredW.get(0);
+            final int newH = restoredH.get(0);
+            ctx.windowWidth = newW;
+            ctx.windowHeight = newH;
+            RenderSystem.viewport(newW, newH);
+
+            dragOffsetX = Math.max(0, Math.min(newW - 1, (int) Math.round(newW * xRatio)));
+            dragOffsetY = (int) Math.max(0, Math.min(AppChrome.TITLEBAR_H - 1, ctx.mouseY));
+            glfwSetWindowPos(ctx.windowHandle, (int) Math.round(globalCursorX - dragOffsetX), (int) Math.round(globalCursorY - dragOffsetY));
+            ctx.requestRender();
+            return true;
+        }
     }
 
     private static void initAudio() {
@@ -437,10 +478,12 @@ public class WaterMediaApp {
                 () -> {
                     if (maximized) {
                         glfwRestoreWindow(ctx.windowHandle);
+                        maximized = false;
                     } else {
                         glfwMaximizeWindow(ctx.windowHandle);
+                        maximized = true;
                     }
-                    maximized = !maximized;
+                    ctx.windowMaximized = maximized;
                 },
                 () -> running = false)) {
             ctx.mouseClicked = false;
