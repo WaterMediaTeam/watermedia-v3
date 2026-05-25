@@ -2,7 +2,7 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.XCodecException;
-import org.watermedia.api.codecs.decoders.webp.common.AlphaDecoder;
+import org.watermedia.api.codecs.common.webp.AlphaDecoder;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

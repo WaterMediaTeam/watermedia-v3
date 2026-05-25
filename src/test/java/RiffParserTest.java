@@ -2,9 +2,9 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.XCodecException;
-import org.watermedia.api.codecs.decoders.webp.riff.RiffChunk;
-import org.watermedia.api.codecs.decoders.webp.riff.RiffParser;
-import org.watermedia.api.codecs.decoders.webp.riff.WebPInfo;
+import org.watermedia.api.codecs.readers.webp.riff.RiffChunk;
+import org.watermedia.api.codecs.readers.webp.riff.RiffParser;
+import org.watermedia.api.codecs.readers.webp.riff.WebPInfo;
 
 import java.io.File;
 import java.io.FileInputStream;

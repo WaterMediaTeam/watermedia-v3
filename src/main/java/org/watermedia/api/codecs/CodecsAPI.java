@@ -4,11 +4,11 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
-import org.watermedia.api.codecs.decoders.GIFReader;
-import org.watermedia.api.codecs.decoders.JPEGReader;
-import org.watermedia.api.codecs.decoders.NETPBMReader;
-import org.watermedia.api.codecs.decoders.PNGReader;
-import org.watermedia.api.codecs.decoders.WEBPReader;
+import org.watermedia.api.codecs.readers.GIFReader;
+import org.watermedia.api.codecs.readers.JPEGReader;
+import org.watermedia.api.codecs.readers.NETPBMReader;
+import org.watermedia.api.codecs.readers.PNGReader;
+import org.watermedia.api.codecs.readers.WEBPReader;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
