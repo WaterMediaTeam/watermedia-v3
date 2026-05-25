@@ -23,6 +23,12 @@ public final class VP8LossyDecoder {
     private static final byte[] LEFT_BORDER_8 = fillBorder(8, 129);
     private static final byte[] LEFT_BORDER_4 = fillBorder(4, 129);
 
+    /**
+     * Decoded VP8 YUV planes — Y at full resolution, U/V chroma-subsampled 4:2:0. Strides may
+     * exceed the visual width because VP8 decoders allocate buffers on macroblock boundaries.
+     */
+    public record Yuv420P(byte[] y, byte[] u, byte[] v, int width, int height, int yStride, int uvStride) {}
+
     public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
         final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
 
@@ -157,6 +163,73 @@ public final class VP8LossyDecoder {
 
         // CONVERT DIRECTLY TO BGRA BYTEBUFFER (SKIPS INTERMEDIATE INT ARRAY)
         return DataTool.yuvToBgraBuf(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
+    }
+
+    // DECODE VP8 LOSSY TO RAW YUV 4:2:0 PLANES (NO COLOR CONVERSION). USED WHEN THE CONSUMER WANTS
+    // TO UPLOAD YUV DIRECTLY (E.G. AS GL TEXTURES) AND DO THE YUV-TO-RGB CONVERSION ON GPU.
+    public static Yuv420P decodeToYuv(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
+        final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
+
+        // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
+        final FrameInfo frm = parseFrameHeader(buf);
+        if (!frm.keyFrame) throw new XCodecException("Only VP8 key frames supported");
+
+        // PARTITION 0 - COMPRESSED HEADER
+        final ByteBuffer p0 = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        p0.position(frm.hdrSz);
+        p0.limit(frm.hdrSz + frm.p0Sz);
+        final VP8BoolDecoder hdrBr = new VP8BoolDecoder(p0.slice().order(ByteOrder.LITTLE_ENDIAN));
+
+        // RFC6386 SECTION 9.2-9.11 - PARSE COMPRESSED HEADER
+        final State st = parseCompressedHeader(hdrBr, frm);
+
+        // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES
+        buf.position(frm.hdrSz + frm.p0Sz);
+        final int[] partSz = new int[st.numParts];
+        if (st.numParts > 1) {
+            for (int i = 0; i < st.numParts - 1; i++)
+                partSz[i] = (buf.get() & 0xFF) | ((buf.get() & 0xFF) << 8) | ((buf.get() & 0xFF) << 16);
+        }
+        int rem = buf.remaining();
+        for (int i = 0; i < st.numParts - 1; i++) rem -= partSz[i];
+        partSz[st.numParts - 1] = rem;
+
+        // CREATE TOKEN PARTITION DECODERS
+        final VP8BoolDecoder[] tokBr = new VP8BoolDecoder[st.numParts];
+        int pos = buf.position();
+        for (int i = 0; i < st.numParts; i++) {
+            final ByteBuffer pb = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+            pb.position(pos);
+            pb.limit(pos + partSz[i]);
+            tokBr[i] = new VP8BoolDecoder(pb.slice().order(ByteOrder.LITTLE_ENDIAN));
+            pos += partSz[i];
+        }
+
+        // ALLOCATE YUV PLANES
+        final int mbW = (frm.w + 15) >> 4;
+        final int mbH = (frm.h + 15) >> 4;
+        final int yStr = mbW * 16;
+        final int uvStr = mbW * 8;
+
+        final byte[] yPln = new byte[yStr * mbH * 16];
+        final byte[] uPln = new byte[uvStr * mbH * 8];
+        final byte[] vPln = new byte[uvStr * mbH * 8];
+        Arrays.fill(yPln, (byte) 128);
+        Arrays.fill(uPln, (byte) 128);
+        Arrays.fill(vPln, (byte) 128);
+
+        // ALLOCATE PER-MB INFO FOR LOOP FILTER
+        st.mbSeg = new int[mbW * mbH];
+        st.mbIsI4x4 = new int[mbW * mbH];
+        st.mbFInner = new int[mbW * mbH];
+
+        // RFC6386 SECTIONS 11-14 - DECODE ALL MACROBLOCKS
+        decodeMBs(hdrBr, tokBr, st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH);
+
+        // RFC6386 SECTION 15 - APPLY LOOP FILTER
+        applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
+
+        return new Yuv420P(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
     }
 
     // RFC6386 SECTION 9 - FRAME HEADER

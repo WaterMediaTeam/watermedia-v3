@@ -11,7 +11,7 @@ import org.watermedia.api.codecs.common.gif.ColorTable;
 import org.watermedia.api.codecs.common.gif.GraphicExtension;
 import org.watermedia.api.codecs.common.gif.ImageDescriptor;
 import org.watermedia.api.codecs.common.gif.ScreenDescriptor;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -142,7 +142,7 @@ public class GIFReader extends ImageReader {
 
     @Override public int width() { return this.lsd.width(); }
     @Override public int height() { return this.lsd.height(); }
-    @Override public ColorSpace pixelFormat() { return ColorSpace.BGRA; }
+    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
     @Override public boolean variableFrameRate() { return this.scan.frameCount() > 1; }
     @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }

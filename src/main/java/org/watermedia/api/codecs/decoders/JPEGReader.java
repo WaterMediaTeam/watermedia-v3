@@ -3,7 +3,7 @@ package org.watermedia.api.codecs.decoders;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.XCodecException;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
 import javax.imageio.ImageIO;
@@ -55,7 +55,7 @@ public class JPEGReader extends ImageReader {
 
     @Override public int width() { return this.width; }
     @Override public int height() { return this.height; }
-    @Override public ColorSpace pixelFormat() { return ColorSpace.BGRA; }
+    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.STATIC; }
     @Override public boolean variableFrameRate() { return false; }
 

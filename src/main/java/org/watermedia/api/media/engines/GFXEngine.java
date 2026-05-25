@@ -1,6 +1,6 @@
 package org.watermedia.api.media.engines;
 
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
 
@@ -14,33 +14,33 @@ import java.nio.ByteBuffer;
  * Thread-safety contracts depend on the backend — see implementation javadoc.
  */
 public abstract class GFXEngine {
-    protected ColorSpace colorSpace;
+    protected PixelFormat pixelFormat;
     protected int width;
     protected int height;
     protected int bitsPerComponent = 8;
 
     /**
      * Reconfigures the engine for a new video format (8-bit).
-     * @param colorSpace pixel layout of incoming frames
+     * @param pixelFormat pixel layout of incoming frames
      * @param width  frame width in pixels
      * @param height frame height in pixels
      */
-    public void setVideoFormat(final ColorSpace colorSpace, final int width, final int height) {
-        this.setVideoFormat(colorSpace, width, height, 8);
+    public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height) {
+        this.setVideoFormat(pixelFormat, width, height, 8);
     }
 
     /**
      * Reconfigures the engine for a new video format with explicit bit depth.
      * <b>This resets all internal rendering state</b> — plane textures, PBOs, shaders,
      * and any buffered frame data are released and re-initialized on the next upload.
-     * Must be called before the first upload and whenever resolution or color space changes.
-     * @param colorSpace pixel layout of incoming frames
+     * Must be called before the first upload and whenever resolution or pixel format changes.
+     * @param pixelFormat pixel layout of incoming frames
      * @param width  frame width in pixels
      * @param height frame height in pixels
      * @param bitsPerComponent sample precision: 8, 10, 12, 16, or 32
      */
-    public void setVideoFormat(final ColorSpace colorSpace, final int width, final int height, final int bitsPerComponent) {
-        this.colorSpace = colorSpace;
+    public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height, final int bitsPerComponent) {
+        this.pixelFormat = pixelFormat;
         this.width = width;
         this.height = height;
         this.bitsPerComponent = bitsPerComponent;
@@ -72,7 +72,7 @@ public abstract class GFXEngine {
      * <p>
      * This is an optional fast path for small animated images. The default implementation
      * reports unsupported so custom engines remain source-compatible.
-     * @param frames decoded direct frame buffers in the current {@link #colorSpace}
+     * @param frames decoded direct frame buffers in the current {@link #pixelFormat}
      * @param stride row stride in bytes, or 0 for tightly-packed rows
      * @return true when the engine accepted the frame set
      */

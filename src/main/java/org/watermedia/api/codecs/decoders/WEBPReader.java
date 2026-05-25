@@ -12,7 +12,7 @@ import org.watermedia.api.codecs.decoders.webp.common.BitReader;
 import org.watermedia.api.codecs.decoders.webp.lossless.VP8LDecoder;
 import org.watermedia.api.codecs.decoders.webp.lossy.VP8LossyDecoder;
 import org.watermedia.api.codecs.decoders.webp.riff.RiffChunk;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -65,10 +65,27 @@ public class WEBPReader extends ImageReader {
     private byte[] anmfScratch = new byte[0];
     private ChunkHdr pendingChunk;
 
+    // OUTPUT PIXEL FORMAT RESOLVED IN CONSTRUCTOR. NATIVE PATH FOR STATIC LOSSY-WITHOUT-ALPHA IS
+    // YUV420P (VP8 PRODUCES THESE PLANES NATURALLY); EVERYTHING ELSE STAYS BGRA BECAUSE
+    // LOSSLESS DECODE, ALPHA HANDLING, AND ANIMATED COMPOSITING ARE ALL ALREADY BGRA-NATIVE.
+    // FOR YUV MODE WE ALLOCATE A SINGLE PACKED BUFFER [Y | U | V] WITH TIGHT ROW STRIDES SO POOL
+    // SIZING REMAINS A SIMPLE FUNCTION OF (FORMAT, W, H). PER-PLANE VIEWS ARE HANDED OUT THROUGH
+    // plane(idx) BY SLICING WITH OFFSET/LIMIT.
+    private final PixelFormat outputFormat;
+    private final int yPlaneSize;
+    private final int uvPlaneSize;
+    private final int chromaWidth;
+    private final int chromaHeight;
+    private ByteBuffer yuvOut;
+
     private boolean done;
 
     public WEBPReader(final ByteBuffer data) throws IOException {
-        super(data);
+        this(data, null);
+    }
+
+    public WEBPReader(final ByteBuffer data, final PixelFormat requestedFormat) throws IOException {
+        super(data, requestedFormat);
         this.data.order(LE);
         this.scan = scan(this.data.duplicate().order(LE));
 
@@ -138,18 +155,79 @@ public class WEBPReader extends ImageReader {
             default -> throw new XCodecException("Unknown WebP first chunk: " + RiffChunk.fourCCString(first.fourCC));
         }
 
-        if (this.animated) {
+        this.outputFormat = resolveOutputFormat(requestedFormat, this.animated, this.bitstreamFourCC, this.hasAlpha, this.alphData);
+
+        if (this.outputFormat == PixelFormat.YUV420P) {
+            this.chromaWidth = (this.canvasWidth + 1) >> 1;
+            this.chromaHeight = (this.canvasHeight + 1) >> 1;
+            this.yPlaneSize = this.canvasWidth * this.canvasHeight;
+            this.uvPlaneSize = this.chromaWidth * this.chromaHeight;
+            this.yuvOut = ByteBuffer.allocateDirect(this.yPlaneSize + 2 * this.uvPlaneSize).order(LE);
+        } else {
+            this.chromaWidth = 0;
+            this.chromaHeight = 0;
+            this.yPlaneSize = 0;
+            this.uvPlaneSize = 0;
             this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
             this.directOutInts = this.directOut.asIntBuffer();
         }
     }
 
+    // CHOOSE THE BUFFER LAYOUT WE'LL DELIVER. ANIMATED FRAMES AND ANY EXPLICIT BGRA REQUEST FORCE
+    // BGRA; THE ONLY SHORT-CIRCUIT TO NATIVE YUV IS A STATIC LOSSY (VP8) FRAME WITH NO ALPHA.
+    private static PixelFormat resolveOutputFormat(final PixelFormat requested, final boolean animated,
+                                                  final int bitstreamFourCC, final boolean hasAlpha,
+                                                  final byte[] alphData) {
+        if (requested == PixelFormat.BGRA) return PixelFormat.BGRA;
+        if (animated) return PixelFormat.BGRA;
+        if (bitstreamFourCC != RiffChunk.VP8) return PixelFormat.BGRA;
+        if (hasAlpha || alphData != null) return PixelFormat.BGRA;
+        return PixelFormat.YUV420P;
+    }
+
     @Override public int width() { return this.canvasWidth; }
     @Override public int height() { return this.canvasHeight; }
-    @Override public ColorSpace pixelFormat() { return ColorSpace.BGRA; }
+    @Override public PixelFormat pixelFormat() { return this.outputFormat; }
     @Override public ImageData.Scan scan() { return this.scan; }
     @Override public boolean variableFrameRate() { return this.animated; }
     @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
+
+    @Override
+    public int planeCount() {
+        return this.outputFormat == PixelFormat.YUV420P ? 3 : 1;
+    }
+
+    @Override
+    public ByteBuffer plane(final int index) {
+        if (this.outputFormat != PixelFormat.YUV420P) {
+            if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
+            return this.currentFrame;
+        }
+        final int offset;
+        final int size;
+        switch (index) {
+            case 0 -> { offset = 0; size = this.yPlaneSize; }
+            case 1 -> { offset = this.yPlaneSize; size = this.uvPlaneSize; }
+            case 2 -> { offset = this.yPlaneSize + this.uvPlaneSize; size = this.uvPlaneSize; }
+            default -> throw new IndexOutOfBoundsException("plane " + index);
+        }
+        final ByteBuffer view = this.yuvOut.duplicate().order(LE);
+        view.position(offset).limit(offset + size);
+        return view.slice().order(LE);
+    }
+
+    @Override
+    public int planeStride(final int index) {
+        if (this.outputFormat != PixelFormat.YUV420P) {
+            if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
+            return 0;
+        }
+        return switch (index) {
+            case 0 -> this.canvasWidth;
+            case 1, 2 -> this.chromaWidth;
+            default -> throw new IndexOutOfBoundsException("plane " + index);
+        };
+    }
 
     @Override
     public boolean hasNext() throws IOException {
@@ -195,8 +273,42 @@ public class WEBPReader extends ImageReader {
     // ----- DECODE -----
 
     private void decodeStaticFrame() throws IOException {
+        if (this.outputFormat == PixelFormat.YUV420P) {
+            this.decodeStaticFrameYuv();
+            return;
+        }
         this.currentFrame = this.decodeBitstreamToBgra(this.vp8Data, this.bitstreamFourCC, this.alphData, this.canvasWidth, this.canvasHeight);
         this.currentFrame.position(0).limit(this.canvasWidth * this.canvasHeight * 4);
+    }
+
+    private void decodeStaticFrameYuv() throws XCodecException {
+        final ByteBuffer vp8Body = wrapSlice(this.vp8Data, 0, this.vp8Data.length);
+        final VP8LossyDecoder.Yuv420P yuv = VP8LossyDecoder.decodeToYuv(vp8Body, this.canvasWidth, this.canvasHeight);
+
+        this.yuvOut.clear();
+        // Y plane: copy [width] bytes per row, repacking from mb-aligned stride to tight stride.
+        copyPlaneRows(yuv.y(), yuv.yStride(), this.yuvOut, 0, this.canvasWidth, this.canvasWidth, this.canvasHeight);
+        // U plane.
+        final int uOffset = this.yPlaneSize;
+        copyPlaneRows(yuv.u(), yuv.uvStride(), this.yuvOut, uOffset, this.chromaWidth, this.chromaWidth, this.chromaHeight);
+        // V plane.
+        final int vOffset = this.yPlaneSize + this.uvPlaneSize;
+        copyPlaneRows(yuv.v(), yuv.uvStride(), this.yuvOut, vOffset, this.chromaWidth, this.chromaWidth, this.chromaHeight);
+
+        this.yuvOut.position(0).limit(this.yPlaneSize + 2 * this.uvPlaneSize);
+        this.currentFrame = this.yuvOut;
+    }
+
+    // COPY PLANE ROW-BY-ROW FROM A MACROBLOCK-ALIGNED byte[] SOURCE INTO A TIGHTLY PACKED REGION
+    // OF THE DESTINATION DIRECT BUFFER. SOURCE STRIDE MAY EXCEED VISUAL WIDTH (VP8 PADS TO MB
+    // BOUNDARIES); DESTINATION ROWS ARE WRITTEN BACK-TO-BACK.
+    private static void copyPlaneRows(final byte[] src, final int srcStride, final ByteBuffer dst,
+                                       final int dstOffset, final int dstStride,
+                                       final int copyWidth, final int rows) {
+        for (int row = 0; row < rows; row++) {
+            dst.position(dstOffset + row * dstStride);
+            dst.put(src, row * srcStride, copyWidth);
+        }
     }
 
     private void decodeAnimFrame(final byte[] anmf, final int anmfLength) throws IOException {

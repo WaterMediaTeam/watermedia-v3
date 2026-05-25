@@ -2,6 +2,7 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -213,9 +214,11 @@ public class WebPTest {
     private void testDecodeSucceeds(final File imageFile, final boolean expectAnimated) throws Exception {
         final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
 
-        // DECODE THE IMAGE VIA CodecsAPI (which sniffs the magic bytes itself)
+        // DECODE THE IMAGE VIA CodecsAPI (which sniffs the magic bytes itself). REQUEST BGRA
+        // EXPLICITLY BECAUSE THE NO-ARG OVERLOAD NOW RETURNS THE READER'S NATIVE LAYOUT (WEBP
+        // LOSSY DEFAULTS TO YUV).
         final ImageData result = assertDoesNotThrow(
-                () -> CodecsAPI.decodeImage(fileBytes),
+                () -> CodecsAPI.decodeImage(fileBytes, PixelFormat.BGRA),
                 "Decoding failed for: " + imageFile.getName()
         );
         assertNotNull(result, "WEBP signature not recognized for: " + imageFile.getName());
@@ -264,9 +267,9 @@ public class WebPTest {
      * This test verifies the output is within acceptable bounds rather than pixel-perfect.
      */
     private void testLossySimilarity(final File imageFile, final String folderPath) throws Exception {
-        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI
+        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI (REQUEST BGRA — REFERENCE IS BGRA).
         final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
-        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes);
+        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes, PixelFormat.BGRA);
         assertNotNull(javaResult, "WEBP signature not recognized");
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE
@@ -339,9 +342,9 @@ public class WebPTest {
      * Uses pre-generated .pam reference files for comparison.
      */
     private void testDataMatchesReference(final File imageFile, final int tolerance, final String folderPath) throws Exception {
-        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI
+        // DECODE WITH JAVA IMPLEMENTATION VIA CodecsAPI (REQUEST BGRA — REFERENCE IS BGRA).
         final byte[] fileBytes = new FileInputStream(imageFile).readAllBytes();
-        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes);
+        final ImageData javaResult = CodecsAPI.decodeImage(fileBytes, PixelFormat.BGRA);
         assertNotNull(javaResult, "WEBP signature not recognized");
 
         // LOAD REFERENCE DATA FROM PRE-GENERATED PAM FILE

@@ -35,7 +35,7 @@ import org.watermedia.api.codecs.common.png.TEXT;
 import org.watermedia.api.codecs.common.png.TIME;
 import org.watermedia.api.codecs.common.png.TRNS;
 import org.watermedia.api.codecs.common.png.ZTXT;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -161,7 +161,7 @@ public class PNGReader extends ImageReader {
 
     @Override public int width() { return this.ihdr.width(); }
     @Override public int height() { return this.ihdr.height(); }
-    @Override public ColorSpace pixelFormat() { return ColorSpace.BGRA; }
+    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
     @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
     @Override public boolean variableFrameRate() { return this.scan.frameCount() > 1; }

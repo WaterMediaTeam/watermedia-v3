@@ -25,7 +25,7 @@ import org.watermedia.api.media.players.util.FrameQueue;
 import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.players.util.PacketQueue;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
@@ -175,7 +175,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // FORMAT CHANGE DETECTION (RENDER THREAD ONLY)
     private int lastFrameWidth;
     private int lastFrameHeight;
-    private ColorSpace lastColorSpace;
+    private PixelFormat lastFormat;
     private int lastBitsPerComponent;
 
     // AUDIO FORMAT NEGOTIATION
@@ -323,64 +323,64 @@ public final class FFMediaPlayer extends MediaPlayer {
     public boolean isHwAccel() { return !isNull(this.hwDeviceCtx); }
 
     // FORMAT MAPPING — NATIVE GPU UPLOAD
-    private record PixFmtMapping(ColorSpace cs, int bits) {}
+    private record PixFmtMapping(PixelFormat cs, int bits) {}
 
     private static PixFmtMapping mapPixelFormat(final int avPixFmt) {
         return switch (avPixFmt) {
             // 8-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> new PixFmtMapping(ColorSpace.YUV420P, 8);
-            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> new PixFmtMapping(ColorSpace.YUV422P, 8);
-            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> new PixFmtMapping(ColorSpace.YUV444P, 8);
+            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> new PixFmtMapping(PixelFormat.YUV420P, 8);
+            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> new PixFmtMapping(PixelFormat.YUV422P, 8);
+            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> new PixFmtMapping(PixelFormat.YUV444P, 8);
             // 8-BIT SEMI-PLANAR
-            case AV_PIX_FMT_NV12 -> new PixFmtMapping(ColorSpace.NV12, 8);
-            case AV_PIX_FMT_NV21 -> new PixFmtMapping(ColorSpace.NV21, 8);
+            case AV_PIX_FMT_NV12 -> new PixFmtMapping(PixelFormat.NV12, 8);
+            case AV_PIX_FMT_NV21 -> new PixFmtMapping(PixelFormat.NV21, 8);
             // 8-BIT PACKED RGB
-            case AV_PIX_FMT_BGRA  -> new PixFmtMapping(ColorSpace.BGRA, 8);
-            case AV_PIX_FMT_RGBA  -> new PixFmtMapping(ColorSpace.RGBA, 8);
-            case AV_PIX_FMT_RGB24 -> new PixFmtMapping(ColorSpace.RGB, 8);
+            case AV_PIX_FMT_BGRA  -> new PixFmtMapping(PixelFormat.BGRA, 8);
+            case AV_PIX_FMT_RGBA  -> new PixFmtMapping(PixelFormat.RGBA, 8);
+            case AV_PIX_FMT_RGB24 -> new PixFmtMapping(PixelFormat.RGB, 8);
             // 8-BIT GRAYSCALE
-            case AV_PIX_FMT_GRAY8 -> new PixFmtMapping(ColorSpace.GRAY, 8);
+            case AV_PIX_FMT_GRAY8 -> new PixFmtMapping(PixelFormat.GRAY, 8);
             // 8-BIT PACKED YUV
-            case AV_PIX_FMT_YUYV422 -> new PixFmtMapping(ColorSpace.YUYV, 8);
-            case AV_PIX_FMT_UYVY422 -> new PixFmtMapping(ColorSpace.YUYV2, 8);
+            case AV_PIX_FMT_YUYV422 -> new PixFmtMapping(PixelFormat.YUYV, 8);
+            case AV_PIX_FMT_UYVY422 -> new PixFmtMapping(PixelFormat.YUYV2, 8);
             // 8-BIT YUVA (4-PLANE)
-            case AV_PIX_FMT_YUVA420P -> new PixFmtMapping(ColorSpace.YUVA420P, 8);
-            case AV_PIX_FMT_YUVA422P -> new PixFmtMapping(ColorSpace.YUVA422P, 8);
-            case AV_PIX_FMT_YUVA444P -> new PixFmtMapping(ColorSpace.YUVA444P, 8);
+            case AV_PIX_FMT_YUVA420P -> new PixFmtMapping(PixelFormat.YUVA420P, 8);
+            case AV_PIX_FMT_YUVA422P -> new PixFmtMapping(PixelFormat.YUVA422P, 8);
+            case AV_PIX_FMT_YUVA444P -> new PixFmtMapping(PixelFormat.YUVA444P, 8);
             // 10-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P10LE -> new PixFmtMapping(ColorSpace.YUV420P, 10);
-            case AV_PIX_FMT_YUV422P10LE -> new PixFmtMapping(ColorSpace.YUV422P, 10);
-            case AV_PIX_FMT_YUV444P10LE -> new PixFmtMapping(ColorSpace.YUV444P, 10);
+            case AV_PIX_FMT_YUV420P10LE -> new PixFmtMapping(PixelFormat.YUV420P, 10);
+            case AV_PIX_FMT_YUV422P10LE -> new PixFmtMapping(PixelFormat.YUV422P, 10);
+            case AV_PIX_FMT_YUV444P10LE -> new PixFmtMapping(PixelFormat.YUV444P, 10);
             // 10-BIT YUVA
-            case AV_PIX_FMT_YUVA420P10LE -> new PixFmtMapping(ColorSpace.YUVA420P, 10);
-            case AV_PIX_FMT_YUVA422P10LE -> new PixFmtMapping(ColorSpace.YUVA422P, 10);
-            case AV_PIX_FMT_YUVA444P10LE -> new PixFmtMapping(ColorSpace.YUVA444P, 10);
+            case AV_PIX_FMT_YUVA420P10LE -> new PixFmtMapping(PixelFormat.YUVA420P, 10);
+            case AV_PIX_FMT_YUVA422P10LE -> new PixFmtMapping(PixelFormat.YUVA422P, 10);
+            case AV_PIX_FMT_YUVA444P10LE -> new PixFmtMapping(PixelFormat.YUVA444P, 10);
             // 12-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P12LE -> new PixFmtMapping(ColorSpace.YUV420P, 12);
-            case AV_PIX_FMT_YUV422P12LE -> new PixFmtMapping(ColorSpace.YUV422P, 12);
-            case AV_PIX_FMT_YUV444P12LE -> new PixFmtMapping(ColorSpace.YUV444P, 12);
+            case AV_PIX_FMT_YUV420P12LE -> new PixFmtMapping(PixelFormat.YUV420P, 12);
+            case AV_PIX_FMT_YUV422P12LE -> new PixFmtMapping(PixelFormat.YUV422P, 12);
+            case AV_PIX_FMT_YUV444P12LE -> new PixFmtMapping(PixelFormat.YUV444P, 12);
             // 12-BIT YUVA
-            case AV_PIX_FMT_YUVA422P12LE -> new PixFmtMapping(ColorSpace.YUVA422P, 12);
-            case AV_PIX_FMT_YUVA444P12LE -> new PixFmtMapping(ColorSpace.YUVA444P, 12);
+            case AV_PIX_FMT_YUVA422P12LE -> new PixFmtMapping(PixelFormat.YUVA422P, 12);
+            case AV_PIX_FMT_YUVA444P12LE -> new PixFmtMapping(PixelFormat.YUVA444P, 12);
             // 16-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P16LE -> new PixFmtMapping(ColorSpace.YUV420P, 16);
-            case AV_PIX_FMT_YUV422P16LE -> new PixFmtMapping(ColorSpace.YUV422P, 16);
-            case AV_PIX_FMT_YUV444P16LE -> new PixFmtMapping(ColorSpace.YUV444P, 16);
+            case AV_PIX_FMT_YUV420P16LE -> new PixFmtMapping(PixelFormat.YUV420P, 16);
+            case AV_PIX_FMT_YUV422P16LE -> new PixFmtMapping(PixelFormat.YUV422P, 16);
+            case AV_PIX_FMT_YUV444P16LE -> new PixFmtMapping(PixelFormat.YUV444P, 16);
             // 16-BIT YUVA
-            case AV_PIX_FMT_YUVA420P16LE -> new PixFmtMapping(ColorSpace.YUVA420P, 16);
-            case AV_PIX_FMT_YUVA422P16LE -> new PixFmtMapping(ColorSpace.YUVA422P, 16);
-            case AV_PIX_FMT_YUVA444P16LE -> new PixFmtMapping(ColorSpace.YUVA444P, 16);
+            case AV_PIX_FMT_YUVA420P16LE -> new PixFmtMapping(PixelFormat.YUVA420P, 16);
+            case AV_PIX_FMT_YUVA422P16LE -> new PixFmtMapping(PixelFormat.YUVA422P, 16);
+            case AV_PIX_FMT_YUVA444P16LE -> new PixFmtMapping(PixelFormat.YUVA444P, 16);
             // P010/P016 — LEFT-SHIFTED 10/16-BIT NV12, MAP AS 16-BIT (bitScale=1.0 IS CORRECT)
-            case AV_PIX_FMT_P010LE -> new PixFmtMapping(ColorSpace.NV12, 16);
-            case AV_PIX_FMT_P016LE -> new PixFmtMapping(ColorSpace.NV12, 16);
+            case AV_PIX_FMT_P010LE -> new PixFmtMapping(PixelFormat.NV12, 16);
+            case AV_PIX_FMT_P016LE -> new PixFmtMapping(PixelFormat.NV12, 16);
             // HIGH-BIT GRAYSCALE
-            case AV_PIX_FMT_GRAY10LE  -> new PixFmtMapping(ColorSpace.GRAY, 10);
-            case AV_PIX_FMT_GRAY12LE  -> new PixFmtMapping(ColorSpace.GRAY, 12);
-            case AV_PIX_FMT_GRAY16LE  -> new PixFmtMapping(ColorSpace.GRAY, 16);
-            case AV_PIX_FMT_GRAYF32LE -> new PixFmtMapping(ColorSpace.GRAY, 32);
+            case AV_PIX_FMT_GRAY10LE  -> new PixFmtMapping(PixelFormat.GRAY, 10);
+            case AV_PIX_FMT_GRAY12LE  -> new PixFmtMapping(PixelFormat.GRAY, 12);
+            case AV_PIX_FMT_GRAY16LE  -> new PixFmtMapping(PixelFormat.GRAY, 16);
+            case AV_PIX_FMT_GRAYF32LE -> new PixFmtMapping(PixelFormat.GRAY, 32);
             // 16-BIT PACKED RGB
-            case AV_PIX_FMT_RGB48LE  -> new PixFmtMapping(ColorSpace.RGB, 16);
-            case AV_PIX_FMT_RGBA64LE -> new PixFmtMapping(ColorSpace.RGBA, 16);
+            case AV_PIX_FMT_RGB48LE  -> new PixFmtMapping(PixelFormat.RGB, 16);
+            case AV_PIX_FMT_RGBA64LE -> new PixFmtMapping(PixelFormat.RGBA, 16);
             default -> null;
         };
     }
@@ -522,14 +522,14 @@ public final class FFMediaPlayer extends MediaPlayer {
             // DETERMINE UPLOAD PATH
             final PixFmtMapping mapping = mapPixelFormat(slot.format);
             final boolean fallback = (mapping == null);
-            final ColorSpace cs = fallback ? ColorSpace.BGRA : mapping.cs;
+            final PixelFormat cs = fallback ? PixelFormat.BGRA : mapping.cs;
             final int bits = fallback ? 8 : mapping.bits;
 
             // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine
-            if (cs != this.lastColorSpace || bits != this.lastBitsPerComponent
+            if (cs != this.lastFormat || bits != this.lastBitsPerComponent
                     || slot.width != this.lastFrameWidth || slot.height != this.lastFrameHeight) {
                 this.gfx.setVideoFormat(cs, slot.width, slot.height, bits);
-                this.lastColorSpace = cs;
+                this.lastFormat = cs;
                 this.lastBitsPerComponent = bits;
                 this.lastFrameWidth = slot.width;
                 this.lastFrameHeight = slot.height;
@@ -601,7 +601,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // COPIES AVFRAME PLANE DATA TO PERSISTENT BUFFERS, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
-    private void uploadNativePlanes(final AVFrame frame, final ColorSpace cs, final int width, final int height) {
+    private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int width, final int height) {
         switch (cs) {
             case BGRA, RGBA, RGB, GRAY, YUYV, YUYV2 -> {
                 final int yStride = frame.linesize(0);
@@ -622,7 +622,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.gfx.upload(this.planeY, yStride, this.planeU, uvStride);
             }
             case YUV420P, YUV422P, YUV444P -> {
-                final int chromaH = (cs == ColorSpace.YUV420P) ? height / 2 : height;
+                final int chromaH = (cs == PixelFormat.YUV420P) ? height / 2 : height;
                 final int yStride = frame.linesize(0);
                 final int uStride = frame.linesize(1);
                 final int vStride = frame.linesize(2);
@@ -638,7 +638,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 this.gfx.upload(this.planeY, yStride, this.planeU, uStride, this.planeV, vStride);
             }
             case YUVA420P, YUVA422P, YUVA444P -> {
-                final int chromaH = (cs == ColorSpace.YUVA420P) ? height / 2 : height;
+                final int chromaH = (cs == PixelFormat.YUVA420P) ? height / 2 : height;
                 final int yStride = frame.linesize(0);
                 final int uStride = frame.linesize(1);
                 final int vStride = frame.linesize(2);
@@ -1995,7 +1995,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final PixFmtMapping initialMapping = mapPixelFormat(this.videoCodecContext.pix_fmt());
         if (initialMapping != null) {
             this.gfx.setVideoFormat(initialMapping.cs, w, h, initialMapping.bits);
-            this.lastColorSpace = initialMapping.cs;
+            this.lastFormat = initialMapping.cs;
             this.lastBitsPerComponent = initialMapping.bits;
             this.lastFrameWidth = w;
             this.lastFrameHeight = h;
@@ -2266,7 +2266,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.planeU = null;
         this.planeV = null;
         this.planeA = null;
-        this.lastColorSpace = null;
+        this.lastFormat = null;
         this.lastBitsPerComponent = 0;
 
         this.videoStreamIndex = -1;

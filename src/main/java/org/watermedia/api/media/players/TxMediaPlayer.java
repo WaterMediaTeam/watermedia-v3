@@ -9,6 +9,7 @@ import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -78,6 +79,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile boolean animated;
     private volatile boolean loaded;
     private volatile long knownDuration;       // 0 = UNKNOWN / STATIC. SET BY READER METADATA OR EOF.
+    private volatile PixelFormat pixelFormat = PixelFormat.BGRA;
+    private volatile int planeCount = 1;
 
     // STATUS
     private volatile Status status = Status.WAITING;
@@ -198,13 +201,15 @@ public final class TxMediaPlayer extends MediaPlayer {
             }
             this.animated = reader.frameCount() != 1;
             this.knownDuration = Math.max(0L, reader.duration());
-            final long byteSize = (long) this.width * this.height * 4L;
+            this.pixelFormat = reader.pixelFormat();
+            this.planeCount = reader.planeCount();
+            final long byteSize = totalBufferBytes(this.pixelFormat, this.width, this.height);
             if (byteSize > Integer.MAX_VALUE) {
                 throw new IOException("Image dimensions exceed upload buffer limit: " + this.width + "x" + this.height);
             }
             this.bufferByteSize = (int) byteSize;
             this.capPrefetch();
-            this.gfx.setVideoFormat(reader.pixelFormat(), this.width, this.height);
+            this.gfx.setVideoFormat(this.pixelFormat, this.width, this.height);
 
             if (this.triggerStop || Thread.currentThread().isInterrupted()) {
                 this.status = Status.STOPPED;
@@ -750,10 +755,116 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // PUSHES A BUFFER TO THE GPU AND RETAINS IT IN AN IN-FLIGHT SAFETY RING.
+    // FOR MULTI-PLANE FORMATS THE BUFFER IS THE PACKED LAYOUT [PLANE0 | PLANE1 | ...] WITH TIGHT
+    // STRIDES — WE SLICE PER-PLANE VIEWS FROM IT AND CALL THE MATCHING gfx.upload OVERLOAD.
     private void uploadBuffer(final ByteBuffer buffer) {
-        this.gfx.upload(buffer, 0);
+        if (this.planeCount <= 1) {
+            this.gfx.upload(buffer, 0);
+        } else {
+            this.uploadMultiPlane(buffer);
+        }
         this.inFlight.offerLast(new InFlightFrame(buffer, this.uploadSerial++));
         this.recycleBuffers();
+    }
+
+    private void uploadMultiPlane(final ByteBuffer buffer) {
+        final PixelFormat cs = this.pixelFormat;
+        final int w = this.width;
+        final int h = this.height;
+        switch (cs) {
+            case NV12, NV21 -> {
+                final int chromaH = (h + 1) >> 1;
+                final ByteBuffer y = sliceView(buffer, 0, w * h);
+                final ByteBuffer uv = sliceView(buffer, w * h, w * chromaH);
+                this.gfx.upload(y, w, uv, w);
+            }
+            case YUV420P -> {
+                final int chromaW = (w + 1) >> 1;
+                final int chromaH = (h + 1) >> 1;
+                final int yLen = w * h;
+                final int uvLen = chromaW * chromaH;
+                final ByteBuffer y = sliceView(buffer, 0, yLen);
+                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
+                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
+                this.gfx.upload(y, w, u, chromaW, v, chromaW);
+            }
+            case YUV422P -> {
+                final int chromaW = (w + 1) >> 1;
+                final int yLen = w * h;
+                final int uvLen = chromaW * h;
+                final ByteBuffer y = sliceView(buffer, 0, yLen);
+                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
+                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
+                this.gfx.upload(y, w, u, chromaW, v, chromaW);
+            }
+            case YUV444P -> {
+                final int yLen = w * h;
+                final ByteBuffer y = sliceView(buffer, 0, yLen);
+                final ByteBuffer u = sliceView(buffer, yLen, yLen);
+                final ByteBuffer v = sliceView(buffer, yLen + yLen, yLen);
+                this.gfx.upload(y, w, u, w, v, w);
+            }
+            case YUVA420P -> {
+                final int chromaW = (w + 1) >> 1;
+                final int chromaH = (h + 1) >> 1;
+                final int yLen = w * h;
+                final int uvLen = chromaW * chromaH;
+                final ByteBuffer y = sliceView(buffer, 0, yLen);
+                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
+                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
+                final ByteBuffer a = sliceView(buffer, yLen + 2 * uvLen, yLen);
+                this.gfx.upload(y, w, u, chromaW, v, chromaW, a, w);
+            }
+            case YUVA422P -> {
+                final int chromaW = (w + 1) >> 1;
+                final int yLen = w * h;
+                final int uvLen = chromaW * h;
+                final ByteBuffer y = sliceView(buffer, 0, yLen);
+                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
+                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
+                final ByteBuffer a = sliceView(buffer, yLen + 2 * uvLen, yLen);
+                this.gfx.upload(y, w, u, chromaW, v, chromaW, a, w);
+            }
+            case YUVA444P -> {
+                final int yLen = w * h;
+                final ByteBuffer y = sliceView(buffer, 0, yLen);
+                final ByteBuffer u = sliceView(buffer, yLen, yLen);
+                final ByteBuffer v = sliceView(buffer, 2 * yLen, yLen);
+                final ByteBuffer a = sliceView(buffer, 3 * yLen, yLen);
+                this.gfx.upload(y, w, u, w, v, w, a, w);
+            }
+            default -> {
+                LOGGER.warn(IT, "Multi-plane upload not implemented for {}; falling back to single-plane", cs);
+                this.gfx.upload(buffer, 0);
+            }
+        }
+    }
+
+    private static ByteBuffer sliceView(final ByteBuffer src, final int offset, final int length) {
+        final ByteBuffer view = src.duplicate().order(src.order());
+        view.position(offset).limit(offset + length);
+        return view.slice().order(src.order());
+    }
+
+    // BYTE BUDGET FOR ONE FRAME, TIGHTLY PACKED, AS A FUNCTION OF THE READER'S NATIVE LAYOUT.
+    // KEEPS THE BUFFER POOL FORMAT-AGNOSTIC: ALLOCATION SIZE COMES STRAIGHT FROM (CS, W, H).
+    private static long totalBufferBytes(final PixelFormat cs, final int w, final int h) {
+        final long pixels = (long) w * h;
+        final long chromaW = (w + 1L) >> 1;
+        final long chromaH = (h + 1L) >> 1;
+        return switch (cs) {
+            case GRAY -> pixels;
+            case YUYV, YUYV2 -> pixels * 2L;
+            case RGB -> pixels * 3L;
+            case BGRA, RGBA, GBRA -> pixels * 4L;
+            case NV12, NV21 -> pixels + 2L * chromaW * chromaH;
+            case YUV420P -> pixels + 2L * chromaW * chromaH;
+            case YUV422P -> pixels + 2L * chromaW * h;
+            case YUV444P -> pixels * 3L;
+            case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
+            case YUVA422P -> pixels * 2L + 2L * chromaW * h;
+            case YUVA444P -> pixels * 4L;
+        };
     }
 
     // COPIES THE REUSED READER BUFFER BEFORE UPLOAD BECAUSE RENDER WORK MAY RUN ASYNCHRONOUSLY.

@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs;
 
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -22,9 +22,9 @@ public abstract class ImageWriter implements Closeable {
     protected final OutputStream out;
     protected final int width;
     protected final int height;
-    protected final ColorSpace pixelFormat;
+    protected final PixelFormat pixelFormat;
 
-    protected ImageWriter(final OutputStream out, final int width, final int height, final ColorSpace pixelFormat) {
+    protected ImageWriter(final OutputStream out, final int width, final int height, final PixelFormat pixelFormat) {
         if (out == null) throw new IllegalArgumentException("OutputStream is null");
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid dimensions: " + width + "x" + height);
         if (pixelFormat == null) throw new IllegalArgumentException("pixelFormat is null");
@@ -41,7 +41,7 @@ public abstract class ImageWriter implements Closeable {
     public final int height() { return this.height; }
 
     /** Pixel layout the writer expects for {@link #writeFrame} inputs. */
-    public final ColorSpace pixelFormat() { return this.pixelFormat; }
+    public final PixelFormat pixelFormat() { return this.pixelFormat; }
 
     /**
      * Encodes one frame and appends it to the wrapped {@link OutputStream}.

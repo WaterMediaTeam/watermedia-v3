@@ -9,6 +9,7 @@ import org.watermedia.api.codecs.decoders.JPEGReader;
 import org.watermedia.api.codecs.decoders.NETPBMReader;
 import org.watermedia.api.codecs.decoders.PNGReader;
 import org.watermedia.api.codecs.decoders.WEBPReader;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
@@ -61,12 +62,28 @@ public class CodecsAPI extends WaterMediaAPI {
 
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
-     * consumed format header.
+     * consumed format header. The reader returns frames in its native {@link PixelFormat} —
+     * whichever layout is cheapest for it to produce. For example, WEBP lossy returns YUV. Use
+     * {@link #decodeImage(ByteBuffer, PixelFormat)} to request a specific output layout.
      *
      * @throws UnsupportedFormatException if the leading bytes don't match any supported format
      * @throws IOException                on malformed bitstream
      */
     public static ImageReader decodeImage(final ByteBuffer source) throws IOException {
+        return decodeImage(source, null);
+    }
+
+    /**
+     * Opens an {@link ImageReader} for the given source and asks it to deliver frames in the
+     * specified {@link PixelFormat}. When {@code requestedFormat} is {@code null} the reader picks
+     * its native format (no conversion). The reader may decline the request when the conversion
+     * is not supported, in which case {@link ImageReader#pixelFormat()} reports the actual layout
+     * it produced — callers must always consult that method.
+     *
+     * @throws UnsupportedFormatException if the leading bytes don't match any supported format
+     * @throws IOException                on malformed bitstream
+     */
+    public static ImageReader decodeImage(final ByteBuffer source, final PixelFormat requestedFormat) throws IOException {
         if (source == null) throw new NullPointerException("source");
         final int start = source.position();
 
@@ -84,7 +101,7 @@ public class CodecsAPI extends WaterMediaAPI {
         }
         if (DataTool.startsWith(source, start, RIFF_HEADER) && DataTool.startsWith(source, start + 8, WEBP_HEADER)) {
             source.position(start + 12);
-            return new WEBPReader(source);
+            return new WEBPReader(source, requestedFormat);
         }
         if (source.limit() - start >= 2 && source.get(start) == 'P') {
             final int version = source.get(start + 1) & 0xFF;
@@ -101,11 +118,25 @@ public class CodecsAPI extends WaterMediaAPI {
     /**
      * @see #decodeImage(ByteBuffer)
      * @param data buffer data array
-     * @return a {@link ImageData} instance with raw decoded image, the resulting buffers are in BGRA
+     * @return a {@link ImageData} instance with raw decoded image in the reader's native layout
+     *         (check {@link ImageReader#pixelFormat()} on the underlying reader to know what it
+     *         picked).
      * @throws IOException on unsupported format or malformed bitstream
      */
     public static ImageData decodeImage(final byte[] data) throws IOException {
-        try (final ImageReader reader = decodeImage(ByteBuffer.wrap(data))) {
+        return decodeImage(data, null);
+    }
+
+    /**
+     * @see #decodeImage(ByteBuffer, PixelFormat)
+     * @param data            buffer data array
+     * @param requestedFormat desired output pixel format, or {@code null} for the reader's native
+     *                        layout.
+     * @return a {@link ImageData} instance with raw decoded image
+     * @throws IOException on unsupported format or malformed bitstream
+     */
+    public static ImageData decodeImage(final byte[] data, final PixelFormat requestedFormat) throws IOException {
+        try (final ImageReader reader = decodeImage(ByteBuffer.wrap(data), requestedFormat)) {
             return reader.readAll();
         }
     }

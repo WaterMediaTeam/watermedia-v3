@@ -6,7 +6,7 @@ import org.lwjgl.glfw.GLFW;
 import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -337,13 +337,13 @@ public final class GLEngine extends GFXEngine {
 
     /**
      * Resets the entire pipeline and prepares for a new format.
-     * Releases plane textures, PBOs, and recompiles shaders if the color space changed.
+     * Releases plane textures, PBOs, and recompiles shaders if the pixel format changed.
      * The managed texture is kept but reallocated on next upload if dimensions changed.
      */
     @Override
-    public void setVideoFormat(final ColorSpace colorSpace, final int width, final int height, final int bitsPerComponent) {
+    public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height, final int bitsPerComponent) {
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.setVideoFormat(colorSpace, width, height, bitsPerComponent));
+            this.renderThreadEx.execute(() -> this.setVideoFormat(pixelFormat, width, height, bitsPerComponent));
             return;
         }
 
@@ -397,7 +397,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         // DETERMINE PLANE COUNT FOR NEW FORMAT
-        this.activePlanes = switch (colorSpace) {
+        this.activePlanes = switch (pixelFormat) {
             case NV12, NV21 -> 2;
             case YUV420P, YUV422P, YUV444P -> 3;
             case YUVA420P, YUVA422P, YUVA444P -> 4;
@@ -405,10 +405,10 @@ public final class GLEngine extends GFXEngine {
         };
 
         // UPDATE BASE STATE
-        super.setVideoFormat(colorSpace, width, height, bitsPerComponent);
+        super.setVideoFormat(pixelFormat, width, height, bitsPerComponent);
 
         // COMPILE SHADERS FOR NEW FORMAT (LAZY — ONLY IF NOT ALREADY COMPILED)
-        switch (colorSpace) {
+        switch (pixelFormat) {
             case GRAY -> {
                 if (this.shaderGray == 0) {
                     this.shaderGray = this.compileShader(VERTEX_SHADER, FRAGMENT_GRAY);
@@ -470,7 +470,7 @@ public final class GLEngine extends GFXEngine {
             default -> {} // BGRA, RGBA, RGB — NO SHADER NEEDED
         }
 
-        LOGGER.info(IT, "Format set: {} {}x{} ({} planes, {}bpc)", colorSpace, width, height, this.activePlanes, bitsPerComponent);
+        LOGGER.info(IT, "Format set: {} {}x{} ({} planes, {}bpc)", pixelFormat, width, height, this.activePlanes, bitsPerComponent);
     }
 
     // UPLOAD — SINGLE PLANE (BGRA, RGBA, RGB, GRAY, YUYV)
@@ -485,13 +485,13 @@ public final class GLEngine extends GFXEngine {
         this.releaseFrameTextures();
 
         // GRAY: R-FORMAT PLANE TEXTURE + FBO CONVERT
-        if (this.colorSpace == ColorSpace.GRAY) {
+        if (this.pixelFormat == PixelFormat.GRAY) {
             this.uploadGray(buffer, stride);
             return;
         }
 
         // YUYV/UYVY: PACKED RGBA HALF-WIDTH TEXTURE + FBO CONVERT
-        if (this.colorSpace == ColorSpace.YUYV || this.colorSpace == ColorSpace.YUYV2) {
+        if (this.pixelFormat == PixelFormat.YUYV || this.pixelFormat == PixelFormat.YUYV2) {
             this.uploadPacked(buffer, stride);
             return;
         }
@@ -502,7 +502,7 @@ public final class GLEngine extends GFXEngine {
         final int glFormat;
         final int glType;
         final int bytesPerTexel;
-        switch (this.colorSpace) {
+        switch (this.pixelFormat) {
             case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
             case RGB  -> {
                 if (this.bitsPerComponent > 8) {
@@ -788,7 +788,7 @@ public final class GLEngine extends GFXEngine {
         if (this.vTexture == 0) this.vTexture = this.newTexture();
 
         final int chromaW, chromaH;
-        switch (this.colorSpace) {
+        switch (this.pixelFormat) {
             case YUV422P -> { chromaW = this.width / 2; chromaH = this.height; }
             case YUV444P -> { chromaW = this.width; chromaH = this.height; }
             default /* YUV420P */ -> { chromaW = this.width / 2; chromaH = this.height / 2; }
@@ -903,7 +903,7 @@ public final class GLEngine extends GFXEngine {
         if (this.aTexture == 0) this.aTexture = this.newTexture();
 
         final int chromaW, chromaH;
-        switch (this.colorSpace) {
+        switch (this.pixelFormat) {
             case YUVA422P -> { chromaW = this.width / 2; chromaH = this.height; }
             case YUVA444P -> { chromaW = this.width; chromaH = this.height; }
             default /* YUVA420P */ -> { chromaW = this.width / 2; chromaH = this.height / 2; }
@@ -1060,7 +1060,7 @@ public final class GLEngine extends GFXEngine {
         GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, this.managedTexture, 0);
         GL11.glViewport(0, 0, this.width, this.height);
 
-        switch (this.colorSpace) {
+        switch (this.pixelFormat) {
             case GRAY -> {
                 GL20.glUseProgram(this.shaderGray);
                 this.activeTexture.accept(GL13.GL_TEXTURE0);
@@ -1076,7 +1076,7 @@ public final class GLEngine extends GFXEngine {
                 this.activeTexture.accept(GL13.GL_TEXTURE1);
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.uvTexture);
                 GL20.glUniform1i(this.uniformNVUVTex, 1);
-                GL20.glUniform1f(this.uniformNVSwap, this.colorSpace == ColorSpace.NV21 ? 1.0f : 0.0f);
+                GL20.glUniform1f(this.uniformNVSwap, this.pixelFormat == PixelFormat.NV21 ? 1.0f : 0.0f);
                 GL20.glUniform1f(this.uniformNVBitScale, this.bitScale);
             }
             case YUV420P, YUV422P, YUV444P -> {
@@ -1114,7 +1114,7 @@ public final class GLEngine extends GFXEngine {
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.yTexture);
                 GL20.glUniform1i(this.uniformYUYVTex, 0);
                 GL20.glUniform1f(this.uniformYUYVWidth, (float) this.width);
-                GL20.glUniform1f(this.uniformYUYVSwap, this.colorSpace == ColorSpace.YUYV2 ? 1.0f : 0.0f);
+                GL20.glUniform1f(this.uniformYUYVSwap, this.pixelFormat == PixelFormat.YUYV2 ? 1.0f : 0.0f);
             }
             default -> {}
         }
@@ -1133,7 +1133,7 @@ public final class GLEngine extends GFXEngine {
 
     // INTERNAL HELPERS
     private boolean directTextureUploadSupported() {
-        return switch (this.colorSpace) {
+        return switch (this.pixelFormat) {
             case BGRA, RGBA, RGB -> true;
             default -> false;
         };
@@ -1143,7 +1143,7 @@ public final class GLEngine extends GFXEngine {
         final int glFormat;
         final int glType;
         final int bytesPerTexel;
-        switch (this.colorSpace) {
+        switch (this.pixelFormat) {
             case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
             case RGB -> {
                 if (this.bitsPerComponent > 8) {

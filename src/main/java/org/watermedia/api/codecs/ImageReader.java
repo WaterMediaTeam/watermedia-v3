@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs;
 
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
 import java.io.EOFException;
@@ -25,11 +25,17 @@ import java.util.List;
  */
 public abstract class ImageReader implements Closeable {
     protected final ByteBuffer data;
+    protected final PixelFormat requestedFormat;
     protected ByteBuffer currentFrame;
     protected long currentDelay;
 
     protected ImageReader(final ByteBuffer data) {
+        this(data, null);
+    }
+
+    protected ImageReader(final ByteBuffer data, final PixelFormat requestedFormat) {
         this.data = data.slice();
+        this.requestedFormat = requestedFormat;
     }
 
     /** Format short name (e.g. {@code "PNG"}, {@code "GIF"}). */
@@ -46,8 +52,46 @@ public abstract class ImageReader implements Closeable {
     /** Image height in pixels. Available immediately after construction. */
     public abstract int height();
 
-    /** Pixel layout of the buffer returned by {@link #next()}. */
-    public abstract ColorSpace pixelFormat();
+    /**
+     * Pixel layout of the buffer(s) returned by {@link #next()} / {@link #plane(int)}. The reader
+     * chooses this layout based on the {@code requestedFormat} passed at construction time:
+     * <ul>
+     *   <li>If {@code requestedFormat} is non-null, the reader tries to honor it (converting
+     *       internally as needed).</li>
+     *   <li>If {@code requestedFormat} is {@code null}, the reader returns whatever layout is
+     *       cheapest for it to produce (its native format) without doing a color conversion.</li>
+     * </ul>
+     * Callers must always read this method to know how to interpret the decoded bytes.
+     */
+    public abstract PixelFormat pixelFormat();
+
+    /**
+     * Number of planes in the decoded frame. {@code 1} for interleaved single-plane layouts
+     * ({@link PixelFormat#BGRA}, {@link PixelFormat#RGBA}, {@link PixelFormat#RGB},
+     * {@link PixelFormat#GRAY}, packed YUYV), {@code 2} for semi-planar
+     * ({@link PixelFormat#NV12}/{@link PixelFormat#NV21}), {@code 3} for planar YUV, {@code 4}
+     * for planar YUV + alpha.
+     */
+    public int planeCount() { return 1; }
+
+    /**
+     * Returns the buffer for the requested plane. Plane {@code 0} is the same buffer returned
+     * by the latest {@link #next()} call. Higher indices are valid only when
+     * {@link #planeCount()} is greater than 1.
+     */
+    public ByteBuffer plane(final int index) {
+        if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
+        return this.currentFrame;
+    }
+
+    /**
+     * Row stride for the requested plane, in bytes. {@code 0} means tightly packed (stride
+     * equals the plane width in bytes).
+     */
+    public int planeStride(final int index) {
+        if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
+        return 0;
+    }
 
     /**
      * Pre-generated animation summary computed during construction. Animated formats walk the

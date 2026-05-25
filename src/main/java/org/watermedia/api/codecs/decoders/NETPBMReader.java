@@ -6,7 +6,7 @@ import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.XCodecException;
 import org.watermedia.api.codecs.decoders.netpbm.NetpbmHeader;
 import org.watermedia.api.codecs.decoders.netpbm.NetpbmType;
-import org.watermedia.api.util.ColorSpace;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
@@ -51,7 +51,7 @@ public class NETPBMReader extends ImageReader {
 
     @Override public int width() { return this.header.width; }
     @Override public int height() { return this.header.height; }
-    @Override public ColorSpace pixelFormat() { return ColorSpace.BGRA; }
+    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.STATIC; }
     @Override public boolean variableFrameRate() { return false; }
 
