@@ -345,6 +345,11 @@ public class NetRequest implements AutoCloseable {
                 final URLConnection conn = this.openConnection(current, effective);
 
                 if (!(conn instanceof final HttpURLConnection http)) {
+                    // FORCE A REAL CONNECT FOR FILE:// AND FTP:// SO MISSING RESOURCES FAIL FAST.
+                    // URLConnection.getContentType() ONLY GUESSES FROM THE FILENAME AND NEVER
+                    // TOUCHES THE UNDERLYING RESOURCE — WITHOUT THIS CALL A NONEXISTENT file://
+                    // URI WOULD SILENTLY LOOK LIKE A VALID MEDIA RESPONSE TO CALLERS LIKE MRL.
+                    conn.connect();
                     return new NetRequest(current, conn, HttpURLConnection.HTTP_OK, effective);
                 }
 
