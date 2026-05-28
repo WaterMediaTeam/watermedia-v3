@@ -9,12 +9,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -83,11 +78,11 @@ public final class HlsTool {
     public record MasterResult(String source, int version, List<Variant> variants, List<Rendition> renditions, List<SessionData> sessionData) implements Result {
 
         public Optional<Variant> best() {
-            return this.variants.stream().max((a, b) -> Long.compare(a.bandwidth, b.bandwidth));
+            return this.variants.stream().max(Comparator.comparingLong(a -> a.bandwidth));
         }
 
         public Optional<Variant> worst() {
-            return this.variants.stream().min((a, b) -> Long.compare(a.bandwidth, b.bandwidth));
+            return this.variants.stream().min(Comparator.comparingLong(a -> a.bandwidth));
         }
 
         public Optional<Variant> byResolution(final int w, final int h) {
