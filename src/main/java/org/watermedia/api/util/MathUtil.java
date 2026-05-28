@@ -245,7 +245,27 @@ public enum MathUtil {
      */
     public static long secondsToMs(final double sec) { return ((long) sec * 1000L); }
 
+    /**
+     * Converts milliseconds in a floating-point seconds
+     * @param ms Time in milliseconds
+     * @return milliseconds converted in seconds
+     */
     public static double msToSeconds(final long ms) { return ms / 1000.0d; }
+
+
+    /**
+     * Converts seconds in a floating-point number into milliseconds long
+     * @param min Time in seconds
+     * @return seconds converted in milliseconds
+     */
+    public static long minutesToMs(final double min) { return ((long) (min * 1000L) * 60); }
+
+    /**
+     * Converts milliseconds in a floating-point seconds
+     * @param ms Time in milliseconds
+     * @return milliseconds converted in seconds
+     */
+    public static double msToMinutes(final long ms) { return (ms / 60d) / 1000.0d; }
 
 
     /**

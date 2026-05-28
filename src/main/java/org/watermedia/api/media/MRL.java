@@ -2,6 +2,7 @@ package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
 import org.watermedia.tools.DataTool;
@@ -30,6 +31,7 @@ public final class MRL {
     private static final Marker IT = MarkerManager.getMarker(MRL.class.getSimpleName());
     private static final Map<URI, MRL> LOADED = new ConcurrentHashMap<>(1024);
     private static final Executor LOADER = ThreadTool.createRecomendedThreadPool("MRL-Loader", Thread.NORM_PRIORITY - 1);
+    private static volatile long NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(60.0); // NOT CONFIGURABLE, BY DEFAULT OBEY FIRST 60 MINUTES
 
     // INSTANCE FIELDS
     public final URI uri;
@@ -37,6 +39,7 @@ public final class MRL {
     private volatile Instant expiresAt;
     private final List<Consumer<MRL>> listeners = new CopyOnWriteArrayList<>();
     private volatile boolean ready;
+    private volatile boolean forgotten;
     private volatile Throwable exception;
 
     private MRL(final URI uri) { this.uri = Objects.requireNonNull(uri, "URI cannot be null"); }
@@ -103,6 +106,22 @@ public final class MRL {
     }
 
     private void load() {
+        try {
+            if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
+                synchronized (LOADED) {
+                    if (NEXT_CLEAN_TIME > System.currentTimeMillis()) return; // FIRST TO LOCK HAS DONE IT
+                    LOADED.forEach((uri, mrl) -> {
+                        if (mrl.expired() || mrl.hasError()) {
+                            LOADED.remove(uri);
+                            mrl.forgotten = true;
+                        }
+                    });
+                    NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlManagerCleanupInterval);
+                }
+            }
+        } catch (final Throwable ex) {
+            LOGGER.fatal(IT, "Failed to disposed forgotten MRLs: {}", ex.getMessage(), ex);
+        }
         try {
             PlatformData data = PlatformAPI.fetch(this.uri);
             if (data == null) {
@@ -249,12 +268,17 @@ public final class MRL {
     }
 
     /**
-     * Checks if cache entry has expired.
+     * Checks if the MRL has expired.
      * @see PlatformData#expires()
      */
     public boolean expired() {
         return this.expiresAt != null && this.expiresAt.isBefore(Instant.now());
     }
+
+    /**
+     * Checks if the MRL was forgotten by the MRL manager
+     */
+    public boolean forgotten() { return this.forgotten; }
 
     /**
      * Returns all {@link Source} instances, or empty array if not ready.

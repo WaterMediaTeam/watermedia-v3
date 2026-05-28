@@ -45,6 +45,11 @@ public class WaterMediaConfig {
     @Spec(value = "media", disableStatic = true)
     public final static class Media {
         @Spec.Field
+        @Comment("Cleanup Interval in Seconds for all expired MRL or with errors (memory saver")
+        @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
+        public float mrlManagerCleanupInterval = 60.0f;
+
+        @Spec.Field
         @Comment("Default quality for streaming media without a specified quality")
         public MediaQuality defaultQuality = MediaQuality.HIGHER;
 
