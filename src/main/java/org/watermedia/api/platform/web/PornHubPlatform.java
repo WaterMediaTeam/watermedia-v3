@@ -2,6 +2,8 @@ package org.watermedia.api.platform.web;
 
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
+import org.watermedia.WaterMedia;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
@@ -31,6 +33,9 @@ public class PornHubPlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
+        if (!WaterMediaConfig.media.platforms.allowMatureContent)
+            throw new  IllegalStateException("Pornhub platform is not allowed on mature content = disabled");
+
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
 
