@@ -60,7 +60,7 @@ public class KickPlatform implements IPlatform {
                 throw new IllegalStateException("Streamer " + path[0] + " is banned");
 
             if (channel.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
-                throw new IllegalStateException("Streamer " + path[0] + " is marked as mature content");
+                throw new MatureContentException("Streamer " + path[0] + " is marked as mature content");
 
             // INIT
             final var r = HlsTool.fetch(channel.url);
@@ -96,7 +96,7 @@ public class KickPlatform implements IPlatform {
                 throw new IllegalStateException("Streamer " + video.livestream.channel.user.username + " is banned");
 
             if (video.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
-                throw new IllegalStateException("Video is marked as mature content");
+                throw new MatureContentException("Video is marked as mature content");
 
             final var r = HlsTool.fetch(uri);
 
@@ -138,7 +138,7 @@ public class KickPlatform implements IPlatform {
             throw new IllegalStateException("Clip " + clipId + " uri is unavailable");
 
         if (clip.isMature && !WaterMediaConfig.media.platforms.allowMatureContent)
-            throw new IllegalStateException("Clip " + clipId + " is marked as mature content");
+            throw new MatureContentException("Clip " + clipId + " is marked as mature content");
 
         // CLIP URL MAY BE A DIRECT FILE (mp4/webm) OR AN M3U8 PLAYLIST
         final DataQuality[] variants;

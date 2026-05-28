@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
@@ -54,6 +55,10 @@ public class TwitchPlatform implements IPlatform {
     private static final String HASH_VIDEO_PREVIEW = "9515480dee68a77e667cb19de634739d33f243572b007e98e67184b1a5d8369f";
     private static final String HASH_VIDEO_METADATA = "45111672eea2e507f8ba44d101a61862f9c56b11dee09a15634cb75cb9b9084d";
     private static final String HASH_CLIP = "0a02bb974443b576f5579aab0fef1d4b7f44e58a8a256f0c5adfead0db70640f";
+    private static final String HASH_CONTENT_CLASS = "57bb6c1aca3631b2b3e74b1c3c8adbecbbcc3becb70ec52d7c5ef0f90d7c3b02";
+
+    // SIGN POST FLAGGED BY TWITCH WHEN THE CONTENT CLASSIFICATION LABELS MARK A STREAM/VOD/CLIP AS MATURE
+    private static final String MATURE_SIGN_POST = "SIGN_POST_TYPE_MATURE";
 
     private static final Set<String> VALID_HOSTS = Set.of(
             "twitch.tv", "www.twitch.tv", "m.twitch.tv", "go.twitch.tv",
@@ -86,16 +91,16 @@ public class TwitchPlatform implements IPlatform {
         if ("clips.twitch.tv".equals(host)) {
             final String slug = parseClipsHost(path, query);
             if (slug == null) throw new IllegalArgumentException("No clip slug found: " + uri);
-            return getClipSources(slug);
+            return this.getClipSources(slug);
         }
 
         // PLAYER.TWITCH.TV/?VIDEO={ID} OR ?CHANNEL={NAME}
         if ("player.twitch.tv".equals(host)) {
             if (query != null) {
                 final String videoId = queryParam(query, "video");
-                if (videoId != null) return getVodSources(videoId.replaceFirst("^v", ""));
+                if (videoId != null) return this.getVodSources(videoId.replaceFirst("^v", ""));
                 final String channel = queryParam(query, "channel");
-                if (channel != null) return getStreamSources(channel.toLowerCase());
+                if (channel != null) return this.getStreamSources(channel.toLowerCase());
             }
             throw new IllegalArgumentException("Invalid player URL: " + uri);
         }
@@ -104,21 +109,21 @@ public class TwitchPlatform implements IPlatform {
 
         // VOD: /VIDEOS/{ID}, /{USER}/V/{ID}, /{USER}/VIDEO/{ID}
         Matcher m = VOD_PATH.matcher(path);
-        if (m.find()) return getVodSources(m.group(1));
+        if (m.find()) return this.getVodSources(m.group(1));
 
         // SCHEDULE: ?VODID={ID}
         if (query != null) {
             final String vodId = queryParam(query, "vodID");
-            if (vodId != null) return getVodSources(vodId);
+            if (vodId != null) return this.getVodSources(vodId);
         }
 
         // CLIP: /{USER}/CLIP/{SLUG}
         m = CLIP_PATH.matcher(path);
-        if (m.find()) return getClipSources(m.group(1));
+        if (m.find()) return this.getClipSources(m.group(1));
 
         // STREAM: /{CHANNEL}
         m = CHANNEL_PATH.matcher(path);
-        if (m.find()) return getStreamSources(m.group(1).toLowerCase());
+        if (m.find()) return this.getStreamSources(m.group(1).toLowerCase());
 
         throw new IllegalArgumentException("Unrecognized Twitch URL: " + uri);
     }
@@ -126,6 +131,7 @@ public class TwitchPlatform implements IPlatform {
     // --- CONTENT-TYPE HANDLERS ---
 
     private PlatformData getStreamSources(final String channel) throws Exception {
+        this.ensureNotMature(ContentKind.STREAM, channel);
         final DataQuality[] variants = this.fetchHlsVariants(channel, false);
 
         Metadata metadata = null;
@@ -144,6 +150,7 @@ public class TwitchPlatform implements IPlatform {
     }
 
     private PlatformData getVodSources(final String vodId) throws Exception {
+        this.ensureNotMature(ContentKind.VOD, vodId);
         final DataQuality[] variants = this.fetchHlsVariants(vodId, true);
 
         Metadata metadata = null;
@@ -162,6 +169,7 @@ public class TwitchPlatform implements IPlatform {
     }
 
     private PlatformData getClipSources(final String slug) throws Exception {
+        this.ensureNotMature(ContentKind.CLIP, slug);
         final JsonObject clip = this.fetchClipData(slug);
         if (clip == null) throw new IOException("Clip not found or no longer available: " + slug);
 
@@ -205,7 +213,7 @@ public class TwitchPlatform implements IPlatform {
         }
 
         URI thumbnailUri = null;
-        if (assets != null && !assets.isEmpty()) {
+        if (!assets.isEmpty()) {
             final String thumbUrl = jsonString(assets.get(0).getAsJsonObject(), "thumbnailURL");
             if (thumbUrl != null) thumbnailUri = URI.create(thumbUrl);
         }
@@ -283,7 +291,7 @@ public class TwitchPlatform implements IPlatform {
         body.put("query", ACCESS_TOKEN_QUERY);
         body.put("variables", variables);
 
-        final String response = gqlPost(body);
+        final String response = this.gqlPost(body);
         final JsonObject data = JsonParser.parseString(response).getAsJsonObject().getAsJsonObject("data");
         if (data == null) throw new IOException("Access token response missing 'data' field");
 
@@ -320,7 +328,7 @@ public class TwitchPlatform implements IPlatform {
             previewVars.put("login", channel);
             batch.add(persistedQuery("VideoPreviewOverlay", HASH_VIDEO_PREVIEW, previewVars));
 
-            final String response = gqlPost(batch);
+            final String response = this.gqlPost(batch);
             final JsonArray results = JsonParser.parseString(response).getAsJsonArray();
 
             // STREAM METADATA — USER EXISTENCE + STREAM STATE
@@ -393,7 +401,7 @@ public class TwitchPlatform implements IPlatform {
                     persistedQuery("VideoMetadata", HASH_VIDEO_METADATA, vars)
             );
 
-            final String response = gqlPost(batch);
+            final String response = this.gqlPost(batch);
             final JsonArray results = JsonParser.parseString(response).getAsJsonArray();
 
             final JsonElement videoEl = results.get(0).getAsJsonObject().getAsJsonObject("data").get("video");
@@ -444,10 +452,51 @@ public class TwitchPlatform implements IPlatform {
                 persistedQuery("ShareClipRenderStatus", HASH_CLIP, vars)
         );
 
-        final String response = gqlPost(batch);
+        final String response = this.gqlPost(batch);
         final JsonArray results = JsonParser.parseString(response).getAsJsonArray();
         final JsonElement clipEl = results.get(0).getAsJsonObject().getAsJsonObject("data").get("clip");
         return (clipEl != null && !clipEl.isJsonNull()) ? clipEl.getAsJsonObject() : null;
+    }
+
+    // --- MATURE CONTENT ---
+
+    private enum ContentKind { STREAM, VOD, CLIP }
+
+    // QUERIES TWITCH'S CONTENT CLASSIFICATION SIGN POST AND ABORTS WHEN THE CONTENT IS MATURE
+    // AND THE HOST DISABLED MATURE CONTENT. RUNS BEFORE ANY PLAYLIST/CLIP FETCH SO NO DATA IS RETRIEVED.
+    private void ensureNotMature(final ContentKind kind, final String id) throws IOException {
+        if (WaterMediaConfig.media.platforms.allowMatureContent) return;
+
+        final Map<String, Object> vars = new HashMap<>();
+        vars.put("login", kind == ContentKind.STREAM ? id : "");
+        vars.put("vodID", kind == ContentKind.VOD ? id : "");
+        vars.put("clipSlug", kind == ContentKind.CLIP ? id : "");
+        vars.put("isStream", kind == ContentKind.STREAM);
+        vars.put("isVOD", kind == ContentKind.VOD);
+        vars.put("isClip", kind == ContentKind.CLIP);
+
+        final String response = this.gqlPost(List.of(persistedQuery("ContentClassificationContext", HASH_CONTENT_CLASS, vars)));
+        final JsonObject data = JsonParser.parseString(response).getAsJsonArray().get(0).getAsJsonObject().getAsJsonObject("data");
+        if (data == null) return;
+
+        // STREAM NESTS UNDER user.stream; VOD UNDER video; CLIP UNDER clip
+        final JsonElement node = switch (kind) {
+            case STREAM -> {
+                final JsonElement user = data.get("user");
+                yield (user != null && !user.isJsonNull()) ? user.getAsJsonObject().get("stream") : null;
+            }
+            case VOD -> data.get("video");
+            case CLIP -> data.get("clip");
+        };
+        if (node == null || node.isJsonNull()) return;
+
+        final JsonElement policy = node.getAsJsonObject().get("contentClassificationLabelPolicyProperties");
+        if (policy == null || policy.isJsonNull()) return;
+        final JsonElement sign = policy.getAsJsonObject().get("signPostProperties");
+        if (sign == null || sign.isJsonNull()) return;
+
+        if (MATURE_SIGN_POST.equals(jsonString(sign.getAsJsonObject(), "signPost")))
+            throw new MatureContentException("Twitch " + kind.name().toLowerCase() + " '" + id + "' is marked as mature content");
     }
 
     // --- GQL HELPERS ---

@@ -280,6 +280,8 @@ public final class MRL {
      */
     public boolean forgotten() { return this.forgotten; }
 
+    public boolean mature() { return this.exception == null && this.exception.getClass() == MatureContentException.class; }
+
     /**
      * Returns all {@link Source} instances, or empty array if not ready.
      */
