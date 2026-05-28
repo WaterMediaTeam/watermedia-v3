@@ -1,19 +1,32 @@
+package org.watermedia.test.tools;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.HlsTool.*;
+import org.watermedia.tools.HlsTool.ErrorResult;
+import org.watermedia.tools.HlsTool.MasterResult;
+import org.watermedia.tools.HlsTool.MediaResult;
+import org.watermedia.tools.HlsTool.Rendition;
+import org.watermedia.tools.HlsTool.Result;
+import org.watermedia.tools.HlsTool.Segment;
+import org.watermedia.tools.HlsTool.SessionData;
+import org.watermedia.tools.HlsTool.Variant;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Comprehensive test suite for HlsTool HLS/M3U8 playlist parser.
- * Tests cover master playlist parsing, media playlist parsing, error handling,
- * and various edge cases encountered in real-world HLS streams.
+ * Comprehensive test suite for {@link HlsTool}, the HLS/M3U8 playlist parser.
+ * Covers master playlist parsing, media playlist parsing, error handling, and
+ * various edge cases encountered in real-world HLS streams.
  */
 public class HlsToolTest {
 
@@ -115,7 +128,7 @@ public class HlsToolTest {
             final MasterResult master = (MasterResult) result;
 
             assertEquals("master.m3u8", master.source());
-            assertEquals(1, master.version()); // Default version
+            assertEquals(1, master.version()); // DEFAULT VERSION
             assertEquals(2, master.variants().size());
         }
 
@@ -492,7 +505,7 @@ public class HlsToolTest {
             final MediaResult media = (MediaResult) result;
 
             assertEquals("2025-12-16T10:56:19.451Z", media.segments().get(0).dateTime());
-            assertNull(media.segments().get(1).dateTime()); // Only first segment has dateTime
+            assertNull(media.segments().get(1).dateTime()); // ONLY FIRST SEGMENT HAS dateTime
         }
 
         @Test
@@ -683,7 +696,7 @@ public class HlsToolTest {
 
             assertInstanceOf(MasterResult.class, result);
             final MasterResult master = (MasterResult) result;
-            assertEquals(0, master.variants().size()); // No URI follows the STREAM-INF
+            assertEquals(0, master.variants().size()); // NO URI FOLLOWS THE STREAM-INF
         }
 
         @Test
@@ -741,7 +754,7 @@ public class HlsToolTest {
             final MasterResult master = (MasterResult) result;
             final Variant variant = master.variants().get(0);
 
-            assertEquals(30.0, variant.fps(), 0.001); // Default is 30
+            assertEquals(30.0, variant.fps(), 0.001); // DEFAULT IS 30
         }
 
         @Test
@@ -834,16 +847,16 @@ public class HlsToolTest {
             assertInstanceOf(MasterResult.class, result);
             final MasterResult master = (MasterResult) result;
 
-            // Verify session data
+            // SESSION DATA
             assertEquals(2, master.sessionData().size());
 
-            // Verify renditions
+            // RENDITIONS
             assertEquals(4, master.renditions().size());
 
-            // Verify variants
+            // VARIANTS
             assertEquals(4, master.variants().size());
 
-            // Verify best/worst
+            // BEST/WORST
             assertTrue(master.best().isPresent());
             assertEquals(9014525L, master.best().get().bandwidth());
             assertEquals("1080p60", master.best().get().quality());
@@ -852,7 +865,7 @@ public class HlsToolTest {
             assertEquals(630000L, master.worst().get().bandwidth());
             assertEquals("360p", master.worst().get().quality());
 
-            // Verify sorted order
+            // SORTED ORDER
             final List<Variant> sorted = master.sorted();
             assertEquals("1080p60", sorted.get(0).quality());
             assertEquals("720p60", sorted.get(1).quality());
@@ -886,11 +899,11 @@ public class HlsToolTest {
             assertEquals(3, media.version());
             assertEquals(6.0, media.targetDuration(), 0.001);
             assertEquals(1074L, media.sequence());
-            assertTrue(media.live()); // No ENDLIST
+            assertTrue(media.live()); // NO ENDLIST
             assertFalse(media.vod());
             assertEquals(12.5, media.totalDuration(), 0.001);
 
-            // Verify segments
+            // SEGMENTS
             assertEquals(3, media.segments().size());
 
             final Segment seg1 = media.segments().get(0);
@@ -933,12 +946,12 @@ public class HlsToolTest {
             final Result media = HlsTool.parse(mediaContent, "test.m3u8");
             final Result error = HlsTool.parse((String) null, "test.m3u8");
 
-            // Verify types using instanceof
+            // VERIFY TYPES USING instanceof
             assertInstanceOf(MasterResult.class, master);
             assertInstanceOf(MediaResult.class, media);
             assertInstanceOf(ErrorResult.class, error);
 
-            // Verify each type is distinct
+            // VERIFY EACH TYPE IS DISTINCT
             assertFalse(master instanceof MediaResult);
             assertFalse(master instanceof ErrorResult);
             assertFalse(media instanceof MasterResult);

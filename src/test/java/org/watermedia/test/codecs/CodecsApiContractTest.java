@@ -1,14 +1,17 @@
+package org.watermedia.test.codecs;
+
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.UnsupportedFormatException;
+import org.watermedia.test.support.Fixtures;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +23,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class CodecsAPIContractTest {
+/**
+ * Contract tests for {@link CodecsAPI}: format detection, header consumption on the
+ * caller's buffer, reader-level invariants ({@code width/height/frameCount/delays},
+ * {@code readAll}), and {@link ImageMetadata} normalization for PNG and JPEG.
+ */
+public class CodecsApiContractTest {
 
     @Test
     void decodeImageByteArrayThrowsUnsupportedFormat() {
@@ -36,7 +44,7 @@ public class CodecsAPIContractTest {
 
     @Test
     void decodeImageByteBufferReturnsReaderAndSkipsHeader() throws Exception {
-        final ByteBuffer data = ByteBuffer.wrap(Files.readAllBytes(Path.of("src/test/resources/png/1.png")));
+        final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.PNG_ANIMATED));
 
         try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
             assertEquals(8, data.position(), "PNG header should be consumed by CodecsAPI");
@@ -51,7 +59,7 @@ public class CodecsAPIContractTest {
 
     @Test
     void readerReadAllReturnsImageData() throws Exception {
-        final ByteBuffer data = ByteBuffer.wrap(Files.readAllBytes(Path.of("src/test/resources/png/1.png")));
+        final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.PNG_ANIMATED));
 
         try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
             final ImageData image = reader.readAll();
@@ -64,7 +72,7 @@ public class CodecsAPIContractTest {
 
     @Test
     void gifQuickReadExposesDurationFrameCountAndDelays() throws Exception {
-        final ByteBuffer data = ByteBuffer.wrap(Files.readAllBytes(Path.of("src/test/resources/gif/1.gif")));
+        final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.GIF_ANIMATED));
 
         try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
             assertEquals(6, data.position(), "GIF header should be consumed by CodecsAPI");
@@ -79,13 +87,13 @@ public class CodecsAPIContractTest {
         record Fixture(String name, Path path, int headerBytes) {}
 
         for (final Fixture fixture: List.of(
-                new Fixture("PNG", Path.of("src/test/resources/png/1.png"), 8),
-                new Fixture("GIF", Path.of("src/test/resources/gif/1.gif"), 6),
-                new Fixture("WEBP", Path.of("src/test/resources/webp/lossless/1.webp"), 12),
-                new Fixture("NETPBM", Path.of("src/test/resources/netpbm/test.ppm"), 2),
-                new Fixture("JPEG", Path.of("src/test/resources/jpeg/1.jpg"), 2)
+                new Fixture("PNG", Fixtures.PNG_ANIMATED, 8),
+                new Fixture("GIF", Fixtures.GIF_ANIMATED, 6),
+                new Fixture("WEBP", Fixtures.WEBP_LOSSLESS, 12),
+                new Fixture("NETPBM", Fixtures.NETPBM_PPM, 2),
+                new Fixture("JPEG", Fixtures.JPEG_BASELINE, 2)
         )) {
-            final ByteBuffer data = ByteBuffer.wrap(Files.readAllBytes(fixture.path()));
+            final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(fixture.path()));
 
             try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
                 assertEquals(fixture.name(), reader.name());
@@ -98,30 +106,7 @@ public class CodecsAPIContractTest {
 
     @Test
     void pngTextMetadataIsNormalizedAndExposedInGenericMap() throws Exception {
-        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(pngWithTextMetadata()))) {
-            final ImageMetadata metadata = reader.metadata();
-
-            assertEquals("WaterMedia", metadata.title());
-            assertEquals(List.of("J-RAP"), metadata.authors());
-            assertNull(metadata.description());
-            assertNotNull(metadata.values());
-            assertTrue(metadata.value(CodecsAPI.PNG_METAKEY_TEXT) instanceof Map<?, ?>);
-        }
-    }
-
-    @Test
-    void emptyMetadataFieldsReturnNull() throws Exception {
-        final byte[] jpeg = Files.readAllBytes(Path.of("src/test/resources/jpeg/1.jpg"));
-        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(jpeg))) {
-            final ImageMetadata metadata = reader.metadata();
-
-            assertNull(metadata.title());
-            assertNull(metadata.authors());
-            assertNull(metadata.values());
-        }
-    }
-
-    private static byte[] pngWithTextMetadata() throws Exception {
+        // BUILD A SYNTHETIC 1x1 PNG WITH tEXt CHUNKS — VALIDATES METADATA NORMALIZATION
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(new byte[] { (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A });
         writePngChunk(out, "IHDR", new byte[] {
@@ -135,10 +120,29 @@ public class CodecsAPIContractTest {
                 0x78, (byte) 0x9C, 0x63, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01
         });
         writePngChunk(out, "IEND", new byte[0]);
-        return out.toByteArray();
+
+        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(out.toByteArray()))) {
+            final ImageMetadata metadata = reader.metadata();
+
+            assertEquals("WaterMedia", metadata.title());
+            assertEquals(List.of("J-RAP"), metadata.authors());
+            assertNull(metadata.description());
+            assertNotNull(metadata.values());
+            assertTrue(metadata.value(CodecsAPI.PNG_METAKEY_TEXT) instanceof Map<?, ?>);
+        }
     }
 
-    private static byte[] pngText(final String key, final String value) throws Exception {
+    @Test
+    void emptyMetadataFieldsReturnNull() throws Exception {
+        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_BASELINE)))) {
+            final ImageMetadata metadata = reader.metadata();
+            assertNull(metadata.title());
+            assertNull(metadata.authors());
+            assertNull(metadata.values());
+        }
+    }
+
+    private static byte[] pngText(final String key, final String value) throws IOException {
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(key.getBytes(StandardCharsets.ISO_8859_1));
         out.write(0);
@@ -146,7 +150,7 @@ public class CodecsAPIContractTest {
         return out.toByteArray();
     }
 
-    private static void writePngChunk(final ByteArrayOutputStream out, final String type, final byte[] data) throws Exception {
+    private static void writePngChunk(final ByteArrayOutputStream out, final String type, final byte[] data) throws IOException {
         writeInt(out, data.length);
         final byte[] typeBytes = type.getBytes(StandardCharsets.US_ASCII);
         out.write(typeBytes);

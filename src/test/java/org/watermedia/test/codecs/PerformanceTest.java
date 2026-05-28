@@ -1,8 +1,11 @@
+package org.watermedia.test.codecs;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.test.support.Fixtures;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -20,41 +23,75 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 /**
  * Diagnostic decoder benchmarks.
  *
- * <p>These are deliberately observational tests rather than wall-clock assertions. They keep the
- * benchmark loop close to the public streaming API and report the most useful split points:
- * reader creation, first-frame readiness, full drain, and how far the source buffer has advanced.
+ * <p>These are deliberately observational rather than wall-clock assertions. They keep
+ * the benchmark loop close to the public streaming API and report the most useful split
+ * points: reader creation, first-frame readiness, full drain, and how far the source
+ * buffer has advanced.
+ *
+ * <p>Results are appended to a TSV report at
+ * {@code build/reports/decoder-performance.tsv} after the factory finishes.
  */
-public class DecoderPerformanceTest {
+public class PerformanceTest {
     private static final int WARMUP_ITERATIONS = 2;
     private static final int MEASURED_ITERATIONS = 5;
     private static final Path REPORT_PATH = Path.of("build", "reports", "decoder-performance.tsv");
     private static final List<String> REPORT_LINES = new ArrayList<>();
 
     private static final List<BenchmarkCase> CASES = List.of(
-            new BenchmarkCase("JPEG_GRAY", Path.of("src", "test", "resources", "jpeg", "1.jpg")),
-            new BenchmarkCase("JPEG_420", Path.of("src", "test", "resources", "jpeg", "2.jpg")),
-            new BenchmarkCase("JPEG_422", Path.of("src", "test", "resources", "jpeg", "3.jpg")),
-            new BenchmarkCase("JPEG_444", Path.of("src", "test", "resources", "jpeg", "4.jpg")),
-            new BenchmarkCase("JPEG_444_APPX", Path.of("src", "test", "resources", "jpeg", "5.jpg")),
-            new BenchmarkCase("GIF", Path.of("src", "test", "resources", "gif", "1.gif")),
-            new BenchmarkCase("GIF ALPHA", Path.of("src", "test", "resources", "gif", "2.gif")),
-            new BenchmarkCase("GIF LARGE", Path.of("src", "test", "resources", "gif", "3.gif")),
-            new BenchmarkCase("PNG", Path.of("src", "test", "resources", "png", "1.png")),
-            new BenchmarkCase("WEBP_LOSSLESS", Path.of("src", "test", "resources", "webp", "lossless", "1.webp")),
-            new BenchmarkCase("WEBP_LOSSY_SMALL", Path.of("src", "test", "resources", "webp", "lossy", "1.webp")),
-            new BenchmarkCase("WEBP_LOSSY_MED", Path.of("src", "test", "resources", "webp", "lossy", "3.webp")),
-            new BenchmarkCase("WEBP_LOSSY_LARGE", Path.of("src", "test", "resources", "webp", "lossy", "6.webp")),
-            new BenchmarkCase("WEBP_ANIMATED", Path.of("src", "test", "resources", "webp", "animated", "1.webp")),
-            new BenchmarkCase("NETPBM_PPM", Path.of("src", "test", "resources", "netpbm", "test.ppm")),
-            new BenchmarkCase("NETPBM_PAM_RGBA", Path.of("src", "test", "resources", "netpbm", "rgba.pam"))
+            new BenchmarkCase("JPEG_GRAY", Fixtures.JPEG_DIR.resolve("1.jpg")),
+            new BenchmarkCase("JPEG_420", Fixtures.JPEG_DIR.resolve("2.jpg")),
+            new BenchmarkCase("JPEG_422", Fixtures.JPEG_DIR.resolve("3.jpg")),
+            new BenchmarkCase("JPEG_444", Fixtures.JPEG_DIR.resolve("4.jpg")),
+            new BenchmarkCase("JPEG_444_APPX", Fixtures.JPEG_DIR.resolve("5.jpg")),
+            new BenchmarkCase("GIF", Fixtures.GIF_DIR.resolve("1.gif")),
+            new BenchmarkCase("GIF ALPHA", Fixtures.GIF_DIR.resolve("2.gif")),
+            new BenchmarkCase("GIF LARGE", Fixtures.GIF_DIR.resolve("3.gif")),
+            new BenchmarkCase("PNG", Fixtures.PNG_DIR.resolve("1.png")),
+            new BenchmarkCase("WEBP_LOSSLESS", Fixtures.WEBP_LOSSLESS_DIR.resolve("1.webp")),
+            new BenchmarkCase("WEBP_LOSSY_SMALL", Fixtures.WEBP_LOSSY_DIR.resolve("1.webp")),
+            new BenchmarkCase("WEBP_LOSSY_MED", Fixtures.WEBP_LOSSY_DIR.resolve("3.webp")),
+            new BenchmarkCase("WEBP_LOSSY_LARGE", Fixtures.WEBP_LOSSY_DIR.resolve("6.webp")),
+            new BenchmarkCase("WEBP_ANIMATED", Fixtures.WEBP_ANIMATED_DIR.resolve("1.webp")),
+            new BenchmarkCase("NETPBM_PPM", Fixtures.NETPBM_DIR.resolve("test.ppm")),
+            new BenchmarkCase("NETPBM_PAM_RGBA", Fixtures.NETPBM_DIR.resolve("rgba.pam"))
     );
 
     @TestFactory
     Iterable<DynamicTest> measureDecoderPipelines() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final BenchmarkCase benchmarkCase: CASES) {
-            tests.add(dynamicTest("decoder performance [" + benchmarkCase.name + "]",
-                    () -> this.measure(benchmarkCase)));
+            tests.add(dynamicTest("decoder performance [" + benchmarkCase.name + "]", () -> {
+                final byte[] source = Files.readAllBytes(benchmarkCase.fixture);
+                assertTrue(source.length > 0, "Fixture must not be empty: " + benchmarkCase.fixture);
+
+                for (int i = 0; i < WARMUP_ITERATIONS; i++) runSample(source);
+
+                final BenchmarkSample[] samples = new BenchmarkSample[MEASURED_ITERATIONS];
+                for (int i = 0; i < MEASURED_ITERATIONS; i++) samples[i] = runSample(source);
+
+                final BenchmarkSample exemplar = samples[0];
+                final BenchmarkSummary summary = new BenchmarkSummary(
+                        benchmarkCase.name,
+                        benchmarkCase.fixture.toString().replace('\\', '/'),
+                        source.length,
+                        exemplar.width,
+                        exemplar.height,
+                        exemplar.frames,
+                        exemplar.outputBytes,
+                        medianMicros(samples, Metric.OPEN),
+                        medianMicros(samples, Metric.FIRST_FRAME),
+                        medianMicros(samples, Metric.ALL_FRAMES),
+                        exemplar.bytesAfterOpen,
+                        exemplar.bytesAfterFirst,
+                        exemplar.bytesAfterAll,
+                        exemplar.duration,
+                        exemplar.averageFps,
+                        exemplar.variableFrameRate
+                );
+
+                REPORT_LINES.add(summary.toTsv());
+                System.out.println(summary.toHumanLine());
+            }));
         }
         return tests;
     }
@@ -69,44 +106,7 @@ public class DecoderPerformanceTest {
         Files.write(REPORT_PATH, lines);
     }
 
-    private void measure(final BenchmarkCase benchmarkCase) throws Exception {
-        final byte[] source = Files.readAllBytes(benchmarkCase.fixture);
-        assertTrue(source.length > 0, "Fixture must not be empty: " + benchmarkCase.fixture);
-
-        for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-            runSample(source);
-        }
-
-        final BenchmarkSample[] samples = new BenchmarkSample[MEASURED_ITERATIONS];
-        for (int i = 0; i < MEASURED_ITERATIONS; i++) {
-            samples[i] = runSample(source);
-        }
-
-        final BenchmarkSample exemplar = samples[0];
-        final BenchmarkSummary summary = new BenchmarkSummary(
-                benchmarkCase.name,
-                benchmarkCase.fixture.toString().replace('\\', '/'),
-                source.length,
-                exemplar.width,
-                exemplar.height,
-                exemplar.frames,
-                exemplar.outputBytes,
-                medianMicros(samples, Metric.OPEN),
-                medianMicros(samples, Metric.FIRST_FRAME),
-                medianMicros(samples, Metric.ALL_FRAMES),
-                exemplar.bytesAfterOpen,
-                exemplar.bytesAfterFirst,
-                exemplar.bytesAfterAll,
-                exemplar.duration,
-                exemplar.averageFps,
-                exemplar.variableFrameRate
-        );
-
-        REPORT_LINES.add(summary.toTsv());
-        System.out.println(summary.toHumanLine());
-    }
-
-    private static BenchmarkSample runSample(final byte[] source) throws Exception {
+    private static BenchmarkSample runSample(final byte[] source) throws IOException {
         final ByteBuffer input = ByteBuffer.wrap(source);
         final long start = System.nanoTime();
 
@@ -246,5 +246,4 @@ public class DecoderPerformanceTest {
 
         abstract long nanos(BenchmarkSample sample);
     }
-
 }

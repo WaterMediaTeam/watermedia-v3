@@ -1,0 +1,80 @@
+package org.watermedia.test.util;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.watermedia.api.util.MediaType;
+
+import static org.junit.jupiter.api.Assertions.assertSame;
+
+/**
+ * Verifies MIME-string to {@link MediaType} resolution, including subtitle subtypes
+ * and null/empty fallbacks.
+ */
+public class MediaTypeTest {
+
+    @Test
+    @DisplayName("image/png -> IMAGE")
+    void imagePng() {
+        assertSame(MediaType.IMAGE, MediaType.of("image/png"));
+    }
+
+    @Test
+    @DisplayName("video/mp4 -> VIDEO")
+    void videoMp4() {
+        assertSame(MediaType.VIDEO, MediaType.of("video/mp4"));
+    }
+
+    @Test
+    @DisplayName("audio/mp3 -> AUDIO")
+    void audioMp3() {
+        assertSame(MediaType.AUDIO, MediaType.of("audio/mp3"));
+    }
+
+    @Test
+    @DisplayName("text/vtt -> SUBTITLES")
+    void textVtt() {
+        assertSame(MediaType.SUBTITLES, MediaType.of("text/vtt"));
+    }
+
+    @Test
+    @DisplayName("text/srt -> SUBTITLES")
+    void textSrt() {
+        assertSame(MediaType.SUBTITLES, MediaType.of("text/srt"));
+    }
+
+    @Test
+    @DisplayName("text/x-subtitle -> SUBTITLES")
+    void textSubtitleVariant() {
+        assertSame(MediaType.SUBTITLES, MediaType.of("text/x-subtitle"));
+    }
+
+    @Test
+    @DisplayName("text/html -> UNKNOWN")
+    void textHtml() {
+        assertSame(MediaType.UNKNOWN, MediaType.of("text/html"));
+    }
+
+    @Test
+    @DisplayName("application/json -> UNKNOWN")
+    void applicationJson() {
+        assertSame(MediaType.UNKNOWN, MediaType.of("application/json"));
+    }
+
+    @Test
+    @DisplayName("null -> UNKNOWN")
+    void nullInput() {
+        assertSame(MediaType.UNKNOWN, MediaType.of(null));
+    }
+
+    @Test
+    @DisplayName("empty string -> UNKNOWN")
+    void emptyInput() {
+        assertSame(MediaType.UNKNOWN, MediaType.of(""));
+    }
+
+    @Test
+    @DisplayName("uppercase primary type is normalized")
+    void caseInsensitivePrimaryType() {
+        assertSame(MediaType.VIDEO, MediaType.of("VIDEO/MP4"));
+    }
+}
