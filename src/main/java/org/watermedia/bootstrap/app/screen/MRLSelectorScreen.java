@@ -243,6 +243,29 @@ public class MRLSelectorScreen extends Screen {
         this.proceedWithMRL();
     }
 
+    private void reloadMRL(final AppContext.TestURI uri) {
+        if (uri == null) return;
+        final String name = uri.name();
+        MRL mrl = this.ctx.groupMRLs.get(name);
+        if (mrl == null) {
+            mrl = MediaAPI.getMRL(uri.uri());
+            this.ctx.groupMRLs.put(name, mrl);
+        } else {
+            mrl.reload();
+        }
+
+        final MediaPlayer thumbnail = this.thumbnailPlayers.remove(name);
+        if (thumbnail != null) thumbnail.release();
+        this.thumbnailAttempted.remove(name);
+        this.groupSubscriptions.remove(name);
+        if (!mrl.ready() && this.groupSubscriptions.add(name)) {
+            mrl.subscribe(done -> this.ctx.requestRender());
+        }
+        this.ctx.selectedMRLName = name;
+        this.ctx.selectedMRL = mrl;
+        this.ctx.requestRender();
+    }
+
     private void proceedWithMRL() {
         final var sourcesList = this.ctx.selectedMRL.sources();
         this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
@@ -451,10 +474,16 @@ public class MRLSelectorScreen extends Screen {
         AppChrome.statusPip(previewX + 18, statusPipY, 10, statusColor, true);
         this.text.render(quality + " - " + status, previewX + 36,
                 statusPipY + (10 - this.text.glyphHeight(0.58f)) / 2f, statusColor, 0.58f);
-        this.copyBounds = new Dimension(previewX + previewW - 314, panelY + 34, 154, 38);
-        this.playBounds = new Dimension(previewX + previewW - 148, panelY + 34, 130, 38);
+        final boolean hasError = mrl != null && mrl.hasError();
+        final String playLabel = hasError ? "RELOAD" : "PLAY";
+        final String playIcon = hasError ? "reload" : "play";
+        final int playW = Math.max(130, this.panelButtonWidth(playLabel, "ENTER", 0.74f));
+        this.playBounds = new Dimension(previewX + previewW - playW - 18, panelY + 34, playW, 38);
+        this.copyBounds = new Dimension(this.playBounds.x() - 166, panelY + 34, 154, 38);
         this.renderPanelButton("copy", "COPY LINK", null, this.copyBounds, AppTheme.NEON_LIGHT, mrl != null);
-        this.renderPanelButton("play", "PLAY", "ENTER", this.playBounds, AppTheme.GREEN, mrl != null && mrl.ready() && !mrl.hasError());
+        this.renderPanelButton(playIcon, playLabel, "ENTER", this.playBounds,
+                hasError ? AppTheme.NEON_LIGHT : AppTheme.GREEN,
+                mrl != null && (hasError || (mrl.ready() && !mrl.hasError())));
         RenderSystem.restoreProjection();
     }
 
@@ -547,10 +576,17 @@ public class MRLSelectorScreen extends Screen {
             final MRL mrl = this.ctx.groupMRLs.get(uri.name());
             RenderSystem.fill(x, y, w, h, AppTheme.BG_0);
             if (mini && (mrl == null || !mrl.hasError())) {
+                if (mrl != null && mrl.ready()) {
+                    final String ok = "[OK]";
+                    final float okScale = 0.44f;
+                    this.text.render(ok, x + (w - this.text.width(ok, okScale)) / 2,
+                            y + (h - this.text.glyphHeight(okScale)) / 2f,
+                            AppTheme.GREEN, okScale);
+                }
                 AppChrome.crtOverlay(x, y, w, h, windowH);
                 return;
             }
-            final String label = mrl != null && mrl.hasError() ? (mini ? "error" : "ERROR") : mrl != null && mrl.ready() ? "[ media preview ]" : "LOADING...";
+            final String label = mrl != null && mrl.hasError() ? (mini ? "[ERROR]" : "ERROR") : mrl != null && mrl.ready() ? "[ media preview ]" : "LOADING...";
             final java.awt.Color color = mrl != null && mrl.hasError() ? AppTheme.RED : mrl != null && mrl.ready() ? AppTheme.TEXT_SOFT : AppTheme.NEON;
             if (!mini && mrl != null && mrl.hasError()) {
                 PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, AppTheme.RED);
@@ -576,7 +612,9 @@ public class MRLSelectorScreen extends Screen {
         final float scale = 0.74f;
         final int iconSize = 15;
         PixelIcon.draw(icon, bounds.x() + 11, bounds.y() + (bounds.height() - iconSize) / 2, iconSize, actual);
-        this.text.renderBold(label, bounds.x() + 34,
+        final int keyReserve = hotkey == null ? 0 : this.text.width(hotkey, 0.46f) + 28;
+        final int labelMaxW = Math.max(24, bounds.width() - 42 - keyReserve);
+        this.text.renderBold(this.text.truncateToWidth(label, labelMaxW, scale, java.awt.Font.BOLD), bounds.x() + 34,
                 bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(scale)) / 2f),
                 actual, scale);
         if (hotkey != null) {
@@ -589,6 +627,14 @@ public class MRLSelectorScreen extends Screen {
                     keyY + Math.max(0, (keyH - this.text.glyphHeight(0.46f)) / 2f),
                     AppTheme.TEXT_FAINT, 0.46f);
         }
+    }
+
+    private int panelButtonWidth(final String label, final String hotkey, final float scale) {
+        final int iconAndLeft = 42;
+        final int rightPad = 8;
+        final int keyW = hotkey == null ? 0 : this.text.width(hotkey, 0.46f) + 20;
+        final int keyGap = hotkey == null ? 0 : 10;
+        return iconAndLeft + this.text.widthBold(label, scale) + keyGap + keyW + rightPad;
     }
 
     private MediaType firstMediaType(final MRL mrl) {
@@ -632,7 +678,12 @@ public class MRLSelectorScreen extends Screen {
                     return;
                 }
                 final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
-                if (uris.length > 0) this.handleSelect(this.selectedIndex, uris[this.selectedIndex]);
+                if (uris.length > 0) {
+                    final AppContext.TestURI uri = uris[this.selectedIndex];
+                    final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+                    if (mrl != null && mrl.hasError()) this.reloadMRL(uri);
+                    else this.handleSelect(this.selectedIndex, uri);
+                }
             }
             case GLFW_KEY_ESCAPE -> {
                 if (this.searchFocused) {
@@ -699,7 +750,10 @@ public class MRLSelectorScreen extends Screen {
             return;
         }
         if (this.playBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
-            this.handleSelect(this.selectedIndex, uris[this.selectedIndex]);
+            final AppContext.TestURI uri = uris[this.selectedIndex];
+            final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+            if (mrl != null && mrl.hasError()) this.reloadMRL(uri);
+            else this.handleSelect(this.selectedIndex, uri);
             return;
         }
         for (int i = 0; i < this.rowBounds.size(); i++) {

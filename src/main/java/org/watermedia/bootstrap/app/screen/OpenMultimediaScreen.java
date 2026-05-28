@@ -39,6 +39,7 @@ public class OpenMultimediaScreen extends Screen {
     private volatile int previewGeneration;
     private long loadStartTime;
     private Dimension pasteBounds = Dimension.ZERO;
+    private Dimension reloadBounds = Dimension.ZERO;
     private Dimension cancelBounds = Dimension.ZERO;
     private Dimension playBounds = Dimension.ZERO;
     private Dimension saveBounds = Dimension.ZERO;
@@ -86,6 +87,22 @@ public class OpenMultimediaScreen extends Screen {
             this.ctx.customUrlText = "";
             this.clearPreview();
         }
+    }
+
+    private void reloadPreviewMRL() {
+        final String url = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
+        if (url.isEmpty()) return;
+        if (this.previewMRL == null || !url.equals(this.previewUrl)) {
+            this.previewUrl = "";
+            this.ensurePreviewMRL();
+            return;
+        }
+
+        final int generation = ++this.previewGeneration;
+        this.previewMRL.reload();
+        this.loadStartTime = System.currentTimeMillis();
+        this.subscribePreviewMRL(this.previewMRL, generation);
+        this.ctx.requestRender();
     }
 
     private void saveCustomUrl() {
@@ -342,10 +359,12 @@ public class OpenMultimediaScreen extends Screen {
         final int y = previewY + previewH + 28;
         final int tbX = dialogX + padding;
         final int pasteW = 104;
+        final int reloadW = 112;
         final int gap = 8;
-        final int tbW = dialogW - padding * 2 - pasteW - gap;
+        final int tbW = dialogW - padding * 2 - pasteW - reloadW - gap * 2;
         final int tbH = 40;
         this.pasteBounds = new Dimension(tbX + tbW + gap, y, pasteW, tbH);
+        this.reloadBounds = new Dimension(this.pasteBounds.right() + gap, y, reloadW, tbH);
         this.inputBounds = new Dimension(tbX, y, tbW, tbH);
 
         this.text.render("URL OR PATH", tbX, y - 20, AppTheme.TEXT_FAINT, 0.58f);
@@ -361,6 +380,7 @@ public class OpenMultimediaScreen extends Screen {
         this.text.render("PASTE", this.pasteBounds.x() + 32,
                 this.pasteBounds.y() + Math.max(0, (this.pasteBounds.height() - this.text.glyphHeight(0.62f)) / 2f),
                 AppTheme.NEON_LIGHT, 0.62f);
+        this.renderInlineButton(this.reloadBounds, "RELOAD", "reload", AppTheme.NEON_LIGHT, !displayUrl.isEmpty());
 
         final float inputScale = 0.66f;
         final int inputTextX = tbX + 32;
@@ -398,6 +418,20 @@ public class OpenMultimediaScreen extends Screen {
         if (this.loading) {
             this.renderLoadingDialog(windowW, windowH);
         }
+    }
+
+    private void renderInlineButton(final Dimension bounds, final String label, final String icon,
+                                    final java.awt.Color color, final boolean enabled) {
+        final java.awt.Color actual = enabled ? color : AppTheme.TEXT_FAINT;
+        final boolean hover = enabled && bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
+        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.BG_2);
+        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), actual, 1f);
+        if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, actual, hover ? 0.24f : 0.12f);
+        PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, actual);
+        this.text.render(label, bounds.x() + 32,
+                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeight(0.58f)) / 2f),
+                actual, 0.58f);
     }
 
     private void renderPreview(final int x, final int y, final int w, final int h) {
@@ -520,6 +554,9 @@ public class OpenMultimediaScreen extends Screen {
             case GLFW_KEY_V -> {
                 if (action == GLFW_PRESS && this.ctx.ctrlDown) this.pasteFromClipboard();
             }
+            case GLFW_KEY_R -> {
+                if (action == GLFW_PRESS) this.reloadPreviewMRL();
+            }
         }
     }
 
@@ -548,6 +585,8 @@ public class OpenMultimediaScreen extends Screen {
             this.navigator.accept(HomeScreen.Action.BACK);
         } else if (this.pasteBounds.contains(mx, my)) {
             this.pasteFromClipboard();
+        } else if (this.reloadBounds.contains(mx, my)) {
+            this.reloadPreviewMRL();
         } else if (this.cancelBounds.contains(mx, my)) {
             this.navigator.accept(HomeScreen.Action.BACK);
         } else if (this.saveBounds.contains(mx, my) && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) {
@@ -560,6 +599,6 @@ public class OpenMultimediaScreen extends Screen {
     @Override
     public String instructions() {
         if (this.loading) return "ESC: Cancel";
-        return "ENTER: Play | SPACE: Save | V: Paste | ESC: Cancel";
+        return "ENTER: Play | SPACE: Save | V: Paste | R: Reload | ESC: Cancel";
     }
 }

@@ -43,6 +43,7 @@ public final class PixelIcon {
             Map.entry("prev", new String[]{"1001", "1011", "1111", "1011", "1001"}),
             Map.entry("forward", new String[]{"100100", "110110", "111111", "110110", "100100"}),
             Map.entry("rewind", new String[]{"001001", "011011", "111111", "011011", "001001"}),
+            Map.entry("reload", new String[]{"0011100", "0100010", "1000001", "1000001", "0000011", "0000101", "0000011"}),
             Map.entry("arrow-left", new String[]{"0010", "0110", "1111", "0110", "0010"}),
             Map.entry("arrow-right", new String[]{"0100", "0110", "1111", "0110", "0100"}),
             Map.entry("check", new String[]{"00001", "00010", "10100", "01000", "00000"}),
