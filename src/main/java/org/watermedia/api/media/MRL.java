@@ -3,11 +3,14 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.ThreadTool;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.time.Instant;
 import java.util.*;
@@ -132,7 +135,19 @@ public final class MRL {
                         throw new UnsupportedOperationException("The MRL content is not multimedia, received: " + req.contentType());
                     }
 
-                    final var entry = new DataSource(MediaType.of(req.contentType()), null, null,
+                    MediaType type = MediaType.of(req.contentType());
+                    if (type == MediaType.UNKNOWN) {
+                        // SERVER GAVE AN AMBIGUOUS MIME (e.g. application/octet-stream). SNIFF THE
+                        // LEADING BYTES — AUTHORITATIVE — THEN FALL BACK TO THE URL EXTENSION.
+                        try (final InputStream in = req.getInputStream()) {
+                            type = CodecsAPI.getMediaType(in);
+                        } catch (final IOException e) {
+                            LOGGER.warn(IT, "Failed to sniff media type for {}", this.uri, e);
+                        }
+                        if (type == MediaType.UNKNOWN) type = MediaType.ofExtension(this.uri.getPath());
+                    }
+
+                    final var entry = new DataSource(type, null, null,
                             RequestHeaders.defaults(this.uri),
                             new DataQuality[] {new DataQuality(this.uri, 0, 0)},
                             null, null);
@@ -280,7 +295,7 @@ public final class MRL {
      */
     public boolean forgotten() { return this.forgotten; }
 
-    public boolean mature() { return this.exception == null && this.exception.getClass() == MatureContentException.class; }
+    public boolean blocked() { return this.exception != null && this.exception.getClass() == MatureContentException.class; }
 
     /**
      * Returns all {@link Source} instances, or empty array if not ready.

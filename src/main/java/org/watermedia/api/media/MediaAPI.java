@@ -50,6 +50,10 @@ public class MediaAPI extends WaterMediaAPI {
         }
 
         try {
+            if (source.type() == MediaType.UNKNOWN) {
+                LOGGER.warn(IT, "Trying to create a media player for the unknow media type url {}", source);
+            }
+
             if (source.type() == MediaType.IMAGE) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
                 return new TxMediaPlayer(mrl, sourceIndex, gfx.get());

@@ -77,4 +77,38 @@ public class MediaTypeTest {
     void caseInsensitivePrimaryType() {
         assertSame(MediaType.VIDEO, MediaType.of("VIDEO/MP4"));
     }
+
+    @Test
+    @DisplayName("ofExtension: single extension")
+    void extensionSingle() {
+        assertSame(MediaType.IMAGE, MediaType.ofExtension("/clips/thumbnail.webp"));
+        assertSame(MediaType.VIDEO, MediaType.ofExtension("video.mp4"));
+    }
+
+    @Test
+    @DisplayName("ofExtension: stacked extensions use the appended container")
+    void extensionStacked() {
+        assertSame(MediaType.VIDEO, MediaType.ofExtension("/v/video.m3u8.mp4"));
+    }
+
+    @Test
+    @DisplayName("ofExtension: trailing non-media suffix falls back to the earlier media one")
+    void extensionTrailingNonMedia() {
+        assertSame(MediaType.VIDEO, MediaType.ofExtension("clip.mp4.download"));
+    }
+
+    @Test
+    @DisplayName("ofExtension: dots in parent directories are ignored")
+    void extensionDirectoryDots() {
+        assertSame(MediaType.IMAGE, MediaType.ofExtension("/cdn.v1.2/path/image.png"));
+        assertSame(MediaType.UNKNOWN, MediaType.ofExtension("/cdn.v1.2/path/noext"));
+    }
+
+    @Test
+    @DisplayName("ofExtension: no/unknown extension -> UNKNOWN")
+    void extensionUnknown() {
+        assertSame(MediaType.UNKNOWN, MediaType.ofExtension("file.bin"));
+        assertSame(MediaType.UNKNOWN, MediaType.ofExtension("noextension"));
+        assertSame(MediaType.UNKNOWN, MediaType.ofExtension(null));
+    }
 }
