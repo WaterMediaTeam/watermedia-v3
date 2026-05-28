@@ -211,8 +211,13 @@ public class JPEGReader extends ImageReader {
         this.mcusX = ceilDiv(this.width, this.maxH * 8);
         this.mcusY = ceilDiv(this.height, this.maxV * 8);
         for (final Component component: this.components) {
+            // MCU-PADDED GRID: USED FOR STORAGE STRIDE AND INTERLEAVED (MCU) SCAN ITERATION
             component.blocksX = this.mcusX * component.h;
             component.blocksY = this.mcusY * component.v;
+            // ACTUAL COMPONENT GRID: USED FOR NON-INTERLEAVED (SINGLE-COMPONENT) SCAN ITERATION.
+            // PADDING BLOCKS PAST THESE BOUNDS ARE NOT CODED IN NON-INTERLEAVED SCANS (T.81 A.2.2).
+            component.widthInBlocks = ceilDiv(this.width * component.h, this.maxH * 8);
+            component.heightInBlocks = ceilDiv(this.height * component.v, this.maxV * 8);
             component.coefficients = new int[component.blocksX * component.blocksY * 64];
         }
         this.data.position(end);
@@ -496,12 +501,14 @@ public class JPEGReader extends ImageReader {
         }
     }
 
+    // NON-INTERLEAVED ITERATION: WALKS THE COMPONENT'S OWN BLOCK GRID (NOT THE MCU-PADDED ONE).
+    // blockOffset() STILL USES THE MCU-PADDED blocksX STRIDE SO COEFFICIENTS LAND IN THE SHARED BUFFER.
     private void forEachBlock(final Component component, final EntropyReader entropy, final SingleBlockConsumer consumer) throws IOException {
         int restartCount = 0;
         int blockIndex = 0;
-        final int total = component.blocksX * component.blocksY;
-        for (int y = 0; y < component.blocksY; y++) {
-            for (int x = 0; x < component.blocksX; x++) {
+        final int total = component.widthInBlocks * component.heightInBlocks;
+        for (int y = 0; y < component.heightInBlocks; y++) {
+            for (int x = 0; x < component.widthInBlocks; x++) {
                 consumer.accept(component.blockOffset(x, y));
                 blockIndex++;
                 restartCount = this.advanceRestart(entropy, restartCount, blockIndex < total);
@@ -718,7 +725,7 @@ public class JPEGReader extends ImageReader {
             tmp2 += z2 + z3;
             tmp3 += z1 + z4;
 
-            int base = dstOff + col;
+            final int base = dstOff + col;
             dst[base]                 = (byte) clamp(((tmp10 + tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
             dst[base + dstStride * 7] = (byte) clamp(((tmp10 - tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
             dst[base + dstStride]     = (byte) clamp(((tmp11 + tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
@@ -932,6 +939,8 @@ public class JPEGReader extends ImageReader {
         int acTable;
         int blocksX;
         int blocksY;
+        int widthInBlocks;
+        int heightInBlocks;
         int dc;
         int[] coefficients;
         byte[] samples;

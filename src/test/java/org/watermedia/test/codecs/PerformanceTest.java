@@ -43,6 +43,7 @@ public class PerformanceTest {
             new BenchmarkCase("JPEG_422", Fixtures.JPEG_DIR.resolve("3.jpg")),
             new BenchmarkCase("JPEG_444", Fixtures.JPEG_DIR.resolve("4.jpg")),
             new BenchmarkCase("JPEG_444_APPX", Fixtures.JPEG_DIR.resolve("5.jpg")),
+            new BenchmarkCase("JPEG_420_PROG", Fixtures.JPEG_DIR.resolve("6.jpg")),
             new BenchmarkCase("GIF", Fixtures.GIF_DIR.resolve("1.gif")),
             new BenchmarkCase("GIF ALPHA", Fixtures.GIF_DIR.resolve("2.gif")),
             new BenchmarkCase("GIF LARGE", Fixtures.GIF_DIR.resolve("3.gif")),

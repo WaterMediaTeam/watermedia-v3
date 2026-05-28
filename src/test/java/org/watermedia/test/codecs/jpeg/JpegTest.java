@@ -54,7 +54,8 @@ public class JpegTest {
                 new Fixture(2, "jpeg420exif", PixelFormat.YUV420P, 3),
                 new Fixture(3, "jpeg422jfif", PixelFormat.YUV422P, 3),
                 new Fixture(4, "jpeg444", PixelFormat.YUV444P, 3),
-                new Fixture(5, "jpeg444_all_appx_markers", PixelFormat.YUV444P, 3)
+                new Fixture(5, "jpeg444_all_appx_markers", PixelFormat.YUV444P, 3),
+                new Fixture(6, "jpeg420prog_unpadded", PixelFormat.YUV420P, 3)
         )) {
             // BGRA STREAM SHAPE CHECK
             tests.add(dynamicTest("JPEG decode [" + fixture.id + " " + fixture.encoding + "]", () -> {
