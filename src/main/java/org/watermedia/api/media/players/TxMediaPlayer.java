@@ -9,6 +9,7 @@ import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
@@ -198,6 +199,12 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.height = reader.height();
             if (this.width <= 0 || this.height <= 0) {
                 throw new IOException("Invalid image dimensions: " + this.width + "x" + this.height);
+            }
+            if (this.quality == MediaQuality.UNKNOWN) {
+                final var realQuality = MediaQuality.of(this.width, this.height);
+                this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
+                LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(this.quality), this.quality, realQuality);
+                this.quality = realQuality;
             }
             this.animated = reader.frameCount() != 1;
             this.knownDuration = Math.max(0L, reader.duration());
