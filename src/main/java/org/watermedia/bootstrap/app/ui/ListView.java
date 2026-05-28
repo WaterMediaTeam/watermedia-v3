@@ -107,8 +107,9 @@ public class ListView<T> extends Element {
                     AppTheme.NEON.getRed() / 255f, AppTheme.NEON.getGreen() / 255f, AppTheme.NEON.getBlue() / 255f, 0.12f);
             RenderSystem.rect(row.x(), row.y(), row.width(), row.height(), AppTheme.NEON, 1f);
         }
-        renderer.render(renderer.truncateToWidth(this.labelProvider.apply(item), row.width() - 16),
-                row.x() + 8, row.y() + 6, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT);
+        renderer.render(renderer.truncateToWidth(this.labelProvider.apply(item), row.width() - 16, AppTheme.TEXT_BODY),
+                row.x() + 8, row.y() + Math.max(0, (row.height() - renderer.glyphHeight(AppTheme.TEXT_BODY)) / 2),
+                selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
     }
 
     @Override

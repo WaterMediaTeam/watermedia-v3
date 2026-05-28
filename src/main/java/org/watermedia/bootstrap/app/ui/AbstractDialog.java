@@ -45,7 +45,7 @@ public abstract class AbstractDialog extends Element {
                 this.accent.getRed() / 255f, this.accent.getGreen() / 255f, this.accent.getBlue() / 255f, 0.12f,
                 0f, 0f, 0f, 0f);
 
-        renderer.render(this.title, this.bounds.x() + 14, this.bounds.y() + 10, this.accent, 0.72f);
+        renderer.renderBold(this.title, this.bounds.x() + 14, this.bounds.y() + 10, this.accent, AppTheme.TEXT_BUTTON);
         final Dimension body = new Dimension(this.bounds.x() + this.padding.left(),
                 this.bounds.y() + 42 + this.padding.top(),
                 this.bounds.width() - this.padding.horizontal(),

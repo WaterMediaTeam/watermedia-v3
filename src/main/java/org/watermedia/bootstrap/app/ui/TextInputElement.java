@@ -50,19 +50,20 @@ public class TextInputElement extends Element {
         RenderSystem.rect(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height(), this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
 
         final int textX = this.bounds.x() + 9;
-        final int textY = this.bounds.y() + Math.max(0, (this.bounds.height() - renderer.glyphHeight()) / 2);
-        final String visibleValue = renderer.truncateToWidth(this.value, this.bounds.width() - 18);
+        final float scale = AppTheme.TEXT_BUTTON;
+        final int textY = this.bounds.y() + Math.max(0, (this.bounds.height() - renderer.glyphHeight(scale)) / 2);
+        final String visibleValue = renderer.truncateToWidth(this.value, this.bounds.width() - 18, scale);
         final String visibleText = this.value.isEmpty()
-                ? renderer.truncateToWidth(this.placeholder, this.bounds.width() - 24)
+                ? renderer.truncateToWidth(this.placeholder, this.bounds.width() - 24, scale)
                 : visibleValue;
         renderer.render(visibleText,
                 textX, textY,
-                this.value.isEmpty() ? AppTheme.TEXT_FAINT : AppTheme.TEXT);
+                this.value.isEmpty() ? AppTheme.TEXT_FAINT : AppTheme.TEXT, scale);
         if (this.focused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-            final int caretTextW = this.value.isEmpty() ? 0 : renderer.width(visibleValue);
+            final int caretTextW = this.value.isEmpty() ? 0 : renderer.width(visibleValue, scale);
             final int caretX = Math.min(this.bounds.right() - 9, textX + caretTextW + (this.value.isEmpty() ? -5 : 1));
-            final int caretY = this.bounds.y() + Math.max(0, (this.bounds.height() - renderer.glyphHeight()) / 2);
-            RenderSystem.fill(caretX, caretY, 2, renderer.glyphHeight(), AppTheme.NEON_LIGHT);
+            final int caretY = this.bounds.y() + Math.max(0, (this.bounds.height() - renderer.glyphHeight(scale)) / 2);
+            RenderSystem.fill(caretX, caretY, 2, renderer.glyphHeight(scale), AppTheme.NEON_LIGHT);
         }
         RenderSystem.restoreProjection();
     }

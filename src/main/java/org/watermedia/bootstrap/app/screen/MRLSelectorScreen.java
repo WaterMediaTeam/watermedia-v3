@@ -316,10 +316,10 @@ public class MRLSelectorScreen extends Screen {
         final String mrlName = this.pendingUri != null ? this.pendingUri.name() : "";
 
         final int padding = 20;
-        final int lineH = this.text.lineHeight();
+        final int lineH = this.text.lineHeight(AppTheme.TEXT_BODY);
 
-        final int contentW = Math.max(this.text.width(loadingText),
-                Math.max(this.text.width(mrlName), this.text.width("ESC to cancel")));
+        final int contentW = Math.max(this.text.widthBold(loadingText, AppTheme.TEXT_BUTTON),
+                Math.max(this.text.width(mrlName, AppTheme.TEXT_BODY), this.text.width("ESC to cancel", AppTheme.TEXT_BODY)));
         final int dialogW = Math.min(Math.max(contentW + padding * 2 + 40, 400), windowW - 100);
         final int dialogH = padding + lineH + 15 + lineH + 10 + lineH + padding;
 
@@ -329,13 +329,13 @@ public class MRLSelectorScreen extends Screen {
         RenderSystem.dialogBox(dialogX, dialogY, dialogW, dialogH, Colors.BLUE, 3);
 
         int y = dialogY + padding;
-        this.text.render(loadingText, dialogX + padding, y, Colors.BLUE);
+        this.text.renderBold(loadingText, dialogX + padding, y, Colors.BLUE, AppTheme.TEXT_BUTTON);
         y += lineH + 15;
 
-        this.text.render(mrlName, dialogX + padding, y, Colors.GRAY);
+        this.text.render(mrlName, dialogX + padding, y, Colors.GRAY, AppTheme.TEXT_BODY);
         y += lineH + 10;
 
-        this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY);
+        this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY, AppTheme.TEXT_BODY);
 
         RenderSystem.restoreProjection();
     }
@@ -416,7 +416,7 @@ public class MRLSelectorScreen extends Screen {
         RenderSystem.rect(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(),
                 this.searchFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
         if (this.searchFocused) RenderSystem.glowRect(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(), 0f, AppTheme.NEON, 0.24f);
-        final float searchScale = 0.58f;
+        final float searchScale = AppTheme.TEXT_BODY;
         final int searchTextX = this.searchBounds.x() + 30;
         final int searchTextY = this.searchBounds.y() + Math.max(0, (this.searchBounds.height() - this.text.glyphHeight(searchScale)) / 2);
         PixelIcon.draw("search", this.searchBounds.x() + 8, this.searchBounds.y() + (this.searchBounds.height() - 14) / 2, 14, AppTheme.TEXT_FAINT);
@@ -459,25 +459,25 @@ public class MRLSelectorScreen extends Screen {
         AppChrome.amberTriangle(previewX - 1, panelY - 1, 10, true);
         AppChrome.amberTriangle(previewX + previewW - 9, panelY + panelH - 9, 10, false);
         final MRL mrl = this.ctx.groupMRLs.get(selected.name());
-        final String title = this.text.truncateToWidth(selected.name().toUpperCase(), previewW - 410, 0.76f);
-        this.text.render(title, previewX + 16, panelY + 14, AppTheme.NEON_LIGHT, 0.76f);
+        final String title = this.text.truncateToWidth(selected.name().toUpperCase(), previewW - 410, AppTheme.TEXT_SECTION, java.awt.Font.BOLD);
+        this.text.renderBold(title, previewX + 16, panelY + 14, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION);
         final MediaType type = this.firstMediaType(mrl);
         if (type != null) {
-            AppChrome.mediaTypeTag(this.text, previewX + 28 + this.text.width(title, 0.76f), panelY + 12, type);
+            AppChrome.mediaTypeTag(this.text, previewX + 28 + this.text.widthBold(title, AppTheme.TEXT_SECTION), panelY + 12, type);
         }
-        this.text.render(this.text.truncateToWidth(selected.uri(), previewW - 270, 0.58f),
-                previewX + 16, panelY + 42, AppTheme.TEXT_SOFT, 0.58f);
+        this.text.render(this.text.truncateToWidth(selected.uri(), previewW - 270, AppTheme.TEXT_BODY),
+                previewX + 16, panelY + 42, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         final String status = mrl == null ? "NULL" : mrl.hasError() ? "ERROR" : mrl.ready() ? "READY" : "LOADING";
         final java.awt.Color statusColor = mrl == null ? AppTheme.TEXT_FAINT : mrl.hasError() ? AppTheme.RED : mrl.ready() ? AppTheme.GREEN : AppTheme.NEON;
         final String quality = this.bestQuality(mrl);
         final int statusPipY = panelY + 72;
         AppChrome.statusPip(previewX + 18, statusPipY, 10, statusColor, true);
         this.text.render(quality + " - " + status, previewX + 36,
-                statusPipY + (10 - this.text.glyphHeight(0.58f)) / 2f, statusColor, 0.58f);
+                statusPipY + (10 - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, statusColor, AppTheme.TEXT_BODY);
         final boolean hasError = mrl != null && mrl.hasError();
         final String playLabel = hasError ? "RELOAD" : "PLAY";
         final String playIcon = hasError ? "reload" : "play";
-        final int playW = Math.max(130, this.panelButtonWidth(playLabel, "ENTER", 0.74f));
+        final int playW = Math.max(130, this.panelButtonWidth(playLabel, "ENTER", AppTheme.TEXT_BUTTON));
         this.playBounds = new Dimension(previewX + previewW - playW - 18, panelY + 34, playW, 38);
         this.copyBounds = new Dimension(this.playBounds.x() - 166, panelY + 34, 154, 38);
         this.renderPanelButton("copy", "COPY LINK", null, this.copyBounds, AppTheme.NEON_LIGHT, mrl != null);
@@ -537,10 +537,10 @@ public class MRLSelectorScreen extends Screen {
         final int textX = row.x() + 88;
         final int statusX = row.right() - 19;
         final int maxTextW = Math.max(40, statusX - textX - 14);
-        this.text.render(this.text.truncateToWidth(uri.name().toUpperCase(), maxTextW, 0.66f),
-                textX, row.y() + 12, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, 0.66f);
-        this.text.render(this.text.truncateToWidth(uri.uri(), maxTextW, 0.48f),
-                textX, row.y() + 34, AppTheme.TEXT_FAINT, 0.48f);
+        this.text.renderBold(this.text.truncateToWidth(uri.name().toUpperCase(), maxTextW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
+                textX, row.y() + 12, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, AppTheme.TEXT_BUTTON);
+        this.text.render(this.text.truncateToWidth(uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
+                textX, row.y() + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         AppChrome.statusPip(statusX, row.y() + 25, 8, stateColor, false);
     }
 
@@ -578,7 +578,7 @@ public class MRLSelectorScreen extends Screen {
             if (mini && (mrl == null || !mrl.hasError())) {
                 if (mrl != null && mrl.ready()) {
                     final String ok = "[OK]";
-                    final float okScale = 0.44f;
+                    final float okScale = AppTheme.TEXT_TINY;
                     this.text.render(ok, x + (w - this.text.width(ok, okScale)) / 2,
                             y + (h - this.text.glyphHeight(okScale)) / 2f,
                             AppTheme.GREEN, okScale);
@@ -591,7 +591,7 @@ public class MRLSelectorScreen extends Screen {
             if (!mini && mrl != null && mrl.hasError()) {
                 PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, AppTheme.RED);
             }
-            final float scale = mini ? 0.44f : 0.72f;
+            final float scale = mini ? AppTheme.TEXT_TINY : AppTheme.TEXT_BUTTON;
             final float textY = mini
                     ? y + (h - this.text.glyphHeight(scale)) / 2f
                     : y + h / 2f - this.text.lineHeight(scale) / 2f + 22;
@@ -609,30 +609,30 @@ public class MRLSelectorScreen extends Screen {
                 hover ? AppTheme.alpha(AppTheme.NEON_DARK, 84) : AppTheme.alpha(AppTheme.BG_2, 220));
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), actual, 2f);
         if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, actual, 0.18f);
-        final float scale = 0.74f;
+        final float scale = AppTheme.TEXT_BUTTON;
         final int iconSize = 15;
         PixelIcon.draw(icon, bounds.x() + 11, bounds.y() + (bounds.height() - iconSize) / 2, iconSize, actual);
-        final int keyReserve = hotkey == null ? 0 : this.text.width(hotkey, 0.46f) + 28;
+        final int keyReserve = hotkey == null ? 0 : this.text.width(hotkey, AppTheme.TEXT_SUBTITLE) + 28;
         final int labelMaxW = Math.max(24, bounds.width() - 42 - keyReserve);
         this.text.renderBold(this.text.truncateToWidth(label, labelMaxW, scale, java.awt.Font.BOLD), bounds.x() + 34,
                 bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(scale)) / 2f),
                 actual, scale);
         if (hotkey != null) {
-            final int keyW = this.text.width(hotkey, 0.46f) + 12;
+            final int keyW = this.text.width(hotkey, AppTheme.TEXT_SUBTITLE) + 12;
             final int keyH = 20;
             final int keyX = bounds.right() - keyW - 8;
             final int keyY = bounds.y() + (bounds.height() - keyH) / 2;
             RenderSystem.rect(keyX, keyY, keyW, keyH, AppTheme.STROKE, 1f);
             this.text.render(hotkey, keyX + 6,
-                    keyY + Math.max(0, (keyH - this.text.glyphHeight(0.46f)) / 2f),
-                    AppTheme.TEXT_FAINT, 0.46f);
+                    keyY + Math.max(0, (keyH - this.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f),
+                    AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
     }
 
     private int panelButtonWidth(final String label, final String hotkey, final float scale) {
         final int iconAndLeft = 42;
         final int rightPad = 8;
-        final int keyW = hotkey == null ? 0 : this.text.width(hotkey, 0.46f) + 20;
+        final int keyW = hotkey == null ? 0 : this.text.width(hotkey, AppTheme.TEXT_SUBTITLE) + 20;
         final int keyGap = hotkey == null ? 0 : 10;
         return iconAndLeft + this.text.widthBold(label, scale) + keyGap + keyW + rightPad;
     }

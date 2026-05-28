@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -122,7 +123,7 @@ public class HomeScreen extends Screen {
 
     @Override
     public void render(final int windowW, final int windowH) {
-        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Main menu", "multimedia api", "v" + org.watermedia.WaterMedia.VERSION);
+        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Multimedia API", "main menu", "v" + org.watermedia.WaterMedia.VERSION);
 
         this.hits.clear();
         final int x = 22;
@@ -198,11 +199,11 @@ public class HomeScreen extends Screen {
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), borderColor, 2f);
         RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, enabled ? selected ? accent : AppTheme.NEON : AppTheme.STROKE_BRIGHT, enabled ? selected ? 0.28f : 0.08f : 0.03f);
         PixelIcon.draw(this.actionIcon(entry.action()), b.x() + 14, b.y() + 17, 18, accent);
-        this.text.renderBold(entry.label().toUpperCase(), b.x() + 48, this.centerBoldTextY(b.y(), b.height(), 0.72f), textColor, 0.72f);
-        final int hintW = this.text.width(entry.meta(), 0.56f) + 14;
+        this.text.renderBold(entry.label().toUpperCase(), b.x() + 48, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), textColor, AppTheme.TEXT_BUTTON);
+        final int hintW = this.text.width(entry.meta(), AppTheme.TEXT_BODY) + 14;
         RenderSystem.fill(b.right() - hintW - 12, b.y() + 17, hintW, 22, AppTheme.alpha(AppTheme.BG_1, 180));
         RenderSystem.rect(b.right() - hintW - 12, b.y() + 17, hintW, 22, AppTheme.STROKE, 1f);
-        this.text.render(entry.meta(), b.right() - hintW - 5, this.centerTextY(b.y() + 17, 22, 0.56f), AppTheme.TEXT_FAINT, 0.56f);
+        this.text.render(entry.meta(), b.right() - hintW - 5, this.centerTextY(b.y() + 17, 22, AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
         if (entry.action() == Action.UPLOAD_LOGS && selected && !this.ctx.uploadDialogVisible) this.uploadTooltipAnchor = b;
     }
 
@@ -222,9 +223,9 @@ public class HomeScreen extends Screen {
                 selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), accent, 2f);
         PixelIcon.draw("folder", b.x() + 14, b.y() + 15, 18, folderColor);
-        this.text.renderBold(this.text.truncateToWidth(entry.label().toUpperCase(), (int) ((b.width() - 62) / 0.66f)),
-                b.x() + 42, this.centerBoldTextY(b.y() + 15, 18, 0.66f), titleColor, 0.66f);
-        this.text.render(entry.meta() + " - click to load", b.x() + 14, b.y() + 50, AppTheme.TEXT_FAINT, 0.52f);
+        this.text.renderBold(this.text.truncateToWidth(entry.label().toUpperCase(), b.width() - 62, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
+                b.x() + 42, this.centerBoldTextY(b.y() + 15, 18, AppTheme.TEXT_BUTTON), titleColor, AppTheme.TEXT_BUTTON);
+        this.text.render((entry.meta() + " - click to load").toUpperCase(Locale.ROOT), b.x() + 14, b.y() + 50, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
     }
 
     private String actionIcon(final Action action) {
@@ -246,8 +247,8 @@ public class HomeScreen extends Screen {
     private void renderUploadLogsTooltip(final Dimension anchor) {
         final int x = anchor.x();
         final int y = anchor.bottom() + 8;
-        final float titleScale = 0.58f;
-        final float bodyScale = 0.52f;
+        final float titleScale = AppTheme.TEXT_BUTTON;
+        final float bodyScale = AppTheme.TEXT_BODY;
         final boolean blocked = !AppContext.IN_MODS;
         final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
         final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
@@ -262,7 +263,7 @@ public class HomeScreen extends Screen {
         RenderSystem.glowRect(x, y, w, h, 0f, color, 0.24f);
         RenderSystem.fillTriangle(x + 16, y, x + 30, y, x + 23, y - 10,
                 color.getRed() / 255f, color.getGreen() / 255f, color.getBlue() / 255f, 1f);
-        this.text.render(title, x + 12, y + 12, color, titleScale);
+        this.text.renderBold(title, x + 12, y + 12, color, titleScale);
         this.text.render(line1, x + 12, y + 36, AppTheme.TEXT_SOFT, bodyScale);
         this.text.render(line2, x + 12, y + 56, AppTheme.TEXT_SOFT, bodyScale);
     }
@@ -286,8 +287,8 @@ public class HomeScreen extends Screen {
 
         this.uploadDialogXBounds = new Dimension(x + dialogW - 52, y + 18, 32, 32);
         final boolean closeHover = this.uploadDialogXBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.text.render(this.ctx.uploadDialogDone ? "SUCCESS" : "UPLOAD LOG FILES",
-                x + 22, y + 24, this.ctx.uploadDialogDone ? AppTheme.GREEN : AppTheme.CYAN, 0.62f);
+        this.text.renderBold(this.ctx.uploadDialogDone ? "SUCCESS" : "UPLOAD LOG FILES",
+                x + 22, y + 24, this.ctx.uploadDialogDone ? AppTheme.GREEN : AppTheme.CYAN, AppTheme.TEXT_BUTTON);
         AppChrome.dialogCloseButton(this.uploadDialogXBounds, closeHover);
 
         this.renderUploadStepper(x + 46, y + 86);
@@ -329,10 +330,10 @@ public class HomeScreen extends Screen {
         if (complete) {
             PixelIcon.draw("check", x + 8, y + 8, 14, color);
         } else {
-            this.text.render(String.valueOf(step), x + 11, y + 7, color, 0.54f);
+            this.text.render(String.valueOf(step), x + 11, y + 7, color, AppTheme.TEXT_BODY);
         }
-        this.text.render(label, x + 42, y + 8, color, 0.54f);
-        return x + 42 + this.text.width(label, 0.54f);
+        this.text.render(label, x + 42, y + 8, color, AppTheme.TEXT_BODY);
+        return x + 42 + this.text.width(label, AppTheme.TEXT_BODY);
     }
 
     private void renderUploadFilesPanel(final int x, final int y, final int w, final int h) {
@@ -360,11 +361,11 @@ public class HomeScreen extends Screen {
         final boolean errored = "FAILED".equals(entry.state) || "READ ERROR".equals(entry.state);
         final boolean detailed = (this.ctx.uploadDialogStage >= 3 && entry.uploaded && !entry.url.isBlank())
                 || (this.ctx.uploadDialogStage == 2 && entry.present && entry.valid && !errored);
-        final int nameY = detailed ? this.centerTextY(y, 28, 0.58f) : this.centerTextY(y, h, 0.58f);
+        final int nameY = detailed ? this.centerTextY(y, 28, AppTheme.TEXT_BODY) : this.centerTextY(y, h, AppTheme.TEXT_BODY);
         AppChrome.statusPip(x + 4, y + Math.max(0, (h - 10) / 2), 10, stateColor, true);
-        this.text.render(entry.name, x + 28, nameY, entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT, 0.58f);
+        this.text.render(entry.name, x + 28, nameY, entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         if (this.ctx.uploadDialogStage >= 3 && entry.uploaded && !entry.url.isBlank()) {
-            this.text.render(entry.url, x + 28, y + 28, AppTheme.CYAN, 0.52f);
+            this.text.render(entry.url, x + 28, y + 28, AppTheme.CYAN, AppTheme.TEXT_SUBTITLE);
         } else if (this.ctx.uploadDialogStage == 2 && entry.present) {
             final int barX = x + 28;
             final int barY = y + 31;
@@ -377,18 +378,18 @@ public class HomeScreen extends Screen {
 
         final int tagH = 26;
         final int tagY = y + Math.max(0, (h - tagH) / 2);
-        final int sizeY = detailed ? nameY : this.centerTextY(tagY, tagH, 0.52f);
-        this.text.render(entry.sizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, 0.52f);
+        final int sizeY = detailed ? nameY : this.centerTextY(tagY, tagH, AppTheme.TEXT_SUBTITLE);
+        this.text.render(entry.sizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         final String tag = this.ctx.uploadDialogStage == 2 && errored
                 ? "ERROR"
                 : this.ctx.uploadDialogStage == 2 && entry.present && entry.valid && !entry.uploaded
                 ? Math.max(0, Math.min(100, entry.progress)) + "%"
                 : entry.state;
-        final int tagW = Math.max(84, this.text.width(tag, 0.50f) + 22);
+        final int tagW = Math.max(84, this.text.width(tag, AppTheme.TEXT_SUBTITLE) + 22);
         final int tagX = x + w - tagW;
         RenderSystem.fill(tagX, tagY, tagW, tagH, AppTheme.alpha(AppTheme.BG_1, 210));
         RenderSystem.rect(tagX, tagY, tagW, tagH, stateColor, 1.5f);
-        this.text.render(tag, tagX + 11, this.centerTextY(tagY, tagH, 0.50f), stateColor, 0.50f);
+        this.text.render(tag, tagX + 11, this.centerTextY(tagY, tagH, AppTheme.TEXT_SUBTITLE), stateColor, AppTheme.TEXT_SUBTITLE);
         if (separator) {
             for (int dx = x + 28; dx < x + w; dx += 8) {
                 RenderSystem.fill(dx, y + h - 1, 4, 1, AppTheme.alpha(AppTheme.STROKE_BRIGHT, 90));
@@ -432,12 +433,12 @@ public class HomeScreen extends Screen {
         RenderSystem.rect(x, y, w, h, AppTheme.GREEN, 1.5f);
         PixelIcon.draw("check", x + 22, y + 24, 14, this.ctx.uploadIssueCopied ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
         this.text.render("Issue template copied to clipboard", x + 52, y + 20,
-                this.ctx.uploadIssueCopied ? AppTheme.GREEN : AppTheme.TEXT_SOFT, 0.56f);
+                this.ctx.uploadIssueCopied ? AppTheme.GREEN : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         PixelIcon.draw("link", x + 22, y + 54, 14, AppTheme.CYAN);
-        this.text.render(this.text.truncateToWidth(this.ctx.uploadIssueUrl, (int) ((w - 74) / 0.56f)),
-                x + 52, y + 50, AppTheme.CYAN, 0.56f);
+        this.text.render(this.text.truncateToWidth(this.ctx.uploadIssueUrl, w - 74, AppTheme.TEXT_BODY),
+                x + 52, y + 50, AppTheme.CYAN, AppTheme.TEXT_BODY);
         this.text.render("Paste the template in the new issue body to share log links.",
-                x + 22, y + 88, AppTheme.TEXT_SOFT, 0.52f);
+                x + 22, y + 88, AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
     }
 
     private void renderUploadDialogButtons(final int x, final int y, final int dialogW, final int dialogH) {
@@ -447,7 +448,7 @@ public class HomeScreen extends Screen {
                 AppTheme.TEXT, AppTheme.STROKE_BRIGHT, cancelHover);
 
         final String label = this.uploadPrimaryLabel();
-        final int primaryW = Math.max(246, this.text.width(label, 0.56f) + this.text.width("ENTER", 0.42f) + 112);
+        final int primaryW = Math.max(246, this.text.widthBold(label, AppTheme.TEXT_BUTTON) + this.text.width("ENTER", AppTheme.TEXT_SUBTITLE) + 112);
         this.uploadDialogPrimaryBounds = new Dimension(x + dialogW - primaryW - 22, y + dialogH - 68, primaryW, 48);
         final boolean primaryEnabled = this.uploadPrimaryEnabled();
         final boolean primaryHover = primaryEnabled && this.uploadDialogPrimaryBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
@@ -473,14 +474,14 @@ public class HomeScreen extends Screen {
             PixelIcon.draw(icon, b.x() + 20, b.y() + 17, 14, textColor);
             textX = b.x() + 52;
         }
-        final int keyW = Math.max(46, this.text.width(key, 0.42f) + 16);
+        final int keyW = Math.max(46, this.text.width(key, AppTheme.TEXT_SUBTITLE) + 16);
         final int keyX = b.right() - keyW - 18;
         final int maxLabelW = Math.max(40, keyX - textX - 18);
-        this.text.render(this.text.truncateToWidth(label, (int) (maxLabelW / 0.56f)),
-                textX, this.centerTextY(b.y(), b.height(), 0.56f), textColor, 0.56f);
+        this.text.renderBold(this.text.truncateToWidth(label, maxLabelW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
+                textX, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), textColor, AppTheme.TEXT_BUTTON);
         RenderSystem.fill(keyX, b.y() + 14, keyW, 22, AppTheme.alpha(AppTheme.BG_1, 180));
         RenderSystem.rect(keyX, b.y() + 14, keyW, 22, AppTheme.STROKE, 1f);
-        this.text.render(key, keyX + 8, this.centerTextY(b.y() + 14, 22, 0.42f), enabled ? AppTheme.TEXT_FAINT : AppTheme.alpha(AppTheme.TEXT_FAINT, 110), 0.42f);
+        this.text.render(key, keyX + 8, this.centerTextY(b.y() + 14, 22, AppTheme.TEXT_SUBTITLE), enabled ? AppTheme.TEXT_FAINT : AppTheme.alpha(AppTheme.TEXT_FAINT, 110), AppTheme.TEXT_SUBTITLE);
     }
 
     private String uploadPrimaryLabel() {
@@ -521,8 +522,8 @@ public class HomeScreen extends Screen {
 
         this.cleanupDialogXBounds = new Dimension(x + dialogW - 52, y + 18, 32, 32);
         final boolean closeHover = this.cleanupDialogXBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.text.render(this.ctx.cleanupDialogDone ? "CACHE CLEANED" : "CLEAN CACHE",
-                x + 22, y + 24, accent, 0.62f);
+        this.text.renderBold(this.ctx.cleanupDialogDone ? "CACHE CLEANED" : "CLEAN CACHE",
+                x + 22, y + 24, accent, AppTheme.TEXT_BUTTON);
         AppChrome.dialogCloseButton(this.cleanupDialogXBounds, closeHover);
 
         this.renderCleanupStepper(x + 46, y + 86);
@@ -555,10 +556,10 @@ public class HomeScreen extends Screen {
         if (complete) {
             PixelIcon.draw("check", x + 8, y + 8, 14, color);
         } else {
-            this.text.render(String.valueOf(step), x + 11, y + 7, color, 0.54f);
+            this.text.render(String.valueOf(step), x + 11, y + 7, color, AppTheme.TEXT_BODY);
         }
-        this.text.render(label, x + 42, y + 8, color, 0.54f);
-        return x + 42 + this.text.width(label, 0.54f);
+        this.text.render(label, x + 42, y + 8, color, AppTheme.TEXT_BODY);
+        return x + 42 + this.text.width(label, AppTheme.TEXT_BODY);
     }
 
     private void renderCleanupPanel(final int x, final int y, final int w, final int h) {
@@ -572,10 +573,10 @@ public class HomeScreen extends Screen {
         final String name = this.ctx.cleanupFileCount == 1 ? "1 FILE" : this.ctx.cleanupFileCount + " FILES";
         final String tag = this.cleanupStateLabel();
         final boolean progress = this.ctx.cleanupDialogStage == 2 && this.ctx.cleanupDialogWorking;
-        final int nameY = progress ? this.centerTextY(y, 28, 0.58f) : this.centerTextY(y, h, 0.58f);
+        final int nameY = progress ? this.centerTextY(y, 28, AppTheme.TEXT_BODY) : this.centerTextY(y, h, AppTheme.TEXT_BODY);
 
         AppChrome.statusPip(x + 4, y + Math.max(0, (h - 10) / 2), 10, stateColor, true);
-        this.text.render(name, x + 28, nameY, this.ctx.cleanupFileCount > 0 ? AppTheme.TEXT : AppTheme.TEXT_SOFT, 0.58f);
+        this.text.render(name, x + 28, nameY, this.ctx.cleanupFileCount > 0 ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         if (progress) {
             final int barX = x + 28;
             final int barY = y + 31;
@@ -588,13 +589,13 @@ public class HomeScreen extends Screen {
 
         final int tagH = 26;
         final int tagY = y + Math.max(0, (h - tagH) / 2);
-        final int sizeY = progress ? nameY : this.centerTextY(tagY, tagH, 0.52f);
-        this.text.render(this.ctx.cleanupSizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, 0.52f);
-        final int tagW = Math.max(84, this.text.width(tag, 0.50f) + 22);
+        final int sizeY = progress ? nameY : this.centerTextY(tagY, tagH, AppTheme.TEXT_SUBTITLE);
+        this.text.render(this.ctx.cleanupSizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+        final int tagW = Math.max(84, this.text.width(tag, AppTheme.TEXT_SUBTITLE) + 22);
         final int tagX = x + w - tagW;
         RenderSystem.fill(tagX, tagY, tagW, tagH, AppTheme.alpha(AppTheme.BG_1, 210));
         RenderSystem.rect(tagX, tagY, tagW, tagH, stateColor, 1.5f);
-        this.text.render(tag, tagX + 11, this.centerTextY(tagY, tagH, 0.50f), stateColor, 0.50f);
+        this.text.render(tag, tagX + 11, this.centerTextY(tagY, tagH, AppTheme.TEXT_SUBTITLE), stateColor, AppTheme.TEXT_SUBTITLE);
     }
 
     private Color cleanupStateColor() {
@@ -619,7 +620,7 @@ public class HomeScreen extends Screen {
                 AppTheme.TEXT, AppTheme.STROKE_BRIGHT, cancelHover);
 
         final String label = this.cleanupPrimaryLabel();
-        final int primaryW = Math.max(220, this.text.width(label, 0.56f) + this.text.width("ENTER", 0.42f) + 112);
+        final int primaryW = Math.max(220, this.text.widthBold(label, AppTheme.TEXT_BUTTON) + this.text.width("ENTER", AppTheme.TEXT_SUBTITLE) + 112);
         this.cleanupDialogPrimaryBounds = new Dimension(x + dialogW - primaryW - 22, y + dialogH - 68, primaryW, 48);
         final boolean primaryEnabled = this.cleanupPrimaryEnabled();
         final boolean primaryHover = primaryEnabled && this.cleanupDialogPrimaryBounds.contains(this.ctx.mouseX, this.ctx.mouseY);

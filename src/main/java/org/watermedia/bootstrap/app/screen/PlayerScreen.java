@@ -35,10 +35,10 @@ public class PlayerScreen extends Screen {
 
     private enum DialogState {NONE, QUALITY}
 
-    private static final float META_SCALE = 0.78f;
-    private static final float META_HEAD_SCALE = 0.87f;
-    private static final float META_DESC_LABEL_SCALE = 0.69f;
-    private static final float META_DESC_SCALE = 0.75f;
+    private static final float META_SCALE = AppTheme.TEXT_SECTION;
+    private static final float META_HEAD_SCALE = AppTheme.TEXT_DISPLAY;
+    private static final float META_DESC_LABEL_SCALE = AppTheme.TEXT_BUTTON;
+    private static final float META_DESC_SCALE = AppTheme.TEXT_SECTION;
     private static final float[] SPEED_VALUES = {0.25f, 0.50f, 0.75f, 1.0f, 1.25f, 1.50f, 1.75f, 2.0f, 2.5f, 3.0f, 4.0f};
     private static final String[] SPEED_LABELS = {"0.25x", "0.50x", "0.75x", "1.0x", "1.25x", "1.50x", "1.75x", "2.0x", "2.5x", "3.0x", "4.0x"};
 
@@ -238,23 +238,23 @@ public class PlayerScreen extends Screen {
         this.topBackBounds = new Dimension(16, topY, 76, 34);
         this.topDebugBounds = Dimension.ZERO;
         this.renderHudButton("BACK", this.topBackBounds, AppTheme.TEXT_SOFT, "arrow-left");
-        final String titleText = this.text.truncateToWidth(title, Math.max(180, windowW - 520), 0.82f);
-        this.text.render(titleText, 108, topY - 3, AppTheme.TEXT, 0.82f);
-        int tagX = 108 + this.text.width(titleText, 0.82f) + 12;
+        final String titleText = this.text.truncateToWidth(title, Math.max(180, windowW - 520), AppTheme.TEXT_SECTION, java.awt.Font.BOLD);
+        this.text.renderBold(titleText, 108, topY - 3, AppTheme.TEXT, AppTheme.TEXT_SECTION);
+        int tagX = 108 + this.text.widthBold(titleText, AppTheme.TEXT_SECTION) + 12;
         final MediaType mediaType = this.currentMediaType();
         if (mediaType != null && tagX < windowW - 180) {
             tagX += AppChrome.mediaTypeTag(this.text, tagX, topY - 5, mediaType) + 8;
         }
         final String sourceLabel = (this.ctx.sourceSelectorIndex + 1) + "/" + sources;
-        final int sourceTagW = this.text.width(sourceLabel, 0.54f) + 46;
+        final int sourceTagW = this.text.width(sourceLabel, AppTheme.TEXT_BODY) + 46;
         if (tagX + sourceTagW < windowW - 20) {
             this.topSourcesBounds = new Dimension(tagX, topY - 6, sourceTagW, 24);
             this.renderHudLabel(sourceLabel, this.topSourcesBounds, AppTheme.NEON_LIGHT, "folder");
         } else {
             this.topSourcesBounds = Dimension.ZERO;
         }
-        this.text.render(this.text.truncateToWidth(author + " - " + host + " - " + posted, Math.max(180, windowW - 520), 0.56f),
-                108, topY + 24, AppTheme.TEXT_SOFT, 0.56f);
+        this.text.render(this.text.truncateToWidth(author + " - " + host + " - " + posted, Math.max(180, windowW - 520), AppTheme.TEXT_BODY),
+                108, topY + 24, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
 
         if (this.debugOpen) {
             int y = debugY + 14;
@@ -349,7 +349,7 @@ public class PlayerScreen extends Screen {
         final int lineH = this.text.lineHeight(META_DESC_SCALE) + 2;
         final int h = 22 + labelH + lines.size() * lineH + 14;
         RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_2, 188));
-        // DIBUJA EL BORDE PUNTEADO SIN CREAR GEOMETRIA EXTRA NI ESTADO TEMPORAL.
+        // DRAWS THE DOTTED BORDER WITHOUT EXTRA GEOMETRY STATE.
         for (int dx = x; dx < x + w; dx += 8) {
             RenderSystem.fill(dx, y, Math.min(4, x + w - dx), 1, AppTheme.STROKE_BRIGHT);
             RenderSystem.fill(dx, y + h - 1, Math.min(4, x + w - dx), 1, AppTheme.STROKE_BRIGHT);
@@ -432,7 +432,7 @@ public class PlayerScreen extends Screen {
         final float progress = duration > 0 ? Math.min(1f, Math.max(0f, (float) player.time() / duration)) : 0f;
         final String leftTime = this.ctx.formatTime(player.time());
         final String rightTime = duration > 0 ? this.ctx.formatTime(duration) : "--:--";
-        final float timeScale = 0.54f;
+        final float timeScale = AppTheme.TEXT_BODY;
         final int timeTextY = y + Math.max(0, (28 - this.text.glyphHeight(timeScale)) / 2);
         final int barX = 112;
         final int barY = y + 11;
@@ -515,8 +515,8 @@ public class PlayerScreen extends Screen {
                 RenderSystem.fill(row.x() + 7, row.y() + 9, 6, 6, AppTheme.AMBER);
             }
             this.text.render(SPEED_LABELS[i], row.x() + 18,
-                    row.y() + Math.max(0, (row.height() - this.text.glyphHeight(0.54f)) / 2f),
-                    color, 0.54f);
+                    row.y() + Math.max(0, (row.height() - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f),
+                    color, AppTheme.TEXT_BODY);
         }
     }
 
@@ -534,7 +534,7 @@ public class PlayerScreen extends Screen {
                 AppTheme.NEON_LIGHT.getRed() / 255f, AppTheme.NEON_LIGHT.getGreen() / 255f, AppTheme.NEON_LIGHT.getBlue() / 255f, 1f);
         RenderSystem.fill(trackX + trackW * (volume / 100f) - 2, trackY - 3, 4, 11, AppTheme.AMBER);
         this.text.render(volume + "%", trackX + trackW + 10,
-                y + Math.max(0, (h - this.text.glyphHeight(0.52f)) / 2f), AppTheme.TEXT_SOFT, 0.52f);
+                y + Math.max(0, (h - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f), AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         return x + w;
     }
 
@@ -545,14 +545,16 @@ public class PlayerScreen extends Screen {
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 2f);
         RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, 0.18f);
         PixelIcon.draw(icon, bounds.x() + 10, bounds.y() + 10, 13, color);
-        this.text.render(label, bounds.x() + 30, bounds.y() + 10, color, 0.54f);
+        this.text.renderBold(label, bounds.x() + 30,
+                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
+                color, AppTheme.TEXT_BUTTON);
     }
 
     private void renderHudLabel(final String label, final Dimension bounds, final java.awt.Color color, final String icon) {
         RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), AppTheme.alpha(AppTheme.BG_1, 188));
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 1f);
         final int iconSize = 12;
-        final float scale = 0.54f;
+        final float scale = AppTheme.TEXT_BODY;
         PixelIcon.draw(icon, bounds.x() + 9, bounds.y() + (bounds.height() - iconSize) / 2, iconSize, color);
         this.text.render(label, bounds.x() + 28,
                 bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeight(scale)) / 2) + 1,
@@ -567,7 +569,9 @@ public class PlayerScreen extends Screen {
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 2f);
         RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, 0.24f);
         PixelIcon.draw("debug", bounds.x() + 10, bounds.y() + 10, 13, color);
-        this.text.render("DEBUG", bounds.x() + 30, bounds.y() + 10, color, 0.54f);
+        this.text.renderBold("DEBUG", bounds.x() + 30,
+                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
+                color, AppTheme.TEXT_BUTTON);
         PixelIcon.draw(this.debugOpen ? "arrow-left" : "arrow-right", bounds.right() - 20, bounds.y() + 10, 12, AppTheme.AMBER);
     }
 
@@ -588,10 +592,10 @@ public class PlayerScreen extends Screen {
         if (!label.isEmpty()) {
             final boolean quality = "quality".equals(id);
             final String badge = quality ? this.playerResolution(this.ctx.player) : null;
-            final int badgeW = badge == null ? 0 : this.text.width(badge, 0.42f) + 14;
+            final int badgeW = badge == null ? 0 : this.text.width(badge, AppTheme.TEXT_SUBTITLE) + 14;
             final int maxLabelW = w - (textX - x) - 8 - (badgeW == 0 ? 0 : badgeW + 8);
-            this.text.render(this.text.truncateToWidth(label, maxLabelW, 0.54f),
-                    textX, y + Math.max(0, (h - this.text.glyphHeight(0.54f)) / 2f), color, 0.54f);
+            this.text.renderBold(this.text.truncateToWidth(label, maxLabelW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
+                    textX, y + Math.max(0, (h - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f), color, AppTheme.TEXT_BUTTON);
             if (badge != null) {
                 final int badgeH = 20;
                 final int badgeX = x + w - badgeW - 7;
@@ -599,8 +603,8 @@ public class PlayerScreen extends Screen {
                 RenderSystem.fill(badgeX, badgeY, badgeW, badgeH, AppTheme.alpha(AppTheme.BG_1, 190));
                 RenderSystem.rect(badgeX, badgeY, badgeW, badgeH, AppTheme.STROKE_BRIGHT, 1f);
                 this.text.render(badge, badgeX + 7,
-                        badgeY + Math.max(0, (badgeH - this.text.glyphHeight(0.42f)) / 2f),
-                        AppTheme.CYAN, 0.42f);
+                        badgeY + Math.max(0, (badgeH - this.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f),
+                        AppTheme.CYAN, AppTheme.TEXT_SUBTITLE);
             }
         }
         return bounds.right();
@@ -723,11 +727,11 @@ public class PlayerScreen extends Screen {
             if (selected) RenderSystem.glowRect(row.x(), row.y(), row.width(), row.height(), 0f, AppTheme.NEON, 0.20f);
             PixelIcon.draw(active ? "play" : "folder", row.x() + 12, row.y() + 15, 14, active ? AppTheme.GREEN : AppTheme.NEON_LIGHT);
             final int typeTagW = this.mediaTypeTagWidth(source.type());
-            final String sourceTitle = this.text.truncateToWidth(this.sourceTitle(source, sourceIndex).toUpperCase(), row.width() - typeTagW - 68, 0.60f);
-            this.text.render(sourceTitle, row.x() + 34, row.y() + 10, selected ? AppTheme.TEXT : AppTheme.TEXT_SOFT, 0.60f);
+            final String sourceTitle = this.text.truncateToWidth(this.sourceTitle(source, sourceIndex).toUpperCase(), row.width() - typeTagW - 68, AppTheme.TEXT_BODY, java.awt.Font.BOLD);
+            this.text.renderBold(sourceTitle, row.x() + 34, row.y() + 10, selected ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
             AppChrome.mediaTypeTag(this.text, row.right() - typeTagW - 12, row.y() + Math.max(0, (row.height() - 22) / 2), source.type());
             this.text.render("SOURCE " + (sourceIndex + 1) + "/" + sourceCount + " - " + source.availableQualities().size() + " QUALITIES",
-                    row.x() + 34, row.y() + 32, AppTheme.TEXT_FAINT, 0.48f);
+                    row.x() + 34, row.y() + 32, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
         if (sourceCount > this.sourceVisibleRows) {
             final int trackX = splitX - 16;
@@ -747,13 +751,13 @@ public class PlayerScreen extends Screen {
             RenderSystem.rect(row.x(), row.y(), row.width(), row.height(),
                     selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, 1f);
             final int qualityPipY = row.y() + Math.max(0, (row.height() - 8) / 2);
-            final int qualityTextY = row.y() + Math.max(0, (row.height() - this.text.glyphHeight(0.62f)) / 2);
-            final int thresholdY = row.y() + Math.max(0, (row.height() - this.text.glyphHeight(0.58f)) / 2);
+            final int qualityTextY = row.y() + Math.max(0, (row.height() - this.text.glyphHeightBold(AppTheme.TEXT_BODY)) / 2);
+            final int thresholdY = row.y() + Math.max(0, (row.height() - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2);
             RenderSystem.fill(row.x() + 8, qualityPipY, 8, 8, selected ? AppTheme.AMBER : AppTheme.TEXT_FAINT);
-            this.text.render(q.name().toUpperCase(), row.x() + 28, qualityTextY,
-                    selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, 0.62f);
+            this.text.renderBold(q.name().toUpperCase(), row.x() + 28, qualityTextY,
+                    selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
             this.text.render(q.threshold + "p", row.right() - 62, thresholdY,
-                    selected ? AppTheme.CYAN : AppTheme.TEXT_FAINT, 0.58f);
+                    selected ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
         }
 
         RenderSystem.restoreProjection();
@@ -769,7 +773,7 @@ public class PlayerScreen extends Screen {
 
     private int mediaTypeTagWidth(final MediaType type) {
         final String label = type == null ? "MEDIA" : type.name();
-        return this.text.width(label, 0.54f) + 22;
+        return this.text.width(label, AppTheme.TEXT_BODY) + 22;
     }
 
     private String sourceTitle(final MRL.Source source, final int sourceIndex) {

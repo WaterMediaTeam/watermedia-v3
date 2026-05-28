@@ -524,12 +524,12 @@ public class WaterMediaApp {
         RenderSystem.rect(x, y, dialogW, dialogH, AppTheme.RED, 1.5f);
         RenderSystem.fill(x, y, dialogW, titleH, AppTheme.alpha(AppTheme.BG_2, 244));
         RenderSystem.lineH(x, y + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
-        ctx.text.render("EXIT WATERMEDIA", x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeight(0.66f)) / 2f), AppTheme.RED, 0.66f);
+        ctx.text.renderBold("EXIT WATERMEDIA", x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f), AppTheme.RED, AppTheme.TEXT_BUTTON);
         exitConfirmCloseBounds = new Dimension(x + dialogW - 48, y + 14, 30, 30);
         AppChrome.dialogCloseButton(exitConfirmCloseBounds, exitConfirmCloseBounds.contains(ctx.mouseX, ctx.mouseY));
         PixelIcon.draw("warn", x + 28, y + 88, 26, AppTheme.RED);
-        ctx.text.render("CONFIRM EXIT", x + 68, y + 84, AppTheme.TEXT, 0.72f);
-        ctx.text.render("Press ENTER to close the app or ESC to return.", x + 68, y + 116, AppTheme.TEXT_SOFT, 0.56f);
+        ctx.text.renderBold("CONFIRM EXIT", x + 68, y + 84, AppTheme.TEXT, AppTheme.TEXT_BUTTON);
+        ctx.text.render("Press ENTER to close the app or ESC to return.", x + 68, y + 116, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         exitConfirmCancelBounds = new Dimension(x + 24, y + dialogH - 58, 150, 36);
         exitConfirmExitBounds = new Dimension(x + dialogW - 174, y + dialogH - 58, 150, 36);
         renderDialogAction(exitConfirmCancelBounds, "CANCEL", "ESC", "x", AppTheme.TEXT_SOFT);
@@ -554,11 +554,11 @@ public class WaterMediaApp {
         RenderSystem.rect(x, y, dialogW, dialogH, accent, 1.5f);
         RenderSystem.fill(x, y, dialogW, titleH, AppTheme.alpha(AppTheme.BG_2, 244));
         RenderSystem.lineH(x, y + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
-        ctx.text.render(title, x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeight(0.66f)) / 2f), accent, 0.66f);
+        ctx.text.renderBold(title, x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f), accent, AppTheme.TEXT_BUTTON);
         PixelIcon.draw("warn", x + 28, y + 84, 28, accent);
         int lineY = y + 86;
         for (final String line : lines) {
-            ctx.text.render(line, x + 72, lineY, AppTheme.TEXT_SOFT, 0.58f);
+            ctx.text.render(line, x + 72, lineY, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
             lineY += 26;
         }
         final Dimension ok = new Dimension(x + dialogW - 174, y + dialogH - 58, 150, 36);
@@ -574,10 +574,10 @@ public class WaterMediaApp {
                 hover ? AppTheme.alpha(accent, 52) : AppTheme.BG_2);
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), accent, 1.2f);
         PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, accent);
-        ctx.text.render(label, bounds.x() + 32,
-                bounds.y() + Math.max(0, (bounds.height() - ctx.text.glyphHeight(0.60f)) / 2f),
-                accent, 0.60f);
-        final float keyScale = 0.48f;
+        ctx.text.renderBold(label, bounds.x() + 32,
+                bounds.y() + Math.max(0, (bounds.height() - ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
+                accent, AppTheme.TEXT_BUTTON);
+        final float keyScale = AppTheme.TEXT_SUBTITLE;
         final int keyW = ctx.text.width(hotkey, keyScale) + 12;
         final int keyH = 20;
         final int keyX = bounds.right() - keyW - 8;

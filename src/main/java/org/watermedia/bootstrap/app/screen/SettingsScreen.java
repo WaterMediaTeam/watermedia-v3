@@ -34,10 +34,14 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class SettingsScreen extends Screen {
 
     private static final int SIDEBAR_W = 248;
-    private static final int ROW_H = 48;
+    private static final int ROW_H = 64;
     private static final int BUTTON_H = 34;
     private static final int CONTROL_W = 320;
     private static final int CONTROL_H = 26;
+    private static final int SPEC_H = 56;
+    private static final int SPEC_STEP = 64;
+    private static final int SECTION_H = 46;
+    private static final int SECTION_STEP = 54;
 
     private final Consumer<HomeScreen.Action> navigator;
     private final List<SettingSpec> specs = new ArrayList<>();
@@ -218,27 +222,27 @@ public final class SettingsScreen extends Screen {
 
     private void renderSidebar(final int x, final int y, final int w, final int h, final SettingSpec active) {
         AppChrome.panel(x, y, w, h, true);
-        this.text.renderBold("SPECS", x + 18, y + 18, AppTheme.NEON, 0.58f);
+        this.text.renderBold("SPECS", x + 18, y + 18, AppTheme.NEON, AppTheme.TEXT_BODY);
 
         int cursorY = y + 46;
         for (int i = 0; i < this.specs.size(); i++) {
             final SettingSpec spec = this.specs.get(i);
-            final Dimension bounds = new Dimension(x + 14, cursorY, w - 28, 42);
+            final Dimension bounds = new Dimension(x + 14, cursorY, w - 28, SPEC_H);
             this.renderSidebarButton(bounds, spec.title, spec.subtitle, i == this.activeSpecIndex, i == 0 ? AppTheme.CYAN : AppTheme.AMBER);
             this.hits.add(new Hit(bounds, HitType.SPEC, i));
-            cursorY += 48;
+            cursorY += SPEC_STEP;
         }
 
         cursorY += 8;
         RenderSystem.lineH(x + 14, cursorY, w - 28, AppTheme.STROKE_BRIGHT, 1f);
         cursorY += 18;
-        this.text.renderBold("SECTIONS", x + 18, cursorY, AppTheme.NEON, 0.58f);
+        this.text.renderBold("SECTIONS", x + 18, cursorY, AppTheme.NEON, AppTheme.TEXT_BODY);
         cursorY += 28;
 
         if (active == null) return;
         for (int i = 0; i < active.sections.size(); i++) {
             final SettingSection section = active.sections.get(i);
-            final Dimension bounds = new Dimension(x + 14, cursorY, w - 28, 38);
+            final Dimension bounds = new Dimension(x + 14, cursorY, w - 28, SECTION_H);
             final boolean selected = i == this.activeSectionIndex;
             final Color accent = selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
             if (selected) {
@@ -247,11 +251,11 @@ public final class SettingsScreen extends Screen {
             }
             RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), selected ? AppTheme.NEON : AppTheme.STROKE, 1f);
             this.renderSelectionCube(bounds.x() + 10, bounds.y() + 15, selected);
-            this.text.render(this.text.truncateToWidth(section.name.toUpperCase(Locale.ROOT), bounds.width() - 46),
-                    bounds.x() + 28, this.centerTextY(bounds.y(), bounds.height(), 0.54f), accent, 0.54f);
+            this.text.renderBold(this.text.truncateToWidth(section.name.toUpperCase(Locale.ROOT), bounds.width() - 46, AppTheme.TEXT_BODY, java.awt.Font.BOLD),
+                    bounds.x() + 28, this.centerBoldTextY(bounds.y(), bounds.height(), AppTheme.TEXT_BODY), accent, AppTheme.TEXT_BODY);
             this.hits.add(new Hit(bounds, HitType.SECTION, i));
-            cursorY += 44;
-            if (cursorY + 44 > y + h - 12) break;
+            cursorY += SECTION_STEP;
+            if (cursorY + SECTION_STEP > y + h - 12) break;
         }
     }
 
@@ -261,10 +265,10 @@ public final class SettingsScreen extends Screen {
         RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
                 selected ? AppTheme.alpha(AppTheme.BG_3, 230) : AppTheme.alpha(AppTheme.BG_2, 180));
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? accent : AppTheme.STROKE_BRIGHT, selected ? 1.5f : 1f);
-        this.renderSelectionCube(b.x() + 11, b.y() + 16, selected);
-        this.text.renderBold(title.toUpperCase(Locale.ROOT), b.x() + 30, b.y() + 8, selected ? accent : AppTheme.TEXT_SOFT, 0.56f);
-        this.text.render(this.text.truncateToWidth(subtitle.toUpperCase(Locale.ROOT), b.width() - 42),
-                b.x() + 30, b.y() + 25, AppTheme.TEXT_FAINT, 0.44f);
+        this.renderSelectionCube(b.x() + 11, b.y() + 20, selected);
+        this.text.renderBold(title.toUpperCase(Locale.ROOT), b.x() + 30, b.y() + 9, selected ? accent : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON);
+        this.text.render(this.text.truncateToWidth(subtitle.toUpperCase(Locale.ROOT), b.width() - 42, AppTheme.TEXT_SUBTITLE),
+                b.x() + 30, b.y() + 33, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
     }
 
     private void renderSelectionCube(final int x, final int y, final boolean selected) {
@@ -282,9 +286,9 @@ public final class SettingsScreen extends Screen {
 
         final int headerH = 74;
         final int titleX = x + 20;
-        this.text.renderBold(section.name.toUpperCase(Locale.ROOT), titleX, y + 18, AppTheme.NEON_LIGHT, 0.72f);
+        this.text.renderBold(section.name.toUpperCase(Locale.ROOT), titleX, y + 16, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION);
         this.text.render(this.text.truncateToWidth(section.detail, Math.max(80, w - 360)),
-                titleX, y + 44, AppTheme.TEXT_FAINT, 0.52f);
+                titleX, y + 44, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
 
         this.resetBounds = new Dimension(x + w - 210, y + 18, 86, BUTTON_H);
         this.saveBounds = new Dimension(x + w - 112, y + 18, 92, BUTTON_H);
@@ -321,12 +325,12 @@ public final class SettingsScreen extends Screen {
         RenderSystem.rect(x, y, w, h, AppTheme.STROKE, 1f);
         AppChrome.statusPip(x + 9, y + 8, 10, this.statusColor, true);
         this.text.render(this.text.truncateToWidth(this.statusText, Math.max(60, w / 2)),
-                x + 28, this.centerTextY(y, h, 0.50f), this.statusColor, 0.50f);
+                x + 28, this.centerTextY(y, h, AppTheme.TEXT_SUBTITLE), this.statusColor, AppTheme.TEXT_SUBTITLE);
         final String count = section.settings.size() + " FIELDS";
         final String file = spec.persistent && spec.configSpec != null ? spec.configSpec.path().getFileName().toString() : "RUNTIME";
         final String right = count + " / " + file;
-        this.text.render(right, x + w - this.text.width(right, 0.50f) - 10,
-                this.centerTextY(y, h, 0.50f), AppTheme.TEXT_FAINT, 0.50f);
+        this.text.render(right, x + w - this.text.width(right, AppTheme.TEXT_SUBTITLE) - 10,
+                this.centerTextY(y, h, AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
     }
 
     private void renderActionButton(final Dimension b, final String label, final Color accent, final boolean hover) {
@@ -335,7 +339,7 @@ public final class SettingsScreen extends Screen {
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), hover ? accent : AppTheme.STROKE_BRIGHT, 1f);
         final int iconSize = 13;
         PixelIcon.draw("check", b.x() + 10, b.y() + 10, iconSize, accent);
-        this.text.render(label, b.x() + 30, this.centerTextY(b.y(), b.height(), 0.52f), hover ? accent : AppTheme.TEXT_SOFT, 0.52f);
+        this.text.renderBold(label, b.x() + 30, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), hover ? accent : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON);
     }
 
     private void renderSettingRow(final Setting setting, final Dimension b, final boolean selected) {
@@ -352,12 +356,14 @@ public final class SettingsScreen extends Screen {
 
         final Dimension control = this.controlBounds(b, setting);
         final int labelMaxW = Math.max(80, control.x() - b.x() - 30);
-        this.text.renderBold(this.text.truncateToWidth(setting.label.toUpperCase(Locale.ROOT), labelMaxW),
-                b.x() + 18, this.centerTextY(b.y(), b.height(), 0.56f), selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, 0.56f);
+        final boolean detailed = selected && !setting.note.isBlank();
+        final int labelY = detailed ? b.y() + 10 : this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY);
+        this.text.renderBold(this.text.truncateToWidth(setting.label.toUpperCase(Locale.ROOT), labelMaxW, AppTheme.TEXT_BODY, java.awt.Font.BOLD),
+                b.x() + 18, labelY, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
 
-        if (selected && !setting.note.isBlank()) {
-            this.text.render(this.text.truncateToWidth(setting.note, labelMaxW),
-                    b.x() + 18, b.y() + Math.min(b.height() - 14, 31), AppTheme.TEXT_FAINT, 0.40f);
+        if (detailed) {
+            this.text.render(this.text.truncateToWidth(setting.note, labelMaxW, AppTheme.TEXT_SUBTITLE),
+                    b.x() + 18, b.y() + 35, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
 
         this.renderSettingControl(setting, control, selected);
@@ -389,12 +395,12 @@ public final class SettingsScreen extends Screen {
 
     private void renderReadOnlyControl(final Setting setting, final Dimension b) {
         final String value = setting.valueLabel();
-        final int w = Math.min(b.width(), Math.max(112, this.text.width(value, 0.52f) + 30));
+        final int w = Math.min(b.width(), Math.max(112, this.text.width(value, AppTheme.TEXT_BODY) + 30));
         final int x = b.right() - w;
         final Color color = statusColor(value);
         AppChrome.statusPip(x + 9, b.y() + 8, 10, color, true);
         this.text.render(this.text.truncateToWidth(value.toUpperCase(Locale.ROOT), w - 28),
-                x + 27, this.centerTextY(b.y(), b.height(), 0.52f), color, 0.52f);
+                x + 27, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY), color, AppTheme.TEXT_BODY);
     }
 
     private void renderSwitchControl(final Dimension b, final boolean on, final boolean selected) {
@@ -420,7 +426,7 @@ public final class SettingsScreen extends Screen {
         PixelIcon.draw("arrow-right", b.right() - 18, b.y() + 8, 10, AppTheme.TEXT_FAINT);
         final String value = setting.valueLabel().toUpperCase(Locale.ROOT);
         this.text.renderBold(this.text.truncateToWidth(value, b.width() - 68),
-                b.x() + 36, this.centerTextY(b.y(), b.height(), 0.52f), selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, 0.52f);
+                b.x() + 36, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY), selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
     }
 
     private void renderSpinnerControl(final Setting setting, final Dimension b, final boolean selected) {
@@ -429,27 +435,27 @@ public final class SettingsScreen extends Screen {
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT, 1f);
         RenderSystem.lineV(b.x() + stepW, b.y(), b.height(), AppTheme.STROKE, 1f);
         RenderSystem.lineV(b.right() - stepW, b.y(), b.height(), AppTheme.STROKE, 1f);
-        this.text.render("-", b.x() + 11, this.centerTextY(b.y(), b.height(), 0.56f), AppTheme.TEXT_FAINT, 0.56f);
-        this.text.render("+", b.right() - 19, this.centerTextY(b.y(), b.height(), 0.56f), AppTheme.TEXT_FAINT, 0.56f);
+        this.text.render("-", b.x() + 11, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+        this.text.render("+", b.right() - 19, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
         final String suffix = setting.suffix();
         final String value = setting.valueLabel();
-        final int suffixW = suffix.isBlank() ? 0 : this.text.width(suffix, 0.46f) + 16;
+        final int suffixW = suffix.isBlank() ? 0 : this.text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16;
         if (!suffix.isBlank()) {
             RenderSystem.fill(b.right() - stepW - suffixW, b.y(), suffixW, b.height(), AppTheme.alpha(AppTheme.BG_2, 210));
             RenderSystem.lineV(b.right() - stepW - suffixW, b.y(), b.height(), AppTheme.STROKE, 1f);
             this.text.render(suffix.toUpperCase(Locale.ROOT), b.right() - stepW - suffixW + 8,
-                    this.centerTextY(b.y(), b.height(), 0.46f), AppTheme.TEXT_FAINT, 0.46f);
+                    this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
         this.text.render(this.text.truncateToWidth(value, b.width() - stepW * 2 - suffixW - 20),
-                b.x() + stepW + 10, this.centerTextY(b.y(), b.height(), 0.52f),
-                selected ? AppTheme.AMBER : AppTheme.TEXT_SOFT, 0.52f);
+                b.x() + stepW + 10, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY),
+                selected ? AppTheme.AMBER : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
     }
 
     private void renderSeekbarControl(final Setting setting, final Dimension b, final boolean selected) {
         final String value = setting.valueLabel();
         final String suffix = setting.suffix();
         final String display = suffix.isBlank() ? value : value + " " + suffix;
-        final int valueW = Math.max(58, this.text.width(display, 0.50f) + 6);
+        final int valueW = Math.max(58, this.text.width(display, AppTheme.TEXT_SUBTITLE) + 6);
         final int trackX = b.x();
         final int trackW = Math.max(80, b.width() - valueW - 14);
         final int trackY = b.y() + 10;
@@ -462,15 +468,15 @@ public final class SettingsScreen extends Screen {
         RenderSystem.glowRect(trackX, trackY, trackW * pct, 6, 0f, AppTheme.NEON, selected ? 0.34f : 0.18f);
         final int knobX = trackX + Math.round(trackW * pct);
         RenderSystem.fill(knobX - 2, trackY - 4, 4, 14, AppTheme.AMBER);
-        this.text.render(display, b.right() - valueW, this.centerTextY(b.y(), b.height(), 0.50f),
-                selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, 0.50f);
+        this.text.render(display, b.right() - valueW, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE),
+                selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
     }
 
     private void renderTextFieldControl(final Setting setting, final Dimension b, final boolean selected) {
         final boolean active = this.editing && this.editingSetting == setting;
         final String value = active ? this.editBuffer : setting.valueLabel();
         final String suffix = setting.suffix();
-        final int suffixW = suffix.isBlank() ? 0 : Math.max(36, this.text.width(suffix, 0.46f) + 16);
+        final int suffixW = suffix.isBlank() ? 0 : Math.max(36, this.text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16);
         if (active || selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.NEON, active ? 0.28f : 0.14f);
         RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(AppTheme.BG_1, 220));
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), active ? AppTheme.NEON_LIGHT : selected ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
@@ -478,14 +484,14 @@ public final class SettingsScreen extends Screen {
             RenderSystem.fill(b.right() - suffixW, b.y(), suffixW, b.height(), AppTheme.alpha(AppTheme.BG_2, 210));
             RenderSystem.lineV(b.right() - suffixW, b.y(), b.height(), AppTheme.STROKE, 1f);
             this.text.render(suffix.toUpperCase(Locale.ROOT), b.right() - suffixW + 8,
-                    this.centerTextY(b.y(), b.height(), 0.46f), AppTheme.TEXT_FAINT, 0.46f);
+                    this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
         final int textMaxW = b.width() - suffixW - 22;
-        final String visible = this.text.truncateToWidth(value, textMaxW, 0.52f);
-        this.text.render(visible, b.x() + 10, this.centerTextY(b.y(), b.height(), 0.52f),
-                value.isBlank() ? AppTheme.TEXT_FAINT : AppTheme.TEXT_SOFT, 0.52f);
+        final String visible = this.text.truncateToWidth(value, textMaxW, AppTheme.TEXT_BODY);
+        this.text.render(visible, b.x() + 10, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY),
+                value.isBlank() ? AppTheme.TEXT_FAINT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         if (active && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-            final int cursorX = Math.min(b.right() - suffixW - 8, b.x() + 10 + this.text.width(visible, 0.52f) + 2);
+            final int cursorX = Math.min(b.right() - suffixW - 8, b.x() + 10 + this.text.width(visible, AppTheme.TEXT_BODY) + 2);
             RenderSystem.fill(cursorX, b.y() + 6, 2, b.height() - 12, AppTheme.NEON_LIGHT);
         }
     }
@@ -818,6 +824,10 @@ public final class SettingsScreen extends Screen {
 
     private int centerTextY(final int y, final int h, final float scale) {
         return y + Math.max(0, (h - this.text.glyphHeight(scale)) / 2);
+    }
+
+    private int centerBoldTextY(final int y, final int h, final float scale) {
+        return y + Math.max(0, (h - this.text.glyphHeightBold(scale)) / 2);
     }
 
     private static String safePath(final Supplier<Path> supplier) {

@@ -34,8 +34,8 @@ public class SimpleDialog extends AbstractDialog {
     protected void renderBody(final TextRenderer renderer, final Dimension body, final int windowW, final int windowH) {
         int y = body.y();
         for (final Line line: this.lines) {
-            renderer.render(line.text, body.x(), y, line.color);
-            y += renderer.lineHeight();
+            renderer.render(line.text, body.x(), y, line.color, AppTheme.TEXT_BODY);
+            y += renderer.lineHeight(AppTheme.TEXT_BODY);
         }
 
         int x = body.right();

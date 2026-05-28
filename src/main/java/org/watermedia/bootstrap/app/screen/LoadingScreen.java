@@ -28,8 +28,8 @@ public class LoadingScreen extends Screen {
     private static final int BAR_H = 8;
     private static final int STATUS_LINE_H = 28;
     private static final int PROGRESS_ANIM_MS = 520;
-    private static final float TITLE_SCALE = 0.84f;
-    private static final float STATUS_SCALE = 0.78f;
+    private static final float TITLE_SCALE = AppTheme.TEXT_DISPLAY;
+    private static final float STATUS_SCALE = AppTheme.TEXT_SECTION;
 
     private final List<StatusLine> completedApis = new ArrayList<>();
 

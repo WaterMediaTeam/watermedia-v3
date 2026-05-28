@@ -64,20 +64,20 @@ public class UiButton extends Element {
                 this.enabled ? 0.92f : 0.48f);
         RenderSystem.rect(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height(), border, 1f);
 
-        final int textY = this.bounds.y() + (this.bounds.height() - renderer.lineHeight()) / 2 + 4;
-        renderer.render(this.label, this.bounds.x() + 12, textY, textColor);
+        final int textY = this.bounds.y() + Math.max(0, (this.bounds.height() - renderer.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2);
+        renderer.renderBold(this.label, this.bounds.x() + 12, textY, textColor, AppTheme.TEXT_BUTTON);
         if (this.hint != null && !this.hint.isEmpty()) {
-            final int hintW = renderer.width(this.hint);
+            final int hintW = renderer.width(this.hint, AppTheme.TEXT_SUBTITLE);
             final int hintX = this.bounds.right() - hintW - 10;
-            renderer.render(this.hint, hintX, textY, AppTheme.TEXT_FAINT, 0.72f);
+            renderer.render(this.hint, hintX, this.bounds.y() + Math.max(0, (this.bounds.height() - renderer.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
         RenderSystem.restoreProjection();
     }
 
     @Override
     public Dimension calculateBounds(final TextRenderer text, final int startX, final int startY) {
-        final int labelW = text.width(this.label == null ? "" : this.label);
-        final int hintW = this.hint == null ? 0 : text.width(this.hint);
+        final int labelW = text.widthBold(this.label == null ? "" : this.label, AppTheme.TEXT_BUTTON);
+        final int hintW = this.hint == null ? 0 : text.width(this.hint, AppTheme.TEXT_SUBTITLE);
         final int width = Math.max(this.minWidth, labelW + hintW + 42);
         this.bounds = new Dimension(startX, startY, width, this.height);
         return this.bounds;

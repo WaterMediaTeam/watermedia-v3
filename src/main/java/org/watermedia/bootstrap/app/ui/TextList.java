@@ -43,12 +43,12 @@ public class TextList extends Element {
         BoxStyle.panel().render(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height());
         RenderSystem.clip(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height(), windowH);
 
-        final int lineH = renderer.lineHeight() - 4;
+        final int lineH = renderer.lineHeight(AppTheme.TEXT_BODY) - 2;
         final int visible = Math.max(1, (this.bounds.height() - 16) / lineH);
         for (int i = 0; i < visible && i + this.scroll < this.lines.size(); i++) {
             final Line line = this.lines.get(i + this.scroll);
-            renderer.render(renderer.truncateToWidth(line.text, this.bounds.width() - 20),
-                    this.bounds.x() + 10, this.bounds.y() + 8 + i * lineH, line.color);
+            renderer.render(renderer.truncateToWidth(line.text, this.bounds.width() - 20, AppTheme.TEXT_BODY),
+                    this.bounds.x() + 10, this.bounds.y() + 8 + i * lineH, line.color, AppTheme.TEXT_BODY);
         }
 
         RenderSystem.clearClip();

@@ -54,9 +54,9 @@ public class CircularProgress extends Element {
         RenderSystem.fillCircle(cx, cy, 3f, AppTheme.AMBER.getRed() / 255f, AppTheme.AMBER.getGreen() / 255f, AppTheme.AMBER.getBlue() / 255f, 1f);
 
         final String pct = Math.round(this.progress * 100f) + "%";
-        renderer.render(pct, this.bounds.centerX() - renderer.width(pct) / 2,
-                this.bounds.centerY() - renderer.lineHeight() / 2 + 4,
-                AppTheme.TEXT_SOFT, 0.62f);
+        renderer.render(pct, this.bounds.centerX() - renderer.width(pct, AppTheme.TEXT_BODY) / 2,
+                this.bounds.centerY() - renderer.glyphHeight(AppTheme.TEXT_BODY) / 2,
+                AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         RenderSystem.restoreProjection();
     }
 

@@ -265,10 +265,10 @@ public class OpenMultimediaScreen extends Screen {
         final String urlText = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
 
         final int padding = 20;
-        final int lineH = this.text.lineHeight();
+        final int lineH = this.text.lineHeight(AppTheme.TEXT_BODY);
 
-        final int contentW = Math.max(this.text.width(loadingText),
-                Math.max(this.text.width(urlText), this.text.width("ESC to cancel")));
+        final int contentW = Math.max(this.text.widthBold(loadingText, AppTheme.TEXT_BUTTON),
+                Math.max(this.text.width(urlText, AppTheme.TEXT_BODY), this.text.width("ESC to cancel", AppTheme.TEXT_BODY)));
         final int dialogW = Math.min(Math.max(contentW + padding * 2 + 40, 400), windowW - 100);
         final int dialogH = padding + lineH + 15 + lineH + 10 + lineH + padding;
 
@@ -278,15 +278,15 @@ public class OpenMultimediaScreen extends Screen {
         RenderSystem.dialogBox(dialogX, dialogY, dialogW, dialogH, Colors.BLUE, 3);
 
         int y = dialogY + padding;
-        this.text.render(loadingText, dialogX + padding, y, Colors.BLUE);
+        this.text.renderBold(loadingText, dialogX + padding, y, Colors.BLUE, AppTheme.TEXT_BUTTON);
         y += lineH + 15;
 
-        final String truncatedUrl = this.text.truncateToWidth(urlText, dialogW - padding * 2);
+        final String truncatedUrl = this.text.truncateToWidth(urlText, dialogW - padding * 2, AppTheme.TEXT_BODY);
         this.text.render(truncatedUrl.isEmpty() ? "(empty)" : truncatedUrl,
-                dialogX + padding, y, Colors.GRAY);
+                dialogX + padding, y, Colors.GRAY, AppTheme.TEXT_BODY);
         y += lineH + 10;
 
-        this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY);
+        this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY, AppTheme.TEXT_BODY);
 
         RenderSystem.restoreProjection();
     }
@@ -334,9 +334,9 @@ public class OpenMultimediaScreen extends Screen {
         AppChrome.amberCube(dialogX + dialogW - 9, dialogY + dialogH - 9, 10);
         RenderSystem.fill(dialogX, dialogY, dialogW, titleH, AppTheme.BG_2);
         RenderSystem.lineH(dialogX, dialogY + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
-        this.text.render("OPEN MULTIMEDIA", dialogX + 20,
-                dialogY + Math.max(0, (titleH - this.text.glyphHeight(0.72f)) / 2f),
-                AppTheme.NEON_LIGHT, 0.72f);
+        this.text.renderBold("OPEN MULTIMEDIA", dialogX + 20,
+                dialogY + Math.max(0, (titleH - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
+                AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
         this.closeBounds = new Dimension(dialogX + dialogW - 44, dialogY + 14, 26, 26);
         final boolean closeHover = this.closeBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
         AppChrome.dialogCloseButton(this.closeBounds, closeHover);
@@ -347,13 +347,13 @@ public class OpenMultimediaScreen extends Screen {
         this.renderPreview(previewX + 6, previewY + 6, previewW - 12, previewH - 12);
         final String chip = this.bestQuality();
         if (chip != null) {
-            final int chipW = (int) (this.text.width(chip) * 0.56f) + 18;
+            final int chipW = this.text.width(chip, AppTheme.TEXT_BODY) + 18;
             final int chipX = previewX + previewW - chipW - 8;
             final int chipY = previewY;
             RenderSystem.fill(chipX, chipY, chipW, 22, AppTheme.alpha(AppTheme.BG_1, 235));
             RenderSystem.rect(chipX, chipY, chipW, 22, AppTheme.NEON, 1f);
             RenderSystem.glowRect(chipX, chipY, chipW, 22, 0f, AppTheme.NEON, 0.34f);
-            this.text.render(chip, chipX + 9, chipY + 5, AppTheme.NEON_LIGHT, 0.56f);
+            this.text.render(chip, chipX + 9, chipY + 5, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY);
         }
 
         final int y = previewY + previewH + 28;
@@ -367,7 +367,7 @@ public class OpenMultimediaScreen extends Screen {
         this.reloadBounds = new Dimension(this.pasteBounds.right() + gap, y, reloadW, tbH);
         this.inputBounds = new Dimension(tbX, y, tbW, tbH);
 
-        this.text.render("URL OR PATH", tbX, y - 20, AppTheme.TEXT_FAINT, 0.58f);
+        this.text.render("URL OR PATH", tbX, y - 20, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
         if (this.inputFocused) RenderSystem.glowRect(tbX, y, tbW, tbH, 0f, AppTheme.NEON, 0.28f);
         RenderSystem.fill(tbX, y, tbW, tbH, AppTheme.BG_2);
         RenderSystem.rect(tbX, y, tbW, tbH, this.inputFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1);
@@ -377,12 +377,12 @@ public class OpenMultimediaScreen extends Screen {
                 pasteHover ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.BG_2);
         RenderSystem.rect(this.pasteBounds.x(), this.pasteBounds.y(), this.pasteBounds.width(), this.pasteBounds.height(), AppTheme.NEON, 1f);
         PixelIcon.draw("copy", this.pasteBounds.x() + 12, this.pasteBounds.y() + (this.pasteBounds.height() - 12) / 2, 12, AppTheme.NEON_LIGHT);
-        this.text.render("PASTE", this.pasteBounds.x() + 32,
-                this.pasteBounds.y() + Math.max(0, (this.pasteBounds.height() - this.text.glyphHeight(0.62f)) / 2f),
-                AppTheme.NEON_LIGHT, 0.62f);
+        this.text.renderBold("PASTE", this.pasteBounds.x() + 32,
+                this.pasteBounds.y() + Math.max(0, (this.pasteBounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
+                AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
         this.renderInlineButton(this.reloadBounds, "RELOAD", "reload", AppTheme.NEON_LIGHT, !displayUrl.isEmpty());
 
-        final float inputScale = 0.66f;
+        final float inputScale = AppTheme.TEXT_BUTTON;
         final int inputTextX = tbX + 32;
         final int inputTextY = y + Math.max(0, (tbH - this.text.glyphHeight(inputScale)) / 2);
         final String truncatedUrl = this.text.truncateToWidth(displayUrl, tbW - 46, inputScale);
@@ -399,11 +399,11 @@ public class OpenMultimediaScreen extends Screen {
         final int detectedY = y + tbH + 12;
         final String detected = this.statusLabel();
         final java.awt.Color detectedColor = this.statusColor();
-        final int detectedW = (int) (this.text.width(detected) * 0.58f) + 34;
+        final int detectedW = this.text.width(detected, AppTheme.TEXT_BODY) + 34;
         RenderSystem.fill(tbX, detectedY, detectedW, 24, AppTheme.alpha(detectedColor, detectedColor == AppTheme.TEXT_FAINT ? 24 : 36));
         RenderSystem.rect(tbX, detectedY, detectedW, 24, detectedColor, 1f);
         AppChrome.statusPip(tbX + 8, detectedY + 8, 8, detectedColor, false);
-        this.text.render(detected, tbX + 24, detectedY + 5, detectedColor, 0.58f);
+        this.text.render(detected, tbX + 24, detectedY + 5, detectedColor, AppTheme.TEXT_BODY);
 
         final int footY = dialogY + dialogH - 58;
         this.cancelBounds = new Dimension(dialogX + padding, footY, 128, 36);
@@ -429,9 +429,9 @@ public class OpenMultimediaScreen extends Screen {
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), actual, 1f);
         if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, actual, hover ? 0.24f : 0.12f);
         PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, actual);
-        this.text.render(label, bounds.x() + 32,
-                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeight(0.58f)) / 2f),
-                actual, 0.58f);
+        this.text.renderBold(label, bounds.x() + 32,
+                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
+                actual, AppTheme.TEXT_BUTTON);
     }
 
     private void renderPreview(final int x, final int y, final int w, final int h) {
@@ -439,17 +439,17 @@ public class OpenMultimediaScreen extends Screen {
         AppChrome.crtOverlay(x, y, w, h, this.ctx.windowHeight);
         if (this.previewMRL == null) {
             PixelIcon.draw("copy", x + w / 2 - 16, y + h / 2 - 32, 32, AppTheme.TEXT_FAINT);
-            this.text.render("NO MEDIA", x + w / 2 - (int) (this.text.width("NO MEDIA") * 0.62f / 2), y + h / 2 + 12, AppTheme.TEXT_FAINT, 0.62f);
+            this.text.render("NO MEDIA", x + w / 2 - this.text.width("NO MEDIA", AppTheme.TEXT_BODY) / 2, y + h / 2 + 12, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
             return;
         }
         if (!this.previewMRL.ready()) {
-            this.text.render("LOADING", x + 22, y + h - 48, AppTheme.NEON_LIGHT, 0.68f);
-            this.text.render(this.text.truncateToWidth(this.previewUrl, (int) ((w - 44) / 0.52f)), x + 22, y + h - 24, AppTheme.TEXT_FAINT, 0.52f);
+            this.text.renderBold("LOADING", x + 22, y + h - 48, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
+            this.text.render(this.text.truncateToWidth(this.previewUrl, w - 44, AppTheme.TEXT_SUBTITLE), x + 22, y + h - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
             return;
         }
         if (this.previewMRL.hasError()) {
             PixelIcon.draw("warn", x + w / 2 - 16, y + h / 2 - 36, 32, AppTheme.RED);
-            this.text.render("ERROR", x + w / 2 - (int) (this.text.width("ERROR") * 0.68f / 2), y + h / 2 + 8, AppTheme.RED, 0.68f);
+            this.text.renderBold("ERROR", x + w / 2 - this.text.widthBold("ERROR", AppTheme.TEXT_BUTTON) / 2, y + h / 2 + 8, AppTheme.RED, AppTheme.TEXT_BUTTON);
             return;
         }
 
@@ -461,9 +461,9 @@ public class OpenMultimediaScreen extends Screen {
         RenderSystem.fillGradientV(x, y + h / 2f, w, h / 2f,
                 0f, 0f, 0f, 0f,
                 AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 0.88f);
-        this.text.render(this.text.truncateToWidth(title.toUpperCase(), (int) ((w - 44) / 0.74f)), x + 22, y + h - 76, AppTheme.NEON_LIGHT, 0.74f);
-        this.text.render(this.text.truncateToWidth(desc, (int) ((w - 44) / 0.52f)), x + 22, y + h - 48, AppTheme.TEXT_SOFT, 0.52f);
-        this.text.render(duration, x + 22, y + h - 24, AppTheme.CYAN, 0.56f);
+        this.text.renderBold(this.text.truncateToWidth(title.toUpperCase(), w - 44, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD), x + 22, y + h - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
+        this.text.render(this.text.truncateToWidth(desc, w - 44, AppTheme.TEXT_SUBTITLE), x + 22, y + h - 48, AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
+        this.text.render(duration, x + 22, y + h - 24, AppTheme.CYAN, AppTheme.TEXT_BODY);
     }
 
     private String statusLabel() {
@@ -509,12 +509,12 @@ public class OpenMultimediaScreen extends Screen {
                 hover && enabled ? AppTheme.alpha(color, 54) : AppTheme.BG_2);
         RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 1.6f);
         if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, hover ? 0.28f : 0.16f);
-        final float labelScale = 0.64f;
+        final float labelScale = AppTheme.TEXT_BUTTON;
         PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, color);
         this.text.renderBold(label, bounds.x() + 32,
                 bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(labelScale)) / 2f),
                 color, labelScale);
-        final float hotkeyScale = 0.5f;
+        final float hotkeyScale = AppTheme.TEXT_SUBTITLE;
         final int hkW = this.text.width(hotkey, hotkeyScale) + 12;
         final int hkH = 20;
         final int hkX = bounds.right() - hkW - 8;

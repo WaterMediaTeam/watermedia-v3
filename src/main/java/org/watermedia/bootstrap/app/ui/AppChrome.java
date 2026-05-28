@@ -65,7 +65,7 @@ public final class AppChrome {
             RenderSystem.blit(8, 6, 16, 16);
         }
 
-        text.render(title, 32, textY(text, 0, TITLEBAR_H, 0.52f), AppTheme.TEXT_SOFT, 0.52f);
+        text.render(title, 32, textY(text, 0, TITLEBAR_H, AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
         for (int i = 0; i < 3; i++) {
             final int bx = windowW - WIN_BUTTON_W * (3 - i);
             final boolean hover = ctx.mouseY >= 0 && ctx.mouseY <= TITLEBAR_H && ctx.mouseX >= bx && ctx.mouseX <= bx + WIN_BUTTON_W;
@@ -112,8 +112,8 @@ public final class AppChrome {
         final int rightReserve = right != null && !right.isEmpty()
                 ? tagWidth(text, right) + 52
                 : 24;
-        final float titleScale = 0.82f;
-        final float subScale = 0.62f;
+        final float titleScale = AppTheme.TEXT_SECTION;
+        final float subScale = AppTheme.TEXT_BODY;
         final int titleMaxW = Math.max(120, windowW - titleX - rightReserve);
         final String title = text.truncateToWidth(name.toUpperCase(), titleMaxW, titleScale, java.awt.Font.BOLD);
         final int titleBoxY = y + 42;
@@ -161,7 +161,7 @@ public final class AppChrome {
             final String key = sep >= 0 ? part.substring(0, sep).trim() : "";
             final String label = sep >= 0 ? part.substring(sep + 1).trim() : part;
             if (!key.isEmpty()) {
-                final float keyScale = 0.46f;
+                final float keyScale = AppTheme.TEXT_BODY;
                 final int keyW = Math.max(36, scaledWidth(text, key, keyScale) + 36);
                 final int keyH = 22;
                 final int keyY = y - 1;
@@ -171,8 +171,8 @@ public final class AppChrome {
                 text.render(key.toUpperCase(), cx + 24, compactTextY(text, keyY, keyH, keyScale), AppTheme.TEXT_SOFT, keyScale);
                 cx += keyW + 6;
             }
-            text.render(label, cx, y + 2, AppTheme.TEXT_FAINT, 0.58f);
-            cx += text.width(label, 0.58f) + 18;
+            text.render(label, cx, y + 2, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+            cx += text.width(label, AppTheme.TEXT_BODY) + 18;
         }
     }
 
@@ -191,10 +191,10 @@ public final class AppChrome {
         final int headH = 21;
         RenderSystem.fill(x, headY, 4, headH, AppTheme.NEON);
         RenderSystem.glowRect(x, headY, 4, headH, 0f, AppTheme.NEON, 0.16f);
-        text.renderBold(label.toUpperCase(), x + 18, boldTextY(text, headY, headH, 0.76f), AppTheme.NEON, 0.76f);
+        text.renderBold(label.toUpperCase(), x + 18, boldTextY(text, headY, headH, AppTheme.TEXT_SECTION), AppTheme.NEON, AppTheme.TEXT_SECTION);
         if (count != null) {
-            text.render(count.toUpperCase(), x + 30 + text.widthBold(label.toUpperCase(), 0.76f),
-                    textY(text, headY, headH, 0.58f), AppTheme.TEXT_FAINT, 0.58f);
+            text.render(count.toUpperCase(), x + 30 + text.widthBold(label.toUpperCase(), AppTheme.TEXT_SECTION),
+                    textY(text, headY, headH, AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
         }
     }
 
@@ -270,7 +270,7 @@ public final class AppChrome {
 
     public static void tag(final TextRenderer text, final int x, final int y,
                            final String label, final Color color) {
-        final float scale = 0.58f;
+        final float scale = AppTheme.TEXT_BODY;
         final int w = tagWidth(text, label);
         final int h = 24;
         RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, 170));
@@ -279,18 +279,18 @@ public final class AppChrome {
     }
 
     public static int tagWidth(final TextRenderer text, final String label) {
-        return scaledWidth(text, label, 0.58f) + 28;
+        return scaledWidth(text, label, AppTheme.TEXT_BODY) + 28;
     }
 
     public static int mediaTypeTag(final TextRenderer text, final int x, final int y, final MediaType type) {
         final String label = type == null ? "MEDIA" : type.name();
         final Color color = mediaTypeColor(type);
-        final int w = text.width(label, 0.54f) + 22;
+        final int w = text.width(label, AppTheme.TEXT_BODY) + 22;
         final int h = 22;
         RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, 188));
         RenderSystem.rect(x, y, w, h, color, 1f);
         RenderSystem.glowRect(x, y, w, h, 0f, color, 0.16f);
-        text.render(label, x + 11, textY(text, y, h, 0.54f), color, 0.54f);
+        text.render(label, x + 11, textY(text, y, h, AppTheme.TEXT_BODY), color, AppTheme.TEXT_BODY);
         return w;
     }
 
@@ -358,7 +358,7 @@ public final class AppChrome {
     }
 
     private static int backendTagWidth(final TextRenderer text, final String label) {
-        return scaledWidth(text, label, 0.56f) + 44;
+        return scaledWidth(text, label, AppTheme.TEXT_BODY) + 44;
     }
 
     private static int backendTag(final TextRenderer text, final int x, final int y,
@@ -372,11 +372,11 @@ public final class AppChrome {
         RenderSystem.rect(x, y, w, 22, AppTheme.STROKE_BRIGHT, 1f);
         pip(x + 8, y + 7, c);
         final int textX = x + 24;
-        final int textW = scaledWidth(text, label, 0.56f);
-        final int textY = compactTextY(text, y, 22, 0.56f);
-        text.render(label.toUpperCase(), textX, textY, c, 0.56f);
+        final int textW = scaledWidth(text, label, AppTheme.TEXT_BODY);
+        final int textY = compactTextY(text, y, 22, AppTheme.TEXT_BODY);
+        text.render(label.toUpperCase(), textX, textY, c, AppTheme.TEXT_BODY);
         if (underline) {
-            RenderSystem.lineH(textX, textY + Math.max(1, text.glyphHeight(0.56f) / 2), textW, c, 1f);
+            RenderSystem.lineH(textX, textY + Math.max(1, text.glyphHeight(AppTheme.TEXT_BODY) / 2), textW, c, 1f);
         }
         return w;
     }

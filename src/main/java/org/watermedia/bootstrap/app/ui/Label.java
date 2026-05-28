@@ -36,13 +36,13 @@ public class Label extends Element {
     @Override
     public void render(final TextRenderer renderer, final int windowW, final int windowH) {
         if (!this.visible || this.text == null) return;
-        renderer.render(this.text, this.bounds.x(), this.bounds.y(), this.color);
+        renderer.render(this.text, this.bounds.x(), this.bounds.y(), this.color, AppTheme.TEXT_BODY);
     }
 
     @Override
     public Dimension calculateBounds(final TextRenderer text, final int startX, final int startY) {
-        final int w = text.width(this.text);
-        final int h = text.lineHeight();
+        final int w = text.width(this.text, AppTheme.TEXT_BODY);
+        final int h = text.lineHeight(AppTheme.TEXT_BODY);
         this.bounds = new Dimension(startX, startY, w, h);
         return this.bounds;
     }

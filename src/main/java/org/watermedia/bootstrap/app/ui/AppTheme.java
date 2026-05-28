@@ -7,6 +7,8 @@ import java.awt.Color;
  */
 public final class AppTheme {
 
+    private static final float FONT_BASE_PX = 20f;
+
     private AppTheme() {
     }
 
@@ -32,6 +34,13 @@ public final class AppTheme {
     public static final Color AMBER = hex(0xFFC266);
     public static final Color RED = hex(0xFF6C8E);
 
+    public static final float TEXT_TINY = textScale(12);
+    public static final float TEXT_SUBTITLE = textScale(12);
+    public static final float TEXT_BODY = textScale(12);
+    public static final float TEXT_BUTTON = textScale(14);
+    public static final float TEXT_SECTION = textScale(16);
+    public static final float TEXT_DISPLAY = textScale(18);
+
     public static Color hex(final int rgb) {
         return new Color(rgb);
     }
@@ -42,5 +51,9 @@ public final class AppTheme {
 
     public static Color alpha(final Color color, final int alpha) {
         return new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha);
+    }
+
+    private static float textScale(final int px) {
+        return px / FONT_BASE_PX;
     }
 }

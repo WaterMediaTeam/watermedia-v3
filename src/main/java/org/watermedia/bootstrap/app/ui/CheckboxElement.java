@@ -37,13 +37,13 @@ public class CheckboxElement extends Element {
             RenderSystem.fill(this.bounds.x() + 4, this.bounds.y() + 8, 8, 8, AppTheme.AMBER);
             RenderSystem.glowRect(this.bounds.x(), this.bounds.y() + 4, box, box, 0f, AppTheme.AMBER, 0.35f);
         }
-        renderer.render(this.label, this.bounds.x() + box + 8, this.bounds.y(), AppTheme.TEXT_SOFT);
+        renderer.render(this.label, this.bounds.x() + box + 8, this.bounds.y(), AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         RenderSystem.restoreProjection();
     }
 
     @Override
     public Dimension calculateBounds(final TextRenderer text, final int startX, final int startY) {
-        this.bounds = new Dimension(startX, startY, 24 + text.width(this.label), text.lineHeight());
+        this.bounds = new Dimension(startX, startY, 24 + text.width(this.label, AppTheme.TEXT_BODY), text.lineHeight(AppTheme.TEXT_BODY));
         return this.bounds;
     }
 

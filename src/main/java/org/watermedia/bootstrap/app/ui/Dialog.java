@@ -159,17 +159,17 @@ public class Dialog {
         RenderSystem.dialogBox(this.bounds.x(), this.bounds.y(), this.bounds.width(), this.bounds.height(), this.borderColor, BORDER_WIDTH);
 
         int y = this.bounds.y() + this.padding;
-        final int lineH = renderer.lineHeight();
+        final int lineH = renderer.lineHeight(AppTheme.TEXT_BODY);
 
         // TITLE
         if (this.title != null && !this.title.isEmpty()) {
-            renderer.render(this.title, this.bounds.x() + this.padding, y, this.borderColor);
+            renderer.renderBold(this.title, this.bounds.x() + this.padding, y, this.borderColor, AppTheme.TEXT_BUTTON);
             y += lineH + 15;
         }
 
         // CONTENT
         for (final ContentLine line: this.contentLines) {
-            renderer.render(line.text, this.bounds.x() + this.padding, y, line.color);
+            renderer.render(line.text, this.bounds.x() + this.padding, y, line.color, AppTheme.TEXT_BODY);
             y += lineH;
         }
 
@@ -185,19 +185,19 @@ public class Dialog {
                 final String leftText = (this.selectedButton == 0 ? "> " : "  ") + left.text;
                 final String rightText = (this.selectedButton == 1 ? "> " : "  ") + right.text;
 
-                renderer.render(leftText, this.bounds.x() + this.padding, y, this.selectedButton == 0 ? Colors.BLUE : Colors.GRAY);
-                left.bounds = new Dimension(this.bounds.x() + this.padding, y, renderer.width(leftText), lineH);
+                renderer.renderBold(leftText, this.bounds.x() + this.padding, y, this.selectedButton == 0 ? Colors.BLUE : Colors.GRAY, AppTheme.TEXT_BUTTON);
+                left.bounds = new Dimension(this.bounds.x() + this.padding, y, renderer.widthBold(leftText, AppTheme.TEXT_BUTTON), lineH);
 
-                final int rightX = this.bounds.right() - this.padding - renderer.width(rightText);
-                renderer.render(rightText, rightX, y, this.selectedButton == 1 ? Colors.BLUE : Colors.GRAY);
-                right.bounds = new Dimension(rightX, y, renderer.width(rightText), lineH);
+                final int rightX = this.bounds.right() - this.padding - renderer.widthBold(rightText, AppTheme.TEXT_BUTTON);
+                renderer.renderBold(rightText, rightX, y, this.selectedButton == 1 ? Colors.BLUE : Colors.GRAY, AppTheme.TEXT_BUTTON);
+                right.bounds = new Dimension(rightX, y, renderer.widthBold(rightText, AppTheme.TEXT_BUTTON), lineH);
             } else {
                 // SINGLE BUTTON: CENTERED
                 final Button btn = this.buttons.get(0);
                 final String text = "> " + btn.text;
-                final int x = this.bounds.x() + (this.bounds.width() - renderer.width(text)) / 2;
-                renderer.render(text, x, y, Colors.BLUE);
-                btn.bounds = new Dimension(x, y, renderer.width(text), lineH);
+                final int x = this.bounds.x() + (this.bounds.width() - renderer.widthBold(text, AppTheme.TEXT_BUTTON)) / 2;
+                renderer.renderBold(text, x, y, Colors.BLUE, AppTheme.TEXT_BUTTON);
+                btn.bounds = new Dimension(x, y, renderer.widthBold(text, AppTheme.TEXT_BUTTON), lineH);
             }
         }
 
@@ -205,30 +205,30 @@ public class Dialog {
     }
 
     public Dimension centerIn(final TextRenderer text, final int windowW, final int windowH) {
-        final int lineH = text.lineHeight();
+        final int lineH = text.lineHeight(AppTheme.TEXT_BODY);
         int contentH = 0;
         int contentW = 0;
 
         // TITLE
         if (this.title != null && !this.title.isEmpty()) {
             contentH += lineH + 15;
-            contentW = Math.max(contentW, text.width(this.title));
+            contentW = Math.max(contentW, text.widthBold(this.title, AppTheme.TEXT_BUTTON));
         }
 
         // CONTENT LINES
         for (final ContentLine line: this.contentLines) {
             contentH += lineH;
-            contentW = Math.max(contentW, text.width(line.text));
+            contentW = Math.max(contentW, text.width(line.text, AppTheme.TEXT_BODY));
         }
 
         // BUTTONS
         if (!this.buttons.isEmpty()) {
             contentH += lineH + 25;
             if (this.buttons.size() == 2) {
-                final int buttonsW = text.width("> " + this.buttons.get(0).text) + 40 + text.width("> " + this.buttons.get(1).text);
+                final int buttonsW = text.widthBold("> " + this.buttons.get(0).text, AppTheme.TEXT_BUTTON) + 40 + text.widthBold("> " + this.buttons.get(1).text, AppTheme.TEXT_BUTTON);
                 contentW = Math.max(contentW, buttonsW);
             } else {
-                contentW = Math.max(contentW, text.width("> " + this.buttons.get(0).text));
+                contentW = Math.max(contentW, text.widthBold("> " + this.buttons.get(0).text, AppTheme.TEXT_BUTTON));
             }
         }
 
