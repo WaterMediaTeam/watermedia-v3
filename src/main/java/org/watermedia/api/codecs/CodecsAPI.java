@@ -239,7 +239,7 @@ public class CodecsAPI extends WaterMediaAPI {
         }
 
         // ISO BASE MEDIA (MP4/MOV/HEIF/AVIF/3GP/M4A...) — THE BRAND AT OFFSET 8 DECIDES
-        if (DataTool.startsWith(b, 4, FTYP_HEADER)) return ofFtyp(ascii(h, 8, 4));
+        if (DataTool.startsWith(b, 4, FTYP_HEADER)) return ofFtyp(12 > h.length ? "" : new String(h, 8, 4, StandardCharsets.US_ASCII));
 
         // AIFF / AIFF-C
         if (DataTool.startsWith(b, 0, FORM_HEADER) && (DataTool.startsWith(b, 8, AIFF_HEADER) || DataTool.startsWith(b, 8, AIFC_HEADER)))
@@ -324,11 +324,6 @@ public class CodecsAPI extends WaterMediaAPI {
                 || v.startsWith("f4a") || v.startsWith("f4b") || v.startsWith("aac"))
             return MediaType.AUDIO;
         return MediaType.VIDEO;
-    }
-
-    private static String ascii(final byte[] data, final int off, final int len) {
-        if (off + len > data.length) return "";
-        return new String(data, off, len, StandardCharsets.US_ASCII);
     }
 
     @Override
