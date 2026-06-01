@@ -1,3 +1,107 @@
+# 📦 UPDATE 3.0.0.17 (BETA)
+## ⚡ Core / lifecycle
+- ⚙️ Added: `org.watermedia.api.WaterMediaAPI` abstract base class — every top-level API now inherits `name()`, `load(WaterMedia)`, `start(WaterMedia)`, `release(WaterMedia)` plus boot-progress fields `step`/`steps`/`stepName` for loading screens
+- ⚙️ Added: `WaterMedia#steps()`, `step()`, `currentAPI()`, `totalWorkSteps()`, `completedWorkSteps()` to surface boot progress
+- ⚙️ Changed: APIs are now registered as `WaterMediaAPI` instances (`CodecsAPI` → `PlatformAPI` → `MediaAPI` → `NetworkAPI`), each driven through `load()` + `start()` with per-API try/catch
+- ⚙️ Changed: `WaterMedia#start(name, ...)` now rejects blank names (`IllegalArgumentException`)
+- ⚙️ Changed: `WaterMediaConfig.Decoders#defaultQuality` retyped from `MRL.Quality` to `org.watermedia.api.util.MediaQuality`
+## ⚡ CodecsAPI
+- ⚙️ Added: `ImageReader` — new abstract pull-based per-frame decoder (`Closeable`) with `width/height/pixelFormat/planeCount/plane/planeStride/scan/loopCount/frameCount/duration/delays/averageFps/variableFrameRate/metadata/readAll/hasNext/next`
+- ⚙️ Added: `ImageWriter` — streaming frame encoder skeleton (`writeFrame(ByteBuffer)`, `writeFrame(ByteBuffer, long)`)
+- ⚙️ Added: `ImageMetadata` — normalized metadata bag with typed accessors (`title`, `description`, `authors`, `copyright`, `comments`, `creationTime`, `software`, `source`) and free-form map
+- ⚙️ Added: `PNG_METAKEY_*`, `GIF_METAKEY_*`, `WEBP_METAKEY_*` metadata key constants on `CodecsAPI`
+- ⚙️ Added: `ImageData.Scan` record (`frameCount`, `delays`, `duration`, `loopCount`) with `Scan.EMPTY` constant
+- ⚙️ Added: `UnsupportedFormatException extends XCodecException`
+- ⚙️ Added: `CodecsAPI#getMediaType(InputStream)` — byte-signature sniffer returning a `MediaType` (resolves ambiguous `application/octet-stream` responses)
+- ⚙️ Changed: `CodecsAPI#decodeImage(byte[]|ByteBuffer)` now declares `throws IOException` and returns an `ImageReader`. New overloads `decodeImage(ByteBuffer|byte[], PixelFormat requestedFormat)`. Unknown magic throws `UnsupportedFormatException` (was returning `null`)
+- ⚙️ Removed: pluggable decoder registry — `CodecsAPI#register(ImageCodec)`, the `IMAGE_CODECS` list and the `org.watermedia.api.codecs.ImageCodec` abstract base (superseded by `ImageReader`)
+## ⚡ MediaAPI
+- ⚙️ Added: `MediaAPI#getMRL(URI)`, `MediaAPI#createPlayer(MRL, [int sourceIndex,] Supplier<GFXEngine>, Supplier<SFXEngine>)` — player factory now lives on `MediaAPI` (was on `MRL`)
+- ⚙️ Added: `MRL#reloadAll()`, `MRL#subscribe(Consumer<MRL>)` (fires once and drops), `MRL#hasError()`, `MRL#exception()`, `MRL#forgotten()`, `MRL#blocked()` (true when gated by mature-content)
+- ⚙️ Added: `MRL.Source#qualityOf(URI)` and a new `MRL.SlaveEntry(name, lang, uri)` record
+- ⚙️ Added: `MediaPlayer.NO_SOURCE` constant
+- ⚙️ Changed: `MRL#get(URI)` renamed to `MRL#getMRL(URI)`; `MRL#preload(URI...)` now returns `MRL[]`
+- ⚙️ Changed: `MRL#sources()` / `MRL#sourcesByType(MediaType)` return `List<Source>` (was `Source[]`)
+- ⚙️ Changed: `MRL.Source` rewritten as record `(MediaType type, URI thumbnail, Metadata metadata, RequestHeaders headers, EnumMap<MediaQuality,URI> qualities, List<SlaveEntry> audioSlaves, List<SlaveEntry> subSlaves)`; non-empty `qualities` invariant enforced
+- ⚙️ Changed: `MediaPlayer` constructor now takes `(MRL, int sourceIndex, GFXEngine, SFXEngine)` instead of a resolved `Source`
+- ⚙️ Changed: `MediaPlayer#quality(MediaQuality)` / `quality()` retyped from `MRL.Quality` to `MediaQuality`
+- ⚙️ Changed: `MediaPlayer#audioSource()` returns `NO_SOURCE` (was `NO_TEXTURE`)
+- ⚙️ Removed (from `MRL`): `invalidate(URI)`, `clearCache()`, `cacheSize()`, `error()`, `busy()`, `createPlayer(...)`, `createThumbnailPlayer(...)`, `sourceBuilder(...)`, `SourceBuilder`, `Source.withQuality/reassignQuality/withSlave/withMetadata/slaveByLanguage`
+- ⚙️ Removed (from `MediaAPI`): `registerPlatform(...)` overloads and the internal `PLATFORMS` list (moved to new `PlatformAPI`)
+- ⚙️ Relocated: `MRL.MediaType` → `api.util.MediaType`; `MRL.Quality` → `api.util.MediaQuality`; `MRL.Metadata` → `api.util.Metadata`
+- ⚙️ Added: optional fast-path on `GFXEngine` — `supportsFrameTextures()`, `uploadFrameTextures(ByteBuffer[] frames, int stride)`, `useFrameTexture(int)`
+- ⚙️ Added: `GLEngine.Builder` accepts four extra GL function consumers — `activeTexture`, `bindVertexArray`, `bindFrameBuffer`, `bindBuffer` — so a host can intercept GL state
+- ⚙️ Removed: `GFXEngine.ColorSpace` inner enum — replaced by top-level `org.watermedia.api.util.PixelFormat`
+- ⚙️ Changed: `colorSpace` parameters/fields renamed `pixelFormat` across `GFXEngine`/`GLEngine`/`FFMediaPlayer`
+- ⚙️ Fixed typo: `MediaPlayer#foward()` → `forward()` (also in `ServerMediaPlayer`, `FFMediaPlayer`, `TxMediaPlayer`)
+## ⚡ [NEW] PlatformsAPI (`api/platform/` package)
+- ⚙️ Added: `org.watermedia.api.platform.PlatformAPI extends WaterMediaAPI` — registry with `static PlatformData fetch(URI)`, `static void register(IPlatform)`; iteration is reverse-registration so apps can override built-ins
+- ⚙️ Added: `IPlatform` (new contract — `name()`, `validate(URI)`, `PlatformData getData(URI)`), `PlatformData(Instant expires, DataSource... entries)`, `DataSource(MediaType, URI thumbnail, Metadata, RequestHeaders, DataQuality[], List<DataSlave> audioSlaves, List<DataSlave> subSlaves)`, `DataQuality(URI, int width, int height)`, `DataSlave(name, lang, uri)`
+- ⚙️ Added: `internal.WaterPlatform` — handles `water://local/remote/global` URIs (constants `HOST_LOCAL/REMOTE/GLOBAL`, `GLOBAL_SERVER`, `toHttpURL(URI)`)
+- ⚙️ Relocated: `BiliBiliPlatform`, `ImgurPlatform`, `KickPlatform`, `PornHubPlatform`, `TwitterPlatform` moved from `api/media/platform/` to `api/platform/web/` and migrated to the new `PlatformData/DataSource/DataQuality` shape
+- ⚙️ Removed: `api/media/platform/DefaultPlatform`, the old `api/media/platform/IPlatform`, and the old `api/media/platform/{Lightshot,Streamable,Twitch,Youtube}Platform`
+- ⚙️ Removed: `YoutubePlatform` (no replacement in this beta)
+## ⚡ NetworkAPI
+- ⚙️ Added: `org.watermedia.api.util.NetRequest` — builder-style HTTP/FTP/file:// client (`create(URI|String)`, `Builder.method/accept/contentType/referer/userAgent/header/addHeader/body/connectTimeout/readTimeout/maxRedirects/headers/send`; `uri()`, `statusCode()`, `contentType()`, `contentLength()`, `header()`, `requestHeaders()`, `responseHeaders()`, `getInputStream()`, `getInputStream(Function)`, `readAllAsString()`, `json()`, `json(Class)`, `UserAgent` enum, `installExtraMimeTypes()`)
+- ⚙️ Added: `org.watermedia.api.util.RequestHeaders` — insertion-ordered case-insensitive multi-value header bag (`set/add/get/getAll/has/removeAll/entries/iterator/toRawString`, `defaults(URI)` factory; FFmpeg-ready blob via `toRawString()`)
+- ⚙️ Added: `org.watermedia.api.util.MediaQuality` enum (`UNKNOWN`, `Q144P`/`LOWEST`…`Q8K`) with `of(int)`, `of(int,int)`, `higher()`, `lower()`, `closest(Set, MediaQuality)`
+- ⚙️ Added: `org.watermedia.api.util.MediaType` enum (`IMAGE/VIDEO/AUDIO/SUBTITLES/UNKNOWN`) with `of(String mimeType)` and `ofExtension(String)`
+- ⚙️ Added: `org.watermedia.api.util.Metadata` record `(title, desc, Instant postedAt, long duration, author)`
+- ⚙️ Added: `HlsTool#fetch(URI, String userAgent)` overload (internals migrated from `HttpClient` to `NetRequest`)
+- ⚙️ Changed: `NetworkAPI` now `extends WaterMediaAPI`; `start(WaterMedia)` becomes an instance override; reports two boot steps (`MIME registry`, `FileServer`); also installs MIME mappings (webp, apng, mkv, opus, m3u8, mpd, vtt, NETPBM, …) into `URLConnection.getFileNameMap()`
+- ⚙️ Changed: `NetworkAPI#upload(...)` return type is now `NetworkServer.UploadStatus` (was top-level `UploadStatus`)
+- ⚙️ Removed (from `NetworkAPI`): `parseQuery(String)`, `waterURL(String)`, `parseWaterURL(URI)`, the static `WATER_HANDLER` field — `water://` URL handling is gone from the public API
+- ⚙️ Renamed: `NetServer` → `NetworkServer` (`UploadStatus` moved inside as nested class)
+- ⚙️ Removed: `WaterStreamHandler`, top-level `UploadStatus`, `NetTool` (replaced by `NetRequest`)
+## ⚡ GENERAL
+- ✨ Added TikTok platform support (with full Metadata and Multi-variant qualities)
+- ✨ Added D.Tube platform support (with full Metadata and Multi-variant qualities)
+- ✨ Added Bluesky platform support (with full Metadata, Gallery support and Multi-variant qualities)
+- ✨ Added Odysee platform support (with full Metadata and Multi-variant qualities)
+- ✨ Added VidLii platform support
+- ✨ Added Sendvid platform support (with half metadata and status-poll wait)
+- ✨ Added back Google Drive, Dropbox and MediaFire platform support (limited support due to platform restrictions)
+- ✨ Rewrote and Enhanced Twitch platform: now covers VOD, live, **clips** and better codecs
+- ✨ Rewrote and Enhanced Kick platform: now covers **clips** 
+- ✨ Rewrote and Enhanced Streamable platform: both `mp4` and `mp4-mobile` qualities exposed as quality variants
+- ✨ Rewrote Lightshot platform on the new platform API (produces `DataSource(MediaType.IMAGE, ...)`)
+- ✨ Added on-disk media `NetworkCache` — two-tier cache (NETWORK live; CODEC reserved for upcoming BC7/DDS) with atomic writes, lock striping, expiry index (`WMIC` v3 format). Wired into `MediaAPI.start()` under `instance.tmp/cache`. Honored by `FFMediaPlayer` HTTP body fetches (config-gated, skips HLS/DASH manifests) and by `TxMediaPlayer`
+- ✨ Rewrote `TxMediaPlayer` with three playback modes: (1) static one-shot upload, (2) pre-uploaded per-frame textures via the new `GFXEngine#uploadFrameTextures` fast-path when frame count ≤ `txMultiTextureFrameThreshold`, (3) streaming `ImageReader` decode driven by the playback clock with a bounded prefetch queue (64 MB budget) and direct-`ByteBuffer` pool. Supports seek/loop/step-backwards, falls into `BUFFERING` on under-run
+- ✨ Added IPTV channel support — `m3u`/`m3u8` channel playlists are expanded into individual channel sources (title, group and logo per channel), with a bundled channel catalog
+- ✨ Added a house-made JPEG decoder (pure Java, no `ImageIO` dependency; baseline + progressive, all common chroma subsamplings)
+- ✨ Optimized PNG/APNG decoder (~40% faster on animated PNG) and added rich image metadata reporting (text, gamma, chromaticities, sRGB/ICC color profile, physical dimensions, timestamps, and ancillary chunks)
+- ✨ Optimized GIF decoder (~12–24% faster); Netscape loop count now surfaced in metadata
+- ✨ Optimized WEBP lossless decoder (~40% faster)
+- ✨ Optimized WEBP lossy decoder (~2–14% faster); static lossy VP8 without alpha now decodes to native `YUV420P` planes (no RGB conversion)
+- ✨ Added new config options: `decoders.maxImageSourceBytesMB` (128), `media.mrlManagerCleanupInterval` (60 min), `media.txMultiTextureFrameThreshold` (5), `media.txNetworkCache`, `media.ffmpegNetworkCache`, `media.ffmpegNetworkCacheMaxBytesMB` (10), `media.ffmpegAnalyzeDurationMs` (7000), `media.ffmpegProbeSizeMB` (10), `media.platforms.allowMatureContent`, `network.requestTimeoutMs` (15000), `network.maxRedirects` (10), `network.maxTextBytes` (16 MiB)
+- ✨ Added JOML 1.10.8 as a library dependency
+- ✨ [WaterMediaApp] Redesigned the entire standalone app on a new backend-agnostic 2D `RenderEngine`/`RenderSystem` (OpenGL 3.2 core backend; architected so Vulkan can drop in without touching widgets), vertex batching, rounded rects / circles / arcs / gradients / glow / shadow primitives
+- ✨ [WaterMediaApp] Added more test cases, thumbnail previews, status badges.
+- ✨ [WaterMediaApp] Enhanced Mouse experience on controls and buttons
+- ✨ [WaterMediaApp] Added a `FrameLimiter` with monitor-aware pacing for drivers ignoring swap interval
+- ✨ [WaterMediaApp] New `LoadingScreen` with animated boot splash and 8-frame duck animation, eased progress driven by `WaterMedia.completedWorkSteps()/totalWorkSteps()`
+- ✨ [WaterMediaApp] Exit-confirmation dialog with `ENTER`/`ESC` bindings
+- 🛠️ Changed: `MRL` `ready` state flips true on success **or** failure; callers must now check `hasError()`/`exception()` separately
+- 🛠️ Changed: `FFMediaPlayer` HW-decoder priority — `D3D11VA` now precedes `D3D12VA`
+- 🛠️ Changed: `FFMediaPlayer` quality auto-aligns — when initial quality is `UNKNOWN`, it is corrected once real video stream dimensions are known
+- 🛠️ Changed: `FFMediaPlayer` open-failure logs now include decoded `av_strerror` text instead of swallowing the return code
+- 🛠️ Changed: HTTP requests across `FFMediaPlayer`, `TxMediaPlayer`, and audio slaves now build headers from a unified `RequestHeaders.defaults(uri)` (no more hand-baked `User-Agent`/`Accept`/`Referer`)
+- 🛠️ Changed: `MRL` source resolution delegated to `PlatformAPI.fetch(URI)`; loader threadpool switched to `ThreadTool.createRecomendedThreadPool(...)`
+- 🛠️ Changed: ambiguous/wrong `Content-Type` (e.g. `application/octet-stream`) is now resolved by sniffing the leading bytes with a URL-extension fallback, so mislabeled media from CDNs no longer fails to open; non-HTTP requests force a real connection instead of letting the URL handler guess the MIME type and existence
+- 🛠️ Changed: the MRL manager periodically forgets expired or errored MRLs to free memory (interval configurable via `media.mrlManagerCleanupInterval`)
+- 🛠️ Changed: BiliBili CDN cookie/UA/Referer now flow through `RequestHeaders` on every `DataSource` (including live); `WaterMediaConfig.media.platforms.biliBiliCookie` honored at request time
+- 🛠️ Changed: Mature content is now gated behind `media.platforms.allowMatureContent` (disabled by default) — Twitch (streams, VODs, clips) and PornHub throw `MatureContentException` before any data fetch; `MRL#blocked()` reports the gated state
+- 🛠️ Changed: `NetworkServer.maxUploadSizeMB <= 0` now disables the size cap (was always enforced); `NetworkAPI.upload` honors `WaterMediaConfig.network.requestTimeoutMs`
+- 🛠️ Changed: [WaterMediaApp] `AppBootstrap` quick-scan fast-path skips the GUI when all jars are cached; otherwise a console window with progress and 5-second auto-launch is shown; renamed `Sideloadable` → `Extension`, `BOOTSTRAPPED_FLAG` → `APP_FLAG`
+- 🛠️ Changed: [WaterMediaApp] `HomeScreen`, `PlayerScreen`, `MRLSelectorScreen`, `OpenMultimediaScreen` rebuilt (`ConsoleScreen` and `SourceSelectorScreen` removed; `Grid` and `Selector` removed in favor of `ListView`/`StackContainer`)
+- 🐛 Fixed: GIF decoder writing `0x00000000` at the transparent index even on frames whose GCE had no transparent-color flag (non-transparent GIFs were getting holes)
+- 🐛 Fixed: NETPBM `PAM` `RGB_ALPHA` decode was emitting an extra `0xFF` byte between RGB and A, shifting every subsequent pixel
+- 🐛 Fixed: `NetworkServer#handleUpload` no longer NPEs / throws `NumberFormatException` on missing or malformed `Content-Length` (returns 400)
+- 🐛 Fixed: `NetworkServer` partial/aborted uploads are cleaned up — half-written file and its ID directory are deleted on mid-transfer `IOException`
+- 🐛 Fixed: `TxMediaPlayer` reset/release no longer leaks lifecycle threads or the `ImageReader`
+- 🐛 Fixed: implausible frame rates reported by some HLS streams (e.g. the 90 kHz clock) no longer break frame pacing — values outside a sane range are now rejected
+- 🐛 Fixed: JVM crash on HLS streams whose audio/video parameters fail to probe (sample rate 0) — the stream is now torn down cleanly instead of dividing by zero
+
 # 📦 UPDATE 3.0.0.16 (BETA)
 - ✨ Added back [orange page] platform support with quality and metadata support
 - ✨ Added back Lightshot (prnt.sc) platform support
