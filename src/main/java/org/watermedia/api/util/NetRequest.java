@@ -92,6 +92,7 @@ public class NetRequest implements AutoCloseable {
             "vob",  "video/dvd",
             "rm",   "application/vnd.rn-realmedia",
             "rmvb", "application/vnd.rn-realmedia-vbr",
+            "m3u",  "application/vnd.apple.mpegurl",
             "m3u8", "application/vnd.apple.mpegurl",
             "mpd",  "application/dash+xml",
 

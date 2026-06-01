@@ -29,6 +29,7 @@ public class HomeScreen extends Screen {
     public enum Action {
         OPEN_MULTIMEDIA, UPLOAD_LOGS, CLEANUP,
         SETTINGS,
+        REGION_SELECTOR,
         MRL_SELECTOR, PLAYER,
         EXIT, BACK
     }
@@ -36,10 +37,12 @@ public class HomeScreen extends Screen {
     private final Consumer<Action> navigator;
     private final List<MenuEntry> actions = new ArrayList<>();
     private final List<MenuEntry> mediaTests = new ArrayList<>();
+    private final List<MenuEntry> entertainment = new ArrayList<>();
     private final List<Hit> hits = new ArrayList<>();
     private int selectedPanel;
     private int selectedAction;
     private int selectedMedia;
+    private int selectedEntertainment;
     private Dimension uploadTooltipAnchor;
     private Dimension uploadDialogCloseBounds = Dimension.ZERO;
     private Dimension uploadDialogXBounds = Dimension.ZERO;
@@ -65,6 +68,7 @@ public class HomeScreen extends Screen {
     private void rebuildMenu() {
         this.actions.clear();
         this.mediaTests.clear();
+        this.entertainment.clear();
 
         this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
         this.actions.add(new MenuEntry("Upload Logs", AppContext.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
@@ -82,6 +86,9 @@ public class HomeScreen extends Screen {
         if (!this.ctx.customTests.isEmpty()) {
             final String label = "CUSTOM (" + this.ctx.customTests.size() + ")";
             this.mediaTests.add(new MenuEntry(label, "custom", null, -2));
+        }
+        if (this.ctx.iptvChannels.length > 0) {
+            this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
         }
     }
 
@@ -160,6 +167,20 @@ public class HomeScreen extends Screen {
             this.drawMediaTile(this.mediaTests.get(i), bounds, this.selectedPanel == 1 && this.selectedMedia == i, windowW, windowH);
             this.hits.add(new Hit(bounds, this.mediaTests.get(i), 1, i));
         }
+        if (!this.entertainment.isEmpty()) {
+            final int mediaRows = Math.max(1, (this.mediaTests.size() + 1) / 2);
+            final int entertainmentY = y + 36 + mediaRows * (tileH + 10) + 24;
+            if (entertainmentY + 112 <= y + contentH) {
+                AppChrome.sectionHead(this.text, "Entertaiment", this.entertainment.size() + " available", rightX, entertainmentY);
+                int entertainmentRowY = entertainmentY + 36;
+                for (int i = 0; i < this.entertainment.size(); i++) {
+                    final Dimension bounds = new Dimension(rightX, entertainmentRowY, rightW, 72);
+                    this.drawEntertainmentTile(this.entertainment.get(i), bounds, this.selectedPanel == 2 && this.selectedEntertainment == i);
+                    this.hits.add(new Hit(bounds, this.entertainment.get(i), 2, i));
+                    entertainmentRowY += 82;
+                }
+            }
+        }
         if (this.uploadTooltipAnchor != null) {
             this.renderUploadLogsTooltip(this.uploadTooltipAnchor);
         }
@@ -226,6 +247,23 @@ public class HomeScreen extends Screen {
         this.text.renderBold(this.text.truncateToWidth(entry.label().toUpperCase(), b.width() - 62, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
                 b.x() + 42, this.centerBoldTextY(b.y() + 15, 18, AppTheme.TEXT_BUTTON), titleColor, AppTheme.TEXT_BUTTON);
         this.text.render((entry.meta() + " - click to load").toUpperCase(Locale.ROOT), b.x() + 14, b.y() + 50, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+    }
+
+    private void drawEntertainmentTile(final MenuEntry entry, final Dimension b, final boolean selected) {
+        final Color accent = selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT;
+        if (selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.GREEN, 0.30f);
+        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
+                selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
+        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.GREEN : AppTheme.STROKE_BRIGHT, 2f);
+        final String label = entry.label().toUpperCase(Locale.ROOT);
+        final int iconSize = 34;
+        final int gap = 18;
+        final int labelW = this.text.widthBold(label, AppTheme.TEXT_DISPLAY);
+        final int groupW = iconSize + gap + labelW;
+        final int groupX = b.x() + Math.max(0, (b.width() - groupW) / 2);
+        PixelIcon.draw("tv", groupX, b.y() + Math.max(0, (b.height() - iconSize) / 2), iconSize, accent);
+        this.text.renderBold(label, groupX + iconSize + gap,
+                this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_DISPLAY), accent, AppTheme.TEXT_DISPLAY);
     }
 
     private String actionIcon(final Action action) {
@@ -697,7 +735,7 @@ public class HomeScreen extends Screen {
             case GLFW_KEY_UP -> this.moveSelection(-1);
             case GLFW_KEY_DOWN -> this.moveSelection(1);
             case GLFW_KEY_LEFT -> this.switchPanel(0);
-            case GLFW_KEY_RIGHT -> this.switchPanel(1);
+            case GLFW_KEY_RIGHT -> this.switchPanel(this.mediaTests.isEmpty() && !this.entertainment.isEmpty() ? 2 : 1);
             case GLFW_KEY_U -> {
                 this.selectedPanel = 0;
                 this.selectedAction = 1;
@@ -718,10 +756,11 @@ public class HomeScreen extends Screen {
         if (this.ctx.uploadDialogVisible || this.ctx.cleanupDialogVisible) return;
         for (final Hit hit: this.hits) {
             if (hit.bounds.contains(mx, my)) {
-                if (hit.panel != this.selectedPanel || hit.index != (hit.panel == 0 ? this.selectedAction : this.selectedMedia)) {
+                if (hit.panel != this.selectedPanel || hit.index != this.selectedIndex(hit.panel)) {
                     this.selectedPanel = hit.panel;
                     if (hit.panel == 0) this.selectedAction = hit.index;
-                    else this.selectedMedia = hit.index;
+                    else if (hit.panel == 1) this.selectedMedia = hit.index;
+                    else this.selectedEntertainment = hit.index;
                     this.ctx.playSelectionSound();
                 }
                 return;
@@ -772,8 +811,24 @@ public class HomeScreen extends Screen {
     private void moveSelection(final int delta) {
         if (this.selectedPanel == 0 && !this.actions.isEmpty()) {
             this.selectedAction = Math.max(0, Math.min(this.actions.size() - 1, this.selectedAction + delta));
+        } else if (this.selectedPanel == 2) {
+            if (delta < 0 && !this.mediaTests.isEmpty()) {
+                this.selectedPanel = 1;
+                this.selectedMedia = Math.max(0, this.mediaTests.size() - 1);
+            } else {
+                this.selectedEntertainment = Math.max(0, Math.min(this.entertainment.size() - 1, this.selectedEntertainment + delta));
+            }
         } else if (!this.mediaTests.isEmpty()) {
-            this.selectedMedia = Math.max(0, Math.min(this.mediaTests.size() - 1, this.selectedMedia + delta * 2));
+            final int next = this.selectedMedia + delta * 2;
+            if (delta > 0 && next >= this.mediaTests.size() && !this.entertainment.isEmpty()) {
+                this.selectedPanel = 2;
+                this.selectedEntertainment = 0;
+            } else {
+                this.selectedMedia = Math.max(0, Math.min(this.mediaTests.size() - 1, next));
+            }
+        } else if (!this.entertainment.isEmpty()) {
+            this.selectedPanel = 2;
+            this.selectedEntertainment = Math.max(0, Math.min(this.entertainment.size() - 1, this.selectedEntertainment + delta));
         }
         this.ctx.playSelectionSound();
     }
@@ -790,7 +845,18 @@ public class HomeScreen extends Screen {
             this.handleSelect(this.actions.get(this.selectedAction));
         } else if (this.selectedPanel == 1 && this.selectedMedia < this.mediaTests.size()) {
             this.handleSelect(this.mediaTests.get(this.selectedMedia));
+        } else if (this.selectedPanel == 2 && this.selectedEntertainment < this.entertainment.size()) {
+            this.handleSelect(this.entertainment.get(this.selectedEntertainment));
         }
+    }
+
+    private int selectedIndex(final int panel) {
+        return switch (panel) {
+            case 0 -> this.selectedAction;
+            case 1 -> this.selectedMedia;
+            case 2 -> this.selectedEntertainment;
+            default -> -1;
+        };
     }
 
     @Override

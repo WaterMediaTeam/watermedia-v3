@@ -104,6 +104,7 @@ public class WaterMediaApp {
         // PHASE 3 — final init that depends on WaterMedia (or that we delayed
         // to keep phase 1 fast).
         ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
+        loadIptvCatalog();
         if (!WaterMedia.LOGGER.isDebugEnabled()) {
             for (int i = 0; i < ctx.uriGroups.length; i++) {
                 final AppContext.URIGroup group = ctx.uriGroups[i];
@@ -117,6 +118,16 @@ public class WaterMediaApp {
         task.run();
         mainLoop();
         cleanup();
+    }
+
+    private static void loadIptvCatalog() {
+        try {
+            final AppContext.IptvCatalog catalog = AppContext.GSON.fromJson(IOTool.jarRead("iptv.json"), AppContext.IptvCatalog.class);
+            ctx.iptvChannels = catalog == null || catalog.channels() == null ? new AppContext.IptvChannel[0] : catalog.channels();
+        } catch (final RuntimeException e) {
+            ctx.iptvChannels = new AppContext.IptvChannel[0];
+            WaterMedia.LOGGER.warn("Failed to load IPTV catalog", e);
+        }
     }
 
     private static void runLoadingPhase(final LoadingScreen loadingScreen) {
@@ -210,6 +221,7 @@ public class WaterMediaApp {
             if (button != GLFW_MOUSE_BUTTON_LEFT) return;
             ctx.requestRender();
             if (action == GLFW_PRESS) {
+                ctx.mouseDown = true;
                 if (ctx.mouseY < AppChrome.TITLEBAR_H && !AppChrome.isTitlebarControl(ctx.mouseX, ctx.windowWidth)) {
                     final boolean restored = restoreForTitlebarDrag();
                     draggingTitlebar = true;
@@ -217,8 +229,11 @@ public class WaterMediaApp {
                         dragOffsetX = (int) ctx.mouseX;
                         dragOffsetY = (int) ctx.mouseY;
                     }
+                } else if (ctx.mouseY >= AppChrome.TITLEBAR_H) {
+                    ctx.mousePressed = true;
                 }
             } else if (action == GLFW_RELEASE) {
+                ctx.mouseDown = false;
                 draggingTitlebar = false;
                 ctx.mouseClicked = true;
             }
@@ -320,6 +335,7 @@ public class WaterMediaApp {
 
         screens.register("home", homeScreen);
         screens.register("mrl", new MRLSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
+        screens.register("regions", new RegionSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("player", new PlayerScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction, homeScreen));
         screens.register("settings", new SettingsScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
@@ -351,6 +367,8 @@ public class WaterMediaApp {
             }
 
             case MRL_SELECTOR -> screens.navigate("mrl");
+
+            case REGION_SELECTOR -> screens.navigate("regions");
 
             case SETTINGS -> {
                 if (WaterMedia.LOGGER.isDebugEnabled()) {
@@ -495,9 +513,14 @@ public class WaterMediaApp {
                 }
             }
         } else {
+            if (ctx.mousePressed) {
+                ctx.mousePressed = false;
+                screens.handleMousePress(ctx.mouseX, ctx.mouseY);
+            }
             screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
             if (ctx.mouseClicked) {
                 ctx.mouseClicked = false;
+                screens.handleMouseRelease(ctx.mouseX, ctx.mouseY);
                 screens.handleMouseClick(ctx.mouseX, ctx.mouseY);
             }
         }
@@ -588,6 +611,7 @@ public class WaterMediaApp {
     }
 
     private static void renderBottomBar() {
+        ctx.configStatusVisible = "settings".equals(screens.currentName());
         final String instructions = exitConfirmVisible ? "ENTER: Exit | ESC: Cancel"
                 : ctx.hasError() ? "ENTER/ESC: Close"
                 : screens.currentInstructions() + " | C: CRT " + (AppChrome.crtEnabled() ? "ON" : "OFF");

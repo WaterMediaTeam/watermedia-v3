@@ -47,6 +47,12 @@ public abstract class Screen {
     public void handleMouseMove(final double mx, final double my) {
     }
 
+    public void handleMousePress(final double mx, final double my) {
+    }
+
+    public void handleMouseRelease(final double mx, final double my) {
+    }
+
     public void handleMouseClick(final double mx, final double my) {
     }
 

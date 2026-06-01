@@ -82,6 +82,18 @@ public class ScreenManager {
         }
     }
 
+    public void handleMousePress(final double mx, final double my) {
+        if (this.current != null) {
+            this.current.handleMousePress(mx, my);
+        }
+    }
+
+    public void handleMouseRelease(final double mx, final double my) {
+        if (this.current != null) {
+            this.current.handleMouseRelease(mx, my);
+        }
+    }
+
     public void handleMouseClick(final double mx, final double my) {
         if (this.current != null) {
             this.current.handleMouseClick(mx, my);

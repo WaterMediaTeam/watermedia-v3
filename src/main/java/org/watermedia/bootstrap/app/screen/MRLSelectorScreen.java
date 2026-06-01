@@ -106,6 +106,19 @@ public class MRLSelectorScreen extends Screen {
         }
     }
 
+    private MRL mrlFor(final AppContext.TestURI uri) {
+        if (uri == null) return null;
+        MRL mrl = this.ctx.groupMRLs.get(uri.name());
+        if (mrl != null) return mrl;
+        mrl = MediaAPI.getMRL(uri.uri());
+        this.ctx.groupMRLs.put(uri.name(), mrl);
+        if (!mrl.ready() && this.groupSubscriptions.add(uri.name())) {
+            mrl.subscribe(done -> this.ctx.requestRender());
+        }
+        this.ctx.requestRender();
+        return mrl;
+    }
+
     private void scheduleLoadTimeout(final int generation) {
         final long deadline = this.loadStartTime + LOAD_TIMEOUT_MS;
         ThreadTool.createStarted("MRLSelectorLoadTimeout", () -> {
@@ -140,7 +153,7 @@ public class MRLSelectorScreen extends Screen {
             if (this.thumbnailPlayers.containsKey(name)) continue;
             if (this.thumbnailAttempted.contains(name)) continue;
 
-            final MRL mrl = this.ctx.groupMRLs.get(name);
+            final MRL mrl = this.mrlFor(uri);
             if (mrl == null) continue;
             if (!mrl.ready()) continue; // STILL LOADING, WAIT
 
@@ -207,7 +220,7 @@ public class MRLSelectorScreen extends Screen {
 
     private void handleSelect(final int index, final AppContext.TestURI uri) {
         this.ctx.selectedMRLName = uri.name();
-        this.ctx.selectedMRL = this.ctx.groupMRLs.get(uri.name());
+        this.ctx.selectedMRL = this.mrlFor(uri);
 
         if (this.ctx.selectedMRL == null) {
             this.ctx.showError("Null", "The MRL is null", null);
@@ -458,7 +471,7 @@ public class MRLSelectorScreen extends Screen {
         AppChrome.panel(previewX, panelY, previewW, panelH, false);
         AppChrome.amberTriangle(previewX - 1, panelY - 1, 10, true);
         AppChrome.amberTriangle(previewX + previewW - 9, panelY + panelH - 9, 10, false);
-        final MRL mrl = this.ctx.groupMRLs.get(selected.name());
+        final MRL mrl = this.mrlFor(selected);
         final String title = this.text.truncateToWidth(selected.name().toUpperCase(), previewW - 410, AppTheme.TEXT_SECTION, java.awt.Font.BOLD);
         this.text.renderBold(title, previewX + 16, panelY + 14, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION);
         final MediaType type = this.firstMediaType(mrl);
@@ -524,7 +537,7 @@ public class MRLSelectorScreen extends Screen {
 
     private void renderMediaRow(final AppContext.TestURI uri, final int index, final Dimension row,
                                 final boolean selected, final int windowW, final int windowH) {
-        final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+        final MRL mrl = this.mrlFor(uri);
         final java.awt.Color stateColor = mrl == null ? AppTheme.TEXT_FAINT : mrl.hasError() ? AppTheme.RED : mrl.ready() ? AppTheme.GREEN : AppTheme.NEON;
         if (selected) {
             RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
@@ -573,7 +586,7 @@ public class MRLSelectorScreen extends Screen {
             RenderSystem.clearClip();
             AppChrome.crtOverlay(x, y, w, h, windowH);
         } else {
-            final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+            final MRL mrl = this.mrlFor(uri);
             RenderSystem.fill(x, y, w, h, AppTheme.BG_0);
             if (mini && (mrl == null || !mrl.hasError())) {
                 if (mrl != null && mrl.ready()) {
@@ -680,7 +693,7 @@ public class MRLSelectorScreen extends Screen {
                 final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
                 if (uris.length > 0) {
                     final AppContext.TestURI uri = uris[this.selectedIndex];
-                    final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+                    final MRL mrl = this.mrlFor(uri);
                     if (mrl != null && mrl.hasError()) this.reloadMRL(uri);
                     else this.handleSelect(this.selectedIndex, uri);
                 }
@@ -751,7 +764,7 @@ public class MRLSelectorScreen extends Screen {
         }
         if (this.playBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
             final AppContext.TestURI uri = uris[this.selectedIndex];
-            final MRL mrl = this.ctx.groupMRLs.get(uri.name());
+            final MRL mrl = this.mrlFor(uri);
             if (mrl != null && mrl.hasError()) this.reloadMRL(uri);
             else this.handleSelect(this.selectedIndex, uri);
             return;

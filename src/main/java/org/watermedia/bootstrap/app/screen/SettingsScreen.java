@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.screen;
 import me.srrapero720.waterconfig.ConfigGroup;
 import me.srrapero720.waterconfig.ConfigSpec;
 import me.srrapero720.waterconfig.WaterConfig;
+import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.IConfigField;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.players.FFMediaPlayer;
@@ -52,13 +53,22 @@ public final class SettingsScreen extends Screen {
     private int selectedRow;
     private int rowScroll;
 
-    private Dimension saveBounds = Dimension.ZERO;
     private Dimension resetBounds = Dimension.ZERO;
     private boolean editing;
     private Setting editingSetting;
     private String editBuffer = "";
     private String statusText = "READY";
     private Color statusColor = AppTheme.TEXT_FAINT;
+    private boolean seekbarDragging;
+    private boolean skipDragClick;
+    private boolean saveAfterDrag;
+    private Setting draggedSeekbar;
+    private Dimension draggedSeekbarBounds = Dimension.ZERO;
+    private Setting dropdownSetting;
+    private Dimension dropdownBounds = Dimension.ZERO;
+    private final List<Dimension> dropdownOptionBounds = new ArrayList<>();
+    private SaveState saveState = SaveState.READY;
+    private int saveFailures;
 
     public SettingsScreen(final TextRenderer text, final AppContext ctx,
                           final Consumer<HomeScreen.Action> navigator) {
@@ -73,6 +83,7 @@ public final class SettingsScreen extends Screen {
         this.editingSetting = null;
         this.editBuffer = "";
         this.clampSelection();
+        this.updateConfigStatus(this.activeSpec());
     }
 
     private void rebuildSpecs() {
@@ -202,11 +213,13 @@ public final class SettingsScreen extends Screen {
     public void render(final int windowW, final int windowH) {
         final SettingSpec spec = this.activeSpec();
         final SettingSection section = this.activeSection();
-        final boolean dirty = spec != null && spec.configSpec != null && spec.configSpec.isDirty();
+        this.updateConfigStatus(spec);
+        final String version = "v" + WaterMedia.VERSION;
         AppChrome.screen(this.text, this.ctx, windowW, windowH,
-                "Settings", section == null ? "" : section.name.toLowerCase(Locale.ROOT), dirty ? "DIRTY" : "READY");
+                "Settings", section == null ? "" : section.name.toLowerCase(Locale.ROOT), version);
 
         this.hits.clear();
+        this.renderHeaderReset(windowW);
         final int x = 22;
         final int y = AppChrome.contentTop() + 10;
         final int bottom = AppChrome.contentBottom(windowH);
@@ -218,6 +231,21 @@ public final class SettingsScreen extends Screen {
         this.renderSidebar(x, y, SIDEBAR_W, h, spec);
         this.renderSettingsPane(contentX, y, contentW, h, spec, section);
         RenderSystem.restoreProjection();
+    }
+
+    @Override
+    public boolean wantsContinuousRender() {
+        return this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING;
+    }
+
+    private void renderHeaderReset(final int windowW) {
+        final String label = "RESET TO DEFAULT";
+        final int w = Math.max(190, this.text.widthBold(label, AppTheme.TEXT_BUTTON) + 58);
+        this.resetBounds = new Dimension(windowW - w - 32, AppChrome.TITLEBAR_H + 58, w, BUTTON_H);
+        RenderSystem.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
+        this.renderActionButton(this.resetBounds, label, AppTheme.AMBER, this.resetBounds.contains(this.ctx.mouseX, this.ctx.mouseY));
+        RenderSystem.restoreProjection();
+        this.hits.add(new Hit(this.resetBounds, HitType.RESET, -1));
     }
 
     private void renderSidebar(final int x, final int y, final int w, final int h, final SettingSpec active) {
@@ -290,18 +318,13 @@ public final class SettingsScreen extends Screen {
         this.text.render(this.text.truncateToWidth(section.detail, Math.max(80, w - 360)),
                 titleX, y + 44, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
 
-        this.resetBounds = new Dimension(x + w - 210, y + 18, 86, BUTTON_H);
-        this.saveBounds = new Dimension(x + w - 112, y + 18, 92, BUTTON_H);
-        this.renderActionButton(this.resetBounds, "RESET", AppTheme.AMBER, this.resetBounds.contains(this.ctx.mouseX, this.ctx.mouseY));
-        this.renderActionButton(this.saveBounds, spec.persistent ? "SAVE" : "APPLY", AppTheme.CYAN, this.saveBounds.contains(this.ctx.mouseX, this.ctx.mouseY));
-        this.hits.add(new Hit(this.resetBounds, HitType.RESET, -1));
-        this.hits.add(new Hit(this.saveBounds, HitType.SAVE, -1));
-
         RenderSystem.lineH(x, y + headerH, w, AppTheme.STROKE_BRIGHT, 1f);
 
         final int rowsY = y + headerH + 10;
         final int rowsH = Math.max(ROW_H, h - headerH - 20);
         this.ensureSelectedVisible(rowsH);
+        this.dropdownBounds = Dimension.ZERO;
+        this.dropdownOptionBounds.clear();
         RenderSystem.clip(x + 12, rowsY, w - 24, rowsH, this.ctx.windowHeight);
         final int visibleRows = Math.max(1, rowsH / ROW_H);
         for (int i = 0; i < visibleRows && i + this.rowScroll < section.settings.size(); i++) {
@@ -316,6 +339,7 @@ public final class SettingsScreen extends Screen {
         if (section.settings.size() > visibleRows) {
             this.renderScrollBar(x + w - 10, rowsY, rowsH, section.settings.size(), visibleRows);
         }
+        this.renderDropdownMenu();
     }
 
     private void renderStatusStrip(final int x, final int y, final int w,
@@ -338,8 +362,8 @@ public final class SettingsScreen extends Screen {
         RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), hover ? AppTheme.alpha(AppTheme.BG_3, 230) : AppTheme.alpha(AppTheme.BG_2, 210));
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), hover ? accent : AppTheme.STROKE_BRIGHT, 1f);
         final int iconSize = 13;
-        PixelIcon.draw("check", b.x() + 10, b.y() + 10, iconSize, accent);
-        this.text.renderBold(label, b.x() + 30, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), hover ? accent : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON);
+        PixelIcon.draw("check", b.x() + 10, b.y() + Math.round((b.height() - iconSize) / 2f), iconSize, accent);
+        this.text.renderBold(label, b.x() + 30, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON) + 1, hover ? accent : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON);
     }
 
     private void renderSettingRow(final Setting setting, final Dimension b, final boolean selected) {
@@ -370,26 +394,49 @@ public final class SettingsScreen extends Screen {
     }
 
     private Dimension controlBounds(final Dimension row, final Setting setting) {
-        final int maxW = Math.max(120, row.width() - 240);
-        final int w = Math.min(setting.controlWidth(), maxW);
+        final int maxW = Math.max(120, row.width() - 160);
+        final int w = Math.min(this.controlWidth(setting), maxW);
         return new Dimension(row.right() - w - 14, row.y() + Math.max(0, (row.height() - CONTROL_H) / 2), w, CONTROL_H);
     }
 
+    private int controlWidth(final Setting setting) {
+        if (setting.isBooleanControl()) return 72;
+        if (setting.isEnumControl()) {
+            final int valueW = this.text.widthBold(setting.widestValueLabel().toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY);
+            return Math.max(150, valueW + 68);
+        }
+        if (setting.isSpinnerControl()) {
+            final String suffix = setting.suffix();
+            final int suffixW = suffix.isBlank() ? 0 : this.text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16;
+            final int valueW = this.text.width(setting.widestValueLabel(), AppTheme.TEXT_BODY);
+            return Math.max(190, valueW + suffixW + 110);
+        }
+        if (setting.isSeekbarControl()) return CONTROL_W;
+        if (Path.class.isAssignableFrom(setting.valueType())) return CONTROL_W + 120;
+        return CONTROL_W;
+    }
+
     private void renderSettingControl(final Setting setting, final Dimension b, final boolean selected) {
-        if (!setting.mutable) {
+        if (!setting.mutable || setting.control() == Control.LABEL) {
             this.renderReadOnlyControl(setting, b);
             return;
         }
-        if (setting.isBooleanControl()) {
-            this.renderSwitchControl(b, setting.booleanValue(), selected);
-        } else if (setting.isSeekbarControl()) {
-            this.renderSeekbarControl(setting, b, selected);
-        } else if (setting.isEnumControl()) {
-            this.renderEnumControl(setting, b, selected);
-        } else if (setting.isSpinnerControl()) {
-            this.renderSpinnerControl(setting, b, selected);
-        } else {
-            this.renderTextFieldControl(setting, b, selected);
+
+        switch (setting.control()) {
+            case SWITCH -> this.renderSwitchControl(b, setting.booleanValue(), selected);
+            case CHECKBOX -> this.renderCheckboxControl(b, setting.booleanValue(), selected);
+            case SEEKBAR, RANGE_SLIDER, KNOB -> {
+                if (setting.isSeekbarControl()) {
+                    this.renderSeekbarControl(setting, b, selected);
+                } else {
+                    this.renderSpinnerControl(setting, b, selected);
+                }
+            }
+            case NUMBER_SPINNER -> this.renderSpinnerControl(setting, b, selected);
+            case DROPDOWN -> this.renderDropdownControl(setting, b, selected);
+            case RADIO_BUTTON, LIST_SPINNER, SEGMENTED -> this.renderEnumControl(setting, b, selected);
+            case LIST_EDITOR, TAG_INPUT, CHECKBOX_LIST -> this.renderReadOnlyControl(setting, b);
+            default -> this.renderTextFieldControl(setting, b, selected);
         }
     }
 
@@ -417,6 +464,17 @@ public final class SettingsScreen extends Screen {
         RenderSystem.fill(knobX, y + 2, knob, knob, on ? AppTheme.AMBER : AppTheme.NEON_LIGHT);
     }
 
+    private void renderCheckboxControl(final Dimension b, final boolean on, final boolean selected) {
+        final int size = 22;
+        final int x = b.right() - size;
+        final int y = b.y() + Math.max(0, (b.height() - size) / 2);
+        final Color border = selected || on ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
+        if (on || selected) RenderSystem.glowRect(x, y, size, size, 0f, on ? AppTheme.GREEN : AppTheme.NEON, on ? 0.30f : 0.16f);
+        RenderSystem.fill(x, y, size, size, AppTheme.alpha(AppTheme.BG_1, 210));
+        RenderSystem.rect(x, y, size, size, border, 1f);
+        if (on) PixelIcon.draw("check", x + 4, y + 4, 14, AppTheme.GREEN);
+    }
+
     private void renderEnumControl(final Setting setting, final Dimension b, final boolean selected) {
         RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(AppTheme.BG_1, 210));
         RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, 1f);
@@ -427,6 +485,65 @@ public final class SettingsScreen extends Screen {
         final String value = setting.valueLabel().toUpperCase(Locale.ROOT);
         this.text.renderBold(this.text.truncateToWidth(value, b.width() - 68),
                 b.x() + 36, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY), selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
+    }
+
+    private void renderDropdownControl(final Setting setting, final Dimension b, final boolean selected) {
+        final boolean open = this.dropdownSetting == setting;
+        final Color border = open || selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
+        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(open ? AppTheme.BG_3 : AppTheme.BG_1, open ? 230 : 210));
+        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), border, open ? 1.5f : 1f);
+        if (open || selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.NEON, open ? 0.20f : 0.12f);
+        RenderSystem.lineV(b.right() - 26, b.y(), b.height(), AppTheme.STROKE, 1f);
+        final Color textColor = open || selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
+        final String value = setting.valueLabel().toUpperCase(Locale.ROOT);
+        this.text.renderBold(value, b.x() + 10, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY), textColor, AppTheme.TEXT_BODY);
+        final float r = textColor.getRed() / 255f;
+        final float g = textColor.getGreen() / 255f;
+        final float blue = textColor.getBlue() / 255f;
+        RenderSystem.fillTriangle(b.right() - 17, b.y() + 10, b.right() - 7, b.y() + 10, b.right() - 12, b.y() + 16, r, g, blue, 1f);
+        if (open) this.dropdownBounds = b;
+    }
+
+    private void renderDropdownMenu() {
+        if (this.dropdownSetting == null) return;
+        if (this.dropdownBounds == Dimension.ZERO) {
+            this.dropdownSetting = null;
+            return;
+        }
+        final List<String> options = this.dropdownSetting.optionLabels();
+        if (options.isEmpty()) return;
+
+        final int rowH = 26;
+        final int padding = 4;
+        final int panelW = Math.max(this.dropdownBounds.width(), this.text.width(this.dropdownSetting.widestValueLabel().toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 44);
+        final int panelH = options.size() * rowH + padding * 2;
+        final int bottomLimit = AppChrome.contentBottom(this.ctx.windowHeight) - 4;
+        final int belowY = this.dropdownBounds.bottom() + 4;
+        final int panelX = this.dropdownBounds.right() - panelW;
+        final int panelY = belowY + panelH <= bottomLimit
+                ? belowY
+                : Math.max(AppChrome.contentTop() + 4, this.dropdownBounds.y() - panelH - 4);
+
+        RenderSystem.shadowRect(panelX, panelY, panelW, panelH, 0f, 0.42f);
+        RenderSystem.fill(panelX, panelY, panelW, panelH, AppTheme.alpha(AppTheme.BG_1, 238));
+        RenderSystem.rect(panelX, panelY, panelW, panelH, AppTheme.STROKE_BRIGHT, 1.5f);
+        RenderSystem.glowRect(panelX, panelY, panelW, panelH, 0f, AppTheme.NEON, 0.18f);
+
+        this.dropdownOptionBounds.clear();
+        final int active = this.dropdownSetting.selectedOptionIndex();
+        for (int i = 0; i < options.size(); i++) {
+            final Dimension row = new Dimension(panelX + padding, panelY + padding + i * rowH, panelW - padding * 2, rowH - 2);
+            this.dropdownOptionBounds.add(row);
+            final boolean optionSelected = i == active;
+            final boolean hover = row.contains(this.ctx.mouseX, this.ctx.mouseY);
+            final Color color = optionSelected ? AppTheme.GREEN : hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
+            RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
+                    optionSelected ? AppTheme.alpha(AppTheme.GREEN, 45) : hover ? AppTheme.alpha(AppTheme.NEON_DARK, 88) : AppTheme.alpha(AppTheme.BG_2, 110));
+            if (optionSelected || hover) RenderSystem.rect(row.x(), row.y(), row.width(), row.height(), color, optionSelected ? 1.5f : 1f);
+            if (optionSelected) RenderSystem.fill(row.x() + 7, row.y() + 9, 6, 6, AppTheme.AMBER);
+            this.text.render(options.get(i).toUpperCase(Locale.ROOT), row.x() + 18,
+                    this.centerTextY(row.y(), row.height(), AppTheme.TEXT_BODY), color, AppTheme.TEXT_BODY);
+        }
     }
 
     private void renderSpinnerControl(final Setting setting, final Dimension b, final boolean selected) {
@@ -446,30 +563,44 @@ public final class SettingsScreen extends Screen {
             this.text.render(suffix.toUpperCase(Locale.ROOT), b.right() - stepW - suffixW + 8,
                     this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         }
-        this.text.render(this.text.truncateToWidth(value, b.width() - stepW * 2 - suffixW - 20),
-                b.x() + stepW + 10, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY),
+        this.text.render(value, b.x() + stepW + 10, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY),
                 selected ? AppTheme.AMBER : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
     }
 
     private void renderSeekbarControl(final Setting setting, final Dimension b, final boolean selected) {
-        final String value = setting.valueLabel();
-        final String suffix = setting.suffix();
-        final String display = suffix.isBlank() ? value : value + " " + suffix;
-        final int valueW = Math.max(58, this.text.width(display, AppTheme.TEXT_SUBTITLE) + 6);
-        final int trackX = b.x();
-        final int trackW = Math.max(80, b.width() - valueW - 14);
-        final int trackY = b.y() + 10;
+        final String display = this.seekbarDisplay(setting);
+        final int valueW = this.seekbarValueWidth(this.seekbarWidestDisplay(setting));
+        final Dimension track = this.seekbarTrackBounds(setting, b);
         final float pct = setting.rangePercent();
 
-        RenderSystem.fill(trackX, trackY, trackW, 6, AppTheme.BG_3);
-        RenderSystem.fillGradientH(trackX, trackY, trackW * pct, 6,
+        RenderSystem.fill(track.x(), track.y(), track.width(), track.height(), AppTheme.BG_3);
+        RenderSystem.fillGradientH(track.x(), track.y(), track.width() * pct, track.height(),
                 AppTheme.NEON_DARK.getRed() / 255f, AppTheme.NEON_DARK.getGreen() / 255f, AppTheme.NEON_DARK.getBlue() / 255f, 1f,
                 AppTheme.NEON_LIGHT.getRed() / 255f, AppTheme.NEON_LIGHT.getGreen() / 255f, AppTheme.NEON_LIGHT.getBlue() / 255f, 1f);
-        RenderSystem.glowRect(trackX, trackY, trackW * pct, 6, 0f, AppTheme.NEON, selected ? 0.34f : 0.18f);
-        final int knobX = trackX + Math.round(trackW * pct);
-        RenderSystem.fill(knobX - 2, trackY - 4, 4, 14, AppTheme.AMBER);
-        this.text.render(display, b.right() - valueW, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE),
+        RenderSystem.glowRect(track.x(), track.y(), track.width() * pct, track.height(), 0f, AppTheme.NEON, selected ? 0.34f : 0.18f);
+        final int knobX = track.x() + Math.round(track.width() * pct);
+        RenderSystem.fill(knobX - 2, track.y() - 4, 4, 14, AppTheme.AMBER);
+        this.text.render(display, b.right() - this.text.width(display, AppTheme.TEXT_SUBTITLE), this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE),
                 selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
+    }
+
+    private Dimension seekbarTrackBounds(final Setting setting, final Dimension b) {
+        final int valueW = this.seekbarValueWidth(this.seekbarWidestDisplay(setting));
+        return new Dimension(b.x(), b.y() + 10, Math.max(80, b.width() - valueW - 14), 6);
+    }
+
+    private int seekbarValueWidth(final String display) {
+        return Math.max(58, this.text.width(display, AppTheme.TEXT_SUBTITLE) + 6);
+    }
+
+    private String seekbarDisplay(final Setting setting) {
+        final String suffix = setting.suffix();
+        return suffix.isBlank() ? setting.valueLabel() : setting.valueLabel() + " " + suffix;
+    }
+
+    private String seekbarWidestDisplay(final Setting setting) {
+        final String suffix = setting.suffix();
+        return suffix.isBlank() ? setting.widestValueLabel() : setting.widestValueLabel() + " " + suffix;
     }
 
     private void renderTextFieldControl(final Setting setting, final Dimension b, final boolean selected) {
@@ -519,6 +650,10 @@ public final class SettingsScreen extends Screen {
             this.handleEditingKey(key);
             return;
         }
+        if (this.dropdownSetting != null) {
+            this.handleDropdownKey(key);
+            return;
+        }
 
         switch (key) {
             case GLFW_KEY_UP -> this.moveRow(-1);
@@ -530,7 +665,6 @@ public final class SettingsScreen extends Screen {
             case GLFW_KEY_RIGHT -> this.adjustSelected(1);
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.activateSelected();
             case GLFW_KEY_R -> this.resetActiveSection();
-            case GLFW_KEY_S -> this.saveActiveSpec();
             case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
         }
     }
@@ -557,7 +691,17 @@ public final class SettingsScreen extends Screen {
 
     @Override
     public void handleMouseMove(final double mx, final double my) {
+        if (this.seekbarDragging) {
+            if (this.ctx.mouseDown && this.draggedSeekbar != null) {
+                this.dragSeekbar(mx);
+            } else {
+                this.seekbarDragging = false;
+                this.draggedSeekbar = null;
+            }
+            return;
+        }
         if (this.editing) return;
+        if (this.dropdownSetting != null) return;
         for (final Hit hit: this.hits) {
             if (hit.type == HitType.ROW && hit.bounds.contains(mx, my)) {
                 if (this.selectedRow != hit.index) {
@@ -571,7 +715,66 @@ public final class SettingsScreen extends Screen {
     }
 
     @Override
+    public void handleMousePress(final double mx, final double my) {
+        if (this.editing) return;
+        for (final Hit hit: this.hits) {
+            if (hit.type != HitType.ROW || !hit.bounds.contains(mx, my)) continue;
+            this.selectedRow = hit.index;
+            final Setting setting = this.selectedSetting();
+            if (setting == null || !setting.mutable || !setting.isSeekbarControl()) return;
+            final Dimension control = this.controlBounds(hit.bounds, setting);
+            if (!control.contains(mx, my)) return;
+            this.seekbarDragging = true;
+            this.skipDragClick = true;
+            this.draggedSeekbar = setting;
+            this.draggedSeekbarBounds = control;
+            this.dragSeekbar(mx);
+            this.ctx.playSelectionSound();
+            return;
+        }
+    }
+
+    private void handleDropdownKey(final int key) {
+        final Setting setting = this.dropdownSetting;
+        if (setting == null) return;
+        switch (key) {
+            case GLFW_KEY_ESCAPE -> this.dropdownSetting = null;
+            case GLFW_KEY_UP -> this.selectDropdownOption(setting, Math.max(0, setting.selectedOptionIndex() - 1));
+            case GLFW_KEY_DOWN -> this.selectDropdownOption(setting, Math.min(setting.optionLabels().size() - 1, setting.selectedOptionIndex() + 1));
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.dropdownSetting = null;
+        }
+        this.ctx.requestRender();
+    }
+
+    @Override
+    public void handleMouseRelease(final double mx, final double my) {
+        this.seekbarDragging = false;
+        this.draggedSeekbar = null;
+        if (this.saveAfterDrag) {
+            this.saveAfterDrag = false;
+            this.autosave();
+        }
+    }
+
+    @Override
     public void handleMouseClick(final double mx, final double my) {
+        if (this.skipDragClick) {
+            this.skipDragClick = false;
+            return;
+        }
+        if (this.dropdownSetting != null) {
+            for (int i = 0; i < this.dropdownOptionBounds.size(); i++) {
+                if (this.dropdownOptionBounds.get(i).contains(mx, my)) {
+                    this.selectDropdownOption(this.dropdownSetting, i);
+                    this.dropdownSetting = null;
+                    this.ctx.playSelectionSound();
+                    return;
+                }
+            }
+            this.dropdownSetting = null;
+            this.ctx.requestRender();
+            return;
+        }
         for (final Hit hit: this.hits) {
             if (!hit.bounds.contains(mx, my)) continue;
             switch (hit.type) {
@@ -589,7 +792,6 @@ public final class SettingsScreen extends Screen {
                         }
                     }
                 }
-                case SAVE -> this.saveActiveSpec();
                 case RESET -> this.resetActiveSection();
             }
             this.ctx.playSelectionSound();
@@ -601,6 +803,7 @@ public final class SettingsScreen extends Screen {
     public void handleScroll(final double yOffset) {
         final SettingSection section = this.activeSection();
         if (section == null) return;
+        this.dropdownSetting = null;
         final int visibleRows = Math.max(1, this.visibleRowsHeight() / ROW_H);
         final int maxScroll = Math.max(0, section.settings.size() - visibleRows);
         this.rowScroll = Math.max(0, Math.min(maxScroll, this.rowScroll - (int) Math.signum(yOffset)));
@@ -614,7 +817,9 @@ public final class SettingsScreen extends Screen {
         this.selectedRow = 0;
         this.rowScroll = 0;
         this.editing = false;
+        this.dropdownSetting = null;
         this.setStatus("READY", AppTheme.TEXT_FAINT);
+        this.updateConfigStatus(this.activeSpec());
     }
 
     private void switchSection(final int index) {
@@ -624,7 +829,9 @@ public final class SettingsScreen extends Screen {
         this.selectedRow = 0;
         this.rowScroll = 0;
         this.editing = false;
+        this.dropdownSetting = null;
         this.setStatus("READY", AppTheme.TEXT_FAINT);
+        this.updateConfigStatus(this.activeSpec());
     }
 
     private void moveSection(final int delta) {
@@ -648,6 +855,7 @@ public final class SettingsScreen extends Screen {
         try {
             if (setting.adjust(delta, this.ctx.ctrlDown ? 10 : 1)) {
                 this.setStatus("CHANGED " + setting.key, AppTheme.AMBER);
+                this.autosave();
                 this.ctx.playSelectionSound();
             } else if (setting.editableText()) {
                 this.beginEdit(setting);
@@ -664,6 +872,11 @@ public final class SettingsScreen extends Screen {
             this.beginEdit(setting);
             return;
         }
+        if (setting.control() == Control.DROPDOWN && setting.isEnumControl()) {
+            this.dropdownSetting = this.dropdownSetting == setting ? null : setting;
+            this.ctx.requestRender();
+            return;
+        }
         this.adjustSelected(1);
     }
 
@@ -671,11 +884,41 @@ public final class SettingsScreen extends Screen {
         try {
             if (setting.editableText()) {
                 this.beginEdit(setting);
-            } else if (setting.click(control, mx)) {
+            } else if (setting.control() == Control.DROPDOWN && setting.isEnumControl()) {
+                this.dropdownSetting = this.dropdownSetting == setting ? null : setting;
+                this.dropdownBounds = control;
+                this.ctx.requestRender();
+            } else if (setting.click(setting.isSeekbarControl() ? this.seekbarTrackBounds(setting, control) : control, mx)) {
                 this.setStatus("CHANGED " + setting.key, AppTheme.AMBER);
+                this.autosave();
                 this.ctx.playSelectionSound();
             }
         } catch (final RuntimeException e) {
+            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
+        }
+    }
+
+    private void selectDropdownOption(final Setting setting, final int index) {
+        try {
+            if (setting.selectOption(index)) {
+                this.setStatus("CHANGED " + setting.key, AppTheme.AMBER);
+                this.autosave();
+            }
+        } catch (final RuntimeException e) {
+            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
+        }
+    }
+
+    private void dragSeekbar(final double mx) {
+        try {
+            if (this.draggedSeekbar != null && this.draggedSeekbar.click(this.seekbarTrackBounds(this.draggedSeekbar, this.draggedSeekbarBounds), mx)) {
+                this.setStatus("CHANGED " + this.draggedSeekbar.key, AppTheme.AMBER);
+                this.saveAfterDrag = true;
+            }
+        } catch (final RuntimeException e) {
+            this.seekbarDragging = false;
+            this.draggedSeekbar = null;
+            this.saveAfterDrag = false;
             this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
         }
     }
@@ -705,6 +948,7 @@ public final class SettingsScreen extends Screen {
             this.editing = false;
             this.editingSetting = null;
             this.editBuffer = "";
+            this.autosave();
         } catch (final RuntimeException e) {
             this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
         }
@@ -718,25 +962,37 @@ public final class SettingsScreen extends Screen {
                 if (setting.mutable) setting.reset();
             }
             this.setStatus("RESET " + section.name.toUpperCase(Locale.ROOT), AppTheme.AMBER);
+            this.autosave();
         } catch (final RuntimeException e) {
             this.setStatus("RESET FAILED: " + compactError(e), AppTheme.RED);
         }
     }
 
-    private void saveActiveSpec() {
+    private void autosave() {
         final SettingSpec spec = this.activeSpec();
         if (spec == null) return;
         if (!spec.persistent || spec.configSpec == null) {
-            this.setStatus("APP SETTINGS APPLY IMMEDIATELY", AppTheme.CYAN);
+            this.saveFailures = 0;
+            this.saveState = SaveState.READY;
+            this.updateConfigStatus(spec);
             return;
         }
+        this.saveState = this.saveFailures > 0 ? SaveState.RESAVING : SaveState.SAVING;
+        this.updateConfigStatus(spec);
+        this.ctx.requestRender();
         try {
             final Method save = ConfigSpec.class.getDeclaredMethod("save");
             save.setAccessible(true);
             save.invoke(spec.configSpec);
+            this.saveFailures = 0;
+            this.saveState = SaveState.SAVED;
             this.setStatus("SAVED " + spec.configSpec.path().getFileName(), AppTheme.GREEN);
         } catch (final ReflectiveOperationException e) {
-            this.setStatus("SAVE FAILED: " + compactError(e), AppTheme.RED);
+            this.saveFailures++;
+            this.saveState = this.saveFailures >= 2 ? SaveState.FAILED_TWICE : SaveState.FAILED_ONCE;
+            this.setStatus("SAVE FAILED: " + compactError(e), this.saveFailures >= 2 ? AppTheme.RED : AppTheme.AMBER);
+        } finally {
+            this.updateConfigStatus(spec);
         }
     }
 
@@ -796,11 +1052,32 @@ public final class SettingsScreen extends Screen {
         this.ctx.requestRender();
     }
 
+    private void updateConfigStatus(final SettingSpec spec) {
+        this.ctx.configStatusText = switch (this.saveState) {
+            case SAVING -> "SAVING";
+            case SAVED -> "SAVED";
+            case FAILED_ONCE, FAILED_TWICE -> "FAILED TO SAVE";
+            case RESAVING -> "RESAVING";
+            case READY -> "READY";
+        };
+        this.ctx.configStatusPulse = this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING;
+        this.ctx.configStatusWarn = this.saveState == SaveState.FAILED_ONCE || this.saveState == SaveState.RESAVING;
+        this.ctx.configStatusError = this.saveState == SaveState.FAILED_TWICE;
+        this.ctx.configStatusStrike = this.saveState == SaveState.FAILED_TWICE;
+        if (spec == null || !spec.persistent || spec.configSpec == null) {
+            this.ctx.configStatusText = "READY";
+            this.ctx.configStatusPulse = false;
+            this.ctx.configStatusWarn = false;
+            this.ctx.configStatusError = false;
+            this.ctx.configStatusStrike = false;
+        }
+    }
+
     @Override
     public String instructions() {
         return this.editing
                 ? "ENTER: Commit | BACKSPACE: Delete | ESC: Cancel"
-                : "UP/DOWN: Field | LEFT/RIGHT: Change | TAB: Spec | PGUP/PGDN: Section | S: Save | ESC: Back";
+                : "UP/DOWN: Field | LEFT/RIGHT: Change | TAB: Spec | PGUP/PGDN: Section | R: Reset | ESC: Back";
     }
 
     private String cacheSizeLabel() {
@@ -867,7 +1144,11 @@ public final class SettingsScreen extends Screen {
     }
 
     private enum HitType {
-        SPEC, SECTION, ROW, SAVE, RESET
+        SPEC, SECTION, ROW, RESET
+    }
+
+    private enum SaveState {
+        READY, SAVING, SAVED, FAILED_ONCE, RESAVING, FAILED_TWICE
     }
 
     private record Hit(Dimension bounds, HitType type, int index) {
@@ -944,8 +1225,28 @@ public final class SettingsScreen extends Screen {
             return false;
         }
 
-        int controlWidth() {
-            return CONTROL_W;
+        Class<?> valueType() {
+            return Object.class;
+        }
+
+        String widestValueLabel() {
+            return this.valueLabel();
+        }
+
+        List<String> optionLabels() {
+            return List.of();
+        }
+
+        int selectedOptionIndex() {
+            return -1;
+        }
+
+        boolean selectOption(final int index) {
+            return false;
+        }
+
+        Control control() {
+            return Control.LABEL;
         }
 
         String suffix() {
@@ -1019,13 +1320,13 @@ public final class SettingsScreen extends Screen {
         }
 
         @Override
-        boolean booleanValue() {
-            return this.getter.get();
+        Control control() {
+            return Control.SWITCH;
         }
 
         @Override
-        int controlWidth() {
-            return 72;
+        boolean booleanValue() {
+            return this.getter.get();
         }
 
         @Override
@@ -1048,13 +1349,18 @@ public final class SettingsScreen extends Screen {
     private static final class ConfigSetting extends Setting {
         private final IConfigField<?, ?> field;
         private final Class<?> valueType;
+        private final Control control;
+        private final String suffix;
         private final Double minValue;
         private final Double maxValue;
 
         private ConfigSetting(final IConfigField<?, ?> field, final String key) {
-            super(titleCase(field.name()), key, typeName(field), firstComment(field), true);
+            super(titleCase(field.name()), key, typeName(field), firstComment(field), fieldMutable(field));
             this.field = field;
             this.valueType = field.type();
+            this.control = safeControl(field);
+            final String rawSuffix = field.suffix();
+            this.suffix = rawSuffix == null || rawSuffix.isBlank() ? "" : rawSuffix.trim();
             this.minValue = numberLimit(field, "minValueString");
             this.maxValue = numberLimit(field, "maxValueString");
         }
@@ -1068,6 +1374,10 @@ public final class SettingsScreen extends Screen {
                 final String raw = path.toString();
                 return raw.isBlank() ? "." : raw;
             }
+            if (this.control == Control.PASSWORD) {
+                final int len = Math.max(8, String.valueOf(value).length());
+                return "*".repeat(Math.min(32, len));
+            }
             return String.valueOf(value);
         }
 
@@ -1079,27 +1389,33 @@ public final class SettingsScreen extends Screen {
 
         @Override
         boolean editableText() {
-            return this.isStringLike() || (this.isNumber() && !this.isSeekbarControl() && !this.isSpinnerControl());
+            return this.mutable && switch (this.control) {
+                case INPUT, TEXT_AREA, INPUT_PASTE, PASSWORD, INPUT_FILE, INPUT_FOLDER, COLOR_PICKER, KEYBIND -> true;
+                default -> false;
+            };
         }
 
         @Override
         boolean isBooleanControl() {
-            return this.isBoolean();
+            return this.isBoolean() && (this.control == Control.SWITCH || this.control == Control.CHECKBOX);
         }
 
         @Override
         boolean isEnumControl() {
-            return this.valueType.isEnum();
+            return this.valueType.isEnum()
+                    && (this.control == Control.DROPDOWN || this.control == Control.RADIO_BUTTON
+                    || this.control == Control.LIST_SPINNER || this.control == Control.SEGMENTED);
         }
 
         @Override
         boolean isSeekbarControl() {
-            return this.isNumber() && this.hasUsableRange();
+            return this.isNumber() && this.hasUsableRange()
+                    && (this.control == Control.SEEKBAR || this.control == Control.RANGE_SLIDER || this.control == Control.KNOB);
         }
 
         @Override
         boolean isSpinnerControl() {
-            return this.isInteger() && !this.hasUsableRange();
+            return this.isNumber() && (this.control == Control.NUMBER_SPINNER || !this.hasUsableRange());
         }
 
         @Override
@@ -1108,22 +1424,69 @@ public final class SettingsScreen extends Screen {
         }
 
         @Override
-        int controlWidth() {
-            if (this.isBooleanControl()) return 72;
-            if (this.isEnumControl()) return 150;
-            if (this.isSeekbarControl()) return CONTROL_W;
-            if (this.isSpinnerControl()) return 190;
-            if (Path.class.isAssignableFrom(this.valueType)) return CONTROL_W + 120;
-            return CONTROL_W;
+        Class<?> valueType() {
+            return this.valueType;
+        }
+
+        @Override
+        String widestValueLabel() {
+            String widest = this.valueLabel();
+            if (this.valueType.isEnum()) {
+                final Object[] constants = this.valueType.getEnumConstants();
+                if (constants != null) {
+                    for (final Object constant: constants) {
+                        widest = wider(widest, String.valueOf(constant));
+                    }
+                }
+                return widest;
+            }
+            if (this.isNumber()) {
+                if (this.minValue != null) widest = wider(widest, String.valueOf(this.numberOf(this.minValue)));
+                if (this.maxValue != null) widest = wider(widest, String.valueOf(this.numberOf(this.maxValue)));
+            }
+            return widest;
+        }
+
+        @Override
+        List<String> optionLabels() {
+            final Object[] constants = this.valueType.isEnum() ? this.valueType.getEnumConstants() : null;
+            if (constants == null || constants.length == 0) return List.of();
+            final List<String> labels = new ArrayList<>(constants.length);
+            for (final Object constant: constants) {
+                labels.add(String.valueOf(constant));
+            }
+            return labels;
+        }
+
+        @Override
+        int selectedOptionIndex() {
+            if (!this.valueType.isEnum()) return -1;
+            final Object[] constants = this.valueType.getEnumConstants();
+            if (constants == null || constants.length == 0) return -1;
+            final Object current = this.field.get();
+            for (int i = 0; i < constants.length; i++) {
+                if (constants[i] == current) return i;
+            }
+            return 0;
+        }
+
+        @Override
+        boolean selectOption(final int index) {
+            if (!this.valueType.isEnum()) return false;
+            final Object[] constants = this.valueType.getEnumConstants();
+            if (constants == null || index < 0 || index >= constants.length) return false;
+            this.setValue(constants[index]);
+            return true;
+        }
+
+        @Override
+        Control control() {
+            return this.control;
         }
 
         @Override
         String suffix() {
-            final String lowerKey = this.key.toLowerCase(Locale.ROOT);
-            if (lowerKey.endsWith("mb")) return "MB";
-            if (lowerKey.endsWith("ms")) return "MS";
-            if (lowerKey.endsWith("bytes")) return "B";
-            return "";
+            return this.suffix;
         }
 
         @Override
@@ -1223,6 +1586,10 @@ public final class SettingsScreen extends Screen {
             }
             if (this.isNumber()) return this.clampNumber(parseNumber(value, this.valueType));
             if (Path.class.isAssignableFrom(this.valueType)) return Path.of(value);
+            if (this.valueType == Character.class || this.valueType == char.class) {
+                if (value.length() != 1) throw new IllegalArgumentException("Expected one character");
+                return value.charAt(0);
+            }
             return raw == null ? "" : raw;
         }
 
@@ -1295,8 +1662,21 @@ public final class SettingsScreen extends Screen {
                     || this.valueType == Double.class || this.valueType == double.class;
         }
 
-        private boolean isStringLike() {
-            return this.valueType == String.class || Path.class.isAssignableFrom(this.valueType);
+        private static boolean fieldMutable(final IConfigField<?, ?> field) {
+            final Control control = safeControl(field);
+            return control != Control.LABEL
+                    && control != Control.LIST_EDITOR
+                    && control != Control.TAG_INPUT
+                    && control != Control.CHECKBOX_LIST;
+        }
+
+        private static Control safeControl(final IConfigField<?, ?> field) {
+            final Control control = field.control();
+            return control == null || control == Control.DEFAULT ? Control.INPUT : control;
+        }
+
+        private static String wider(final String current, final String candidate) {
+            return candidate != null && candidate.length() > current.length() ? candidate : current;
         }
 
         private static Object parseNumber(final String raw, final Class<?> type) {

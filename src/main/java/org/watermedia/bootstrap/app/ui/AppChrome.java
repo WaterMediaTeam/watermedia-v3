@@ -148,7 +148,7 @@ public final class AppChrome {
         }
 
         renderBindings(text, instructions == null ? "" : instructions, 14, y + 10);
-        backendStrip(text, ctx, windowW - backendStripWidth(text) - 18, y + 10);
+        backendStrip(text, ctx, windowW - backendStripWidth(text, ctx) - 18, y + 10);
         RenderSystem.restoreProjection();
     }
 
@@ -168,10 +168,10 @@ public final class AppChrome {
                 RenderSystem.fill(cx, keyY, keyW, keyH, AppTheme.alpha(AppTheme.BG_2, 220));
                 RenderSystem.rect(cx, keyY, keyW, keyH, AppTheme.STROKE_BRIGHT, 1f);
                 PixelIcon.draw(iconForKey(key), cx + 7, keyY + 5, 12, AppTheme.TEXT_FAINT);
-                text.render(key.toUpperCase(), cx + 24, compactTextY(text, keyY, keyH, keyScale), AppTheme.TEXT_SOFT, keyScale);
+                text.render(key.toUpperCase(), cx + 24, compactTextY(text, keyY, keyH, keyScale) + 1, AppTheme.TEXT_SOFT, keyScale);
                 cx += keyW + 6;
             }
-            text.render(label, cx, y + 2, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+            text.render(label, cx, textY(text, y - 1, 22, AppTheme.TEXT_BODY) + 1, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
             cx += text.width(label, AppTheme.TEXT_BODY) + 18;
         }
     }
@@ -348,13 +348,24 @@ public final class AppChrome {
     public static void backendStrip(final TextRenderer text, final AppContext ctx, final int x, final int y) {
         final boolean pending = ctx != null && ctx.backendsLoading && !FFMediaPlayer.loaded() && !FFMediaPlayer.loadError();
         int cx = x;
-        cx += backendTag(text, cx, y, "FFMPEG", FFMediaPlayer.loaded(), pending, FFMediaPlayer.loadError(), false);
-        cx += backendTag(text, cx, y, "OpenGL", true, false, false, false);
-        backendTag(text, cx, y, "Vulkan", false, false, true, true);
+        if (ctx != null && ctx.configStatusVisible) {
+            cx += backendTag(text, cx, y, "CONFIG", true, ctx.configStatusPulse,
+                    ctx.configStatusError, ctx.configStatusWarn, ctx.configStatusStrike);
+        }
+        cx += backendTag(text, cx, y, "FFMPEG", FFMediaPlayer.loaded(), pending, FFMediaPlayer.loadError(), false, false);
+        cx += backendTag(text, cx, y, "OpenGL", true, false, false, false, false);
+        backendTag(text, cx, y, "Vulkan", false, false, true, false, true);
     }
 
     public static int backendStripWidth(final TextRenderer text) {
-        return backendTagWidth(text, "FFMPEG") + backendTagWidth(text, "OpenGL") + backendTagWidth(text, "Vulkan");
+        return backendStripWidth(text, null);
+    }
+
+    public static int backendStripWidth(final TextRenderer text, final AppContext ctx) {
+        final int config = ctx != null && ctx.configStatusVisible
+                ? backendTagWidth(text, "CONFIG")
+                : 0;
+        return config + backendTagWidth(text, "FFMPEG") + backendTagWidth(text, "OpenGL") + backendTagWidth(text, "Vulkan");
     }
 
     private static int backendTagWidth(final TextRenderer text, final String label) {
@@ -363,10 +374,10 @@ public final class AppChrome {
 
     private static int backendTag(final TextRenderer text, final int x, final int y,
                                   final String label, final boolean on, final boolean pending,
-                                  final boolean error, final boolean underline) {
+                                  final boolean error, final boolean warn, final boolean strike) {
         final int w = backendTagWidth(text, label);
         final float pulse = pending ? 0.42f + 0.35f * (float) ((Math.sin(System.currentTimeMillis() / 180.0) + 1.0) * 0.5) : 1f;
-        final Color base = pending ? AppTheme.TEXT_FAINT : error || !on ? AppTheme.RED : AppTheme.GREEN;
+        final Color base = error || !on ? AppTheme.RED : warn ? AppTheme.AMBER : pending ? AppTheme.TEXT_FAINT : AppTheme.GREEN;
         final Color c = AppTheme.alpha(base, Math.max(70, Math.min(255, (int) (255 * pulse))));
         RenderSystem.fill(x, y, w, 22, AppTheme.alpha(AppTheme.BG_1, 190));
         RenderSystem.rect(x, y, w, 22, AppTheme.STROKE_BRIGHT, 1f);
@@ -375,7 +386,7 @@ public final class AppChrome {
         final int textW = scaledWidth(text, label, AppTheme.TEXT_BODY);
         final int textY = compactTextY(text, y, 22, AppTheme.TEXT_BODY);
         text.render(label.toUpperCase(), textX, textY, c, AppTheme.TEXT_BODY);
-        if (underline) {
+        if (strike) {
             RenderSystem.lineH(textX, textY + Math.max(1, text.glyphHeight(AppTheme.TEXT_BODY) / 2), textW, c, 1f);
         }
         return w;

@@ -46,9 +46,19 @@ public final class AppContext implements Executor {
     // MOUSE
     public double mouseX;
     public double mouseY;
+    public boolean mouseDown;
+    public boolean mousePressed;
     public boolean mouseClicked;
     public boolean ctrlDown;
     public boolean selectionSoundEnabled = true;
+
+    // CONFIG STATUS SHOWN BY SETTINGS IN THE ENGINE STRIP
+    public volatile boolean configStatusVisible;
+    public volatile String configStatusText = "READY";
+    public volatile boolean configStatusPulse;
+    public volatile boolean configStatusWarn;
+    public volatile boolean configStatusError;
+    public volatile boolean configStatusStrike;
 
     // TEXT RENDERER
     public TextRenderer text;
@@ -60,6 +70,8 @@ public final class AppContext implements Executor {
     public final LinkedHashMap<String, MRL> groupMRLs = new LinkedHashMap<>();
     public final List<TestURI> customTests = new ArrayList<>();
     public URIGroup[] uriGroups;
+    public IptvChannel[] iptvChannels = new IptvChannel[0];
+    public String selectedIptvRegion = "";
 
     // SELECTION STATE
     public URIGroup selectedGroup;
@@ -134,6 +146,13 @@ public final class AppContext implements Executor {
     }
 
     public record URIGroup(String name, TestURI[] uris) {
+    }
+
+    public record IptvCatalog(String generatedAt, IptvChannel[] channels) {
+    }
+
+    public record IptvChannel(String name, String url, String logo, String region,
+                              String group, String tvgId, String source) {
     }
 
     public static final class UploadFileEntry {

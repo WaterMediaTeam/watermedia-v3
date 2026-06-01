@@ -7,6 +7,7 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.M3UTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -131,28 +132,57 @@ public final class MRL {
                 try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug("Connected to {} with content type {}", this.uri, req.contentType());
 
-                    if (!DataTool.startsWidth(req.contentType(), "video", "image", "audio", "application/vnd.rn-realmedia", "application/vnd.rn-realmedia-vbr", "application/vnd.apple.mpegurl", "application/octet-stream")) {
-                        throw new UnsupportedOperationException("The MRL content is not multimedia, received: " + req.contentType());
+                    // FAIL FAST ON NON-2xx — OTHERWISE READING THE BODY WOULD THROW A LATE,
+                    // OPAQUE IOException FROM HttpURLConnection.getInputStream().
+                    if (req.statusCode() >= 400) {
+                        throw new IOException("HTTP " + req.statusCode() + " for " + this.uri);
                     }
 
-                    MediaType type = MediaType.of(req.contentType());
-                    if (type == MediaType.UNKNOWN) {
-                        // SERVER GAVE AN AMBIGUOUS MIME (e.g. application/octet-stream). SNIFF THE
-                        // LEADING BYTES — AUTHORITATIVE — THEN FALL BACK TO THE URL EXTENSION.
-                        try (final InputStream in = req.getInputStream()) {
-                            type = CodecsAPI.getMediaType(in);
-                        } catch (final IOException e) {
-                            LOGGER.warn(IT, "Failed to sniff media type for {}", this.uri, e);
+                    // SOME SERVERS OMIT CONTENT-TYPE ENTIRELY; LET THE BYTE SNIFFER CLASSIFY
+                    // IN THAT CASE. EXPLICITLY-NON-MEDIA TYPES (text/html, application/json...)
+                    // STILL FAIL FAST HERE TO AVOID DOWNLOADING A 404 PAGE.
+                    final String contentType = req.contentType();
+                    if (contentType != null && !DataTool.startsWidth(contentType, "video", "image", "audio", "application/vnd.rn-realmedia", "application/vnd.rn-realmedia-vbr", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/octet-stream")) {
+                        throw new UnsupportedOperationException("The MRL content is not multimedia, received: " + contentType);
+                    }
+
+                    // M3U PLAYLISTS HAVE TWO DIALECTS. IPTV LISTS ARE FLAT GALLERIES OF
+                    // INDEPENDENT CHANNELS AND MUST EXPAND INTO N DATASOURCES, ONE PER
+                    // CHANNEL — OTHERWISE THE PLAYER WOULD MISTAKE THEM FOR HLS AND FAIL.
+                    // HLS PLAYLISTS COLLAPSE TO A SINGLE VIDEO SOURCE AND THE PLAYER DRIVES
+                    // THE RENDITION NEGOTIATION ITSELF.
+                    final String pathLower = this.uri.getPath() == null ? "" : this.uri.getPath().toLowerCase();
+                    final boolean m3uShape = (contentType != null && contentType.toLowerCase().contains("mpegurl"))
+                            || pathLower.endsWith(".m3u") || pathLower.endsWith(".m3u8");
+
+                    if (m3uShape) {
+                        final String body = req.readAllAsString();
+                        if (M3UTool.isIptv(body)) {
+                            data = expandIptv(body, this.uri);
+                        } else {
+                            data = new PlatformData(null, new DataSource(MediaType.VIDEO, null, null,
+                                    RequestHeaders.defaults(this.uri),
+                                    new DataQuality[] { new DataQuality(this.uri, 0, 0) },
+                                    null, null));
                         }
-                        if (type == MediaType.UNKNOWN) type = MediaType.ofExtension(this.uri.getPath());
+                    } else {
+                        MediaType type = MediaType.of(contentType);
+                        if (type == MediaType.UNKNOWN) {
+                            // SERVER GAVE AN AMBIGUOUS MIME (e.g. application/octet-stream). SNIFF THE
+                            // LEADING BYTES — AUTHORITATIVE — THEN FALL BACK TO THE URL EXTENSION.
+                            try (final InputStream in = req.getInputStream()) {
+                                type = CodecsAPI.getMediaType(in);
+                            } catch (final IOException e) {
+                                LOGGER.warn(IT, "Failed to sniff media type for {}", this.uri, e);
+                            }
+                            if (type == MediaType.UNKNOWN) type = MediaType.ofExtension(this.uri.getPath());
+                        }
+
+                        data = new PlatformData(null, new DataSource(type, null, null,
+                                RequestHeaders.defaults(this.uri),
+                                new DataQuality[] {new DataQuality(this.uri, 0, 0)},
+                                null, null));
                     }
-
-                    final var entry = new DataSource(type, null, null,
-                            RequestHeaders.defaults(this.uri),
-                            new DataQuality[] {new DataQuality(this.uri, 0, 0)},
-                            null, null);
-
-                    data = new PlatformData(null, entry);
                 }
             }
 
@@ -171,6 +201,34 @@ public final class MRL {
             this.ready = true;
             this.fireListeners();
         }
+    }
+
+    private static PlatformData expandIptv(final String body, final URI source) throws IOException {
+        final List<M3UTool.Entry> channels = M3UTool.parse(body);
+        if (channels.isEmpty()) throw new IOException("IPTV playlist contained no entries: " + source);
+        final List<DataSource> sources = new ArrayList<>(channels.size());
+        for (final M3UTool.Entry e: channels) {
+            final URI childUri;
+            try {
+                childUri = URI.create(e.url());
+            } catch (final IllegalArgumentException badUri) {
+                // A SINGLE BAD CHILD URI MUSTN'T SINK THE WHOLE PLAYLIST — JUST SKIP IT.
+                LOGGER.warn(IT, "Skipping malformed URL in IPTV playlist {}: {}", source, e.url());
+                continue;
+            }
+            URI logoUri = null;
+            if (e.tvgLogo() != null && !e.tvgLogo().isEmpty()) {
+                try { logoUri = URI.create(e.tvgLogo()); }
+                catch (final IllegalArgumentException ignored) { /* TVG-LOGO IS BEST-EFFORT, BAD ENTRIES STAY UNILLUSTRATED */ }
+            }
+            final Metadata md = new Metadata(e.title(), null, null, 0, e.tvgGroup());
+            sources.add(new DataSource(MediaType.UNKNOWN, logoUri, md,
+                    RequestHeaders.defaults(childUri),
+                    new DataQuality[] { new DataQuality(childUri, 0, 0) },
+                    null, null));
+        }
+        if (sources.isEmpty()) throw new IOException("IPTV playlist " + source + " had only malformed URLs");
+        return new PlatformData(null, sources.toArray(DataSource[]::new));
     }
 
     private void fireListeners() {

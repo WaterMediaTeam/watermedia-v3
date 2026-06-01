@@ -409,6 +409,14 @@ public final class FFMediaPlayer extends MediaPlayer {
         };
     }
 
+    // PLAUSIBLE REAL-WORLD VIDEO FRAME RATE. REJECTS 0/NaN/INFINITY AND TIMEBASE
+    // ARTIFACTS LIKE THE 90kHz MPEG-TS PCR CLOCK (90000), WHICH WOULD OTHERWISE
+    // DRIVE frameDuration TO 0ms AND BREAK PACING. 1000fps IS WELL ABOVE ANY REAL
+    // CONTENT WHILE STILL EXCLUDING CLOCK-RATE VALUES.
+    private static boolean isPlausibleFps(final double fps) {
+        return fps >= 1.0 && fps <= 1000.0;
+    }
+
     // MEMBERSHIP CHECK FOR INT ARRAYS.
     private static boolean contains(final int[] arr, final int value) {
         for (final int v: arr) if (v == value) return true;
@@ -1714,6 +1722,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVDictionary options = new AVDictionary();
         try {
             av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
+            this.applyProbeOptions(options);
             av_dict_set(options, "buffer_size", "33554432", 0);
             av_dict_set(options, "rtbufsize", "15000000", 0);
             av_dict_set(options, "http_persistent", "1", 0);
@@ -1747,6 +1756,18 @@ public final class FFMediaPlayer extends MediaPlayer {
         return true;
     }
 
+    // APPLIES STREAM-PROBING OPTIONS BEFORE avformat_open_input. ANALYZEDURATION IS GIVEN
+    // IN MICROSECONDS AND PROBESIZE IN BYTES, SO WE CONVERT FROM THE CONFIG'S ms/MB UNITS.
+    // RAISING THESE LETS FFMPEG DETECT AUDIO/VIDEO PARAMS (sample_rate, channels) ON LIVE
+    // HLS STREAMS WHOSE HEADERS ARE SPARSE — OTHERWISE STREAMS PROBE AS 0Hz/0ch.
+    private void applyProbeOptions(final AVDictionary options) {
+        final int analyzeMs = WaterMediaConfig.media.ffmpegAnalyzeDurationMs;
+        if (analyzeMs > 0) {
+            av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1000L), 0);
+        }
+        av_dict_set(options, "probesize", String.valueOf((long) WaterMediaConfig.media.ffmpegProbeSizeMB * 1024L * 1024L), 0);
+    }
+
     // INIT
     private boolean init() {
         try {
@@ -1776,6 +1797,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             try {
                 LOGGER.debug("Referer: {}", uri.getScheme() + "://" + uri.getHost());
                 av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
+                this.applyProbeOptions(options);
                 av_dict_set(options, "buffer_size", "33554432", 0);
                 av_dict_set(options, "rtbufsize", "15000000", 0);
                 av_dict_set(options, "http_persistent", "1", 0);
@@ -1849,6 +1871,32 @@ public final class FFMediaPlayer extends MediaPlayer {
             final boolean videoInit = this.initVideo();
             final boolean audioInit = this.initAudio();
 
+            // FULLY DISABLE A STREAM WHOSE INIT FAILED. THE DECODE THREADS ONLY CHECK
+            // streamIndex >= 0 && codecContext != null TO START, BUT A PARTIALLY-OPENED
+            // PIPELINE LEAVES codecContext NON-NULL (E.G. avcodec_open2 SUCCEEDS WHILE
+            // swr_init FAILS). RUNNING ON THAT HALF-INITIALIZED RESAMPLER CALLS
+            // swr_get_delay ON AN UNINITIALIZED SwrContext WHOSE in_sample_rate IS 0,
+            // CAUSING A NATIVE INTEGER DIVIDE-BY-ZERO (JVM CRASH). THIS HAPPENS ON HLS
+            // VARIANTS WHOSE AUDIO PARAMS CANNOT BE PROBED (sample_rate=0, 0 channels).
+            if (!videoInit) {
+                if (this.videoCodecContext != null) {
+                    avcodec.avcodec_free_context(this.videoCodecContext);
+                    this.videoCodecContext = null;
+                }
+                this.videoStreamIndex = -1;
+            }
+            if (!audioInit) {
+                if (this.audioCodecContext != null) {
+                    avcodec.avcodec_free_context(this.audioCodecContext);
+                    this.audioCodecContext = null;
+                }
+                if (this.swrContext != null) {
+                    swresample.swr_free(this.swrContext);
+                    this.swrContext = null;
+                }
+                this.audioStreamIndex = -1;
+            }
+
             if (!videoInit && !audioInit)
                 throw new IllegalStateException("Video and Audio failed to initialize");
 
@@ -1921,15 +1969,20 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         final AVStream videoStream = this.formatContext.streams(this.videoStreamIndex);
-        final AVRational frameRate = videoStream.avg_frame_rate();
 
-        if (frameRate.num() > 0 && frameRate.den() > 0) {
-            this.clock.fps((float) av_q2d(frameRate));
+        // DETERMINE FRAME RATE — PREFER avg_frame_rate, FALL BACK TO r_frame_rate.
+        // REJECT IMPLAUSIBLE VALUES: MPEG-TS (COMMON INSIDE HLS) REPORTS THE 90kHz PCR
+        // CLOCK (90000fps) AS r_frame_rate UNTIL THE REAL RATE IS PROBED. FEEDING THAT
+        // TO THE CLOCK COLLAPSES FRAME PACING — frameDuration AND skipThreshold ROUND
+        // TO 0ms — SO WE KEEP THE CLOCK'S SANE DEFAULT WHEN NO REAL RATE IS AVAILABLE.
+        final double avgFps = av_q2d(videoStream.avg_frame_rate());
+        final double rFps = av_q2d(videoStream.r_frame_rate());
+        if (isPlausibleFps(avgFps)) {
+            this.clock.fps((float) avgFps);
+        } else if (isPlausibleFps(rFps)) {
+            this.clock.fps((float) rFps);
         } else {
-            final AVRational tbr = videoStream.r_frame_rate();
-            if (tbr.num() > 0 && tbr.den() > 0) {
-                this.clock.fps((float) av_q2d(tbr));
-            }
+            LOGGER.warn(IT, "No plausible frame rate (avg={}, r={}) — keeping default {}fps", avgFps, rFps, this.clock.fps());
         }
 
         LOGGER.info(IT, "Video timing: {}fps, frame duration: {}ms, skip threshold: {}ms",
