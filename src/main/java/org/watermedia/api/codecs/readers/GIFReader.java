@@ -98,6 +98,12 @@ public class GIFReader extends ImageReader {
     private GraphicExtension previousGce;
     private ImageDescriptor previousId;
 
+    // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
+    private final int resetPos;
+    private final int resetIntroducer;
+    private final boolean resetDone;
+    private final GraphicExtension resetGce;
+
     public GIFReader(final ByteBuffer data) throws IOException {
         super(data);
         this.data.order(LE);
@@ -138,6 +144,12 @@ public class GIFReader extends ImageReader {
                 break;
             }
         }
+
+        // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
+        this.resetPos = this.data.position();
+        this.resetIntroducer = this.pendingIntroducer;
+        this.resetDone = this.done;
+        this.resetGce = this.currentGce;
     }
 
     @Override public int width() { return this.lsd.width(); }
@@ -184,6 +196,21 @@ public class GIFReader extends ImageReader {
         this.decodeFrame();
         this.currentFrame = this.directOut;
         return this.directOut;
+    }
+
+    @Override
+    public boolean reset() {
+        // CANVAS AND restoreFrame NEED NO CLEARING: FRAME 0 FULLY REFILLS THE CANVAS AND
+        // DISPOSAL-3 SNAPSHOTS ARE ALWAYS SAVED BEFORE BEING RESTORED WITHIN THE SAME PASS
+        this.data.position(this.resetPos);
+        this.pendingIntroducer = this.resetIntroducer;
+        this.done = this.resetDone;
+        this.nextReady = false;
+        this.currentGce = this.resetGce;
+        this.previousGce = null;
+        this.previousId = null;
+        this.currentDelay = 0L;
+        return true;
     }
 
     // ----- FRAME DECODE -----

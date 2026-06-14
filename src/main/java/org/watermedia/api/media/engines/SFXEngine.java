@@ -138,6 +138,26 @@ public abstract class SFXEngine {
     public abstract boolean upload(final ByteBuffer data);
 
     /**
+     * Discards all audio queued in the engine that has not finished playing.
+     * Used on seeks and quality switches so stale audio from the previous
+     * position doesn't keep playing (or get replayed) after the jump.
+     * Playback stops; the next {@link #upload(ByteBuffer)} + {@link #play()} resumes it.
+     */
+    public abstract void flush();
+
+    /**
+     * Returns the amount of queued audio that has not yet reached the listener, in milliseconds.
+     * <p>
+     * This is the complement of {@link #playbackMs()} for A/V synchronization: a media clock can
+     * derive the audible position as {@code endPtsOfLastUploadedFrame - pendingMs()}. When
+     * {@code AL_SOFT_source_latency} (or the equivalent in other backends) is available, the value
+     * includes audio still buffered inside the output device.
+     * @return milliseconds of uploaded audio not yet audible; {@code 0} when nothing is pending
+     *         (e.g. after an underrun or before the first upload)
+     */
+    public abstract long pendingMs();
+
+    /**
      * Returns the playback position of the sample currently reaching the listener, in milliseconds.
      * <p>
      * When {@code AL_SOFT_source_latency} (or the equivalent in other backends) is available,

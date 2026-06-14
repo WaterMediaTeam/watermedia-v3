@@ -85,15 +85,14 @@ public final class ServerMediaPlayer extends MediaPlayer {
     public boolean pause(final boolean paused) {
         if (paused) {
             if (this.status != Status.PLAYING) return false;
-            this.accumulatedMs = computeTime();
+            this.accumulatedMs = this.computeTime();
             this.status = Status.PAUSED;
-            return true;
         } else {
             if (this.status != Status.PAUSED) return false;
             this.segmentStartNanos = System.nanoTime();
             this.status = Status.PLAYING;
-            return true;
         }
+        return true;
     }
 
     @Override
@@ -108,9 +107,10 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public boolean togglePlay() {
         return switch (this.status) {
-            case PLAYING -> pause();
-            case PAUSED  -> resume();
-            case STOPPED, ENDED -> { start(); yield true; }
+            case PLAYING -> this.pause();
+            case PAUSED  -> this.resume();
+            case STOPPED, ENDED -> {
+                this.start(); yield true; }
             default -> false;
         };
     }
@@ -118,14 +118,14 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public boolean seek(final long time) {
         if (this.status == Status.WAITING) return false;
-        syncTime(time);
+        this.syncTime(time);
         return true;
     }
 
     @Override
     public long time() {
         return switch (this.status) {
-            case PLAYING -> computeTime();
+            case PLAYING -> this.computeTime();
             case PAUSED, STOPPED, ENDED -> this.accumulatedMs;
             default -> 0;
         };
@@ -133,28 +133,28 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean skipTime(final long time) {
-        return seek(time() + time);
+        return this.seek(this.time() + time);
     }
 
     @Override
     public boolean seekQuick(final long time) {
-        return seek(time);
+        return this.seek(time);
     }
 
     @Override
     public boolean forward() {
-        return skipTime(5000);
+        return this.skipTime(5000);
     }
 
     @Override
     public boolean rewind() {
-        return skipTime(-5000);
+        return this.skipTime(-5000);
     }
 
     @Override
     public boolean speed(final float speed) {
         if (this.status == Status.PLAYING) {
-            this.accumulatedMs = computeTime();
+            this.accumulatedMs = this.computeTime();
             this.segmentStartNanos = System.nanoTime();
         }
         return super.speed(speed);
@@ -210,7 +210,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     private long computeTime() {
         final long elapsedNanos = System.nanoTime() - this.segmentStartNanos;
-        final long elapsedMs = (long) (TimeUnit.NANOSECONDS.toMillis(elapsedNanos) * speed());
+        final long elapsedMs = (long) (TimeUnit.NANOSECONDS.toMillis(elapsedNanos) * this.speed());
         return this.accumulatedMs + elapsedMs;
     }
 
@@ -228,8 +228,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
         if (this.status != Status.PLAYING) return;
 
         final long d = this.duration;
-        if (d > 0 && computeTime() >= d) {
-            if (repeat()) {
+        if (d > 0 && this.computeTime() >= d) {
+            if (this.repeat()) {
                 this.accumulatedMs = 0;
                 this.segmentStartNanos = System.nanoTime();
             } else {

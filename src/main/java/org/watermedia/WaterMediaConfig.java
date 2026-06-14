@@ -58,18 +58,24 @@ public class WaterMediaConfig {
         @Comment("Disables FFMPEG engine (AT ALL)")
         public boolean disableFFMPEG = false;
 
+        @Spec.Field
+        @Comment("Enables hardware-accelerated video decoding (NVDEC, QuickSync, D3D11VA, VAAPI...)")
+        @Comment("Disable if you experience stutter, lag or black video — software decoding is often smoother on some GPUs (notably AMD)")
+        public boolean ffmpegHardwareAcceleration = true;
+
         @Spec.Field(suffix = "packets", control = Control.SEEKBAR)
         @Comment("Configures how many audio packets read when video has an audio slave")
         @Comment("Increment this value if you find YouTube videos with slow playback")
         @NumberConditions(minInt = 1, maxInt = 12)
         public int ffmpegSlavePacketReads = 3;
 
-        @Spec.Field(suffix = "frames", control = Control.SEEKBAR)
-        @Comment("Animated images with this many frames or fewer are uploaded as one GL texture per frame")
+        @Spec.Field(suffix = "MB", control = Control.SEEKBAR)
+        @Comment("VRAM budget (in MB) for keeping an animated image as one GL texture per frame")
+        @Comment("Animations whose decoded frames fit under this budget skip per-frame streaming entirely (best performance, like v2)")
         @Comment("Set to 0 to force TxMediaPlayer to stream animated image frames into a single texture")
-        @NumberConditions(minInt = 0, maxInt = 64)
-        public int txMultiTextureFrameThreshold = 5;
-    
+        @NumberConditions(minInt = 0, maxInt = 512)
+        public int txFrameTexturesBudgetMB = 32;
+
         @Spec.Field
         @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
         public boolean txNetworkCache = true;

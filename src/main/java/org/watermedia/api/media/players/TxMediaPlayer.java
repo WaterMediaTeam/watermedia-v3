@@ -19,10 +19,13 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -35,21 +38,30 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <ul>
  *   <li><b>Mode 1 — Static image:</b> a single frame is uploaded once. No lifecycle thread is
  *       spawned and the texture remains live until {@link #stop()} or {@link #release()}.</li>
- *   <li><b>Mode 2 — Pre-uploaded frame textures:</b> when the known frame count sits at or
- *       below the configured threshold <i>and</i> the engine reports
+ *   <li><b>Mode 2 — Pre-uploaded frame textures:</b> when the animation's decoded RGBA frames
+ *       fit under the configured VRAM budget <i>and</i> the engine reports
  *       {@link GFXEngine#supportsFrameTextures()}, every frame is uploaded as its own texture.
- *       Playback only switches which texture handle is exposed.</li>
+ *       Playback is driven by a passive clock: no thread exists, the displayed frame is
+ *       resolved from wall time on each {@link #texture()} call, so steady-state cost is zero
+ *       uploads and zero wakeups.</li>
  *   <li><b>Mode 3 — Streaming decode with prefetch:</b> a streaming {@link ImageReader} is
  *       driven from the playback clock — each {@code next()} call decodes one frame on demand,
  *       like a video decoder. During the current frame's display window the loop pre-decodes
  *       upcoming frames into a bounded queue ("decode ahead instead of just sleeping"). If the
  *       queue empties because decoding fell behind the clock, playback drops into
- *       {@link Status#BUFFERING} and pre-decodes a handful of frames before resuming.</li>
+ *       {@link Status#BUFFERING} and pre-decodes a handful of frames before resuming. Aggregate
+ *       decode CPU across all players is bounded by a shared permit pool.</li>
  * </ul>
  * <p>
- * Seek / loop / step-backwards re-open the source and decode forward to the target. Animated
- * image formats are not random-access because each frame's canvas depends on prior frames,
- * exactly like video's GOP semantics.
+ * Seek / loop / step-backwards rewind the source ({@link ImageReader#reset()} when supported,
+ * otherwise a full re-open) and decode forward to the target. Animated image formats are not
+ * random-access because each frame's canvas depends on prior frames, exactly like video's GOP
+ * semantics.
+ * <p>
+ * When {@link #maxSize(int, int)} or a {@link LodLevel} below MAX is active, decoded frames
+ * are downscaled (area average) before upload. Streaming playback (Mode 3) picks up LOD
+ * changes on the fly; static images and preloaded texture sets (Modes 1-2) apply the target
+ * at preparation time.
  */
 public final class TxMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(TxMediaPlayer.class.getSimpleName());
@@ -59,17 +71,25 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // PREFETCH: HOLD UP TO PREFETCH_MAX PRE-DECODED FRAMES; REFILL PREFETCH_REFILL ON BUFFERING STALL.
     // PIXEL BUFFERS CYCLE THROUGH A POOL SO STEADY-STATE ALLOCATIONS ARE ZERO.
-    // TOTAL LIVE MEMORY IS ROUGHLY PREFETCH AND IN-FLIGHT BUFFER COUNT TIMES WIDTH*HEIGHT*4.
+    // TOTAL LIVE MEMORY IS ROUGHLY PREFETCH AND IN-FLIGHT BUFFER COUNT TIMES THE FRAME BYTE SIZE.
     private static final int PREFETCH_MAX = 6;
     private static final int PREFETCH_REFILL = 3;
     private static final int POOL_SPARE = 2;
     private static final long PREFETCH_BUDGET_BYTES = 64L * 1024 * 1024;
     private static final long PREFETCH_SAFETY_MARGIN_MS = 2L;
-    private static final int IN_FLIGHT_RING_SIZE = 4;
-    private static final int IN_FLIGHT_SAFETY_FRAMES = 2;
+    // ENGINES CONSUME OR DROP A SUBMITTED FRAME BEFORE THE SECOND SUBSEQUENT upload() RETURNS,
+    // SO ONLY THE LAST TWO SUBMITTED BUFFERS MUST STAY UNTOUCHED.
+    private static final int IN_FLIGHT_KEEP = 2;
+    // MODE 2 HARD CAP: AVOIDS CREATING THOUSANDS OF GL TEXTURE OBJECTS FOR TINY LONG ANIMATIONS
+    private static final int MAX_FRAME_TEXTURES = 256;
+    private static final long PAUSE_WAIT_MS = 200L;
+    private static final long REFILL_PERMIT_TIMEOUT_MS = 5_000L;
     private static final ExecutorService SINGLE_FRAME_POOL = Executors.newFixedThreadPool(
             Math.max(1, ThreadTool.minThreads()),
             ThreadTool.createFactory("TxPlayer-SingleFrame", Thread.NORM_PRIORITY - 1));
+    // GLOBAL PERMITS BOUNDING AGGREGATE DECODE CPU ACROSS ALL TX PLAYERS — MANY ANIMATED
+    // IMAGES THROTTLE EACH OTHER INSTEAD OF STARVING THE GAME'S OWN THREADS
+    private static final Semaphore DECODE_PERMITS = new Semaphore(Math.max(2, ThreadTool.minThreads()));
 
     // ==========================================================================
     // FIELDS
@@ -83,17 +103,23 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile PixelFormat pixelFormat = PixelFormat.BGRA;
     private volatile int planeCount = 1;
 
+    // UPLOAD TARGET — SOURCE DIMENSIONS SHRUNK BY maxSize/LOD (SEE MediaPlayer#targetSize).
+    // WRITTEN ONLY BY THE PREPARE/LIFECYCLE THREAD THAT DECODES AND UPLOADS FRAMES.
+    private int outWidth;
+    private int outHeight;
+
     // STATUS
     private volatile Status status = Status.WAITING;
     private volatile float speed = 1.0f;
 
-    // LIFECYCLE THREAD
+    // LIFECYCLE THREAD (MODE 3 ONLY)
     private volatile Thread lifecycleThread;
     private volatile Future<?> lifecycleTask;
     private volatile ImageReader activeReader;
     private volatile int lifecycleSerial;
 
-    // TRIGGERS (CALLER TO LIFECYCLE THREAD)
+    // TRIGGERS (CALLER TO LIFECYCLE THREAD); signals WAKES THE LIFECYCLE OUT OF ITS WAITS
+    private final Object signals = new Object();
     private volatile boolean paused;
     private volatile boolean triggerStop;
     private volatile boolean triggerPause;
@@ -107,6 +133,15 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile long currentDelayMs;
     private volatile int currentFrameIndex = -1;
 
+    // MODE 2 PASSIVE CLOCK — texTimeline[i] IS THE CUMULATIVE START TIME OF FRAME i. WHEN
+    // NON-NULL, THE DISPLAYED FRAME IS RESOLVED FROM WALL TIME ON EACH texture() CALL AND NO
+    // LIFECYCLE THREAD EXISTS. clock GUARDS THE (clockBase, wallBase) PAIR.
+    private final Object clock = new Object();
+    private volatile long[] texTimeline;
+    private volatile long[] texDelays;
+    private long clockBase;     // MEDIA TIME AT wallBase
+    private long wallBase;      // WALL MILLIS WHEN clockBase WAS TAKEN
+
     // PREFETCH STATE (ACCESSED ONLY BY THE LIFECYCLE THREAD IN STREAMING MODE)
     private final ArrayDeque<PrefetchedFrame> prefetchQueue = new ArrayDeque<>(PREFETCH_MAX);
     private int prefetchMax = PREFETCH_MAX;
@@ -115,11 +150,10 @@ public final class TxMediaPlayer extends MediaPlayer {
     private boolean readerExhausted;
 
     // BUFFER POOL: DIRECT BYTE BUFFERS CYCLE THROUGH QUEUE, UPLOAD, AND POOL INSTEAD OF BEING
-    // ALLOCATED PER FRAME. UPLOADED BUFFERS STAY IN AN IN-FLIGHT RING FOR A FEW FRAME
-    // INTERVALS BEFORE RECYCLING, GUARDING ASYNC RENDER-THREAD CONSUMPTION.
+    // ALLOCATED PER FRAME. THE LAST IN_FLIGHT_KEEP UPLOADED BUFFERS ARE HELD BACK TO HONOR THE
+    // ENGINE'S ASYNC CONSUMPTION CONTRACT.
     private final ArrayDeque<ByteBuffer> bufferPool = new ArrayDeque<>();
-    private final ArrayDeque<InFlightFrame> inFlight = new ArrayDeque<>(IN_FLIGHT_RING_SIZE + IN_FLIGHT_SAFETY_FRAMES);
-    private long uploadSerial;
+    private final ArrayDeque<ByteBuffer> inFlight = new ArrayDeque<>(IN_FLIGHT_KEEP + 1);
     private int bufferByteSize;
 
     public TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine) {
@@ -157,6 +191,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public boolean stop() {
         this.triggerStop = true;
+        this.texTimeline = null;
+        this.texDelays = null;
         IOTool.closeQuietly(this.activeReader);
         final Future<?> task = this.lifecycleTask;
         if (task != null) task.cancel(true);
@@ -170,6 +206,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public void release() {
         this.triggerStop = true;
+        this.texTimeline = null;
+        this.texDelays = null;
         IOTool.closeQuietly(this.activeReader);
         final Future<?> task = this.lifecycleTask;
         if (task != null) task.cancel(true);
@@ -187,7 +225,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // OPENS THE SOURCE ONCE, READS METADATA, AND DISPATCHES TO EXACTLY ONE OF THE
     // THREE PLAYBACK MODES BELOW. THE READER IS HANDED OFF TO A LIFECYCLE THREAD
-    // FOR MODES THAT NEED ONE; OTHERWISE IT IS CLOSED IN THE FINALLY BLOCK.
+    // FOR MODE 3; OTHERWISE IT IS CLOSED IN THE FINALLY BLOCK.
     // THE 'handedOff' FLAG GUARDS AGAINST DOUBLE-CLOSING A READER STILL IN USE.
     private void prepare(final int serial) {
         ImageReader reader = null;
@@ -210,13 +248,8 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.knownDuration = Math.max(0L, reader.duration());
             this.pixelFormat = reader.pixelFormat();
             this.planeCount = reader.planeCount();
-            final long byteSize = totalBufferBytes(this.pixelFormat, this.width, this.height);
-            if (byteSize > Integer.MAX_VALUE) {
-                throw new IOException("Image dimensions exceed upload buffer limit: " + this.width + "x" + this.height);
-            }
-            this.bufferByteSize = (int) byteSize;
-            this.capPrefetch();
-            this.gfx.setVideoFormat(this.pixelFormat, this.width, this.height);
+            this.applyTarget();
+            this.gfx.setVideoFormat(this.pixelFormat, this.outWidth, this.outHeight);
 
             if (this.triggerStop || Thread.currentThread().isInterrupted()) {
                 this.status = Status.STOPPED;
@@ -229,9 +262,9 @@ public final class TxMediaPlayer extends MediaPlayer {
                 return;
             }
 
-            // MODE 2: PRE-UPLOADED FRAME TEXTURES — SHORT ANIMATION ON A CAPABLE ENGINE.
+            // MODE 2: PRE-UPLOADED FRAME TEXTURES — FITS THE VRAM BUDGET ON A CAPABLE ENGINE.
             if (this.shouldUseFrameTextures(reader)) {
-                this.prepareTextures(reader, serial);
+                this.prepareTextures(reader);
                 return;
             }
 
@@ -273,30 +306,28 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // ==========================================================================
-    // MODE 2 — PRE-UPLOADED FRAME TEXTURES
+    // MODE 2 — PRE-UPLOADED FRAME TEXTURES + PASSIVE CLOCK
     // ==========================================================================
-    // ALL FRAMES ARE DECODED UP FRONT AND UPLOADED AS PER-FRAME TEXTURES. THE
-    // LIFECYCLE THREAD ADVANCES THE CLOCK AND SWITCHES THE EXPOSED HANDLE, BUT
-    // NEVER RE-DECODES OR RE-UPLOADS. SUITABLE FOR SHORT ANIMATIONS WHERE THE
-    // ONE-TIME UPLOAD COST IS WORTH PAYING TO ELIMINATE PER-FRAME GPU TRAFFIC.
+    // ALL FRAMES ARE DECODED UP FRONT AND UPLOADED AS PER-FRAME TEXTURES. NO THREAD EXISTS:
+    // texture() RESOLVES THE DISPLAYED FRAME FROM WALL TIME ON EVERY CALL, SO PLAYBACK COSTS
+    // ZERO UPLOADS, ZERO WAKEUPS, AND HAS NO SLEEP DRIFT.
 
-    // ONLY ELIGIBLE WHEN: A POSITIVE THRESHOLD IS CONFIGURED, FRAME COUNT IS
-    // KNOWN, FITS UNDER THE THRESHOLD, AND THE GFX BACKEND SUPPORTS THE PATH.
+    // ELIGIBLE WHEN THE DECODED RGBA FRAME SET FITS THE CONFIGURED VRAM BUDGET, THE FRAME
+    // COUNT IS KNOWN AND SANE, AND THE GFX BACKEND SUPPORTS THE PATH.
     private boolean shouldUseFrameTextures(final ImageReader reader) {
-        final int threshold = Math.max(0, WaterMediaConfig.media.txMultiTextureFrameThreshold);
         final int frames = reader.frameCount();
-        return threshold > 1
-                && frames > 1
-                && frames <= threshold
-                && this.gfx.supportsFrameTextures();
+        if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.supportsFrameTextures()) return false;
+        // VRAM COST IS RGBA8 PER FRAME (AT THE UPLOAD TARGET) REGARDLESS OF THE SOURCE PIXEL LAYOUT
+        final long budget = Math.max(0L, WaterMediaConfig.media.txFrameTexturesBudgetMB) * 1024L * 1024L;
+        return (long) frames * this.outWidth * this.outHeight * 4L <= budget;
     }
 
-    private void prepareTextures(final ImageReader reader, final int serial) throws IOException {
+    private void prepareTextures(final ImageReader reader) throws IOException {
         this.status = Status.BUFFERING;
         this.clearQueues();
 
         // DECODE EVERY FRAME. IF readAll() YIELDS ONLY ONE FRAME (E.G. APNG WITH A SINGLE FCTL)
-        // FALL BACK TO STATIC SEMANTICS RATHER THAN SPAWNING A THREAD FOR NOTHING.
+        // FALL BACK TO STATIC SEMANTICS RATHER THAN BUILDING A CLOCK FOR NOTHING.
         final ImageData data = reader.readAll();
         if (data.frames().length <= 1) {
             this.uploadFrame(data.frames()[0]);
@@ -310,132 +341,107 @@ public final class TxMediaPlayer extends MediaPlayer {
             return;
         }
 
-        if (!this.gfx.uploadFrameTextures(data.frames(), 0)) {
+        ByteBuffer[] frames = data.frames();
+        if (this.outWidth != this.width || this.outHeight != this.height) {
+            // DOWNSCALE THE WHOLE SET BEFORE THE BULK UPLOAD — VRAM AND UPLOAD COST
+            // FOLLOW THE TARGET SIZE, NOT THE SOURCE SIZE
+            final ByteBuffer[] scaled = new ByteBuffer[frames.length];
+            for (int i = 0; i < scaled.length; i++) {
+                final ByteBuffer dst = ByteBuffer.allocateDirect(this.bufferByteSize).order(ByteOrder.nativeOrder());
+                this.scaleFrame(frames[i], dst);
+                dst.flip();
+                scaled[i] = dst;
+            }
+            frames = scaled;
+        }
+
+        if (!this.gfx.uploadFrameTextures(frames, 0)) {
             throw new IOException("GFXEngine rejected preloaded frame textures for: " + this.source);
         }
-
         this.gfx.useFrameTexture(0);
-        this.knownDuration = Math.max(this.knownDuration, data.duration());
+
+        // BUILD THE CUMULATIVE TIMELINE THAT DRIVES THE PASSIVE CLOCK
+        final long[] delays = data.delay();
+        final long[] timeline = new long[data.frames().length];
+        long total = 0L;
+        for (int i = 0; i < timeline.length; i++) {
+            timeline[i] = total;
+            total += Math.max(1L, delayAt(delays, i));
+        }
+        this.knownDuration = total;
         this.currentFrameIndex = 0;
-        this.currentDelayMs = delayAt(data.delay(), 0);
-        this.time = 0L;
-        this.loaded = true;
-        this.nextDecodedIndex = data.frames().length;
+        this.currentDelayMs = delayAt(delays, 0);
+        this.nextDecodedIndex = timeline.length;
         this.readerExhausted = true;
+        synchronized (this.clock) {
+            this.clockBase = 0L;
+            this.wallBase = System.currentTimeMillis();
+        }
+        this.texDelays = delays;
+        this.texTimeline = timeline;
+        this.loaded = true;
         this.resolveInitialStatus();
 
-        LOGGER.debug(IT, "Loaded: {} ({}x{}, {} preloaded textures, duration={}ms)",
-                this.source, this.width, this.height, data.frames().length, this.knownDuration);
-
-        this.lifecycleThread = new Thread(() -> this.playTextures(data.delay(), serial),
-                "TxPlayer-Frames-" + Integer.toHexString(this.source.hashCode()));
-        this.lifecycleThread.setDaemon(true);
-        this.lifecycleThread.start();
+        LOGGER.debug(IT, "Loaded: {} ({}x{}, {} frame textures, passive clock, duration={}ms)",
+                this.source, this.width, this.height, timeline.length, this.knownDuration);
     }
 
-    // FRAME-TEXTURE CLOCK LOOP. ONLY MUTATES PLAYBACK STATE AND SWITCHES TEXTURE
-    // HANDLES — NEVER DECODES OR UPLOADS. SEEK / STEP / LOOP ALL RESOLVE LOCALLY
-    // USING THE PRECOMPUTED DELAYS ARRAY.
-    private void playTextures(final long[] delays, final int serial) {
-        try {
-            while (!Thread.currentThread().isInterrupted()) {
-                // STOP
-                if (this.triggerStop) {
-                    this.triggerStop = false;
-                    this.status = Status.STOPPED;
-                    return;
-                }
-
-                // PAUSE / RESUME
-                if (this.triggerPause && !this.paused) {
-                    this.paused = true;
-                    this.triggerPause = false;
-                    this.status = Status.PAUSED;
-                }
-                if (this.triggerResume && this.paused) {
-                    this.paused = false;
-                    this.triggerResume = false;
-                    this.status = Status.PLAYING;
-                }
-
-                // SEEK — RESOLVED LOCALLY BY WALKING THE DELAYS TABLE.
-                final long target = this.seekTarget;
-                if (target >= 0L) {
-                    this.seekTarget = -1L;
-                    this.showFrameTexture(this.frameAtTime(delays, target), delays);
-                    if (this.paused) {
-                        ThreadTool.sleep(10);
-                        continue;
-                    }
-                }
-
-                // PAUSED FRAME STEPPING (CLAMPED TO TEXTURE BOUNDS).
-                if (this.paused) {
-                    if (this.triggerNextFrame) {
-                        this.triggerNextFrame = false;
-                        this.showFrameTexture(Math.min(delays.length - 1, this.currentFrameIndex + 1), delays);
-                    }
-                    if (this.triggerPrevFrame) {
-                        this.triggerPrevFrame = false;
-                        this.showFrameTexture(Math.max(0, this.currentFrameIndex - 1), delays);
-                    }
-                    ThreadTool.sleep(10);
-                    continue;
-                }
-
-                // WAIT THE CURRENT FRAME DELAY THEN ADVANCE, LOOP, OR END.
-                final long sleepBudgetMs = Math.max(1L, (long) (this.currentDelayMs / this.speed));
-                ThreadTool.sleep(sleepBudgetMs);
-                if (this.seekTarget >= 0L || this.triggerStop) continue;
-
-                final int next = this.currentFrameIndex + 1;
-                if (next < delays.length) {
-                    this.showFrameTexture(next, delays);
-                    continue;
-                }
-
-                if (this.knownDuration <= 0L) this.knownDuration = this.time + this.currentDelayMs;
-                if (this.repeat()) {
-                    this.showFrameTexture(0, delays);
-                } else {
-                    this.time = this.knownDuration;
-                    this.status = Status.ENDED;
-                    return;
-                }
+    // RESOLVES THE PASSIVE-CLOCK MEDIA TIME, FOLDING LOOP WRAPS AND THE ENDED TRANSITION.
+    private long texTime() {
+        synchronized (this.clock) {
+            final long duration = Math.max(1L, this.knownDuration);
+            long t = this.clockBase;
+            if (this.status == Status.PLAYING) {
+                t += (long) ((System.currentTimeMillis() - this.wallBase) * this.speed);
             }
-        } finally {
-            if (this.triggerStop && this.lifecycleSerial == serial) {
-                this.triggerStop = false;
-                this.status = Status.STOPPED;
+            if (t < duration) return t;
+            if (this.repeat()) {
+                t %= duration;
+                this.clockBase = t;
+                this.wallBase = System.currentTimeMillis();
+                return t;
             }
+            this.clockBase = duration;
+            this.wallBase = System.currentTimeMillis();
+            if (this.status == Status.PLAYING) this.status = Status.ENDED;
+            return duration;
         }
     }
 
-    private void showFrameTexture(final int frame, final long[] delays) {
-        this.gfx.useFrameTexture(frame);
-        this.currentFrameIndex = frame;
-        this.currentDelayMs = delayAt(delays, frame);
-        this.time = timeAtFrame(delays, frame);
+    private boolean stepTexture(final int direction) {
+        final long[] timeline = this.texTimeline;
+        if (timeline == null) return false;
+        synchronized (this.clock) {
+            final int idx = frameAt(timeline, Math.min(this.clockBase, this.knownDuration - 1L));
+            final int target = Math.max(0, Math.min(timeline.length - 1, idx + direction));
+            this.clockBase = timeline[target];
+            this.wallBase = System.currentTimeMillis();
+            this.currentFrameIndex = target;
+            this.currentDelayMs = delayAt(this.texDelays, target);
+        }
+        return true;
     }
 
-    // WALK THE DELAYS TABLE TO FIND THE FRAME WHOSE DISPLAY WINDOW CONTAINS targetMs.
-    // RETURNS THE LAST FRAME WHEN targetMs EXTENDS BEYOND THE ANIMATION DURATION.
-    private int frameAtTime(final long[] delays, final long targetMs) {
-        long accum = 0L;
-        for (int i = 0; i < delays.length; i++) {
-            final long delay = Math.max(1L, delayAt(delays, i));
-            if (targetMs < accum + delay || i == delays.length - 1) return i;
-            accum += delay;
-        }
-        return 0;
+    // FINDS THE FRAME WHOSE DISPLAY WINDOW CONTAINS time IN A CUMULATIVE TIMELINE.
+    private static int frameAt(final long[] timeline, final long time) {
+        int idx = Arrays.binarySearch(timeline, time);
+        if (idx < 0) idx = -idx - 2;
+        return Math.max(0, Math.min(idx, timeline.length - 1));
     }
 
-    private static long timeAtFrame(final long[] delays, final int frame) {
-        long time = 0L;
-        for (int i = 0; i < frame && i < delays.length; i++) {
-            time += delayAt(delays, i);
+    @Override
+    public long texture() {
+        final long[] timeline = this.texTimeline;
+        if (timeline != null) {
+            // PASSIVE CLOCK: THE FRAME IS RESOLVED AT RENDER TIME
+            final int frame = frameAt(timeline, this.texTime());
+            if (frame != this.currentFrameIndex) {
+                this.currentFrameIndex = frame;
+                this.currentDelayMs = delayAt(this.texDelays, frame);
+            }
+            this.gfx.useFrameTexture(frame);
         }
-        return time;
+        return super.texture();
     }
 
     // ==========================================================================
@@ -444,8 +450,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     // EACH next() CALL DECODES ONE FRAME ON DEMAND. WHILE THE CURRENT FRAME IS
     // DISPLAYED, THE LOOP DECODES AHEAD INTO A BOUNDED QUEUE. IF THE QUEUE
     // EMPTIES THE PLAYER ENTERS BUFFERING, REFILLS A SMALL BATCH, AND RESUMES.
-    // SEEK / LOOP / STEP-BACKWARDS REOPEN THE SOURCE AND DECODE FORWARD BECAUSE
-    // ANIMATED IMAGE FRAMES DEPEND ON PRIOR ONES — THERE IS NO RANDOM ACCESS.
+    // SEEK / LOOP / STEP-BACKWARDS REWIND THE SOURCE (reset() WHEN SUPPORTED) AND
+    // DECODE FORWARD BECAUSE ANIMATED IMAGE FRAMES DEPEND ON PRIOR ONES.
 
     // WRAPS playStream(...) WITH FIRST-FRAME PUBLISH AND READER LIFECYCLE.
     private void playStreaming(ImageReader reader, final int serial) {
@@ -475,6 +481,11 @@ public final class TxMediaPlayer extends MediaPlayer {
     // AND ABSORBS PAUSE / SEEK / STEP TRIGGERS WITHOUT LEAKING DECODE WORK.
     private ImageReader playStream(ImageReader reader) throws InterruptedException, IOException {
         while (!Thread.currentThread().isInterrupted()) {
+            // HOT maxSize/LOD CHANGES — FRAMES DECODED FROM NOW ON SCALE TO THE NEW
+            // TARGET; FRAMES ALREADY QUEUED KEEP THEIR SIZE AND DRAIN FIRST
+            // (uploadBuffer RECONFIGURES THE ENGINE WHEN THE SIZE FLIPS).
+            this.applyTarget();
+
             // STOP
             if (this.triggerStop) {
                 this.triggerStop = false;
@@ -482,30 +493,37 @@ public final class TxMediaPlayer extends MediaPlayer {
                 return reader;
             }
 
-            // PAUSE / RESUME
+            // PAUSE / RESUME. STRAY TRIGGERS ARE CLEARED SO SIGNAL WAITS NEVER SPIN.
             if (this.triggerPause && !this.paused) {
                 this.paused = true;
                 this.triggerPause = false;
                 this.status = Status.PAUSED;
+                this.bufferPool.clear(); // TRIM SPARE BUFFERS WHILE PAUSED — QUEUE AND IN-FLIGHT STAY
             }
-            if (this.triggerResume && this.paused) {
-                this.paused = false;
+            if (this.triggerResume) {
                 this.triggerResume = false;
-                this.status = Status.PLAYING;
+                if (this.paused) {
+                    this.paused = false;
+                    this.status = Status.PLAYING;
+                }
+            }
+            if (this.triggerPause && this.paused) this.triggerPause = false;
+            if (!this.paused) {
+                this.triggerNextFrame = false;
+                this.triggerPrevFrame = false;
             }
 
-            // SEEK BY REOPENING AND DECODING FORWARD TO THE TARGET, THEN DROP THE PREFETCH QUEUE.
+            // SEEK BY REWINDING AND DECODING FORWARD TO THE TARGET, THEN DROP THE PREFETCH QUEUE.
             final long target = this.seekTarget;
             if (target >= 0) {
                 this.seekTarget = -1L;
                 this.clearPrefetch();
-                reader.close();
-                reader = this.openSource();
+                reader = this.reopen(reader);
                 final ByteBuffer frame = this.seekReaderToTime(reader, target);
                 if (frame != null) this.uploadFrame(frame);
                 this.nextDecodedIndex = this.currentFrameIndex + 1;
                 this.readerExhausted = false;
-                if (this.paused) { ThreadTool.sleep(10); continue; }
+                if (this.paused) { this.awaitSignal(PAUSE_WAIT_MS); continue; }
             }
 
             // PAUSED FRAME STEPPING: THE CLOCK IS STOPPED AND PREFETCH IS INACTIVE.
@@ -519,26 +537,28 @@ public final class TxMediaPlayer extends MediaPlayer {
                     final int targetIdx = this.currentFrameIndex - 1;
                     if (targetIdx >= 0) {
                         this.clearPrefetch();
-                        reader.close();
-                        reader = this.openSource();
+                        reader = this.reopen(reader);
                         final ByteBuffer frame = this.seekReaderToFrame(reader, targetIdx);
                         if (frame != null) this.uploadFrame(frame);
                         this.nextDecodedIndex = this.currentFrameIndex + 1;
                         this.readerExhausted = false;
                     }
                 }
-                ThreadTool.sleep(10);
+                this.awaitSignal(PAUSE_WAIT_MS);
                 continue;
             }
 
-            // SLEEP FOR THE CURRENT FRAME DELAY WHILE DECODING AHEAD DURING THE WAIT.
+            // DISPLAY WINDOW: DECODE AHEAD, THEN WAIT OUT THE REMAINDER. THE WAIT IS SIGNALED
+            // BY SEEK/PAUSE/STOP SO LONG FRAME DELAYS DON'T DELAY CONTROL REACTIONS.
             final long sleepBudgetMs = Math.max(1L, (long) (this.currentDelayMs / this.speed));
             final long deadline = System.currentTimeMillis() + sleepBudgetMs;
             this.fillQueueUntil(reader, deadline);
-            final long remaining = deadline - System.currentTimeMillis();
-            if (remaining > 0L) ThreadTool.sleep(remaining);
-
-            if (this.seekTarget >= 0 || this.triggerStop) continue;
+            long remaining;
+            while (!Thread.currentThread().isInterrupted() && !this.signaled()
+                    && (remaining = deadline - System.currentTimeMillis()) > 0L) {
+                this.awaitSignal(remaining);
+            }
+            if (this.signaled()) continue; // RE-ENTER WITHOUT ADVANCING THE CLOCK
 
             // ADVANCE BY POPPING A QUEUED FRAME OR STALLING TO BUFFERING AND REFILLING.
             this.time += this.currentDelayMs;
@@ -546,15 +566,21 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (next == null && !this.readerExhausted) {
                 // DECODING FELL BEHIND, SO SWITCH TO BUFFERING, REFILL, THEN RESUME.
                 this.status = Status.BUFFERING;
-                while (this.prefetchQueue.size() < this.prefetchRefill && !this.readerExhausted) {
-                    if (!this.queueNextFrame(reader)) break;
+                if (ThreadTool.tryAdquireLock(DECODE_PERMITS, REFILL_PERMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    try {
+                        while (this.prefetchQueue.size() < this.prefetchRefill && !this.readerExhausted) {
+                            if (!this.queueNextFrame(reader)) break;
+                        }
+                    } finally {
+                        DECODE_PERMITS.release();
+                    }
                 }
                 this.status = this.paused ? Status.PAUSED : Status.PLAYING;
                 next = this.prefetchQueue.pollFirst();
             }
 
             if (next != null) {
-                this.uploadBuffer(next.pixels);
+                this.uploadBuffer(next.pixels, next.width, next.height);
                 this.currentDelayMs = next.delay;
                 this.currentFrameIndex = next.index;
                 continue;
@@ -564,8 +590,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.knownDuration <= 0L) this.knownDuration = this.time;
             if (this.repeat()) {
                 this.clearPrefetch();
-                reader.close();
-                reader = this.openSource();
+                reader = this.reopen(reader);
                 if (!reader.hasNext()) {
                     this.status = Status.ENDED;
                     return reader;
@@ -589,11 +614,19 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // DECODES AHEAD UNTIL THE DEADLINE OR QUEUE LIMIT, LEAVING A SMALL SAFETY MARGIN.
+    // THE SHARED PERMIT POOL BOUNDS HOW MANY PLAYERS DECODE CONCURRENTLY.
     private void fillQueueUntil(final ImageReader reader, final long deadlineMs) throws IOException {
-        while (this.prefetchQueue.size() < this.prefetchMax && !this.readerExhausted) {
-            final long remaining = deadlineMs - System.currentTimeMillis();
-            if (remaining <= PREFETCH_SAFETY_MARGIN_MS) break;
-            if (!this.queueNextFrame(reader)) break;
+        if (this.readerExhausted || this.prefetchQueue.size() >= this.prefetchMax) return;
+        final long budget = deadlineMs - System.currentTimeMillis() - PREFETCH_SAFETY_MARGIN_MS;
+        if (budget <= 0L) return;
+        if (!ThreadTool.tryAdquireLock(DECODE_PERMITS, budget, TimeUnit.MILLISECONDS)) return;
+        try {
+            while (this.prefetchQueue.size() < this.prefetchMax && !this.readerExhausted) {
+                if (deadlineMs - System.currentTimeMillis() <= PREFETCH_SAFETY_MARGIN_MS) break;
+                if (!this.queueNextFrame(reader)) break;
+            }
+        } finally {
+            DECODE_PERMITS.release();
         }
     }
 
@@ -613,7 +646,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private void stepForward(final ImageReader reader) throws IOException {
         final PrefetchedFrame queued = this.prefetchQueue.pollFirst();
         if (queued != null) {
-            this.uploadBuffer(queued.pixels);
+            this.uploadBuffer(queued.pixels, queued.width, queued.height);
             this.time += this.currentDelayMs;
             this.currentDelayMs = queued.delay;
             this.currentFrameIndex = queued.index;
@@ -653,6 +686,14 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (t instanceof final RuntimeException re) throw re;
             throw new IOException("Failed to open image source: " + uri, t);
         }
+    }
+
+    // REWINDS THE READER IN PLACE WHEN THE CODEC SUPPORTS IT; OTHERWISE REOPENS THE SOURCE.
+    // RESET AVOIDS RE-READING THE CACHED SOURCE FROM DISK ON EVERY LOOP ITERATION.
+    private ImageReader reopen(final ImageReader reader) throws IOException {
+        if (reader.reset()) return reader;
+        reader.close();
+        return this.openSource();
     }
 
     // DECODES, UPLOADS, AND PUBLISHES THE FIRST FRAME. SHARED BETWEEN STATIC AND
@@ -741,9 +782,36 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // ==========================================================================
+    // SHARED — SIGNALS (CALLER TO LIFECYCLE THREAD)
+    // ==========================================================================
+    private boolean signaled() {
+        return this.triggerStop || this.triggerPause || this.triggerResume
+                || this.triggerNextFrame || this.triggerPrevFrame || this.seekTarget >= 0L;
+    }
+
+    // WAITS UP TO timeoutMs UNLESS A TRIGGER IS ALREADY PENDING. wake() INTERRUPTS THE WAIT
+    // SO CONTROLS REACT IMMEDIATELY EVEN DURING LONG FRAME DELAYS.
+    private void awaitSignal(final long timeoutMs) {
+        synchronized (this.signals) {
+            if (this.signaled()) return;
+            try {
+                this.signals.wait(Math.max(1L, timeoutMs));
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private void wake() {
+        synchronized (this.signals) {
+            this.signals.notifyAll();
+        }
+    }
+
+    // ==========================================================================
     // SHARED — BUFFER POOL & GPU UPLOAD
     // ==========================================================================
-    // BORROWS A WIDTH*HEIGHT*4 DIRECT BUFFER, REUSING A POOLED BUFFER WHEN POSSIBLE.
+    // BORROWS A FRAME-SIZED DIRECT BUFFER, REUSING A POOLED BUFFER WHEN POSSIBLE.
     private ByteBuffer borrowBuffer() {
         final ByteBuffer pooled = this.bufferPool.pollFirst();
         if (pooled != null && pooled.capacity() == this.bufferByteSize) {
@@ -761,23 +829,27 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.bufferPool.offerLast(buffer);
     }
 
-    // PUSHES A BUFFER TO THE GPU AND RETAINS IT IN AN IN-FLIGHT SAFETY RING.
+    // PUSHES A BUFFER TO THE GPU AND HOLDS BACK THE LAST IN_FLIGHT_KEEP SUBMISSIONS.
     // FOR MULTI-PLANE FORMATS THE BUFFER IS THE PACKED LAYOUT [PLANE0 | PLANE1 | ...] WITH TIGHT
     // STRIDES — WE SLICE PER-PLANE VIEWS FROM IT AND CALL THE MATCHING gfx.upload OVERLOAD.
-    private void uploadBuffer(final ByteBuffer buffer) {
+    private void uploadBuffer(final ByteBuffer buffer, final int w, final int h) {
+        // SIZE FLIP (HOT maxSize/LOD CHANGE) — RECONFIGURE THE ENGINE FOR THIS FRAME
+        if (this.gfx.width() != w || this.gfx.height() != h) {
+            this.gfx.setVideoFormat(this.pixelFormat, w, h);
+        }
         if (this.planeCount <= 1) {
             this.gfx.upload(buffer, 0);
         } else {
-            this.uploadMultiPlane(buffer);
+            this.uploadMultiPlane(buffer, w, h);
         }
-        this.inFlight.offerLast(new InFlightFrame(buffer, this.uploadSerial++));
-        this.recycleBuffers();
+        this.inFlight.offerLast(buffer);
+        while (this.inFlight.size() > IN_FLIGHT_KEEP) {
+            this.returnBuffer(this.inFlight.pollFirst());
+        }
     }
 
-    private void uploadMultiPlane(final ByteBuffer buffer) {
+    private void uploadMultiPlane(final ByteBuffer buffer, final int w, final int h) {
         final PixelFormat cs = this.pixelFormat;
-        final int w = this.width;
-        final int h = this.height;
         switch (cs) {
             case NV12, NV21 -> {
                 final int chromaH = (h + 1) >> 1;
@@ -876,32 +948,132 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // COPIES THE REUSED READER BUFFER BEFORE UPLOAD BECAUSE RENDER WORK MAY RUN ASYNCHRONOUSLY.
     private void uploadFrame(final ByteBuffer frame) {
-        this.uploadBuffer(this.copyFrame(frame));
+        this.uploadBuffer(this.copyFrame(frame), this.outWidth, this.outHeight);
     }
 
-    // COPIES A FRAME INTO A BORROWED POOL BUFFER AND LEAVES IT FLIPPED FOR READING.
+    // COPIES A FRAME INTO A BORROWED POOL BUFFER (DOWNSCALING WHEN A maxSize/LOD
+    // TARGET IS ACTIVE) AND LEAVES IT FLIPPED FOR READING.
     private ByteBuffer copyFrame(final ByteBuffer src) {
-        final int savedPos = src.position();
         final ByteBuffer dst = this.borrowBuffer();
-        dst.put(src);
+        if (this.outWidth != this.width || this.outHeight != this.height) {
+            this.scaleFrame(src, dst);
+        } else {
+            final int savedPos = src.position();
+            dst.put(src);
+            src.position(savedPos);
+        }
         dst.flip();
-        src.position(savedPos);
         return dst;
     }
 
-    private PrefetchedFrame snapshot(final ByteBuffer frame, final long delay, final int idx) {
-        return new PrefetchedFrame(this.copyFrame(frame), delay, idx);
+    // RESOLVES THE UPLOAD TARGET FROM maxSize/LOD AND REBUILDS THE BUFFER BUDGET ON
+    // CHANGE. UNSCALABLE FORMATS UPLOAD AT SOURCE SIZE. CALLED ONLY FROM THE
+    // PREPARE/LIFECYCLE THREAD SO outWidth/outHeight NEVER TEAR AGAINST A DECODE.
+    private void applyTarget() throws IOException {
+        int w = this.width;
+        int h = this.height;
+        if (scalable(this.pixelFormat)) {
+            final long target = this.targetSize(w, h);
+            w = (int) (target >>> 32);
+            h = (int) target;
+        }
+        if (w == this.outWidth && h == this.outHeight) return;
+        final long byteSize = totalBufferBytes(this.pixelFormat, w, h);
+        if (byteSize > Integer.MAX_VALUE) {
+            throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
+        }
+        this.outWidth = w;
+        this.outHeight = h;
+        this.bufferByteSize = (int) byteSize;
+        this.capPrefetch();
     }
 
-    // RECYCLES UPLOADED BUFFERS ONLY AFTER THE SAFETY RING HAS ENOUGH NEWER SUBMISSIONS.
-    private void recycleBuffers() {
-        final long safeSerial = this.uploadSerial - IN_FLIGHT_SAFETY_FRAMES;
-        while (this.inFlight.size() > IN_FLIGHT_RING_SIZE) {
-            final InFlightFrame oldest = this.inFlight.peekFirst();
-            if (oldest == null || oldest.serial() >= safeSerial) break;
-            this.inFlight.pollFirst();
-            this.returnBuffer(oldest.buffer());
+    // FORMATS THE JAVA AREA SCALER UNDERSTANDS — PACKED YUYV VARIANTS ARE EXCLUDED
+    // (PIXEL PAIRS SHARE CHROMA; AVERAGING THEM BYTE-WISE WOULD MIX COMPONENTS).
+    private static boolean scalable(final PixelFormat cs) {
+        return cs != PixelFormat.YUYV && cs != PixelFormat.YUYV2;
+    }
+
+    // DOWNSCALES A READER FRAME (TIGHTLY PACKED PLANE LAYOUT) INTO dst AT THE UPLOAD
+    // TARGET. MIRRORS THE PLANE LAYOUT USED BY totalBufferBytes/uploadMultiPlane.
+    private void scaleFrame(final ByteBuffer src, final ByteBuffer dst) {
+        final int sw = this.width;
+        final int sh = this.height;
+        final int dw = this.outWidth;
+        final int dh = this.outHeight;
+        final int base = src.position();
+        switch (this.pixelFormat) {
+            case GRAY -> scaleArea(src, base, sw, sh, dst, dw, dh, 1);
+            case RGB -> scaleArea(src, base, sw, sh, dst, dw, dh, 3);
+            case BGRA, RGBA, GBRA -> scaleArea(src, base, sw, sh, dst, dw, dh, 4);
+            case NV12, NV21 -> {
+                scaleArea(src, base, sw, sh, dst, dw, dh, 1);
+                scaleArea(src, base + sw * sh, (sw + 1) >> 1, (sh + 1) >> 1, dst, (dw + 1) >> 1, (dh + 1) >> 1, 2);
+            }
+            case YUV420P, YUVA420P -> {
+                final int scw = (sw + 1) >> 1;
+                final int sch = (sh + 1) >> 1;
+                final int dcw = (dw + 1) >> 1;
+                final int dch = (dh + 1) >> 1;
+                scaleArea(src, base, sw, sh, dst, dw, dh, 1);
+                scaleArea(src, base + sw * sh, scw, sch, dst, dcw, dch, 1);
+                scaleArea(src, base + sw * sh + scw * sch, scw, sch, dst, dcw, dch, 1);
+                if (this.pixelFormat == PixelFormat.YUVA420P) {
+                    scaleArea(src, base + sw * sh + 2 * scw * sch, sw, sh, dst, dw, dh, 1);
+                }
+            }
+            case YUV422P, YUVA422P -> {
+                final int scw = (sw + 1) >> 1;
+                final int dcw = (dw + 1) >> 1;
+                scaleArea(src, base, sw, sh, dst, dw, dh, 1);
+                scaleArea(src, base + sw * sh, scw, sh, dst, dcw, dh, 1);
+                scaleArea(src, base + sw * sh + scw * sh, scw, sh, dst, dcw, dh, 1);
+                if (this.pixelFormat == PixelFormat.YUVA422P) {
+                    scaleArea(src, base + sw * sh + 2 * scw * sh, sw, sh, dst, dw, dh, 1);
+                }
+            }
+            case YUV444P, YUVA444P -> {
+                final int planes = this.pixelFormat == PixelFormat.YUVA444P ? 4 : 3;
+                for (int p = 0; p < planes; p++) {
+                    scaleArea(src, base + p * sw * sh, sw, sh, dst, dw, dh, 1);
+                }
+            }
+            default -> {
+                // UNREACHABLE — applyTarget NEVER ACTIVATES A TARGET FOR UNSCALABLE FORMATS
+                final int savedPos = src.position();
+                dst.put(src);
+                src.position(savedPos);
+            }
         }
+    }
+
+    // AREA-AVERAGE DOWNSCALE OF AN 8-BIT PLANE WITH ch INTERLEAVED COMPONENTS.
+    // EACH OUTPUT PIXEL AVERAGES ITS WHOLE SOURCE BLOCK, SO STRONG REDUCTIONS
+    // (LOD FAR/FAR_AWAY) STAY ALIAS-FREE. READS src ABSOLUTE, WRITES dst RELATIVE.
+    private static void scaleArea(final ByteBuffer src, final int srcOff, final int sw, final int sh,
+                                  final ByteBuffer dst, final int dw, final int dh, final int ch) {
+        final int[] acc = new int[ch];
+        for (int dy = 0; dy < dh; dy++) {
+            final int sy0 = (int) ((long) dy * sh / dh);
+            final int sy1 = Math.max(sy0 + 1, (int) ((long) (dy + 1) * sh / dh));
+            for (int dx = 0; dx < dw; dx++) {
+                final int sx0 = (int) ((long) dx * sw / dw);
+                final int sx1 = Math.max(sx0 + 1, (int) ((long) (dx + 1) * sw / dw));
+                Arrays.fill(acc, 0);
+                for (int sy = sy0; sy < sy1; sy++) {
+                    int p = srcOff + (sy * sw + sx0) * ch;
+                    for (int sx = sx0; sx < sx1; sx++) {
+                        for (int c = 0; c < ch; c++) acc[c] += src.get(p++) & 0xFF;
+                    }
+                }
+                final int count = (sy1 - sy0) * (sx1 - sx0);
+                for (int c = 0; c < ch; c++) dst.put((byte) (acc[c] / count));
+            }
+        }
+    }
+
+    private PrefetchedFrame snapshot(final ByteBuffer frame, final long delay, final int idx) {
+        return new PrefetchedFrame(this.copyFrame(frame), delay, idx, this.outWidth, this.outHeight);
     }
 
     // DRAINS THE PREFETCH QUEUE AND RETURNS EACH QUEUED BUFFER TO THE POOL.
@@ -912,8 +1084,8 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // CAPS THE PREFETCH QUEUE SO DIRECT BUFFER MEMORY STAYS UNDER THE BUDGET.
     private void capPrefetch() {
-        final long bytesPerFrame = (long) Math.max(1, this.width) * Math.max(1, this.height) * 4L;
-        final int cap = (int) Math.max(1L, Math.min(PREFETCH_MAX, PREFETCH_BUDGET_BYTES / Math.max(bytesPerFrame, 1L)));
+        final long bytesPerFrame = Math.max(1L, this.bufferByteSize);
+        final int cap = (int) Math.max(1L, Math.min(PREFETCH_MAX, PREFETCH_BUDGET_BYTES / bytesPerFrame));
         this.prefetchMax = cap;
         this.prefetchRefill = Math.min(PREFETCH_REFILL, cap);
     }
@@ -937,7 +1109,12 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.currentFrameIndex = -1;
         this.nextDecodedIndex = 0;
         this.readerExhausted = false;
-        this.uploadSerial = 0L;
+        // FORCE A TARGET RECOMPUTE — THE NEW SOURCE MAY REUSE DIMENSIONS WITH A
+        // DIFFERENT PIXEL FORMAT, WHICH CHANGES THE BUFFER BYTE SIZE
+        this.outWidth = 0;
+        this.outHeight = 0;
+        this.texTimeline = null;
+        this.texDelays = null;
         this.lifecycleThread = null;
         this.activeReader = null;
         this.clearQueues();
@@ -947,7 +1124,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.clearPrefetch();
         this.bufferPool.clear();
         this.inFlight.clear();
-        this.uploadSerial = 0L;
     }
 
     private void resetAfterRelease() {
@@ -992,8 +1168,25 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.status = paused ? Status.PAUSED : Status.PLAYING;
             return true;
         }
+        if (this.texTimeline != null) {
+            // PASSIVE CLOCK: FREEZE OR REBASE WITHOUT A LIFECYCLE THREAD
+            synchronized (this.clock) {
+                final long now = System.currentTimeMillis();
+                if (paused && this.status == Status.PLAYING) {
+                    this.clockBase += (long) ((now - this.wallBase) * this.speed);
+                    this.paused = true;
+                    this.status = Status.PAUSED;
+                } else if (!paused && this.status == Status.PAUSED) {
+                    this.paused = false;
+                    this.status = Status.PLAYING;
+                }
+                this.wallBase = now;
+            }
+            return true;
+        }
         if (paused) { this.triggerPause = true; this.triggerResume = false; }
         else { this.triggerResume = true; this.triggerPause = false; }
+        this.wake();
         return true;
     }
 
@@ -1007,7 +1200,16 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (!this.loaded || !this.animated) return false;
         long target = Math.max(0L, time);
         if (this.knownDuration > 0L) target = Math.min(target, this.knownDuration - 1L);
+        if (this.texTimeline != null) {
+            synchronized (this.clock) {
+                this.clockBase = target;
+                this.wallBase = System.currentTimeMillis();
+                if (this.status == Status.ENDED) this.status = this.paused ? Status.PAUSED : Status.PLAYING;
+            }
+            return true;
+        }
         this.seekTarget = target;
+        this.wake();
         return true;
     }
 
@@ -1015,7 +1217,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     public boolean seekQuick(final long time) { return this.seek(time); }
 
     @Override
-    public boolean skipTime(final long time) { return this.seek(this.time + time); }
+    public boolean skipTime(final long time) { return this.seek(this.time() + time); }
 
     @Override
     public boolean forward() { return this.skipTime(1000); }
@@ -1026,22 +1228,35 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public boolean previousFrame() {
         if (!this.paused()) return false;
+        if (this.texTimeline != null) return this.stepTexture(-1);
         this.triggerPrevFrame = true;
+        this.wake();
         return true;
     }
 
     @Override
     public boolean nextFrame() {
         if (!this.paused()) return false;
+        if (this.texTimeline != null) return this.stepTexture(1);
         this.triggerNextFrame = true;
+        this.wake();
         return true;
     }
 
     // ==========================================================================
     // PUBLIC STATE QUERIES
     // ==========================================================================
-    @Override public Status status() { return this.status; }
-    @Override public long time() { return this.time; }
+    @Override
+    public Status status() {
+        // TEXTURE MODE RESOLVES THE ENDED TRANSITION LAZILY FROM THE PASSIVE CLOCK
+        if (this.texTimeline != null && this.status == Status.PLAYING && !this.repeat()) this.texTime();
+        return this.status;
+    }
+
+    @Override
+    public long time() {
+        return this.texTimeline != null ? this.texTime() : this.time;
+    }
 
     @Override
     public float fps() {
@@ -1062,16 +1277,22 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public boolean speed(final float speed) {
         if (!Float.isFinite(speed) || speed <= 0 || speed > 4.0f) return false;
-        this.speed = speed;
+        synchronized (this.clock) {
+            // REBASE THE PASSIVE CLOCK SO THE SPEED CHANGE DOESN'T JUMP THE MEDIA TIME
+            if (this.texTimeline != null && this.status == Status.PLAYING) {
+                final long now = System.currentTimeMillis();
+                this.clockBase += (long) ((now - this.wallBase) * this.speed);
+                this.wallBase = now;
+            }
+            this.speed = speed;
+        }
         return true;
     }
 
     // ==========================================================================
     // RECORDS
     // ==========================================================================
-    // SINGLE PRE-DECODED FRAME HELD IN THE PREFETCH QUEUE.
-    private record PrefetchedFrame(ByteBuffer pixels, long delay, int index) {}
-
-    // PREVIOUSLY UPLOADED BUFFER RETAINED TO AVOID PREMATURE REUSE ON ASYNC RENDER PATHS.
-    private record InFlightFrame(ByteBuffer buffer, long serial) {}
+    // SINGLE PRE-DECODED FRAME HELD IN THE PREFETCH QUEUE. CARRIES ITS OWN UPLOAD
+    // DIMENSIONS SO FRAMES QUEUED BEFORE A HOT maxSize/LOD CHANGE DRAIN CORRECTLY.
+    private record PrefetchedFrame(ByteBuffer pixels, long delay, int index, int width, int height) {}
 }

@@ -7,7 +7,7 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.M3UTool;
+import org.watermedia.tools.MPEGTools;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -42,8 +42,7 @@ public final class MRL {
     private volatile Source[] sources;
     private volatile Instant expiresAt;
     private final List<Consumer<MRL>> listeners = new CopyOnWriteArrayList<>();
-    private volatile boolean ready;
-    private volatile boolean forgotten;
+    private volatile Status status = Status.FETCHING;
     private volatile Throwable exception;
 
     private MRL(final URI uri) { this.uri = Objects.requireNonNull(uri, "URI cannot be null"); }
@@ -57,13 +56,13 @@ public final class MRL {
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
      */
-    static MRL getMRL(final URI uri) {
+    static MRL get(final URI uri) {
         Objects.requireNonNull(uri, "URI cannot be null");
 
         // CREATE IF DOESN'T EXIST, AND RELOAD IF WAS EXPIRED
         return LOADED.compute(uri, (key, existing) -> {
             if (existing != null) {
-                if (existing.expired())
+                if (existing.status() == Status.EXPIRED)
                     existing.reload();
                 return existing;
             }
@@ -79,52 +78,44 @@ public final class MRL {
      * Useful for prefetching playlists or a bunch of well known URLs.
      * @return array of all MRL instances created/existing, in the same order as {@code uris}
      */
-    public static MRL[] preload(final URI... uris) {
+    static MRL[] preload(final URI... uris) {
         final MRL[] result = new MRL[uris.length];
         for (int i = 0; i < uris.length; i++) {
-            result[i] = getMRL(uris[i]); // WILL START ASYNC LOAD IF NOT CACHED
+            result[i] = get(uris[i]); // WILL START ASYNC LOAD IF NOT CACHED
         }
         return result;
     }
 
     /**
-     * Reloads all cached MRLs in place. Each MRL's {@link #sources()} array becomes
-     * stale until the async reload completes; existing players keep their reference
-     * to the MRL and will see the new sources once {@link #ready()} flips back to true.
-     */
-    public static void reloadAll() {
-        LOADED.forEach((uri, mrl) -> mrl.reload());
-    }
-
-    /**
      * Restarts the async platform lookup for this MRL. Clears the previous
-     * sources/error state immediately; consumers should poll {@link #ready()}
-     * (or re-subscribe) to detect completion.
+     * sources/error state immediately;
      */
     public void reload() {
         this.sources = null;
         this.expiresAt = null;
-        this.ready = false;
+        this.status = Status.FETCHING;
         this.exception = null;
         LOADER.execute(this::load);
     }
 
     private void load() {
+        if (this.status != Status.FETCHING) return;
         try {
             if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
                 synchronized (LOADED) {
                     if (NEXT_CLEAN_TIME > System.currentTimeMillis()) return; // FIRST TO LOCK HAS DONE IT
                     LOADED.forEach((uri, mrl) -> {
-                        if (mrl.expired() || mrl.hasError()) {
+                        if (mrl.status().disposable()) {
                             LOADED.remove(uri);
-                            mrl.forgotten = true;
+                            mrl.status = Status.FORGOTTEN;
                         }
                     });
                     NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlManagerCleanupInterval);
                 }
             }
         } catch (final Throwable ex) {
-            LOGGER.fatal(IT, "Failed to disposed forgotten MRLs: {}", ex.getMessage(), ex);
+            // CLEANUP OF UNRELATED, EXPIRED MRLs FAILED — NON-FATAL FOR THIS LOAD, KEEP GOING.
+            LOGGER.error(IT, "Failed to dispose forgotten MRLs", ex);
         }
         try {
             PlatformData data = PlatformAPI.fetch(this.uri);
@@ -132,37 +123,58 @@ public final class MRL {
                 try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug("Connected to {} with content type {}", this.uri, req.contentType());
 
-                    // FAIL FAST ON NON-2xx — OTHERWISE READING THE BODY WOULD THROW A LATE,
-                    // OPAQUE IOException FROM HttpURLConnection.getInputStream().
+                    // FAIL FAST ON NON-2xx
                     if (req.statusCode() >= 400) {
                         throw new IOException("HTTP " + req.statusCode() + " for " + this.uri);
                     }
 
-                    // SOME SERVERS OMIT CONTENT-TYPE ENTIRELY; LET THE BYTE SNIFFER CLASSIFY
-                    // IN THAT CASE. EXPLICITLY-NON-MEDIA TYPES (text/html, application/json...)
-                    // STILL FAIL FAST HERE TO AVOID DOWNLOADING A 404 PAGE.
+                    // SCAN RECEIVED CONTENT-TYPE
                     final String contentType = req.contentType();
                     if (contentType != null && !DataTool.startsWidth(contentType, "video", "image", "audio", "application/vnd.rn-realmedia", "application/vnd.rn-realmedia-vbr", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/octet-stream")) {
-                        throw new UnsupportedOperationException("The MRL content is not multimedia, received: " + contentType);
+                        throw new IOException("Content is not multimedia (received content-type '" + contentType + "'): " + this.uri);
                     }
 
-                    // M3U PLAYLISTS HAVE TWO DIALECTS. IPTV LISTS ARE FLAT GALLERIES OF
-                    // INDEPENDENT CHANNELS AND MUST EXPAND INTO N DATASOURCES, ONE PER
-                    // CHANNEL — OTHERWISE THE PLAYER WOULD MISTAKE THEM FOR HLS AND FAIL.
-                    // HLS PLAYLISTS COLLAPSE TO A SINGLE VIDEO SOURCE AND THE PLAYER DRIVES
-                    // THE RENDITION NEGOTIATION ITSELF.
+                    // DETECT HLS/IPTV AND PARSE IT
                     final String pathLower = this.uri.getPath() == null ? "" : this.uri.getPath().toLowerCase();
-                    final boolean m3uShape = (contentType != null && contentType.toLowerCase().contains("mpegurl"))
-                            || pathLower.endsWith(".m3u") || pathLower.endsWith(".m3u8");
+                    final boolean m3uShape = (contentType != null && contentType.toLowerCase().contains("mpegurl")) || pathLower.endsWith(".m3u") || pathLower.endsWith(".m3u8");
 
                     if (m3uShape) {
                         final String body = req.readAllAsString();
-                        if (M3UTool.isIptv(body)) {
-                            data = expandIptv(body, this.uri);
+                        // IPTV LISTS EXPAND INTO N CHANNELS; HLS MASTER/MEDIA (AND ANYTHING THAT
+                        // FAILS TO PARSE) COLLAPSE TO A SINGLE VIDEO SOURCE THE PLAYER DRIVES ITSELF.
+                        MPEGTools.Playlist parsed;
+                        try {
+                            parsed = MPEGTools.parse(body, this.uri);
+                        } catch (final IOException badPlaylist) {
+                            // NOT A RECOGNIZABLE PLAYLIST — HAND THE RAW URL TO FFmpeg BELOW
+                            LOGGER.debug(IT, "Body from {} is not a recognizable playlist ({}); using the raw URL", this.uri, badPlaylist.getMessage());
+                            parsed = null;
+                        }
+                        if (parsed instanceof final MPEGTools.Iptv iptv) {
+                            final List<MPEGTools.Channel> channels = iptv.channels();
+                            if (channels.isEmpty())
+                                throw new IOException("IPTV playlist contained no entries: " + this.uri);
+                            final List<DataSource> sources = new ArrayList<>(channels.size());
+                            for (final MPEGTools.Channel e : channels) {
+                                // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY MPEGTools (MALFORMED ONES WERE DROPPED DURING PARSE)
+                                final URI childUri = e.url();
+                                URI logoUri = null;
+                                if (e.tvgLogo() != null && !e.tvgLogo().isEmpty()) {
+                                    try {
+                                        logoUri = URI.create(e.tvgLogo());
+                                    } catch (final
+                                    IllegalArgumentException ignored) { /* TVG-LOGO IS BEST-EFFORT, BAD ENTRIES STAY UNILLUSTRATED */ }
+                                }
+                                final Metadata md = new Metadata(e.title(), null, null, 0, e.tvgGroup());
+                                sources.add(new DataSource(MediaType.UNKNOWN, logoUri, md,
+                                        RequestHeaders.defaults(childUri),
+                                        new DataQuality[]{new DataQuality(childUri, 0, 0)},
+                                        null, null));
+                            }
+                            data = new PlatformData(null, sources.toArray(DataSource[]::new));
                         } else {
-                            data = new PlatformData(null, new DataSource(MediaType.VIDEO, null, null,
-                                    RequestHeaders.defaults(this.uri),
-                                    new DataQuality[] { new DataQuality(this.uri, 0, 0) },
+                            data = new PlatformData(null, new DataSource(MediaType.VIDEO, null, null, RequestHeaders.defaults(this.uri),
+                                    new DataQuality[]{new DataQuality(this.uri, 0, 0)},
                                     null, null));
                         }
                     } else {
@@ -170,7 +182,7 @@ public final class MRL {
                         if (type == MediaType.UNKNOWN) {
                             // SERVER GAVE AN AMBIGUOUS MIME (e.g. application/octet-stream). SNIFF THE
                             // LEADING BYTES — AUTHORITATIVE — THEN FALL BACK TO THE URL EXTENSION.
-                            try (final InputStream in = req.getInputStream()) {
+                            try (final InputStream in = req.inputStream()) {
                                 type = CodecsAPI.getMediaType(in);
                             } catch (final IOException e) {
                                 LOGGER.warn(IT, "Failed to sniff media type for {}", this.uri, e);
@@ -180,60 +192,60 @@ public final class MRL {
 
                         data = new PlatformData(null, new DataSource(type, null, null,
                                 RequestHeaders.defaults(this.uri),
-                                new DataQuality[] {new DataQuality(this.uri, 0, 0)},
+                                new DataQuality[]{new DataQuality(this.uri, 0, 0)},
                                 null, null));
                     }
                 }
             }
 
             if (data.size() > 0) {
-                this.sources = toSources(data);
+                final DataSource[] entries = data.entries();
+                final Source[] sources = new Source[entries.length];
+                for (int i = 0; i < entries.length; i++) {
+                    final DataSource entry = entries[i];
+                    if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
+                    final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
+                    for (final DataQuality v : entry.variants()) {
+                        qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
+                    }
+
+                    final List<DataSlave> audioSlaves = entry.audioSlaves();
+                    final List<DataSlave> subSlave = entry.subSlaves();
+
+                    sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
+                            entry.headers(), qualities,
+                            audioSlaves.stream().map(s -> new SlaveEntry(s.name(), s.lang(), s.uri())).toList(),
+                            subSlave.stream().map(s -> new SlaveEntry(s.name(), s.lang(), s.uri())).toList());
+                }
+
+
+                this.sources = sources;
                 this.expiresAt = data.expires();
-                this.ready = true;
+                this.status = Status.LOADED;
                 this.fireListeners();
                 LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.size(), this.uri);
             } else {
-                throw new IllegalStateException("[INTERNAL] Result is null or is empty");
+                throw new IllegalStateException("[INTERNAL] PlatformData resolved to zero entries for " + this.uri);
             }
         } catch (final Throwable t) {
-            LOGGER.error(IT, "Failed to load sources for: {}", this.uri, t);
+            // STORE THE FAILURE VERBATIM SO exception() EXPOSES THE REAL MESSAGE, CAUSE AND STACK TO DEVS.
             this.exception = t;
-            this.ready = true;
+            this.status = t instanceof MatureContentException ? Status.BLOCKED : Status.ERROR;
+
+            // EXPECTED FAILURES (BLOCK / PLATFORM / IO) ALREADY CARRY A SELF-DESCRIBING MESSAGE: LOG IT
+            // WITHOUT THE STACK TRACE. ONLY GENUINELY UNEXPECTED ERRORS DUMP THE TRACE SO THEY STAND OUT.
+            if (t instanceof MatureContentException)
+                LOGGER.warn(IT, "Blocked (mature content disabled) {}: {}", this.uri, t.getMessage());
+            else if (t instanceof IOException) // PlatformException + DIRECT-LOAD IO FAILURES
+                LOGGER.error(IT, "Failed to resolve {}: {}", this.uri, t.getMessage(), t);
+            else
+                LOGGER.error(IT, "Unexpected error resolving {}", this.uri, t);
+
             this.fireListeners();
         }
     }
 
-    private static PlatformData expandIptv(final String body, final URI source) throws IOException {
-        final List<M3UTool.Entry> channels = M3UTool.parse(body);
-        if (channels.isEmpty()) throw new IOException("IPTV playlist contained no entries: " + source);
-        final List<DataSource> sources = new ArrayList<>(channels.size());
-        for (final M3UTool.Entry e: channels) {
-            final URI childUri;
-            try {
-                childUri = URI.create(e.url());
-            } catch (final IllegalArgumentException badUri) {
-                // A SINGLE BAD CHILD URI MUSTN'T SINK THE WHOLE PLAYLIST — JUST SKIP IT.
-                LOGGER.warn(IT, "Skipping malformed URL in IPTV playlist {}: {}", source, e.url());
-                continue;
-            }
-            URI logoUri = null;
-            if (e.tvgLogo() != null && !e.tvgLogo().isEmpty()) {
-                try { logoUri = URI.create(e.tvgLogo()); }
-                catch (final IllegalArgumentException ignored) { /* TVG-LOGO IS BEST-EFFORT, BAD ENTRIES STAY UNILLUSTRATED */ }
-            }
-            final Metadata md = new Metadata(e.title(), null, null, 0, e.tvgGroup());
-            sources.add(new DataSource(MediaType.UNKNOWN, logoUri, md,
-                    RequestHeaders.defaults(childUri),
-                    new DataQuality[] { new DataQuality(childUri, 0, 0) },
-                    null, null));
-        }
-        if (sources.isEmpty()) throw new IOException("IPTV playlist " + source + " had only malformed URLs");
-        return new PlatformData(null, sources.toArray(DataSource[]::new));
-    }
-
     private void fireListeners() {
-        // Drain under the list's own lock semantics — any subscribe() that lands
-        // after this point is handled by subscribe() itself (fire-immediately).
         synchronized (this.listeners) {
             for (final Consumer<MRL> c: this.listeners) {
                 try { c.accept(this); }
@@ -244,69 +256,36 @@ public final class MRL {
     }
 
     /**
-     * Converts the platform-facing {@link DataSource} array into the
-     * player-facing {@link Source} array. Each {@link DataQuality} carries the
-     * raw {@code width}/{@code height} the platform reported; MRL is the one
-     * that maps those into a {@link MediaQuality} bucket here. Platform slave
-     * tracks ({@link DataSlave}) are translated to MRL's own
-     * {@link SlaveEntry} the player understands.
-     */
-    private static Source[] toSources(final PlatformData data) {
-        final DataSource[] entries = data.entries();
-        final Source[] sources = new Source[entries.length];
-        for (int i = 0; i < entries.length; i++) {
-            final DataSource entry = entries[i];
-            if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
-            final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
-            for (final DataQuality v: entry.variants()) {
-                qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
-            }
-            sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
-                    entry.headers(), qualities,
-                    toSlaves(entry.audioSlaves()), toSlaves(entry.subSlaves()));
-        }
-        return sources;
-    }
-
-    private static List<SlaveEntry> toSlaves(final List<DataSlave> slaves) {
-        if (slaves == null || slaves.isEmpty()) return null;
-        final List<SlaveEntry> out = new ArrayList<>(slaves.size());
-        for (final DataSlave s: slaves) {
-            out.add(new SlaveEntry(s.name(), s.lang(), s.uri()));
-        }
-        return out;
-    }
-
-    /**
      * Blocks until loading completes or times out.
      * This method call is highly disliked on Game environments where
-     * are tick-based, is strongly recommended to check {@link MRL#ready()} every tick
+     * are tick-based, is strongly recommended to check {@link MRL#status()} every tick
      *
      * @param timeoutMs maximum wait time in milliseconds
      * @return true if ready, false if timeout or error
      */
     public boolean await(final long timeoutMs) {
         final long deadline = System.currentTimeMillis() + timeoutMs;
-        while (!this.ready && System.currentTimeMillis() < deadline) {
-            ThreadTool.sleep(10);
+        // IF IS STILL FETCHING AND THE DEADLINE IS NOT REACHED YET, WAIT FOR 50 MILLIS
+        while (this.status == Status.FETCHING && System.currentTimeMillis() < deadline) {
+            ThreadTool.sleep(50);
         }
-        return this.ready;
+        return this.status != Status.FETCHING; // FETCHING FINISHED, QUERY IS DONE, NEED TO HANDLE PROPER STATUS
     }
 
     /**
-     * Registers a new listener, gets triggered when {@link MRL#ready()} is true.
+     * Registers a new listener, gets triggered when {@link MRL#status()} is true.
      * If the MRL is already ready when this is called, the listener fires immediately
      * on the calling thread; otherwise it fires on the loader thread once loading
      * finishes. After firing, all listeners are dropped — re-subscribe across reloads.
      * <p>
      * This method call is highly disliked on Game environments where
-     * are tick-based, is strongly recommended to check {@link MRL#ready()} every tick
+     * are tick-based, is strongly recommended to check {@link MRL#status()} every tick
      * </p>
      * @param listener Consumer instance that accepts the ready MRL.
      */
     public void subscribe(final Consumer<MRL> listener) {
         synchronized (this.listeners) {
-            if (this.ready) {
+            if (this.status == Status.LOADED) {
                 try { listener.accept(this); }
                 catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
                 return;
@@ -316,44 +295,27 @@ public final class MRL {
     }
 
     /**
-     * Checks if the MRL finish loading and can be validated
-     * @return true is loading has finished, you must validate if is valid and has any existing error using {@link #hasError()}
+     * Provides the current status of the MRL
+     * Every call validates the sources has been expired.
+     * @return status instance, never null
      */
-    public boolean ready() {
-        return this.ready;
+    public Status status() {
+        if (this.expiresAt != null && this.expiresAt.isBefore(Instant.now())) {
+            this.status = Status.EXPIRED;
+        }
+        return this.status;
     }
 
     /**
-     * Checks if the MRL has encountered any error during loading, if there's ANY error present that menas
-     * the MRL has failed ENTIRELY to load and stays in an invalid state.
-     * @return true if there's any error present and the MRL is not able to create any player.
-     */
-    public boolean hasError() {
-        return this.exception != null;
-    }
-
-    /**
-     * Returns the exception instance occurred while loading the MRL.
-     * This got cleared on reload
+     * Returns the failure captured while loading this MRL, or {@code null} when it loaded
+     * successfully or is still loading. The throwable is self-describing: a
+     * {@link MatureContentException} when blocked, a {@link PlatformException} for platform
+     * or I/O failures, otherwise the raw internal error. Inspect {@link Throwable#getCause()}
+     * for the underlying cause. Cleared on {@link #reload()}.
      */
     public Throwable exception() {
         return this.exception;
     }
-
-    /**
-     * Checks if the MRL has expired.
-     * @see PlatformData#expires()
-     */
-    public boolean expired() {
-        return this.expiresAt != null && this.expiresAt.isBefore(Instant.now());
-    }
-
-    /**
-     * Checks if the MRL was forgotten by the MRL manager
-     */
-    public boolean forgotten() { return this.forgotten; }
-
-    public boolean blocked() { return this.exception != null && this.exception.getClass() == MatureContentException.class; }
 
     /**
      * Returns all {@link Source} instances, or empty array if not ready.
@@ -472,7 +434,7 @@ public final class MRL {
 
     @Override
     public String toString() {
-        return "MRL{uri=" + this.uri + ", ready=" + this.ready + ", error=" + this.exception + ", sources=" + this.sourceCount() + "}";
+        return "MRL{uri=" + this.uri + ", status=" + this.status + ", error=" + this.exception + ", sources=" + this.sourceCount() + "}";
     }
 
     /**
@@ -593,5 +555,36 @@ public final class MRL {
      * Slave entry for a media {@link Source}
      */
     public record SlaveEntry(String name, String lang, URI uri) {
+    }
+
+    public enum Status {
+        FETCHING,
+        LOADED,
+        EXPIRED,
+        ERROR,
+        BLOCKED,
+        FORGOTTEN;
+
+        /** Sources are loaded and usable. */
+        public boolean loaded() {
+            return this == LOADED;
+        }
+
+        /** Loading failed — either a plain error or a platform block. */
+        public boolean failed() {
+            return this == ERROR || this == BLOCKED;
+        }
+
+        /**
+         * A terminal, non-loaded state the user must regenerate from:
+         * load failures (ERROR/BLOCKED) plus stale instances (EXPIRED/FORGOTTEN).
+         */
+        public boolean regenerable() {
+            return this == ERROR || this == BLOCKED || this == EXPIRED || this == FORGOTTEN;
+        }
+
+        public boolean disposable() {
+            return this == ERROR || this == EXPIRED;
+        }
     }
 }

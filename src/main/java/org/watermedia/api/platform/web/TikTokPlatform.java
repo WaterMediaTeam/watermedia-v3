@@ -11,6 +11,7 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -34,25 +35,16 @@ public class TikTokPlatform implements IPlatform {
     private static final Pattern EMBED_ID_PATTERN = Pattern.compile("/embed(?:/v2)?/(\\d+)");
     private static final Pattern UNIVERSAL_DATA_PATTERN = Pattern.compile("<script[^>]+id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\"[^>]*>\\s*(\\{.*?})\\s*</script>", Pattern.DOTALL);
     private static final Pattern URL_KEY_PATTERN = Pattern.compile("v[^_]+_([^_]+)_(\\d+)p_(\\d+)");
+    private static final String[] HOSTS = { "www.tiktok.com", "tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com" };
 
     @Override
     public String name() { return "TikTok"; }
 
     @Override
-    public boolean validate(final URI uri) {
-        final String host = uri.getHost();
-        return host != null && (
-                host.equals("www.tiktok.com")
-                || host.equals("tiktok.com")
-                || host.equals("vm.tiktok.com")
-                || host.equals("vt.tiktok.com")
-                || host.equals("m.tiktok.com")
-        );
-    }
-
-    @Override
     public PlatformData getData(URI uri) throws Exception {
         final String host = uri.getHost();
+        if (!DataTool.containsIgnoreCase(host, HOSTS)) return null;
+
         if ("vm.tiktok.com".equals(host) || "vt.tiktok.com".equals(host)) {
             uri = resolveRedirect(uri);
         }
@@ -74,7 +66,7 @@ public class TikTokPlatform implements IPlatform {
         }
 
         if (videoId == null) {
-            throw new IllegalArgumentException("No video ID found in TikTok URL: " + uri);
+            throw new PlatformException(TikTokPlatform.class, "No video ID found in URL: " + uri);
         }
 
         String html = fetchWebpage(uri, null);
@@ -88,7 +80,7 @@ public class TikTokPlatform implements IPlatform {
         }
 
         if (videoData == null) {
-            throw new IllegalStateException("No video data found in TikTok page for video " + videoId);
+            throw new PlatformException(TikTokPlatform.class, "No video data found in page for video " + videoId);
         }
 
         return buildResult(videoData, videoId);
@@ -98,7 +90,7 @@ public class TikTokPlatform implements IPlatform {
     private static String solveChallenge(final String html) throws Exception {
         final String csData = extractElementClass(html, "cs");
         if (csData == null || csData.isEmpty()) {
-            throw new IllegalStateException("Unable to extract TikTok WAF challenge data");
+            throw new PlatformException(TikTokPlatform.class, "Unable to extract WAF challenge data");
         }
 
         final JsonObject challengeData = JsonParser.parseString(
@@ -126,7 +118,7 @@ public class TikTokPlatform implements IPlatform {
         }
 
         if (!solved) {
-            throw new IllegalStateException("Unable to solve TikTok WAF challenge");
+            throw new PlatformException(TikTokPlatform.class, "Unable to solve WAF challenge");
         }
 
         final String cookieValue = Base64.getEncoder().encodeToString(
@@ -164,10 +156,10 @@ public class TikTokPlatform implements IPlatform {
     }
 
     // RESULT BUILDING
-    private PlatformData buildResult(final JsonObject awemeDetail, final String videoId) {
+    private PlatformData buildResult(final JsonObject awemeDetail, final String videoId) throws PlatformException {
         final JsonObject video = awemeDetail.getAsJsonObject("video");
         if (video == null) {
-            throw new IllegalStateException("No video object found for TikTok video " + videoId);
+            throw new PlatformException(TikTokPlatform.class, "No video object found for video " + videoId);
         }
 
         final String desc = jsonString(awemeDetail, "desc");
@@ -196,12 +188,15 @@ public class TikTokPlatform implements IPlatform {
             URI fallback = extractAddrUri(video, "playAddr");
             if (fallback == null) fallback = extractAddrUri(video, "downloadAddr");
             if (fallback == null) {
-                throw new IllegalStateException("No playable video URLs found for TikTok video " + videoId);
+                throw new PlatformException(TikTokPlatform.class, "Video '" + videoId + "' exposed no playable URLs (bitrateInfo, playAddr, and downloadAddr all empty)");
             }
             // No reliable dimensions on this fallback — let FFMediaPlayer probe and re-bucket.
+            LOGGER.debug(IT, "TikTok video '{}' had no usable bitrateInfo, falling back to {}", videoId, fallback);
             variants.add(new DataQuality(fallback, 0, 0));
         }
 
+        if (author == null) LOGGER.warn(IT, "TikTok video '{}' has no resolvable author", videoId);
+        LOGGER.info(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
         return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
                 new DataSource(MediaType.VIDEO, thumbnail, metadata,
                         cdnHeaders(), variants.toArray(DataQuality[]::new), null, null));
@@ -258,6 +253,7 @@ public class TikTokPlatform implements IPlatform {
 
             out.add(new DataQuality(url, w, h));
         }
+        LOGGER.debug(IT, "TikTok parsed {} variant(s) from {} bitrateInfo entry(es)", out.size(), bitrateInfos.size());
     }
 
     private static URI pickBestUrl(final JsonObject playAddr) {
@@ -341,7 +337,7 @@ public class TikTokPlatform implements IPlatform {
     }
 
     // DATA EXTRACTION
-    private JsonObject extractVideoData(final String html, final String videoId) {
+    private JsonObject extractVideoData(final String html, final String videoId) throws PlatformException {
         final Matcher matcher = UNIVERSAL_DATA_PATTERN.matcher(html);
         if (!matcher.find()) {
             LOGGER.warn(IT, "No __UNIVERSAL_DATA_FOR_REHYDRATION__ found for TikTok video {}", videoId);
@@ -359,10 +355,10 @@ public class TikTokPlatform implements IPlatform {
         if (videoDetail.has("statusCode") && videoDetail.get("statusCode").getAsInt() != 0) {
             final int status = videoDetail.get("statusCode").getAsInt();
             if (status == 10216 || status == 10222) {
-                throw new IllegalStateException("TikTok video " + videoId + " is private or requires login");
+                throw new PlatformException(TikTokPlatform.class, "Video " + videoId + " is private or requires login");
             }
             if (status == 10204) {
-                throw new IllegalStateException("IP address is blocked from accessing TikTok video " + videoId);
+                throw new PlatformException(TikTokPlatform.class, "IP address is blocked from accessing video " + videoId);
             }
             LOGGER.warn(IT, "TikTok video {} returned status code {}", videoId, status);
         }
@@ -388,7 +384,7 @@ public class TikTokPlatform implements IPlatform {
         if (cookies != null) builder.header("Cookie", cookies);
 
         try (final NetRequest req = builder.send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            if (req.statusCode() != 200) throw new PlatformException(TikTokPlatform.class, "HTTP " + req.statusCode() + " for " + uri);
             captureCookies(req);
             return req.readAllAsString();
         }

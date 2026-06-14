@@ -9,9 +9,9 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.tools.HlsTool;
+import org.watermedia.tools.DataTool;
+import org.watermedia.tools.MPEGTools;
 
-import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -20,7 +20,6 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -33,50 +32,54 @@ public class KickPlatform implements IPlatform {
     private static final String CHANNELS_API = "https://kick.com/api/v2/channels/%s";
     private static final String CLIPS_API = "https://kick.com/api/v2/clips/%s/play";
     private static final DateTimeFormatter DATE_PATTERN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String[] HOSTS = { "kick.com" };
 
     @Override
-    public String name() { return "Kick"; }
-
-    @Override
-    public boolean validate(final URI uri) {
-        return "kick.com".equalsIgnoreCase(uri.getHost());
-    }
+    public String name() { return NAME; }
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
+        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+
         final String clipId = clipId(uri);
-        if (clipId != null) // /<channel>/clips/clip_... OR /<channel>?clip=clip_...
+        if (clipId != null) { // /<channel>/clips/clip_... OR /<channel>?clip=clip_...
+            LOGGER.debug(IT, "Kick resolving clip '{}' from {}", clipId, uri);
             return this.getClipData(uri, clipId);
+        }
 
         final var path = uri.getPath().substring(1).split("/");
 
         if (path.length == 1) { // ASSUME IT WAS A CHANNEL NAME
-            final Channel channel = this.getChannelInfo(path[0]);
+            final String slug = path[0];
+            LOGGER.debug(IT, "Kick resolving channel '{}' from {}", slug, uri);
+            final Channel channel = this.getChannelInfo(slug);
 
             if (channel.livestream == null || !channel.livestream.is_live)
-                throw new IllegalStateException("Streamer " + path[0] + " is not online");
+                throw new PlatformException(KickPlatform.class, "Streamer '" + slug + "' is offline");
 
             if (channel.is_banned)
-                throw new IllegalStateException("Streamer " + path[0] + " is banned");
+                throw new PlatformException(KickPlatform.class, "Streamer '" + slug + "' is banned");
 
             if (channel.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
-                throw new MatureContentException("Streamer " + path[0] + " is marked as mature content");
+                throw new MatureContentException(KickPlatform.class, "Streamer '" + slug + "' is marked as mature content");
 
-            // INIT
-            final var r = HlsTool.fetch(channel.url);
+            final String username = channel.user != null ? channel.user.username : slug;
+            if (channel.livestream.session_title == null)
+                LOGGER.warn(IT, "Kick channel '{}' is live but reports no session_title", slug);
 
-            // BASIC METADATA
+            // FETCH THE HLS MASTER PLAYLIST AND EXPAND ITS RENDITIONS INTO QUALITY VARIANTS
+            final DataQuality[] variants = variantsFrom(channel.url, "channel " + slug);
+
             final Metadata metadata = new Metadata(
-                    channel.user.username,
+                    username,
                     channel.livestream.session_title,
-                    LocalDateTime.parse(channel.livestream.start_time, DATE_PATTERN).toInstant(ZoneOffset.UTC),
+                    parseDate(channel.livestream.start_time, slug),
                     0,
-                    channel.user.username);
+                    username);
 
-            final DataQuality[] variants = variantsFrom(r, channel.url);
-
-            // WE MAKE IT EXPIRES EVERY 30 SECONDS BECAUSE... I AM REALLY NOT SURE IF THE LINKS EVEN EXPIRES
-            final var entry = new DataSource(MediaType.VIDEO, channel.user.profile_pic, metadata,
+            LOGGER.info(IT, "Kick resolved live channel '{}' with {} variant(s)", slug, variants.length);
+            // KICK LIVE CDN LINKS ROTATE; RE-RESOLVE PERIODICALLY (30 MIN) TO AVOID SERVING STALE PLAYLISTS
+            final var entry = new DataSource(MediaType.VIDEO, channel.user != null ? channel.user.profile_pic : null, metadata,
                     RequestHeaders.defaults(uri),
                     variants,
                     null, null);
@@ -84,32 +87,38 @@ public class KickPlatform implements IPlatform {
 
         } else {
             if (!path[0].equalsIgnoreCase("video"))
-                throw new IllegalArgumentException("Invalid Kick URL: " + uri);
+                throw new PlatformException(KickPlatform.class, "Unrecognized URL (expected /<channel>, /video/<id>, or a clip): " + uri);
 
             final String id = path[path.length - 1];
+            LOGGER.debug(IT, "Kick resolving VOD '{}' from {}", id, uri);
             final Video video = this.getVideoInfo(id);
 
             if (video.livestream == null || video.url == null)
-                throw new IllegalStateException("Video " + id + " uri is unavailable");
+                throw new PlatformException(KickPlatform.class, "VOD '" + id + "' is unavailable (no playback URL)");
 
-            if (video.livestream.channel.is_banned)
-                throw new IllegalStateException("Streamer " + video.livestream.channel.user.username + " is banned");
+            final String username = video.livestream.channel != null && video.livestream.channel.user != null
+                    ? video.livestream.channel.user.username : null;
+
+            if (video.livestream.channel != null && video.livestream.channel.is_banned)
+                throw new PlatformException(KickPlatform.class, "Streamer '" + username + "' is banned");
 
             if (video.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
-                throw new MatureContentException("Video is marked as mature content");
+                throw new MatureContentException(KickPlatform.class, "VOD '" + id + "' is marked as mature content");
 
-            final var r = HlsTool.fetch(uri);
+            // FETCH THE HLS PLAYLIST FROM THE VOD'S PLAYBACK URL (NOT THE PAGE URI)
+            final DataQuality[] vodVariants = variantsFrom(video.url, "VOD " + id);
 
             final Metadata vodMetadata = new Metadata(
-                    video.livestream.channel.user.username,
+                    username,
                     video.livestream.session_title,
-                    LocalDateTime.parse(video.livestream.start_time, DATE_PATTERN).toInstant(ZoneOffset.UTC),
+                    parseDate(video.livestream.start_time, id),
                     video.livestream.duration,
-                    video.livestream.channel.user.username);
+                    username);
 
-            final DataQuality[] vodVariants = variantsFrom(r, video.url);
-
-            final var entry = new DataSource(MediaType.VIDEO, video.livestream.channel.user.profile_pic, vodMetadata,
+            LOGGER.info(IT, "Kick resolved VOD '{}' with {} variant(s)", id, vodVariants.length);
+            final var entry = new DataSource(MediaType.VIDEO,
+                    video.livestream.channel != null && video.livestream.channel.user != null ? video.livestream.channel.user.profile_pic : null,
+                    vodMetadata,
                     RequestHeaders.defaults(uri),
                     vodVariants,
                     null, null);
@@ -119,15 +128,19 @@ public class KickPlatform implements IPlatform {
 
     private Channel getChannelInfo(final String channel) throws Exception {
         try (final NetRequest req = NetRequest.create(URI.create(String.format(CHANNELS_API, channel))).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + req.uri());
-            return req.json(Channel.class);
+            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Channels API for '" + channel + "' returned HTTP " + req.statusCode());
+            final Channel data = req.json(Channel.class);
+            if (data == null) throw new PlatformException(KickPlatform.class, "Channels API returned an empty or non-JSON body for '" + channel + "'");
+            return data;
         }
     }
 
     private Video getVideoInfo(final String videoId) throws Exception {
         try (final NetRequest req = NetRequest.create(URI.create(String.format(VIDEO_API, videoId))).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + req.uri());
-            return req.json(Video.class);
+            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Video API for '" + videoId + "' returned HTTP " + req.statusCode());
+            final Video data = req.json(Video.class);
+            if (data == null) throw new PlatformException(KickPlatform.class, "Video API returned an empty or non-JSON body for '" + videoId + "'");
+            return data;
         }
     }
 
@@ -135,16 +148,17 @@ public class KickPlatform implements IPlatform {
         final Clip clip = this.getClipInfo(clipId);
 
         if (clip.clipUrl == null)
-            throw new IllegalStateException("Clip " + clipId + " uri is unavailable");
+            throw new PlatformException(KickPlatform.class, "Clip '" + clipId + "' has no playback URL (removed or still processing)");
 
         if (clip.isMature && !WaterMediaConfig.media.platforms.allowMatureContent)
-            throw new MatureContentException("Clip " + clipId + " is marked as mature content");
+            throw new MatureContentException(KickPlatform.class, "Clip '" + clipId + "' is marked as mature content");
 
         // CLIP URL MAY BE A DIRECT FILE (mp4/webm) OR AN M3U8 PLAYLIST
         final DataQuality[] variants;
         if (clip.clipUrl.getPath().toLowerCase(Locale.ROOT).endsWith(".m3u8")) {
-            variants = variantsFrom(HlsTool.fetch(clip.clipUrl), clip.clipUrl);
+            variants = variantsFrom(clip.clipUrl, "clip " + clipId);
         } else {
+            LOGGER.debug(IT, "Kick clip '{}' is a direct file: {}", clipId, clip.clipUrl);
             variants = new DataQuality[] { new DataQuality(clip.clipUrl, 0, 0) };
         }
 
@@ -155,6 +169,7 @@ public class KickPlatform implements IPlatform {
                 (long) (clip.duration * 1000L),
                 clip.creator != null ? clip.creator.username : null);
 
+        LOGGER.info(IT, "Kick resolved clip '{}' with {} variant(s)", clipId, variants.length);
         final var entry = new DataSource(MediaType.VIDEO, clip.thumbnail, metadata,
                 RequestHeaders.defaults(uri),
                 variants,
@@ -164,9 +179,9 @@ public class KickPlatform implements IPlatform {
 
     private Clip getClipInfo(final String clipId) throws Exception {
         try (final NetRequest req = NetRequest.create(URI.create(String.format(CLIPS_API, clipId))).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + req.uri());
+            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Clips API for '" + clipId + "' returned HTTP " + req.statusCode());
             final ClipResponse response = req.json(ClipResponse.class);
-            if (response == null || response.clip == null) throw new IllegalStateException("Clip " + clipId + " is unavailable");
+            if (response == null || response.clip == null) throw new PlatformException(KickPlatform.class, "Clip '" + clipId + "' is unavailable");
             return response.clip;
         }
     }
@@ -191,18 +206,27 @@ public class KickPlatform implements IPlatform {
         return null;
     }
 
-    private static DataQuality[] variantsFrom(final HlsTool.Result result, final URI fallback) {
-        final List<DataQuality> variants = new ArrayList<>();
-        if (result instanceof final HlsTool.MasterResult master) {
-            for (final var variant: master.variants()) {
-                variants.add(new DataQuality(URI.create(variant.uri()), variant.width(), variant.height()));
-            }
+    // RESOLVES AN HLS STREAM URL INTO QUALITY VARIANTS. RESILIENT BY DESIGN (NEVER THROWS): A FETCH/PARSE
+    // HICCUP, A MEDIA PLAYLIST, OR A NON-HLS RESOURCE FALLS BACK TO THE RAW URL SO FFMediaPlayer CAN PROBE.
+    // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST source BY MPEGTools).
+    private static DataQuality[] variantsFrom(final URI source, final String ctx) {
+        final List<MPEGTools.Variant> variants = MPEGTools.qualities(source);
+        final DataQuality[] out = new DataQuality[variants.size()];
+        for (int i = 0; i < variants.size(); i++) {
+            final MPEGTools.Variant v = variants.get(i);
+            out[i] = new DataQuality(v.uri(), v.width(), v.height());
         }
-        if (variants.isEmpty()) {
-            LOGGER.warn(IT, "Failed to parse M3U8 data, proceeding to encapsulate uri with high quality as default");
-            variants.add(new DataQuality(fallback, 0, 0));
-        }
-        return variants.toArray(DataQuality[]::new);
+        LOGGER.debug(IT, "Kick resolved {} HLS rendition(s) for {}", out.length, ctx);
+        return out;
+    }
+
+    // PARSES KICK LIVE/VOD start_time ("yyyy-MM-dd HH:mm:ss" OR ISO-8601), NULL-SAFE: WARNS RATHER
+    // THAN ABORTING THE WHOLE RESOLUTION WHEN THE TIMESTAMP IS MISSING OR MALFORMED
+    private static Instant parseDate(final String value, final String ctx) {
+        final Instant parsed = parseIso(value);
+        if (parsed == null && value != null)
+            LOGGER.warn(IT, "Kick unparseable start_time '{}' for {}", value, ctx);
+        return parsed;
     }
 
     // CLIP TIMESTAMPS ARE ISO-8601 (created_at), UNLIKE THE "yyyy-MM-dd HH:mm:ss" USED BY LIVE/VOD

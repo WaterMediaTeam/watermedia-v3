@@ -104,6 +104,11 @@ public class PNGReader extends ImageReader {
     private int framesDelivered;
     private final ImageData.Scan scan;
 
+    // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
+    private final int resetPos;
+    private final CHUNK resetChunk;
+    private final boolean resetDone;
+
     // CANVAS / OUTPUT (1-D ARGB INT BUFFERS, STRIDE = canvasWidth)
     private int canvasWidth;
     private int canvasHeight;
@@ -136,6 +141,11 @@ public class PNGReader extends ImageReader {
 
         this.parseUntilFirstFrame();
         if (this.ihdr == null) throw new XCodecException("Missing IHDR chunk");
+
+        // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
+        this.resetPos = this.data.position();
+        this.resetChunk = this.pendingChunk;
+        this.resetDone = this.done;
 
         this.gammaLUT = buildGammaLUT(this.gamma, this.srgb, this.cicp);
         this.canvasWidth = this.ihdr.width();
@@ -171,6 +181,20 @@ public class PNGReader extends ImageReader {
         if (this.inflaterClosed) return;
         this.inflater.end();
         this.inflaterClosed = true;
+    }
+
+    @Override
+    public boolean reset() {
+        this.data.position(this.resetPos);
+        this.pendingChunk = this.resetChunk;
+        this.done = this.resetDone;
+        this.framesDelivered = 0;
+        this.currentDelay = 0L;
+        // RE-INIT THE CANVAS EXACTLY AS THE CONSTRUCTOR LEAVES IT (BKGD COLOR OR TRANSPARENT);
+        // frameBuffer AND previousBuffer NEED NO CLEARING BECAUSE EACH next() FULLY WRITES THE
+        // REGIONS IT LATER READS
+        Arrays.fill(this.outputBuffer, this.bkgd != null ? this.bkgdToARGB(this.bkgd, this.depth, this.plte) : 0);
+        return true;
     }
 
     @Override

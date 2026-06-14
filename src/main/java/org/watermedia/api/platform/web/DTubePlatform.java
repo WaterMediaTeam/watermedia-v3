@@ -7,7 +7,8 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.tools.HlsTool;
+import org.watermedia.tools.DataTool;
+import org.watermedia.tools.MPEGTools;
 
 import java.io.IOException;
 import java.net.URI;
@@ -32,32 +33,36 @@ public class DTubePlatform implements IPlatform {
     private static final Pattern DURATION = Pattern.compile("duration:\\s*(\\d+)");
     private static final Pattern CREATED_AT = Pattern.compile("created_at:\\s*\"([^\"]+)\"");
     private static final Pattern USERNAME = Pattern.compile("username:\\s*\"([^\"]+)\"");
+    private static final String[] HOSTS = { "d.tube", "www.d.tube" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public boolean validate(final URI uri) {
-        final String host = uri.getHost();
-        return host != null && (host.equals("d.tube") || host.equals("www.d.tube"));
-    }
-
-    @Override
     public PlatformData getData(final URI uri) throws Exception {
+        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            if (req.statusCode() != 200) throw new PlatformException(DTubePlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());
             final String html = req.readAllAsString();
 
             final String videoUrl = extractRequired(html, VIDEO_URL, "video_url", uri);
             final URI hlsUri = new URI(videoUrl);
+            LOGGER.debug(IT, "D.tube extracted video_url {} from {}", hlsUri, uri);
 
             final String title = extract(html, TITLE);
             final String description = extract(html, DESCRIPTION);
             final String thumbnailUrl = extract(html, THUMBNAIL_URL);
             final URI thumbnail = thumbnailUrl != null ? new URI(thumbnailUrl) : null;
+            if (title == null) LOGGER.warn(IT, "D.tube page has no title for {}", uri);
 
+            // METADATA IS BEST-EFFORT: A MALFORMED TIMESTAMP MUST NOT ABORT AN OTHERWISE PLAYABLE VIDEO
+            Instant publishedAt = null;
             final String createdAt = extract(html, CREATED_AT);
-            final Instant publishedAt = createdAt != null ? Instant.parse(createdAt) : null;
+            if (createdAt != null) {
+                try { publishedAt = Instant.parse(createdAt); }
+                catch (final Exception e) { LOGGER.warn(IT, "D.tube unparseable created_at '{}' for {}", createdAt, uri); }
+            }
 
             long duration = 0;
             final String durationStr = extract(html, DURATION);
@@ -69,15 +74,21 @@ public class DTubePlatform implements IPlatform {
             final Metadata metadata = new Metadata(title, description, publishedAt, duration, author);
 
             final List<DataQuality> variants = new ArrayList<>();
-            final var r = fetchHls(hlsUri);
-            if (r instanceof final HlsTool.MasterResult master) {
-                for (final var variant: master.variants()) {
-                    variants.add(new DataQuality(hlsUri.resolve(variant.uri()), variant.width(), variant.height()));
+            try {
+                // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY MPEGTools)
+                final MPEGTools.Playlist r = fetchHls(hlsUri);
+                if (r instanceof final MPEGTools.Master master) {
+                    for (final MPEGTools.Variant variant: master.variants()) {
+                        variants.add(new DataQuality(variant.uri(), variant.width(), variant.height()));
+                    }
+                    LOGGER.debug(IT, "D.tube parsed {} HLS rendition(s) for {}", master.variants().size(), uri);
+                } else {
+                    LOGGER.warn(IT, "D.tube HLS response for {} was not a master playlist — falling back to direct URL", uri);
                 }
-            } else if (r instanceof final HlsTool.ErrorResult error) {
-                LOGGER.warn(IT, "Failed to parse D.tube HLS playlist: {}, falling back to direct URL", error.message());
-                variants.add(new DataQuality(hlsUri, 0, 0));
-            } else {
+            } catch (final IOException e) {
+                LOGGER.warn(IT, "D.tube failed to parse HLS playlist for {}: {} — falling back to direct URL", uri, e.getMessage());
+            }
+            if (variants.isEmpty()) {
                 variants.add(new DataQuality(hlsUri, 0, 0));
             }
 
@@ -87,6 +98,7 @@ public class DTubePlatform implements IPlatform {
                     .set("Referer", ORIGIN + "/")
                     .set("Origin", ORIGIN);
 
+            LOGGER.info(IT, "D.tube resolved '{}' with {} variant(s) for {}", title, variants.size(), uri);
             final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
                     headers,
                     variants.toArray(DataQuality[]::new),
@@ -95,7 +107,9 @@ public class DTubePlatform implements IPlatform {
         }
     }
 
-    private static HlsTool.Result fetchHls(final URI uri) {
+    // FETCHES THE HLS PLAYLIST WITH D.tube CDN HEADERS (BROWSER UA + d.tube ORIGIN/REFERER).
+    // KEPT SEPARATE FROM MPEGTools.fetch BECAUSE THAT HELPER CANNOT CARRY THE Origin/Referer HEADERS THE CDN DEMANDS.
+    private static MPEGTools.Playlist fetchHls(final URI uri) throws IOException {
         try (final NetRequest req = NetRequest.create(uri)
                 .method("GET")
                 .accept("application/vnd.apple.mpegurl")
@@ -106,9 +120,7 @@ public class DTubePlatform implements IPlatform {
                 .readTimeout(10_000)
                 .send()) {
             if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
-            return HlsTool.parse(req.readAllAsString(), uri.toString());
-        } catch (final Exception e) {
-            return new HlsTool.ErrorResult("Fetch error: " + e.getMessage(), e);
+            return MPEGTools.parse(req.readAllAsString(), uri);
         }
     }
 
@@ -117,10 +129,10 @@ public class DTubePlatform implements IPlatform {
         return m.find() ? m.group(1) : null;
     }
 
-    private static String extractRequired(final String html, final Pattern pattern, final String field, final URI uri) {
+    private static String extractRequired(final String html, final Pattern pattern, final String field, final URI uri) throws PlatformException {
         final String value = extract(html, pattern);
         if (value == null) {
-            throw new IllegalStateException("No " + field + " found in D.tube page: " + uri);
+            throw new PlatformException(DTubePlatform.class, "No " + field + " found in page: " + uri);
         }
         return value;
     }

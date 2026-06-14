@@ -206,7 +206,7 @@ public final class NetworkCache {
             }
 
             final byte[] bytes;
-            try (final InputStream in = req.getInputStream()) {
+            try (final InputStream in = req.inputStream()) {
                 bytes = IOTool.readLimited(in, maxBytes, contentLength);
             }
             return new CachedBytes(bytes, req.contentType(), false, expiry(req));

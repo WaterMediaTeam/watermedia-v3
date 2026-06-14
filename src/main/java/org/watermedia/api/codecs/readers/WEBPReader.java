@@ -80,6 +80,10 @@ public class WEBPReader extends ImageReader {
 
     private boolean done;
 
+    // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
+    private final int resetPos;
+    private final boolean resetDone;
+
     public WEBPReader(final ByteBuffer data) throws IOException {
         this(data, null);
     }
@@ -171,6 +175,10 @@ public class WEBPReader extends ImageReader {
             this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
             this.directOutInts = this.directOut.asIntBuffer();
         }
+
+        // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
+        this.resetPos = this.data.position();
+        this.resetDone = this.done;
 
         LOGGER.debug(IT, "WEBP opened: {}x{} codec={} animated={} alpha={} output={} frames={}",
                 this.canvasWidth, this.canvasHeight, RiffChunk.fourCCString(this.bitstreamFourCC),
@@ -272,6 +280,19 @@ public class WEBPReader extends ImageReader {
         this.decodeAnimFrame(anmf, c.size);
         this.currentFrame = this.directOut;
         return this.directOut;
+    }
+
+    @Override
+    public boolean reset() {
+        // STATIC PATHS KEEP THE WHOLE BITSTREAM BUFFERED, SO ONLY THE DELIVERY FLAG MATTERS;
+        // THE ANIMATED CANVAS STARTS FULLY TRANSPARENT (ANIM BACKGROUND IS NEVER APPLIED HERE)
+        this.data.position(this.resetPos);
+        this.done = this.resetDone;
+        this.staticDelivered = false;
+        this.pendingChunk = null;
+        this.currentDelay = 0L;
+        if (this.canvas != null) Arrays.fill(this.canvas, 0);
+        return true;
     }
 
     // ----- DECODE -----

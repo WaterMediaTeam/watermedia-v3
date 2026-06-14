@@ -22,7 +22,7 @@ public class MrlPreloadTest {
         final URI uriA = Fixtures.fileUri(Fixtures.PNG_STATIC);
         final URI uriB = Fixtures.fileUri(Fixtures.GIF_ANIMATED);
 
-        final MRL[] preloaded = MRL.preload(uriA, uriB);
+        final MRL[] preloaded = MediaAPI.preloadMRL(uriA, uriB);
 
         assertEquals(2, preloaded.length);
         assertSame(preloaded[0], MediaAPI.getMRL(uriA));

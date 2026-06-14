@@ -34,6 +34,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private float speed = 1.0f;
     private boolean muted = false;
 
+    // VIDEO UPLOAD SCALING — READ BY THE PLAYBACK THREADS, WRITTEN BY THE CALLER
+    private volatile int maxWidth = NO_SIZE;
+    private volatile int maxHeight = NO_SIZE;
+    private volatile LodLevel lod = LodLevel.MAX;
+
     public MediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
         Objects.requireNonNull(mrl, "MediaPlayer must have a valid MRL");
         final MRL.Source resolved = mrl.source(sourceIndex);
@@ -91,16 +96,93 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean withAudio() { return this.sfx != null; }
 
     /**
-     * Returns the width of the video in pixels.
+     * Returns the width of the video in pixels, as uploaded to the GPU
+     * (after any {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale).
      * @return the width of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
     public final int width() { return this.gfx == null ? NO_SIZE : this.gfx.width(); }
 
     /**
-     * Returns the height of the video in pixels.
+     * Returns the height of the video in pixels, as uploaded to the GPU
+     * (after any {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale).
      * @return the height of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
     public final int height() { return this.gfx == null ? NO_SIZE : this.gfx.height(); }
+
+    /**
+     * Caps the dimensions of the video frames uploaded to the GPU.
+     * Frames exceeding the cap are downscaled by the player before upload, preserving
+     * the aspect ratio; frames are never upscaled. This trades a small CPU scaling cost
+     * for less data uploaded to the GPU and smaller textures.
+     * <p>
+     * The effective cap is further reduced by the current {@link LodLevel}.
+     * Changes apply on the fly to the next uploaded frame without interrupting playback;
+     * already uploaded frames (static images, preloaded animations) keep their size
+     * until the next {@link #start()}.
+     * @param width maximum upload width in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} for no limit
+     * @param height maximum upload height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} for no limit
+     * @throws IllegalArgumentException if width or height is negative
+     */
+    public void maxSize(final int width, final int height) {
+        if (width < 0 || height < 0) throw new IllegalArgumentException("Dimensions cannot be negative.");
+        this.maxWidth = width;
+        this.maxHeight = height;
+    }
+
+    /**
+     * Returns the maximum upload width set by {@link #maxSize(int, int)}.
+     * @return the maximum width in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
+     */
+    public int maxWidth() { return this.maxWidth; }
+
+    /**
+     * Returns the maximum upload height set by {@link #maxSize(int, int)}.
+     * @return the maximum height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
+     */
+    public int maxHeight() { return this.maxHeight; }
+
+    /**
+     * Sets the level of detail for video uploads.
+     * Each level shrinks the effective maximum video dimensions to a percentage of their
+     * value (see {@link LodLevel}), so distant or less important media decodes, scales and
+     * uploads fewer pixels. The change is applied on the fly to the next uploaded frame
+     * without interrupting playback.
+     * @param lod the new level of detail
+     * @throws IllegalArgumentException if lod is null
+     * @see #maxSize(int, int)
+     */
+    public void lod(final LodLevel lod) {
+        if (lod == null) throw new IllegalArgumentException("LOD level cannot be null.");
+        this.lod = lod;
+    }
+
+    /**
+     * Returns the current level of detail. Always starts at {@link LodLevel#MAX MAX}.
+     * @return the current level of detail
+     */
+    public LodLevel lod() { return this.lod; }
+
+    // RESOLVES THE UPLOAD SIZE FOR A SOURCE FRAME: FITS IT INSIDE maxSize SHRUNK BY THE
+    // LOD PERCENT, KEEPING ASPECT RATIO AND NEVER UPSCALING. DIMENSIONS ARE FORCED EVEN
+    // FOR CHROMA SUBSAMPLING. PACKED AS (WIDTH << 32) | HEIGHT SO BOTH AXES ARE RESOLVED
+    // FROM ONE CONSISTENT READ OF THE VOLATILE FIELDS.
+    protected final long targetSize(final int srcW, final int srcH) {
+        final int percent = this.lod.percent();
+        final int mw = this.maxWidth;
+        final int mh = this.maxHeight;
+        if (srcW <= 0 || srcH <= 0 || (percent >= 100 && mw == NO_SIZE && mh == NO_SIZE)) {
+            return (long) srcW << 32 | (srcH & 0xFFFFFFFFL);
+        }
+        final double boundW = (mw > 0 ? Math.min(mw, srcW) : srcW) * (percent / 100.0);
+        final double boundH = (mh > 0 ? Math.min(mh, srcH) : srcH) * (percent / 100.0);
+        final double scale = Math.min(boundW / srcW, boundH / srcH);
+        if (scale >= 1.0) {
+            return (long) srcW << 32 | (srcH & 0xFFFFFFFFL);
+        }
+        final int w = Math.max(2, (int) Math.round(srcW * scale) & ~1);
+        final int h = Math.max(2, (int) Math.round(srcH * scale) & ~1);
+        return (long) w << 32 | (h & 0xFFFFFFFFL);
+    }
 
     /**
      * Returns the texture ID used for rendering the video frames.
@@ -469,5 +551,36 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
          * @throws ArrayIndexOutOfBoundsException if the value is out of range
          */
         public static Status of(final int value) { return VALUES[value]; }
+    }
+
+    /**
+     * Level of detail applied to video uploads.
+     * Each level keeps a percentage of the effective maximum video dimensions
+     * ({@link #maxSize(int, int)} when set, otherwise the source size), reducing the
+     * amount of pixel data scaled and uploaded to the GPU. Useful to tie media
+     * resolution to the viewer distance. Playback always starts at {@link #MAX}.
+     * @see MediaPlayer#lod(LodLevel)
+     */
+    public enum LodLevel {
+        /** Full resolution — no LOD reduction. */
+        MAX(100),
+        /** Close range — 75% of the maximum dimensions. */
+        CLOSE(75),
+        /** Near range — 50% of the maximum dimensions. */
+        NEAR(50),
+        /** Far range — 25% of the maximum dimensions. */
+        FAR(25),
+        /** Barely visible — 10% of the maximum dimensions. */
+        FAR_AWAY(10);
+
+        private final int percent;
+
+        LodLevel(final int percent) { this.percent = percent; }
+
+        /**
+         * Returns the percentage of the maximum video dimensions this level keeps.
+         * @return the percentage (1-100)
+         */
+        public int percent() { return this.percent; }
     }
 }

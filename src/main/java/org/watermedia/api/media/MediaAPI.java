@@ -27,15 +27,19 @@ public class MediaAPI extends WaterMediaAPI {
      * Otherwise, starts async loading via the platform API.
      *
      * @param uri the media URI
-     * @return the MRL instance (may still be loading)
+     * @return the MRL instance(may still be loading)
      */
     public static MRL getMRL(final String uri) {
         final File f = new File(uri);
-        return MRL.getMRL(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
+        return MRL.get(f.exists() ? f.getAbsoluteFile().toURI() : URI.create(uri));
     }
 
     public static MRL getMRL(final URI uri) {
-        return MRL.getMRL(uri);
+        return MRL.get(uri);
+    }
+
+    public static MRL[] preloadMRL(final URI... uri) {
+        return MRL.preload(uri);
     }
 
     public static MediaPlayer createPlayer(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {

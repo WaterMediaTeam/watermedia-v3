@@ -3,32 +3,43 @@ package org.watermedia.test.tools;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.watermedia.tools.HlsTool;
-import org.watermedia.tools.HlsTool.ErrorResult;
-import org.watermedia.tools.HlsTool.MasterResult;
-import org.watermedia.tools.HlsTool.MediaResult;
-import org.watermedia.tools.HlsTool.Rendition;
-import org.watermedia.tools.HlsTool.Result;
-import org.watermedia.tools.HlsTool.Segment;
-import org.watermedia.tools.HlsTool.SessionData;
-import org.watermedia.tools.HlsTool.Variant;
+import org.watermedia.tools.MPEGTools;
+import org.watermedia.tools.MPEGTools.Channel;
+import org.watermedia.tools.MPEGTools.Iptv;
+import org.watermedia.tools.MPEGTools.Master;
+import org.watermedia.tools.MPEGTools.Media;
+import org.watermedia.tools.MPEGTools.Playlist;
+import org.watermedia.tools.MPEGTools.Rendition;
+import org.watermedia.tools.MPEGTools.Segment;
+import org.watermedia.tools.MPEGTools.Variant;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Comprehensive test suite for {@link HlsTool}, the HLS/M3U8 playlist parser.
- * Covers master playlist parsing, media playlist parsing, error handling, and
- * various edge cases encountered in real-world HLS streams.
+ * Comprehensive test suite for {@link MPEGTools}, the unified M3U/M3U8 playlist parser
+ * (formerly split across {@code HlsTool} and {@code M3UTool}). Covers HLS master and
+ * media playlists, IPTV channel lists, error handling, and real-world edge cases.
+ *
+ * <p>Classification is single-entry through {@link MPEGTools#parse(String, URI)}:
+ * {@code #EXT-X-STREAM-INF} → {@link Master}, any other {@code #EXT-X-} tag →
+ * {@link Media}, a tag-less {@code #EXTINF} list → {@link Iptv}, and anything else
+ * throws {@link IOException}. Every entry URL ({@link Variant}, {@link Segment},
+ * {@link Rendition}, {@link Channel}) is resolved against the source while parsing,
+ * so callers always receive absolute {@link URI}s.
  */
-public class HlsToolTest {
+public class MPEGToolTest {
 
     // ==========================================================================
     // ERROR HANDLING TESTS
@@ -39,38 +50,31 @@ public class HlsToolTest {
     class ErrorHandlingTests {
 
         @Test
-        @DisplayName("Null content returns ErrorResult")
+        @DisplayName("Null content throws IOException")
         void testNullContent() {
-            final Result result = HlsTool.parse((String) null, "test.m3u8");
-
-            assertInstanceOf(ErrorResult.class, result);
-            final ErrorResult error = (ErrorResult) result;
-            assertEquals("Content is null or empty", error.message());
-            assertNull(error.cause());
+            final IOException error = assertThrows(IOException.class,
+                    () -> MPEGTools.parse((String) null, URI.create("test.m3u8")));
+            assertTrue(error.getMessage().contains("Empty playlist"));
         }
 
         @Test
-        @DisplayName("Empty content returns ErrorResult")
+        @DisplayName("Empty content throws IOException")
         void testEmptyContent() {
-            final Result result = HlsTool.parse("", "test.m3u8");
-
-            assertInstanceOf(ErrorResult.class, result);
-            final ErrorResult error = (ErrorResult) result;
-            assertEquals("Content is null or empty", error.message());
+            final IOException error = assertThrows(IOException.class,
+                    () -> MPEGTools.parse("", URI.create("test.m3u8")));
+            assertTrue(error.getMessage().contains("Empty playlist"));
         }
 
         @Test
-        @DisplayName("Blank content returns ErrorResult")
+        @DisplayName("Blank content throws IOException")
         void testBlankContent() {
-            final Result result = HlsTool.parse("   \n\t  ", "test.m3u8");
-
-            assertInstanceOf(ErrorResult.class, result);
-            final ErrorResult error = (ErrorResult) result;
-            assertEquals("Content is null or empty", error.message());
+            final IOException error = assertThrows(IOException.class,
+                    () -> MPEGTools.parse("   \n\t  ", URI.create("test.m3u8")));
+            assertTrue(error.getMessage().contains("Empty playlist"));
         }
 
         @Test
-        @DisplayName("Missing #EXTM3U header returns ErrorResult")
+        @DisplayName("Missing #EXTM3U header throws IOException")
         void testMissingHeader() {
             final String content = """
                 #EXT-X-VERSION:3
@@ -79,27 +83,31 @@ public class HlsToolTest {
                 segment.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
-
-            assertInstanceOf(ErrorResult.class, result);
-            final ErrorResult error = (ErrorResult) result;
-            assertEquals("Invalid M3U8: Missing #EXTM3U header", error.message());
+            final IOException error = assertThrows(IOException.class,
+                    () -> MPEGTools.parse(content, URI.create("test.m3u8")));
+            assertTrue(error.getMessage().contains("#EXTM3U"));
         }
 
         @Test
-        @DisplayName("Unknown playlist type returns ErrorResult")
+        @DisplayName("Unknown playlist type throws IOException")
         void testUnknownPlaylistType() {
+            // #EXTM3U present but NO #EXT-X-STREAM-INF, NO #EXT-X-* tag and NO #EXTINF:
             final String content = """
                 #EXTM3U
-                #EXT-X-VERSION:3
                 # Just some comments, no actual content
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final IOException error = assertThrows(IOException.class,
+                    () -> MPEGTools.parse(content, URI.create("test.m3u8")));
+            assertTrue(error.getMessage().contains("Unrecognized"));
+        }
 
-            assertInstanceOf(ErrorResult.class, result);
-            final ErrorResult error = (ErrorResult) result;
-            assertEquals("Unknown playlist type", error.message());
+        @Test
+        @DisplayName("Non-playlist text throws IOException")
+        void testNonPlaylistText() {
+            assertThrows(IOException.class, () -> MPEGTools.parse("", URI.create("src")));
+            assertThrows(IOException.class, () -> MPEGTools.parse((String) null, URI.create("src")));
+            assertThrows(IOException.class, () -> MPEGTools.parse("hello world", URI.create("src")));
         }
     }
 
@@ -113,7 +121,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse basic master playlist")
-        void testBasicMasterPlaylist() {
+        void testBasicMasterPlaylist() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
@@ -122,19 +130,20 @@ public class HlsToolTest {
                 480p.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "master.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("master.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
 
-            assertEquals("master.m3u8", master.source());
+            assertEquals(URI.create("master.m3u8"), master.source());
+            assertEquals("master", master.kind());
             assertEquals(1, master.version()); // DEFAULT VERSION
             assertEquals(2, master.variants().size());
         }
 
         @Test
         @DisplayName("Parse version from master playlist")
-        void testMasterVersion() {
+        void testMasterVersion() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-VERSION:6
@@ -142,49 +151,48 @@ public class HlsToolTest {
                 stream.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             assertEquals(6, master.version());
         }
 
         @Test
         @DisplayName("Parse variant bandwidth and resolution")
-        void testVariantBandwidthResolution() {
+        void testVariantBandwidthResolution() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=9014525,RESOLUTION=1920x1080
                 1080p.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             assertEquals(1, master.variants().size());
 
             final Variant variant = master.variants().get(0);
             assertEquals(9014525L, variant.bandwidth());
             assertEquals(1920, variant.width());
             assertEquals(1080, variant.height());
-            assertEquals("1920x1080", variant.resolution());
-            assertEquals("1080p.m3u8", variant.uri());
+            assertEquals(URI.create("1080p.m3u8"), variant.uri());
         }
 
         @Test
         @DisplayName("Parse variant with codecs and frame rate")
-        void testVariantCodecsFrameRate() {
+        void testVariantCodecsFrameRate() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.64002A,mp4a.40.2",FRAME-RATE=60.000
                 stream.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             final Variant variant = master.variants().get(0);
 
             assertEquals("avc1.64002A,mp4a.40.2", variant.codecs());
@@ -192,35 +200,8 @@ public class HlsToolTest {
         }
 
         @Test
-        @DisplayName("Parse session data")
-        void testSessionData() {
-            final String content = """
-                #EXTM3U
-                #EXT-X-SESSION-DATA:DATA-ID="com.example.node",VALUE="server1.example.com"
-                #EXT-X-SESSION-DATA:DATA-ID="com.example.broadcast",VALUE="12345",LANGUAGE="en"
-                #EXT-X-STREAM-INF:BANDWIDTH=1000000
-                stream.m3u8
-                """;
-
-            final Result result = HlsTool.parse(content, "test.m3u8");
-
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
-            assertEquals(2, master.sessionData().size());
-
-            final SessionData sd1 = master.sessionData().get(0);
-            assertEquals("com.example.node", sd1.id());
-            assertEquals("server1.example.com", sd1.value());
-
-            final SessionData sd2 = master.sessionData().get(1);
-            assertEquals("com.example.broadcast", sd2.id());
-            assertEquals("12345", sd2.value());
-            assertEquals("en", sd2.language());
-        }
-
-        @Test
         @DisplayName("Parse media renditions")
-        void testMediaRenditions() {
+        void testMediaRenditions() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="audio_en.m3u8"
@@ -229,10 +210,10 @@ public class HlsToolTest {
                 video.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             assertEquals(2, master.renditions().size());
 
             final Rendition en = master.renditions().get(0);
@@ -240,7 +221,7 @@ public class HlsToolTest {
             assertEquals("audio", en.groupId());
             assertEquals("English", en.name());
             assertEquals("en", en.language());
-            assertEquals("audio_en.m3u8", en.uri());
+            assertEquals(URI.create("audio_en.m3u8"), en.uri());
             assertTrue(en.isDefault());
             assertTrue(en.autoSelect());
 
@@ -253,7 +234,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse video group with name")
-        void testVideoGroupName() {
+        void testVideoGroupName() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="chunked",NAME="1080p60 (uri)",AUTOSELECT=YES,DEFAULT=YES
@@ -261,10 +242,10 @@ public class HlsToolTest {
                 chunked.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             final Variant variant = master.variants().get(0);
 
             assertEquals("chunked", variant.videoGroup());
@@ -273,7 +254,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("best() returns highest bandwidth variant")
-        void testBestVariant() {
+        void testBestVariant() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360
@@ -284,17 +265,17 @@ public class HlsToolTest {
                 720p.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
-            final MasterResult master = (MasterResult) result;
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Master master = (Master) result;
 
             assertTrue(master.best().isPresent());
             assertEquals(5000000L, master.best().get().bandwidth());
-            assertEquals("1080p.m3u8", master.best().get().uri());
+            assertEquals(URI.create("1080p.m3u8"), master.best().get().uri());
         }
 
         @Test
         @DisplayName("worst() returns lowest bandwidth variant")
-        void testWorstVariant() {
+        void testWorstVariant() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360
@@ -305,17 +286,17 @@ public class HlsToolTest {
                 720p.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
-            final MasterResult master = (MasterResult) result;
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Master master = (Master) result;
 
             assertTrue(master.worst().isPresent());
             assertEquals(500000L, master.worst().get().bandwidth());
-            assertEquals("360p.m3u8", master.worst().get().uri());
+            assertEquals(URI.create("360p.m3u8"), master.worst().get().uri());
         }
 
         @Test
         @DisplayName("sorted() returns variants by bandwidth descending")
-        void testSortedVariants() {
+        void testSortedVariants() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360
@@ -326,77 +307,14 @@ public class HlsToolTest {
                 720p.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
-            final MasterResult master = (MasterResult) result;
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Master master = (Master) result;
 
             final List<Variant> sorted = master.sorted();
             assertEquals(3, sorted.size());
             assertEquals(5000000L, sorted.get(0).bandwidth());
             assertEquals(2000000L, sorted.get(1).bandwidth());
             assertEquals(500000L, sorted.get(2).bandwidth());
-        }
-
-        @Test
-        @DisplayName("byResolution() finds variant by width and height")
-        void testByResolution() {
-            final String content = """
-                #EXTM3U
-                #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360
-                360p.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
-                720p.m3u8
-                """;
-
-            final Result result = HlsTool.parse(content, "test.m3u8");
-            final MasterResult master = (MasterResult) result;
-
-            assertTrue(master.byResolution(1280, 720).isPresent());
-            assertEquals("720p.m3u8", master.byResolution(1280, 720).get().uri());
-
-            assertFalse(master.byResolution(1920, 1080).isPresent());
-        }
-
-        @Test
-        @DisplayName("Variant quality() labels")
-        void testVariantQualityLabels() {
-            final String content = """
-                #EXTM3U
-                #EXT-X-STREAM-INF:BANDWIDTH=20000000,RESOLUTION=3840x2160,FRAME-RATE=60
-                4k60.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=15000000,RESOLUTION=3840x2160,FRAME-RATE=30
-                4k.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=2560x1440,FRAME-RATE=60
-                1440p60.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,FRAME-RATE=60
-                1080p60.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,FRAME-RATE=30
-                1080p.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,FRAME-RATE=60
-                720p60.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720,FRAME-RATE=30
-                720p.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=854x480
-                480p.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360
-                360p.m3u8
-                #EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=426x240
-                240p.m3u8
-                """;
-
-            final Result result = HlsTool.parse(content, "test.m3u8");
-            final MasterResult master = (MasterResult) result;
-            final List<Variant> sorted = master.sorted();
-
-            assertEquals("4K60", sorted.get(0).quality());
-            assertEquals("4K", sorted.get(1).quality());
-            assertEquals("1440p60", sorted.get(2).quality());
-            assertEquals("1080p60", sorted.get(3).quality());
-            assertEquals("1080p", sorted.get(4).quality());
-            assertEquals("720p60", sorted.get(5).quality());
-            assertEquals("720p", sorted.get(6).quality());
-            assertEquals("480p", sorted.get(7).quality());
-            assertEquals("360p", sorted.get(8).quality());
-            assertEquals("240p", sorted.get(9).quality());
         }
     }
 
@@ -410,7 +328,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse basic media playlist")
-        void testBasicMediaPlaylist() {
+        void testBasicMediaPlaylist() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-VERSION:3
@@ -422,12 +340,13 @@ public class HlsToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Result result = HlsTool.parse(content, "playlist.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("playlist.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
-            assertEquals("playlist.m3u8", media.source());
+            assertEquals(URI.create("playlist.m3u8"), media.source());
+            assertEquals("media", media.kind());
             assertEquals(3, media.version());
             assertEquals(6.0, media.targetDuration(), 0.001);
             assertEquals(2, media.segments().size());
@@ -437,7 +356,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse media sequence")
-        void testMediaSequence() {
+        void testMediaSequence() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -448,10 +367,10 @@ public class HlsToolTest {
                 segment1075.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertEquals(1074L, media.sequence());
             assertEquals(1074L, media.segments().get(0).sequence());
@@ -460,7 +379,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse segment duration and title")
-        void testSegmentDurationTitle() {
+        void testSegmentDurationTitle() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:10
@@ -471,15 +390,15 @@ public class HlsToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             final Segment seg1 = media.segments().get(0);
             assertEquals(4.167, seg1.duration(), 0.001);
             assertEquals("live segment", seg1.title());
-            assertEquals("segment1.ts", seg1.uri());
+            assertEquals(URI.create("segment1.ts"), seg1.uri());
 
             final Segment seg2 = media.segments().get(1);
             assertEquals(4.166, seg2.duration(), 0.001);
@@ -488,7 +407,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse program date time")
-        void testProgramDateTime() {
+        void testProgramDateTime() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -499,10 +418,10 @@ public class HlsToolTest {
                 segment2.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertEquals("2025-12-16T10:56:19.451Z", media.segments().get(0).dateTime());
             assertNull(media.segments().get(1).dateTime()); // ONLY FIRST SEGMENT HAS dateTime
@@ -510,7 +429,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Detect live stream (no ENDLIST)")
-        void testLiveStream() {
+        void testLiveStream() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -520,17 +439,17 @@ public class HlsToolTest {
                 segment2.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertTrue(media.live());
         }
 
         @Test
         @DisplayName("Detect VOD stream")
-        void testVodStream() {
+        void testVodStream() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -540,10 +459,10 @@ public class HlsToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertTrue(media.vod());
             assertFalse(media.live());
@@ -551,7 +470,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Calculate total duration")
-        void testTotalDuration() {
+        void testTotalDuration() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -564,41 +483,17 @@ public class HlsToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertEquals(12.5, media.totalDuration(), 0.001);
         }
 
         @Test
-        @DisplayName("bySequence() finds segment by sequence number")
-        void testBySequence() {
-            final String content = """
-                #EXTM3U
-                #EXT-X-TARGETDURATION:6
-                #EXT-X-MEDIA-SEQUENCE:100
-                #EXTINF:4.0,
-                segment100.ts
-                #EXTINF:4.0,
-                segment101.ts
-                #EXTINF:4.0,
-                segment102.ts
-                """;
-
-            final Result result = HlsTool.parse(content, "test.m3u8");
-            final MediaResult media = (MediaResult) result;
-
-            assertTrue(media.bySequence(101).isPresent());
-            assertEquals("segment101.ts", media.bySequence(101).get().uri());
-
-            assertFalse(media.bySequence(999).isPresent());
-        }
-
-        @Test
         @DisplayName("Parse EXTINF without comma")
-        void testExtinfWithoutComma() {
+        void testExtinfWithoutComma() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -606,13 +501,129 @@ public class HlsToolTest {
                 segment.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertEquals(1, media.segments().size());
             assertEquals(4.5, media.segments().get(0).duration(), 0.001);
+        }
+    }
+
+    // ==========================================================================
+    // IPTV PLAYLIST TESTS
+    // ==========================================================================
+
+    @Nested
+    @DisplayName("IPTV Playlist Parsing")
+    class IptvPlaylistTests {
+
+        private static final String IPTV_SAMPLE =
+                "#EXTM3U x-tvg-url=\"https://epg.example/epg.xml.gz\"\n" +
+                "#EXTINF:-1 tvg-name=\"Channel One\" tvg-logo=\"https://logo.example/one.png\" tvg-id=\"One.us\" tvg-country=\"US\" group-title=\"USA\",Channel One\n" +
+                "https://stream.example/one/playlist.m3u8\n" +
+                "#EXTINF:-1 tvg-name=\"Channel Two\" tvg-logo=\"https://logo.example/two.png\" group-title=\"USA\",Channel Two\n" +
+                "https://stream.example/two/playlist.m3u8\n";
+
+        @Test
+        @DisplayName("Flat #EXTINF list (no #EXT-X-* tags) is classified as IPTV")
+        void testFlatExtinfClassifiedAsIptv() throws IOException {
+            assertInstanceOf(Iptv.class, MPEGTools.parse(IPTV_SAMPLE, URI.create("iptv.m3u")));
+        }
+
+        @Test
+        @DisplayName("HLS master is NOT classified as IPTV")
+        void testHlsMasterNotIptv() throws IOException {
+            final String content = """
+                #EXTM3U
+                #EXT-X-VERSION:6
+                #EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1280x720
+                720p.m3u8
+                """;
+            assertInstanceOf(Master.class, MPEGTools.parse(content, URI.create("src")));
+        }
+
+        @Test
+        @DisplayName("HLS media is NOT classified as IPTV")
+        void testHlsMediaNotIptv() throws IOException {
+            final String content = """
+                #EXTM3U
+                #EXT-X-VERSION:3
+                #EXT-X-TARGETDURATION:6
+                #EXTINF:5.005,
+                segment-0.ts
+                """;
+            assertInstanceOf(Media.class, MPEGTools.parse(content, URI.create("src")));
+        }
+
+        @Test
+        @DisplayName("Extract channels with their tvg-* attributes")
+        void testExtractsChannelsWithAttributes() throws IOException {
+            final Playlist result = MPEGTools.parse(IPTV_SAMPLE, URI.create("iptv.m3u"));
+
+            assertInstanceOf(Iptv.class, result);
+            final List<Channel> channels = ((Iptv) result).channels();
+            assertEquals(2, channels.size());
+
+            final Channel first = channels.get(0);
+            assertEquals("Channel One", first.title());
+            assertEquals(URI.create("https://stream.example/one/playlist.m3u8"), first.url());
+            assertEquals("https://logo.example/one.png", first.tvgLogo());
+            assertEquals("One.us", first.tvgId());
+            assertEquals("US", first.tvgCountry());
+            assertEquals("USA", first.tvgGroup());
+
+            final Channel second = channels.get(1);
+            assertEquals("Channel Two", second.title());
+            assertNull(second.tvgId());
+            assertEquals("USA", second.tvgGroup());
+        }
+
+        @Test
+        @DisplayName("groups() and byGroup() expose channel grouping")
+        void testGroups() throws IOException {
+            final Iptv iptv = (Iptv) MPEGTools.parse(IPTV_SAMPLE, URI.create("iptv.m3u"));
+            assertEquals(1, iptv.groups().size());
+            assertTrue(iptv.groups().contains("USA"));
+            assertEquals(2, iptv.byGroup("USA").size());
+        }
+
+        @Test
+        @DisplayName("Tolerate a bare URL line inside an IPTV list")
+        void testToleratesBareUrlInList() throws IOException {
+            final String src =
+                    "#EXTM3U\n" +
+                    "#EXTINF:-1 tvg-name=\"X\",X\n" +
+                    "https://x.example/x\n" +
+                    "https://bare.example/y\n";
+
+            final Playlist result = MPEGTools.parse(src, URI.create("iptv.m3u"));
+            assertInstanceOf(Iptv.class, result);
+            final List<Channel> channels = ((Iptv) result).channels();
+
+            assertEquals(2, channels.size());
+            final Channel bare = channels.get(1);
+            assertNotNull(bare);
+            assertEquals(URI.create("https://bare.example/y"), bare.url());
+            assertEquals("https://bare.example/y", bare.title()); // SYNTHESISED FROM URL
+        }
+
+        @Test
+        @DisplayName("Skip #KODIPROP and #EXTVLCOPT hint lines")
+        void testSkipsKodiAndVlcOptLines() throws IOException {
+            final String src =
+                    "#EXTM3U\n" +
+                    "#EXTINF:-1 tvg-name=\"X\",X\n" +
+                    "#KODIPROP:inputstream.adaptive.license_type=clearkey\n" +
+                    "#EXTVLCOPT:http-user-agent=foo\n" +
+                    "https://x.example/x\n";
+
+            final Playlist result = MPEGTools.parse(src, URI.create("iptv.m3u"));
+            assertInstanceOf(Iptv.class, result);
+            final List<Channel> channels = ((Iptv) result).channels();
+            assertEquals(1, channels.size());
+            assertEquals(URI.create("https://x.example/x"), channels.get(0).url());
         }
     }
 
@@ -626,7 +637,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Parse master playlist from InputStream")
-        void testParseInputStreamMaster() {
+        void testParseInputStreamMaster() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
@@ -634,16 +645,16 @@ public class HlsToolTest {
                 """;
 
             final var stream = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
-            final Result result = HlsTool.parse(stream, "test.m3u8");
+            final Playlist result = MPEGTools.parse(stream, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             assertEquals(1, master.variants().size());
         }
 
         @Test
         @DisplayName("Parse media playlist from InputStream")
-        void testParseInputStreamMedia() {
+        void testParseInputStreamMedia() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -653,10 +664,10 @@ public class HlsToolTest {
                 """;
 
             final var stream = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
-            final Result result = HlsTool.parse(stream, "test.m3u8");
+            final Playlist result = MPEGTools.parse(stream, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
             assertEquals(1, media.segments().size());
         }
     }
@@ -671,7 +682,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Handle whitespace around header")
-        void testWhitespaceAroundHeader() {
+        void testWhitespaceAroundHeader() throws IOException {
             final String content = """
                    #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -679,29 +690,29 @@ public class HlsToolTest {
                 segment.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
+            assertInstanceOf(Media.class, result);
         }
 
         @Test
         @DisplayName("Handle empty variant list")
-        void testEmptyVariantList() {
+        void testEmptyVariantList() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             assertEquals(0, master.variants().size()); // NO URI FOLLOWS THE STREAM-INF
         }
 
         @Test
         @DisplayName("Handle full URLs in segments")
-        void testFullUrlSegments() {
+        void testFullUrlSegments() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -711,47 +722,67 @@ public class HlsToolTest {
                 https://cdn.example.com/stream/segment2.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
-            assertEquals("https://cdn.example.com/stream/segment1.ts", media.segments().get(0).uri());
+            assertEquals(URI.create("https://cdn.example.com/stream/segment1.ts"), media.segments().get(0).uri());
+        }
+
+        @Test
+        @DisplayName("Resolve relative segment URLs against the source")
+        void testRelativeSegmentResolution() throws IOException {
+            final String content = """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:6
+                #EXTINF:4.0,
+                segments/segment1.ts
+                #EXTINF:4.0,
+                ../other/segment2.ts
+                """;
+
+            final Playlist result = MPEGTools.parse(content, URI.create("https://cdn.example.com/live/stream/playlist.m3u8"));
+
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
+
+            assertEquals(URI.create("https://cdn.example.com/live/stream/segments/segment1.ts"), media.segments().get(0).uri());
+            assertEquals(URI.create("https://cdn.example.com/live/other/segment2.ts"), media.segments().get(1).uri());
         }
 
         @Test
         @DisplayName("Handle missing resolution in variant")
-        void testMissingResolution() {
+        void testMissingResolution() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000
                 stream.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             final Variant variant = master.variants().get(0);
 
             assertEquals(0, variant.width());
             assertEquals(0, variant.height());
-            assertEquals("0x0", variant.resolution());
         }
 
         @Test
         @DisplayName("Handle default frame rate")
-        void testDefaultFrameRate() {
+        void testDefaultFrameRate() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080
                 stream.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             final Variant variant = master.variants().get(0);
 
             assertEquals(30.0, variant.fps(), 0.001); // DEFAULT IS 30
@@ -759,7 +790,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Handle multiple PROGRAM-DATE-TIME tags")
-        void testMultipleProgramDateTime() {
+        void testMultipleProgramDateTime() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
@@ -771,10 +802,10 @@ public class HlsToolTest {
                 segment2.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
             assertEquals("2025-12-16T10:00:00.000Z", media.segments().get(0).dateTime());
             assertEquals("2025-12-16T10:00:04.000Z", media.segments().get(1).dateTime());
@@ -782,7 +813,7 @@ public class HlsToolTest {
 
         @Test
         @DisplayName("Handle audio group in variant")
-        void testAudioGroup() {
+        void testAudioGroup() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Stereo"
@@ -790,40 +821,18 @@ public class HlsToolTest {
                 stream.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "test.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
             final Variant variant = master.variants().get(0);
 
             assertEquals("stereo", variant.audioGroup());
         }
 
         @Test
-        @DisplayName("Handle session data with URI")
-        void testSessionDataWithUri() {
-            final String content = """
-                #EXTM3U
-                #EXT-X-SESSION-DATA:DATA-ID="com.example.metadata",URI="metadata.json"
-                #EXT-X-STREAM-INF:BANDWIDTH=1000000
-                stream.m3u8
-                """;
-
-            final Result result = HlsTool.parse(content, "test.m3u8");
-
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
-
-            assertEquals(1, master.sessionData().size());
-            final SessionData sd = master.sessionData().get(0);
-            assertEquals("com.example.metadata", sd.id());
-            assertEquals("metadata.json", sd.uri());
-            assertNull(sd.value());
-        }
-
-        @Test
         @DisplayName("Complex real-world master playlist")
-        void testRealWorldMaster() {
+        void testRealWorldMaster() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-SESSION-DATA:DATA-ID="NODE",VALUE="cloudfront.hls.live-video.net"
@@ -842,13 +851,10 @@ public class HlsToolTest {
                 https://example.com/360p30.m3u8
                 """;
 
-            final Result result = HlsTool.parse(content, "master.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("master.m3u8"));
 
-            assertInstanceOf(MasterResult.class, result);
-            final MasterResult master = (MasterResult) result;
-
-            // SESSION DATA
-            assertEquals(2, master.sessionData().size());
+            assertInstanceOf(Master.class, result);
+            final Master master = (Master) result;
 
             // RENDITIONS
             assertEquals(4, master.renditions().size());
@@ -859,23 +865,23 @@ public class HlsToolTest {
             // BEST/WORST
             assertTrue(master.best().isPresent());
             assertEquals(9014525L, master.best().get().bandwidth());
-            assertEquals("1080p60", master.best().get().quality());
+            assertEquals(URI.create("https://example.com/chunked.m3u8"), master.best().get().uri());
 
             assertTrue(master.worst().isPresent());
             assertEquals(630000L, master.worst().get().bandwidth());
-            assertEquals("360p", master.worst().get().quality());
+            assertEquals(URI.create("https://example.com/360p30.m3u8"), master.worst().get().uri());
 
-            // SORTED ORDER
+            // SORTED ORDER (BY DESCENDING BANDWIDTH)
             final List<Variant> sorted = master.sorted();
-            assertEquals("1080p60", sorted.get(0).quality());
-            assertEquals("720p60", sorted.get(1).quality());
-            assertEquals("480p", sorted.get(2).quality());
-            assertEquals("360p", sorted.get(3).quality());
+            assertEquals(9014525L, sorted.get(0).bandwidth());
+            assertEquals(3422999L, sorted.get(1).bandwidth());
+            assertEquals(1427999L, sorted.get(2).bandwidth());
+            assertEquals(630000L, sorted.get(3).bandwidth());
         }
 
         @Test
         @DisplayName("Complex real-world media playlist")
-        void testRealWorldMedia() {
+        void testRealWorldMedia() throws IOException {
             final String content = """
                 #EXTM3U
                 #EXT-X-VERSION:3
@@ -890,12 +896,12 @@ public class HlsToolTest {
                 https://cdn.example.com/segment3.ts
                 """;
 
-            final Result result = HlsTool.parse(content, "playlist.m3u8");
+            final Playlist result = MPEGTools.parse(content, URI.create("playlist.m3u8"));
 
-            assertInstanceOf(MediaResult.class, result);
-            final MediaResult media = (MediaResult) result;
+            assertInstanceOf(Media.class, result);
+            final Media media = (Media) result;
 
-            assertEquals("playlist.m3u8", media.source());
+            assertEquals(URI.create("playlist.m3u8"), media.source());
             assertEquals(3, media.version());
             assertEquals(6.0, media.targetDuration(), 0.001);
             assertEquals(1074L, media.sequence());
@@ -907,7 +913,7 @@ public class HlsToolTest {
             assertEquals(3, media.segments().size());
 
             final Segment seg1 = media.segments().get(0);
-            assertEquals("https://cdn.example.com/segment1.ts", seg1.uri());
+            assertEquals(URI.create("https://cdn.example.com/segment1.ts"), seg1.uri());
             assertEquals(4.167, seg1.duration(), 0.001);
             assertEquals("live", seg1.title());
             assertEquals(1074L, seg1.sequence());
@@ -923,12 +929,12 @@ public class HlsToolTest {
     // ==========================================================================
 
     @Nested
-    @DisplayName("Result Types")
-    class PlatformDataTypeTests {
+    @DisplayName("Playlist Types")
+    class PlaylistTypeTests {
 
         @Test
-        @DisplayName("Result sealed interface permits only defined types")
-        void testSealedInterface() {
+        @DisplayName("Playlist sealed interface permits only Master/Media/Iptv; invalid input throws")
+        void testSealedInterface() throws IOException {
             final String masterContent = """
                 #EXTM3U
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000
@@ -942,22 +948,35 @@ public class HlsToolTest {
                 segment.ts
                 """;
 
-            final Result master = HlsTool.parse(masterContent, "test.m3u8");
-            final Result media = HlsTool.parse(mediaContent, "test.m3u8");
-            final Result error = HlsTool.parse((String) null, "test.m3u8");
+            final String iptvContent =
+                    "#EXTM3U\n" +
+                    "#EXTINF:-1 tvg-name=\"X\",X\n" +
+                    "https://x.example/x\n";
+
+            final Playlist master = MPEGTools.parse(masterContent, URI.create("test.m3u8"));
+            final Playlist media = MPEGTools.parse(mediaContent, URI.create("test.m3u8"));
+            final Playlist iptv = MPEGTools.parse(iptvContent, URI.create("test.m3u"));
 
             // VERIFY TYPES USING instanceof
-            assertInstanceOf(MasterResult.class, master);
-            assertInstanceOf(MediaResult.class, media);
-            assertInstanceOf(ErrorResult.class, error);
+            assertInstanceOf(Master.class, master);
+            assertInstanceOf(Media.class, media);
+            assertInstanceOf(Iptv.class, iptv);
+
+            // VERIFY DISCRIMINATOR
+            assertEquals("master", master.kind());
+            assertEquals("media", media.kind());
+            assertEquals("iptv", iptv.kind());
 
             // VERIFY EACH TYPE IS DISTINCT
-            assertFalse(master instanceof MediaResult);
-            assertFalse(master instanceof ErrorResult);
-            assertFalse(media instanceof MasterResult);
-            assertFalse(media instanceof ErrorResult);
-            assertFalse(error instanceof MasterResult);
-            assertFalse(error instanceof MediaResult);
+            assertFalse(master instanceof Media);
+            assertFalse(master instanceof Iptv);
+            assertFalse(media instanceof Master);
+            assertFalse(media instanceof Iptv);
+            assertFalse(iptv instanceof Master);
+            assertFalse(iptv instanceof Media);
+
+            // INVALID INPUT IS NO LONGER A RESULT TYPE — IT THROWS
+            assertThrows(IOException.class, () -> MPEGTools.parse((String) null, URI.create("test.m3u8")));
         }
     }
 }

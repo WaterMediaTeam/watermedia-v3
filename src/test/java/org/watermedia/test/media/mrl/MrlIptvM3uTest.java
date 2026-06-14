@@ -42,8 +42,8 @@ public class MrlIptvM3uTest {
     public void iptvPlaylistExpandsIntoOneSourcePerChannel() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(IPTV_FIXTURE));
         assertTrue(mrl.await(TIMEOUT_MS));
-        assertTrue(mrl.ready());
-        assertFalse(mrl.hasError(), () -> "Unexpected error: " + mrl.exception());
+        assertTrue(mrl.status().loaded());
+        assertFalse(mrl.status().failed(), () -> "Unexpected error: " + mrl.exception());
 
         assertEquals(3, mrl.sourceCount(),
                 "IPTV playlist should expand to 3 channels, got " + mrl.sourceCount());

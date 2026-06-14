@@ -23,12 +23,9 @@ public class WaterPlatform implements IPlatform {
     }
 
     @Override
-    public boolean validate(final URI uri) {
-        return "water".equals(uri.getScheme());
-    }
-
-    @Override
     public PlatformData getData(final URI uri) throws Exception {
+        if (!"water".equals(uri.getScheme())) return null;
+
         final String resolved = toHttpURL(uri);
         final URI resolvedUri = new URI(resolved);
         final var entry = new DataSource(MediaType.UNKNOWN, null, null,
@@ -42,7 +39,7 @@ public class WaterPlatform implements IPlatform {
         final String host = u.getHost();
         String path = u.getPath();
 
-        if (host == null) throw new IOException("water:// URL requires a host (local, remote, global)");
+        if (host == null) throw new PlatformException(WaterPlatform.class, "water:// URL requires a host (local, remote, global)");
 
         return switch (host) {
             case HOST_LOCAL -> {
@@ -59,7 +56,7 @@ public class WaterPlatform implements IPlatform {
                 if (path.startsWith("/")) path = path.substring(1);
                 yield GLOBAL_SERVER + path;
             }
-            default -> throw new IOException("Unknown water:// host: " + host + " (expected: local, remote, global)");
+            default -> throw new PlatformException(WaterPlatform.class, "Unknown water:// host: " + host + " (expected: local, remote, global)");
         };
     }
 }

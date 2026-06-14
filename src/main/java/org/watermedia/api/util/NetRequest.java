@@ -218,7 +218,7 @@ public class NetRequest implements AutoCloseable {
     /**
      * Raw response stream. Caller must close it (or {@link #close()} the request).
      */
-    public InputStream getInputStream() throws IOException {
+    public InputStream inputStream() throws IOException {
         return this.connection.getInputStream();
     }
 
@@ -230,8 +230,8 @@ public class NetRequest implements AutoCloseable {
      * BufferedInputStream bis = req.getInputStream(BufferedInputStream::new);
      * }</pre>
      */
-    public <T extends InputStream> T getInputStream(final Function<InputStream, T> wrapper) throws IOException {
-        return wrapper.apply(this.getInputStream());
+    public <T extends InputStream> T inputStream(final Function<InputStream, T> wrapper) throws IOException {
+        return wrapper.apply(this.inputStream());
     }
 
     /**
@@ -239,7 +239,7 @@ public class NetRequest implements AutoCloseable {
      * {@link WaterMediaConfig.Network#maxTextBytes}.
      */
     public String readAllAsString() throws IOException {
-        try (final InputStream is = this.getInputStream()) {
+        try (final InputStream is = this.inputStream()) {
             return readBounded(is, WaterMediaConfig.network.maxTextBytes);
         }
     }
@@ -277,7 +277,7 @@ public class NetRequest implements AutoCloseable {
     private String readJsonBody() throws IOException {
         final String ct = this.contentType();
         if (ct == null || !ct.toLowerCase().contains(MIMETYPE_JSON)) return null;
-        try (final InputStream is = this.getInputStream()) {
+        try (final InputStream is = this.inputStream()) {
             return readBounded(is, WaterMediaConfig.network.maxTextBytes);
         }
     }

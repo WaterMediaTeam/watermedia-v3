@@ -7,8 +7,8 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.tools.DataTool;
 
-import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
 import java.util.regex.Matcher;
@@ -25,42 +25,41 @@ public class SendvidPlatform implements IPlatform {
     private static final Pattern PATTERN_DURATION = Pattern.compile("var\\s+video_duration\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_VALIDTO = Pattern.compile("[?&]validto=(\\d+)");
     private static final int MAX_QUEUE = 2;
+    private static final String[] HOSTS = { "sendvid.com", "www.sendvid.com" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public boolean validate(final URI uri) {
-        final String host = uri.getHost();
-        return host != null && (host.equals("sendvid.com") || host.equals("www.sendvid.com"));
-    }
-
-    @Override
     public PlatformData getData(final URI uri) throws Exception {
+        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+
         final String path = uri.getPath();
         if (path == null || path.length() < 2) {
-            throw new IllegalArgumentException("Invalid Sendvid URL: " + uri);
+            throw new PlatformException(SendvidPlatform.class, "Invalid URL: " + uri);
         }
 
         final String videoId = path.substring(1).split("[/#?]")[0];
         final URI statusUri = new URI(String.format(STATUS_API, videoId));
+        LOGGER.debug(IT, "Sendvid resolving video '{}'", videoId);
 
         final StatusResponse status = this.fetchStatus(statusUri);
         if (!"done".equals(status.state)) {
+            LOGGER.debug(IT, "Sendvid video '{}' not ready yet (state={}, queue={})", videoId, status.state, status.placeInQueue);
             if (status.placeInQueue > MAX_QUEUE) {
-                throw new IllegalStateException("Sendvid video " + videoId + " is in queue position " + status.placeInQueue + ", too far to wait");
+                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' is in queue position " + status.placeInQueue + " (> " + MAX_QUEUE + "), too far to wait");
             }
             this.waitForReady(statusUri, videoId);
         }
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            if (req.statusCode() != 200) throw new PlatformException(SendvidPlatform.class, "Page request for video '" + videoId + "' returned HTTP " + req.statusCode());
 
             final String html = req.readAllAsString();
 
             final Matcher sourceMatcher = PATTERN_SOURCE.matcher(html);
             if (!sourceMatcher.find()) {
-                throw new IllegalStateException("No video_source found in Sendvid page: " + uri);
+                throw new PlatformException(SendvidPlatform.class, "video_source not found in page for video '" + videoId + "' (removed or markup changed): " + uri);
             }
 
             final URI videoUri = new URI(sourceMatcher.group(1));
@@ -69,8 +68,11 @@ public class SendvidPlatform implements IPlatform {
             final Matcher posterMatcher = PATTERN_POSTER.matcher(html);
             if (posterMatcher.find()) {
                 thumbnailUri = new URI(posterMatcher.group(1));
+            } else {
+                LOGGER.warn(IT, "Sendvid video '{}' has no video_poster (thumbnail)", videoId);
             }
 
+            // PREFER THE PAGE'S video_duration; FALL BACK TO THE STATUS API VALUE
             long durationMs = (long) (status.duration * 1000);
             final Matcher durationMatcher = PATTERN_DURATION.matcher(html);
             if (durationMatcher.find()) {
@@ -79,12 +81,14 @@ public class SendvidPlatform implements IPlatform {
 
             final Metadata metadata = new Metadata(null, null, null, durationMs, null);
 
+            // THE SIGNED CDN URL CARRIES ITS OWN EXPIRY (validto EPOCH SECONDS); HONOR IT FOR CACHE INVALIDATION
             Instant expires = null;
             final Matcher validtoMatcher = PATTERN_VALIDTO.matcher(videoUri.toString());
             if (validtoMatcher.find()) {
                 expires = Instant.ofEpochSecond(Long.parseLong(validtoMatcher.group(1)));
             }
 
+            LOGGER.info(IT, "Sendvid resolved video '{}' (durationMs={}, expires={})", videoId, durationMs, expires);
             final var entry = new DataSource(MediaType.VIDEO, thumbnailUri, metadata,
                     RequestHeaders.defaults(uri),
                     new DataQuality[] {new DataQuality(videoUri, 0, 0)},
@@ -95,8 +99,10 @@ public class SendvidPlatform implements IPlatform {
 
     private StatusResponse fetchStatus(final URI statusUri) throws Exception {
         try (final NetRequest req = NetRequest.create(statusUri).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + statusUri);
-            return req.json(StatusResponse.class);
+            if (req.statusCode() != 200) throw new PlatformException(SendvidPlatform.class, "Status API returned HTTP " + req.statusCode() + " for " + statusUri);
+            final StatusResponse status = req.json(StatusResponse.class);
+            if (status == null) throw new PlatformException(SendvidPlatform.class, "Status API returned an empty or non-JSON body for " + statusUri);
+            return status;
         }
     }
 
@@ -107,10 +113,10 @@ public class SendvidPlatform implements IPlatform {
             LOGGER.debug(IT, "Sendvid {} status: {} ({}%)", videoId, status.state, status.progress);
             if ("done".equals(status.state)) return;
             if (status.placeInQueue > MAX_QUEUE) {
-                throw new IllegalStateException("Sendvid video " + videoId + " queue position grew to " + status.placeInQueue);
+                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' queue position grew to " + status.placeInQueue);
             }
         }
-        throw new IllegalStateException("Sendvid video " + videoId + " did not become ready after 60 seconds");
+        throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' did not become ready after 60 seconds");
     }
 
     private static class StatusResponse {

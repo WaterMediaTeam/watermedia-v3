@@ -93,14 +93,14 @@ public class MRLSelectorScreen extends Screen {
         if (this.ctx.selectedGroup == null) return;
         for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
             final MRL mrl = this.ctx.groupMRLs.get(uri.name());
-            if (mrl != null && !mrl.ready() && this.groupSubscriptions.add(uri.name())) {
+            if (mrl != null && !loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
                 mrl.subscribe(done -> this.ctx.requestRender());
             }
         }
     }
 
     private void subscribeThumbnailMRL(final URI uri, final MRL mrl) {
-        if (uri == null || mrl == null || mrl.ready()) return;
+        if (uri == null || mrl == null || loaded(mrl)) return;
         if (this.thumbnailSubscriptions.add(uri.toString())) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
@@ -112,7 +112,7 @@ public class MRLSelectorScreen extends Screen {
         if (mrl != null) return mrl;
         mrl = MediaAPI.getMRL(uri.uri());
         this.ctx.groupMRLs.put(uri.name(), mrl);
-        if (!mrl.ready() && this.groupSubscriptions.add(uri.name())) {
+        if (!loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
         this.ctx.requestRender();
@@ -155,12 +155,7 @@ public class MRLSelectorScreen extends Screen {
 
             final MRL mrl = this.mrlFor(uri);
             if (mrl == null) continue;
-            if (!mrl.ready()) continue; // STILL LOADING, WAIT
-
-            if (mrl.hasError()) {
-                this.thumbnailAttempted.add(name);
-                continue;
-            }
+            if (!loaded(mrl)) continue; // ONLY BUILD PREVIEWS FOR FULLY LOADED MRLS
 
             final var sources = mrl.sources();
             if (sources.isEmpty()) {
@@ -176,12 +171,13 @@ public class MRLSelectorScreen extends Screen {
                 final URI thumbnailUri = src.thumbnail();
                 if (thumbnailUri == null) continue;
                 final MRL thumbnailMrl = org.watermedia.api.media.MediaAPI.getMRL(thumbnailUri.toString());
-                if (!thumbnailMrl.ready()) {
+                final MRL.Status thumbStatus = thumbnailMrl.status();
+                if (thumbStatus == MRL.Status.FETCHING) {
                     pendingThumbnail = true;
                     this.subscribeThumbnailMRL(thumbnailUri, thumbnailMrl);
                     break;
                 }
-                if (thumbnailMrl.hasError()) continue;
+                if (thumbStatus != MRL.Status.LOADED) continue; // ERROR/EXPIRED/BLOCKED/FORGOTTEN — TRY NEXT SOURCE
                 player = MediaAPI.createPlayer(thumbnailMrl, this.glEngineBuilder::build, () -> null);
                 if (player != null) break;
             }
@@ -220,47 +216,43 @@ public class MRLSelectorScreen extends Screen {
 
     private void handleSelect(final int index, final AppContext.TestURI uri) {
         this.ctx.selectedMRLName = uri.name();
-        this.ctx.selectedMRL = this.mrlFor(uri);
+        final MRL mrl = this.mrlFor(uri);
+        this.ctx.selectedMRL = mrl;
 
-        if (this.ctx.selectedMRL == null) {
+        if (mrl == null) {
             this.ctx.showError("Null", "The MRL is null", null);
             return;
         }
 
-        if (this.ctx.selectedMRL.hasError()) {
-            this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
-            return;
-        }
-
-        if (this.ctx.selectedMRL.expired()) {
-            this.ctx.showError("MRL expired", "Re-freshing MRL", () -> {
+        switch (mrl.status()) {
+            case LOADED -> this.proceedWithMRL();
+            case FETCHING -> {
+                this.loading = true;
+                this.loadGeneration++;
+                this.loadStartTime = System.currentTimeMillis();
+                this.pendingUri = uri;
+                mrl.subscribe(done -> this.ctx.requestRender());
+                this.scheduleLoadTimeout(this.loadGeneration);
+                this.ctx.requestRender();
+            }
+            case ERROR -> this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
+            case BLOCKED -> this.ctx.showError("Blocked", "This media was blocked by the platform", null);
+            // EXPIRED SOURCES AND FORGOTTEN (CACHE-EVICTED) MRLS ARE NO LONGER USABLE —
+            // DROP THE CACHED INSTANCE SO THE NEXT ACCESS REGENERATES A FRESH ONE.
+            case EXPIRED, FORGOTTEN -> this.ctx.showError("MRL expired", "Re-freshing MRL", () -> {
                 this.ctx.selectedMRL = null;
                 this.ctx.groupMRLs.remove(uri.name());
             });
-            return;
         }
-
-        if (!this.ctx.selectedMRL.ready()) {
-            this.loading = true;
-            this.loadGeneration++;
-            this.loadStartTime = System.currentTimeMillis();
-            this.pendingUri = uri;
-            this.ctx.selectedMRL.subscribe(done -> this.ctx.requestRender());
-            this.scheduleLoadTimeout(this.loadGeneration);
-            this.ctx.requestRender();
-            return;
-        }
-
-        if (!this.ctx.selectedMRL.ready()) return;
-
-        this.proceedWithMRL();
     }
 
     private void reloadMRL(final AppContext.TestURI uri) {
         if (uri == null) return;
         final String name = uri.name();
         MRL mrl = this.ctx.groupMRLs.get(name);
-        if (mrl == null) {
+        // FORGOTTEN MRLS WERE EVICTED FROM THE CACHE — FETCH A FRESH INSTANCE INSTEAD
+        // OF RELOADING THE DISPOSED ONE.
+        if (mrl == null || mrl.status() == MRL.Status.FORGOTTEN) {
             mrl = MediaAPI.getMRL(uri.uri());
             this.ctx.groupMRLs.put(name, mrl);
         } else {
@@ -271,7 +263,7 @@ public class MRLSelectorScreen extends Screen {
         if (thumbnail != null) thumbnail.release();
         this.thumbnailAttempted.remove(name);
         this.groupSubscriptions.remove(name);
-        if (!mrl.ready() && this.groupSubscriptions.add(name)) {
+        if (!loaded(mrl) && this.groupSubscriptions.add(name)) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
         this.ctx.selectedMRLName = name;
@@ -297,19 +289,21 @@ public class MRLSelectorScreen extends Screen {
             return;
         }
 
-        if (this.ctx.selectedMRL.hasError()) {
-            this.loading = false;
-            this.loadGeneration++;
-            this.pendingUri = null;
-            this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
-            return;
-        }
-
-        if (this.ctx.selectedMRL.ready()) {
+        final MRL.Status status = this.ctx.selectedMRL.status();
+        if (status == MRL.Status.LOADED) {
             this.loading = false;
             this.loadGeneration++;
             this.pendingUri = null;
             this.proceedWithMRL();
+            return;
+        }
+
+        // ANY TERMINAL NON-LOADED STATE (ERROR/BLOCKED/EXPIRED/FORGOTTEN) ENDS THE WAIT.
+        if (status != MRL.Status.FETCHING) {
+            this.loading = false;
+            this.loadGeneration++;
+            this.pendingUri = null;
+            this.ctx.showError("Error", "Unable to open media: " + status.name(), null);
             return;
         }
 
@@ -480,23 +474,23 @@ public class MRLSelectorScreen extends Screen {
         }
         this.text.render(this.text.truncateToWidth(selected.uri(), previewW - 270, AppTheme.TEXT_BODY),
                 previewX + 16, panelY + 42, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-        final String status = mrl == null ? "NULL" : mrl.hasError() ? "ERROR" : mrl.ready() ? "READY" : "LOADING";
-        final java.awt.Color statusColor = mrl == null ? AppTheme.TEXT_FAINT : mrl.hasError() ? AppTheme.RED : mrl.ready() ? AppTheme.GREEN : AppTheme.NEON;
+        final String status = statusLabel(mrl);
+        final java.awt.Color statusColor = statusColor(mrl);
         final String quality = this.bestQuality(mrl);
         final int statusPipY = panelY + 72;
         AppChrome.statusPip(previewX + 18, statusPipY, 10, statusColor, true);
         this.text.render(quality + " - " + status, previewX + 36,
                 statusPipY + (10 - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, statusColor, AppTheme.TEXT_BODY);
-        final boolean hasError = mrl != null && mrl.hasError();
-        final String playLabel = hasError ? "RELOAD" : "PLAY";
-        final String playIcon = hasError ? "reload" : "play";
+        final boolean regen = regenerable(mrl);
+        final String playLabel = regen ? "RELOAD" : "PLAY";
+        final String playIcon = regen ? "reload" : "play";
         final int playW = Math.max(130, this.panelButtonWidth(playLabel, "ENTER", AppTheme.TEXT_BUTTON));
         this.playBounds = new Dimension(previewX + previewW - playW - 18, panelY + 34, playW, 38);
         this.copyBounds = new Dimension(this.playBounds.x() - 166, panelY + 34, 154, 38);
         this.renderPanelButton("copy", "COPY LINK", null, this.copyBounds, AppTheme.NEON_LIGHT, mrl != null);
         this.renderPanelButton(playIcon, playLabel, "ENTER", this.playBounds,
-                hasError ? AppTheme.NEON_LIGHT : AppTheme.GREEN,
-                mrl != null && (hasError || (mrl.ready() && !mrl.hasError())));
+                regen ? AppTheme.NEON_LIGHT : AppTheme.GREEN,
+                regen || loaded(mrl));
         RenderSystem.restoreProjection();
     }
 
@@ -517,7 +511,7 @@ public class MRLSelectorScreen extends Screen {
     private void renderFailedTag(final int rightEdge, final int sectionY) {
         int failed = 0;
         for (final MRL mrl: this.ctx.groupMRLs.values()) {
-            if (mrl != null && mrl.hasError()) failed++;
+            if (failed(mrl)) failed++;
         }
         final String label = failed + " FAILED";
         final int tagW = AppChrome.tagWidth(this.text, label);
@@ -538,7 +532,7 @@ public class MRLSelectorScreen extends Screen {
     private void renderMediaRow(final AppContext.TestURI uri, final int index, final Dimension row,
                                 final boolean selected, final int windowW, final int windowH) {
         final MRL mrl = this.mrlFor(uri);
-        final java.awt.Color stateColor = mrl == null ? AppTheme.TEXT_FAINT : mrl.hasError() ? AppTheme.RED : mrl.ready() ? AppTheme.GREEN : AppTheme.NEON;
+        final java.awt.Color stateColor = statusColor(mrl);
         if (selected) {
             RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
                     AppTheme.NEON.getRed() / 255f, AppTheme.NEON.getGreen() / 255f, AppTheme.NEON.getBlue() / 255f, 0.10f);
@@ -587,9 +581,13 @@ public class MRLSelectorScreen extends Screen {
             AppChrome.crtOverlay(x, y, w, h, windowH);
         } else {
             final MRL mrl = this.mrlFor(uri);
+            final MRL.Status status = mrl == null ? null : mrl.status();
+            final boolean ready = status == MRL.Status.LOADED;
+            // ERROR/BLOCKED/EXPIRED/FORGOTTEN — A FINAL STATE THAT NEEDS REGENERATION.
+            final boolean failed = status != null && status != MRL.Status.LOADED && status != MRL.Status.FETCHING;
             RenderSystem.fill(x, y, w, h, AppTheme.BG_0);
-            if (mini && (mrl == null || !mrl.hasError())) {
-                if (mrl != null && mrl.ready()) {
+            if (mini && !failed) {
+                if (ready) {
                     final String ok = "[OK]";
                     final float okScale = AppTheme.TEXT_TINY;
                     this.text.render(ok, x + (w - this.text.width(ok, okScale)) / 2,
@@ -599,10 +597,11 @@ public class MRLSelectorScreen extends Screen {
                 AppChrome.crtOverlay(x, y, w, h, windowH);
                 return;
             }
-            final String label = mrl != null && mrl.hasError() ? (mini ? "[ERROR]" : "ERROR") : mrl != null && mrl.ready() ? "[ media preview ]" : "LOADING...";
-            final java.awt.Color color = mrl != null && mrl.hasError() ? AppTheme.RED : mrl != null && mrl.ready() ? AppTheme.TEXT_SOFT : AppTheme.NEON;
-            if (!mini && mrl != null && mrl.hasError()) {
-                PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, AppTheme.RED);
+            final String label = failed ? (mini ? "[" + statusLabel(mrl) + "]" : statusLabel(mrl))
+                    : ready ? "[ media preview ]" : "LOADING...";
+            final java.awt.Color color = failed ? statusColor(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
+            if (!mini && failed) {
+                PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, statusColor(mrl));
             }
             final float scale = mini ? AppTheme.TEXT_TINY : AppTheme.TEXT_BUTTON;
             final float textY = mini
@@ -650,13 +649,52 @@ public class MRLSelectorScreen extends Screen {
         return iconAndLeft + this.text.widthBold(label, scale) + keyGap + keyW + rightPad;
     }
 
+    // ===== MRL STATUS HELPERS =====
+    // STATES ARE MUTUALLY EXCLUSIVE: LOADED (usable), FETCHING (in flight), ERROR/BLOCKED
+    // (load failed), EXPIRED (sources no longer valid), FORGOTTEN (evicted from the cache).
+    // THE BOOLEAN PREDICATES LIVE ON MRL.Status; THESE WRAP THEM NULL-SAFELY FOR THE UI.
+
+    private static boolean loaded(final MRL mrl) {
+        return mrl != null && mrl.status().loaded();
+    }
+
+    private static boolean failed(final MRL mrl) {
+        return mrl != null && mrl.status().failed();
+    }
+
+    private static boolean regenerable(final MRL mrl) {
+        return mrl != null && mrl.status().regenerable();
+    }
+
+    private static String statusLabel(final MRL mrl) {
+        if (mrl == null) return "NULL";
+        return switch (mrl.status()) {
+            case LOADED -> "READY";
+            case FETCHING -> "LOADING";
+            case ERROR -> "ERROR";
+            case BLOCKED -> "BLOCKED";
+            case EXPIRED -> "EXPIRED";
+            case FORGOTTEN -> "FORGOTTEN";
+        };
+    }
+
+    private static java.awt.Color statusColor(final MRL mrl) {
+        if (mrl == null) return AppTheme.TEXT_FAINT;
+        return switch (mrl.status()) {
+            case LOADED -> AppTheme.GREEN;
+            case FETCHING -> AppTheme.NEON;
+            case ERROR, BLOCKED -> AppTheme.RED;
+            case EXPIRED, FORGOTTEN -> AppTheme.AMBER;
+        };
+    }
+
     private MediaType firstMediaType(final MRL mrl) {
-        if (mrl == null || !mrl.ready() || mrl.hasError() || mrl.sources().isEmpty()) return null;
+        if (!loaded(mrl) || mrl.sources().isEmpty()) return null;
         return mrl.sources().get(0).type();
     }
 
     private String bestQuality(final MRL mrl) {
-        if (mrl == null || !mrl.ready() || mrl.hasError() || mrl.sources().isEmpty()) return "UNKNOWN";
+        if (!loaded(mrl) || mrl.sources().isEmpty()) return "UNKNOWN";
         return mrl.sources().stream()
                 .flatMap(source -> source.availableQualities().stream())
                 .max(java.util.Comparator.comparingInt(q -> q.threshold))
@@ -694,7 +732,7 @@ public class MRLSelectorScreen extends Screen {
                 if (uris.length > 0) {
                     final AppContext.TestURI uri = uris[this.selectedIndex];
                     final MRL mrl = this.mrlFor(uri);
-                    if (mrl != null && mrl.hasError()) this.reloadMRL(uri);
+                    if (regenerable(mrl)) this.reloadMRL(uri);
                     else this.handleSelect(this.selectedIndex, uri);
                 }
             }
@@ -765,7 +803,7 @@ public class MRLSelectorScreen extends Screen {
         if (this.playBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
             final AppContext.TestURI uri = uris[this.selectedIndex];
             final MRL mrl = this.mrlFor(uri);
-            if (mrl != null && mrl.hasError()) this.reloadMRL(uri);
+            if (regenerable(mrl)) this.reloadMRL(uri);
             else this.handleSelect(this.selectedIndex, uri);
             return;
         }

@@ -7,8 +7,7 @@ import org.watermedia.test.support.Fixtures;
 
 import java.net.URI;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Asserts the basic readiness contract of {@link MRL}: a successful load flips
@@ -24,8 +23,8 @@ public class MrlReadinessTest {
     public void localImageLoadsCleanly() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(TIMEOUT_MS));
-        assertTrue(mrl.ready());
-        assertFalse(mrl.hasError());
+        assertTrue(mrl.status().loaded());
+        assertFalse(mrl.status().failed());
         assertTrue(mrl.sourceCount() > 0);
     }
 
@@ -33,14 +32,14 @@ public class MrlReadinessTest {
     public void nonexistentFileMarksErrorAfterLoad() {
         final MRL mrl = MediaAPI.getMRL(URI.create("file:///nonexistent/abc.png"));
         assertTrue(mrl.await(TIMEOUT_MS));
-        assertTrue(mrl.ready());
-        assertTrue(mrl.hasError());
+        assertTrue(mrl.status().loaded());
+        assertTrue(mrl.status().failed());
     }
 
     @Test
     public void freshlyLoadedLocalMrlIsNotExpired() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(TIMEOUT_MS));
-        assertFalse(mrl.expired());
+        assertNotSame(MRL.Status.EXPIRED, mrl.status());
     }
 }

@@ -11,7 +11,8 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.tools.HlsTool;
+import org.watermedia.tools.DataTool;
+import org.watermedia.tools.MPEGTools;
 
 import java.io.IOException;
 import java.net.URI;
@@ -35,27 +36,21 @@ public class BlueskyPlatform implements IPlatform {
     private static final String DEFAULT_PDS = "https://bsky.social";
     private static final Pattern WEB_PATTERN = Pattern.compile("/profile/([\\w.:%-]+)/post/(\\w+)");
     private static final Pattern AT_PATTERN = Pattern.compile("at://([\\w.:%-]+)/app\\.bsky\\.feed\\.post/(\\w+)");
+    private static final String[] HOSTS = { "bsky.app", "www.bsky.app", "main.bsky.dev", "www.main.bsky.dev" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public boolean validate(final URI uri) {
+    public PlatformData getData(final URI uri) throws Exception {
         final String uriStr = uri.toString();
         if (uriStr.startsWith("at://")) {
-            return AT_PATTERN.matcher(uriStr).matches();
+            if (!AT_PATTERN.matcher(uriStr).matches()) return null;
+        } else {
+            final boolean validHost = DataTool.containsIgnoreCase(uri.getHost(), HOSTS);
+            if (!validHost || uri.getPath() == null || !WEB_PATTERN.matcher(uri.getPath()).find()) return null;
         }
 
-        final String host = uri.getHost();
-        if (host == null) return false;
-
-        final boolean validHost = host.equalsIgnoreCase("bsky.app") || host.equalsIgnoreCase("www.bsky.app")
-                || host.equalsIgnoreCase("main.bsky.dev") || host.equalsIgnoreCase("www.main.bsky.dev");
-        return validHost && uri.getPath() != null && WEB_PATTERN.matcher(uri.getPath()).find();
-    }
-
-    @Override
-    public PlatformData getData(final URI uri) throws Exception {
         final String[] parsed = parseUri(uri);
         final String handle = parsed[0];
         final String postId = parsed[1];
@@ -97,9 +92,10 @@ public class BlueskyPlatform implements IPlatform {
         }
 
         if (entries.isEmpty()) {
-            throw new IllegalStateException("No media found in Bluesky post: " + uri);
+            throw new PlatformException(BlueskyPlatform.class, "Post '" + postId + "' has no playable media (text-only, external link, or unsupported embed): " + uri);
         }
 
+        LOGGER.info(IT, "Bluesky resolved {} media entry(es) for post '{}'", entries.size(), postId);
         return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entries.toArray(DataSource[]::new));
     }
 
@@ -115,19 +111,18 @@ public class BlueskyPlatform implements IPlatform {
         final List<DataQuality> variants = new ArrayList<>();
 
         try {
-            final var hlsResult = HlsTool.fetch(playlistUri);
-            if (hlsResult instanceof final HlsTool.MasterResult master) {
-                for (final var variant: master.variants()) {
+            // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST playlistUri BY MPEGTools);
+            // ONLY KEEP RENDITIONS THAT ADVERTISE A REAL RESOLUTION, RAW-URL FALLBACK HANDLES THE REST.
+            final MPEGTools.Playlist hlsResult = MPEGTools.fetch(playlistUri);
+            if (hlsResult instanceof final MPEGTools.Master master) {
+                for (final MPEGTools.Variant variant: master.variants()) {
                     if (variant.width() <= 0 || variant.height() <= 0) continue;
-                    URI variantUri = URI.create(variant.uri());
-                    if (!variantUri.isAbsolute()) {
-                        variantUri = playlistUri.resolve(variantUri);
-                    }
-                    variants.add(new DataQuality(variantUri, variant.width(), variant.height()));
+                    variants.add(new DataQuality(variant.uri(), variant.width(), variant.height()));
                 }
+                LOGGER.debug(IT, "Bluesky parsed {} HLS rendition(s) for '{}'", variants.size(), postId);
             }
         } catch (final Exception e) {
-            LOGGER.warn(IT, "HLS fetch failed for '{}': {}", postId, e.getMessage());
+            LOGGER.warn(IT, "Bluesky HLS fetch failed for '{}': {} — falling back to raw playlist URL", postId, e.getMessage());
         }
         if (variants.isEmpty()) {
             variants.add(new DataQuality(playlistUri, 0, 0));
@@ -231,10 +226,14 @@ public class BlueskyPlatform implements IPlatform {
         final URI apiUri = URI.create(API_URL + "?uri=" + enc(atUri) + "&depth=0&parentHeight=0");
 
         try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + apiUri);
-            return JsonParser.parseString(req.readAllAsString()).getAsJsonObject()
-                    .getAsJsonObject("thread")
-                    .getAsJsonObject("post");
+            if (req.statusCode() != 200) throw new PlatformException(BlueskyPlatform.class, "getPostThread for '" + atUri + "' returned HTTP " + req.statusCode());
+
+            // RESPONSE SHAPE: { thread: { post: {...} } } — A BLOCKED/NOT-FOUND THREAD OMITS "post"
+            final JsonObject thread = getObj(JsonParser.parseString(req.readAllAsString()).getAsJsonObject(), "thread");
+            final JsonObject post = getObj(thread, "post");
+            if (post == null)
+                throw new PlatformException(BlueskyPlatform.class, "Post '" + postId + "' by '" + handle + "' was not found, blocked, or deleted");
+            return post;
         }
     }
 
@@ -274,7 +273,7 @@ public class BlueskyPlatform implements IPlatform {
         return quotedRef;
     }
 
-    static String[] parseUri(final URI uri) {
+    static String[] parseUri(final URI uri) throws PlatformException {
         final String raw = uri.toString();
         Matcher m = AT_PATTERN.matcher(raw);
         if (m.matches()) return new String[]{ m.group(1), m.group(2) };
@@ -284,7 +283,7 @@ public class BlueskyPlatform implements IPlatform {
             m = WEB_PATTERN.matcher(path);
             if (m.find()) return new String[]{ m.group(1), m.group(2) };
         }
-        throw new IllegalArgumentException("Cannot parse Bluesky URL: " + uri);
+        throw new PlatformException(BlueskyPlatform.class, "Cannot parse URL: " + uri);
     }
 
     private static String truncateTitle(final String text, final int maxLen) {

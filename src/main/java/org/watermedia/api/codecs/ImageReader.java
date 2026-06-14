@@ -29,9 +29,7 @@ public abstract class ImageReader implements Closeable {
     protected ByteBuffer currentFrame;
     protected long currentDelay;
 
-    protected ImageReader(final ByteBuffer data) {
-        this(data, null);
-    }
+    protected ImageReader(final ByteBuffer data) { this(data, null); }
 
     protected ImageReader(final ByteBuffer data, final PixelFormat requestedFormat) {
         this.data = data.slice();
@@ -166,6 +164,24 @@ public abstract class ImageReader implements Closeable {
         }
         return new ImageData(frames.toArray(ByteBuffer[]::new), this.width(), this.height(),
                 delayArray, total, this.loopCount());
+    }
+
+    /**
+     * Rewinds the reader back to the first frame without re-parsing or re-buffering the source.
+     * <p>
+     * Animated readers that support rewinding reposition their internal cursor at the first
+     * frame and clear any inter-frame state (canvas, disposal, counters) so the next
+     * {@link #next()} call decodes frame 0 again. Metadata accessors ({@link #scan()},
+     * {@link #width()}, {@link #delays()}, ...) are unaffected.
+     * <p>
+     * The default implementation reports no support; callers must then dispose this reader and
+     * decode the source from scratch.
+     *
+     * @return {@code true} when the reader was rewound, {@code false} when rewinding is not
+     *         supported by this implementation
+     */
+    public boolean reset() {
+        return false;
     }
 
     /**

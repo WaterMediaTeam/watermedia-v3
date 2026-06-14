@@ -70,8 +70,10 @@ public abstract class GFXEngine {
     /**
      * Uploads a complete frame set as dedicated textures.
      * <p>
-     * This is an optional fast path for small animated images. The default implementation
-     * reports unsupported so custom engines remain source-compatible.
+     * This is an optional fast path for animated images that fit a VRAM budget. The default
+     * implementation reports unsupported so custom engines remain source-compatible.
+     * Engines may upload the set progressively across render frames; in that case
+     * {@link #useFrameTexture(int)} must clamp to the already-uploaded prefix.
      * @param frames decoded direct frame buffers in the current {@link #pixelFormat}
      * @param stride row stride in bytes, or 0 for tightly-packed rows
      * @return true when the engine accepted the frame set
@@ -85,6 +87,11 @@ public abstract class GFXEngine {
 
     /**
      * Uploads a single-plane frame (BGRA, RGBA, RGB, GRAY, YUYV).
+     * <p>
+     * <b>Buffer retention contract (applies to all {@code upload} overloads):</b> engines may
+     * consume the submitted buffers asynchronously, but must finish reading (or drop) them
+     * before the second subsequent {@code upload} call on the same engine returns. Callers in
+     * turn must not modify a submitted buffer until they have submitted two newer frames.
      * @param buffer  direct ByteBuffer pointing to native pixel data
      * @param stride  row stride in <b>bytes</b>, or 0 for tightly-packed rows
      */

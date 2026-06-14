@@ -4,13 +4,18 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.test.support.Fixtures;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -65,5 +70,53 @@ public class GifTest {
             }));
         }
         return tests;
+    }
+
+    @TestFactory
+    Iterable<DynamicTest> testGIFReset() {
+        final List<DynamicTest> tests = new ArrayList<>();
+        for (final Fixture fixture: List.of(
+                new Fixture("1.gif", Fixtures.GIF_DIR.resolve("1.gif")),
+                new Fixture("2.gif", Fixtures.GIF_DIR.resolve("2.gif")),
+                new Fixture("3.gif", Fixtures.GIF_DIR.resolve("3.gif"))
+        )) {
+            tests.add(dynamicTest("GIF reset replay [" + fixture.name + "]", () -> {
+                try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(Fixtures.readAll(fixture.path)))) {
+                    final long[] delays = reader.delays().clone();
+                    final List<byte[]> first = decodeFrameHashes(reader);
+                    assertTrue(first.size() > 1, "Fixture should be animated: " + fixture.name);
+
+                    // FIRST RESET — REPLAY MUST BE BYTE-IDENTICAL AND METADATA MUST SURVIVE
+                    assertTrue(reader.reset(), "reset() must be supported for " + fixture.name);
+                    assertArrayEquals(delays, reader.delays(), "Delays changed after reset for " + fixture.name);
+                    assertReplayMatches(first, decodeFrameHashes(reader), fixture.name);
+
+                    // SECOND RESET — reset() MUST BE REPEATABLE
+                    assertTrue(reader.reset(), "Second reset() must be supported for " + fixture.name);
+                    assertReplayMatches(first, decodeFrameHashes(reader), fixture.name);
+                }
+            }));
+        }
+        return tests;
+    }
+
+    // HASH FRAMES INSTEAD OF COPYING THEM — 1080P FIXTURES TIMES THREE DECODE PASSES WOULD BLOW
+    // THE 512MB DIRECT-MEMORY BUDGET OF THE TEST JVM, AND SHA-256 EQUALITY IS BYTE-IDENTITY
+    private static List<byte[]> decodeFrameHashes(final ImageReader reader) throws IOException, NoSuchAlgorithmException {
+        final MessageDigest sha = MessageDigest.getInstance("SHA-256");
+        final List<byte[]> hashes = new ArrayList<>();
+        while (reader.hasNext()) {
+            sha.update(reader.next().duplicate());
+            hashes.add(sha.digest());
+        }
+        return hashes;
+    }
+
+    private static void assertReplayMatches(final List<byte[]> expected, final List<byte[]> replay, final String name) {
+        assertEquals(expected.size(), replay.size(), "Frame count changed after reset for " + name);
+        for (int i = 0; i < expected.size(); i++) {
+            assertArrayEquals(expected.get(i), replay.get(i),
+                    "Frame " + i + " not byte-identical after reset for " + name);
+        }
     }
 }

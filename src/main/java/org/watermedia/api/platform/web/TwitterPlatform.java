@@ -8,6 +8,7 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -26,96 +27,111 @@ public class TwitterPlatform implements IPlatform {
     private static final String API_TOKEN = "watermedia-java-x-access-token";
     private static final Pattern ID_PATTERN = Pattern.compile("status/(\\d+)$");
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile("/(\\d{2,5})x(\\d{2,5})/");
+    private static final String[] HOSTS = { "x.com", "www.x.com", "twitter.com", "www.twitter.com" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public boolean validate(final URI uri) {
-        final String host = uri.getHost();
-        if (host == null) return false;
-        final boolean validHost = host.equalsIgnoreCase("x.com") || host.equalsIgnoreCase("www.x.com")
-                || host.equalsIgnoreCase("twitter.com") || host.equalsIgnoreCase("www.twitter.com");
-        return validHost && uri.getPath() != null && ID_PATTERN.matcher(uri.getPath()).find();
-    }
-
-    @Override
     public PlatformData getData(final URI uri) throws Exception {
+        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (uri.getPath() == null || !ID_PATTERN.matcher(uri.getPath()).find()) return null;
+
         String path = uri.getPath();
         if (path.endsWith("/")) path = path.substring(0, path.length() - 1);
 
         final Matcher m = ID_PATTERN.matcher(path);
-        if (!m.find()) throw new IllegalArgumentException("No tweet ID found in URL: " + uri);
+        if (!m.find()) throw new PlatformException(TwitterPlatform.class, "No tweet ID found in URL: " + uri);
 
         final String tweetId = m.group(1);
-        LOGGER.debug(IT, "Fetching tweet '{}'", tweetId);
+        LOGGER.debug(IT, "Twitter fetching tweet '{}'", tweetId);
 
         final Tweet tweet = this.fetchTweet(tweetId);
 
         if ("TweetTombstone".equals(tweet.typename))
-            throw new IllegalStateException("Tweet '" + tweetId + "' is unavailable (tombstoned)");
+            throw new PlatformException(TwitterPlatform.class, "Tweet '" + tweetId + "' is unavailable (tombstoned / age-restricted / deleted)");
 
         if (tweet.mediaDetails == null || tweet.mediaDetails.length == 0)
-            throw new IllegalStateException("No media found in tweet '" + tweetId + "'");
+            throw new PlatformException(TwitterPlatform.class, "Tweet '" + tweetId + "' carries no media (text-only or protected)");
 
         final String title = tweet.user != null ? tweet.user.name : tweet.text;
         final String author = tweet.user != null ? tweet.user.screenName : null;
+        // PARSE THE TIMESTAMP ONCE AND REUSE ACROSS EVERY MEDIA ENTRY (A BAD DATE MUST NOT DROP MEDIA)
+        final Instant postedAt = parseInstant(tweet.createdAt);
 
         final RequestHeaders headers = RequestHeaders.defaults(uri);
         final List<DataSource> entries = new ArrayList<>(tweet.mediaDetails.length);
         for (int i = 0; i < tweet.mediaDetails.length; i++) {
             try {
-                final DataSource entry = this.buildEntry(tweet, tweet.mediaDetails[i], title, author, headers);
+                final DataSource entry = this.buildEntry(tweet, tweet.mediaDetails[i], title, author, postedAt, headers);
                 if (entry != null) entries.add(entry);
             } catch (final Exception e) {
-                LOGGER.warn(IT, "Failed to build entry for media {} of tweet '{}': {}", i, tweetId, e.getMessage());
+                LOGGER.warn(IT, "Twitter failed to build entry for media {} of tweet '{}': {}", i, tweetId, e.getMessage());
             }
         }
 
         if (entries.isEmpty())
-            throw new IllegalStateException("All media sources failed to load for tweet '" + tweetId + "'");
+            throw new PlatformException(TwitterPlatform.class, "All " + tweet.mediaDetails.length + " media source(s) failed to resolve for tweet '" + tweetId + "'");
 
-        LOGGER.debug(IT, "Loaded {} entry(es) for tweet '{}'", entries.size(), tweetId);
+        LOGGER.info(IT, "Twitter resolved {} of {} media entry(es) for tweet '{}'", entries.size(), tweet.mediaDetails.length, tweetId);
         return new PlatformData(null, entries.toArray(DataSource[]::new));
     }
 
-    private DataSource buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final RequestHeaders headers) {
+    private DataSource buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final RequestHeaders headers) {
         if ("photo".equals(media.type)) {
-            final Metadata metadata = new Metadata(title, tweet.text, Instant.parse(tweet.createdAt), 0, author);
+            final int w = media.originalInfo != null ? media.originalInfo.width : 0;
+            final int h = media.originalInfo != null ? media.originalInfo.height : 0;
+            final Metadata metadata = new Metadata(title, tweet.text, postedAt, 0, author);
             return new DataSource(MediaType.IMAGE, null, metadata, headers,
-                    new DataQuality[] {new DataQuality(URI.create(media.mediaUrlHttps), media.originalInfo.width, media.originalInfo.height)},
+                    new DataQuality[] {new DataQuality(URI.create(media.mediaUrlHttps), w, h)},
                     null, null);
         }
 
-        if ("video".equals(media.type)) {
-            final URI thumbnail = URI.create(media.mediaUrlHttps);
-            final Metadata metadata = new Metadata(title, tweet.text, Instant.parse(tweet.createdAt), media.videoInfo.durationMillis, author);
+        if ("video".equals(media.type) || "animated_gif".equals(media.type)) {
+            if (media.videoInfo == null || media.videoInfo.variants == null) {
+                LOGGER.warn(IT, "Twitter media type '{}' has no video_info/variants, skipping", media.type);
+                return null;
+            }
+            final URI thumbnail = media.mediaUrlHttps != null ? URI.create(media.mediaUrlHttps) : null;
+            final Metadata metadata = new Metadata(title, tweet.text, postedAt, media.videoInfo.durationMillis, author);
 
-            final List<DataQuality> variants = new ArrayList<>();
+            final List<DataQuality> variants = new ArrayList<>(media.videoInfo.variants.length);
             for (final var variant: media.videoInfo.variants) {
+                if (variant.url == null) continue;
                 final var resMatcher = RESOLUTION_PATTERN.matcher(variant.url);
-                if (!resMatcher.find()) continue;
+                if (!resMatcher.find()) continue; // SKIP NON-PROGRESSIVE RENDITIONS (E.G. THE m3u8 PLAYLIST ENTRY)
                 variants.add(new DataQuality(URI.create(variant.url),
                         Integer.parseInt(resMatcher.group(1)), Integer.parseInt(resMatcher.group(2))));
             }
 
-            if (variants.isEmpty()) return null;
+            if (variants.isEmpty()) {
+                LOGGER.warn(IT, "Twitter video media in tweet exposed {} variant(s) but none were progressive MP4 renditions, skipping", media.videoInfo.variants.length);
+                return null;
+            }
 
             return new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
                     variants.toArray(DataQuality[]::new),
                     null, null);
         }
 
-        LOGGER.warn(IT, "Unsupported media type '{}', skipping", media.type);
+        LOGGER.warn(IT, "Twitter unsupported media type '{}', skipping", media.type);
         return null;
     }
 
     private Tweet fetchTweet(final String tweetId) throws IOException {
         final URI apiUri = URI.create(String.format(API_URL, tweetId, API_TOKEN));
         try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + apiUri);
-            return req.json(Tweet.class);
+            if (req.statusCode() != 200) throw new PlatformException(TwitterPlatform.class, "Syndication API for tweet '" + tweetId + "' returned HTTP " + req.statusCode());
+            final Tweet tweet = req.json(Tweet.class);
+            if (tweet == null) throw new PlatformException(TwitterPlatform.class, "Syndication API returned an empty or non-JSON body for tweet '" + tweetId + "'");
+            return tweet;
         }
+    }
+
+    private static Instant parseInstant(final String iso) {
+        if (iso == null) return null;
+        try { return Instant.parse(iso); }
+        catch (final Exception e) { LOGGER.warn(IT, "Twitter unparseable created_at '{}'", iso); return null; }
     }
 
     private record Tweet(

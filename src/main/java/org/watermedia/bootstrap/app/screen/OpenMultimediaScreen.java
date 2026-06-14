@@ -120,13 +120,28 @@ public class OpenMultimediaScreen extends Screen {
 
         this.ensurePreviewMRL();
         if (this.previewMRL == null) return;
-        if (!this.previewMRL.ready()) {
-            this.beginLoading(this.previewMRL);
-            return;
-        }
-        if (this.previewMRL.hasError()) {
-            this.ctx.showError("Invalid URL", "Failed to load this URL.", null);
-            return;
+        switch (this.previewMRL.status()) {
+            case LOADED -> { /* PROCEED BELOW */ }
+            case FETCHING -> {
+                this.beginLoading(this.previewMRL);
+                return;
+            }
+            case ERROR -> {
+                this.ctx.showError("Invalid URL", "Failed to load this URL.", null);
+                return;
+            }
+            case BLOCKED -> {
+                this.ctx.showError("Blocked", "This media was blocked by the platform.", null);
+                return;
+            }
+            // EXPIRED/FORGOTTEN SOURCES ARE NO LONGER USABLE — DISPOSE THE PREVIEW AND
+            // REGENERATE A FRESH MRL BEFORE PLAYING.
+            case EXPIRED, FORGOTTEN -> {
+                this.previewUrl = "";
+                this.ensurePreviewMRL();
+                if (this.previewMRL != null) this.beginLoading(this.previewMRL);
+                return;
+            }
         }
 
         this.ctx.selectedMRL = this.previewMRL;
@@ -179,7 +194,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void subscribePreviewMRL(final MRL mrl, final int generation) {
-        if (mrl == null || mrl.ready()) return;
+        if (mrl == null || loaded(mrl)) return;
         mrl.subscribe(done -> {
             if (this.previewGeneration == generation && this.previewMRL == done) {
                 this.ctx.requestRender();
@@ -193,7 +208,7 @@ public class OpenMultimediaScreen extends Screen {
         this.loading = true;
         this.loadGeneration++;
         this.loadStartTime = System.currentTimeMillis();
-        if (!mrl.ready()) {
+        if (!loaded(mrl)) {
             final int generation = this.loadGeneration;
             mrl.subscribe(done -> {
                 if (this.loading && this.loadGeneration == generation && this.ctx.selectedMRL == done) {
@@ -223,15 +238,17 @@ public class OpenMultimediaScreen extends Screen {
             return;
         }
 
-        if (this.ctx.selectedMRL.hasError()) {
+        final MRL.Status status = this.ctx.selectedMRL.status();
+        // ANY TERMINAL NON-LOADED STATE (ERROR/BLOCKED/EXPIRED/FORGOTTEN) ENDS THE WAIT.
+        if (status != MRL.Status.LOADED && status != MRL.Status.FETCHING) {
             this.loading = false;
             this.loadGeneration++;
-            this.ctx.showError("Load Error", "Failed to load URL: Error", null);
+            this.ctx.showError("Load Error", "Failed to load URL: " + status.name(), null);
             this.ctx.selectedMRL = null;
             return;
         }
 
-        if (this.ctx.selectedMRL.ready()) {
+        if (status == MRL.Status.LOADED) {
             this.loading = false;
             this.loadGeneration++;
             this.ctx.selectedMRLName = this.previewTitle();
@@ -442,14 +459,18 @@ public class OpenMultimediaScreen extends Screen {
             this.text.render("NO MEDIA", x + w / 2 - this.text.width("NO MEDIA", AppTheme.TEXT_BODY) / 2, y + h / 2 + 12, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
             return;
         }
-        if (!this.previewMRL.ready()) {
+        final MRL.Status status = this.previewMRL.status();
+        if (status == MRL.Status.FETCHING) {
             this.text.renderBold("LOADING", x + 22, y + h - 48, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
             this.text.render(this.text.truncateToWidth(this.previewUrl, w - 44, AppTheme.TEXT_SUBTITLE), x + 22, y + h - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
             return;
         }
-        if (this.previewMRL.hasError()) {
-            PixelIcon.draw("warn", x + w / 2 - 16, y + h / 2 - 36, 32, AppTheme.RED);
-            this.text.renderBold("ERROR", x + w / 2 - this.text.widthBold("ERROR", AppTheme.TEXT_BUTTON) / 2, y + h / 2 + 8, AppTheme.RED, AppTheme.TEXT_BUTTON);
+        if (status != MRL.Status.LOADED) {
+            // ERROR/BLOCKED/EXPIRED/FORGOTTEN — SHOW THE EXACT STATE.
+            final java.awt.Color color = this.statusColor();
+            final String label = this.statusLabel();
+            PixelIcon.draw("warn", x + w / 2 - 16, y + h / 2 - 36, 32, color);
+            this.text.renderBold(label, x + w / 2 - this.text.widthBold(label, AppTheme.TEXT_BUTTON) / 2, y + h / 2 + 8, color, AppTheme.TEXT_BUTTON);
             return;
         }
 
@@ -466,22 +487,34 @@ public class OpenMultimediaScreen extends Screen {
         this.text.render(duration, x + 22, y + h - 24, AppTheme.CYAN, AppTheme.TEXT_BODY);
     }
 
+    private static boolean loaded(final MRL mrl) {
+        return mrl != null && mrl.status().loaded();
+    }
+
     private String statusLabel() {
         if (this.previewMRL == null) return "AWAITING URL";
-        if (!this.previewMRL.ready()) return "LOADING";
-        if (this.previewMRL.hasError()) return "ERROR";
-        return "READY";
+        return switch (this.previewMRL.status()) {
+            case LOADED -> "READY";
+            case FETCHING -> "LOADING";
+            case ERROR -> "ERROR";
+            case BLOCKED -> "BLOCKED";
+            case EXPIRED -> "EXPIRED";
+            case FORGOTTEN -> "FORGOTTEN";
+        };
     }
 
     private java.awt.Color statusColor() {
         if (this.previewMRL == null) return AppTheme.TEXT_FAINT;
-        if (!this.previewMRL.ready()) return AppTheme.NEON;
-        if (this.previewMRL.hasError()) return AppTheme.RED;
-        return AppTheme.GREEN;
+        return switch (this.previewMRL.status()) {
+            case LOADED -> AppTheme.GREEN;
+            case FETCHING -> AppTheme.NEON;
+            case ERROR, BLOCKED -> AppTheme.RED;
+            case EXPIRED, FORGOTTEN -> AppTheme.AMBER;
+        };
     }
 
     private MRL.Source firstSource() {
-        if (this.previewMRL == null || !this.previewMRL.ready() || this.previewMRL.hasError() || this.previewMRL.sources().isEmpty()) return null;
+        if (!loaded(this.previewMRL) || this.previewMRL.sources().isEmpty()) return null;
         return this.previewMRL.sources().get(0);
     }
 

@@ -42,25 +42,27 @@ public class PlatformAPI extends WaterMediaAPI {
      * built-in handlers shipped by WaterMedia.
      *
      * @param uri the media URI
-     * @return raw platform data, or {@code null} if no registered platform validated the URI
-     * @throws IOException whatever the matching platform throws while resolving
+     * @return raw platform data, or {@code null} if no registered platform handled the URI
+     * @throws PlatformException whatever the matching platform throws while resolving
      */
-    public static PlatformData fetch(final URI uri) throws IOException {
-        // Reverse iteration: last registered wins (lets apps override built-ins).
+    public static PlatformData fetch(final URI uri) throws PlatformException {
         for (int i = PLATFORMS.size() - 1; i >= 0; i--) {
             final IPlatform platform = PLATFORMS.get(i);
-            if (platform.validate(uri)) {
-                LOGGER.debug(IT, "Fetching data from {} for {}", platform.name(), uri);
-                try {
-                    return platform.getData(uri);
-                } catch (final IOException e) {
-                    throw e;
-                } catch (final Exception e) {
-                    throw new IOException("Platform " + platform.name() + " failed to resolve " + uri, e);
+            try {
+                final PlatformData data = platform.getData(uri);
+                if (data != null) {
+                    LOGGER.debug(IT, "Fetched data from {} for {}", platform.name(), uri);
+                    return data;
                 }
+            } catch (final PlatformException e) { // ALREADY DISPLAYABLE — RETHROW UNTOUCHED
+                throw e;
+            } catch (final IOException e) { // NETWORK/IO FAILURE TALKING TO THE PLATFORM — DISPLAYABLE, KEEP ITS DETAIL
+                throw new PlatformException(platform.getClass(), "I/O failure resolving " + uri + " (" + e.getMessage() + ")", e);
+            } catch (final Throwable e) { // BUG IN THE HANDLER — SURFACE THE CAUSE INLINE, KEEP THE TRACE AS THE CAUSE
+                throw new PlatformException(platform.getClass(), "Unexpected error resolving " + uri + " (" + e + ")", e);
             }
         }
-        return null;
+        return null; // NOTHING FOUND
     }
 
     /**
