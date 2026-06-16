@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
@@ -20,9 +21,11 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * on-disk fixtures cover the decodable image formats; synthetic minimal headers cover the
  * container/codec signatures (video, audio, subtitles) that have no fixture.
  */
+@DisplayName("MediaType sniffing")
 public class MediaTypeSniffTest {
 
     @TestFactory
+    @DisplayName("On-disk fixtures")
     Iterable<DynamicTest> sniffsFixtures() {
         final List<DynamicTest> tests = new ArrayList<>();
 
@@ -43,6 +46,7 @@ public class MediaTypeSniffTest {
     }
 
     @TestFactory
+    @DisplayName("Synthetic signatures")
     Iterable<DynamicTest> sniffsSignatures() {
         final List<DynamicTest> tests = new ArrayList<>();
 

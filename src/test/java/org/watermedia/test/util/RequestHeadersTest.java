@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Verifies the multi-valued, case-insensitive contract of {@link RequestHeaders}
  * and the default header bag built from a target URI.
  */
+@DisplayName("RequestHeaders")
 public class RequestHeadersTest {
 
     @Nested

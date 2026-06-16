@@ -7,12 +7,12 @@ import java.util.function.Consumer;
 /**
  * Binary switch/toggle.
  */
-public class SwitchElement extends Element {
+public class Switch extends Element {
 
     private boolean on;
     private Consumer<Boolean> onChanged;
 
-    public SwitchElement on(final boolean on) {
+    public Switch on(final boolean on) {
         this.on = on;
         return this;
     }
@@ -21,7 +21,7 @@ public class SwitchElement extends Element {
         return this.on;
     }
 
-    public SwitchElement onChanged(final Consumer<Boolean> onChanged) {
+    public Switch onChanged(final Consumer<Boolean> onChanged) {
         this.onChanged = onChanged;
         return this;
     }

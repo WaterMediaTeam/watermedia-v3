@@ -33,8 +33,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     // TIME TRACKING
     private volatile long duration;
-    private volatile long accumulatedMs;      // time accumulated before the current play segment
-    private volatile long segmentStartNanos;  // System.nanoTime() when current segment began
+    private volatile long accumulatedMs;      // TIME ACCUMULATED BEFORE THE CURRENT PLAY SEGMENT
+    private volatile long segmentStartNanos;  // System.nanoTime() WHEN THE CURRENT SEGMENT BEGAN
     private volatile Status status = Status.WAITING;
 
     public ServerMediaPlayer() {
@@ -219,7 +219,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             try {
                 player.update();
             } catch (final Throwable t) {
-                LOGGER.error(IT, "Error updating ServerMediaPlayer", t);
+                LOGGER.error(IT, "Failed to update ServerMediaPlayer", t);
             }
         }
     }

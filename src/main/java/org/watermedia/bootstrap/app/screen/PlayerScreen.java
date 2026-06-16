@@ -57,7 +57,7 @@ public class PlayerScreen extends Screen {
     private boolean speedSpinnerOpen;
     private int speedSelectedIndex = 3;
 
-    // Cached bounds for quality dialog items
+    // CACHED BOUNDS FOR QUALITY DIALOG ITEMS
     private Dimension qualityDialogBounds = Dimension.ZERO;
     private Dimension topBackBounds = Dimension.ZERO;
     private Dimension topSourcesBounds = Dimension.ZERO;
@@ -399,7 +399,7 @@ public class PlayerScreen extends Screen {
     private int wrapBreak(final String value, final int fit) {
         final int limit = Math.max(1, Math.min(fit, value.length()));
         int best = -1;
-        // PREFIERE CORTES VISUALMENTE ESTABLES PARA URLS Y TITULOS LARGOS.
+        // PREFER VISUALLY STABLE BREAKS FOR LONG URLS AND TITLES.
         for (int i = limit - 1; i > Math.max(0, limit - 18); i--) {
             final char c = value.charAt(i);
             if (Character.isWhitespace(c) || c == '/' || c == '?' || c == '&' || c == '-' || c == '_') {
@@ -559,20 +559,6 @@ public class PlayerScreen extends Screen {
         this.text.render(label, bounds.x() + 28,
                 bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeight(scale)) / 2) + 1,
                 color, scale);
-    }
-
-    private void renderDebugButton(final Dimension bounds) {
-        final java.awt.Color color = AppTheme.NEON_LIGHT;
-        final boolean hover = bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 92) : AppTheme.alpha(AppTheme.BG_1, 205));
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 2f);
-        RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, 0.24f);
-        PixelIcon.draw("debug", bounds.x() + 10, bounds.y() + 10, 13, color);
-        this.text.renderBold("DEBUG", bounds.x() + 30,
-                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
-                color, AppTheme.TEXT_BUTTON);
-        PixelIcon.draw(this.debugOpen ? "arrow-left" : "arrow-right", bounds.right() - 20, bounds.y() + 10, 12, AppTheme.AMBER);
     }
 
     private int renderTransportButton(final String id, final String label, final int x, final int y,

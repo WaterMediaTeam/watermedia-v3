@@ -34,7 +34,7 @@ public class TwitterPlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
         if (uri.getPath() == null || !ID_PATTERN.matcher(uri.getPath()).find()) return null;
 
         String path = uri.getPath();

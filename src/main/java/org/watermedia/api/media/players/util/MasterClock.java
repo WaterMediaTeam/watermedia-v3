@@ -11,14 +11,15 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * SINGLE SOURCE OF TRUTH FOR TIME, STATUS, SEEK REQUESTS, AND INTER-THREAD
- * COORDINATION. USES A REENTRANT LOCK + CONDITION FOR THREAD SYNCHRONIZATION.
- *
- * CLOCK IS PTS-DRIFT BASED (LIKE FFPLAY):
- *   TIME = PTS_DRIFT + NOW    (WHEN PLAYING)
- *   TIME = PTS                (WHEN NOT PLAYING — FROZEN)
- *
- * STATUS IS VOLATILE FOR LOCK-FREE READS; ALL MUTATIONS HAPPEN UNDER LOCK.
+ * Single source of truth for time, status, seek requests, and inter-thread coordination.
+ * Uses a reentrant lock plus condition for thread synchronization.
+ * <p>
+ * The clock is PTS-drift based (like ffplay):
+ * <ul>
+ *   <li>{@code time = ptsDrift + now} when playing</li>
+ *   <li>{@code time = pts} when not playing (frozen)</li>
+ * </ul>
+ * Status is volatile for lock-free reads; all mutations happen under the lock.
  */
 public final class MasterClock {
 
@@ -65,7 +66,7 @@ public final class MasterClock {
     private volatile long skipThresholdMs = 165;
 
     // INNER TYPES
-    /** IMMUTABLE SEEK REQUEST — STORED ATOMICALLY UNDER LOCK */
+    /** Immutable seek request — stored atomically under the lock. */
     public record SeekRequest(long targetMs, boolean precise) {}
 
     // WALLCLOCK
@@ -76,9 +77,9 @@ public final class MasterClock {
 
     // CLOCK READ (LOCK-FREE VIA VOLATILE)
     /**
-     * CURRENT CLOCK TIME IN SECONDS.
-     * WHEN PLAYING: PTS_DRIFT + NOW, ADJUSTED FOR SPEED.
-     * WHEN NOT PLAYING: FROZEN AT LAST PTS VALUE.
+     * Returns the current clock time in seconds.
+     * When playing: {@code ptsDrift + now}, adjusted for speed.
+     * When not playing: frozen at the last PTS value.
      */
     public double time() {
         final Status s = this.status;
@@ -88,21 +89,21 @@ public final class MasterClock {
         return this.ptsDrift + now - elapsed * (1.0 - this.speed);
     }
 
-    /** CONVENIENCE: CURRENT CLOCK TIME IN MILLISECONDS */
+    /** Convenience: current clock time in milliseconds. */
     public long timeMs() {
         return (long) (this.time() * 1000.0);
     }
 
     // CLOCK WRITE (UNDER LOCK)
     /**
-     * AUDIO-DRIVEN CLOCK UPDATE. CALLED EACH TIME THE AUDIO DECODER
-     * PROCESSES A FRAME. IF BUFFERING AND SERIAL MATCHES, TRANSITIONS
-     * TO PLAYING OR PAUSED BASED ON PAUSE INTENT.
+     * Audio-driven clock update. Called each time the audio decoder processes a frame.
+     * If buffering and the serial matches, transitions to playing or paused based on the
+     * pause intent.
+     * <p>
+     * No backward guard — the serial system handles stale frames.
      *
-     * NO BACKWARD GUARD — THE SERIAL SYSTEM HANDLES STALE FRAMES.
-     *
-     * @param ptsSec PTS OF THE FRAME IN SECONDS
-     * @param serial SERIAL OF THE PACKET QUEUE THAT ORIGINATED THIS FRAME
+     * @param ptsSec PTS of the frame in seconds
+     * @param serial serial of the packet queue that originated this frame
      */
     public void update(final double ptsSec, final int serial) {
         this.lock.lock();
@@ -137,24 +138,24 @@ public final class MasterClock {
         }
     }
 
-    /** CONVENIENCE: UPDATE WITH MILLISECONDS */
+    /** Convenience: update with milliseconds. */
     public void updateMs(final long ptsMs, final int serial) {
         this.update(ptsMs / 1000.0, serial);
     }
 
     // STATE (STATUS IS VOLATILE FOR LOCK-FREE READS)
-    /** CURRENT STATUS — LOCK-FREE READ VIA VOLATILE */
+    /** Current status — lock-free read via volatile. */
     public Status status() {
         return this.status;
     }
 
     /**
-     * VALIDATED STATE TRANSITION. CHECKS THE STATE MACHINE FOR LEGALITY,
-     * UPDATES STATUS, ADJUSTS CLOCK WHEN ENTERING/LEAVING PLAYING STATE,
-     * AND SIGNALS ALL WAITING THREADS.
+     * Validated state transition. Checks the state machine for legality, updates the status,
+     * adjusts the clock when entering or leaving the playing state, and signals all waiting
+     * threads.
      *
-     * @param newStatus THE DESIRED STATUS TO TRANSITION TO
-     * @return TRUE IF THE TRANSITION WAS VALID AND APPLIED
+     * @param newStatus the desired status to transition to
+     * @return true if the transition was valid and applied
      */
     public boolean transition(final Status newStatus) {
         this.lock.lock();
@@ -187,10 +188,10 @@ public final class MasterClock {
     }
 
     /**
-     * START THE PIPELINE — TRANSITION FROM LOADING TO PLAYING OR PAUSED.
-     * CALIBRATES THE CLOCK FROM TIME 0.
+     * Starts the pipeline — transition from loading to playing or paused.
+     * Calibrates the clock from time 0.
      *
-     * @param paused IF TRUE, START IN PAUSED STATE INSTEAD OF PLAYING
+     * @param paused if true, start in the paused state instead of playing
      */
     public void start(final boolean paused) {
         this.lock.lock();
@@ -209,13 +210,13 @@ public final class MasterClock {
 
     // SEEK (UNDER LOCK, SIGNALS CONDITION)
     /**
-     * REQUEST A SEEK. STORES THE REQUEST ATOMICALLY, FREEZES THE CLOCK
-     * AT THE TARGET POSITION, TRANSITIONS TO BUFFERING, AND WAKES ALL
-     * WAITING THREADS. REJECTED IF STATUS IS TERMINAL.
+     * Requests a seek. Stores the request atomically, freezes the clock at the target
+     * position, transitions to buffering, and wakes all waiting threads. Rejected if the
+     * status is terminal.
      *
-     * @param targetMs TARGET POSITION IN MILLISECONDS
-     * @param precise  IF TRUE, REQUEST PRECISE (FRAME-EXACT) SEEK
-     * @return TRUE IF THE SEEK WAS ACCEPTED
+     * @param targetMs target position in milliseconds
+     * @param precise  if true, request a precise (frame-exact) seek
+     * @return true if the seek was accepted
      */
     public boolean requestSeek(final long targetMs, final boolean precise) {
         this.lock.lock();
@@ -235,9 +236,9 @@ public final class MasterClock {
     }
 
     /**
-     * CONSUME THE PENDING SEEK REQUEST. RETURNS AND CLEARS IT.
+     * Consumes the pending seek request, returning and clearing it.
      *
-     * @return THE PENDING SEEK REQUEST, OR NULL IF NONE
+     * @return the pending seek request, or null if none
      */
     public SeekRequest consumeSeek() {
         this.lock.lock();
@@ -250,7 +251,7 @@ public final class MasterClock {
         }
     }
 
-    /** CHECK IF A SEEK REQUEST IS PENDING — LOCK-FREE VIA VOLATILE */
+    /** Checks if a seek request is pending — lock-free via volatile. */
     public boolean hasSeekPending() {
         return this.pendingSeek != null;
     }
@@ -258,11 +259,11 @@ public final class MasterClock {
     // PAUSE (CONVENIENCE — DELEGATES TO transition())
 
     /**
-     * SET PAUSED STATE. CONVENIENCE METHOD THAT DELEGATES TO transition().
-     * ALSO STORES THE PAUSE INTENT FOR BUFFERING RESOLUTION.
+     * Sets the paused state. Convenience method that delegates to {@link #transition(Status)}.
+     * Also stores the pause intent for buffering resolution.
      *
-     * @param paused TRUE TO PAUSE, FALSE TO RESUME
-     * @return TRUE IF THE STATE CHANGED
+     * @param paused true to pause, false to resume
+     * @return true if the state changed
      */
     public boolean setPaused(final boolean paused) {
         this.lock.lock();
@@ -285,19 +286,19 @@ public final class MasterClock {
         }
     }
 
-    /** STORED PAUSE INTENT FOR BUFFERING → PLAYING/PAUSED RESOLUTION */
+    /** Stored pause intent for buffering to playing/paused resolution. */
     public boolean pauseRequested() {
         return this.pauseIntent;
     }
 
     // THREAD COORDINATION (UNDER LOCK)
     /**
-     * BLOCK UNTIL THE STATUS CHANGES OR A NEW SEEK REQUEST ARRIVES.
-     * POLLS EVERY 50MS TO BOUND LATENCY.
+     * Blocks until the status changes or a new seek request arrives.
+     * Polls every 50ms to bound latency.
      *
-     * @param timeoutMs MAXIMUM TIME TO WAIT (0 = INDEFINITE)
-     * @return THE STATUS AT THE TIME OF RETURN
-     * @throws InterruptedException IF THE THREAD IS INTERRUPTED
+     * @param timeoutMs maximum time to wait (0 = indefinite)
+     * @return the status at the time of return
+     * @throws InterruptedException if the thread is interrupted
      */
     public Status awaitChange(final long timeoutMs) throws InterruptedException {
         this.lock.lock();
@@ -317,12 +318,12 @@ public final class MasterClock {
     }
 
     /**
-     * BLOCK UNTIL THE STATUS IS NO LONGER THE GIVEN VALUE.
+     * Blocks until the status is no longer the given value.
      *
-     * @param current   THE STATUS TO WAIT TO LEAVE
-     * @param timeoutMs MAXIMUM TIME TO WAIT (0 = INDEFINITE)
-     * @return THE STATUS AT THE TIME OF RETURN
-     * @throws InterruptedException IF THE THREAD IS INTERRUPTED
+     * @param current   the status to wait to leave
+     * @param timeoutMs maximum time to wait (0 = indefinite)
+     * @return the status at the time of return
+     * @throws InterruptedException if the thread is interrupted
      */
     public Status awaitNotStatus(final Status current, final long timeoutMs) throws InterruptedException {
         this.lock.lock();
@@ -340,14 +341,13 @@ public final class MasterClock {
     }
 
     /**
-     * PACING FOR VIDEO-ONLY STREAMS (NO AUDIO CLOCK DRIVER).
-     * BLOCKS UNTIL THE CLOCK REACHES THE GIVEN FRAME PTS.
-     * USES THE LOCK CONDITION INSTEAD OF Thread.sleep TO ALLOW
-     * EARLY WAKE-UP ON STATUS CHANGES.
+     * Pacing for video-only streams (no audio clock driver).
+     * Blocks until the clock reaches the given frame PTS. Uses the lock condition instead of
+     * {@link Thread#sleep(long)} to allow early wake-up on status changes.
      *
-     * @param framePtsSec PTS OF THE FRAME IN SECONDS
-     * @return TRUE IF THE FRAME SHOULD BE DISPLAYED, FALSE IF INTERRUPTED OR STATUS CHANGED
-     * @throws InterruptedException IF THE THREAD IS INTERRUPTED
+     * @param framePtsSec PTS of the frame in seconds
+     * @return true if the frame should be displayed, false if interrupted or the status changed
+     * @throws InterruptedException if the thread is interrupted
      */
     public boolean waitUntil(final double framePtsSec) throws InterruptedException {
         this.lock.lock();
@@ -369,7 +369,7 @@ public final class MasterClock {
     }
 
     // PIPELINE LIFECYCLE
-    /** RESET ALL STATE TO INITIAL VALUES */
+    /** Resets all state to its initial values. */
     public void reset() {
         this.lock.lock();
         try {
@@ -389,7 +389,7 @@ public final class MasterClock {
         }
     }
 
-    /** SIGNAL THAT THE DEMUXER HAS REACHED END-OF-STREAM */
+    /** Signals that the demuxer has reached end-of-stream. */
     public void signalDemuxFinished() {
         this.lock.lock();
         try {
@@ -400,16 +400,16 @@ public final class MasterClock {
         }
     }
 
-    /** CHECK IF THE DEMUXER HAS FINISHED — LOCK-FREE VIA VOLATILE */
+    /** Checks if the demuxer has finished — lock-free via volatile. */
     public boolean isDemuxFinished() {
         return this.demuxFinished;
     }
 
     /**
-     * INCREMENT AND RETURN THE SERIAL NUMBER.
-     * USED TO INVALIDATE STALE PACKETS/FRAMES AFTER A SEEK OR RESTART.
+     * Increments and returns the serial number.
+     * Used to invalidate stale packets and frames after a seek or restart.
      *
-     * @return THE NEW SERIAL VALUE
+     * @return the new serial value
      */
     public int nextSerial() {
         this.lock.lock();
@@ -421,17 +421,17 @@ public final class MasterClock {
     }
 
     // FRAME TIMING
-    /** CURRENT SERIAL NUMBER — LOCK-FREE VIA VOLATILE */
+    /** Current serial number — lock-free via volatile. */
     public int serial() {
         return this.serial;
     }
 
     /**
-     * SET SERIAL TO MATCH AN EXTERNAL SOURCE (E.G., PacketQueue SERIAL AFTER FLUSH).
-     * CALLED BY THE SEEK HANDLER AFTER FLUSHING QUEUES SO THAT clock.update()
-     * ACCEPTS POST-SEEK FRAMES (SERIAL MATCH REQUIRED FOR BUFFERING → PLAYING).
+     * Sets the serial to match an external source (e.g. the {@link PacketQueue} serial after a
+     * flush). Called by the seek handler after flushing queues so that {@link #update(double, int)}
+     * accepts post-seek frames (a serial match is required for the buffering to playing transition).
      *
-     * @param serial THE SERIAL VALUE TO SET
+     * @param serial the serial value to set
      */
     public void setSerial(final int serial) {
         this.lock.lock();
@@ -443,8 +443,8 @@ public final class MasterClock {
     }
 
     /**
-     * SIGNAL THAT THE DEMUX HAS RESUMED AFTER EOF (E.G., AFTER A SEEK).
-     * CLEARS THE demuxFinished FLAG AND SIGNALS ALL WAITING THREADS.
+     * Signals that the demux has resumed after EOF (e.g. after a seek).
+     * Clears the {@code demuxFinished} flag and signals all waiting threads.
      */
     public void signalDemuxResumed() {
         this.lock.lock();
@@ -457,10 +457,10 @@ public final class MasterClock {
     }
 
     /**
-     * SET FPS OF THE STREAM. CALLED WHEN OPENING THE VIDEO STREAM.
-     * ALSO UPDATES FRAME DURATION AND SKIP THRESHOLD.
+     * Sets the FPS of the stream. Called when opening the video stream.
+     * Also updates the frame duration and skip threshold.
      *
-     * @param fps FRAMES PER SECOND (CLAMPED TO MINIMUM 1.0)
+     * @param fps frames per second (clamped to a minimum of 1.0)
      */
     public void fps(final float fps) {
         this.fpsValue = Math.max(fps, 1.0f);
@@ -469,36 +469,36 @@ public final class MasterClock {
         this.skipThresholdMs = (long) (this.frameDurationSec * 5.0 * 1000.0);
     }
 
-    /** CURRENT FPS VALUE */
+    /** Current FPS value. */
     public float fps() {
         return this.fpsValue;
     }
 
-    /** FRAME DURATION IN MILLISECONDS */
+    /** Frame duration in milliseconds. */
     public long frameDurationMs() {
         return (long) (this.frameDurationSec * 1000.0);
     }
 
-    /** FRAME DURATION IN SECONDS */
+    /** Frame duration in seconds. */
     public double frameDurationSec() {
         return this.frameDurationSec;
     }
 
-    /** SKIP THRESHOLD IN MILLISECONDS (~5 FRAMES) */
+    /** Skip threshold in milliseconds (~5 frames). */
     public long skipThresholdMs() {
         return this.skipThresholdMs;
     }
 
-    /** CURRENT PLAYBACK SPEED MULTIPLIER */
+    /** Current playback speed multiplier. */
     public double speed() {
         return this.speed;
     }
 
     /**
-     * SET PLAYBACK SPEED. RECALIBRATES THE CLOCK TO MAINTAIN
-     * CONTINUITY AT THE CURRENT TIME POSITION.
+     * Sets the playback speed. Recalibrates the clock to maintain continuity at the current
+     * time position.
      *
-     * @param speed PLAYBACK SPEED MULTIPLIER (1.0 = NORMAL)
+     * @param speed playback speed multiplier (1.0 = normal)
      */
     public void speed(final double speed) {
         this.lock.lock();

@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.png;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
@@ -35,12 +36,14 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * second compares the first decoded frame pixel-for-pixel against a pre-generated PAM
  * reference under {@code png/raw}. PNG is lossless so the tolerance is zero.
  */
+@DisplayName("PNG decoder")
 public class PngTest {
 
     // PNG IS LOSSLESS — REFERENCE MATCH MUST BE EXACT
     private static final int LOSSLESS_TOLERANCE = 0;
 
     @TestFactory
+    @DisplayName("Decode shape and pixel match")
     Iterable<DynamicTest> testPNG() {
         final List<DynamicTest> tests = new ArrayList<>();
 
@@ -116,6 +119,7 @@ public class PngTest {
     }
 
     @TestFactory
+    @DisplayName("reset() replay")
     Iterable<DynamicTest> testPNGReset() {
         final List<DynamicTest> tests = new ArrayList<>();
         try (final Stream<Path> entries = Files.list(Fixtures.PNG_DIR)) {

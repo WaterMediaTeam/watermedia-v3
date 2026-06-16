@@ -10,7 +10,6 @@ import java.io.File;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -41,7 +40,7 @@ public final class AppContext implements Executor {
     public int windowHeight = 720;
     public long windowHandle;
     public boolean windowMaximized;
-    private final AtomicBoolean renderRequested = new AtomicBoolean(true);
+    private volatile boolean renderRequested = true;
 
     // MOUSE
     public double mouseX;
@@ -181,18 +180,22 @@ public final class AppContext implements Executor {
     }
 
     public void requestRender() {
-        this.renderRequested.set(true);
+        this.renderRequested = true;
         if (this.windowHandle != 0L) {
             glfwPostEmptyEvent();
         }
     }
 
     public boolean renderRequested() {
-        return this.renderRequested.get();
+        return this.renderRequested;
     }
 
     public boolean consumeRenderRequest() {
-        return this.renderRequested.getAndSet(false);
+        // SINGLE-CONSUMER CLEAR ON THE MAIN/GL THREAD; WRITERS ONLY EVER SET TRUE,
+        // SO A RACING REQUEST IS HARMLESSLY RE-DELIVERED VIA glfwPostEmptyEvent().
+        final boolean requested = this.renderRequested;
+        this.renderRequested = false;
+        return requested;
     }
 
     public boolean processExecutor() {

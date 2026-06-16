@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.netpbm;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
@@ -22,9 +23,11 @@ import static org.junit.jupiter.api.Assertions.fail;
  * {@code .pam} fixture and asserts the parsed header reports a known Netpbm version
  * (4..7) and positive dimensions.
  */
+@DisplayName("Netpbm header parser")
 public class NetpbmTest {
 
     @TestFactory
+    @DisplayName("Parse header")
     Iterable<DynamicTest> testNetpbmHeaders() {
         final List<DynamicTest> tests = new ArrayList<>();
         try (final Stream<Path> entries = Files.list(Fixtures.NETPBM_DIR)) {

@@ -6,24 +6,36 @@ import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.WaterMediaAPI;
 import org.watermedia.api.util.NetRequest;
-
 import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class NetworkAPI extends WaterMediaAPI {
     static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
+    private static final Executor EXECUTOR = ThreadTool.createRecommendedThreadPool("NetworkAPI-Upload", 5);
     private static final String STEP_MIME = "MIME registry";
     private static final String STEP_SERVER = "FileServer";
     public static final String PROTOCOL_WATER = "water";
     public static final String X_WATERMEDIA_ID = "X-WaterMedia-Id";
     public static final String X_WATERMEDIA_TOKEN = "X-WaterMedia-Token";
     public static final String X_WATERMEDIA_FILENAME = "X-WaterMedia-Filename";
+
+    /**
+     * Uploads multiple files to the remote WaterMedia server on a shared background thread pool.
+     * @param files the files to upload
+     * @return one status tracker per file
+     */
+    public static NetworkServer.UploadStatus[] upload(final File... files) {
+        final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[files.length];
+        for (int i = 0; i < files.length; i++) statuses[i] = upload(files[i]);
+        return statuses;
+    }
 
     /**
      * Uploads a file to the remote WaterMedia server in a background thread.
@@ -33,33 +45,18 @@ public class NetworkAPI extends WaterMediaAPI {
      */
     public static NetworkServer.UploadStatus upload(final File file) {
         final NetworkServer.UploadStatus status = new NetworkServer.UploadStatus(file.length());
-
-        ThreadTool.createStarted("WaterMedia-Upload-" + file.getName(), () -> doUpload(file, status));
-
+        EXECUTOR.execute(() -> upload(file, status));
         return status;
     }
 
-    /**
-     * Uploads multiple files to the remote WaterMedia server, each in its own background thread.
-     * @param files the files to upload
-     * @return one status tracker per file
-     */
-    public static NetworkServer.UploadStatus[] upload(final File... files) {
-        final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[files.length];
-        for (int i = 0; i < files.length; i++) {
-            statuses[i] = upload(files[i]);
-        }
-        return statuses;
-    }
-
-    private static void doUpload(final File file, final NetworkServer.UploadStatus status) {
+    private static void upload(final File file, final NetworkServer.UploadStatus status) {
         try {
             String base = WaterMediaConfig.network.remoteHost;
             if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
 
-            // Streaming uploads with byte-level progress are out of scope for NetRequest,
-            // so we drive HttpURLConnection directly — but use URI.toURL() to avoid the
-            // deprecated new URL(String) constructor.
+            // STREAMING UPLOADS WITH BYTE-LEVEL PROGRESS ARE OUT OF SCOPE FOR NetRequest,
+            // SO WE DRIVE HttpURLConnection DIRECTLY — BUT USE URI.toURL() TO AVOID THE
+            // DEPRECATED new URL(String) CONSTRUCTOR.
             final URL url = URI.create(base + "/upload").toURL();
             final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(WaterMediaConfig.network.requestTimeoutMs);
@@ -149,9 +146,9 @@ public class NetworkAPI extends WaterMediaAPI {
     @Override
     public boolean start(final WaterMedia instance) {
         // EXTEND THE PLATFORM FILE NAME MAP WITH MIME TYPES JAVA DOES NOT KNOW ABOUT
-        // (webp, apng, NETPBM variants, mkv, opus, etc). Java's content-types.properties
-        // ships a tiny set; without this, URLConnection.guessContentTypeFromName() returns
-        // null for most modern media and platform code mis-classifies the resource.
+        // (webp, apng, NETPBM VARIANTS, mkv, opus, ETC). JAVA'S content-types.properties
+        // SHIPS A TINY SET; WITHOUT THIS, URLConnection.guessContentTypeFromName() RETURNS
+        // null FOR MOST MODERN MEDIA AND PLATFORM CODE MIS-CLASSIFIES THE RESOURCE.
         this.step++;
         this.stepName = STEP_MIME;
         NetRequest.installExtraMimeTypes();

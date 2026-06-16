@@ -192,10 +192,10 @@ public enum MathUtil {
         }
     };
 
-    public static long parseLong(String s) {
+    public static long parseLong(final String s) {
         try {
             return Long.parseLong(s);
-        } catch (NumberFormatException e) {
+        } catch (final NumberFormatException e) {
             return 0L;
         }
     }
@@ -958,11 +958,11 @@ public enum MathUtil {
         }
     }
 
-    public static int clamp(int value, int min, int max) {
+    public static int clamp(final int value, final int min, final int max) {
         return value >= max ? max : value <= min ? min : value;
     }
 
-    public static int clip255(int value) {
+    public static int clip255(final int value) {
         return clamp(value, 0, 255);
     }
 

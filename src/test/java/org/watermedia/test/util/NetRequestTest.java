@@ -17,11 +17,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Covers status reporting, body decoding, JSON binding, manual redirect
  * following and the {@code accept()} builder shortcut.
  */
+@DisplayName("NetRequest")
 public class NetRequestTest {
 
     @Test
     @DisplayName("plain GET returns 200 and the configured body")
-    void simpleGet() throws IOException {
+    void testSimpleGet() throws IOException {
         try (final LocalHttp server = LocalHttp.start("/text",
                 ex -> LocalHttp.respond(ex, "text/plain", "hello".getBytes(), 0))) {
 
@@ -36,7 +37,7 @@ public class NetRequestTest {
 
     @Test
     @DisplayName("json(Map.class) parses an application/json body")
-    void jsonBinding() throws IOException {
+    void testJsonBinding() throws IOException {
         try (final LocalHttp server = LocalHttp.start("/data",
                 ex -> LocalHttp.respond(ex, "application/json", "{\"a\":1}".getBytes(), 0))) {
 
@@ -54,7 +55,7 @@ public class NetRequestTest {
 
     @Test
     @DisplayName("302 redirect is followed to the final URI")
-    void followsRedirect() throws IOException {
+    void testFollowsRedirect() throws IOException {
         // TARGET SERVER FIRST SO ITS ABSOLUTE URL CAN BE EMBEDDED IN THE REDIRECTOR'S Location HEADER
         try (final LocalHttp target = LocalHttp.start("/final",
                 ex -> LocalHttp.respond(ex, "text/plain", "done".getBytes(), 0))) {
@@ -76,7 +77,7 @@ public class NetRequestTest {
 
     @Test
     @DisplayName("accept() builder sets the outbound Accept header")
-    void acceptHeader() throws IOException {
+    void testAcceptHeader() throws IOException {
         try (final LocalHttp server = LocalHttp.start("/echo",
                 ex -> LocalHttp.respond(ex, "text/plain", "ok".getBytes(), 0))) {
 

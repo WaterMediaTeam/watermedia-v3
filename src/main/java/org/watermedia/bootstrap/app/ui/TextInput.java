@@ -5,14 +5,14 @@ import org.watermedia.bootstrap.app.render.RenderSystem;
 /**
  * Text input renderer with placeholder and focus state.
  */
-public class TextInputElement extends Element {
+public class TextInput extends Element {
 
     private String value = "";
     private String placeholder = "";
     private int width = 320;
     private int height = 36;
 
-    public TextInputElement value(final String value) {
+    public TextInput value(final String value) {
         this.value = value == null ? "" : value;
         return this;
     }
@@ -21,12 +21,12 @@ public class TextInputElement extends Element {
         return this.value;
     }
 
-    public TextInputElement placeholder(final String placeholder) {
+    public TextInput placeholder(final String placeholder) {
         this.placeholder = placeholder == null ? "" : placeholder;
         return this;
     }
 
-    public TextInputElement size(final int width, final int height) {
+    public TextInput size(final int width, final int height) {
         this.width = width;
         this.height = height;
         return this;

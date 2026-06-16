@@ -498,7 +498,7 @@ public final class GLEngine extends GFXEngine {
                     if (this.shaderGray != 0) {
                         this.uniformGrayTex = GL20.glGetUniformLocation(this.shaderGray, "yTex");
                         this.uniformGrayBitScale = GL20.glGetUniformLocation(this.shaderGray, "bitScale");
-                        LOGGER.info(IT, "Gray shader compiled (program={})", this.shaderGray);
+                        LOGGER.info(IT, "Successfully compiled Gray shader (program={})", this.shaderGray);
                     }
                 }
             }
@@ -510,7 +510,7 @@ public final class GLEngine extends GFXEngine {
                         this.uniformNVUVTex = GL20.glGetUniformLocation(this.shaderNV, "uvTex");
                         this.uniformNVSwap = GL20.glGetUniformLocation(this.shaderNV, "uvSwap");
                         this.uniformNVBitScale = GL20.glGetUniformLocation(this.shaderNV, "bitScale");
-                        LOGGER.info(IT, "NV shader compiled (program={})", this.shaderNV);
+                        LOGGER.info(IT, "Successfully compiled NV shader (program={})", this.shaderNV);
                     }
                 }
             }
@@ -522,7 +522,7 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUV3UTex = GL20.glGetUniformLocation(this.shaderYUV3, "uTex");
                         this.uniformYUV3VTex = GL20.glGetUniformLocation(this.shaderYUV3, "vTex");
                         this.uniformYUV3BitScale = GL20.glGetUniformLocation(this.shaderYUV3, "bitScale");
-                        LOGGER.info(IT, "YUV3 shader compiled (program={})", this.shaderYUV3);
+                        LOGGER.info(IT, "Successfully compiled YUV3 shader (program={})", this.shaderYUV3);
                     }
                 }
             }
@@ -535,7 +535,7 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUVAVTex = GL20.glGetUniformLocation(this.shaderYUVA, "vTex");
                         this.uniformYUVAATex = GL20.glGetUniformLocation(this.shaderYUVA, "aTex");
                         this.uniformYUVABitScale = GL20.glGetUniformLocation(this.shaderYUVA, "bitScale");
-                        LOGGER.info(IT, "YUVA shader compiled (program={})", this.shaderYUVA);
+                        LOGGER.info(IT, "Successfully compiled YUVA shader (program={})", this.shaderYUVA);
                     }
                 }
             }
@@ -546,7 +546,7 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUYVTex = GL20.glGetUniformLocation(this.shaderYUYV, "packedTex");
                         this.uniformYUYVWidth = GL20.glGetUniformLocation(this.shaderYUYV, "outputWidth");
                         this.uniformYUYVSwap = GL20.glGetUniformLocation(this.shaderYUYV, "uvSwap");
-                        LOGGER.info(IT, "YUYV shader compiled (program={})", this.shaderYUYV);
+                        LOGGER.info(IT, "Successfully compiled YUYV shader (program={})", this.shaderYUYV);
                     }
                 }
             }
@@ -713,7 +713,7 @@ public final class GLEngine extends GFXEngine {
                 this.bindTexture.accept(GL11.GL_TEXTURE_2D, p.tex);
                 this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, addr);
-                this.checkGLErrorAlways("plane texImage");
+                this.checkGLError("plane texImage");
                 this.seedPBO(i * NUM_PBOS, needed, addr);
                 this.planeBytes[i] = needed;
             }
@@ -760,7 +760,7 @@ public final class GLEngine extends GFXEngine {
             this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
             if (this.planeBytes[i] != needed) {
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, offset);
-                this.checkGLErrorAlways("ring plane texImage");
+                this.checkGLError("ring plane texImage");
                 this.planeBytes[i] = needed;
             } else {
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, offset);
@@ -807,7 +807,7 @@ public final class GLEngine extends GFXEngine {
         GL44.glBufferStorage(GL21.GL_PIXEL_UNPACK_BUFFER, slotBytes * RING_SLOTS, flags);
         final ByteBuffer mapped = GL30.glMapBufferRange(GL21.GL_PIXEL_UNPACK_BUFFER, 0, slotBytes * RING_SLOTS, flags);
         this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-        this.checkGLErrorAlways("armRing");
+        this.checkGLError("armRing");
         if (mapped == null) {
             GL15.glDeleteBuffers(id);
             this.ringCapable = false;
@@ -885,7 +885,7 @@ public final class GLEngine extends GFXEngine {
         if (this.managedTextureW != this.width || this.managedTextureH != this.height) {
             this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.managedTexture);
             GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
-            this.checkGLErrorAlways("managed texture alloc");
+            this.checkGLError("managed texture alloc");
             this.managedTextureW = this.width;
             this.managedTextureH = this.height;
         }
@@ -1098,7 +1098,7 @@ public final class GLEngine extends GFXEngine {
         this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
         GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
-        this.checkGLErrorAlways("preloaded frame glTexImage2D");
+        this.checkGLError("preloaded frame glTexImage2D");
 
         this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
         this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
@@ -1157,7 +1157,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
 
         this.bindVertexArray.accept(0);
-        this.checkGLErrorAlways("initQuad");
+        this.checkGLError("initQuad");
     }
 
     private void initPBOs(final int planeCount) {
@@ -1165,7 +1165,7 @@ public final class GLEngine extends GFXEngine {
         final int[] ids = new int[count];
         GL15.glGenBuffers(ids);
         System.arraycopy(ids, 0, this.pbos, 0, count);
-        this.checkGLErrorAlways("initPBOs");
+        this.checkGLError("initPBOs");
         this.pboInitialized = true;
         this.pboWriteIdx = 0;
         this.pboReady = false;
@@ -1184,7 +1184,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glShaderSource(vert, vertSrc);
         GL20.glCompileShader(vert);
         if (GL20.glGetShaderi(vert, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            LOGGER.error(IT, "VERTEX COMPILE FAILED: {}", GL20.glGetShaderInfoLog(vert, 1024));
+            LOGGER.error(IT, "Failed to compile vertex shader: {}", GL20.glGetShaderInfoLog(vert, 1024));
             GL20.glDeleteShader(vert);
             return 0;
         }
@@ -1193,7 +1193,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glShaderSource(frag, fragSrc);
         GL20.glCompileShader(frag);
         if (GL20.glGetShaderi(frag, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            LOGGER.error(IT, "FRAGMENT COMPILE FAILED: {}", GL20.glGetShaderInfoLog(frag, 1024));
+            LOGGER.error(IT, "Failed to compile fragment shader: {}", GL20.glGetShaderInfoLog(frag, 1024));
             GL20.glDeleteShader(vert);
             GL20.glDeleteShader(frag);
             return 0;
@@ -1206,7 +1206,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glBindAttribLocation(prog, 1, "uv");
         GL20.glLinkProgram(prog);
         if (GL20.glGetProgrami(prog, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            LOGGER.error(IT, "LINK FAILED: {}", GL20.glGetProgramInfoLog(prog, 1024));
+            LOGGER.error(IT, "Failed to link shader program: {}", GL20.glGetProgramInfoLog(prog, 1024));
             GL20.glDeleteProgram(prog);
             GL20.glDeleteShader(vert);
             GL20.glDeleteShader(frag);
@@ -1256,10 +1256,6 @@ public final class GLEngine extends GFXEngine {
         if (err != GL11.GL_NO_ERROR) {
             LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
         }
-    }
-
-    private void checkGLErrorAlways(final String op) {
-        this.checkGLError(op);
     }
 
     private static String glErrorName(final int err) {

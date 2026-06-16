@@ -10,7 +10,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTools;
+import org.watermedia.tools.MPEGTool;
 
 import java.net.URI;
 import java.time.Instant;
@@ -39,12 +39,12 @@ public class KickPlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final String clipId = clipId(uri);
         if (clipId != null) { // /<channel>/clips/clip_... OR /<channel>?clip=clip_...
             LOGGER.debug(IT, "Kick resolving clip '{}' from {}", clipId, uri);
-            return this.getClipData(uri, clipId);
+            return this.resolveClip(uri, clipId);
         }
 
         final var path = uri.getPath().substring(1).split("/");
@@ -144,7 +144,7 @@ public class KickPlatform implements IPlatform {
         }
     }
 
-    private PlatformData getClipData(final URI uri, final String clipId) throws Exception {
+    private PlatformData resolveClip(final URI uri, final String clipId) throws Exception {
         final Clip clip = this.getClipInfo(clipId);
 
         if (clip.clipUrl == null)
@@ -208,12 +208,12 @@ public class KickPlatform implements IPlatform {
 
     // RESOLVES AN HLS STREAM URL INTO QUALITY VARIANTS. RESILIENT BY DESIGN (NEVER THROWS): A FETCH/PARSE
     // HICCUP, A MEDIA PLAYLIST, OR A NON-HLS RESOURCE FALLS BACK TO THE RAW URL SO FFMediaPlayer CAN PROBE.
-    // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST source BY MPEGTools).
+    // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST source BY MPEGTool).
     private static DataQuality[] variantsFrom(final URI source, final String ctx) {
-        final List<MPEGTools.Variant> variants = MPEGTools.qualities(source);
+        final List<MPEGTool.Variant> variants = MPEGTool.qualities(source);
         final DataQuality[] out = new DataQuality[variants.size()];
         for (int i = 0; i < variants.size(); i++) {
-            final MPEGTools.Variant v = variants.get(i);
+            final MPEGTool.Variant v = variants.get(i);
             out[i] = new DataQuality(v.uri(), v.width(), v.height());
         }
         LOGGER.debug(IT, "Kick resolved {} HLS rendition(s) for {}", out.length, ctx);

@@ -23,10 +23,6 @@ public class ScreenManager {
             this.backToHome();
             return;
         }
-        this.navigateTo(screenName);
-    }
-
-    private void navigateTo(final String screenName) {
         final Screen next = this.screens.get(screenName);
         if (next == null) return;
 

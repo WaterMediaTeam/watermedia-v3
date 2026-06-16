@@ -1,5 +1,6 @@
 package org.watermedia.test.media.tx;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -17,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * duration seek and verifies the lifecycle thread eventually resumes playback
  * after settling on the target frame.
  */
+@DisplayName("TxMediaPlayer seek")
 public class TxSeekTest {
 
     private static final long MRL_TIMEOUT_MS = 2000L;
@@ -24,7 +26,8 @@ public class TxSeekTest {
     private static final long SEEK_SETTLE_MS = 3000L;
 
     @Test
-    public void seekJumpsToMidDurationAndResumesPlayback() {
+    @DisplayName("Seek jumps to mid-duration and resumes playback")
+    void testSeekJumpsToMidDurationAndResumesPlayback() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 

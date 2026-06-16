@@ -482,7 +482,7 @@ public class HomeScreen extends Screen {
     private void renderUploadDialogButtons(final int x, final int y, final int dialogW, final int dialogH) {
         this.uploadDialogCloseBounds = new Dimension(x + 22, y + dialogH - 68, 170, 48);
         final boolean cancelHover = this.uploadDialogCloseBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.renderUploadButton(this.uploadDialogCloseBounds, this.ctx.uploadDialogDone ? "CLOSE" : "CANCEL", "ESC",
+        this.renderDialogButton(this.uploadDialogCloseBounds, this.ctx.uploadDialogDone ? "CLOSE" : "CANCEL", "ESC",
                 AppTheme.TEXT, AppTheme.STROKE_BRIGHT, cancelHover);
 
         final String label = this.uploadPrimaryLabel();
@@ -491,15 +491,15 @@ public class HomeScreen extends Screen {
         final boolean primaryEnabled = this.uploadPrimaryEnabled();
         final boolean primaryHover = primaryEnabled && this.uploadDialogPrimaryBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
         final Color primaryColor = !primaryEnabled ? AppTheme.TEXT_FAINT : (this.ctx.uploadDialogDone || this.ctx.uploadUploadsDone) ? AppTheme.GREEN : AppTheme.CYAN;
-        this.renderUploadButton(this.uploadDialogPrimaryBounds, label, "ENTER", primaryColor, primaryColor, primaryHover, primaryEnabled);
+        this.renderDialogButton(this.uploadDialogPrimaryBounds, label, "ENTER", primaryColor, primaryColor, primaryHover, primaryEnabled);
     }
 
-    private void renderUploadButton(final Dimension b, final String label, final String key,
+    private void renderDialogButton(final Dimension b, final String label, final String key,
                                     final Color textColor, final Color borderColor, final boolean hover) {
-        this.renderUploadButton(b, label, key, textColor, borderColor, hover, true);
+        this.renderDialogButton(b, label, key, textColor, borderColor, hover, true);
     }
 
-    private void renderUploadButton(final Dimension b, final String label, final String key,
+    private void renderDialogButton(final Dimension b, final String label, final String key,
                                     final Color textColor, final Color borderColor, final boolean hover,
                                     final boolean enabled) {
         RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
@@ -654,7 +654,7 @@ public class HomeScreen extends Screen {
     private void renderCleanupDialogButtons(final int x, final int y, final int dialogW, final int dialogH) {
         this.cleanupDialogCloseBounds = new Dimension(x + 22, y + dialogH - 68, 170, 48);
         final boolean cancelHover = this.cleanupDialogCloseBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.renderUploadButton(this.cleanupDialogCloseBounds, this.ctx.cleanupDialogDone ? "CLOSE" : "CANCEL", "ESC",
+        this.renderDialogButton(this.cleanupDialogCloseBounds, this.ctx.cleanupDialogDone ? "CLOSE" : "CANCEL", "ESC",
                 AppTheme.TEXT, AppTheme.STROKE_BRIGHT, cancelHover);
 
         final String label = this.cleanupPrimaryLabel();
@@ -663,7 +663,7 @@ public class HomeScreen extends Screen {
         final boolean primaryEnabled = this.cleanupPrimaryEnabled();
         final boolean primaryHover = primaryEnabled && this.cleanupDialogPrimaryBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
         final Color primaryColor = !primaryEnabled ? AppTheme.TEXT_FAINT : this.ctx.cleanupDialogDone ? AppTheme.GREEN : AppTheme.CYAN;
-        this.renderUploadButton(this.cleanupDialogPrimaryBounds, label, "ENTER", primaryColor, primaryColor, primaryHover, primaryEnabled);
+        this.renderDialogButton(this.cleanupDialogPrimaryBounds, label, "ENTER", primaryColor, primaryColor, primaryHover, primaryEnabled);
     }
 
     private String cleanupPrimaryLabel() {
@@ -802,10 +802,6 @@ public class HomeScreen extends Screen {
                 return;
             }
         }
-    }
-
-    @Override
-    public void handleScroll(final double yOffset) {
     }
 
     private void moveSelection(final int delta) {

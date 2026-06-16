@@ -7,7 +7,7 @@ public class PlatformException extends IOException {
         super(platform.getSimpleName() + ": " + message);
     }
 
-    public PlatformException(final Class<? extends IPlatform> platform, final String message, Throwable cause) {
+    public PlatformException(final Class<? extends IPlatform> platform, final String message, final Throwable cause) {
         super(platform.getSimpleName() + ": " + message, cause);
     }
 }

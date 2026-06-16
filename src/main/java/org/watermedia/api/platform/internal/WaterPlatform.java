@@ -11,6 +11,7 @@ import java.net.URI;
 import java.nio.file.Path;
 
 public class WaterPlatform implements IPlatform {
+    public static final String NAME = "WaterMedia Internal";
     public static final String HOST_LOCAL = "local";
     public static final String HOST_REMOTE = "remote";
     public static final String HOST_GLOBAL = "global";
@@ -19,7 +20,7 @@ public class WaterPlatform implements IPlatform {
 
     @Override
     public String name() {
-        return "WaterMedia Internal";
+        return NAME;
     }
 
     @Override

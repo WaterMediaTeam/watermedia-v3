@@ -12,7 +12,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTools;
+import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -47,7 +47,7 @@ public class BlueskyPlatform implements IPlatform {
         if (uriStr.startsWith("at://")) {
             if (!AT_PATTERN.matcher(uriStr).matches()) return null;
         } else {
-            final boolean validHost = DataTool.containsIgnoreCase(uri.getHost(), HOSTS);
+            final boolean validHost = DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS);
             if (!validHost || uri.getPath() == null || !WEB_PATTERN.matcher(uri.getPath()).find()) return null;
         }
 
@@ -111,18 +111,18 @@ public class BlueskyPlatform implements IPlatform {
         final List<DataQuality> variants = new ArrayList<>();
 
         try {
-            // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST playlistUri BY MPEGTools);
+            // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST playlistUri BY MPEGTool);
             // ONLY KEEP RENDITIONS THAT ADVERTISE A REAL RESOLUTION, RAW-URL FALLBACK HANDLES THE REST.
-            final MPEGTools.Playlist hlsResult = MPEGTools.fetch(playlistUri);
-            if (hlsResult instanceof final MPEGTools.Master master) {
-                for (final MPEGTools.Variant variant: master.variants()) {
+            final MPEGTool.Playlist hlsResult = MPEGTool.fetch(playlistUri);
+            if (hlsResult instanceof final MPEGTool.Master master) {
+                for (final MPEGTool.Variant variant: master.variants()) {
                     if (variant.width() <= 0 || variant.height() <= 0) continue;
                     variants.add(new DataQuality(variant.uri(), variant.width(), variant.height()));
                 }
                 LOGGER.debug(IT, "Bluesky parsed {} HLS rendition(s) for '{}'", variants.size(), postId);
             }
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Bluesky HLS fetch failed for '{}': {} — falling back to raw playlist URL", postId, e.getMessage());
+            LOGGER.warn(IT, "Bluesky failed to fetch HLS for '{}': {} — falling back to raw playlist URL", postId, e.getMessage());
         }
         if (variants.isEmpty()) {
             variants.add(new DataQuality(playlistUri, 0, 0));
@@ -147,7 +147,7 @@ public class BlueskyPlatform implements IPlatform {
                     }
                 }
             } catch (final Exception e) {
-                LOGGER.warn(IT, "Subtitle extraction failed for '{}': {}", postId, e.getMessage());
+                LOGGER.warn(IT, "Bluesky failed to extract subtitles for '{}': {}", postId, e.getMessage());
             }
         }
 
@@ -260,7 +260,7 @@ public class BlueskyPlatform implements IPlatform {
                 }
             }
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Service endpoint resolution failed for '{}': {}", did, e.getMessage());
+            LOGGER.warn(IT, "Bluesky failed to resolve service endpoint for '{}': {}", did, e.getMessage());
         }
         return DEFAULT_PDS;
     }

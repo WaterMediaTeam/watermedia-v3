@@ -7,7 +7,7 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTools;
+import org.watermedia.tools.MPEGTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -34,7 +34,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class MRL {
     private static final Marker IT = MarkerManager.getMarker(MRL.class.getSimpleName());
     private static final Map<URI, MRL> LOADED = new ConcurrentHashMap<>(1024);
-    private static final Executor LOADER = ThreadTool.createRecomendedThreadPool("MRL-Loader", Thread.NORM_PRIORITY - 1);
+    private static final Executor LOADER = ThreadTool.createRecommendedThreadPool("MRL-Loader", Thread.NORM_PRIORITY - 1);
     private static volatile long NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(60.0); // NOT CONFIGURABLE, BY DEFAULT OBEY FIRST 60 MINUTES
 
     // INSTANCE FIELDS
@@ -121,7 +121,7 @@ public final class MRL {
             PlatformData data = PlatformAPI.fetch(this.uri);
             if (data == null) {
                 try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
-                    LOGGER.debug("Connected to {} with content type {}", this.uri, req.contentType());
+                    LOGGER.debug(IT, "Connected to {} with content type {}", this.uri, req.contentType());
 
                     // FAIL FAST ON NON-2xx
                     if (req.statusCode() >= 400) {
@@ -130,7 +130,7 @@ public final class MRL {
 
                     // SCAN RECEIVED CONTENT-TYPE
                     final String contentType = req.contentType();
-                    if (contentType != null && !DataTool.startsWidth(contentType, "video", "image", "audio", "application/vnd.rn-realmedia", "application/vnd.rn-realmedia-vbr", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/octet-stream")) {
+                    if (contentType != null && !DataTool.startsWith(contentType, "video", "image", "audio", "application/vnd.rn-realmedia", "application/vnd.rn-realmedia-vbr", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/octet-stream")) {
                         throw new IOException("Content is not multimedia (received content-type '" + contentType + "'): " + this.uri);
                     }
 
@@ -142,21 +142,21 @@ public final class MRL {
                         final String body = req.readAllAsString();
                         // IPTV LISTS EXPAND INTO N CHANNELS; HLS MASTER/MEDIA (AND ANYTHING THAT
                         // FAILS TO PARSE) COLLAPSE TO A SINGLE VIDEO SOURCE THE PLAYER DRIVES ITSELF.
-                        MPEGTools.Playlist parsed;
+                        MPEGTool.Playlist parsed;
                         try {
-                            parsed = MPEGTools.parse(body, this.uri);
+                            parsed = MPEGTool.parse(body, this.uri);
                         } catch (final IOException badPlaylist) {
                             // NOT A RECOGNIZABLE PLAYLIST — HAND THE RAW URL TO FFmpeg BELOW
                             LOGGER.debug(IT, "Body from {} is not a recognizable playlist ({}); using the raw URL", this.uri, badPlaylist.getMessage());
                             parsed = null;
                         }
-                        if (parsed instanceof final MPEGTools.Iptv iptv) {
-                            final List<MPEGTools.Channel> channels = iptv.channels();
+                        if (parsed instanceof final MPEGTool.Iptv iptv) {
+                            final List<MPEGTool.Channel> channels = iptv.channels();
                             if (channels.isEmpty())
                                 throw new IOException("IPTV playlist contained no entries: " + this.uri);
                             final List<DataSource> sources = new ArrayList<>(channels.size());
-                            for (final MPEGTools.Channel e : channels) {
-                                // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY MPEGTools (MALFORMED ONES WERE DROPPED DURING PARSE)
+                            for (final MPEGTool.Channel e : channels) {
+                                // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY MPEGTool (MALFORMED ONES WERE DROPPED DURING PARSE)
                                 final URI childUri = e.url();
                                 URI logoUri = null;
                                 if (e.tvgLogo() != null && !e.tvgLogo().isEmpty()) {

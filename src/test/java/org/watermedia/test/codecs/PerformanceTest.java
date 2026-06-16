@@ -1,6 +1,7 @@
 package org.watermedia.test.codecs;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
@@ -31,6 +32,7 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * <p>Results are appended to a TSV report at
  * {@code build/reports/decoder-performance.tsv} after the factory finishes.
  */
+@DisplayName("Decoder performance benchmarks")
 public class PerformanceTest {
     private static final int WARMUP_ITERATIONS = 2;
     private static final int MEASURED_ITERATIONS = 5;
@@ -58,6 +60,7 @@ public class PerformanceTest {
     );
 
     @TestFactory
+    @DisplayName("Measure decoder pipelines")
     Iterable<DynamicTest> measureDecoderPipelines() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final BenchmarkCase benchmarkCase: CASES) {

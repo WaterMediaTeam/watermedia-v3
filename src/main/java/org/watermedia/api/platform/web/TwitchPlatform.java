@@ -14,7 +14,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTools;
+import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -34,6 +34,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class TwitchPlatform implements IPlatform {
+    public static final String NAME = "Twitch";
     private static final Marker IT = MarkerManager.getMarker(TwitchPlatform.class.getSimpleName());
     // TWITCH GQL ENDPOINT AND USHER CDN URLS
     private static final String GQL_URL = "https://gql.twitch.tv/gql";
@@ -73,12 +74,12 @@ public class TwitchPlatform implements IPlatform {
     private static final Pattern CHANNEL_PATH = Pattern.compile("^/([^/#?]+)/?$");
 
     @Override
-    public String name() { return "Twitch"; }
+    public String name() { return NAME; }
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
         final String host = uri.getHost();
-        if (!DataTool.containsIgnoreCase(host, HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(host, HOSTS)) return null;
 
         final String path = uri.getPath();
         final String query = uri.getQuery();
@@ -87,16 +88,16 @@ public class TwitchPlatform implements IPlatform {
         if ("clips.twitch.tv".equalsIgnoreCase(host)) {
             final String slug = parseClipsHost(path, query);
             if (slug == null) throw new PlatformException(TwitchPlatform.class, "No clip slug found: " + uri);
-            return this.getClipSources(slug);
+            return this.resolveClip(slug);
         }
 
         // PLAYER.TWITCH.TV/?VIDEO={ID} OR ?CHANNEL={NAME}
         if ("player.twitch.tv".equalsIgnoreCase(host)) {
             if (query != null) {
                 final String videoId = queryParam(query, "video");
-                if (videoId != null) return this.getVodSources(videoId.replaceFirst("^v", ""));
+                if (videoId != null) return this.resolveVod(videoId.replaceFirst("^v", ""));
                 final String channel = queryParam(query, "channel");
-                if (channel != null) return this.getStreamSources(channel.toLowerCase());
+                if (channel != null) return this.resolveStream(channel.toLowerCase());
             }
             throw new PlatformException(TwitchPlatform.class, "Invalid player URL: " + uri);
         }
@@ -105,28 +106,28 @@ public class TwitchPlatform implements IPlatform {
 
         // VOD: /VIDEOS/{ID}, /{USER}/V/{ID}, /{USER}/VIDEO/{ID}
         Matcher m = VOD_PATH.matcher(path);
-        if (m.find()) return this.getVodSources(m.group(1));
+        if (m.find()) return this.resolveVod(m.group(1));
 
         // SCHEDULE: ?VODID={ID}
         if (query != null) {
             final String vodId = queryParam(query, "vodID");
-            if (vodId != null) return this.getVodSources(vodId);
+            if (vodId != null) return this.resolveVod(vodId);
         }
 
         // CLIP: /{USER}/CLIP/{SLUG}
         m = CLIP_PATH.matcher(path);
-        if (m.find()) return this.getClipSources(m.group(1));
+        if (m.find()) return this.resolveClip(m.group(1));
 
         // STREAM: /{CHANNEL}
         m = CHANNEL_PATH.matcher(path);
-        if (m.find()) return this.getStreamSources(m.group(1).toLowerCase());
+        if (m.find()) return this.resolveStream(m.group(1).toLowerCase());
 
         throw new PlatformException(TwitchPlatform.class, "Unrecognized URL: " + uri);
     }
 
     // --- CONTENT-TYPE HANDLERS ---
 
-    private PlatformData getStreamSources(final String channel) throws Exception {
+    private PlatformData resolveStream(final String channel) throws Exception {
         this.ensureNotMature(ContentKind.STREAM, channel);
 
         // RESOLVE METADATA FIRST: ITS StreamMetadata QUERY ALSO REPORTS WHETHER THE CHANNEL IS LIVE
@@ -144,7 +145,7 @@ public class TwitchPlatform implements IPlatform {
                 apiAnswered = true;
             }
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Twitch stream metadata fetch failed for '{}': {}", channel, e.getMessage());
+            LOGGER.warn(IT, "Twitch failed to fetch stream metadata for '{}': {}", channel, e.getMessage());
         }
 
         // ONLY THE API CAN DECLARE A STREAM OFFLINE → CLEAR ERROR, NO POINT HITTING USHER.
@@ -163,7 +164,7 @@ public class TwitchPlatform implements IPlatform {
                         variants, null, null));
     }
 
-    private PlatformData getVodSources(final String vodId) throws Exception {
+    private PlatformData resolveVod(final String vodId) throws Exception {
         this.ensureNotMature(ContentKind.VOD, vodId);
         final DataQuality[] variants = this.fetchHlsVariants(vodId, true);
 
@@ -173,7 +174,7 @@ public class TwitchPlatform implements IPlatform {
             final MetadataWithThumbnail mwt = this.fetchVodMetadata(vodId);
             if (mwt != null) { metadata = mwt.metadata; thumbnail = mwt.thumbnail; }
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Twitch VOD metadata fetch failed for '{}': {}", vodId, e.getMessage());
+            LOGGER.warn(IT, "Twitch failed to fetch VOD metadata for '{}': {}", vodId, e.getMessage());
         }
 
         if (metadata == null) LOGGER.warn(IT, "Twitch VOD '{}' resolved without metadata", vodId);
@@ -184,7 +185,7 @@ public class TwitchPlatform implements IPlatform {
                         variants, null, null));
     }
 
-    private PlatformData getClipSources(final String slug) throws Exception {
+    private PlatformData resolveClip(final String slug) throws Exception {
         this.ensureNotMature(ContentKind.CLIP, slug);
         final JsonObject clip = this.fetchClipData(slug);
         if (clip == null) throw new PlatformException(TwitchPlatform.class, "Clip not found or no longer available: " + slug);
@@ -264,20 +265,20 @@ public class TwitchPlatform implements IPlatform {
     private DataQuality[] fetchHlsVariants(final String id, final boolean isVod) throws IOException {
         final URI master = URI.create(this.buildPlaylistUrl(id, isVod));
 
-        // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST THE MASTER BY MPEGTools)
-        final List<MPEGTools.Variant> variants;
+        // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST THE MASTER BY MPEGTool)
+        final List<MPEGTool.Variant> variants;
         if (!isVod) {
-            variants = MPEGTools.qualities(master);
+            variants = MPEGTool.qualities(master);
         } else {
-            final MPEGTools.Playlist playlist = MPEGTools.fetch(master);
-            variants = playlist instanceof final MPEGTools.Master m && !m.variants().isEmpty()
+            final MPEGTool.Playlist playlist = MPEGTool.fetch(master);
+            variants = playlist instanceof final MPEGTool.Master m && !m.variants().isEmpty()
                     ? m.variants()
-                    : List.of(MPEGTools.Variant.self(master));
+                    : List.of(MPEGTool.Variant.self(master));
         }
 
         final DataQuality[] out = new DataQuality[variants.size()];
         for (int i = 0; i < variants.size(); i++) {
-            final MPEGTools.Variant v = variants.get(i);
+            final MPEGTool.Variant v = variants.get(i);
             out[i] = new DataQuality(v.uri(), v.width(), v.height());
         }
         LOGGER.debug(IT, "Twitch resolved {} HLS rendition(s) for {} '{}'", out.length, isVod ? "VOD" : "stream", id);
@@ -412,7 +413,7 @@ public class TwitchPlatform implements IPlatform {
 
             return new MetadataWithThumbnail(new Metadata(title, null, createdAt, 0, displayName), thumbnailUri, stream != null);
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Failed to fetch stream metadata for '{}': {}", channel, e.getMessage());
+            LOGGER.warn(IT, "Twitch failed to fetch stream metadata for '{}': {}", channel, e.getMessage());
             return null;
         }
     }
@@ -464,7 +465,7 @@ public class TwitchPlatform implements IPlatform {
                     true // VOD METADATA RESOLVED ⇒ AVAILABLE; online IS UNUSED FOR VODs
             );
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Failed to fetch VOD metadata for '{}': {}", vodId, e.getMessage());
+            LOGGER.warn(IT, "Twitch failed to fetch VOD metadata for '{}': {}", vodId, e.getMessage());
             return null;
         }
     }

@@ -1,5 +1,6 @@
 package org.watermedia.test.media.mrl;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -17,12 +18,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Verifies {@link MRL#sourceByType}, {@link MRL#imageSource}, {@link MRL#videoSource},
  * and {@link MRL#sourcesByType} consistently classify a local image as IMAGE-only.
  */
+@DisplayName("MRL source classification")
 public class MrlSourcesTest {
 
     private static final long TIMEOUT_MS = 2000L;
 
     @Test
-    public void localImageOnlyExposesImageSources() {
+    @DisplayName("Local image only exposes IMAGE sources")
+    void testLocalImageOnlyExposesImageSources() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(TIMEOUT_MS));
 

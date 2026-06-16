@@ -6,23 +6,20 @@ import org.bytedeco.ffmpeg.global.avcodec;
 import java.util.ArrayDeque;
 
 /**
- * Thread-safe queue of AVPackets between the demux thread and decode threads.
- *
- * Unlike FrameQueue (fixed ring buffer), PacketQueue uses an
- * ArrayDeque because:
- * - Packets are small (metadata + pointer to compressed data)
- * - Packet count varies widely (keyframes are large, P-frames are small)
- * - No need to pre-allocate slots — av_packet_clone is cheap
- *
- * SERIAL SYSTEM:
- * Each flush() increments the serial. The decode thread compares the packet
- * serial with the current serial to discard stale packets after a seek.
- *
- * CAPACITY:
- * No packet count limit, but a byte total limit (maxBytes).
- * If the demux thread exceeds the limit, put() blocks until the
- * decode thread consumes enough packets. This prevents OOM on
- * network streams with large buffers.
+ * Thread-safe queue of AVPackets between the demux thread and the decode threads.
+ * <p>
+ * Unlike {@link FrameQueue} (a fixed ring buffer), PacketQueue uses an {@link ArrayDeque} because:
+ * <ul>
+ *   <li>Packets are small (metadata plus a pointer to compressed data)</li>
+ *   <li>Packet count varies widely (keyframes are large, P-frames are small)</li>
+ *   <li>No need to pre-allocate slots — {@code av_packet_clone} is cheap</li>
+ * </ul>
+ * Serial system: each {@link #flush()} increments the serial. The decode thread compares the
+ * packet serial with the current serial to discard stale packets after a seek.
+ * <p>
+ * Capacity: no packet count limit, but a byte total limit ({@code maxBytes}). If the demux thread
+ * exceeds the limit, {@link #put(AVPacket)} blocks until the decode thread consumes enough packets.
+ * This prevents OOM on network streams with large buffers.
  */
 public final class PacketQueue {
     private final ArrayDeque<Entry> packets = new ArrayDeque<>();
@@ -37,8 +34,8 @@ public final class PacketQueue {
         final AVPacket packet; // OWNED — CLONED IN put()
         final int serial;
 
-        Entry(AVPacket pkt, int serial) {
-            this.packet = pkt;
+        Entry(final AVPacket packet, final int serial) {
+            this.packet = packet;
             this.serial = serial;
         }
     }
@@ -47,27 +44,27 @@ public final class PacketQueue {
      * @param maxBytes byte limit for the queue. 16MB is reasonable for video.
      *                 Use Long.MAX_VALUE for no limit.
      */
-    public PacketQueue(long maxBytes) {
+    public PacketQueue(final long maxBytes) {
         this.maxBytes = maxBytes;
     }
 
     /**
-     * Enqueues a packet. Does av_packet_clone internally.
+     * Enqueues a packet. Does {@code av_packet_clone} internally.
      * The caller retains ownership of its original packet.
-     *
-     * BLOCKS if totalBytes >= maxBytes (backpressure to the demux thread).
+     * <p>
+     * Blocks if {@code totalBytes >= maxBytes} (backpressure to the demux thread).
      *
      * @return false if the queue was aborted.
      */
-    public boolean put(AVPacket packet) {
-        AVPacket clone = avcodec.av_packet_clone(packet);
+    public boolean put(final AVPacket packet) {
+        final AVPacket clone = avcodec.av_packet_clone(packet);
         if (clone == null) return false;
 
         synchronized (this.lock) {
             while (this.totalBytes >= this.maxBytes && !this.aborted) {
                 try {
                     this.lock.wait();
-                } catch (InterruptedException e) {
+                } catch (final InterruptedException e) {
                     avcodec.av_packet_free(clone);
                     Thread.currentThread().interrupt();
                     return false;
@@ -87,10 +84,10 @@ public final class PacketQueue {
 
     /**
      * Non-blocking put. Returns false immediately if the queue is full.
-     * The packet is NOT cloned or consumed on failure.
+     * The caller's original packet is not consumed on failure.
      */
-    public boolean tryPut(AVPacket packet) {
-        AVPacket clone = avcodec.av_packet_clone(packet);
+    public boolean tryPut(final AVPacket packet) {
+        final AVPacket clone = avcodec.av_packet_clone(packet);
         if (clone == null) return false;
 
         synchronized (this.lock) {
@@ -106,19 +103,19 @@ public final class PacketQueue {
     }
 
     /**
-     * Dequeues a packet. BLOCKS if empty.
-     * The caller receives ownership of the AVPacket — must call av_packet_free.
+     * Dequeues a packet. Blocks if empty.
+     * The caller receives ownership of the AVPacket — must call {@code av_packet_free}.
      *
-     * @param serialOut array of at least 1 element. serialOut[0] receives
+     * @param serialOut array of at least 1 element. {@code serialOut[0]} receives
      *                  the packet serial for post-seek comparison.
      * @return packet owned by the caller, or null if aborted.
      */
-    public AVPacket get(int[] serialOut) {
+    public AVPacket get(final int[] serialOut) {
         synchronized (this.lock) {
             while (this.packets.isEmpty() && !this.aborted && !this.finished) {
                 try {
                     this.lock.wait();
-                } catch (InterruptedException e) {
+                } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return null;
                 }
@@ -127,7 +124,7 @@ public final class PacketQueue {
             // FINISHED + EMPTY: EOF, NO MORE PACKETS COMING
             if (this.packets.isEmpty()) return null;
 
-            Entry entry = this.packets.pollFirst();
+            final Entry entry = this.packets.pollFirst();
             this.totalBytes -= entry.packet.size();
             serialOut[0] = entry.serial;
             this.lock.notifyAll();
@@ -137,8 +134,7 @@ public final class PacketQueue {
 
     /**
      * Flush: discards all packets and increments the serial.
-     * Decode threads that receive packets with the old serial
-     * will discard them without decoding.
+     * Decode threads that receive packets with the old serial will discard them without decoding.
      */
     public void flush() {
         synchronized (this.lock) {
@@ -152,10 +148,9 @@ public final class PacketQueue {
     }
 
     /**
-     * Clear: remove all packets WITHOUT changing the serial.
-     * Used during precise seek when the demux thread drains the codec
-     * synchronously — the serial must stay the same so the decode thread
-     * doesn't re-flush the codec on the next packet.
+     * Clear: removes all packets without changing the serial.
+     * Used during a precise seek when the demux thread drains the codec synchronously — the
+     * serial must stay the same so the decode thread doesn't re-flush the codec on the next packet.
      */
     public void clear() {
         synchronized (this.lock) {
@@ -167,23 +162,23 @@ public final class PacketQueue {
         }
     }
 
-    /** CURRENT SERIAL. CHANGES WITH EACH flush(). */
+    /** Current serial. Changes with each {@link #flush()}. */
     public int serial() { return this.serial; }
 
-    /** TOTAL BYTES ENQUEUED. */
+    /** Total bytes enqueued. */
     public long byteSize() {
         synchronized (this.lock) { return this.totalBytes; }
     }
 
-    /** NUMBER OF PACKETS ENQUEUED. */
+    /** Number of packets enqueued. */
     public int count() {
         synchronized (this.lock) { return this.packets.size(); }
     }
 
     /**
-     * Signal EOF: no more packets will be added.
-     * get() will drain remaining packets, then return null.
-     * Unlike abort(), this does NOT discard pending packets.
+     * Signals EOF: no more packets will be added.
+     * {@link #get(int[])} will drain the remaining packets, then return null.
+     * Unlike {@link #abort()}, this does not discard pending packets.
      */
     public void finish() {
         synchronized (this.lock) {
@@ -192,7 +187,7 @@ public final class PacketQueue {
         }
     }
 
-    /** ABORT — UNBLOCKS get() AND put() IMMEDIATELY, DISCARDS PENDING PACKETS. */
+    /** Abort — unblocks {@link #get(int[])} and {@link #put(AVPacket)} immediately, discards pending packets. */
     public void abort() {
         synchronized (this.lock) {
             this.aborted = true;
@@ -200,7 +195,7 @@ public final class PacketQueue {
         }
     }
 
-    /** RESET FLAGS TO REUSE THE QUEUE (E.G., QUALITY SWITCH). */
+    /** Resets the flags to reuse the queue (e.g. on a quality switch). */
     public void reset() {
         synchronized (this.lock) {
             this.flush();
@@ -209,7 +204,7 @@ public final class PacketQueue {
         }
     }
 
-    /** RELEASES ALL PENDING PACKETS. */
+    /** Releases all pending packets. */
     public void free() {
         this.flush();
     }

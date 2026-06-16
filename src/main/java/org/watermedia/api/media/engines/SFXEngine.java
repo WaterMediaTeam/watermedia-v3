@@ -5,7 +5,7 @@ import java.nio.ByteBuffer;
 /**
  * Sound engine abstraction for uploading decoded audio data to playback systems.
  * <p>
- * WATERMeDIA decodes audio, uploads sample data, and exposes a uri handle.
+ * WATERMeDIA decodes audio, uploads sample data, and exposes a source handle.
  * The developer controls playback through that handle.
  * <p>
  * Implementations are backend-specific (OpenAL, etc.).
@@ -81,7 +81,7 @@ public abstract class SFXEngine {
      */
     public abstract boolean setAudioFormat(final SampleType type, final int channels, final int sampleRate);
 
-    /** Current uri handle. */
+    /** Current source handle. */
     public int source() { return this.source; }
 
     /** Current sample type, or {@code null} before {@link #setAudioFormat}. */
@@ -94,7 +94,7 @@ public abstract class SFXEngine {
     public int sampleRate() { return this.sampleRate; }
 
     /**
-     * Generates audio buffers and initializes the internal uri handle.
+     * Generates audio buffers and initializes the internal source handle.
      */
     protected abstract int genSource();
 
@@ -121,7 +121,7 @@ public abstract class SFXEngine {
     public abstract void volume(final float volume);
 
     /**
-     * Releases all resources associated with the uri.
+     * Releases all resources associated with the source.
      * The engine is unusable after this call.
      */
     public abstract void release();
@@ -162,7 +162,7 @@ public abstract class SFXEngine {
      * <p>
      * When {@code AL_SOFT_source_latency} (or the equivalent in other backends) is available,
      * this compensates for device output latency, giving sub-sample precision suitable for
-     * A/V synchronization. When the extension is not available, returns the raw uri offset
+     * A/V synchronization. When the extension is not available, returns the raw source offset
      * without latency compensation.
      * @return playback position in ms within the queued buffers, or {@code -1} if playback hasn't started
      */

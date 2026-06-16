@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.webp;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
@@ -32,9 +33,11 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * parsing, dimension extraction and animation frame walking against the real WebP
  * fixtures bundled with the project.
  */
+@DisplayName("RiffParser")
 public class RiffParserTest {
 
     @TestFactory
+    @DisplayName("Format detection")
     Iterable<DynamicTest> testFormatDetection() {
         final List<DynamicTest> tests = new ArrayList<>();
 
@@ -84,6 +87,7 @@ public class RiffParserTest {
     }
 
     @TestFactory
+    @DisplayName("Parse real fixtures")
     Iterable<DynamicTest> testParseRealFiles() {
         final List<DynamicTest> tests = new ArrayList<>();
 
@@ -141,7 +145,8 @@ public class RiffParserTest {
     }
 
     @Test
-    void corruptedDataThrows() {
+    @DisplayName("Corrupted VP8L chunk throws")
+    void testCorruptedDataThrows() {
         // VALID HEADER BUT VP8L CHUNK CLAIMS DATA THAT ISN'T THERE
         final ByteBuffer buffer = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
         buffer.putInt(RiffChunk.RIFF);
@@ -154,7 +159,8 @@ public class RiffParserTest {
     }
 
     @Test
-    void vp8DimensionsAreReasonable() {
+    @DisplayName("VP8 dimensions are within a reasonable range")
+    void testVp8DimensionsAreReasonable() {
         // GUARDS AGAINST INTEGER UNDERFLOW / 14-BIT MASK BUGS
         final List<Path> files = listWebp(Fixtures.WEBP_LOSSY_DIR);
         if (files.isEmpty()) return;
@@ -165,7 +171,8 @@ public class RiffParserTest {
     }
 
     @Test
-    void vp8lDimensionsAreReasonable() {
+    @DisplayName("VP8L dimensions are within a reasonable range")
+    void testVp8lDimensionsAreReasonable() {
         final List<Path> files = listWebp(Fixtures.WEBP_LOSSLESS_DIR);
         if (files.isEmpty()) return;
         final ByteBuffer buffer = ByteBuffer.wrap(Fixtures.readAll(files.get(0)));
@@ -175,7 +182,8 @@ public class RiffParserTest {
     }
 
     @Test
-    void fourCCStringMatchesAscii() {
+    @DisplayName("fourCCString matches the ASCII FourCC")
+    void testFourCCStringMatchesAscii() {
         assertEquals("RIFF", RiffChunk.fourCCString(RiffChunk.RIFF));
         assertEquals("WEBP", RiffChunk.fourCCString(RiffChunk.WEBP));
         assertEquals("VP8 ", RiffChunk.fourCCString(RiffChunk.VP8));
@@ -187,7 +195,8 @@ public class RiffParserTest {
     }
 
     @Test
-    void webPInfoTypesAreDeclared() {
+    @DisplayName("WebPInfo.Type constants are declared")
+    void testWebPInfoTypesAreDeclared() {
         assertNotNull(WebPInfo.Type.LOSSY);
         assertNotNull(WebPInfo.Type.LOSSLESS);
         assertNotNull(WebPInfo.Type.EXTENDED);

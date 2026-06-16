@@ -29,7 +29,7 @@ public class MediaFirePlatform implements IPlatform {
     @Override
     public PlatformData getData(final URI uri) throws Exception {
         final String path = uri.getPath();
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS) || path == null || !path.startsWith("/file/"))
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || path == null || !path.startsWith("/file/"))
             return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {

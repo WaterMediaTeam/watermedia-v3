@@ -2,6 +2,7 @@ package org.watermedia.test.platform.web;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -46,8 +47,9 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * the success (instance) and parse-failure (exception) states by
  * {@link org.watermedia.test.platform.WaterPlatformTest}, the registry-level
  * wiring by {@link org.watermedia.test.platform.PlatformApiTest}, and the
- * mature-content gate by {@link #matureContentDisabledThrowsBeforeFetch()}.
+ * mature-content gate by {@link #testMatureContentDisabledThrowsBeforeFetch()}.
  */
+@DisplayName("Platform URI claim (offline)")
 public class PlatformClaimTest {
 
     static Stream<Arguments> foreignUris() {
@@ -121,7 +123,7 @@ public class PlatformClaimTest {
 
     @ParameterizedTest(name = "{0} getData({1}) == null")
     @MethodSource("foreignUris")
-    void foreignUriYieldsNull(final Class<? extends IPlatform> type, final String uriString) throws Exception {
+    void testForeignUriYieldsNull(final Class<? extends IPlatform> type, final String uriString) throws Exception {
         final IPlatform platform = type.getDeclaredConstructor().newInstance();
         final URI uri = URI.create(uriString);
         assertNull(platform.getData(uri),
@@ -143,7 +145,8 @@ public class PlatformClaimTest {
     }
 
     @Test
-    void matureContentDisabledThrowsBeforeFetch() {
+    @DisplayName("Mature-only platform throws before any fetch when mature content is disabled")
+    void testMatureContentDisabledThrowsBeforeFetch() {
         WaterMediaConfig.media.platforms.allowMatureContent = false;
         final PornHubPlatform platform = new PornHubPlatform();
         assertThrows(MatureContentException.class,

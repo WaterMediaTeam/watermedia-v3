@@ -42,10 +42,10 @@ public class NetworkServer {
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop(0);
-                LOGGER.info(IT, "Network server stopped");
-            }));
+                LOGGER.info(IT, "Successfully stopped network server");
+            }, "NetworkServer-Shutdown"));
 
-            LOGGER.info(IT, "Network server started on port {} - storage: {}", port, storageDir);
+            LOGGER.info(IT, "Successfully started network server on port {} - storage: {}", port, storageDir);
         } catch (final Exception e) {
             LOGGER.error(IT, "Failed to start network server", e);
         }
@@ -119,11 +119,11 @@ public class NetworkServer {
 
             try {
                 try (final var in = new BufferedInputStream(exchange.getRequestBody());
-                     final var ou = new BufferedOutputStream(Files.newOutputStream(targetFile))) {
-                    in.transferTo(ou);
+                     final var os = new BufferedOutputStream(Files.newOutputStream(targetFile))) {
+                    in.transferTo(os);
                 }
             } catch (final IOException e) {
-                // CLEANUP PARTIAL UPLOAD: drop the half-written file and its dir
+                // CLEANUP PARTIAL UPLOAD: DROP THE HALF-WRITTEN FILE AND ITS DIRECTORY
                 LOGGER.warn(IT, "Upload aborted mid-transfer for ID '{}': {}", id, e.getMessage());
                 try { Files.deleteIfExists(targetFile); } catch (final IOException ignored) {}
                 try { Files.deleteIfExists(idDir); } catch (final IOException ignored) {}
@@ -215,7 +215,7 @@ public class NetworkServer {
                 final String rangeSpec = rangeHeader.substring(6);
                 final String[] parts = rangeSpec.split("-", 2);
 
-                long start, end;
+                final long start, end;
                 if (parts[0].isEmpty()) {
                     end = fileSize - 1;
                     start = fileSize - Long.parseLong(parts[1]);
@@ -226,28 +226,28 @@ public class NetworkServer {
 
                 if (start < 0 || end >= fileSize || start > end) {
                     exchange.getResponseHeaders().set("Content-Range", "bytes */" + fileSize);
-                    exchange.sendResponseHeaders(416, -1); // Range Not Satisfiable (no HttpURLConnection constant)
+                    exchange.sendResponseHeaders(416, -1); // RANGE NOT SATISFIABLE (NO HttpURLConnection CONSTANT)
                     return;
                 }
 
                 final long contentLength = end - start + 1;
                 exchange.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + fileSize);
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_PARTIAL, contentLength);
-                try (final var ou = exchange.getResponseBody(); final var in = Files.newInputStream(file)) {
+                try (final var os = exchange.getResponseBody(); final var in = Files.newInputStream(file)) {
                     in.skipNBytes(start);
                     final byte[] buffer = new byte[8192];
                     long remaining = contentLength;
                     int read;
                     while (remaining > 0 && (read = in.read(buffer, 0, (int) Math.min(buffer.length, remaining))) != -1) {
-                        ou.write(buffer, 0, read);
+                        os.write(buffer, 0, read);
                         remaining -= read;
                     }
                 }
             } else {
                 exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename.replace("\"", "_") + "\"");
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, fileSize);
-                try (final var ou = exchange.getResponseBody(); final var in = Files.newInputStream(file)) {
-                    in.transferTo(ou);
+                try (final var os = exchange.getResponseBody(); final var in = Files.newInputStream(file)) {
+                    in.transferTo(os);
                 }
             }
         }
@@ -255,7 +255,7 @@ public class NetworkServer {
 
     /**
      * Tracks the progress of a file upload to a WaterMedia server.
-     * Returned by {@link NetworkAPI#upload} methods.
+     * Returned by {@link NetworkAPI#upload(java.io.File)} methods.
      * All getters are thread-safe and can be polled from any thread.
      */
     public static class UploadStatus {

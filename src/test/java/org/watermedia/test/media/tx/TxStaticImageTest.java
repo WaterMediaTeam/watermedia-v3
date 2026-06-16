@@ -1,5 +1,6 @@
 package org.watermedia.test.media.tx;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -17,13 +18,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * single-frame PNG, observe the first GPU upload, and verify that release tears
  * down the engine cleanly.
  */
+@DisplayName("TxMediaPlayer static image")
 public class TxStaticImageTest {
 
     private static final long MRL_TIMEOUT_MS = 2000L;
     private static final long PLAYER_TIMEOUT_MS = 3000L;
 
     @Test
-    public void staticPngLoadsAndUploadsOneFrame() {
+    @DisplayName("Static PNG loads and uploads one frame")
+    void testStaticPngLoadsAndUploadsOneFrame() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 

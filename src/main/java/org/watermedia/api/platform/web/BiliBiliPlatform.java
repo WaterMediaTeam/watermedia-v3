@@ -25,6 +25,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class BiliBiliPlatform implements IPlatform {
+    public static final String NAME = "BiliBili";
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     private static final String REFERER = "https://www.bilibili.com/";
 
@@ -62,11 +63,11 @@ public class BiliBiliPlatform implements IPlatform {
     private static final String[] HOSTS = { "www.bilibili.com", "bilibili.com", "live.bilibili.com", "b23.tv" };
 
     @Override
-    public String name() { return "BiliBili"; }
+    public String name() { return NAME; }
 
     @Override
     public PlatformData getData(URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         if ("b23.tv".equalsIgnoreCase(uri.getHost())) {
             uri = resolveRedirect(uri);
@@ -74,19 +75,19 @@ public class BiliBiliPlatform implements IPlatform {
 
         final String host = uri.getHost();
         if ("live.bilibili.com".equals(host)) {
-            return this.getLiveSources(uri);
+            return this.resolveLive(uri);
         }
 
         final String path = uri.getPath();
         if (path != null && path.contains("/bangumi/play/")) {
-            return this.getBangumiSources(uri);
+            return this.resolveBangumi(uri);
         }
 
-        return this.getVideoSources(uri);
+        return this.resolveVideo(uri);
     }
 
     // VIDEO
-    private PlatformData getVideoSources(final URI uri) throws Exception {
+    private PlatformData resolveVideo(final URI uri) throws Exception {
         final String url = uri.toString();
 
         final Matcher bvidMatcher = BVID_PATTERN.matcher(url);
@@ -129,7 +130,7 @@ public class BiliBiliPlatform implements IPlatform {
     }
 
     // BANGUMI
-    private PlatformData getBangumiSources(final URI uri) throws Exception {
+    private PlatformData resolveBangumi(final URI uri) throws Exception {
         final String url = uri.toString();
 
         String epId = null;
@@ -196,7 +197,7 @@ public class BiliBiliPlatform implements IPlatform {
     }
 
     // LIVE
-    private PlatformData getLiveSources(final URI uri) throws Exception {
+    private PlatformData resolveLive(final URI uri) throws Exception {
         final Matcher roomMatcher = LIVE_ROOM_PATTERN.matcher(uri.toString());
         if (!roomMatcher.find()) throw new PlatformException(BiliBiliPlatform.class, "No room ID found in live URL: " + uri);
         final String roomId = roomMatcher.group(1);
@@ -217,7 +218,7 @@ public class BiliBiliPlatform implements IPlatform {
             thumbnail = jsonUri(roomInfo, "keyframe");
             if (thumbnail == null) thumbnail = jsonUri(roomInfo, "user_cover");
         } catch (final Exception e) {
-            LOGGER.warn(IT, "Failed to fetch live room title for room {}", realRoomId);
+            LOGGER.warn(IT, "BiliBili failed to fetch live room title for room {}", realRoomId);
         }
 
         String author = null;
@@ -228,7 +229,7 @@ public class BiliBiliPlatform implements IPlatform {
                     author = userInfo.get("name").getAsString();
                 }
             } catch (final Exception e) {
-                LOGGER.warn(IT, "Failed to fetch author name for uid {}", uid);
+                LOGGER.warn(IT, "BiliBili failed to fetch author name for uid {}", uid);
             }
         }
 

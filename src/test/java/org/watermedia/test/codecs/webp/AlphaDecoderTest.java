@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.webp;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
@@ -25,9 +26,11 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * compression {@code 0} is none and {@code 1} is lossless; filter {@code 0..3} maps to
  * none / horizontal / vertical / gradient.
  */
+@DisplayName("AlphaDecoder")
 public class AlphaDecoderTest {
 
     @TestFactory
+    @DisplayName("Uncompressed alpha filter modes")
     Iterable<DynamicTest> testUncompressedAlpha() {
         final List<DynamicTest> tests = new ArrayList<>();
 
@@ -101,7 +104,8 @@ public class AlphaDecoderTest {
     }
 
     @Test
-    void applyAlphaToArgb() {
+    @DisplayName("applyAlpha replaces the high byte of each ARGB pixel")
+    void testApplyAlphaToArgb() {
         // ALPHA BYTE MUST REPLACE THE HIGH BYTE OF EACH ARGB PIXEL
         final int[] argb = {0xFF_FF_00_00, 0xFF_00_FF_00, 0xFF_00_00_FF};
         final byte[] alpha = {(byte) 128, (byte) 64, (byte) 255};
@@ -114,7 +118,8 @@ public class AlphaDecoderTest {
     }
 
     @Test
-    void applyAlphaToBgraBuffer() {
+    @DisplayName("applyAlpha writes the alpha byte in-place into a BGRA buffer")
+    void testApplyAlphaToBgraBuffer() {
         // 3 OPAQUE BGRA PIXELS — APPLY ALPHA AT OFFSETS i*4+3 IN-PLACE
         final ByteBuffer bgra = ByteBuffer.allocateDirect(3 * 4).order(ByteOrder.LITTLE_ENDIAN);
         bgra.put((byte) 0).put((byte) 0).put((byte) 255).put((byte) 255);   // RED
@@ -139,7 +144,8 @@ public class AlphaDecoderTest {
     }
 
     @Test
-    void truncatedDataThrows() {
+    @DisplayName("Truncated data throws")
+    void testTruncatedDataThrows() {
         // HEADER ONLY — DECODER MUST REJECT MISSING PAYLOAD
         final ByteBuffer buffer = ByteBuffer.allocate(1).order(ByteOrder.LITTLE_ENDIAN);
         buffer.put((byte) 0x00).flip();
@@ -148,14 +154,16 @@ public class AlphaDecoderTest {
     }
 
     @Test
-    void emptyBufferThrows() {
+    @DisplayName("Empty buffer throws")
+    void testEmptyBufferThrows() {
         assertThrows(XCodecException.class,
                 () -> AlphaDecoder.decode(ByteBuffer.allocate(0).order(ByteOrder.LITTLE_ENDIAN), 4, 4),
                 "Should throw exception for empty buffer");
     }
 
     @Test
-    void unknownCompressionThrows() {
+    @DisplayName("Unknown compression method throws")
+    void testUnknownCompressionThrows() {
         // HEADER 0x02 — COMPRESSION FIELD IS NEITHER 0 (NONE) NOR 1 (LOSSLESS)
         final ByteBuffer buffer = ByteBuffer.allocate(100).order(ByteOrder.LITTLE_ENDIAN);
         buffer.put((byte) 0x02);
@@ -166,7 +174,8 @@ public class AlphaDecoderTest {
     }
 
     @Test
-    void applyAlphaMismatchedSizes() {
+    @DisplayName("applyAlpha with a shorter alpha array touches only the leading pixels")
+    void testApplyAlphaMismatchedSizes() {
         // ALPHA ARRAY SHORTER THAN ARGB — ONLY THE LEADING ELEMENTS ARE TOUCHED
         final int[] argb = {
                 0xFF_FF_00_00,

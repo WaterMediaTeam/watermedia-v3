@@ -46,10 +46,10 @@ import static org.watermedia.WaterMedia.LOGGER;
  * {@code #EXTINF} list is treated as IPTV. {@link String#indexOf(String)} is JIT-intrinsified
  * and short-circuits, so the classification probe is far cheaper than a parse pass.
  */
-public final class MPEGTools {
-    private MPEGTools() {}
+public final class MPEGTool {
+    private MPEGTool() {}
 
-    private static final Marker IT = MarkerManager.getMarker("MPEGTools");
+    private static final Marker IT = MarkerManager.getMarker("MPEGTool");
 
     // ATTRIBUTE PATTERN COVERS BOTH HLS (UPPERCASE KEYS, QUOTED OR BARE VALUES)
     // AND IPTV (LOWERCASE tvg-* KEYS, ALWAYS QUOTED VALUES)
@@ -111,9 +111,12 @@ public final class MPEGTools {
         final String content = raw.charAt(0) == '\uFEFF' ? raw.substring(1) : raw;
 
         final String head = content.stripLeading();
-        if (!head.startsWith("#EXTM3U"))
+        if (!head.startsWith("#EXTM3U")) {
+            // SHORT, SINGLE-LINE EXCERPT OF THE BODY FOR THE ERROR MESSAGE
+            final String preview = head.substring(0, Math.min(32, head.length())).replace('\n', ' ').replace('\r', ' ');
             throw new IOException("Invalid playlist from " + source + ": missing the mandatory #EXTM3U header (body starts with '"
-                    + preview(head) + "'), so it is not an M3U/M3U8 document");
+                    + preview + "'), so it is not an M3U/M3U8 document");
+        }
 
         // CLASSIFICATION: STREAM-INF WINS (MASTER); ANY OTHER #EXT-X- MARKS A MEDIA PLAYLIST;
         // A TAG-LESS #EXTINF LIST IS IPTV. indexOf IS INTRINSIFIED AND SHORT-CIRCUITS.
@@ -161,7 +164,7 @@ public final class MPEGTools {
         try {
             final Playlist playlist = fetch(source);
             if (playlist instanceof final Master master && !master.variants().isEmpty()) {
-                LOGGER.debug(IT, "Resolved {} HLS rendition(s) from master {}", master.variants().size(), source);
+                LOGGER.debug(IT, "Successfully resolved {} HLS rendition(s) from master {}", master.variants().size(), source);
                 return master.variants();
             }
             if (playlist instanceof Iptv)
@@ -169,7 +172,7 @@ public final class MPEGTools {
             // MEDIA PLAYLIST, OR MASTER WITH NO USABLE VARIANTS: THE URL ITSELF IS THE ONLY QUALITY
             return List.of(Variant.self(source));
         } catch (final IOException e) {
-            LOGGER.warn(IT, "Could not resolve HLS qualities for {}: {}; falling back to the raw URL", source, e.getMessage());
+            LOGGER.warn(IT, "Failed to resolve HLS qualities for {}: {}; falling back to the raw URL", source, e.getMessage());
             return List.of(Variant.self(source));
         }
     }
@@ -302,7 +305,10 @@ public final class MPEGTools {
                 version = DataTool.toInt(line.substring(15), 1);
             }
             else if (line.startsWith("#EXT-X-MEDIA:")) {
-                final Map<String, String> a = attrs(line.substring(13));
+                // PARSE KEY=VALUE / KEY="VALUE" PAIRS FROM THE TAG BODY (KEYS KEPT AS-IS)
+                final Map<String, String> a = new HashMap<>();
+                final Matcher am = ATTR.matcher(line.substring(13));
+                while (am.find()) a.put(am.group(1), am.group(2) != null ? am.group(2) : am.group(3));
                 final String type = a.get("TYPE");
                 final String groupId = a.get("GROUP-ID");
                 if (type != null && groupId != null) {
@@ -318,10 +324,27 @@ public final class MPEGTools {
                 }
             }
             else if (line.startsWith("#EXT-X-STREAM-INF:")) {
-                // PEEK THE FOLLOWING URI LINE; THE MAIN LOOP THEN SKIPS IT (IT MATCHES NO TAG)
-                final URI uri = resolve(source, nextUri(content, i, len));
+                // PEEK THE FIRST NON-COMMENT, NON-EMPTY LINE AS THE VARIANT URI (NULL IF A TAG IS HIT FIRST);
+                // THE MAIN LOOP THEN SKIPS THAT LINE SINCE IT MATCHES NO TAG
+                String peeked = null;
+                int j = i;
+                while (j < len) {
+                    final int pnl = content.indexOf('\n', j);
+                    final int pend = pnl < 0 ? len : pnl;
+                    final String pl = content.substring(j, pend).trim();
+                    j = pnl < 0 ? len : pnl + 1;
+                    if (pl.isEmpty()) continue;
+                    if (pl.startsWith("#EXT-X-") || pl.startsWith("#EXTINF")) break;
+                    if (pl.charAt(0) == '#') continue;
+                    peeked = pl;
+                    break;
+                }
+                final URI uri = resolve(source, peeked);
                 if (uri != null) {
-                    final Map<String, String> a = attrs(line.substring(18));
+                    // PARSE KEY=VALUE / KEY="VALUE" PAIRS FROM THE TAG BODY (KEYS KEPT AS-IS)
+                    final Map<String, String> a = new HashMap<>();
+                    final Matcher am = ATTR.matcher(line.substring(18));
+                    while (am.find()) a.put(am.group(1), am.group(2) != null ? am.group(2) : am.group(3));
 
                     int w = 0, h = 0;
                     final String res = a.get("RESOLUTION");
@@ -480,7 +503,7 @@ public final class MPEGTools {
     // UTILITIES
     // ================================================================================================
 
-    /** Resolves {@code spec} against {@code base}; null/blank or malformed inputs yield null (logged). */
+    // RESOLVES spec AGAINST base; NULL/BLANK OR MALFORMED INPUTS YIELD NULL (LOGGED)
     private static URI resolve(final URI base, final String spec) {
         if (spec == null || spec.isEmpty()) return null;
         try {
@@ -489,37 +512,5 @@ public final class MPEGTools {
             LOGGER.warn(IT, "Skipping malformed URI '{}' relative to {}", spec, base);
             return null;
         }
-    }
-
-    /** Parses {@code KEY=VALUE} / {@code KEY="VALUE"} pairs from an HLS tag body (keys kept as-is). */
-    private static Map<String, String> attrs(final String body) {
-        final Map<String, String> map = new HashMap<>();
-        final Matcher m = ATTR.matcher(body);
-        while (m.find()) {
-            map.put(m.group(1), m.group(2) != null ? m.group(2) : m.group(3));
-        }
-        return map;
-    }
-
-    /** First non-comment, non-empty line at/after {@code from}; null if a tag is hit first. */
-    private static String nextUri(final String content, final int from, final int len) {
-        int i = from;
-        while (i < len) {
-            final int nl = content.indexOf('\n', i);
-            final int end = nl < 0 ? len : nl;
-            final String l = content.substring(i, end).trim();
-            i = nl < 0 ? len : nl + 1;
-            if (l.isEmpty()) continue;
-            if (l.startsWith("#EXT-X-") || l.startsWith("#EXTINF")) return null;
-            if (l.charAt(0) == '#') continue;
-            return l;
-        }
-        return null;
-    }
-
-    /** Short, single-line excerpt of a body for error messages. */
-    private static String preview(final String s) {
-        final String cut = s.substring(0, Math.min(32, s.length()));
-        return cut.replace('\n', ' ').replace('\r', ' ');
     }
 }

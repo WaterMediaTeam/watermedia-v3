@@ -8,7 +8,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTools;
+import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -40,7 +40,7 @@ public class DTubePlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(DTubePlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());
@@ -75,10 +75,10 @@ public class DTubePlatform implements IPlatform {
 
             final List<DataQuality> variants = new ArrayList<>();
             try {
-                // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY MPEGTools)
-                final MPEGTools.Playlist r = fetchHls(hlsUri);
-                if (r instanceof final MPEGTools.Master master) {
-                    for (final MPEGTools.Variant variant: master.variants()) {
+                // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY MPEGTool)
+                final MPEGTool.Playlist r = fetchHls(hlsUri);
+                if (r instanceof final MPEGTool.Master master) {
+                    for (final MPEGTool.Variant variant: master.variants()) {
                         variants.add(new DataQuality(variant.uri(), variant.width(), variant.height()));
                     }
                     LOGGER.debug(IT, "D.tube parsed {} HLS rendition(s) for {}", master.variants().size(), uri);
@@ -108,8 +108,8 @@ public class DTubePlatform implements IPlatform {
     }
 
     // FETCHES THE HLS PLAYLIST WITH D.tube CDN HEADERS (BROWSER UA + d.tube ORIGIN/REFERER).
-    // KEPT SEPARATE FROM MPEGTools.fetch BECAUSE THAT HELPER CANNOT CARRY THE Origin/Referer HEADERS THE CDN DEMANDS.
-    private static MPEGTools.Playlist fetchHls(final URI uri) throws IOException {
+    // KEPT SEPARATE FROM MPEGTool.fetch BECAUSE THAT HELPER CANNOT CARRY THE Origin/Referer HEADERS THE CDN DEMANDS.
+    private static MPEGTool.Playlist fetchHls(final URI uri) throws IOException {
         try (final NetRequest req = NetRequest.create(uri)
                 .method("GET")
                 .accept("application/vnd.apple.mpegurl")
@@ -120,7 +120,7 @@ public class DTubePlatform implements IPlatform {
                 .readTimeout(10_000)
                 .send()) {
             if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
-            return MPEGTools.parse(req.readAllAsString(), uri);
+            return MPEGTool.parse(req.readAllAsString(), uri);
         }
     }
 

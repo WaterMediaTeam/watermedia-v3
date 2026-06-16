@@ -27,7 +27,7 @@ public class MediaAPI extends WaterMediaAPI {
      * Otherwise, starts async loading via the platform API.
      *
      * @param uri the media URI
-     * @return the MRL instance(may still be loading)
+     * @return the MRL instance (may still be loading)
      */
     public static MRL getMRL(final String uri) {
         final File f = new File(uri);
@@ -49,13 +49,13 @@ public class MediaAPI extends WaterMediaAPI {
     public static MediaPlayer createPlayer(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
         final MRL.Source source = mrl.source(sourceIndex);
         if (source == null) {
-            LOGGER.warn(IT, "Cannot create player: uri {} not available for {}", sourceIndex, mrl.uri);
+            LOGGER.warn(IT, "Cannot create player: source {} not available for {}", sourceIndex, mrl.uri);
             return null;
         }
 
         try {
             if (source.type() == MediaType.UNKNOWN) {
-                LOGGER.warn(IT, "Trying to create a media player for the unknow media type url {}", source);
+                LOGGER.warn(IT, "Creating a media player for an unknown media type: {}", source);
             }
 
             if (source.type() == MediaType.IMAGE) {
@@ -90,7 +90,7 @@ public class MediaAPI extends WaterMediaAPI {
     @Override
     public boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
-            LOGGER.warn(IT, "Media API refuses to load on server-side");
+            LOGGER.warn(IT, "Skipping media API start on server-side");
             return false;
         }
 

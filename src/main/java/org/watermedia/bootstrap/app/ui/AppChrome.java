@@ -168,7 +168,7 @@ public final class AppChrome {
                 RenderSystem.fill(cx, keyY, keyW, keyH, AppTheme.alpha(AppTheme.BG_2, 220));
                 RenderSystem.rect(cx, keyY, keyW, keyH, AppTheme.STROKE_BRIGHT, 1f);
                 PixelIcon.draw(iconForKey(key), cx + 7, keyY + 5, 12, AppTheme.TEXT_FAINT);
-                text.render(key.toUpperCase(), cx + 24, compactTextY(text, keyY, keyH, keyScale) + 1, AppTheme.TEXT_SOFT, keyScale);
+                text.render(key.toUpperCase(), cx + 24, textY(text, keyY, keyH, keyScale) + 1, AppTheme.TEXT_SOFT, keyScale);
                 cx += keyW + 6;
             }
             text.render(label, cx, textY(text, y - 1, 22, AppTheme.TEXT_BODY) + 1, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
@@ -275,7 +275,7 @@ public final class AppChrome {
         final int h = 24;
         RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, 170));
         RenderSystem.rect(x, y, w, h, color, 1f);
-        text.render(label.toUpperCase(), x + 14, compactTextY(text, y, h, scale) + 1, color, scale);
+        text.render(label.toUpperCase(), x + 14, textY(text, y, h, scale) + 1, color, scale);
     }
 
     public static int tagWidth(final TextRenderer text, final String label) {
@@ -320,10 +320,6 @@ public final class AppChrome {
 
     private static int boldTextY(final TextRenderer text, final int y, final int h, final float scale) {
         return y + Math.max(0, (h - text.glyphHeightBold(scale)) / 2);
-    }
-
-    private static int compactTextY(final TextRenderer text, final int y, final int h, final float scale) {
-        return textY(text, y, h, scale);
     }
 
     public static void pip(final int x, final int y, final Color color) {
@@ -384,7 +380,7 @@ public final class AppChrome {
         pip(x + 8, y + 7, c);
         final int textX = x + 24;
         final int textW = scaledWidth(text, label, AppTheme.TEXT_BODY);
-        final int textY = compactTextY(text, y, 22, AppTheme.TEXT_BODY);
+        final int textY = textY(text, y, 22, AppTheme.TEXT_BODY);
         text.render(label.toUpperCase(), textX, textY, c, AppTheme.TEXT_BODY);
         if (strike) {
             RenderSystem.lineH(textX, textY + Math.max(1, text.glyphHeight(AppTheme.TEXT_BODY) / 2), textW, c, 1f);

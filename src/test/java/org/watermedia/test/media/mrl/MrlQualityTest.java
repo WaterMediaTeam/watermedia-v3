@@ -1,5 +1,6 @@
 package org.watermedia.test.media.mrl;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -19,12 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link MRL#moveQuality}, and bidirectional URI/quality lookup via
  * {@link MRL.Source#qualityOf(URI)}.
  */
+@DisplayName("MRL quality buckets")
 public class MrlQualityTest {
 
     private static final long TIMEOUT_MS = 2000L;
 
     @Test
-    public void sourceResolvesUriThroughClosestFallback() {
+    @DisplayName("Source resolves a URI through the closest fallback")
+    void testSourceResolvesUriThroughClosestFallback() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
@@ -37,7 +40,8 @@ public class MrlQualityTest {
     }
 
     @Test
-    public void moveQualityRewritesQualityKey() {
+    @DisplayName("moveQuality rewrites the quality key in place")
+    void testMoveQualityRewritesQualityKey() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
@@ -54,7 +58,8 @@ public class MrlQualityTest {
     }
 
     @Test
-    public void qualityOfRoundTripsKnownUri() {
+    @DisplayName("qualityOf round-trips a known URI")
+    void testQualityOfRoundTripsKnownUri() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("3.gif")));
         assertTrue(mrl.await(TIMEOUT_MS));
 

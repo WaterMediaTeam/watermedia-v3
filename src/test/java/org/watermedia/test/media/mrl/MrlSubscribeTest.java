@@ -1,5 +1,6 @@
 package org.watermedia.test.media.mrl;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -16,12 +17,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * cache hands back the same instance for repeated URIs, so each test uses a
  * different fixture URI to avoid cross-contamination.
  */
+@DisplayName("MRL subscription")
 public class MrlSubscribeTest {
 
     private static final long TIMEOUT_MS = 2000L;
 
     @Test
-    public void listenerFiresOnceWhenLoadingCompletes() {
+    @DisplayName("Listener fires once when loading completes")
+    void testListenerFiresOnceWhenLoadingCompletes() {
         // EACH TEST USES A DISTINCT FIXTURE FILE BECAUSE THE MRL CACHE KEYS BY URI.
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
 
@@ -35,7 +38,8 @@ public class MrlSubscribeTest {
     }
 
     @Test
-    public void listenerFiresImmediatelyWhenAlreadyReady() {
+    @DisplayName("Listener fires immediately when already ready")
+    void testListenerFiresImmediatelyWhenAlreadyReady() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
@@ -52,7 +56,8 @@ public class MrlSubscribeTest {
     }
 
     @Test
-    public void throwingListenerDoesNotBreakDispatchChain() {
+    @DisplayName("Throwing listener does not break the dispatch chain")
+    void testThrowingListenerDoesNotBreakDispatchChain() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
 
         final boolean[] secondFired = new boolean[1];

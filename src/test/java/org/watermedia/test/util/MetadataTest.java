@@ -15,11 +15,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * tolerance. The record carries no logic, so the test surface is intentionally
  * minimal.
  */
+@DisplayName("Metadata record")
 public class MetadataTest {
 
     @Test
     @DisplayName("constructor populates every accessor")
-    void allFieldsPopulated() {
+    void testAllFieldsPopulated() {
         final Instant postedAt = Instant.parse("2025-06-01T12:00:00Z");
         final Metadata md = new Metadata("Song", "Catchy tune", postedAt, 240_000L, "Artist");
 
@@ -32,7 +33,7 @@ public class MetadataTest {
 
     @Test
     @DisplayName("nulls flow through the record unchanged")
-    void nullableFields() {
+    void testNullableFields() {
         final Metadata md = new Metadata(null, null, null, 0L, null);
 
         assertNull(md.title());
@@ -44,7 +45,7 @@ public class MetadataTest {
 
     @Test
     @DisplayName("equals/hashCode follow record semantics")
-    void recordEquality() {
+    void testRecordEquality() {
         final Instant ts = Instant.parse("2025-06-01T12:00:00Z");
         final Metadata a = new Metadata("t", "d", ts, 1L, "x");
         final Metadata b = new Metadata("t", "d", ts, 1L, "x");

@@ -1,6 +1,7 @@
 package org.watermedia.test.media.mrl;
 
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MRL;
@@ -21,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * into one — the regression fix for the previous behaviour where MRL handed
  * the URL straight to the player as if it were HLS.
  */
+@DisplayName("MRL IPTV M3U expansion")
 public class MrlIptvM3uTest {
 
     private static final long TIMEOUT_MS = 5000L;
@@ -39,7 +41,8 @@ public class MrlIptvM3uTest {
     }
 
     @Test
-    public void iptvPlaylistExpandsIntoOneSourcePerChannel() {
+    @DisplayName("IPTV playlist expands into one source per channel")
+    void testIptvPlaylistExpandsIntoOneSourcePerChannel() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(IPTV_FIXTURE));
         assertTrue(mrl.await(TIMEOUT_MS));
         assertTrue(mrl.status().loaded());
@@ -50,7 +53,8 @@ public class MrlIptvM3uTest {
     }
 
     @Test
-    public void iptvChannelMetadataReachesSources() {
+    @DisplayName("IPTV channel metadata reaches the sources")
+    void testIptvChannelMetadataReachesSources() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(IPTV_FIXTURE));
         assertTrue(mrl.await(TIMEOUT_MS));
 

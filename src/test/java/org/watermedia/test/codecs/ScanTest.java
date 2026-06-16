@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
@@ -26,13 +27,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * summary, and then streams every frame from the same reader, verifying the per-frame
  * delays the streaming codec emits match the delays captured up front by the scanner.
  */
+@DisplayName("ImageReader.scan()")
 public class ScanTest {
 
     // 1x1 GRAYSCALE STATIC PNG (NO acTL/fcTL) — IMAGEIO-PRODUCED FOR VALID CHUNK CRCs
     private static final byte[] STATIC_PNG_BYTES = buildStaticPng();
 
     @Test
-    void staticPngScanIsTheStaticSingleton() throws IOException {
+    @DisplayName("Static PNG scan reuses the EMPTY singleton")
+    void testStaticPngScanIsTheStaticSingleton() throws IOException {
         try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(STATIC_PNG_BYTES))) {
             assertSame(ImageData.Scan.EMPTY, reader.scan(),
                     "static PNGs should reuse the STATIC scan singleton");
@@ -40,30 +43,28 @@ public class ScanTest {
     }
 
     @Test
-    void apngScanMatchesStreaming() throws IOException {
+    @DisplayName("APNG scan matches streaming")
+    void testApngScanMatchesStreaming() throws IOException {
         assertScanMatchesStreaming(Fixtures.PNG_ANIMATED);
     }
 
     @Test
-    void gifScanMatchesStreaming() throws IOException {
+    @DisplayName("GIF scan matches streaming")
+    void testGifScanMatchesStreaming() throws IOException {
         assertScanMatchesStreaming(Fixtures.GIF_ANIMATED);
     }
 
     @Test
-    void animatedWebpScanMatchesStreaming() throws IOException {
+    @DisplayName("Animated WebP scan matches streaming")
+    void testAnimatedWebpScanMatchesStreaming() throws IOException {
         assertScanMatchesStreaming(Fixtures.WEBP_ANIMATED);
     }
 
-    /**
-     * Opens a single reader, queries its pre-generated scan, then drives the same reader
-     * through every frame, asserting that:
-     * <ul>
-     *   <li>scan reports a positive duration and more than one frame</li>
-     *   <li>scan duration equals the sum of its own per-frame delays</li>
-     *   <li>each streamed frame's delay equals the scan's pre-recorded delay at that index</li>
-     *   <li>the number of streamed frames equals scan's reported frame count</li>
-     * </ul>
-     */
+    // OPENS A SINGLE READER, QUERIES ITS PRE-GENERATED SCAN, THEN DRIVES THE SAME READER
+    // THROUGH EVERY FRAME, ASSERTING THAT THE SCAN REPORTS A POSITIVE DURATION AND >1 FRAME,
+    // ITS DURATION EQUALS THE SUM OF ITS OWN PER-FRAME DELAYS, EACH STREAMED FRAME'S DELAY
+    // MATCHES THE SCAN'S PRE-RECORDED DELAY AT THAT INDEX, AND THE STREAMED FRAME COUNT
+    // EQUALS THE SCAN'S REPORTED FRAME COUNT.
     private static void assertScanMatchesStreaming(final Path resource) throws IOException {
         final byte[] bytes = Fixtures.readAll(resource);
         try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(bytes))) {

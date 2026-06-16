@@ -121,7 +121,7 @@ public class MRLSelectorScreen extends Screen {
 
     private void scheduleLoadTimeout(final int generation) {
         final long deadline = this.loadStartTime + LOAD_TIMEOUT_MS;
-        ThreadTool.createStarted("MRLSelectorLoadTimeout", () -> {
+        ThreadTool.createStarted("MRLSelectorScreen-LoadTimeout", () -> {
             final long wait = Math.max(0L, deadline - System.currentTimeMillis());
             ThreadTool.sleep(wait);
             if (this.loading && this.loadGeneration == generation) {
@@ -141,7 +141,7 @@ public class MRLSelectorScreen extends Screen {
         }
     }
 
-    // Keeps preview players scoped to entries the selector is currently showing.
+    // KEEPS THUMBNAIL PLAYERS SCOPED TO ENTRIES THE SELECTOR IS CURRENTLY SHOWING.
     private void updateThumbnailPlayers(final Set<String> activeNames) {
         if (this.ctx.selectedGroup == null) return;
 
@@ -155,7 +155,7 @@ public class MRLSelectorScreen extends Screen {
 
             final MRL mrl = this.mrlFor(uri);
             if (mrl == null) continue;
-            if (!loaded(mrl)) continue; // ONLY BUILD PREVIEWS FOR FULLY LOADED MRLS
+            if (!loaded(mrl)) continue; // ONLY BUILD THUMBNAILS FOR FULLY LOADED MRLS
 
             final var sources = mrl.sources();
             if (sources.isEmpty()) {
@@ -446,7 +446,7 @@ public class MRLSelectorScreen extends Screen {
             final Dimension row = new Dimension(8, rowsY + i * rowH, leftW - 16, rowH - 6);
             this.rowBounds.add(row);
             this.rowIndices.add(index);
-            this.renderMediaRow(uri, index, row, index == this.selectedIndex, windowW, windowH);
+            this.renderMediaRow(uri, index, row, index == this.selectedIndex, windowH);
         }
 
         final int previewX = leftW + 18;
@@ -459,7 +459,7 @@ public class MRLSelectorScreen extends Screen {
         final int previewY = top + Math.max(0, (bottom - top - stackH) / 2);
         final AppContext.TestURI selected = uris[this.selectedIndex];
         AppChrome.tvFrame(previewX, previewY, previewW, previewH, true);
-        this.renderSelectedPreview(selected, previewX + 8, previewY + 8, previewW - 16, previewH - 16, windowW, windowH);
+        this.renderThumbnailContent(selected, previewX + 8, previewY + 8, previewW - 16, previewH - 16, windowH, false);
 
         final int panelY = previewY + previewH + stackGap;
         AppChrome.panel(previewX, panelY, previewW, panelH, false);
@@ -530,7 +530,7 @@ public class MRLSelectorScreen extends Screen {
     }
 
     private void renderMediaRow(final AppContext.TestURI uri, final int index, final Dimension row,
-                                final boolean selected, final int windowW, final int windowH) {
+                                final boolean selected, final int windowH) {
         final MRL mrl = this.mrlFor(uri);
         final java.awt.Color stateColor = statusColor(mrl);
         if (selected) {
@@ -549,11 +549,6 @@ public class MRLSelectorScreen extends Screen {
         this.text.render(this.text.truncateToWidth(uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
                 textX, row.y() + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         AppChrome.statusPip(statusX, row.y() + 25, 8, stateColor, false);
-    }
-
-    private void renderSelectedPreview(final AppContext.TestURI uri, final int x, final int y,
-                                       final int w, final int h, final int windowW, final int windowH) {
-        this.renderThumbnailContent(uri, x, y, w, h, windowH, false);
     }
 
     private void renderThumbnailContent(final AppContext.TestURI uri, final int x, final int y,
@@ -598,7 +593,7 @@ public class MRLSelectorScreen extends Screen {
                 return;
             }
             final String label = failed ? (mini ? "[" + statusLabel(mrl) + "]" : statusLabel(mrl))
-                    : ready ? "[ media preview ]" : "LOADING...";
+                    : ready ? "[ media thumbnail ]" : "LOADING...";
             final java.awt.Color color = failed ? statusColor(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
             if (!mini && failed) {
                 PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, statusColor(mrl));

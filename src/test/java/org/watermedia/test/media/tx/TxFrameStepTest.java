@@ -1,5 +1,6 @@
 package org.watermedia.test.media.tx;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -18,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * advances {@code time()} and {@code previousFrame()} rewinds it; the player must
  * remain in {@link Status#PAUSED} throughout.
  */
+@DisplayName("TxMediaPlayer frame step")
 public class TxFrameStepTest {
 
     private static final long MRL_TIMEOUT_MS = 2000L;
@@ -25,7 +27,8 @@ public class TxFrameStepTest {
     private static final long STEP_SETTLE_MS = 2000L;
 
     @Test
-    public void nextAndPreviousFrameMoveClockWhilePaused() {
+    @DisplayName("nextFrame and previousFrame move the clock while paused")
+    void testNextAndPreviousFrameMoveClockWhilePaused() {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 

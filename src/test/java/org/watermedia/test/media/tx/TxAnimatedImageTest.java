@@ -1,5 +1,6 @@
 package org.watermedia.test.media.tx;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.media.MRL;
@@ -23,6 +24,7 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * fixture, drives the player through the standard load + play + pause cycle
  * and verifies the lifecycle thread uploads frames over time.
  */
+@DisplayName("TxMediaPlayer animated image")
 public class TxAnimatedImageTest {
 
     private static final long MRL_TIMEOUT_MS = 2000L;
@@ -30,6 +32,7 @@ public class TxAnimatedImageTest {
     private static final long PLAYBACK_OBSERVATION_MS = 1500L;
 
     @TestFactory
+    @DisplayName("Animated GIF load/play/pause cycle")
     Stream<DynamicTest> animatedGifs() {
         final List<Path> fixtures = List.of(
                 Fixtures.GIF_DIR.resolve("1.gif"),

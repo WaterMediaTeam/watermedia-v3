@@ -33,7 +33,7 @@ public class DrivePlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS) || uri.getPath() == null || !uri.getPath().startsWith("/file/d/"))
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || uri.getPath() == null || !uri.getPath().startsWith("/file/d/"))
             return null;
 
         final String fileId = extractFileId(uri.getPath());
@@ -57,10 +57,10 @@ public class DrivePlatform implements IPlatform {
         }
 
         // FALLBACK: DIRECT DOWNLOAD URL
-        return this.getDataFromDownload(fileId, uri);
+        return this.getDownloadData(fileId, uri);
     }
 
-    private PlatformData getDataFromDownload(final String fileId, final URI original) throws Exception {
+    private PlatformData getDownloadData(final String fileId, final URI original) throws Exception {
         String url = String.format(DOWNLOAD_URL, fileId);
 
         try (final NetRequest req = NetRequest.create(URI.create(url)).method("GET").accept("*/*").send()) {

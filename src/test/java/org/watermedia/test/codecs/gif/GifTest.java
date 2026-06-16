@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.gif;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
@@ -30,11 +31,13 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * size. dwebp-style PAM references are not generated for GIF so no pixel comparison
  * is attempted here.
  */
+@DisplayName("GIF decoder")
 public class GifTest {
 
     private record Fixture(String name, Path path) {}
 
     @TestFactory
+    @DisplayName("Decode shape")
     Iterable<DynamicTest> testGIFFixtures() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Fixture fixture: List.of(
@@ -73,6 +76,7 @@ public class GifTest {
     }
 
     @TestFactory
+    @DisplayName("reset() replay")
     Iterable<DynamicTest> testGIFReset() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Fixture fixture: List.of(

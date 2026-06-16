@@ -25,7 +25,7 @@ public class LightshotPlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(LightshotPlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());

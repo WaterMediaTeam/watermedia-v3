@@ -3,15 +3,15 @@ package org.watermedia.test.tools;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.watermedia.tools.MPEGTools;
-import org.watermedia.tools.MPEGTools.Channel;
-import org.watermedia.tools.MPEGTools.Iptv;
-import org.watermedia.tools.MPEGTools.Master;
-import org.watermedia.tools.MPEGTools.Media;
-import org.watermedia.tools.MPEGTools.Playlist;
-import org.watermedia.tools.MPEGTools.Rendition;
-import org.watermedia.tools.MPEGTools.Segment;
-import org.watermedia.tools.MPEGTools.Variant;
+import org.watermedia.tools.MPEGTool;
+import org.watermedia.tools.MPEGTool.Channel;
+import org.watermedia.tools.MPEGTool.Iptv;
+import org.watermedia.tools.MPEGTool.Master;
+import org.watermedia.tools.MPEGTool.Media;
+import org.watermedia.tools.MPEGTool.Playlist;
+import org.watermedia.tools.MPEGTool.Rendition;
+import org.watermedia.tools.MPEGTool.Segment;
+import org.watermedia.tools.MPEGTool.Variant;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -28,11 +28,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Comprehensive test suite for {@link MPEGTools}, the unified M3U/M3U8 playlist parser
+ * Comprehensive test suite for {@link MPEGTool}, the unified M3U/M3U8 playlist parser
  * (formerly split across {@code HlsTool} and {@code M3UTool}). Covers HLS master and
  * media playlists, IPTV channel lists, error handling, and real-world edge cases.
  *
- * <p>Classification is single-entry through {@link MPEGTools#parse(String, URI)}:
+ * <p>Classification is single-entry through {@link MPEGTool#parse(String, URI)}:
  * {@code #EXT-X-STREAM-INF} → {@link Master}, any other {@code #EXT-X-} tag →
  * {@link Media}, a tag-less {@code #EXTINF} list → {@link Iptv}, and anything else
  * throws {@link IOException}. Every entry URL ({@link Variant}, {@link Segment},
@@ -53,7 +53,7 @@ public class MPEGToolTest {
         @DisplayName("Null content throws IOException")
         void testNullContent() {
             final IOException error = assertThrows(IOException.class,
-                    () -> MPEGTools.parse((String) null, URI.create("test.m3u8")));
+                    () -> MPEGTool.parse((String) null, URI.create("test.m3u8")));
             assertTrue(error.getMessage().contains("Empty playlist"));
         }
 
@@ -61,7 +61,7 @@ public class MPEGToolTest {
         @DisplayName("Empty content throws IOException")
         void testEmptyContent() {
             final IOException error = assertThrows(IOException.class,
-                    () -> MPEGTools.parse("", URI.create("test.m3u8")));
+                    () -> MPEGTool.parse("", URI.create("test.m3u8")));
             assertTrue(error.getMessage().contains("Empty playlist"));
         }
 
@@ -69,7 +69,7 @@ public class MPEGToolTest {
         @DisplayName("Blank content throws IOException")
         void testBlankContent() {
             final IOException error = assertThrows(IOException.class,
-                    () -> MPEGTools.parse("   \n\t  ", URI.create("test.m3u8")));
+                    () -> MPEGTool.parse("   \n\t  ", URI.create("test.m3u8")));
             assertTrue(error.getMessage().contains("Empty playlist"));
         }
 
@@ -84,7 +84,7 @@ public class MPEGToolTest {
                 """;
 
             final IOException error = assertThrows(IOException.class,
-                    () -> MPEGTools.parse(content, URI.create("test.m3u8")));
+                    () -> MPEGTool.parse(content, URI.create("test.m3u8")));
             assertTrue(error.getMessage().contains("#EXTM3U"));
         }
 
@@ -98,16 +98,16 @@ public class MPEGToolTest {
                 """;
 
             final IOException error = assertThrows(IOException.class,
-                    () -> MPEGTools.parse(content, URI.create("test.m3u8")));
+                    () -> MPEGTool.parse(content, URI.create("test.m3u8")));
             assertTrue(error.getMessage().contains("Unrecognized"));
         }
 
         @Test
         @DisplayName("Non-playlist text throws IOException")
         void testNonPlaylistText() {
-            assertThrows(IOException.class, () -> MPEGTools.parse("", URI.create("src")));
-            assertThrows(IOException.class, () -> MPEGTools.parse((String) null, URI.create("src")));
-            assertThrows(IOException.class, () -> MPEGTools.parse("hello world", URI.create("src")));
+            assertThrows(IOException.class, () -> MPEGTool.parse("", URI.create("src")));
+            assertThrows(IOException.class, () -> MPEGTool.parse((String) null, URI.create("src")));
+            assertThrows(IOException.class, () -> MPEGTool.parse("hello world", URI.create("src")));
         }
     }
 
@@ -130,7 +130,7 @@ public class MPEGToolTest {
                 480p.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("master.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("master.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -151,7 +151,7 @@ public class MPEGToolTest {
                 stream.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -167,7 +167,7 @@ public class MPEGToolTest {
                 1080p.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -189,7 +189,7 @@ public class MPEGToolTest {
                 stream.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -210,7 +210,7 @@ public class MPEGToolTest {
                 video.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -242,7 +242,7 @@ public class MPEGToolTest {
                 chunked.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -265,7 +265,7 @@ public class MPEGToolTest {
                 720p.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
             final Master master = (Master) result;
 
             assertTrue(master.best().isPresent());
@@ -286,7 +286,7 @@ public class MPEGToolTest {
                 720p.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
             final Master master = (Master) result;
 
             assertTrue(master.worst().isPresent());
@@ -307,7 +307,7 @@ public class MPEGToolTest {
                 720p.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
             final Master master = (Master) result;
 
             final List<Variant> sorted = master.sorted();
@@ -340,7 +340,7 @@ public class MPEGToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("playlist.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("playlist.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -367,7 +367,7 @@ public class MPEGToolTest {
                 segment1075.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -390,7 +390,7 @@ public class MPEGToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -418,7 +418,7 @@ public class MPEGToolTest {
                 segment2.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -439,7 +439,7 @@ public class MPEGToolTest {
                 segment2.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -459,7 +459,7 @@ public class MPEGToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -483,7 +483,7 @@ public class MPEGToolTest {
                 #EXT-X-ENDLIST
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -501,7 +501,7 @@ public class MPEGToolTest {
                 segment.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -529,7 +529,7 @@ public class MPEGToolTest {
         @Test
         @DisplayName("Flat #EXTINF list (no #EXT-X-* tags) is classified as IPTV")
         void testFlatExtinfClassifiedAsIptv() throws IOException {
-            assertInstanceOf(Iptv.class, MPEGTools.parse(IPTV_SAMPLE, URI.create("iptv.m3u")));
+            assertInstanceOf(Iptv.class, MPEGTool.parse(IPTV_SAMPLE, URI.create("iptv.m3u")));
         }
 
         @Test
@@ -541,7 +541,7 @@ public class MPEGToolTest {
                 #EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1280x720
                 720p.m3u8
                 """;
-            assertInstanceOf(Master.class, MPEGTools.parse(content, URI.create("src")));
+            assertInstanceOf(Master.class, MPEGTool.parse(content, URI.create("src")));
         }
 
         @Test
@@ -554,13 +554,13 @@ public class MPEGToolTest {
                 #EXTINF:5.005,
                 segment-0.ts
                 """;
-            assertInstanceOf(Media.class, MPEGTools.parse(content, URI.create("src")));
+            assertInstanceOf(Media.class, MPEGTool.parse(content, URI.create("src")));
         }
 
         @Test
         @DisplayName("Extract channels with their tvg-* attributes")
         void testExtractsChannelsWithAttributes() throws IOException {
-            final Playlist result = MPEGTools.parse(IPTV_SAMPLE, URI.create("iptv.m3u"));
+            final Playlist result = MPEGTool.parse(IPTV_SAMPLE, URI.create("iptv.m3u"));
 
             assertInstanceOf(Iptv.class, result);
             final List<Channel> channels = ((Iptv) result).channels();
@@ -583,7 +583,7 @@ public class MPEGToolTest {
         @Test
         @DisplayName("groups() and byGroup() expose channel grouping")
         void testGroups() throws IOException {
-            final Iptv iptv = (Iptv) MPEGTools.parse(IPTV_SAMPLE, URI.create("iptv.m3u"));
+            final Iptv iptv = (Iptv) MPEGTool.parse(IPTV_SAMPLE, URI.create("iptv.m3u"));
             assertEquals(1, iptv.groups().size());
             assertTrue(iptv.groups().contains("USA"));
             assertEquals(2, iptv.byGroup("USA").size());
@@ -598,7 +598,7 @@ public class MPEGToolTest {
                     "https://x.example/x\n" +
                     "https://bare.example/y\n";
 
-            final Playlist result = MPEGTools.parse(src, URI.create("iptv.m3u"));
+            final Playlist result = MPEGTool.parse(src, URI.create("iptv.m3u"));
             assertInstanceOf(Iptv.class, result);
             final List<Channel> channels = ((Iptv) result).channels();
 
@@ -619,7 +619,7 @@ public class MPEGToolTest {
                     "#EXTVLCOPT:http-user-agent=foo\n" +
                     "https://x.example/x\n";
 
-            final Playlist result = MPEGTools.parse(src, URI.create("iptv.m3u"));
+            final Playlist result = MPEGTool.parse(src, URI.create("iptv.m3u"));
             assertInstanceOf(Iptv.class, result);
             final List<Channel> channels = ((Iptv) result).channels();
             assertEquals(1, channels.size());
@@ -645,7 +645,7 @@ public class MPEGToolTest {
                 """;
 
             final var stream = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
-            final Playlist result = MPEGTools.parse(stream, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(stream, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -664,7 +664,7 @@ public class MPEGToolTest {
                 """;
 
             final var stream = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
-            final Playlist result = MPEGTools.parse(stream, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(stream, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -690,7 +690,7 @@ public class MPEGToolTest {
                 segment.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
         }
@@ -703,7 +703,7 @@ public class MPEGToolTest {
                 #EXT-X-STREAM-INF:BANDWIDTH=1000000
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -722,7 +722,7 @@ public class MPEGToolTest {
                 https://cdn.example.com/stream/segment2.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -742,7 +742,7 @@ public class MPEGToolTest {
                 ../other/segment2.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("https://cdn.example.com/live/stream/playlist.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("https://cdn.example.com/live/stream/playlist.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -760,7 +760,7 @@ public class MPEGToolTest {
                 stream.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -779,7 +779,7 @@ public class MPEGToolTest {
                 stream.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -802,7 +802,7 @@ public class MPEGToolTest {
                 segment2.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -821,7 +821,7 @@ public class MPEGToolTest {
                 stream.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("test.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("test.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -851,7 +851,7 @@ public class MPEGToolTest {
                 https://example.com/360p30.m3u8
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("master.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("master.m3u8"));
 
             assertInstanceOf(Master.class, result);
             final Master master = (Master) result;
@@ -896,7 +896,7 @@ public class MPEGToolTest {
                 https://cdn.example.com/segment3.ts
                 """;
 
-            final Playlist result = MPEGTools.parse(content, URI.create("playlist.m3u8"));
+            final Playlist result = MPEGTool.parse(content, URI.create("playlist.m3u8"));
 
             assertInstanceOf(Media.class, result);
             final Media media = (Media) result;
@@ -953,9 +953,9 @@ public class MPEGToolTest {
                     "#EXTINF:-1 tvg-name=\"X\",X\n" +
                     "https://x.example/x\n";
 
-            final Playlist master = MPEGTools.parse(masterContent, URI.create("test.m3u8"));
-            final Playlist media = MPEGTools.parse(mediaContent, URI.create("test.m3u8"));
-            final Playlist iptv = MPEGTools.parse(iptvContent, URI.create("test.m3u"));
+            final Playlist master = MPEGTool.parse(masterContent, URI.create("test.m3u8"));
+            final Playlist media = MPEGTool.parse(mediaContent, URI.create("test.m3u8"));
+            final Playlist iptv = MPEGTool.parse(iptvContent, URI.create("test.m3u"));
 
             // VERIFY TYPES USING instanceof
             assertInstanceOf(Master.class, master);
@@ -976,7 +976,7 @@ public class MPEGToolTest {
             assertFalse(iptv instanceof Media);
 
             // INVALID INPUT IS NO LONGER A RESULT TYPE — IT THROWS
-            assertThrows(IOException.class, () -> MPEGTools.parse((String) null, URI.create("test.m3u8")));
+            assertThrows(IOException.class, () -> MPEGTool.parse((String) null, URI.create("test.m3u8")));
         }
     }
 }

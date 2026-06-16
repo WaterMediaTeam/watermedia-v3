@@ -28,6 +28,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public class TikTokPlatform implements IPlatform {
+    public static final String NAME = "TikTok";
     private static final Marker IT = MarkerManager.getMarker(TikTokPlatform.class.getSimpleName());
     private static final String TIKTOK_REFERER = "https://www.tiktok.com/";
 
@@ -38,12 +39,12 @@ public class TikTokPlatform implements IPlatform {
     private static final String[] HOSTS = { "www.tiktok.com", "tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com" };
 
     @Override
-    public String name() { return "TikTok"; }
+    public String name() { return NAME; }
 
     @Override
     public PlatformData getData(URI uri) throws Exception {
         final String host = uri.getHost();
-        if (!DataTool.containsIgnoreCase(host, HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(host, HOSTS)) return null;
 
         if ("vm.tiktok.com".equals(host) || "vt.tiktok.com".equals(host)) {
             uri = resolveRedirect(uri);

@@ -366,7 +366,7 @@ public class NetRequest implements AutoCloseable {
                         if (i > 0) chain.append("\n  -> ");
                         chain.append('[').append(i).append("] ").append(trace.get(i));
                     }
-                    LOGGER.error(IT, "tooManyRedirects: hit cap of {} redirects for {}\n  {}", this.maxRedirects, this.uri, chain);
+                    LOGGER.error(IT, "Failed to follow redirects for {}: hit cap of {} redirects\n  {}", this.uri, this.maxRedirects, chain);
                     throw new IOException("tooManyRedirects: " + this.maxRedirects + " hops exceeded for " + this.uri);
                 }
 

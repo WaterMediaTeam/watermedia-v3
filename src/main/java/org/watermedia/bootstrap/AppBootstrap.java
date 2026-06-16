@@ -29,7 +29,7 @@ public class AppBootstrap {
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia/libs");
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
     private static final String APP_FLAG = "watermedia.app";
-    private static final String OS = IOTool.getPlatformClassifier();
+    private static final String OS = IOTool.platformClassifier();
 
     private static final String[][] DEPS = {
             {"log4j-api-2.25.0.jar", "org/apache/logging/log4j/log4j-api/2.25.0/log4j-api-2.25.0.jar"},

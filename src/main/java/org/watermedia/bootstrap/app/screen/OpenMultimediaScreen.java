@@ -222,7 +222,7 @@ public class OpenMultimediaScreen extends Screen {
 
     private void scheduleLoadTimeout(final int generation) {
         final long deadline = this.loadStartTime + LOAD_TIMEOUT_MS;
-        ThreadTool.createStarted("OpenMultimediaLoadTimeout", () -> {
+        ThreadTool.createStarted("OpenMultimediaScreen-LoadTimeout", () -> {
             final long wait = Math.max(0L, deadline - System.currentTimeMillis());
             ThreadTool.sleep(wait);
             if (this.loading && this.loadGeneration == generation) {

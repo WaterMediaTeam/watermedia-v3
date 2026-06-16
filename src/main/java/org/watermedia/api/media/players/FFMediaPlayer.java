@@ -2111,7 +2111,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             final AVDictionary options = new AVDictionary();
 
             try {
-                LOGGER.debug("Referer: {}", uri.getScheme() + "://" + uri.getHost());
+                LOGGER.debug(IT, "Referer: {}", uri.getScheme() + "://" + uri.getHost());
                 av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
                 this.applyProbeOptions(options);
                 av_dict_set(options, "buffer_size", "33554432", 0);
@@ -2149,12 +2149,12 @@ public final class FFMediaPlayer extends MediaPlayer {
             final String fmtName = this.formatContext.iformat() != null ? this.formatContext.iformat().name().getString() : "";
             if (url.contains(".m3u8") || fmtName.contains("hls")) {
                 try {
-                    MPEGTools.Playlist hlsResult = MPEGTools.fetch(uri);
+                    MPEGTool.Playlist hlsResult = MPEGTool.fetch(uri);
                     // MASTER PLAYLIST: FOLLOW THE FIRST VARIANT (URL ALREADY ABSOLUTE) DOWN TO A REAL MEDIA PLAYLIST
-                    if (hlsResult instanceof final MPEGTools.Master master && !master.variants().isEmpty()) {
-                        hlsResult = MPEGTools.fetch(master.variants().get(0).uri());
+                    if (hlsResult instanceof final MPEGTool.Master master && !master.variants().isEmpty()) {
+                        hlsResult = MPEGTool.fetch(master.variants().get(0).uri());
                     }
-                    if (hlsResult instanceof final MPEGTools.Media media) {
+                    if (hlsResult instanceof final MPEGTool.Media media) {
                         this.hlsLiveSource = media.live();
                         LOGGER.info(IT, "HLS probe: live={}, vod={}, totalDuration={}s", media.live(), media.vod(), media.totalDuration());
                     } else {

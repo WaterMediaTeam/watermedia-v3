@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.webp;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
@@ -38,6 +39,7 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * <p>All tests request {@link PixelFormat#BGRA} so the no-arg overload's native-YUV
  * default for lossy WebP doesn't trip pixel comparisons.
  */
+@DisplayName("WebP decoder")
 public class WebpTest {
 
     // LOSSY VP8 DECODE BOUNDS — DECODER VARIANTS ARE NORMAL
@@ -49,6 +51,7 @@ public class WebpTest {
     private static final int LOSSLESS_TOLERANCE = 0;
 
     @TestFactory
+    @DisplayName("Lossless decode and pixel match")
     Iterable<DynamicTest> testLossless() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Path imageFile: listWebp(Fixtures.WEBP_LOSSLESS_DIR)) {
@@ -84,6 +87,7 @@ public class WebpTest {
     }
 
     @TestFactory
+    @DisplayName("Lossy decode and similarity")
     Iterable<DynamicTest> testLossy() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Path imageFile: listWebp(Fixtures.WEBP_LOSSY_DIR)) {
@@ -125,6 +129,7 @@ public class WebpTest {
     }
 
     @TestFactory
+    @DisplayName("Animated decode")
     Iterable<DynamicTest> testAnimated() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Path imageFile: listWebp(Fixtures.WEBP_ANIMATED_DIR)) {
@@ -137,6 +142,7 @@ public class WebpTest {
     }
 
     @TestFactory
+    @DisplayName("reset() replay")
     Iterable<DynamicTest> testReset() {
         final List<DynamicTest> tests = new ArrayList<>();
         // EVERY ANIMATED FIXTURE PLUS ONE STATIC OF EACH CODEC — reset() MUST REPLAY ALL SHAPES

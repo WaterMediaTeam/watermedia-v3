@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 /**
  * Verifies {@link MediaQuality} classification, navigation and lookup helpers.
  */
+@DisplayName("MediaQuality")
 public class MediaQualityTest {
 
     @Nested

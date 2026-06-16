@@ -566,7 +566,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (next == null && !this.readerExhausted) {
                 // DECODING FELL BEHIND, SO SWITCH TO BUFFERING, REFILL, THEN RESUME.
                 this.status = Status.BUFFERING;
-                if (ThreadTool.tryAdquireLock(DECODE_PERMITS, REFILL_PERMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                if (ThreadTool.tryAcquireLock(DECODE_PERMITS, REFILL_PERMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                     try {
                         while (this.prefetchQueue.size() < this.prefetchRefill && !this.readerExhausted) {
                             if (!this.queueNextFrame(reader)) break;
@@ -619,7 +619,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (this.readerExhausted || this.prefetchQueue.size() >= this.prefetchMax) return;
         final long budget = deadlineMs - System.currentTimeMillis() - PREFETCH_SAFETY_MARGIN_MS;
         if (budget <= 0L) return;
-        if (!ThreadTool.tryAdquireLock(DECODE_PERMITS, budget, TimeUnit.MILLISECONDS)) return;
+        if (!ThreadTool.tryAcquireLock(DECODE_PERMITS, budget, TimeUnit.MILLISECONDS)) return;
         try {
             while (this.prefetchQueue.size() < this.prefetchMax && !this.readerExhausted) {
                 if (deadlineMs - System.currentTimeMillis() <= PREFETCH_SAFETY_MARGIN_MS) break;

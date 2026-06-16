@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Exercises the pure helpers in {@link MathUtil}: clamping, modular arithmetic,
  * unit conversions, byte formatting and easing.
  */
+@DisplayName("MathUtil")
 public class MathUtilTest {
 
     private static final double EPSILON = 1.0e-3;

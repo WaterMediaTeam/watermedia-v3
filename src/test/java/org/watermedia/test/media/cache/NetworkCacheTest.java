@@ -1,5 +1,6 @@
 package org.watermedia.test.media.cache;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.api.media.players.util.NetworkCache;
@@ -21,7 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * loopback HTTP origin via {@link LocalHttp}, exercises a single cache surface,
  * and asserts the index/payload state on disk after the second access.
  */
+@DisplayName("NetworkCache round-trip")
 public class NetworkCacheTest {
+
+    // ACCEPT HEADERS AND READ LIMIT SHARED ACROSS THE CACHE SCENARIOS
+    private static final String ACCEPT_IMAGE = "image/*,*/*";
+    private static final String ACCEPT_VIDEO = "video/*,*/*";
+    private static final int READ_LIMIT = 1024;
 
     @TempDir
     Path tempDir;
@@ -31,7 +38,8 @@ public class NetworkCacheTest {
     private volatile int hits;
 
     @Test
-    public void cachesHttpBytesAndUsesIndexOnSecondRead() throws Exception {
+    @DisplayName("Caches HTTP bytes and uses the index on the second read")
+    void testCachesHttpBytesAndUsesIndexOnSecondRead() throws Exception {
         final byte[] body = new byte[] { 1, 2, 3, 4, 5 };
         this.hits = 0;
         try (final LocalHttp server = LocalHttp.start("/image.png", exchange -> {
@@ -44,8 +52,8 @@ public class NetworkCacheTest {
             try {
                 final URI uri = server.uri("/image.png");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, "image/*,*/*", 1024);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, "image/*,*/*", 1024);
+                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT);
+                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT);
 
                 assertFalse(first.cached());
                 assertTrue(second.cached());
@@ -70,7 +78,8 @@ public class NetworkCacheTest {
     }
 
     @Test
-    public void cachesHttpResponseAsReusableFile() throws Exception {
+    @DisplayName("Caches an HTTP response as a reusable file")
+    void testCachesHttpResponseAsReusableFile() throws Exception {
         final byte[] body = new byte[] { 10, 20, 30, 40 };
         this.hits = 0;
         try (final LocalHttp server = LocalHttp.start("/clip.mp4", exchange -> {
@@ -82,8 +91,8 @@ public class NetworkCacheTest {
             try {
                 final URI uri = server.uri("/clip.mp4");
 
-                final NetworkCache.CachedFile first = NetworkCache.readFile(uri, null, "video/*,*/*", 1024, true);
-                final NetworkCache.CachedFile second = NetworkCache.readFile(uri, null, "video/*,*/*", 1024, true);
+                final NetworkCache.CachedFile first = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
+                final NetworkCache.CachedFile second = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
 
                 assertNotNull(first);
                 assertNotNull(second);
@@ -100,7 +109,8 @@ public class NetworkCacheTest {
     }
 
     @Test
-    public void separatesCacheEntriesByRequestHeaders() throws Exception {
+    @DisplayName("Separates cache entries by request headers")
+    void testSeparatesCacheEntriesByRequestHeaders() throws Exception {
         final byte[] firstBody = new byte[] { 1, 1, 1 };
         final byte[] secondBody = new byte[] { 2, 2, 2 };
         this.hits = 0;
@@ -117,9 +127,9 @@ public class NetworkCacheTest {
                 final RequestHeaders firstHeaders = new RequestHeaders().set("X-Variant", "first");
                 final RequestHeaders secondHeaders = new RequestHeaders().set("X-Variant", "second");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, "image/*,*/*", 1024);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, "image/*,*/*", 1024);
-                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, "image/*,*/*", 1024);
+                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT);
+                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT);
+                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT);
 
                 assertArrayEquals(firstBody, first.bytes());
                 assertArrayEquals(secondBody, second.bytes());

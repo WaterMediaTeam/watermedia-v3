@@ -5,7 +5,7 @@ public class MatureContentException extends PlatformException {
         super(platform, message);
     }
 
-    public MatureContentException(final Class<? extends IPlatform> platform, final String message, Throwable cause) {
+    public MatureContentException(final Class<? extends IPlatform> platform, final String message, final Throwable cause) {
         super(platform, message, cause);
     }
 }

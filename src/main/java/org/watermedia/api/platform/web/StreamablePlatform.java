@@ -29,7 +29,7 @@ public class StreamablePlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws PlatformException {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final String videoId = uri.getPath().substring(1);
 

@@ -22,7 +22,7 @@ public class DropboxPlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS) || !DataTool.contains(uri.getQuery(), "dl=0"))
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || !DataTool.contains(uri.getQuery(), "dl=0"))
             return null;
 
         // dl=0 OPENS THE PREVIEW PAGE; dl=1 SERVES THE RAW FILE THROUGH THE CDN

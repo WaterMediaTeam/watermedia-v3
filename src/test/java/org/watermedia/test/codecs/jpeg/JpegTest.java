@@ -1,5 +1,6 @@
 package org.watermedia.test.codecs.jpeg;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
@@ -29,6 +30,7 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * against a pre-generated PAM reference. Tolerances are relaxed because JPEG decoders
  * legitimately differ at the IDCT/upsampling layer.
  */
+@DisplayName("JPEG decoder")
 public class JpegTest {
     // PER-CHANNEL DIFFERENCE BOUNDS — JPEG IS LOSSY AND DECODER VARIANTS ARE NORMAL
     private static final int SMALL_DIFF = 8;
@@ -47,6 +49,7 @@ public class JpegTest {
     }
 
     @TestFactory
+    @DisplayName("Decode shape, native format and pixel match")
     Iterable<DynamicTest> testJPEGFixtures() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Fixture fixture: List.of(

@@ -132,7 +132,7 @@ public class WaterMediaApp {
 
     private static void runLoadingPhase(final LoadingScreen loadingScreen) {
         final java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
-        final Thread loader = ThreadTool.createStarted("WaterMedia-Init", () -> {
+        final Thread loader = ThreadTool.createStarted("WaterMediaApp-Init", () -> {
             try {
                 WaterMedia.start("WaterMediaApp", null, null, true);
             } catch (final Throwable t) {
@@ -404,12 +404,12 @@ public class WaterMediaApp {
                 if (ctx.uploadDialogStage <= 1) {
                     if (!hasUploadCandidate()) return;
                     ctx.uploadDialogWorking = true;
-                    ThreadTool.createStarted("UploadLogs", WaterMediaApp::performUploadLogs);
+                    ThreadTool.createStarted("WaterMediaApp-UploadLogs", WaterMediaApp::uploadLogs);
                 } else if (ctx.uploadDialogStage == 2) {
                     if (!hasUploadedLog()) return;
-                    ThreadTool.createStarted("UploadLogsIssue", WaterMediaApp::generateUploadIssueReport);
+                    ThreadTool.createStarted("WaterMediaApp-UploadIssueReport", WaterMediaApp::uploadIssueReport);
                 } else {
-                    ThreadTool.createStarted("UploadLogsOpenGithub", WaterMediaApp::openUploadIssuePage);
+                    ThreadTool.createStarted("WaterMediaApp-OpenIssuePage", WaterMediaApp::openIssuePage);
                 }
             }
 
@@ -426,7 +426,7 @@ public class WaterMediaApp {
                 if (ctx.cleanupDialogStage <= 1) {
                     if (ctx.cleanupFileCount <= 0) return;
                     ctx.cleanupDialogWorking = true;
-                    ThreadTool.createStarted("CleanupCache", WaterMediaApp::performCacheCleanup);
+                    ThreadTool.createStarted("WaterMediaApp-CacheCleanup", WaterMediaApp::cleanupCache);
                 } else {
                     ctx.cleanupDialogVisible = false;
                     scanCleanupCache();
@@ -966,7 +966,7 @@ public class WaterMediaApp {
         }
     }
 
-    private static void performUploadLogs() {
+    private static void uploadLogs() {
         try {
             ctx.uploadDialogStage = 2;
             setUploadStatus("UPLOAD");
@@ -1003,7 +1003,7 @@ public class WaterMediaApp {
         }
     }
 
-    private static void generateUploadIssueReport() {
+    private static void uploadIssueReport() {
         try {
             ctx.uploadDialogWorking = true;
             ctx.uploadDialogStage = 3;
@@ -1026,7 +1026,7 @@ public class WaterMediaApp {
                 ctx.uploadDialogStatus = "ERROR";
             }
 
-            openUploadIssuePage();
+            openIssuePage();
             ctx.uploadDialogDone = !ctx.uploadDialogError;
         } finally {
             ctx.uploadDialogWorking = false;
@@ -1034,7 +1034,7 @@ public class WaterMediaApp {
         }
     }
 
-    private static void openUploadIssuePage() {
+    private static void openIssuePage() {
         try {
             final String url = ctx.uploadIssueUrl != null && ctx.uploadIssueUrl.startsWith("https://")
                     ? ctx.uploadIssueUrl
@@ -1163,7 +1163,7 @@ public class WaterMediaApp {
         return WaterMedia.tmp().resolve("cache");
     }
 
-    private static void performCacheCleanup() {
+    private static void cleanupCache() {
         try {
             ctx.cleanupDialogStage = 2;
             ctx.cleanupDialogState = "CLEANING";

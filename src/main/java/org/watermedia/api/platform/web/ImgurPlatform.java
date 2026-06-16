@@ -36,7 +36,7 @@ public class ImgurPlatform implements IPlatform {
     @Override
     public PlatformData getData(final URI uri) throws Exception {
         // i.imgur.com IS EXCLUDED, THOSE ARE ALREADY STATIC
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final var path = uri.getPath();
         final var fragment = uri.getFragment();
@@ -72,7 +72,7 @@ public class ImgurPlatform implements IPlatform {
             final List<DataSource> entries = new ArrayList<>(data.images().length);
             // ITERATE OVER GALLERY IMAGES
             for (final Image img: data.images()) {
-                entries.add(this.buildEntryFromImage(img, data.title(), data.accountUrl(), uri));
+                entries.add(this.buildEntry(img, data.title(), data.accountUrl(), uri));
             }
 
             LOGGER.info(IT, "Imgur resolved gallery '{}' with {} entry(es)", id, entries.size());
@@ -89,11 +89,11 @@ public class ImgurPlatform implements IPlatform {
 
             final Image img = res.data();
             LOGGER.info(IT, "Imgur resolved image '{}' ({})", id, img.type());
-            return new PlatformData(null, this.buildEntryFromImage(img, img.title(), img.accountUrl(), uri));
+            return new PlatformData(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
         }
     }
 
-    private DataSource buildEntryFromImage(final Image img, final String fallbackTitle, final String accountUrl, final URI mrlUri) throws PlatformException {
+    private DataSource buildEntry(final Image img, final String fallbackTitle, final String accountUrl, final URI uri) throws PlatformException {
         // PARSE MIME TYPE
         final MediaType type = MediaType.of(img.type());
 
@@ -119,7 +119,7 @@ public class ImgurPlatform implements IPlatform {
 
         try {
             return new DataSource(type, null, metadata,
-                    RequestHeaders.defaults(mrlUri),
+                    RequestHeaders.defaults(uri),
                     new DataQuality[] {new DataQuality(new URI(link), img.width, img.height)},
                     null, null);
         } catch (final Exception e) {

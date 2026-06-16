@@ -7,22 +7,22 @@ import java.util.function.Consumer;
 /**
  * Binary checkbox with a label.
  */
-public class CheckboxElement extends Element {
+public class Checkbox extends Element {
 
     private String label;
     private boolean checked;
     private Consumer<Boolean> onChanged;
 
-    public CheckboxElement(final String label) {
+    public Checkbox(final String label) {
         this.label = label;
     }
 
-    public CheckboxElement checked(final boolean checked) {
+    public Checkbox checked(final boolean checked) {
         this.checked = checked;
         return this;
     }
 
-    public CheckboxElement onChanged(final Consumer<Boolean> onChanged) {
+    public Checkbox onChanged(final Consumer<Boolean> onChanged) {
         this.onChanged = onChanged;
         return this;
     }

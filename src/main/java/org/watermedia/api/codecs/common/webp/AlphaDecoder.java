@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.webp;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.XCodecException;
 import org.watermedia.api.codecs.readers.webp.lossless.VP8LDecoder;
 
@@ -15,6 +17,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 // SUPPORTS UNCOMPRESSED AND VP8L-COMPRESSED ALPHA DATA
 // WITH OPTIONAL PREDICTIVE FILTERING (HORIZONTAL, VERTICAL, GRADIENT)
 public final class AlphaDecoder {
+    private static final Marker IT = MarkerManager.getMarker(AlphaDecoder.class.getSimpleName());
 
     // COMPRESSION METHODS
     private static final int COMPRESS_NONE = 0;
@@ -43,7 +46,7 @@ public final class AlphaDecoder {
         final int compMeth = hdr & 0x03;
         // int preProc = (hdr >> 2) & 0x03; // UNUSED
 
-        LOGGER.debug("Alpha: filter={}, compression={}", filterMeth, compMeth);
+        LOGGER.debug(IT, "Alpha: filter={}, compression={}", filterMeth, compMeth);
 
         final byte[] alpha;
 

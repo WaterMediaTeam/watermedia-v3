@@ -33,7 +33,7 @@ public class OdyseePlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        if (!DataTool.containsIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final String path = uri.getRawPath();
         if (path == null || path.length() < 2) {
