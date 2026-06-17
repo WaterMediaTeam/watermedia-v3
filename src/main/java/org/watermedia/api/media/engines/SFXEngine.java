@@ -18,7 +18,6 @@ public abstract class SFXEngine {
 
     /**
      * Canonical PCM sample type — backend-independent.
-     * Planar/packed layout is handled separately via {@link #supportsPlanar()}/{@link #supportsInterleaved()}.
      */
     public enum SampleType {
         /** Unsigned 8-bit integer. */

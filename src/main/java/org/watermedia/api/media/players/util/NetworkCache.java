@@ -3,18 +3,26 @@ package org.watermedia.api.media.players.util;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.common.dds.DDSHeader;
+import org.watermedia.api.codecs.readers.BCReader;
+import org.watermedia.api.codecs.writers.BCWriter;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.tools.IOTool;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,20 +48,23 @@ import static org.watermedia.WaterMedia.LOGGER;
  *       {@link #read} and {@link #readFile} operate on today and the only tier currently
  *       wired in. Image bytes for {@code TxMediaPlayer} and short clip bodies for
  *       {@code FFMediaPlayer} land here.</li>
- *   <li><b>Codec tier</b> — reserved for upcoming BC7-compressed frame textures packaged
- *       as DDS containers. The codec writer is activated only when the active GPU
- *       advertises BC7 support; each decoded frame is recompressed on the decode thread
- *       and persisted here so subsequent playbacks can stream the DDS straight to GPU
- *       memory without a software decode pass.</li>
+ *   <li><b>Codec tier</b> — BC7/BC3/BC1-compressed frame textures packaged as DDS containers.
+ *       The {@linkplain #mode() codec mode} engages only when {@code media.txCodecCache} is on
+ *       <i>and</i> a block-compression codec is {@linkplain CodecsAPI#supports(String) available};
+ *       {@code TxMediaPlayer} then feeds decoded frames (plus their delays) to a
+ *       {@link CodecWriter}, which recompresses them off the render thread and persists one DDS
+ *       per source. Subsequent playbacks read the DDS through a {@link CodecReader} and upload the
+ *       blocks straight to GPU memory without any software decode — saving both decode CPU and
+ *       (since BCn is a quarter or eighth of RGBA8) VRAM.</li>
  * </ul>
  * Both tiers share the same on-disk infrastructure (directory, atomic writes, lock
  * striping, index persistence, expiry) routed through the {@link Tier}-aware store
  * primitives below. They never collide because every cache file is prefixed with the
  * tier discriminator and every index entry carries its tier byte.
  * <p>
- * The codec-tier reader/writer surface is intentionally not exposed yet — only the
- * storage primitives are laid out so the BC7/DDS pipeline can slot in without
- * re-shuffling the public cache surface.
+ * The codec mode and its writer/reader are resolved at {@link #start(Path)} from the configured
+ * preference and the codecs the JNI bindings have registered; when no BC encoder is present the
+ * cache stays in {@link Mode#DISK} and behaves exactly like the network tier alone.
  */
 public final class NetworkCache {
     private static final Marker IT = MarkerManager.getMarker(NetworkCache.class.getSimpleName());
@@ -66,12 +77,19 @@ public final class NetworkCache {
     private static final String FILE_PREFIX = "wm_";
     private static final String FILE_SUFFIX = ".tmp";
 
+    // CODEC-TIER ENTRIES ARE DERIVED ARTEFACTS (NOT HTTP BODIES), SO THEY CARRY A DDS CONTENT TYPE
+    // AND NEVER EXPIRE ON THEIR OWN — THEY ARE DROPPED ONLY WHEN UNREADABLE OR ON MANUAL CLEANUP.
+    private static final String CODEC_CONTENT_TYPE = "image/vnd-ms.dds";
+    private static final long CODEC_NEVER_EXPIRES = Long.MAX_VALUE;
+
     // INDEX KEY = tier.prefix + ":" + hex(hash) SO BOTH TIERS CAN COEXIST FOR THE SAME URI.
     private static final Map<String, Entry> INDEX = new HashMap<>();
     private static final Object[] LOCKS = new Object[LOCK_STRIPES];
 
     private static Path cacheDir;
     private static Path indexPath;
+    // ACTIVE CACHING STRATEGY, RESOLVED ONCE AT start(). READ FROM PLAYER/DECODE THREADS.
+    private static volatile Mode mode = Mode.DISK;
 
     static {
         for (int i = 0; i < LOCKS.length; i++) {
@@ -110,6 +128,21 @@ public final class NetworkCache {
         byte tag() { return (byte) this.ordinal(); }
     }
 
+    /**
+     * Caching strategy resolved at {@link #start(Path)}.
+     */
+    public enum Mode {
+        /** Classic disk cache: HTTP bodies are stored verbatim and re-read instead of re-fetched. */
+        DISK,
+        /**
+         * Codec cache: decoded frames are recompressed to GPU block-compressed textures (BC over
+         * DDS) and replayed straight to the GPU. Engages only when {@code media.txCodecCache} is on
+         * and a BC codec is {@linkplain CodecsAPI#available(String) available}. The disk tier still
+         * backs the first fetch, so this strategy is strictly additive.
+         */
+        CODEC
+    }
+
     // ==========================================================================
     // PUBLIC API — LIFECYCLE
     // ==========================================================================
@@ -118,13 +151,17 @@ public final class NetworkCache {
         indexPath = cacheDir.resolve(INDEX_FILE);
         Files.createDirectories(cacheDir);
         loadIndex();
-        LOGGER.info(IT, "Media network cache initialized at {}", cacheDir);
+        // CODEC MODE IS OPT-IN AND REQUIRES A NATIVE BC CODEC; OTHERWISE THE CACHE IS DISK-ONLY.
+        mode = WaterMediaConfig.media.txCodecCache && CodecsAPI.available(CodecsAPI.CODEC_BC)
+                ? Mode.CODEC : Mode.DISK;
+        LOGGER.info(IT, "Media network cache initialized at {} (mode={})", cacheDir, mode);
     }
 
     public static synchronized void release() {
         INDEX.clear();
         cacheDir = null;
         indexPath = null;
+        mode = Mode.DISK;
     }
 
     public static synchronized Path directory() {
@@ -177,13 +214,87 @@ public final class NetworkCache {
     }
 
     // ==========================================================================
-    // PUBLIC API — CODEC TIER (RESERVED FOR THE UPCOMING BC7/DDS PIPELINE)
+    // PUBLIC API — CODEC TIER (BC OVER DDS)
     // ==========================================================================
-    // The codec writer/reader will be added together with the BC7 encoder. Until then the
-    // codec tier remains dormant: the storage primitives below already accept Tier.CODEC,
-    // and the on-disk format reserves the discriminator byte, so wiring the encoder amounts
-    // to calling storeWrite(Tier.CODEC, ...) per frame and readStoredFile(Tier.CODEC, ...)
-    // on playback. No changes to the network tier are needed.
+    /** The active caching strategy resolved at {@link #start(Path)}. */
+    public static Mode mode() {
+        return mode;
+    }
+
+    /** Whether the codec cache (BC over DDS) is active. */
+    public static boolean codecEnabled() {
+        return mode == Mode.CODEC;
+    }
+
+    /**
+     * Opens a codec write session that recompresses frames to a BC/DDS texture for {@code uri}.
+     * The caller feeds decoded frames (with their delays) through {@link CodecWriter#write} and
+     * finalizes with {@link CodecWriter#commit}; aborting (or closing without committing) discards
+     * the partial file.
+     *
+     * @return a session, or {@code null} when the codec cache is inactive (so callers simply skip
+     *         codec caching)
+     * @throws IOException if the temp file or the BC writer cannot be created
+     */
+    public static CodecWriter openCodecWriter(final URI uri, final RequestHeaders headers, final String accept,
+                                              final int width, final int height, final PixelFormat format) throws IOException {
+        if (mode != Mode.CODEC || cacheDir == null) return null;
+        final byte[] hash = keyHash(uri, headers, accept);
+        final String hex = hex(hash);
+        Files.createDirectories(cacheDir);
+        final Path file = storeFile(Tier.CODEC, hex);
+        // UNIQUE TEMP: A CODEC SESSION SPANS MANY FRAMES OVER TIME, SO IT CANNOT HOLD A STORE LOCK;
+        // CONCURRENT WRITERS FOR THE SAME SOURCE GET DISTINCT TEMPS AND THE COMMIT MOVE IS ATOMIC.
+        final Path tmp = file.resolveSibling(file.getFileName().toString() + '.' + System.nanoTime() + ".part");
+        final OutputStream out = new BufferedOutputStream(Files.newOutputStream(tmp));
+        try {
+            return new CodecWriter(hash, hex, tmp, file, new BCWriter(out, width, height, format));
+        } catch (final IOException e) {
+            IOTool.closeQuietly(out);
+            Files.deleteIfExists(tmp);
+            throw e;
+        }
+    }
+
+    /** Whether a committed, non-expired codec texture exists for {@code uri}. */
+    public static boolean codecReadable(final URI uri, final RequestHeaders headers, final String accept) throws IOException {
+        if (cacheDir == null) return false;
+        final String hex = hex(keyHash(uri, headers, accept));
+        return validCodecEntry(hex) != null;
+    }
+
+    /**
+     * Opens a reader over the committed codec texture for {@code uri}, or {@code null} when none is
+     * available. A corrupt or unreadable entry is dropped and an {@link IOException} is thrown so
+     * the caller falls back to a fresh decode.
+     */
+    public static BCReader openCodecReader(final URI uri, final RequestHeaders headers, final String accept) throws IOException {
+        if (cacheDir == null) return null;
+        final String hex = hex(keyHash(uri, headers, accept));
+        final Path file = validCodecEntry(hex);
+        if (file == null) return null;
+        try {
+            return new BCReader(ByteBuffer.wrap(Files.readAllBytes(file)));
+        } catch (final IOException e) {
+            storeDelete(Tier.CODEC, hex);
+            throw e;
+        }
+    }
+
+    // RESOLVES A LIVE CODEC STORE FILE FOR hex, EVICTING THE ENTRY WHEN IT IS EXPIRED OR MISSING.
+    private static Path validCodecEntry(final String hex) {
+        final Entry entry;
+        synchronized (NetworkCache.class) {
+            entry = INDEX.get(indexKey(Tier.CODEC, hex));
+        }
+        if (entry == null) return null;
+        final Path file = storeFile(Tier.CODEC, hex);
+        if (entry.expired(System.currentTimeMillis()) || !Files.isRegularFile(file)) {
+            storeDelete(Tier.CODEC, hex);
+            return null;
+        }
+        return file;
+    }
 
     // ==========================================================================
     // NETWORK FETCH
@@ -466,6 +577,92 @@ public final class NetworkCache {
             out.append(Character.forDigit(b & 0xF, 16));
         }
         return out.toString();
+    }
+
+    // ==========================================================================
+    // CODEC WRITE SESSION
+    // ==========================================================================
+    /**
+     * A streaming codec write session. Frames flow in via {@link #write}; {@link #commit} finalizes
+     * the DDS (patching its frame count), atomically publishes it to the codec tier, and indexes it.
+     * The session owns a private temp file until commit, so an aborted or failed write never leaves
+     * a half-written entry behind. Not thread-safe — drive it from a single producer.
+     */
+    public static final class CodecWriter implements Closeable {
+        private final byte[] hash;
+        private final String hex;
+        private final Path tmp;
+        private final Path file;
+        private final BCWriter writer;
+        private boolean closed;
+
+        CodecWriter(final byte[] hash, final String hex, final Path tmp, final Path file, final BCWriter writer) {
+            this.hash = hash;
+            this.hex = hex;
+            this.tmp = tmp;
+            this.file = file;
+            this.writer = writer;
+        }
+
+        /** Encodes one frame and appends it to the texture with its display delay in milliseconds. */
+        public void write(final ByteBuffer frame, final long delayMs) throws IOException {
+            if (this.closed) throw new IOException("Codec writer is closed");
+            this.writer.writeFrame(frame, delayMs);
+        }
+
+        /** Frames written so far. */
+        public int frameCount() {
+            return this.writer.frameCount();
+        }
+
+        /**
+         * Finalizes and publishes the texture. A session with no frames is discarded instead.
+         * Idempotent: a second call (e.g. from {@link #close()}) does nothing.
+         */
+        public void commit() throws IOException {
+            if (this.closed) return;
+            this.closed = true;
+            if (this.writer.frameCount() == 0) {
+                this.discard();
+                return;
+            }
+            try {
+                this.writer.close();
+                DDSHeader.patchArraySize(this.tmp, this.writer.frameCount());
+                IOTool.move(this.tmp, this.file);
+            } catch (final IOException e) {
+                // FINALIZE FAILED — DON'T LEAVE A HALF-WRITTEN TEMP BEHIND.
+                try {
+                    Files.deleteIfExists(this.tmp);
+                } catch (final IOException ignored) {}
+                throw e;
+            }
+            synchronized (NetworkCache.class) {
+                INDEX.put(indexKey(Tier.CODEC, this.hex), new Entry(this.hash, Tier.CODEC, CODEC_NEVER_EXPIRES, CODEC_CONTENT_TYPE));
+                writeIndex();
+            }
+        }
+
+        /** Discards the in-progress texture without publishing it. */
+        public void abort() {
+            if (this.closed) return;
+            this.closed = true;
+            this.discard();
+        }
+
+        private void discard() {
+            IOTool.closeQuietly(this.writer);
+            try {
+                Files.deleteIfExists(this.tmp);
+            } catch (final IOException e) {
+                LOGGER.warn(IT, "Failed to delete aborted codec temp {}", this.tmp, e);
+            }
+        }
+
+        @Override
+        public void close() {
+            this.abort();
+        }
     }
 
     // ==========================================================================

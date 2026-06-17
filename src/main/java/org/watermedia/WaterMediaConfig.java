@@ -81,6 +81,12 @@ public class WaterMediaConfig {
         public boolean txNetworkCache = true;
 
         @Spec.Field
+        @Comment("Enables the on-disk BC7/DDS codec cache used by TxMediaPlayer")
+        @Comment("Decoded frames are recompressed to GPU block-compressed textures (DDS) so replays skip the decode and use a quarter of the VRAM")
+        @Comment("Requires GPU block-compression support; ignored when the BC codecs are unavailable")
+        public boolean txCodecCache = false;
+
+        @Spec.Field
         @Comment("Enables the on-disk HTTP media cache used by FFMediaPlayer for small files")
         public boolean ffmpegNetworkCache = true;
 

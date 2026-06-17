@@ -6,6 +6,7 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.readers.BCReader;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
@@ -90,6 +91,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     // GLOBAL PERMITS BOUNDING AGGREGATE DECODE CPU ACROSS ALL TX PLAYERS — MANY ANIMATED
     // IMAGES THROTTLE EACH OTHER INSTEAD OF STARVING THE GAME'S OWN THREADS
     private static final Semaphore DECODE_PERMITS = new Semaphore(Math.max(2, ThreadTool.minThreads()));
+    // ACCEPT HEADER FOR IMAGE FETCHES — SHARED BY THE NETWORK AND CODEC CACHE KEYS SO BOTH TIERS
+    // DERIVE THE SAME LOGICAL-RESOURCE KEY FOR A GIVEN SOURCE.
+    private static final String IMAGE_ACCEPT = "image/*,*/*";
 
     // ==========================================================================
     // FIELDS
@@ -155,6 +159,13 @@ public final class TxMediaPlayer extends MediaPlayer {
     private final ArrayDeque<ByteBuffer> bufferPool = new ArrayDeque<>();
     private final ArrayDeque<ByteBuffer> inFlight = new ArrayDeque<>(IN_FLIGHT_KEEP + 1);
     private int bufferByteSize;
+
+    // CODEC CACHE (BC OVER DDS) — WRITE SIDE. codecActive IS RESOLVED AT PREPARE; codecWriter HOLDS
+    // THE IN-PROGRESS SESSION (OWNED BY THE PRODUCER THREAD) AND codecExpect GUARDS STRICT IN-ORDER
+    // FIRST-PASS FEEDING SO A SEEK/LOOP/SCRUB ABORTS INSTEAD OF WRITING A CORRUPT TEXTURE.
+    private volatile boolean codecActive;
+    private volatile NetworkCache.CodecWriter codecWriter;
+    private int codecExpect;
 
     public TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine) {
         super(mrl, sourceIndex, gfxEngine, null);
@@ -232,6 +243,11 @@ public final class TxMediaPlayer extends MediaPlayer {
         boolean handedOff = false;
         try {
             this.status = Status.LOADING;
+
+            // CODEC FAST PATH — REPLAY A CACHED BC TEXTURE STRAIGHT TO THE GPU, SKIPPING THE
+            // NETWORK FETCH AND THE SOFTWARE DECODE ENTIRELY. FALLS THROUGH WHEN UNAVAILABLE.
+            if (this.tryCodecTextures()) return;
+
             reader = this.openSource();
             this.width = reader.width();
             this.height = reader.height();
@@ -250,6 +266,8 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.planeCount = reader.planeCount();
             this.applyTarget();
             this.gfx.setVideoFormat(this.pixelFormat, this.outWidth, this.outHeight);
+            // CODEC WRITE APPLIES ONLY FOR BC-ENCODABLE LAYOUTS WHEN THE CODEC CACHE IS ACTIVE.
+            this.codecActive = NetworkCache.codecEnabled() && bcEncodable(this.pixelFormat);
 
             if (this.triggerStop || Thread.currentThread().isInterrupted()) {
                 this.status = Status.STOPPED;
@@ -285,6 +303,9 @@ public final class TxMediaPlayer extends MediaPlayer {
             }
         } finally {
             if (!handedOff) {
+                // SAFETY NET: STATIC/MODE-2 PATHS ALREADY COMMITTED (WRITER NULL); THIS DROPS A
+                // SESSION LEFT OPEN BY AN EXCEPTION SO NO HALF-WRITTEN TEXTURE SURVIVES.
+                this.abortCodec();
                 if (this.lifecycleSerial == serial) this.clearBuffers();
                 IOTool.closeQuietly(reader);
                 if (this.lifecycleSerial == serial) this.activeReader = null;
@@ -301,6 +322,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private void showStatic(final ImageReader reader) throws IOException {
         this.showFirstFrame(reader);
         this.readerExhausted = true;
+        this.commitCodec(); // SINGLE-FRAME TEXTURE: THE ONE FRAME WAS FED IN showFirstFrame
         LOGGER.debug(IT, "Loaded: {} ({}x{}, static, cache/threadless)",
                 this.source, this.width, this.height);
     }
@@ -381,6 +403,9 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.texTimeline = timeline;
         this.loaded = true;
         this.resolveInitialStatus();
+
+        // CODEC CACHE: PERSIST THE WHOLE (SCALED) FRAME SET AS A BC TEXTURE FOR FAST REPLAYS.
+        this.cacheCodecFrames(frames, delays);
 
         LOGGER.debug(IT, "Loaded: {} ({}x{}, {} frame textures, passive clock, duration={}ms)",
                 this.source, this.width, this.height, timeline.length, this.knownDuration);
@@ -471,6 +496,9 @@ public final class TxMediaPlayer extends MediaPlayer {
                 if (this.lifecycleSerial == serial) this.status = Status.ERROR;
             }
         } finally {
+            // SAFETY NET: A CLEAN EOF ALREADY COMMITTED (WRITER NULL); THIS DROPS A SESSION LEFT
+            // OPEN BY STOP/ERROR/INTERRUPT SO NO HALF-WRITTEN TEXTURE SURVIVES.
+            this.abortCodec();
             if (this.lifecycleSerial == serial) this.clearBuffers();
             IOTool.closeQuietly(reader);
             if (this.lifecycleSerial == serial) this.activeReader = null;
@@ -517,6 +545,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             final long target = this.seekTarget;
             if (target >= 0) {
                 this.seekTarget = -1L;
+                this.abortCodec(); // SEEK BREAKS THE IN-ORDER FIRST PASS — DROP THE PARTIAL TEXTURE
                 this.clearPrefetch();
                 reader = this.reopen(reader);
                 final ByteBuffer frame = this.seekReaderToTime(reader, target);
@@ -536,6 +565,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                     this.triggerPrevFrame = false;
                     final int targetIdx = this.currentFrameIndex - 1;
                     if (targetIdx >= 0) {
+                        this.abortCodec(); // STEP-BACK BREAKS THE IN-ORDER PASS
                         this.clearPrefetch();
                         reader = this.reopen(reader);
                         final ByteBuffer frame = this.seekReaderToFrame(reader, targetIdx);
@@ -586,8 +616,9 @@ public final class TxMediaPlayer extends MediaPlayer {
                 continue;
             }
 
-            // NO FRAME AVAILABLE MEANS EOF.
+            // NO FRAME AVAILABLE MEANS EOF — A CLEAN FORWARD PASS COMPLETED, SO PUBLISH THE TEXTURE.
             if (this.knownDuration <= 0L) this.knownDuration = this.time;
+            this.commitCodec();
             if (this.repeat()) {
                 this.clearPrefetch();
                 reader = this.reopen(reader);
@@ -644,6 +675,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // PAUSED STEP-FORWARD PREFERS A QUEUED FRAME, THEN DECODES DIRECTLY IF NEEDED.
     private void stepForward(final ImageReader reader) throws IOException {
+        this.abortCodec(); // MANUAL STEPPING DESYNCS THE IN-ORDER PASS — DROP THE PARTIAL TEXTURE
         final PrefetchedFrame queued = this.prefetchQueue.pollFirst();
         if (queued != null) {
             this.uploadBuffer(queued.pixels, queued.width, queued.height);
@@ -665,6 +697,159 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // ==========================================================================
+    // CODEC CACHE (BC OVER DDS)
+    // ==========================================================================
+    // READ: a committed BC texture replays straight to the GPU — no fetch, no decode. WRITE: decoded
+    // frames are recompressed to BC and persisted so the next playback takes the read path. Dormant
+    // until a native BC codec is available, so today these helpers no-op transparently.
+
+    // REPLAYS A CACHED BC TEXTURE WHEN ONE EXISTS AND THE ENGINE CAN SAMPLE IT. RETURNS FALSE TO
+    // FALL BACK TO THE NORMAL FETCH+DECODE PATH; ENGINE STATE IS ONLY TOUCHED ONCE COMMITTED.
+    private boolean tryCodecTextures() {
+        if (!NetworkCache.codecEnabled()) return false;
+        final URI uri = this.source.uri(this.quality);
+        BCReader bc = null;
+        try {
+            if (!NetworkCache.codecReadable(uri, this.source.headers(), IMAGE_ACCEPT)) return false;
+            bc = NetworkCache.openCodecReader(uri, this.source.headers(), IMAGE_ACCEPT);
+            if (bc == null || !this.gfx.supportsCompressedTextures(bc.version())) return false;
+
+            super.quality(this.source.qualityOf(uri));
+            this.width = bc.width();
+            this.height = bc.height();
+            this.outWidth = this.width;
+            this.outHeight = this.height;
+            this.planeCount = 1;
+            this.pixelFormat = PixelFormat.BGRA; // BC SAMPLES AS RGBA; THE RENDER PATH TREATS IT AS BGRA
+            if (this.quality == MediaQuality.UNKNOWN) {
+                final var realQuality = MediaQuality.of(this.width, this.height);
+                this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
+                this.quality = realQuality;
+            }
+
+            final ByteBuffer[] blocks = bc.blocks();
+            final long[] delays = bc.delays();
+            this.gfx.setVideoFormat(this.pixelFormat, this.outWidth, this.outHeight);
+            if (!this.gfx.uploadCompressedFrames(blocks, bc.version(), bc.blockBytes())) return false;
+            this.gfx.useFrameTexture(0);
+
+            this.animated = blocks.length > 1;
+            this.currentFrameIndex = 0;
+            this.currentDelayMs = delayAt(delays, 0);
+            this.nextDecodedIndex = blocks.length;
+            this.readerExhausted = true;
+            if (this.animated) {
+                // PASSIVE CLOCK — SAME AS MODE 2: THE DISPLAYED FRAME IS RESOLVED FROM WALL TIME.
+                final long[] timeline = new long[blocks.length];
+                long total = 0L;
+                for (int i = 0; i < timeline.length; i++) {
+                    timeline[i] = total;
+                    total += Math.max(1L, delayAt(delays, i));
+                }
+                this.knownDuration = total;
+                synchronized (this.clock) {
+                    this.clockBase = 0L;
+                    this.wallBase = System.currentTimeMillis();
+                }
+                this.texDelays = delays;
+                this.texTimeline = timeline;
+            } else {
+                this.knownDuration = 0L;
+            }
+            this.loaded = true;
+            this.resolveInitialStatus();
+            LOGGER.debug(IT, "Loaded from codec cache: {} ({}x{}, {} {} frame(s), {})",
+                    this.source, this.width, this.height, blocks.length, bc.version(),
+                    this.animated ? "passive clock" : "static");
+            return true;
+        } catch (final Exception e) {
+            LOGGER.debug(IT, "Codec cache read failed for {}; decoding from source", this.source, e);
+            return false;
+        } finally {
+            IOTool.closeQuietly(bc);
+        }
+    }
+
+    // BULK-WRITES A FULLY DECODED FRAME SET (MODE 2) TO THE CODEC CACHE IN ONE SHOT.
+    private void cacheCodecFrames(final ByteBuffer[] frames, final long[] delays) {
+        if (!this.codecActive) return;
+        final URI uri = this.source.uri(this.quality);
+        try (final NetworkCache.CodecWriter writer = NetworkCache.openCodecWriter(
+                uri, this.source.headers(), IMAGE_ACCEPT, this.outWidth, this.outHeight, this.pixelFormat)) {
+            if (writer == null) return;
+            for (int i = 0; i < frames.length; i++) {
+                final ByteBuffer f = frames[i];
+                final int pos = f.position();
+                writer.write(f, delayAt(delays, i));
+                f.position(pos);
+            }
+            writer.commit();
+        } catch (final IOException e) {
+            LOGGER.debug(IT, "Codec cache write failed for {}", this.source, e);
+        }
+    }
+
+    // OPENS A STREAMING CODEC SESSION (MODE 1/3) BEFORE THE FIRST FRAME. NO-OP WHEN INACTIVE.
+    private void openCodec() {
+        if (!this.codecActive || this.codecWriter != null) return;
+        try {
+            this.codecWriter = NetworkCache.openCodecWriter(this.source.uri(this.quality),
+                    this.source.headers(), IMAGE_ACCEPT, this.outWidth, this.outHeight, this.pixelFormat);
+            this.codecExpect = 0;
+        } catch (final IOException e) {
+            LOGGER.debug(IT, "Codec cache open failed for {}", this.source, e);
+            this.codecWriter = null;
+        }
+    }
+
+    // FEEDS ONE FRAME TO THE STREAMING SESSION, ONLY IN STRICT FIRST-PASS ORDER. ANY GAP (SEEK,
+    // LOOP, SCRUB) ABORTS THE SESSION SO THE CACHED TEXTURE IS NEVER PARTIAL OR REORDERED.
+    private void feedCodec(final ByteBuffer frame, final long delay, final int idx) {
+        final NetworkCache.CodecWriter writer = this.codecWriter;
+        if (writer == null) return;
+        if (idx != this.codecExpect) {
+            this.abortCodec();
+            return;
+        }
+        final int pos = frame.position();
+        try {
+            writer.write(frame, delay);
+            this.codecExpect++;
+        } catch (final IOException e) {
+            LOGGER.debug(IT, "Codec cache write failed for {}; aborting", this.source, e);
+            this.abortCodec();
+        } finally {
+            frame.position(pos);
+        }
+    }
+
+    // FINALIZES AND PUBLISHES THE STREAMING SESSION AFTER A CLEAN FULL FORWARD PASS.
+    private void commitCodec() {
+        final NetworkCache.CodecWriter writer = this.codecWriter;
+        if (writer == null) return;
+        this.codecWriter = null;
+        try {
+            writer.commit();
+        } catch (final IOException e) {
+            LOGGER.debug(IT, "Codec cache commit failed for {}", this.source, e);
+        }
+    }
+
+    // DISCARDS THE STREAMING SESSION WITHOUT PUBLISHING (SEEK/LOOP/STOP/SIZE-CHANGE/ERROR).
+    private void abortCodec() {
+        final NetworkCache.CodecWriter writer = this.codecWriter;
+        if (writer != null) {
+            this.codecWriter = null;
+            writer.abort();
+        }
+    }
+
+    // BC ENCODES PACKED COLOUR LAYOUTS ONLY — YUV/GRAY FRAMES SKIP CODEC CACHING.
+    private static boolean bcEncodable(final PixelFormat cs) {
+        return cs == PixelFormat.BGRA || cs == PixelFormat.RGBA || cs == PixelFormat.GBRA || cs == PixelFormat.RGB;
+    }
+
+    // ==========================================================================
     // SHARED — SOURCE LIFECYCLE
     // ==========================================================================
     private ImageReader openSource() throws IOException {
@@ -672,7 +857,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         super.quality(this.source.qualityOf(uri));
         final long maxBytes = this.maxSourceBytes();
         try {
-            final NetworkCache.CachedBytes sourceBytes = NetworkCache.read(uri, this.source.headers(), "image/*,*/*", maxBytes);
+            final NetworkCache.CachedBytes sourceBytes = NetworkCache.read(uri, this.source.headers(), IMAGE_ACCEPT, maxBytes);
             final String type = sourceBytes.contentType();
             if (type == null || !type.toLowerCase(Locale.ROOT).startsWith("image/")) {
                 throw new IllegalArgumentException("Invalid content type: " + type);
@@ -706,7 +891,11 @@ public final class TxMediaPlayer extends MediaPlayer {
             throw new IOException("No frames decoded from: " + this.source);
         }
 
-        this.uploadFrame(reader.next());
+        // OPEN THE CODEC SESSION BEFORE FRAME 0 SO IT IS CAPTURED IN-ORDER (NO-OP WHEN INACTIVE).
+        this.openCodec();
+        final ByteBuffer first = this.copyFrame(reader.next());
+        this.feedCodec(first, delayAt(reader, 0), 0);
+        this.uploadBuffer(first, this.outWidth, this.outHeight);
         this.currentFrameIndex = 0;
         this.currentDelayMs = delayAt(reader, 0);
         this.time = 0L;
@@ -982,6 +1171,9 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (byteSize > Integer.MAX_VALUE) {
             throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
         }
+        // A HOT maxSize/LOD CHANGE MID-STREAM RESIZES SUBSEQUENT FRAMES; THE CODEC TEXTURE IS
+        // FIXED-SIZE, SO DROP ANY IN-PROGRESS WRITE (NO-OP WHEN NO SESSION IS OPEN).
+        this.abortCodec();
         this.outWidth = w;
         this.outHeight = h;
         this.bufferByteSize = (int) byteSize;
@@ -1073,7 +1265,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     private PrefetchedFrame snapshot(final ByteBuffer frame, final long delay, final int idx) {
-        return new PrefetchedFrame(this.copyFrame(frame), delay, idx, this.outWidth, this.outHeight);
+        final ByteBuffer pixels = this.copyFrame(frame);
+        this.feedCodec(pixels, delay, idx); // STREAMING IN-ORDER FEED (NO-OP WHEN INACTIVE)
+        return new PrefetchedFrame(pixels, delay, idx, this.outWidth, this.outHeight);
     }
 
     // DRAINS THE PREFETCH QUEUE AND RETURNS EACH QUEUED BUFFER TO THE POOL.
@@ -1117,6 +1311,10 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.texDelays = null;
         this.lifecycleThread = null;
         this.activeReader = null;
+        // CODEC WRITE STATE — codecActive IS RE-RESOLVED IN prepare(); THE WRITER ITSELF IS OWNED
+        // AND TORN DOWN BY THE PRODUCER THREAD'S finally, SO IT IS NOT TOUCHED HERE.
+        this.codecActive = false;
+        this.codecExpect = 0;
         this.clearQueues();
     }
 

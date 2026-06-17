@@ -27,7 +27,7 @@ public final class ALEngine extends SFXEngine {
     // AL_EXT_MCFORMATS ONLY DEFINES 8/16-BIT INT + 32-BIT FLOAT FORMATS (NO 64-BIT).
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL };
     private static final long[] SUPPORTED_CHANNELS = {
-            //    ch   U8  S16 FLT DBL --  --  --
+            //ch U8 S16 FLT DBL --  --  --
             0x01_FF_FF_FF_FF_00_00_00L, // mono:   all four types
             0x02_FF_FF_FF_FF_00_00_00L, // stereo: all four types
             0x04_FF_FF_FF_00_00_00_00L, // quad:   no DBL

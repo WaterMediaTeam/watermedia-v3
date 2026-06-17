@@ -86,6 +86,28 @@ public abstract class GFXEngine {
     public void useFrameTexture(final int frameIndex) {}
 
     /**
+     * Whether this engine can sample block-compressed (BCn) textures of the given codec.
+     * Engines that return false keep receiving decoded pixels through the {@code upload} overloads.
+     * @param codec a codec id such as {@code "BC7"} (see {@code CodecsAPI.CODEC_BC7})
+     */
+    public boolean supportsCompressedTextures(final String codec) { return false; }
+
+    /**
+     * Uploads a set of already block-compressed frames as dedicated textures — the GPU samples the
+     * BCn data directly, with no software decode and a quarter (BC3/BC7) or eighth (BC1) of the
+     * VRAM of an RGBA8 frame set. This is the codec-cache counterpart to
+     * {@link #uploadFrameTextures(ByteBuffer[], int)}; {@link #useFrameTexture(int)} and
+     * {@link #texture()} select and expose frames the same way. Dimensions come from the active
+     * {@link #setVideoFormat}. The default implementation reports unsupported so custom engines
+     * remain source-compatible.
+     * @param frameBlocks per-frame compressed block data, each {@code ceil(w/4)*ceil(h/4)*blockBytes} bytes
+     * @param codec       the BCn codec id (e.g. {@code "BC7"})
+     * @param blockBytes  bytes per 4x4 block (8 for BC1, 16 for BC3/BC7)
+     * @return true when the engine accepted the compressed frame set
+     */
+    public boolean uploadCompressedFrames(final ByteBuffer[] frameBlocks, final String codec, final int blockBytes) { return false; }
+
+    /**
      * Uploads a single-plane frame (BGRA, RGBA, RGB, GRAY, YUYV).
      * <p>
      * <b>Buffer retention contract (applies to all {@code upload} overloads):</b> engines may
