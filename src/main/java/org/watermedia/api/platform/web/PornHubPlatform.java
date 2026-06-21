@@ -32,8 +32,11 @@ public class PornHubPlatform implements IPlatform {
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        // VALIDATE THE HOST AND REQUIRE A viewkey QUERY PARAM (e.g. ?viewkey=6a159015e4470)
-        if (!DataTool.endsWith(uri.getHost(), HOSTS)
+        // VALIDATE THE HOST AND REQUIRE A viewkey QUERY PARAM (e.g. ?viewkey=6a159015e4470).
+        // A NULL HOST (e.g. file:// URIs) IS NOT OURS — endsWith IS NOT NULL-SAFE, SO GUARD IT
+        // HERE INSTEAD OF LETTING IT NPE AND BREAK THE PLATFORM RESOLUTION CHAIN.
+        final String host = uri.getHost();
+        if (host == null || !DataTool.endsWith(host, HOSTS)
                 || !DataTool.contains(uri.getQuery(), "viewkey="))
             return null;
 
