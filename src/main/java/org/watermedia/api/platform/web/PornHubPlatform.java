@@ -37,7 +37,7 @@ public class PornHubPlatform implements IPlatform {
                 || !DataTool.contains(uri.getQuery(), "viewkey="))
             return null;
 
-        if (!WaterMediaConfig.media.platforms.allowMatureContent)
+        if (!WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(PornHubPlatform.class, "Mature content is disabled in config (this platform serves mature content exclusively)");
 
         final String viewkey = DataTool.parseQuery(uri.getQuery()).get("viewkey");

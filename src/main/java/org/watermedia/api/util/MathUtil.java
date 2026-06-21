@@ -967,6 +967,26 @@ public enum MathUtil {
     }
 
     /**
+     * Resolves a downscaled dimension from a native size: caps it to {@code max} when set
+     * ({@code max > 0}, never upscaling) and then scales it by {@code percent}. Returns the
+     * native size untouched when nothing reduces it (preserving odd source dimensions at full
+     * detail); otherwise forces an even result of at least 2 so chroma-subsampled planes stay
+     * aligned. Used to size video frames before a GPU upload.
+     *
+     * @param nativeSize the source dimension in pixels
+     * @param max the maximum allowed dimension, or {@code 0} (or less) for no cap
+     * @param percent the percentage of the (capped) dimension to keep, 1-100
+     * @return the resolved dimension in pixels
+     */
+    public static int scaled(final int nativeSize, final int max, final int percent) {
+        if (nativeSize <= 0) return nativeSize;
+        int size = max > 0 ? Math.min(nativeSize, max) : nativeSize;
+        if (percent < 100) size = (int) Math.round(size * (percent / 100.0));
+        if (size >= nativeSize) return nativeSize;
+        return Math.max(2, size & ~1);
+    }
+
+    /**
      * Returns an approximate sine value for a given angle from a precomputed lookup table.
      *
      * @param pValue The angle in radians.

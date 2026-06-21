@@ -33,7 +33,7 @@ import static org.lwjgl.glfw.GLFW.*;
  */
 public class PlayerScreen extends Screen {
 
-    private enum DialogState {NONE, QUALITY}
+    private enum DialogState {NONE, QUALITY, VIDEO}
 
     private static final float META_SCALE = AppTheme.TEXT_SECTION;
     private static final float META_HEAD_SCALE = AppTheme.TEXT_DISPLAY;
@@ -41,6 +41,7 @@ public class PlayerScreen extends Screen {
     private static final float META_DESC_SCALE = AppTheme.TEXT_SECTION;
     private static final float[] SPEED_VALUES = {0.25f, 0.50f, 0.75f, 1.0f, 1.25f, 1.50f, 1.75f, 2.0f, 2.5f, 3.0f, 4.0f};
     private static final String[] SPEED_LABELS = {"0.25x", "0.50x", "0.75x", "1.0x", "1.25x", "1.50x", "1.75x", "2.0x", "2.5x", "3.0x", "4.0x"};
+    private static final int RES_FIELD_MAX_DIGITS = 5;
 
     private final Consumer<HomeScreen.Action> navigator;
     private final GLEngine.Builder glEngineBuilder;
@@ -56,9 +57,16 @@ public class PlayerScreen extends Screen {
     private boolean loopEnabled = true;
     private boolean speedSpinnerOpen;
     private int speedSelectedIndex = 3;
+    private String resWidthText = "";
+    private String resHeightText = "";
+    private int videoFocusField; // 0 NONE, 1 WIDTH, 2 HEIGHT
+    private int lodSelectedIndex;
 
     // CACHED BOUNDS FOR QUALITY DIALOG ITEMS
     private Dimension qualityDialogBounds = Dimension.ZERO;
+    private Dimension videoDialogBounds = Dimension.ZERO;
+    private Dimension resWidthBounds = Dimension.ZERO;
+    private Dimension resHeightBounds = Dimension.ZERO;
     private Dimension topBackBounds = Dimension.ZERO;
     private Dimension topSourcesBounds = Dimension.ZERO;
     private Dimension topDebugBounds = Dimension.ZERO;
@@ -84,6 +92,10 @@ public class PlayerScreen extends Screen {
         this.loopEnabled = true;
         this.speedSpinnerOpen = false;
         this.speedSelectedIndex = 3;
+        this.resWidthText = "";
+        this.resHeightText = "";
+        this.videoFocusField = 0;
+        this.lodSelectedIndex = 0;
         this.startPlayer();
     }
 
@@ -115,6 +127,7 @@ public class PlayerScreen extends Screen {
         this.ctx.player.quality(this.ctx.selectedQuality);
         this.ctx.player.repeat(this.loopEnabled);
         this.ctx.player.speed(SPEED_VALUES[this.speedSelectedIndex]);
+        this.applyVideoSettings();
         this.ctx.player.start();
         this.endedSoundPlayed = false;
     }
@@ -149,6 +162,7 @@ public class PlayerScreen extends Screen {
         // RENDER ACTIVE DIALOG ON TOP
         switch (this.dialogState) {
             case QUALITY -> this.renderQualityDialog(windowW, windowH);
+            case VIDEO -> this.renderVideoDialog(windowW, windowH);
         }
     }
 
@@ -166,18 +180,38 @@ public class PlayerScreen extends Screen {
         final int videoH = player.height();
 
         float renderW = windowW, renderH = windowH, offsetX = 0, offsetY = 0;
+        float u0 = 0f, v0 = 0f, u1 = 1f, v1 = 1f;
 
         if (videoW > 0 && videoH > 0) {
-            final float videoAspect = (float) videoW / videoH;
-            final float windowAspect = (float) windowW / windowH;
+            final float srcAspect = (float) videoW / videoH;
 
-            if (videoAspect > windowAspect) {
+            // CENTER-CROP THE UPLOADED FRAME TO THE CUSTOM RESOLUTION ASPECT WHEN BOTH CAPS ARE
+            // SET. maxSize KEEPS THE TEXTURE AT THE SOURCE ASPECT, SO WE ONLY NARROW THE SAMPLED
+            // UV REGION — NO DISTORTION, JUST TRIMMED EDGES — AND DISPLAY IT AT THE CAP ASPECT.
+            float dispAspect = srcAspect;
+            final int capW = player.maxWidth();
+            final int capH = player.maxHeight();
+            if (capW > 0 && capH > 0) {
+                dispAspect = (float) capW / capH;
+                if (dispAspect > srcAspect) {
+                    final float frac = srcAspect / dispAspect;
+                    v0 = (1f - frac) / 2f;
+                    v1 = 1f - v0;
+                } else if (dispAspect < srcAspect) {
+                    final float frac = dispAspect / srcAspect;
+                    u0 = (1f - frac) / 2f;
+                    u1 = 1f - u0;
+                }
+            }
+
+            final float windowAspect = (float) windowW / windowH;
+            if (dispAspect > windowAspect) {
                 renderW = windowW;
-                renderH = windowW / videoAspect;
+                renderH = windowW / dispAspect;
                 offsetY = (windowH - renderH) / 2;
             } else {
                 renderH = windowH;
-                renderW = windowH * videoAspect;
+                renderW = windowH * dispAspect;
                 offsetX = (windowW - renderW) / 2;
             }
         }
@@ -188,7 +222,8 @@ public class PlayerScreen extends Screen {
                 (offsetX / windowW) * 2 - 1,
                 (offsetY / windowH) * 2 - 1,
                 ((offsetX + renderW) / windowW) * 2 - 1,
-                ((offsetY + renderH) / windowH) * 2 - 1
+                ((offsetY + renderH) / windowH) * 2 - 1,
+                u0, v0, u1, v1
         );
     }
 
@@ -275,7 +310,8 @@ public class PlayerScreen extends Screen {
                     : this.ctx.formatTime(player.time()) + " / " + this.ctx.formatTime(duration);
             y = this.renderMetric("Time", timeValue, 28, y, AppTheme.TEXT_SOFT);
             y = this.renderMetric("Volume", player.volume() + "%", 28, y, AppTheme.TEXT_SOFT);
-            y = this.renderMetric("Quality", player.quality().name() + " - " + resolution, 28, y, AppTheme.CYAN);
+            y = this.renderMetric("Quality", player.quality().name() + " - " + this.maxSizeLabel(), 28, y, AppTheme.CYAN);
+            y = this.renderMetric("Dimensions", resolution, 28, y, AppTheme.CYAN);
             y = this.renderMetric("Speed", String.format("%.2f", player.speed()) + "x", 28, y, AppTheme.TEXT_SOFT);
             y = this.renderMetric("Live", player.liveSource() ? "Yes" : "No", 28, y, AppTheme.TEXT_SOFT);
 
@@ -450,8 +486,9 @@ public class PlayerScreen extends Screen {
         final int controlsY = y + 42;
         int leftX = 28;
         leftX = this.renderTransportButton("debug", "DEBUG", leftX, controlsY - 5, 112, 30, AppTheme.NEON_LIGHT) + 8;
-        final int qualityRight = this.renderTransportButton("quality", player.quality().name(), leftX, controlsY - 5, 178, 30, AppTheme.CYAN);
-        final int qualityDividerX = qualityRight + 14;
+        leftX = this.renderTransportButton("quality", player.quality().name(), leftX, controlsY - 5, 210, 30, AppTheme.CYAN) + 8;
+        final int lodRight = this.renderTransportButton("lod", this.lodLabel(), leftX, controlsY - 5, 230, 30, AppTheme.AMBER);
+        final int qualityDividerX = lodRight + 14;
         RenderSystem.lineV(qualityDividerX, controlsY - 6, 32, AppTheme.STROKE_BRIGHT, 1f);
 
         final int sourceCount = this.ctx.availableSources != null ? this.ctx.availableSources.length : 1;
@@ -576,8 +613,7 @@ public class PlayerScreen extends Screen {
             textX = x + 28;
         }
         if (!label.isEmpty()) {
-            final boolean quality = "quality".equals(id);
-            final String badge = quality ? this.playerResolution(this.ctx.player) : null;
+            final String badge = "quality".equals(id) || "lod".equals(id) ? this.maxSizeLabel() : null;
             final int badgeW = badge == null ? 0 : this.text.width(badge, AppTheme.TEXT_SUBTITLE) + 14;
             final int maxLabelW = w - (textX - x) - 8 - (badgeW == 0 ? 0 : badgeW + 8);
             this.text.renderBold(this.text.truncateToWidth(label, maxLabelW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
@@ -610,6 +646,7 @@ public class PlayerScreen extends Screen {
             case "speed" -> "info";
             case "debug" -> "debug";
             case "loop" -> "repeat";
+            case "lod" -> "tv";
             default -> null;
         };
     }
@@ -769,6 +806,213 @@ public class PlayerScreen extends Screen {
         return "SOURCE " + (sourceIndex + 1);
     }
 
+    // VIDEO DIALOG (UPLOAD RESOLUTION CAP + LOD LEVEL)
+    private void openVideoDialog() {
+        if (this.ctx.player == null || this.ctx.player.error()) return;
+        this.speedSpinnerOpen = false;
+        this.dialogState = DialogState.VIDEO;
+    }
+
+    // PUSHES THE CUSTOM MAX RESOLUTION AND LOD TO THE LIVE PLAYER. BOTH APPLY ON THE FLY
+    // TO THE NEXT UPLOADED FRAME; RE-APPLIED FROM startPlayer SO THEY SURVIVE PLAYER RESTARTS.
+    private void applyVideoSettings() {
+        final MediaPlayer player = this.ctx.player;
+        if (player == null) return;
+        player.maxSize(this.parseDim(this.resWidthText, player.sourceWidth()), this.parseDim(this.resHeightText, player.sourceHeight()));
+        player.lod(MediaPlayer.LodLevel.values()[this.lodSelectedIndex]);
+    }
+
+    // PARSES A RESOLUTION FIELD: EMPTY OR NON-POSITIVE MEANS UNLIMITED (NO_SIZE); A POSITIVE
+    // VALUE IS CLAMPED TO THE NATIVE SOURCE SIZE SO THE CAP NEVER EXCEEDS THE ACTIVE MAXIMUM.
+    private int parseDim(final String text, final int nativeMax) {
+        if (text.isEmpty()) return 0;
+        final int value;
+        try {
+            value = Integer.parseInt(text);
+        } catch (final NumberFormatException e) {
+            return 0;
+        }
+        if (value <= 0) return 0;
+        return nativeMax > 0 ? Math.min(value, nativeMax) : value;
+    }
+
+    private String lodLabel() {
+        return MediaPlayer.LodLevel.values()[this.lodSelectedIndex].name();
+    }
+
+    private String maxSizeLabel() {
+        final MediaPlayer player = this.ctx.player;
+        if (player == null) return "FULL";
+        final int mw = player.maxWidth();
+        final int mh = player.maxHeight();
+        if (mw == 0 && mh == 0) return "FULL";
+        return (mw == 0 ? "*" : mw) + "x" + (mh == 0 ? "*" : mh);
+    }
+
+    private void renderVideoDialog(final int windowW, final int windowH) {
+        final MediaPlayer.LodLevel[] lods = MediaPlayer.LodLevel.values();
+        final MediaPlayer player = this.ctx.player;
+        final int dialogW = Math.min(Math.max(580, (int) (windowW * 0.54f)), windowW - 72);
+        final int dialogH = Math.min(Math.max(320, 96 + Math.max(lods.length * 40, 200)), windowH - 96);
+
+        this.videoDialogBounds = Dimension.centered(windowW, windowH, dialogW, dialogH);
+        final int x = this.videoDialogBounds.x();
+        final int y = this.videoDialogBounds.y();
+
+        RenderSystem.setupOrtho(windowW, windowH);
+        RenderSystem.fill(0, 0, windowW, windowH, 0f, 0f, 0f, 0.62f);
+        RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.5f);
+        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, AppTheme.NEON, 0.22f);
+        RenderSystem.fillGradientV(x, y, dialogW, dialogH,
+                AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 0.96f,
+                AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 0.96f);
+        RenderSystem.rect(x, y, dialogW, dialogH, AppTheme.NEON, 1.4f);
+
+        final int splitX = x + dialogW / 2;
+        RenderSystem.lineV(splitX, y + 18, dialogH - 36, AppTheme.STROKE_BRIGHT, 1f);
+        AppChrome.sectionHead(this.text, "Resolution", "custom px", x + 22, y + 20);
+        AppChrome.sectionHead(this.text, "Level of Detail", lods.length + " levels", splitX + 22, y + 20);
+
+        // LEFT COLUMN — CUSTOM RESOLUTION TEXT INPUTS CLAMPED TO THE ACTIVE SOURCE SIZE
+        final int fieldX = x + 24;
+        final int fieldW = splitX - x - 46;
+        this.resWidthBounds = new Dimension(fieldX, y + 80, fieldW, 34);
+        this.resHeightBounds = new Dimension(fieldX, y + 152, fieldW, 34);
+        this.text.render("WIDTH", fieldX, y + 62, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+        this.renderInputField(this.resWidthBounds, this.resWidthText, this.videoFocusField == 1);
+        this.text.render("HEIGHT", fieldX, y + 134, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+        this.renderInputField(this.resHeightBounds, this.resHeightText, this.videoFocusField == 2);
+
+        final int srcW = player == null ? 0 : player.sourceWidth();
+        final int srcH = player == null ? 0 : player.sourceHeight();
+        final String activeMax = srcW > 0 && srcH > 0 ? srcW + " x " + srcH : "PENDING";
+        this.text.render("ACTIVE MAX  " + activeMax, fieldX, y + 200, AppTheme.CYAN, AppTheme.TEXT_BODY);
+        this.text.render("EMPTY FIELD = UNLIMITED", fieldX, y + 222, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+
+        // RIGHT COLUMN — LOD LEVELS
+        for (int i = 0; i < lods.length; i++) {
+            this.renderVideoRow(this.lodRowBounds(i), i == this.lodSelectedIndex, lods[i].name(), lods[i].percent() + "%");
+        }
+
+        RenderSystem.restoreProjection();
+    }
+
+    private void renderInputField(final Dimension box, final String value, final boolean focused) {
+        RenderSystem.fill(box.x(), box.y(), box.width(), box.height(), AppTheme.alpha(AppTheme.BG_0, 220));
+        RenderSystem.rect(box.x(), box.y(), box.width(), box.height(), focused ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, focused ? 2f : 1f);
+        if (focused) RenderSystem.glowRect(box.x(), box.y(), box.width(), box.height(), 0f, AppTheme.NEON, 0.18f);
+        final int textX = box.x() + 12;
+        final int textY = box.y() + Math.max(0, (box.height() - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2);
+        final boolean empty = value.isEmpty();
+        if (!empty) {
+            this.text.render(value, textX, textY, AppTheme.TEXT, AppTheme.TEXT_BODY);
+        } else if (!focused) {
+            this.text.render("AUTO", textX, textY, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+        }
+        if (focused) {
+            final int caretX = textX + (empty ? 0 : this.text.width(value, AppTheme.TEXT_BODY)) + 2;
+            RenderSystem.fill(caretX, box.y() + 7, 2, box.height() - 14, AppTheme.NEON_LIGHT);
+        }
+    }
+
+    private void renderVideoRow(final Dimension row, final boolean selected, final String label, final String detail) {
+        final boolean hover = row.contains(this.ctx.mouseX, this.ctx.mouseY);
+        RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
+                selected ? AppTheme.alpha(AppTheme.NEON_DARK, 88) : hover ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : AppTheme.alpha(AppTheme.BG_1, 148));
+        RenderSystem.rect(row.x(), row.y(), row.width(), row.height(),
+                selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, selected ? 2f : 1f);
+        RenderSystem.fill(row.x() + 8, row.y() + Math.max(0, (row.height() - 8) / 2), 8, 8, selected ? AppTheme.AMBER : AppTheme.TEXT_FAINT);
+        this.text.renderBold(label, row.x() + 28, row.y() + Math.max(0, (row.height() - this.text.glyphHeightBold(AppTheme.TEXT_BODY)) / 2),
+                selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
+        this.text.render(detail, row.right() - this.text.width(detail, AppTheme.TEXT_BODY) - 12,
+                row.y() + Math.max(0, (row.height() - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2),
+                selected ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+    }
+
+    private Dimension lodRowBounds(final int index) {
+        final int rowX = this.videoDialogBounds.x() + this.videoDialogBounds.width() / 2 + 24;
+        final int rowW = this.videoDialogBounds.right() - rowX - 22;
+        return new Dimension(rowX, this.videoDialogBounds.y() + 60 + index * 40, rowW, 34);
+    }
+
+    // EDITS A RESOLUTION FIELD, CLAMPS THE TYPED VALUE TO THE NATIVE SOURCE SIZE, AND
+    // PUSHES THE NEW CAP TO THE LIVE PLAYER.
+    private void setResField(final boolean width, final String raw) {
+        String value = raw;
+        final MediaPlayer player = this.ctx.player;
+        final int nativeMax = player == null ? 0 : (width ? player.sourceWidth() : player.sourceHeight());
+        if (!value.isEmpty() && nativeMax > 0) {
+            try {
+                if (Integer.parseInt(value) > nativeMax) value = String.valueOf(nativeMax);
+            } catch (final NumberFormatException e) {
+                value = "";
+            }
+        }
+        if (width) this.resWidthText = value;
+        else this.resHeightText = value;
+        this.applyVideoSettings();
+        this.ctx.requestRender();
+    }
+
+    private void selectVideoLod(final int index) {
+        final int next = Math.max(0, Math.min(MediaPlayer.LodLevel.values().length - 1, index));
+        if (next == this.lodSelectedIndex) return;
+        this.lodSelectedIndex = next;
+        this.applyVideoSettings();
+        this.ctx.playSelectionSound();
+        this.ctx.requestRender();
+    }
+
+    private void handleVideoKey(final int key) {
+        switch (key) {
+            case GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE -> {
+                if (this.videoFocusField != 0) {
+                    final String cur = this.videoFocusField == 1 ? this.resWidthText : this.resHeightText;
+                    if (!cur.isEmpty()) this.setResField(this.videoFocusField == 1, cur.substring(0, cur.length() - 1));
+                }
+            }
+            case GLFW_KEY_TAB -> this.videoFocusField = this.videoFocusField == 1 ? 2 : 1;
+            case GLFW_KEY_UP -> this.selectVideoLod(this.lodSelectedIndex - 1);
+            case GLFW_KEY_DOWN -> this.selectVideoLod(this.lodSelectedIndex + 1);
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.dialogState = DialogState.NONE;
+            case GLFW_KEY_ESCAPE -> {
+                if (this.videoFocusField != 0) this.videoFocusField = 0;
+                else this.dialogState = DialogState.NONE;
+            }
+        }
+    }
+
+    private void handleVideoClick(final double mx, final double my) {
+        if (this.resWidthBounds.contains(mx, my)) {
+            this.videoFocusField = 1;
+            this.ctx.playSelectionSound();
+            return;
+        }
+        if (this.resHeightBounds.contains(mx, my)) {
+            this.videoFocusField = 2;
+            this.ctx.playSelectionSound();
+            return;
+        }
+        for (int i = 0; i < MediaPlayer.LodLevel.values().length; i++) {
+            if (this.lodRowBounds(i).contains(mx, my)) {
+                this.videoFocusField = 0;
+                this.selectVideoLod(i);
+                return;
+            }
+        }
+        if (this.videoDialogBounds.contains(mx, my)) this.videoFocusField = 0;
+        else this.dialogState = DialogState.NONE;
+    }
+
+    @Override
+    public void handleChar(final int codepoint) {
+        if (this.dialogState != DialogState.VIDEO || this.videoFocusField == 0 || this.ctx.ctrlDown) return;
+        if (codepoint < '0' || codepoint > '9') return;
+        final String cur = this.videoFocusField == 1 ? this.resWidthText : this.resHeightText;
+        if (cur.length() >= RES_FIELD_MAX_DIGITS) return;
+        this.setResField(this.videoFocusField == 1, cur + (char) codepoint);
+    }
+
     // NAVIGATION
     private void returnToMenu() {
         this.dialogState = DialogState.NONE;
@@ -845,6 +1089,7 @@ public class PlayerScreen extends Screen {
     protected void onKeyRelease(final int key) {
         switch (this.dialogState) {
             case QUALITY -> this.handleQualityKey(key);
+            case VIDEO -> this.handleVideoKey(key);
             case NONE -> this.handlePlayerKey(key);
         }
     }
@@ -869,6 +1114,7 @@ public class PlayerScreen extends Screen {
                 this.returnToMenu();
             }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openQualityDialog();
+            case GLFW_KEY_V -> this.openVideoDialog();
             case GLFW_KEY_SPACE -> this.togglePlayback(player);
             case GLFW_KEY_LEFT -> player.rewind();
             case GLFW_KEY_RIGHT -> player.forward();
@@ -940,7 +1186,8 @@ public class PlayerScreen extends Screen {
     public void handleMouseMove(final double mx, final double my) {
         switch (this.dialogState) {
             case QUALITY -> this.handleQualityHover(mx, my);
-            case NONE -> {
+            // VIDEO ROWS COMPUTE HOVER DIRECTLY FROM ctx.mouse DURING RENDER
+            case VIDEO, NONE -> {
             }
         }
     }
@@ -949,6 +1196,7 @@ public class PlayerScreen extends Screen {
     public void handleMouseClick(final double mx, final double my) {
         switch (this.dialogState) {
             case QUALITY -> this.handleQualityClick(mx, my);
+            case VIDEO -> this.handleVideoClick(mx, my);
             case NONE -> this.handlePlayerMouse(mx, my);
         }
     }
@@ -1005,6 +1253,7 @@ public class PlayerScreen extends Screen {
                 case "volumeDown" -> player.volume(player.volume() - 5);
                 case "volumeUp" -> player.volume(player.volume() + 5);
                 case "quality" -> this.openQualityDialog();
+                case "lod" -> this.openVideoDialog();
                 case "debug" -> this.debugOpen = !this.debugOpen;
                 case "loop" -> this.toggleLoop(player);
                 case "speed" -> {
@@ -1074,9 +1323,10 @@ public class PlayerScreen extends Screen {
     public String instructions() {
         return switch (this.dialogState) {
             case QUALITY -> "ARROWS: Navigate | ENTER: Select | ESC: Cancel";
+            case VIDEO -> "TYPE: Resolution | TAB: Field | UP/DOWN: LOD | ENTER/ESC: Close";
             case NONE -> this.ctx.availableSources != null && this.ctx.availableSources.length > 1
-                    ? "SPACE: Play/Pause | L: Loop | ESC: Menu | Arrows: Seek/Vol | ENTER: Sources"
-                    : "SPACE: Play/Pause | L: Loop | ESC: Menu | Arrows: Seek/Vol | ENTER: Quality";
+                    ? "SPACE: Play/Pause | L: Loop | V: Video | ESC: Menu | ENTER: Sources"
+                    : "SPACE: Play/Pause | L: Loop | V: Video | ESC: Menu | ENTER: Quality";
         };
     }
 }

@@ -110,7 +110,7 @@ public final class MRL {
                             mrl.status = Status.FORGOTTEN;
                         }
                     });
-                    NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlManagerCleanupInterval);
+                    NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlCleanupInterval);
                 }
             }
         } catch (final Throwable ex) {

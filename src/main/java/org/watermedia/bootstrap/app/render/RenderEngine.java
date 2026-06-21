@@ -403,12 +403,17 @@ public final class RenderEngine {
     }
 
     public void blitNDC(final float x1, final float y1, final float x2, final float y2) {
-        put(0, x1, y1, 0f, 1f, this.color);
-        put(1, x1, y2, 0f, 0f, this.color);
-        put(2, x2, y2, 1f, 0f, this.color);
-        put(3, x1, y1, 0f, 1f, this.color);
-        put(4, x2, y2, 1f, 0f, this.color);
-        put(5, x2, y1, 1f, 1f, this.color);
+        this.blitNDC(x1, y1, x2, y2, 0f, 0f, 1f, 1f);
+    }
+
+    public void blitNDC(final float x1, final float y1, final float x2, final float y2,
+                        final float u0, final float v0, final float u1, final float v1) {
+        put(0, x1, y1, u0, v1, this.color);
+        put(1, x1, y2, u0, v0, this.color);
+        put(2, x2, y2, u1, v0, this.color);
+        put(3, x1, y1, u0, v1, this.color);
+        put(4, x2, y2, u1, v0, this.color);
+        put(5, x2, y1, u1, v1, this.color);
         this.draw(DrawMode.TRIANGLES, 6, this.boundTextureId > 0);
     }
 

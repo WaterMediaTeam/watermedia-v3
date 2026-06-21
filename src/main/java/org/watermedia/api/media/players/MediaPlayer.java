@@ -34,10 +34,20 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private float speed = 1.0f;
     private boolean muted = false;
 
-    // VIDEO UPLOAD SCALING — READ BY THE PLAYBACK THREADS, WRITTEN BY THE CALLER
-    private volatile int maxWidth = NO_SIZE;
-    private volatile int maxHeight = NO_SIZE;
-    private volatile LodLevel lod = LodLevel.MAX;
+    // VIDEO UPLOAD SCALING — WRITTEN BY THE CALLER (OR A SUBCLASS), READ BY THE PLAYBACK
+    // THREADS. EACH SUBCLASS RESOLVES ITS UPLOAD SIZE FROM THESE VIA MathUtil.scaled(native,
+    // scale, lod.percent()): THE SCALE IS THE PER-AXIS CEILING (NO_SIZE = NO CAP, NEVER
+    // UPSCALES) AND lod SHRINKS IT FURTHER BY A PERCENTAGE. PROTECTED SO THE EXTENDER OWNS THE
+    // VALUES AND MediaPlayer ONLY CENTRALIZES THE SETTER/GETTER PLUMBING.
+    protected volatile int scaleWidth = NO_SIZE;
+    protected volatile int scaleHeight = NO_SIZE;
+    protected volatile LodLevel lod = LodLevel.MAX;
+
+    // NATIVE SOURCE FRAME SIZE BEFORE ANY SCALING — UPDATED BY THE SUBCLASS WHEN IT LEARNS
+    // THE DECODED DIMENSIONS, READ BY CALLERS THAT NEED THE UNCAPPED RESOLUTION (e.g. A UI
+    // CLAMPING A CUSTOM maxSize TO THE SOURCE).
+    protected volatile int sourceWidth = NO_SIZE;
+    protected volatile int sourceHeight = NO_SIZE;
 
     public MediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
         Objects.requireNonNull(mrl, "MediaPlayer must have a valid MRL");
@@ -110,36 +120,51 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public final int height() { return this.gfx == null ? NO_SIZE : this.gfx.height(); }
 
     /**
+     * Returns the native width of the source video in pixels, before any
+     * {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale is applied.
+     * @return the source width, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not yet known.
+     */
+    public final int sourceWidth() { return this.sourceWidth; }
+
+    /**
+     * Returns the native height of the source video in pixels, before any
+     * {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale is applied.
+     * @return the source height, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not yet known.
+     */
+    public final int sourceHeight() { return this.sourceHeight; }
+
+    /**
      * Caps the dimensions of the video frames uploaded to the GPU.
-     * Frames exceeding the cap are downscaled by the player before upload, preserving
-     * the aspect ratio; frames are never upscaled. This trades a small CPU scaling cost
-     * for less data uploaded to the GPU and smaller textures.
+     * Each axis is capped independently to the requested maximum: a frame larger than the
+     * cap on either axis is downscaled by the player before upload, and frames are never
+     * upscaled. Pass dimensions matching the source aspect ratio to avoid distortion.
+     * This trades a small CPU scaling cost for less data uploaded to the GPU and smaller
+     * textures.
      * <p>
-     * The effective cap is further reduced by the current {@link LodLevel}.
-     * Changes apply on the fly to the next uploaded frame without interrupting playback;
-     * already uploaded frames (static images, preloaded animations) keep their size
-     * until the next {@link #start()}.
+     * The cap is further reduced by the current {@link LodLevel}. Changes apply on the fly
+     * to the next uploaded frame without interrupting playback; already uploaded frames
+     * (static images, preloaded animations) keep their size until the next {@link #start()}.
      * @param width maximum upload width in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} for no limit
      * @param height maximum upload height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} for no limit
      * @throws IllegalArgumentException if width or height is negative
      */
     public void maxSize(final int width, final int height) {
         if (width < 0 || height < 0) throw new IllegalArgumentException("Dimensions cannot be negative.");
-        this.maxWidth = width;
-        this.maxHeight = height;
+        this.scaleWidth = width;
+        this.scaleHeight = height;
     }
 
     /**
      * Returns the maximum upload width set by {@link #maxSize(int, int)}.
      * @return the maximum width in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
      */
-    public int maxWidth() { return this.maxWidth; }
+    public int maxWidth() { return this.scaleWidth; }
 
     /**
      * Returns the maximum upload height set by {@link #maxSize(int, int)}.
      * @return the maximum height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
      */
-    public int maxHeight() { return this.maxHeight; }
+    public int maxHeight() { return this.scaleHeight; }
 
     /**
      * Sets the level of detail for video uploads.
@@ -161,28 +186,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return the current level of detail
      */
     public LodLevel lod() { return this.lod; }
-
-    // RESOLVES THE UPLOAD SIZE FOR A SOURCE FRAME: FITS IT INSIDE maxSize SHRUNK BY THE
-    // LOD PERCENT, KEEPING ASPECT RATIO AND NEVER UPSCALING. DIMENSIONS ARE FORCED EVEN
-    // FOR CHROMA SUBSAMPLING. PACKED AS (WIDTH << 32) | HEIGHT SO BOTH AXES ARE RESOLVED
-    // FROM ONE CONSISTENT READ OF THE VOLATILE FIELDS.
-    protected final long targetSize(final int srcW, final int srcH) {
-        final int percent = this.lod.percent();
-        final int mw = this.maxWidth;
-        final int mh = this.maxHeight;
-        if (srcW <= 0 || srcH <= 0 || (percent >= 100 && mw == NO_SIZE && mh == NO_SIZE)) {
-            return (long) srcW << 32 | (srcH & 0xFFFFFFFFL);
-        }
-        final double boundW = (mw > 0 ? Math.min(mw, srcW) : srcW) * (percent / 100.0);
-        final double boundH = (mh > 0 ? Math.min(mh, srcH) : srcH) * (percent / 100.0);
-        final double scale = Math.min(boundW / srcW, boundH / srcH);
-        if (scale >= 1.0) {
-            return (long) srcW << 32 | (srcH & 0xFFFFFFFFL);
-        }
-        final int w = Math.max(2, (int) Math.round(srcW * scale) & ~1);
-        final int h = Math.max(2, (int) Math.round(srcH * scale) & ~1);
-        return (long) w << 32 | (h & 0xFFFFFFFFL);
-    }
 
     /**
      * Returns the texture ID used for rendering the video frames.

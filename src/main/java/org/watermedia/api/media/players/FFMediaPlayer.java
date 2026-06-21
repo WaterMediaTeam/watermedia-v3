@@ -26,6 +26,7 @@ import org.watermedia.api.media.players.util.MasterClock;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
@@ -603,9 +604,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             // THE TARGET IS RESOLVED PER FRAME, SO HOT LOD CHANGES APPLY WITHOUT
             // TOUCHING THE DECODE PIPELINE OR THE CLOCK.
             PixFmtMapping mapping = mapPixelFormat(slot.format);
-            final long target = this.targetSize(slot.width, slot.height);
-            final int targetW = (int) (target >>> 32);
-            final int targetH = (int) target;
+            final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
+            final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
 
             AVFrame uploadFrame = slot.frame;
             int uploadW = slot.width;
@@ -1509,6 +1509,13 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             LOGGER.info(IT, "Video decode exiting — packets: {}, frames produced: {}, frames dropped: {}, interrupted: {}",
                     packetsProcessed, framesProduced, framesDropped, Thread.currentThread().isInterrupted());
+            // LEAVE THE CODEC CLEAN FOR THE NEXT RUN. AT EOF THIS THREAD EXITS WITHOUT
+            // DRAINING, SO REORDER-BUFFERED FRAMES STAY INSIDE THE DECODER. A repeat()
+            // RESTARTS THIS THREAD WITH lastSerial=-1, WHICH SKIPS THE PER-SEEK FLUSH —
+            // WITHOUT FLUSHING HERE THOSE STALE FRAMES WOULD BE EMITTED FIRST WITH
+            // END-OF-STREAM PTS, POISONING THE PTS DISCONTINUITY OFFSET AND FREEZING
+            // VIDEO ON REPEAT (AUDIO IS UNAFFECTED — NO DECODER REORDER DELAY).
+            if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
             avutil.av_frame_free(tempFrame);
             if (hwTransfer != null) avutil.av_frame_free(hwTransfer);
         }
@@ -1601,6 +1608,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             LOGGER.info(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
+            // LEAVE THE CODEC CLEAN FOR THE NEXT RUN (SEE THE VIDEO DECODER): A repeat()
+            // RESTARTS THIS THREAD WITH lastSerial=-1 AND SKIPS ITS PER-SEEK FLUSH, SO
+            // ANY BUFFERED FRAMES FROM EOF MUST NOT SURVIVE INTO THE NEW RUN. AUDIO
+            // CODECS RARELY BUFFER, BUT THE FLUSH KEEPS THE INVARIANT FOR THOSE THAT DO.
+            if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
             avutil.av_frame_free(tempFrame);
         }
     }
@@ -2361,6 +2373,8 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final int w = this.videoCodecContext.width();
         final int h = this.videoCodecContext.height();
+        this.sourceWidth = w;
+        this.sourceHeight = h;
 
         if (this.quality == MediaQuality.UNKNOWN) {
             final var realQuality = MediaQuality.of(w, h);
@@ -2373,9 +2387,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (initialMapping != null) {
             // PRE-CONFIGURE THE ENGINE WITH THE UPLOAD TARGET (maxSize/LOD APPLIED) SO
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
-            final long target = this.targetSize(w, h);
-            final int targetW = (int) (target >>> 32);
-            final int targetH = (int) target;
+            final int targetW = MathUtil.scaled(w, this.scaleWidth, this.lod.percent());
+            final int targetH = MathUtil.scaled(h, this.scaleHeight, this.lod.percent());
             this.gfx.setVideoFormat(initialMapping.cs, targetW, targetH, initialMapping.bits);
             this.lastFormat = initialMapping.cs;
             this.lastBitsPerComponent = initialMapping.bits;

@@ -10,6 +10,7 @@ import org.watermedia.api.codecs.readers.BCReader;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.IOTool;
@@ -98,16 +99,15 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // FIELDS
     // ==========================================================================
-    // METADATA (RESOLVED ON FIRST READER OPEN; DURATION MAY REMAIN UNKNOWN UNTIL EOF)
-    private volatile int width;
-    private volatile int height;
+    // METADATA (RESOLVED ON FIRST READER OPEN; DURATION MAY REMAIN UNKNOWN UNTIL EOF).
+    // THE NATIVE FRAME SIZE LIVES IN MediaPlayer#sourceWidth / sourceHeight.
     private volatile boolean animated;
     private volatile boolean loaded;
     private volatile long knownDuration;       // 0 = UNKNOWN / STATIC. SET BY READER METADATA OR EOF.
     private volatile PixelFormat pixelFormat = PixelFormat.BGRA;
     private volatile int planeCount = 1;
 
-    // UPLOAD TARGET — SOURCE DIMENSIONS SHRUNK BY maxSize/LOD (SEE MediaPlayer#targetSize).
+    // UPLOAD TARGET — SOURCE DIMENSIONS SHRUNK BY maxSize/LOD (SEE MathUtil#scaled).
     // WRITTEN ONLY BY THE PREPARE/LIFECYCLE THREAD THAT DECODES AND UPLOADS FRAMES.
     private int outWidth;
     private int outHeight;
@@ -249,13 +249,13 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.tryCodecTextures()) return;
 
             reader = this.openSource();
-            this.width = reader.width();
-            this.height = reader.height();
-            if (this.width <= 0 || this.height <= 0) {
-                throw new IOException("Invalid image dimensions: " + this.width + "x" + this.height);
+            this.sourceWidth = reader.width();
+            this.sourceHeight = reader.height();
+            if (this.sourceWidth <= 0 || this.sourceHeight <= 0) {
+                throw new IOException("Invalid image dimensions: " + this.sourceWidth + "x" + this.sourceHeight);
             }
             if (this.quality == MediaQuality.UNKNOWN) {
-                final var realQuality = MediaQuality.of(this.width, this.height);
+                final var realQuality = MediaQuality.of(this.sourceWidth, this.sourceHeight);
                 this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
                 LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(this.quality), this.quality, realQuality);
                 this.quality = realQuality;
@@ -324,7 +324,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.readerExhausted = true;
         this.commitCodec(); // SINGLE-FRAME TEXTURE: THE ONE FRAME WAS FED IN showFirstFrame
         LOGGER.debug(IT, "Loaded: {} ({}x{}, static, cache/threadless)",
-                this.source, this.width, this.height);
+                this.source, this.sourceWidth, this.sourceHeight);
     }
 
     // ==========================================================================
@@ -364,7 +364,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         }
 
         ByteBuffer[] frames = data.frames();
-        if (this.outWidth != this.width || this.outHeight != this.height) {
+        if (this.outWidth != this.sourceWidth || this.outHeight != this.sourceHeight) {
             // DOWNSCALE THE WHOLE SET BEFORE THE BULK UPLOAD — VRAM AND UPLOAD COST
             // FOLLOW THE TARGET SIZE, NOT THE SOURCE SIZE
             final ByteBuffer[] scaled = new ByteBuffer[frames.length];
@@ -408,7 +408,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.cacheCodecFrames(frames, delays);
 
         LOGGER.debug(IT, "Loaded: {} ({}x{}, {} frame textures, passive clock, duration={}ms)",
-                this.source, this.width, this.height, timeline.length, this.knownDuration);
+                this.source, this.sourceWidth, this.sourceHeight, timeline.length, this.knownDuration);
     }
 
     // RESOLVES THE PASSIVE-CLOCK MEDIA TIME, FOLDING LOOP WRAPS AND THE ENDED TRANSITION.
@@ -483,7 +483,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         try {
             this.showFirstFrame(reader);
             LOGGER.debug(IT, "Loaded: {} ({}x{}, animated, duration={}ms, prefetch<={})",
-                    this.source, this.width, this.height, this.knownDuration, this.prefetchMax);
+                    this.source, this.sourceWidth, this.sourceHeight, this.knownDuration, this.prefetchMax);
             reader = this.playStream(reader);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -715,14 +715,14 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (bc == null || !this.gfx.supportsCompressedTextures(bc.version())) return false;
 
             super.quality(this.source.qualityOf(uri));
-            this.width = bc.width();
-            this.height = bc.height();
-            this.outWidth = this.width;
-            this.outHeight = this.height;
+            this.sourceWidth = bc.width();
+            this.sourceHeight = bc.height();
+            this.outWidth = this.sourceWidth;
+            this.outHeight = this.sourceHeight;
             this.planeCount = 1;
             this.pixelFormat = PixelFormat.BGRA; // BC SAMPLES AS RGBA; THE RENDER PATH TREATS IT AS BGRA
             if (this.quality == MediaQuality.UNKNOWN) {
-                final var realQuality = MediaQuality.of(this.width, this.height);
+                final var realQuality = MediaQuality.of(this.sourceWidth, this.sourceHeight);
                 this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
                 this.quality = realQuality;
             }
@@ -759,7 +759,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.loaded = true;
             this.resolveInitialStatus();
             LOGGER.debug(IT, "Loaded from codec cache: {} ({}x{}, {} {} frame(s), {})",
-                    this.source, this.width, this.height, blocks.length, bc.version(),
+                    this.source, this.sourceWidth, this.sourceHeight, blocks.length, bc.version(),
                     this.animated ? "passive clock" : "static");
             return true;
         } catch (final Exception e) {
@@ -1144,7 +1144,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // TARGET IS ACTIVE) AND LEAVES IT FLIPPED FOR READING.
     private ByteBuffer copyFrame(final ByteBuffer src) {
         final ByteBuffer dst = this.borrowBuffer();
-        if (this.outWidth != this.width || this.outHeight != this.height) {
+        if (this.outWidth != this.sourceWidth || this.outHeight != this.sourceHeight) {
             this.scaleFrame(src, dst);
         } else {
             final int savedPos = src.position();
@@ -1159,12 +1159,11 @@ public final class TxMediaPlayer extends MediaPlayer {
     // CHANGE. UNSCALABLE FORMATS UPLOAD AT SOURCE SIZE. CALLED ONLY FROM THE
     // PREPARE/LIFECYCLE THREAD SO outWidth/outHeight NEVER TEAR AGAINST A DECODE.
     private void applyTarget() throws IOException {
-        int w = this.width;
-        int h = this.height;
+        int w = this.sourceWidth;
+        int h = this.sourceHeight;
         if (scalable(this.pixelFormat)) {
-            final long target = this.targetSize(w, h);
-            w = (int) (target >>> 32);
-            h = (int) target;
+            w = MathUtil.scaled(this.sourceWidth, this.scaleWidth, this.lod.percent());
+            h = MathUtil.scaled(this.sourceHeight, this.scaleHeight, this.lod.percent());
         }
         if (w == this.outWidth && h == this.outHeight) return;
         final long byteSize = totalBufferBytes(this.pixelFormat, w, h);
@@ -1189,8 +1188,8 @@ public final class TxMediaPlayer extends MediaPlayer {
     // DOWNSCALES A READER FRAME (TIGHTLY PACKED PLANE LAYOUT) INTO dst AT THE UPLOAD
     // TARGET. MIRRORS THE PLANE LAYOUT USED BY totalBufferBytes/uploadMultiPlane.
     private void scaleFrame(final ByteBuffer src, final ByteBuffer dst) {
-        final int sw = this.width;
-        final int sh = this.height;
+        final int sw = this.sourceWidth;
+        final int sh = this.sourceHeight;
         final int dw = this.outWidth;
         final int dh = this.outHeight;
         final int base = src.position();

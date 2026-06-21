@@ -12,6 +12,7 @@ import java.util.regex.Pattern;
 
 @Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
 public class WaterMediaConfig {
+    private static final int DEFAULT_NETWORK_SERVER_PORT = 25572;
 
     @Spec.Field
     @Comment("CodecsAPI settings")
@@ -24,6 +25,10 @@ public class WaterMediaConfig {
     @Spec.Field
     @Comment("MediaAPI settings")
     public static final Media media = new Media();
+
+    @Spec.Field
+    @Comment("Platform-specific settings")
+    public static final Platforms platforms = new Platforms();
 
     @Spec(value = "decoders", disableStatic = true)
     public final static class Decoders {
@@ -45,18 +50,23 @@ public class WaterMediaConfig {
 
     @Spec(value = "media", disableStatic = true)
     public final static class Media {
-        @Spec.Field(suffix = "min")
-        @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")
-        @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
-        public float mrlManagerCleanupInterval = 60.0f;
-
         @Spec.Field(control = Control.DROPDOWN)
         @Comment("Default quality for streaming media without a specified quality")
         public MediaQuality defaultQuality = MediaQuality.HIGHER;
 
+        @Spec.Field(suffix = "min")
+        @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")
+        @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
+        public float mrlCleanupInterval = 60.0f;
+
         @Spec.Field
         @Comment("Disables FFMPEG engine (AT ALL)")
         public boolean disableFFMPEG = false;
+
+        @Spec.Field(control = Control.INPUT_FOLDER)
+        @Comment("Adds this path to the discovery path")
+        @Comment("Path must not be the fat ffmpeg.exe file")
+        public Path customFFMPEGPath = new File("").toPath();
 
         @Spec.Field
         @Comment("Enables hardware-accelerated video decoding (NVDEC, QuickSync, D3D11VA, VAAPI...)")
@@ -68,23 +78,6 @@ public class WaterMediaConfig {
         @Comment("Increment this value if you find YouTube videos with slow playback")
         @NumberConditions(minInt = 1, maxInt = 12)
         public int ffmpegSlavePacketReads = 3;
-
-        @Spec.Field(suffix = "MB", control = Control.SEEKBAR)
-        @Comment("VRAM budget (in MB) for keeping an animated image as one GL texture per frame")
-        @Comment("Animations whose decoded frames fit under this budget skip per-frame streaming entirely (best performance, like v2)")
-        @Comment("Set to 0 to force TxMediaPlayer to stream animated image frames into a single texture")
-        @NumberConditions(minInt = 0, maxInt = 512)
-        public int txFrameTexturesBudgetMB = 32;
-
-        @Spec.Field
-        @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
-        public boolean txNetworkCache = true;
-
-        @Spec.Field
-        @Comment("Enables the on-disk BC7/DDS codec cache used by TxMediaPlayer")
-        @Comment("Decoded frames are recompressed to GPU block-compressed textures (DDS) so replays skip the decode and use a quarter of the VRAM")
-        @Comment("Requires GPU block-compression support; ignored when the BC codecs are unavailable")
-        public boolean txCodecCache = false;
 
         @Spec.Field
         @Comment("Enables the on-disk HTTP media cache used by FFMediaPlayer for small files")
@@ -108,14 +101,22 @@ public class WaterMediaConfig {
         @NumberConditions(minInt = 1, math = true)
         public int ffmpegProbeSizeMB = 10;
 
-        @Spec.Field(control = Control.INPUT_FOLDER)
-        @Comment("Adds this path to the discovery path")
-        @Comment("Path must not be the fat ffmpeg.exe file")
-        public Path customFFMPEGPath = new File("").toPath();
+        @Spec.Field(suffix = "MB", control = Control.SEEKBAR)
+        @Comment("VRAM budget (in MB) for keeping an animated image as one GL texture per frame")
+        @Comment("Animations whose decoded frames fit under this budget skip per-frame streaming entirely (best performance, like v2)")
+        @Comment("Set to 0 to force TxMediaPlayer to stream animated image frames into a single texture")
+        @NumberConditions(minInt = 0, maxInt = 512)
+        public int txFrameTexturesBudgetMB = 32;
 
         @Spec.Field
-        @Comment("Platform-specific settings")
-        public final Platforms platforms = new Platforms();
+        @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
+        public boolean txNetworkCache = true;
+
+        @Spec.Field
+        @Comment("Enables the on-disk BC7/DDS codec cache used by TxMediaPlayer")
+        @Comment("Decoded frames are recompressed to GPU block-compressed textures (DDS) so replays skip the decode and use a quarter of the VRAM")
+        @Comment("Requires GPU block-compression support; ignored when the BC codecs are unavailable")
+        public boolean txCodecCache = false;
     }
 
     @Spec(value = "platforms", disableStatic = true)
@@ -156,13 +157,13 @@ public class WaterMediaConfig {
         @NumberConditions(minInt = 1, maxInt = 65535)
         @Comment("Sets file storage server port, ask to your provider if the port is open worldwide before start the server or blame the lib")
         @Comment("Used only on server-side")
-        public int serverPort = 25580;
+        public int serverPort = DEFAULT_NETWORK_SERVER_PORT;
 
         @Spec.Field
         @StringConditions(value = "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)+([A-Za-z]|[A-Za-z][A-Za-z0-9\\-]*[A-Za-z0-9])$", regexFlags = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE, mode = StringField.Mode.REGEX)
         @Comment("Sets the remote file server to upload and download files, it must match your game server IP or domain with the given port")
         @Comment("Used only on client-side")
-        public String remoteHost = "http://localhost:25580/";
+        public String remoteHost = "http://localhost:" + DEFAULT_NETWORK_SERVER_PORT + "/";
 
         @Spec.Field(control = Control.PASSWORD)
         @Comment("The password to access the server, change this every time you have to update your server and the client to prevent external access and bandwidth abuse")

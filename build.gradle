@@ -67,7 +67,7 @@ dependencies {
 
     // DEPENDENCIES
     include "org.watermedia:tools"
-    include "org.bytedeco:ffmpeg:7.1.1-1.5.12"
+    include "org.bytedeco:ffmpeg:8.0.1-1.5.13"
     include ("com.github.SrRapero720:waterconfig:$waterconfig_version") { // TODO: do not shade
         transitive = false
     }

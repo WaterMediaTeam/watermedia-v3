@@ -71,6 +71,7 @@ public final class RenderSystem {
     public static void blit(final float x, final float y, final float w, final float h) { engine.blit(x, y, w, h); }
     public static void blit(final float x, final float y, final float w, final float h, final float u0, final float v0, final float u1, final float v1) { engine.blit(x, y, w, h, u0, v0, u1, v1); }
     public static void blitNDC(final float x1, final float y1, final float x2, final float y2) { engine.blitNDC(x1, y1, x2, y2); }
+    public static void blitNDC(final float x1, final float y1, final float x2, final float y2, final float u0, final float v0, final float u1, final float v1) { engine.blitNDC(x1, y1, x2, y2, u0, v0, u1, v1); }
     public static void dialogBox(final float x, final float y, final float w, final float h, final Color borderColor, final float borderWidth) { engine.dialogBox(x, y, w, h, borderColor, borderWidth); }
     public static void dialogBox(final float x, final float y, final float w, final float h, final float r, final float g, final float b, final float a, final float borderWidth) { engine.dialogBox(x, y, w, h, r, g, b, a, borderWidth); }
     public static void fadeLeft(final float width, final float height, final float fadeWidth, final float alpha) { engine.fadeLeft(width, height, fadeWidth, alpha); }
