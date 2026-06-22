@@ -1,3 +1,61 @@
+# 📦 UPDATE 3.0.0.18 (BETA)
+## ⚡ CodecsAPI
+- ⚙️ Added: `ImageReader#reset()` — frame-0 rewind (GIF/PNG/APNG/WebP; other formats full re-open)
+- ⚙️ Added: `CodecsAPI#available(String)` — codec-availability query (pure-Java codecs `PNG`/`JPEG`/`GIF`/`WEBP`/`NETPBM` always present)
+- ⚙️ Added: `common.dds.DDSHeader` (DX10 DDS + per-frame-delay footer), `common.bc.BCCodec` (native seam, bindings pending)
+## ⚡ MediaAPI — Animated images (TxMediaPlayer / GLEngine)
+- ⚙️ Added: codec cache (BC over DDS) — `NetworkCache.Mode` (`DISK`/`CODEC`, from `media.txCodecCache`) + streaming `CodecWriter`; dormant until native BC ships (playback unchanged)
+- ⚙️ Added: `GFXEngine#supportsCompressedTextures(String)` / `uploadCompressedFrames(ByteBuffer[], String, int)` — default-off BCn upload hooks
+- ⚙️ Added: config `media.txCodecCache` (default off)
+- ⚙️ Changed: Mode 2 gated by VRAM budget — `media.txFrameTexturesBudgetMB` (32 MB, 0 disables) replaces `media.txMultiTextureFrameThreshold`; 256-frame cap
+- ⚙️ Changed: Mode 2 passive clock — no thread per animated image; frame resolved from wall time on `texture()`
+- ⚙️ Changed: preloaded frame-texture sets upload progressively (no load hitch on long animations)
+- ⚙️ Added: `GLEngine` latest-wins coalescing — ≤1 upload task queued, newer frames replace undrained
+- ⚙️ Added: `GLEngine` persistent-mapped PBO ring (`ARB_buffer_storage` / GL 4.4); legacy PBO path as fallback
+- ⚙️ Changed: hot-path `glGetError` off unless `-Dwatermedia.glchecks=true`
+- ⚙️ Changed: loop/seek/step-back rewind via `ImageReader#reset()` (no disk re-read/decoder rebuild)
+- ⚙️ Added: shared decode permit pool — bounds aggregate Tx decode CPU (simultaneous GIFs no longer starve game threads)
+- ⚙️ Changed: paused streaming waits on signals (no 100 Hz poll); pause/seek/stop interrupt frame delays
+- ⚙️ Changed: streaming memory — retention 6→2 buffers, pool trimmed while paused, prefetch cap uses real frame size
+## ⚡ MediaAPI
+- ⚙️ Added: `MediaPlayer#maxSize(int, int)` (+ `maxWidth()` / `maxHeight()`) — caps uploaded frame dims per axis (`min(native, cap)`, never upscales)
+- ⚙️ Added: `MediaPlayer.LodLevel` (`MAX`/`CLOSE`/`NEAR`/`FAR`/`FAR_AWAY` = 100/75/50/25/10%) + `lod(LodLevel)` / `lod()` — % of capped dims; applies hot
+- ⚙️ Added: `MediaPlayer#sourceWidth()` / `sourceHeight()` (native res pre-scale) via `scaledWidth(int)` / `scaledHeight(int)`
+- ⚙️ Added: `FFMediaPlayer` per-frame downscale via `sws_scale` (`SWS_AREA`); keeps native pixel format when sws-supported, else BGRA
+- ⚙️ Added: `TxMediaPlayer` Java area-average downscale before upload (Mode 3 on the fly; Modes 1-2 at prep)
+- ⚙️ Changed: `MRL.preload(URI...)` moved to `MediaAPI`
+- ⚙️ Removed (`MRL`): `reloadAll()`, `forgotten()`, `error()`, `expired()`
+- ⚙️ Added: `MRL.Status` — `FETCHING` / `LOADED` / `EXPIRED` (manual reload) / `ERROR` / `BLOCKED` (mature-gated) / `FORGOTTEN` (renew via `MediaAPI.getMRL(URI)`)
+## ⚡ MediaAPI — Playback engine (FFMediaPlayer / engines)
+- ⚙️ Added: `SFXEngine#flush()` / `pendingMs()` (`ALEngine` via `AL_SOFT_source_latency`) — clock now tracks audible position
+- ⚙️ Added: config `media.ffmpegHardwareAcceleration` + auto SW fallback when GPU transfer fails/exceeds budget (AMD D3D11VA stutter)
+- ⚙️ Changed: audio fed eagerly (buffer pool = backpressure, no 2ms gate); `ALEngine` buffers 4→8 (~340ms)
+- ⚙️ Fixed: stale OpenAL buffers after underrun/pause-resume (audio "slowed down"/repeated)
+- ⚙️ Fixed: `pause()` never paused the source (drained/underran); `startPaused()` pause/clock-reset race
+- ⚙️ Fixed: resampler-flush PTS yanked clock backwards/stalled — delay now compensated in output PTS
+- ⚙️ Fixed: mid-stream audio param changes (chained OGG / Icecast) rebuild resampler; state dropped on seek
+- ⚙️ Fixed: `AV_NOPTS_VALUE` timestamps (Ogg demuxer) corrupted clock — synthesized continuity
+- ⚙️ Fixed: native use-after-free — `duration()`/`liveSource()`/`canPlay()` read cached snapshots; `release()` waits for pipeline
+- ⚙️ Fixed: torn video frames (rotating buffer pool); stale `SwsContext` after resolution change (BGRA fallback)
+- ⚙️ Fixed: `file://` broken on Linux/macOS; seek clamped to 0 without known duration; odd-height chroma copied one row short; stream indices re-resolved after reopen
+- ⚙️ Removed: `VULKAN` and `OPENCL` from HW decoder candidates
+## ⚡ PlatformsAPI
+- ⚙️ Removed: `IPlatform#validate(URI)` (folded into `getData(URI)`)
+- ⚙️ Changed: `IPlatform#getData(URI)` is now 3-state — `null` (not this platform) / throws (belongs but failed, or mature-gated) / `PlatformData` (success)
+- ⚙️ Fixed: `PornHubPlatform` NPE on hostless URIs (e.g. `file://`) broke local-file playback — now returns `null` for a null host
+- ⚙️ Changed: Enhanced logging and exception messages
+## ⚡ GENERAL
+- ✨ Animated images (GIF / WebP) are far lighter and smoother — most animations no longer stream frame-by-frame, there is no longer a background thread per animation, long animations no longer hitch while loading, and many animations playing at once no longer stutter the game or each other (lower CPU and VRAM all around)
+- ✨ Videos can use less VRAM and bandwidth — mods can now cap the upload resolution or pick a distance-based level of detail, so distant or many simultaneous screens cost far less
+- 🛠️ Smoother video on AMD GPUs — playback now falls back to software decoding automatically when hardware decoding stutters, and hardware decoding can be disabled from the config (`media.ffmpegHardwareAcceleration`)
+- 🛠️ Changed default 
+- 🐛 Fixed: local files (`file://`) would not play on Linux and macOS — local media opens again on those systems
+- 🐛 Fixed: audio playing "slowed down" or repeating itself after a pause or a game hitch
+- 🐛 Fixed: pausing did not actually pause audio (it kept draining and then cut out)
+- 🐛 Fixed: live / streaming audio (chained OGG, Icecast radio) playing at the wrong speed
+- 🐛 Fixed: torn or garbled video frames under heavy load
+- 🐛 Fixed: occasional crashes and freezes while playing some streams
+
 # 📦 UPDATE 3.0.0.17 (BETA)
 ## ⚡ Core / lifecycle
 - ⚙️ Added: `org.watermedia.api.WaterMediaAPI` abstract base class — every top-level API now inherits `name()`, `load(WaterMedia)`, `start(WaterMedia)`, `release(WaterMedia)` plus boot-progress fields `step`/`steps`/`stepName` for loading screens
