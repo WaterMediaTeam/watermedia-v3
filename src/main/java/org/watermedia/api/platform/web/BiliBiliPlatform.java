@@ -38,7 +38,7 @@ public class BiliBiliPlatform implements IPlatform {
                 .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
                 .set("Accept", "*/*")
                 .set("Referer", REFERER);
-        final String c = WaterMediaConfig.media.platforms.biliBiliCookie;
+        final String c = WaterMediaConfig.platforms.biliBiliCookie;
         if (c != null && !c.isEmpty()) h.set("Cookie", c);
         return h;
     }
@@ -381,7 +381,7 @@ public class BiliBiliPlatform implements IPlatform {
         final NetRequest.Builder builder = NetRequest.create(uri).method("GET").accept("application/json")
                 .userAgent(NetRequest.UserAgent.GENERIC)
                 .referer(REFERER);
-        final String c = WaterMediaConfig.media.platforms.biliBiliCookie;
+        final String c = WaterMediaConfig.platforms.biliBiliCookie;
         if (c != null && !c.isEmpty()) builder.header("Cookie", c);
 
         try (final NetRequest req = builder.send()) {

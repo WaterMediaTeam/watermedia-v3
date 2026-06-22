@@ -13,3 +13,4 @@ hs_err_pid*
 /.idea/
 !/.idea/icon.svg
 *.mp4
+!/src/test/resources/mp4/*.mp4

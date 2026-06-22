@@ -136,18 +136,18 @@ public class PlatformClaimTest {
 
     @BeforeEach
     void rememberConfig() {
-        this.previousMature = WaterMediaConfig.media.platforms.allowMatureContent;
+        this.previousMature = WaterMediaConfig.platforms.allowMatureContent;
     }
 
     @AfterEach
     void restoreConfig() {
-        WaterMediaConfig.media.platforms.allowMatureContent = this.previousMature;
+        WaterMediaConfig.platforms.allowMatureContent = this.previousMature;
     }
 
     @Test
     @DisplayName("Mature-only platform throws before any fetch when mature content is disabled")
     void testMatureContentDisabledThrowsBeforeFetch() {
-        WaterMediaConfig.media.platforms.allowMatureContent = false;
+        WaterMediaConfig.platforms.allowMatureContent = false;
         final PornHubPlatform platform = new PornHubPlatform();
         assertThrows(MatureContentException.class,
                 () -> platform.getData(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),

@@ -60,7 +60,7 @@ public class KickPlatform implements IPlatform {
             if (channel.is_banned)
                 throw new PlatformException(KickPlatform.class, "Streamer '" + slug + "' is banned");
 
-            if (channel.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
+            if (channel.livestream.is_mature && !WaterMediaConfig.platforms.allowMatureContent)
                 throw new MatureContentException(KickPlatform.class, "Streamer '" + slug + "' is marked as mature content");
 
             final String username = channel.user != null ? channel.user.username : slug;
@@ -102,7 +102,7 @@ public class KickPlatform implements IPlatform {
             if (video.livestream.channel != null && video.livestream.channel.is_banned)
                 throw new PlatformException(KickPlatform.class, "Streamer '" + username + "' is banned");
 
-            if (video.livestream.is_mature && !WaterMediaConfig.media.platforms.allowMatureContent)
+            if (video.livestream.is_mature && !WaterMediaConfig.platforms.allowMatureContent)
                 throw new MatureContentException(KickPlatform.class, "VOD '" + id + "' is marked as mature content");
 
             // FETCH THE HLS PLAYLIST FROM THE VOD'S PLAYBACK URL (NOT THE PAGE URI)
@@ -150,7 +150,7 @@ public class KickPlatform implements IPlatform {
         if (clip.clipUrl == null)
             throw new PlatformException(KickPlatform.class, "Clip '" + clipId + "' has no playback URL (removed or still processing)");
 
-        if (clip.isMature && !WaterMediaConfig.media.platforms.allowMatureContent)
+        if (clip.isMature && !WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(KickPlatform.class, "Clip '" + clipId + "' is marked as mature content");
 
         // CLIP URL MAY BE A DIRECT FILE (mp4/webm) OR AN M3U8 PLAYLIST

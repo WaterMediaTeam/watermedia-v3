@@ -493,7 +493,7 @@ public class TwitchPlatform implements IPlatform {
     // QUERIES TWITCH'S CONTENT CLASSIFICATION SIGN POST AND ABORTS WHEN THE CONTENT IS MATURE
     // AND THE HOST DISABLED MATURE CONTENT. RUNS BEFORE ANY PLAYLIST/CLIP FETCH SO NO DATA IS RETRIEVED.
     private void ensureNotMature(final ContentKind kind, final String id) throws IOException {
-        if (WaterMediaConfig.media.platforms.allowMatureContent) return;
+        if (WaterMediaConfig.platforms.allowMatureContent) return;
 
         final Map<String, Object> vars = new HashMap<>();
         vars.put("login", kind == ContentKind.STREAM ? id : "");
