@@ -1,3 +1,6 @@
+# 📦 UPDATE 3.0.0.19 (BETA)
+- 🐛 Fixed: Stall opening youtube videos 
+
 # 📦 UPDATE 3.0.0.18 (BETA)
 ## ⚡ CodecsAPI
 - ⚙️ Added: `ImageReader#reset()` — frame-0 rewind (GIF/PNG/APNG/WebP; other formats full re-open)
