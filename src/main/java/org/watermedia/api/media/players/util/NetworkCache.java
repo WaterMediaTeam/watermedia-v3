@@ -305,10 +305,18 @@ public final class NetworkCache {
         if (accept != null && (headers == null || !headers.has("Accept"))) {
             builder.accept(accept);
         }
+        // SOME CDNs (e.g. googlevideo) THROTTLE PLAIN, NON-RANGE GETS TO ~REAL-TIME BITRATE, SO A FULL GET
+        // OF A FEW-MB AUDIO TRACK TRICKLES IN OVER ~90s AND STALLS PLAYBACK START. A bytes=0- RANGE FORCES
+        // FULL-SPEED DELIVERY (HTTP 206) WHILE STILL RETURNING THE WHOLE BODY.
+        if (headers == null || !headers.has("Range")) {
+            builder.header("Range", "bytes=0-");
+        }
 
         try (final NetRequest req = builder.send()) {
-            if (req.statusCode() != HttpURLConnection.HTTP_OK) {
-                throw new IOException("HTTP " + req.statusCode() + " for " + uri);
+            // 206 IS EXPECTED FOR THE bytes=0- RANGE ABOVE; 200 STILL COMES BACK FROM SERVERS THAT IGNORE IT
+            final int status = req.statusCode();
+            if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
+                throw new IOException("HTTP " + status + " for " + uri);
             }
 
             final long contentLength = req.contentLength();
