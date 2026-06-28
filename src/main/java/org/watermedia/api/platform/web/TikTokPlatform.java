@@ -71,20 +71,20 @@ public class TikTokPlatform implements IPlatform {
         }
 
         String html = fetchWebpage(uri, null);
-        JsonObject videoData = extractVideoData(html, videoId);
+        JsonObject videoData = this.extractVideoData(html, videoId);
 
         if (videoData == null && html.contains("Please wait...")) {
             LOGGER.debug(IT, "TikTok WAF challenge detected for video {}, solving...", videoId);
             final String challengeCookies = solveChallenge(html);
             html = fetchWebpage(uri, challengeCookies);
-            videoData = extractVideoData(html, videoId);
+            videoData = this.extractVideoData(html, videoId);
         }
 
         if (videoData == null) {
             throw new PlatformException(TikTokPlatform.class, "No video data found in page for video " + videoId);
         }
 
-        return buildResult(videoData, videoId);
+        return this.buildResult(videoData, videoId);
     }
 
     // WAF CHALLENGE SOLVER (ported from yt-dlp _solve_challenge_and_set_cookies)
@@ -182,7 +182,7 @@ public class TikTokPlatform implements IPlatform {
         final List<DataQuality> variants = new ArrayList<>();
 
         if (video.has("bitrateInfo") && video.get("bitrateInfo").isJsonArray()) {
-            parseBitrateInfo(variants, video.getAsJsonArray("bitrateInfo"), video);
+            this.parseBitrateInfo(variants, video.getAsJsonArray("bitrateInfo"), video);
         }
 
         if (variants.isEmpty()) {
@@ -307,7 +307,7 @@ public class TikTokPlatform implements IPlatform {
                 }
             }
             final URI src = toUri(jsonString(obj, "src"));
-            if (src != null) return src;
+            return src;
         }
 
         return null;
