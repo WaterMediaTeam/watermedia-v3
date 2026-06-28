@@ -14,6 +14,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
@@ -32,6 +33,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.tools.JsonTool.*;
 
 public class TwitchPlatform implements IPlatform {
     public static final String NAME = "Twitch";
@@ -49,6 +51,13 @@ public class TwitchPlatform implements IPlatform {
             "  streamPlaybackAccessToken(channelName: $login, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: $playerType}) @include(if: $isLive) { value signature }" +
             "  videoPlaybackAccessToken(id: $vodID, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: $playerType}) @include(if: $isVod) { value signature }" +
             "}";
+    // INLINE GQL SEARCH (NO PERSISTED HASH — THOSE ROTATE AND FAIL WITH PersistedQueryNotFound). ONLY THE
+    // userQuery/platform ARGS ARE REQUIRED. WE KEEP THE channels SECTION: STREAMS/CHANNELS ARE THE MOST
+    // USEFUL HITS AND CARRY BOTH A TITLE AND A THUMBNAIL (LIVE PREVIEW, ELSE PROFILE PICTURE).
+    private static final String SEARCH_QUERY =
+            "query Search($q: String!) { searchFor(userQuery: $q, platform: \"web\") {" +
+                    " channels { edges { item { ... on User {" +
+                    " login displayName profileImageURL(width: 300) broadcastSettings { title } stream { previewImageURL } } } } } } }";
 
     // PERSISTED QUERY HASHES — ALIGNED WITH YT-DLP'S TWITCH EXTRACTOR
     private static final String HASH_STREAM_METADATA = "ad022ca32220d5523d03a23cbcb5beaa1e0999889c1f8f78f9f2520dafb5cae6";
@@ -60,6 +69,10 @@ public class TwitchPlatform implements IPlatform {
 
     // SIGN POST FLAGGED BY TWITCH WHEN THE CONTENT CLASSIFICATION LABELS MARK A STREAM/VOD/CLIP AS MATURE
     private static final String MATURE_SIGN_POST = "SIGN_POST_TYPE_MATURE";
+
+    // LIVE-PREVIEW URLS COME TEMPLATED WITH {width}x{height}; SUBSTITUTE A 16:9 THUMBNAIL SIZE
+    private static final String PREVIEW_WIDTH = "960";
+    private static final String PREVIEW_HEIGHT = "540";
 
     private static final String[] HOSTS = {
             "twitch.tv", "www.twitch.tv", "m.twitch.tv", "go.twitch.tv",
@@ -123,6 +136,56 @@ public class TwitchPlatform implements IPlatform {
         if (m.find()) return this.resolveStream(m.group(1).toLowerCase());
 
         throw new PlatformException(TwitchPlatform.class, "Unrecognized URL: " + uri);
+    }
+
+    @Override
+    public List<PlatformResult> search(final String query, final int limit) throws Exception {
+        final Map<String, Object> body = new HashMap<>(3);
+        body.put("operationName", "Search");
+        body.put("query", SEARCH_QUERY);
+        body.put("variables", Map.of("q", query));
+
+        final String response = this.gqlPost(body);
+        final JsonObject data = JsonParser.parseString(response).getAsJsonObject().getAsJsonObject("data");
+        if (data == null) return List.of();
+        final JsonObject searchFor = data.getAsJsonObject("searchFor");
+        if (searchFor == null) return List.of();
+        final JsonObject channels = searchFor.getAsJsonObject("channels");
+        final JsonArray edges = channels != null ? channels.getAsJsonArray("edges") : null;
+        if (edges == null) return List.of();
+
+        final List<PlatformResult> out = new ArrayList<>(Math.min(edges.size(), limit));
+        for (final JsonElement edgeEl: edges) {
+            if (out.size() >= limit) break;
+            final JsonElement itemEl = edgeEl.getAsJsonObject().get("item");
+            if (itemEl == null || itemEl.isJsonNull()) continue;
+            final JsonObject item = itemEl.getAsJsonObject();
+
+            final String login = str(item, "login");
+            if (login == null) continue; // CAN'T BUILD A PAGE URL WITHOUT THE CHANNEL LOGIN
+
+            // PREFER THE STREAM TITLE; FALL BACK TO THE CHANNEL NAME WHEN THE CHANNEL HAS NEVER SET ONE
+            String title = null;
+            final JsonElement settings = item.get("broadcastSettings");
+            if (settings != null && !settings.isJsonNull()) title = str(settings.getAsJsonObject(), "title");
+            if (title == null) title = str(item, "displayName");
+
+            // LIVE CHANNELS EXPOSE A STREAM PREVIEW (TEMPLATED); OFFLINE ONES FALL BACK TO THE PROFILE PICTURE
+            URI thumbnail = null;
+            final JsonElement stream = item.get("stream");
+            if (stream != null && !stream.isJsonNull()) {
+                final String preview = str(stream.getAsJsonObject(), "previewImageURL");
+                if (preview != null)
+                    thumbnail = JsonTool.uri(preview.replace("{width}", PREVIEW_WIDTH).replace("{height}", PREVIEW_HEIGHT));
+            }
+            if (thumbnail == null) {
+                final String profile = str(item, "profileImageURL");
+                if (profile != null) thumbnail = JsonTool.uri(profile);
+            }
+
+            out.add(new PlatformResult(NAME, title, thumbnail, URI.create("https://www.twitch.tv/" + login)));
+        }
+        return out;
     }
 
     // --- CONTENT-TYPE HANDLERS ---
@@ -207,8 +270,8 @@ public class TwitchPlatform implements IPlatform {
             if (videoQualities != null) {
                 for (final JsonElement qe: videoQualities) {
                     final JsonObject q = qe.getAsJsonObject();
-                    final String sourceUrl = jsonString(q, "sourceURL");
-                    final int height = jsonInt(q, "quality", 0);
+                    final String sourceUrl = str(q, "sourceURL");
+                    final int height = intOr(q, "quality", 0);
                     if (sourceUrl != null && height > 0) {
                         final String separator = sourceUrl.contains("?") ? "&" : "?";
                         clipVariants.add(new DataQuality(
@@ -221,22 +284,22 @@ public class TwitchPlatform implements IPlatform {
 
         if (clipVariants.isEmpty()) throw new PlatformException(TwitchPlatform.class, "No video qualities found for clip: " + slug);
 
-        final String title = jsonString(clip, "title");
-        final int duration = jsonInt(clip, "durationSeconds", 0);
+        final String title = str(clip, "title");
+        final int duration = intOr(clip, "durationSeconds", 0);
         String author = null;
         final JsonElement broadcasterEl = clip.get("broadcaster");
         if (broadcasterEl != null && !broadcasterEl.isJsonNull()) {
-            author = jsonString(broadcasterEl.getAsJsonObject(), "displayName");
+            author = str(broadcasterEl.getAsJsonObject(), "displayName");
         }
 
         URI thumbnailUri = null;
         if (!assets.isEmpty()) {
-            final String thumbUrl = jsonString(assets.get(0).getAsJsonObject(), "thumbnailURL");
+            final String thumbUrl = str(assets.get(0).getAsJsonObject(), "thumbnailURL");
             if (thumbUrl != null) thumbnailUri = URI.create(thumbUrl);
         }
 
         Instant publishedAt = null;
-        final String createdAt = jsonString(clip, "createdAt");
+        final String createdAt = str(clip, "createdAt");
         if (createdAt != null) {
             try { publishedAt = Instant.parse(createdAt); }
             catch (final Exception ignored) {}
@@ -369,8 +432,8 @@ public class TwitchPlatform implements IPlatform {
             Instant createdAt = null;
             String streamType = null;
             if (stream != null) {
-                streamType = jsonString(stream, "type");
-                final String createdStr = jsonString(stream, "createdAt");
+                streamType = str(stream, "type");
+                final String createdStr = str(stream, "createdAt");
                 if (createdStr != null) {
                     try { createdAt = Instant.parse(createdStr); }
                     catch (final Exception ignored) {}
@@ -384,10 +447,10 @@ public class TwitchPlatform implements IPlatform {
                 final JsonElement sqUserEl = results.get(1).getAsJsonObject().getAsJsonObject("data").get("user");
                 if (sqUserEl != null && !sqUserEl.isJsonNull()) {
                     final JsonObject sqUser = sqUserEl.getAsJsonObject();
-                    displayName = jsonString(sqUser, "displayName");
+                    displayName = str(sqUser, "displayName");
                     final JsonElement broadcastEl = sqUser.get("broadcastSettings");
                     if (broadcastEl != null && !broadcastEl.isJsonNull()) {
-                        title = jsonString(broadcastEl.getAsJsonObject(), "title");
+                        title = str(broadcastEl.getAsJsonObject(), "title");
                     }
                 }
             }
@@ -400,7 +463,7 @@ public class TwitchPlatform implements IPlatform {
                     if (pvUserEl != null && !pvUserEl.isJsonNull()) {
                         final JsonElement pvStreamEl = pvUserEl.getAsJsonObject().get("stream");
                         if (pvStreamEl != null && !pvStreamEl.isJsonNull()) {
-                            final String thumbUrl = jsonString(pvStreamEl.getAsJsonObject(), "previewImageURL");
+                            final String thumbUrl = str(pvStreamEl.getAsJsonObject(), "previewImageURL");
                             if (thumbUrl != null) thumbnailUri = URI.create(thumbUrl);
                         }
                     }
@@ -435,25 +498,25 @@ public class TwitchPlatform implements IPlatform {
             if (videoEl == null || videoEl.isJsonNull()) return null;
             final JsonObject video = videoEl.getAsJsonObject();
 
-            final String title = jsonString(video, "title");
-            final String description = jsonString(video, "description");
-            final int duration = jsonInt(video, "lengthSeconds", 0);
+            final String title = str(video, "title");
+            final String description = str(video, "description");
+            final int duration = intOr(video, "lengthSeconds", 0);
 
             String author = null;
             final JsonElement ownerEl = video.get("owner");
             if (ownerEl != null && !ownerEl.isJsonNull()) {
-                author = jsonString(ownerEl.getAsJsonObject(), "displayName");
+                author = str(ownerEl.getAsJsonObject(), "displayName");
             }
 
             URI thumbnailUri = null;
-            final String thumbUrl = jsonString(video, "previewThumbnailURL");
+            final String thumbUrl = str(video, "previewThumbnailURL");
             if (thumbUrl != null) {
                 // FULL-SIZE THUMBNAIL: REPLACE DIMENSION PLACEHOLDER (E.G. 640x480.jpg → 0x0.jpg)
                 thumbnailUri = URI.create(thumbUrl.replaceAll("\\d+x\\d+(\\.\\w+)($|(?=[?#]))", "0x0$1$2"));
             }
 
             Instant publishedAt = null;
-            final String publishedStr = jsonString(video, "postedAt");
+            final String publishedStr = str(video, "postedAt");
             if (publishedStr != null) {
                 try { publishedAt = Instant.parse(publishedStr); }
                 catch (final Exception ignored) {}
@@ -523,7 +586,7 @@ public class TwitchPlatform implements IPlatform {
         final JsonElement sign = policy.getAsJsonObject().get("signPostProperties");
         if (sign == null || sign.isJsonNull()) return;
 
-        if (MATURE_SIGN_POST.equals(jsonString(sign.getAsJsonObject(), "signPost")))
+        if (MATURE_SIGN_POST.equals(str(sign.getAsJsonObject(), "signPost")))
             throw new MatureContentException(TwitchPlatform.class, kind.name().toLowerCase() + " '" + id + "' is marked as mature content");
     }
 
@@ -573,13 +636,4 @@ public class TwitchPlatform implements IPlatform {
         return null;
     }
 
-    // --- JSON HELPERS ---
-
-    private static String jsonString(final JsonObject obj, final String key) {
-        return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : null;
-    }
-
-    private static int jsonInt(final JsonObject obj, final String key, final int def) {
-        return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsInt() : def;
-    }
 }

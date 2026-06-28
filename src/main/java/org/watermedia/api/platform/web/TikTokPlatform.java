@@ -12,6 +12,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -26,6 +27,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.tools.JsonTool.*;
 
 public class TikTokPlatform implements IPlatform {
     public static final String NAME = "TikTok";
@@ -163,7 +165,7 @@ public class TikTokPlatform implements IPlatform {
             throw new PlatformException(TikTokPlatform.class, "No video object found for video " + videoId);
         }
 
-        final String desc = jsonString(awemeDetail, "desc");
+        final String desc = str(awemeDetail, "desc");
         final String title = (desc != null && !desc.isEmpty()) ? desc : "TikTok video #" + videoId;
 
         final Instant publishedAt = awemeDetail.has("createTime") && !awemeDetail.get("createTime").isJsonNull()
@@ -234,7 +236,7 @@ public class TikTokPlatform implements IPlatform {
             final URI url = pickBestUrl(playAddr);
             if (url == null) continue;
 
-            final String urlKey = jsonString(playAddr, "UrlKey");
+            final String urlKey = str(playAddr, "UrlKey");
             if (urlKey != null) {
                 final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
                 if (keyMatcher.find() && "bytevc2".equals(keyMatcher.group(1))) continue;
@@ -284,13 +286,13 @@ public class TikTokPlatform implements IPlatform {
         final JsonElement element = video.get(key);
 
         if (element.isJsonPrimitive()) {
-            return toUri(element.getAsString());
+            return uri(element.getAsString());
         }
 
         if (element.isJsonArray()) {
             for (final JsonElement item: element.getAsJsonArray()) {
                 if (item.isJsonObject()) {
-                    final URI src = toUri(jsonString(item.getAsJsonObject(), "src"));
+                    final URI src = uri(str(item.getAsJsonObject(), "src"));
                     if (src != null) return src;
                 }
             }
@@ -302,11 +304,11 @@ public class TikTokPlatform implements IPlatform {
             if (obj.has("UrlList") && obj.get("UrlList").isJsonArray()) {
                 final JsonArray urls = obj.getAsJsonArray("UrlList");
                 for (int i = 0; i < urls.size(); i++) {
-                    final URI u = toUri(urls.get(i).getAsString());
+                    final URI u = uri(urls.get(i).getAsString());
                     if (u != null) return u;
                 }
             }
-            final URI src = toUri(jsonString(obj, "src"));
+            final URI src = uri(str(obj, "src"));
             return src;
         }
 
@@ -316,9 +318,9 @@ public class TikTokPlatform implements IPlatform {
     // METADATA EXTRACTION
     private static URI findThumbnail(final JsonObject awemeDetail, final JsonObject video) {
         for (final String key: new String[]{"originCover", "cover", "thumbnail"}) {
-            URI uri = jsonUri(video, key);
+            URI uri = JsonTool.uri(video, key);
             if (uri != null) return uri;
-            uri = jsonUri(awemeDetail, key);
+            uri = JsonTool.uri(awemeDetail, key);
             if (uri != null) return uri;
         }
         return null;
@@ -328,9 +330,9 @@ public class TikTokPlatform implements IPlatform {
         for (final String key: new String[]{"author", "authorInfo"}) {
             if (awemeDetail.has(key) && awemeDetail.get(key).isJsonObject()) {
                 final JsonObject obj = awemeDetail.getAsJsonObject(key);
-                final String nickname = jsonString(obj, "nickname");
+                final String nickname = str(obj, "nickname");
                 if (nickname != null) return nickname;
-                final String uniqueId = jsonString(obj, "uniqueId");
+                final String uniqueId = str(obj, "uniqueId");
                 if (uniqueId != null) return uniqueId;
             }
         }
@@ -418,25 +420,5 @@ public class TikTokPlatform implements IPlatform {
             final String location = req.header("Location");
             return location != null ? URI.create(location) : shortUri;
         }
-    }
-
-    // UTILS
-    private static URI toUri(final String url) {
-        if (url == null || url.isEmpty()) return null;
-        try {
-            return URI.create(url.startsWith("//") ? "https:" + url : url);
-        } catch (final Exception e) {
-            return null;
-        }
-    }
-
-    private static String jsonString(final JsonObject obj, final String key) {
-        return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : null;
-    }
-
-    private static URI jsonUri(final JsonObject obj, final String key) {
-        final String val = jsonString(obj, key);
-        if (val == null || val.isEmpty()) return null;
-        return toUri(val);
     }
 }

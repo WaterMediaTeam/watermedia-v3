@@ -12,6 +12,8 @@ import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +30,7 @@ public class ImgurPlatform implements IPlatform {
     private static final String IMAGE_URL = API_URL + "/image/%s?client_id=" + API_KEY;
     private static final String GALLERY_URL = API_URL + "/gallery/%s?client_id=" + API_KEY;
     private static final String TAG_GALLERY_URL = API_URL + "/gallery/t/%s/%s?client_id=" + API_KEY;
+    private static final String SEARCH_URL = API_URL + "/gallery/search/top/all/0?client_id=" + API_KEY + "&q=%s";
     private static final String[] HOSTS = { "imgur.com" };
 
     @Override
@@ -93,6 +96,25 @@ public class ImgurPlatform implements IPlatform {
         }
     }
 
+    @Override
+    public List<PlatformResult> search(final String query, final int limit) throws Exception {
+        final SearchResponse res = this.fetch(String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
+        if (res == null || !res.success() || res.data() == null) return List.of();
+
+        final List<PlatformResult> out = new ArrayList<>(Math.min(res.data().length, limit));
+        for (final SearchItem item: res.data()) {
+            if (out.size() >= limit) break;
+            if (item.id() == null) continue;
+            // ALBUM POSTS HAVE NO IMAGE OF THEIR OWN — THUMBNAIL THE COVER; SINGLE IMAGES THUMBNAIL THEMSELVES.
+            // THE 'm' SUFFIX (MEDIUM, 320px) GOES BEFORE THE EXTENSION AND RETURNS A STATIC FRAME EVEN FOR GIFS.
+            final String thumbId = item.isAlbum() && item.cover() != null ? item.cover() : item.id();
+            out.add(new PlatformResult(NAME, item.title(),
+                    URI.create("https://i.imgur.com/" + thumbId + "m.jpg"),
+                    URI.create("https://imgur.com/gallery/" + item.id())));
+        }
+        return out;
+    }
+
     private DataSource buildEntry(final Image img, final String fallbackTitle, final String accountUrl, final URI uri) throws PlatformException {
         // PARSE MIME TYPE
         final MediaType type = MediaType.of(img.type());
@@ -138,6 +160,13 @@ public class ImgurPlatform implements IPlatform {
 
     // DATA RECORDS
     public record ImageResponse(Image data, boolean success, int status) {
+    }
+
+    // GALLERY SEARCH RETURNS A MIXED ARRAY OF ALBUMS AND SINGLE IMAGES; ONLY THE DISPLAY FIELDS ARE BOUND
+    public record SearchResponse(SearchItem[] data, boolean success, int status) {
+    }
+
+    public record SearchItem(String id, String title, String cover, @SerializedName("is_album") boolean isAlbum) {
     }
 
     public record GalleryResponse(Gallery data, boolean success, int status) {

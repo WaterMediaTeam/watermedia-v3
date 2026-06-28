@@ -19,6 +19,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.tools.JsonTool.*;
 
 public class OdyseePlatform implements IPlatform {
     public static final String NAME = "Odysee";
@@ -52,31 +53,31 @@ public class OdyseePlatform implements IPlatform {
             }
 
             final JsonObject video = JsonParser.parseString(matcher.group(1)).getAsJsonObject();
-            final String ldType = jsonString(video, "@type");
+            final String ldType = str(video, "@type");
             if (!"VideoObject".equals(ldType)) {
                 throw new PlatformException(OdyseePlatform.class, "JSON-LD is a '" + ldType + "', not a VideoObject (not a playable video): " + uri);
             }
 
-            final String contentUrl = jsonString(video, "contentUrl");
+            final String contentUrl = str(video, "contentUrl");
             if (contentUrl == null)
                 throw new PlatformException(OdyseePlatform.class, "VideoObject is missing 'contentUrl' (stream not published yet?): " + uri);
             final URI videoUri = new URI(contentUrl);
 
-            final String title = jsonString(video, "name");
-            final String description = jsonString(video, "description");
-            final String thumbnailUrl = jsonString(video, "thumbnailUrl");
+            final String title = str(video, "name");
+            final String description = str(video, "description");
+            final String thumbnailUrl = str(video, "thumbnailUrl");
             final URI thumbnail = thumbnailUrl != null ? new URI(thumbnailUrl) : null;
             if (title == null) LOGGER.warn(IT, "Odysee VideoObject has no 'name' (title) for {}", uri);
 
             Instant publishedAt = null;
-            final String uploadDate = jsonString(video, "uploadDate");
+            final String uploadDate = str(video, "uploadDate");
             if (uploadDate != null) {
                 try { publishedAt = Instant.parse(uploadDate); }
                 catch (final DateTimeParseException e) { LOGGER.warn(IT, "Odysee unparseable uploadDate '{}' for {}", uploadDate, uri); }
             }
 
             long durationMs = 0;
-            final String durationStr = jsonString(video, "duration");
+            final String durationStr = str(video, "duration");
             if (durationStr != null) {
                 try { durationMs = Duration.parse(durationStr).toMillis(); }
                 catch (final DateTimeParseException e) { LOGGER.warn(IT, "Odysee unparseable ISO-8601 duration '{}' for {}", durationStr, uri); }
@@ -84,7 +85,7 @@ public class OdyseePlatform implements IPlatform {
 
             String author = null;
             if (video.has("author") && video.get("author").isJsonObject()) {
-                author = jsonString(video.getAsJsonObject("author"), "name");
+                author = str(video.getAsJsonObject("author"), "name");
             }
 
             LOGGER.debug(IT, "Odysee resolved contentUrl {} (title='{}', durationMs={}) for {}", videoUri, title, durationMs, uri);
@@ -96,9 +97,5 @@ public class OdyseePlatform implements IPlatform {
 
             return new PlatformData(null, entry);
         }
-    }
-
-    private static String jsonString(final JsonObject obj, final String key) {
-        return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : null;
     }
 }

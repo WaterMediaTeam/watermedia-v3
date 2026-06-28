@@ -12,6 +12,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -23,6 +24,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.tools.JsonTool.*;
 
 public class BiliBiliPlatform implements IPlatform {
     public static final String NAME = "BiliBili";
@@ -100,11 +102,11 @@ public class BiliBiliPlatform implements IPlatform {
         LOGGER.debug(IT, "BiliBili resolving video bvid={} page={}", bvid, page);
 
         final JsonObject viewData = fetchJson(URI.create(String.format(VIDEO_VIEW_API, bvid)), "data");
-        final String title = jsonString(viewData, "title");
+        final String title = str(viewData, "title");
         final JsonObject owner = viewData.has("owner") && viewData.get("owner").isJsonObject() ? viewData.getAsJsonObject("owner") : null;
-        final String author = owner != null ? jsonString(owner, "name") : null;
-        final String desc = jsonString(viewData, "desc");
-        final URI thumbnail = jsonUri(viewData, "pic");
+        final String author = owner != null ? str(owner, "name") : null;
+        final String desc = str(viewData, "desc");
+        final URI thumbnail = JsonTool.uri(viewData, "pic");
         final long duration = viewData.has("duration") ? viewData.get("duration").getAsLong() : 0;
         final Instant publishedAt = viewData.has("pubdate") ? Instant.ofEpochSecond(viewData.get("pubdate").getAsLong()) : null;
 
@@ -175,7 +177,7 @@ public class BiliBiliPlatform implements IPlatform {
                 if (String.valueOf(ep.get("id").getAsInt()).equals(epId)) {
                     cid = String.valueOf(ep.get("cid").getAsLong());
                     epTitle = ep.get("share_copy").getAsString();
-                    epCover = jsonUri(ep, "cover");
+                    epCover = JsonTool.uri(ep, "cover");
                     epDurationMs = ep.has("duration") ? ep.get("duration").getAsLong() : 0;
                     break;
                 }
@@ -190,8 +192,8 @@ public class BiliBiliPlatform implements IPlatform {
         }
 
         final String fullTitle = epTitle != null ? seasonTitle + " - " + epTitle : seasonTitle;
-        final String desc = jsonString(result, "evaluate");
-        final URI thumbnail = epCover != null ? epCover : jsonUri(result, "cover");
+        final String desc = str(result, "evaluate");
+        final URI thumbnail = epCover != null ? epCover : JsonTool.uri(result, "cover");
         final Metadata metadata = new Metadata(fullTitle, desc, null, epDurationMs / 1000, null);
         return this.buildResult(playResult, metadata, thumbnail);
     }
@@ -215,8 +217,8 @@ public class BiliBiliPlatform implements IPlatform {
             if (roomInfo.has("title") && !roomInfo.get("title").isJsonNull()) {
                 title = roomInfo.get("title").getAsString();
             }
-            thumbnail = jsonUri(roomInfo, "keyframe");
-            if (thumbnail == null) thumbnail = jsonUri(roomInfo, "user_cover");
+            thumbnail = JsonTool.uri(roomInfo, "keyframe");
+            if (thumbnail == null) thumbnail = JsonTool.uri(roomInfo, "user_cover");
         } catch (final Exception e) {
             LOGGER.warn(IT, "BiliBili failed to fetch live room title for room {}", realRoomId);
         }
@@ -399,16 +401,6 @@ public class BiliBiliPlatform implements IPlatform {
 
             return json.getAsJsonObject(dataKey);
         }
-    }
-
-    private static String jsonString(final JsonObject obj, final String key) {
-        return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : null;
-    }
-
-    private static URI jsonUri(final JsonObject obj, final String key) {
-        final String val = jsonString(obj, key);
-        if (val == null || val.isEmpty()) return null;
-        return URI.create(val.startsWith("//") ? "https:" + val : val);
     }
 
     private static URI resolveRedirect(final URI shortUri) throws IOException {

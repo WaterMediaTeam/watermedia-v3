@@ -75,4 +75,7 @@ Commercial usage is forbidden, you need to contact us in order to use WATERMeDIA
 WATERCoNFIG dependency is shaded under All-Rights-Reserved<br>
 This is temporally until the dependency gets moved into a external (non-shadeable) library
 
-JavaCPP bindigs for FFMPEG are shaded under Apache 2.0 
+JavaCPP bindigs for FFMPEG are shaded under Apache 2.0
+
+Full, verbatim license texts for shaded third-party dependencies are bundled under
+`src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`). 

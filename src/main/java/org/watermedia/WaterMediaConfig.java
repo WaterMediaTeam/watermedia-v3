@@ -131,6 +131,12 @@ public class WaterMediaConfig {
         @Comment("Allow resolving streams/videos marked as mature content (e.g. Kick).")
         @Comment("When false, mature streams throw and never reach the player.")
         public boolean allowMatureContent = false;
+
+        @Spec.Field(suffix = "min")
+        @Comment("Cleanup interval in minutes for the in-memory platform search results cache")
+        @Comment("Identical searches are served from memory until the whole cache is flushed on this interval (general sweep)")
+        @Comment("Set to 0 to disable caching and always query the platforms")
+        public float searchCacheCleanup = 15.0f;
     }
 
     @Spec(value = "network", disableStatic = true)

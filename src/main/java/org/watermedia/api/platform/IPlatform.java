@@ -1,6 +1,7 @@
 package org.watermedia.api.platform;
 
 import java.net.URI;
+import java.util.List;
 
 /**
  * Contract for a platform handler. A single {@link #getData(URI)} call both
@@ -37,4 +38,25 @@ public interface IPlatform {
      * @throws Exception if the URI belongs to this platform but the lookup fails
      */
     PlatformData getData(URI uri) throws Exception;
+
+    /**
+     * Searches this platform for {@code query} and returns up to {@code limit} raw results — a
+     * page URL, title and thumbnail per hit, deliberately <i>not</i> resolved to playback (see
+     * {@link PlatformResult}). Resolution happens later, when the user picks a result.
+     * <p>
+     * Most platforms expose no public search and keep this default, which returns an empty list;
+     * only the handful that do (YouTube, Twitch, Kick, Imgur) override it. The method runs on
+     * {@link PlatformAPI}'s single search thread, so an implementation may block on network I/O,
+     * but it should bail out promptly once that thread is {@link Thread#isInterrupted()
+     * interrupted} — a newer search has superseded this one.
+     *
+     * @param query the user's search text (never {@code null} or blank)
+     * @param limit the maximum number of results to return
+     * @return up to {@code limit} hits, or an empty list when this platform has no match or no
+     *         search support; never {@code null}
+     * @throws Exception if this platform supports search but the lookup failed
+     */
+    default List<PlatformResult> search(final String query, final int limit) throws Exception {
+        return List.of();
+    }
 }

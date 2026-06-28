@@ -10,9 +10,12 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -20,6 +23,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -31,6 +35,7 @@ public class KickPlatform implements IPlatform {
     private static final String VIDEO_API = "https://kick.com/api/v2/video/%s";
     private static final String CHANNELS_API = "https://kick.com/api/v2/channels/%s";
     private static final String CLIPS_API = "https://kick.com/api/v2/clips/%s/play";
+    private static final String SEARCH_API = "https://kick.com/api/search?searched_word=";
     private static final DateTimeFormatter DATE_PATTERN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final String[] HOSTS = { "kick.com" };
 
@@ -124,6 +129,34 @@ public class KickPlatform implements IPlatform {
                     null, null);
             return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
         }
+    }
+
+    @Override
+    public List<PlatformResult> search(final String query, final int limit) throws Exception {
+        // KICK SEARCH IS CHANNEL-CENTRIC: channels[] IS THE ONLY SECTION CARRYING A SLUG + AVATAR. NOTE THE
+        // NESTED user OBJECT IS camelCase (profilePic/username), UNLIKE THE snake_case /api/v2/channels PAYLOAD.
+        final SearchResponse res;
+        try (final NetRequest req = NetRequest.create(URI.create(SEARCH_API + URLEncoder.encode(query, StandardCharsets.UTF_8)))
+                .method("GET").accept("application/json").send()) {
+            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Search API for '" + query + "' returned HTTP " + req.statusCode());
+            res = req.json(SearchResponse.class);
+        }
+        if (res == null || res.channels == null) return List.of();
+
+        final List<PlatformResult> out = new ArrayList<>(Math.min(res.channels.length, limit));
+        for (final SearchChannel channel: res.channels) {
+            if (out.size() >= limit) break;
+            if (channel.slug == null) continue;
+            final String username = channel.user != null ? channel.user.username : null;
+            final String pic = channel.user != null ? channel.user.profilePic : null;
+            // SAFE-PARSE THE NETWORK AVATAR URL: A MALFORMED ONE MUST NOT ABORT THE WHOLE RESULT SET
+            final URI thumbnail = JsonTool.uri(pic);
+            final URI page = JsonTool.uri("https://kick.com/" + channel.slug);
+            if (page == null) continue;
+            // THE USERNAME IS THE SEARCH LABEL — THIS ENDPOINT REPORTS NO LIVE STREAM TITLE
+            out.add(new PlatformResult(NAME, username != null ? username : channel.slug, thumbnail, page));
+        }
+        return out;
     }
 
     private Channel getChannelInfo(final String channel) throws Exception {
@@ -245,6 +278,19 @@ public class KickPlatform implements IPlatform {
 
     private record Channel(int id, boolean is_banned, Livestream livestream, User user, @SerializedName("playback_url") URI url) {
 
+
+    }
+
+    // SEARCH PAYLOAD: A SEPARATE SHAPE FROM Channel/User — channels[].slug + camelCase user{username, profilePic}
+    private record SearchResponse(SearchChannel[] channels) {
+
+    }
+
+    private record SearchChannel(String slug, SearchUser user) {
+
+    }
+
+    private record SearchUser(String username, String profilePic) {
 
     }
 
