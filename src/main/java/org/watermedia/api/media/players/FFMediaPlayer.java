@@ -103,7 +103,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final int[] VIDEO_HW_CODECS = {
             AV_HWDEVICE_TYPE_CUDA,          // NVIDIA
             AV_HWDEVICE_TYPE_QSV,           // INTEL
-            //  OS DEDICATED HARDWARE
+            AV_HWDEVICE_TYPE_AMF,           // AMD
+            // DEDICATED HW LIBRARY
+            AV_HWDEVICE_TYPE_OHCODEC,
+            // OS DEDICATED HARDWARE
             AV_HWDEVICE_TYPE_D3D11VA,       // WINDOWS DIRECTX 11
             AV_HWDEVICE_TYPE_D3D12VA,       // WINDOWS DIRECTX 12
             AV_HWDEVICE_TYPE_VIDEOTOOLBOX,  // MACOS
@@ -111,7 +114,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             AV_HWDEVICE_TYPE_VDPAU,         // LINUX VDPAU
             AV_HWDEVICE_TYPE_DRM,           // LINUX DRM
             AV_HWDEVICE_TYPE_MEDIACODEC,    // ANDROID MEDIACODEC
-            // RENDERING API CODECS
+            // GENERIC GPU PATH, KEPT LAST ON PURPOSE AS THE LAST RESORT
             AV_HWDEVICE_TYPE_VULKAN         // VULKAN
     };
 
@@ -973,7 +976,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                                 if (result <= 0) {
                                     LOGGER.error(IT, "sws_scale failed: result={}, fmt={}, size={}x{} -> {}x{}",
                                             result, slot.format, slot.width, slot.height, targetW, targetH);
+                                    // COUNT AS SKIPPED: THE FRAME WAS DECODED BUT DROPPED HERE, SO THE
+                                    // ZERO-FRAME → ERROR CHECK MUST NOT MISTAKE THIS FOR A DEAD DECODER
                                     this.videoFrameQueue.next();
+                                    this.totalSkippedFrames++;
                                     break;
                                 }
 
@@ -982,8 +988,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                                 uploadH = targetH;
                                 if (dstFormat == AV_PIX_FMT_BGRA) mapping = BGRA_MAPPING;
                             } else if (mapping == null) {
-                                // NO CONVERTER AND NO NATIVE UPLOAD — THE FRAME IS UNUSABLE
+                                // NO CONVERTER AND NO NATIVE UPLOAD — THE FRAME IS UNUSABLE.
+                                // COUNT AS SKIPPED SO THE ZERO-FRAME → ERROR CHECK STAYS ACCURATE.
                                 this.videoFrameQueue.next();
+                                this.totalSkippedFrames++;
                                 break;
                             }
                             // SCALER UNAVAILABLE BUT THE FORMAT UPLOADS NATIVELY — DEGRADE TO SOURCE SIZE
@@ -1501,12 +1509,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             LOGGER.info(IT, "Video decode exiting — packets: {}, frames produced: {}, interrupted: {}",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
-            // LEAVE THE CODEC CLEAN FOR THE NEXT RUN. AT EOF THIS THREAD EXITS WITHOUT
-            // DRAINING, SO REORDER-BUFFERED FRAMES STAY INSIDE THE DECODER. A repeat()
-            // RESTARTS THIS THREAD WITH lastSerial=-1, WHICH SKIPS THE PER-SEEK FLUSH —
-            // WITHOUT FLUSHING HERE THOSE STALE FRAMES WOULD BE EMITTED FIRST WITH
-            // END-OF-STREAM PTS, POISONING THE PTS DISCONTINUITY OFFSET AND FREEZING
-            // VIDEO ON REPEAT (AUDIO IS UNAFFECTED — NO DECODER REORDER DELAY).
+            // RESET THE CODEC FOR THE NEXT RUN. AT A CLEAN EOF THIS THREAD DRAINS THE DECODER
+            // (null FLUSH PACKET ABOVE), LEAVING IT IN DRAINED/EOF STATE THAT REJECTS NEW PACKETS.
+            // A repeat() RESTARTS THIS THREAD WITH lastSerial=-1, WHICH SKIPS THE PER-SEEK FLUSH —
+            // WITHOUT FLUSHING HERE THE DECODER WOULD STAY DRAINED AND EMIT ZERO FRAMES ON REPEAT,
+            // TRIPPING THE ZERO-FRAME → ERROR CHECK AND FREEZING VIDEO.
             if (this.videoCodecContext != null) avcodec.avcodec_flush_buffers(this.videoCodecContext);
             avutil.av_frame_free(tempFrame);
             if (hwTransfer != null) avutil.av_frame_free(hwTransfer);
@@ -1608,10 +1615,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             LOGGER.info(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
-            // LEAVE THE CODEC CLEAN FOR THE NEXT RUN (SEE THE VIDEO DECODER): A repeat()
-            // RESTARTS THIS THREAD WITH lastSerial=-1 AND SKIPS ITS PER-SEEK FLUSH, SO
-            // ANY BUFFERED FRAMES FROM EOF MUST NOT SURVIVE INTO THE NEW RUN. AUDIO
-            // CODECS RARELY BUFFER, BUT THE FLUSH KEEPS THE INVARIANT FOR THOSE THAT DO.
+            // RESET THE CODEC FOR THE NEXT RUN (SEE THE VIDEO DECODER): AT A CLEAN EOF THIS THREAD
+            // DRAINS THE DECODER, LEAVING IT IN DRAINED/EOF STATE. A repeat() RESTARTS THIS THREAD
+            // WITH lastSerial=-1 AND SKIPS ITS PER-SEEK FLUSH, SO WITHOUT THIS FLUSH THE DECODER
+            // WOULD STAY DRAINED AND REJECT NEW PACKETS. AUDIO RARELY BUFFERS, BUT IT KEEPS THE INVARIANT.
             if (this.audioCodecContext != null) avcodec.avcodec_flush_buffers(this.audioCodecContext);
             avutil.av_frame_free(tempFrame);
         }
