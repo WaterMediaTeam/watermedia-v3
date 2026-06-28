@@ -35,10 +35,6 @@
         "uri": "https://kick.com/Rakkun"
       },
       {
-        "name": "KICK CLP (RKKN)",
-        "uri": "https://kick.com/rakkun/clips/clip_01KSPD5ME8ZDEZVFTZH1MYV9BQ"
-      },
-      {
         "name": "LIGHTSHOT (PRNT.SC)",
         "uri": "https://prnt.sc/N_wBi7XCMbmf"
       },
@@ -64,10 +60,14 @@
       },
       {
         "name": "STREAMABLE",
-        "uri": "https://streamable.com/6j8r9a"
+        "uri": "https://streamable.com/jzqiek"
       },
       {
-        "name": "TWITTER (x)",
+        "name": "TWITTER VIDEO (x)",
+        "uri": "https://x.com/MatriFirst/status/2068433954416295944"
+      },
+      {
+        "name": "TWITTER GALLERY (x)",
         "uri": "https://x.com/sketch_soft10/status/1969820419827143072"
       },
       {
