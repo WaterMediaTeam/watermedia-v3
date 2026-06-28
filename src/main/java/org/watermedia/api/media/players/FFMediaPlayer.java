@@ -112,10 +112,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             AV_HWDEVICE_TYPE_VDPAU,         // LINUX VDPAU
             AV_HWDEVICE_TYPE_DRM,           // LINUX DRM
             AV_HWDEVICE_TYPE_MEDIACODEC,    // ANDROID MEDIACODEC
-            // VULKAN AND OPENCL ARE INTENTIONALLY EXCLUDED: OPENCL HAS NO DECODER
-            // HW CONFIGS (NEVER MATCHES) AND FFMPEG'S VULKAN VIDEO DECODE IS STILL
-            // EXPERIMENTAL ON WINDOWS DRIVERS — FALLING INTO IT WHEN D3D11/D3D12
-            // FAIL IS WORSE THAN SOFTWARE DECODING.
+            // RENDERING API CODECS
+            AV_HWDEVICE_TYPE_VULKAN         // VULKAN
     };
 
     // FFMPEG COMPONENTS
@@ -971,6 +969,16 @@ public final class FFMediaPlayer extends MediaPlayer {
                     final boolean vEmpty = this.videoFrameQueue == null || this.videoFrameQueue.isEmpty();
                     final boolean aEmpty = this.audioFrameQueue == null || this.audioFrameQueue.isEmpty();
                     if (vDone && aDone && vEmpty && aEmpty) {
+                        // A VIDEO STREAM THAT DRAINED WITHOUT EVER EMITTING A FRAME (NEITHER
+                        // RENDERED NOR SKIPPED) IS A DECODE FAILURE, NOT A NORMAL END — E.G. AN
+                        // AV1 STREAM THE SELECTED DECODER CANNOT HANDLE. REPORTING ENDED THERE
+                        // LOOKS LIKE AN INSTANT 0-LENGTH PLAYBACK; SURFACE ERROR INSTEAD SO THE
+                        // FAILURE IS VISIBLE AND NOT RETRIED FOREVER BY repeat().
+                        if (this.videoStreamIndex >= 0 && this.totalRenderedFrames == 0 && this.totalSkippedFrames == 0) {
+                            LOGGER.error(IT, "Video decoder emitted no frames for {} — failing instead of reporting ENDED", this.source.uri(this.quality));
+                            this.clock.transition(Status.ERROR);
+                            break;
+                        }
                         if (this.repeat()) {
                             // ALL DATA CONSUMED — SEEK TO BEGINNING FOR REPEAT.
                             // THIS TRIGGERS AFTER FULL DRAIN, NOT AT DEMUX EOF,
@@ -1409,21 +1417,31 @@ public final class FFMediaPlayer extends MediaPlayer {
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 final AVPacket packet = this.videoPacketQueue.get(serialOut);
-                if (packet == null) break;
 
-                final int packetSerial = serialOut[0];
+                // A null PACKET MEANS THE QUEUE IS DONE: A CLEAN EOF (DRAIN THE DECODER'S
+                // BUFFERED BACKLOG WITH A null FLUSH PACKET) OR AN abort() FROM stop()/seek()
+                // (THE BACKLOG IS STALE — JUST EXIT). DELAYED/THREADED DECODERS (libdav1d,
+                // THE NATIVE av1 DECODER) HOLD A REORDER WINDOW THAT ONLY COMES OUT ON FLUSH;
+                // WITHOUT THIS THE TAIL IS LOST, AND A DECODER THAT BUFFERS THE WHOLE STREAM
+                // EMITS NOTHING AT ALL — ENDING PLAYBACK WITH ZERO RENDERED FRAMES.
+                final boolean eof = packet == null;
+                if (eof && (lastSerial < 0 || !this.videoPacketQueue.eofReached())) break;
+
+                final int packetSerial = eof ? lastSerial : serialOut[0];
 
                 try {
-                    if (packetSerial != lastSerial) {
+                    if (!eof && packetSerial != lastSerial) {
                         if (lastSerial >= 0) avcodec.avcodec_flush_buffers(this.videoCodecContext);
                         lastSerial = packetSerial;
                         this.lastRawVideoPts = Double.NaN;
                         this.videoPtsOffset = 0;
                     }
 
-                    if (packetSerial != this.videoPacketQueue.serial()) continue;
+                    if (!eof && packetSerial != this.videoPacketQueue.serial()) continue;
 
-                    if (avcodec.avcodec_send_packet(this.videoCodecContext, packet) < 0) continue;
+                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
+                    // SKIPS ONLY THAT PACKET.
+                    if (avcodec.avcodec_send_packet(this.videoCodecContext, packet) < 0 && !eof) continue;
 
                     while (avcodec.avcodec_receive_frame(this.videoCodecContext, tempFrame) >= 0) {
                         AVFrame frameToQueue = tempFrame;
@@ -1503,8 +1521,10 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     packetsProcessed++;
                 } finally {
-                    avcodec.av_packet_free(packet);
+                    if (packet != null) avcodec.av_packet_free(packet);
                 }
+
+                if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
             }
         } finally {
             LOGGER.info(IT, "Video decode exiting — packets: {}, frames produced: {}, frames dropped: {}, interrupted: {}",
@@ -1532,12 +1552,16 @@ public final class FFMediaPlayer extends MediaPlayer {
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 final AVPacket packet = this.audioPacketQueue.get(serialOut);
-                if (packet == null) break;
 
-                final int packetSerial = serialOut[0];
+                // SEE videoDecodeLoop: a null PACKET IS A CLEAN EOF (FLUSH THE DECODER'S
+                // BUFFERED BACKLOG) OR AN abort() TEARDOWN (DROP IT).
+                final boolean eof = packet == null;
+                if (eof && (lastSerial < 0 || !this.audioPacketQueue.eofReached())) break;
+
+                final int packetSerial = eof ? lastSerial : serialOut[0];
 
                 try {
-                    if (packetSerial != lastSerial) {
+                    if (!eof && packetSerial != lastSerial) {
                         if (lastSerial >= 0) {
                             avcodec.avcodec_flush_buffers(this.audioCodecContext);
                             // DROP SAMPLES BUFFERED INSIDE THE RESAMPLER — THEY BELONG
@@ -1553,9 +1577,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                         this.audioNextPtsSec = Double.NaN;
                     }
 
-                    if (packetSerial != this.audioPacketQueue.serial()) continue;
+                    if (!eof && packetSerial != this.audioPacketQueue.serial()) continue;
 
-                    if (avcodec.avcodec_send_packet(this.audioCodecContext, packet) < 0) continue;
+                    // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
+                    // SKIPS ONLY THAT PACKET.
+                    if (avcodec.avcodec_send_packet(this.audioCodecContext, packet) < 0 && !eof) continue;
 
                     while (avcodec.avcodec_receive_frame(this.audioCodecContext, tempFrame) >= 0) {
                         // MID-STREAM PARAMETER CHANGES (CHAINED OGG / ICECAST) NEED A NEW
@@ -1602,8 +1628,10 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     packetsProcessed++;
                 } finally {
-                    avcodec.av_packet_free(packet);
+                    if (packet != null) avcodec.av_packet_free(packet);
                 }
+
+                if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
             }
         } finally {
             LOGGER.info(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
@@ -2347,17 +2375,34 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final var profilePointer = avcodec_profile_name(codecId, profile);
         final var fmtNamePointer = av_get_pix_fmt_name(pixFmt);
-        LOGGER.info(IT, "Video codec: {} ({}), bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
-                codecName, codecLongName, bitrate > 0 ? bitrate / 1000 : "N/A", getString(profilePointer, profile), level, getString(fmtNamePointer, pixFmt));
 
         final AVCodec decoder = avcodec_find_decoder(codecId);
         if (decoder == null)
             LOGGER.error(IT, "Failed to find video codec with id {} for videoIndex {}", codecId, this.videoStreamIndex);
 
+        // REPORT THE ACTUAL DECODER (e.g. libdav1d vs libaom-av1 vs THE NATIVE av1 DECODER):
+        // THE SAME CODEC ID RESOLVES TO DIFFERENT DECODERS PER PLATFORM BUILD, AND THEY DIFFER
+        // IN REORDER DELAY AND STREAM SUPPORT — KEY CONTEXT WHEN A DECODE YIELDS NO FRAMES.
+        LOGGER.info(IT, "Video codec: {} ({}) via {}, bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
+                codecName, codecLongName, decoder != null ? getString(decoder.name(), codecName) : "no decoder",
+                bitrate > 0 ? bitrate / 1000 : "N/A", getString(profilePointer, profile), level, getString(fmtNamePointer, pixFmt));
+
         final boolean hwAllowed = WaterMediaConfig.media.ffmpegHardwareAcceleration;
+        // THE DEFAULT DECODER IS KEPT FOR THE HARDWARE PATH (THE NATIVE av1 DECODER IS THE
+        // HWACCEL HOST). THE SOFTWARE PATH NEEDS A REAL SOFTWARE DECODER INSTEAD — SEE
+        // softwareVideoDecoder.
         if (!hwAllowed || !this.initHwDecoder(decoder, videoStream)) {
             if (!hwAllowed) LOGGER.info(IT, "Hardware acceleration disabled by config — using software decoding");
-            this.videoCodecContext = avcodec.avcodec_alloc_context3(decoder);
+
+            final AVCodec swDecoder = softwareVideoDecoder(codecId, decoder);
+            if (swDecoder == null) {
+                LOGGER.error(IT, "No software decoder available for codec id {}", codecId);
+                return false;
+            }
+            if (decoder == null || !getString(swDecoder.name(), "").equals(getString(decoder.name(), "")))
+                LOGGER.info(IT, "Software decode using {}", getString(swDecoder.name(), "?"));
+
+            this.videoCodecContext = avcodec.avcodec_alloc_context3(swDecoder);
             if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
                 LOGGER.error(IT, "Failed to copy video codec parameters to context");
                 return false;
@@ -2365,7 +2410,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             this.configureSwDecoderThreads(this.videoCodecContext);
 
-            if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) < 0) {
+            if (avcodec.avcodec_open2(this.videoCodecContext, swDecoder, (PointerPointer<?>) null) < 0) {
                 LOGGER.error(IT, "Failed to open video codec");
                 return false;
             }
@@ -2447,6 +2492,28 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.hwPixelFormat = AV_PIX_FMT_NONE;
     }
 
+    // RESOLVES A SOFTWARE-CAPABLE VIDEO DECODER FOR THE SOFTWARE DECODE PATH.
+    // avcodec_find_decoder CAN HAND BACK A HWACCEL-ONLY DECODER: THE NATIVE FFmpeg "av1"
+    // DECODER HAS NO SOFTWARE DECODE PATH AND EMITS ZERO FRAMES WHEN NO HARDWARE ACCELERATOR
+    // IS ACTIVE (IT ERRORS ON MOST PACKETS), WHICH SURFACES AS A VIDEO THAT INSTANTLY "ENDS".
+    // FOR AV1 ON THE SOFTWARE PATH, PREFER A DEDICATED SOFTWARE DECODER (libdav1d, THEN
+    // libaom-av1); FALL BACK TO THE DEFAULT WHEN THE BUILD SHIPS NEITHER.
+    //
+    // AV1 IS THE ONLY VIDEO CODEC THAT NEEDS THIS. ENUMERATING THE BUNDLED FFMPEG CONFIRMS
+    // EVERY OTHER CODEC WITH MULTIPLE DECODERS (h264, hevc, vp8, vp9, vc1, mpeg2, mjpeg, vvc)
+    // DEFAULTS TO ITS NATIVE *SOFTWARE* DECODER — ONLY AV1 DEFAULTS TO/CAN LAND ON A NON-SW
+    // STUB BECAUSE FFmpeg NEVER WROTE A NATIVE SOFTWARE AV1 DECODER. THE GENERAL BACKSTOP FOR
+    // ANY FUTURE STUB IS THE ZERO-FRAME → ERROR CHECK IN THE CONSUMPTION LOOP.
+    private static AVCodec softwareVideoDecoder(final int codecId, final AVCodec fallback) {
+        if (codecId == AV_CODEC_ID_AV1) {
+            final AVCodec dav1d = avcodec_find_decoder_by_name("libdav1d");
+            if (dav1d != null) return dav1d;
+            final AVCodec aom = avcodec_find_decoder_by_name("libaom-av1");
+            if (aom != null) return aom;
+        }
+        return fallback;
+    }
+
     // SIZES THE SOFTWARE DECODER THREAD POOL TO THE FRAME AREA
     private void configureSwDecoderThreads(final AVCodecContext ctx) {
         final int width = ctx.width();
@@ -2471,7 +2538,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ALREADY-FAILING PIPELINE.
     private boolean reinitVideoCodecSoftware() {
         final AVStream stream = this.formatContext.streams(this.videoStreamIndex);
-        final AVCodec decoder = avcodec_find_decoder(stream.codecpar().codec_id());
+        final int codecId = stream.codecpar().codec_id();
+        // ROUTE AROUND THE HWACCEL-ONLY NATIVE av1 DECODER ON THIS SOFTWARE FALLBACK — SEE
+        // softwareVideoDecoder. WITHOUT THIS A FAILED AV1 HWACCEL WOULD FALL BACK TO A
+        // DECODER THAT PRODUCES NO FRAMES.
+        final AVCodec decoder = softwareVideoDecoder(codecId, avcodec_find_decoder(codecId));
         if (decoder == null) return false;
 
         final AVCodecContext fresh = avcodec.avcodec_alloc_context3(decoder);

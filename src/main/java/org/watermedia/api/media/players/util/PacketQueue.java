@@ -165,6 +165,14 @@ public final class PacketQueue {
     /** Current serial. Changes with each {@link #flush()}. */
     public int serial() { return this.serial; }
 
+    /**
+     * True when a {@code null} from {@link #get(int[])} means a clean end-of-stream
+     * ({@link #finish()} was signalled) rather than a {@link #abort()} teardown.
+     * The decode threads use this to decide whether to flush the decoder's buffered
+     * frames at EOF — on an abort those frames are stale and must be dropped.
+     */
+    public boolean endOfFile() { return this.finished && !this.aborted; }
+
     /** Total bytes enqueued. */
     public long byteSize() {
         synchronized (this.lock) { return this.totalBytes; }
