@@ -1,3 +1,8 @@
+# 📦 UPDATE 3.0.0.21 (BETA)
+## ⚡ Packaging
+- 🐛 Fixed: `gson` was being bundled inside the final WaterMedia jar — it leaked in as a transitive dependency of the `tools` module (declared there as `implementation`) and got shaded by the `include` configuration; `tools` now declares `gson` as a provided `library`, so the loader-provided copy is used and `gson` is no longer duplicated in the jar
+- ⚙️ Changed: homologated the `tools` buildscript and `gradle.properties` with the `watermedia`/`binaries` conventions (`include`/`library` configurations, build-info logging, aligned JUnit BOM and `gson` versions)
+
 # 📦 UPDATE 3.0.0.20 (BETA)
 ## ⚡ MediaAPI — Playback engine (FFMediaPlayer)
 - ⚙️ Added: `AV_HWDEVICE_TYPE_AMF` (AMD) and `AV_HWDEVICE_TYPE_OHCODEC` (OpenHarmony) to the hardware decoder candidates
