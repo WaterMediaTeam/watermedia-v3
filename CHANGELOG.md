@@ -1,3 +1,38 @@
+# 📦 UPDATE 3.0.0.20 (BETA)
+## ⚡ MediaAPI — Playback engine (FFMediaPlayer)
+- ⚙️ Added: `AV_HWDEVICE_TYPE_AMF` (AMD) and `AV_HWDEVICE_TYPE_OHCODEC` (OpenHarmony) to the hardware decoder candidates
+- ⚙️ Changed: `VULKAN` restored as a last-resort generic GPU decoder (kept last in the candidate list, after D3D11/D3D12 and the platform decoders); `OPENCL` stays excluded
+- ⚙️ Fixed: AV1 software decode — FFmpeg's native `av1` decoder is hwaccel-only and emits zero frames without a GPU accelerator (video "ended" instantly); the software path now picks a real software decoder (`libdav1d`, else `libaom-av1`), on both the initial open and the HW→SW fallback
+- ⚙️ Fixed: decoders with a reorder window (libdav1d, native av1) lost the tail of the stream / produced nothing on repeat — the video/audio decode loops now drain the decoder with a flush packet at a clean EOF, while an `abort()` teardown still drops the stale backlog
+- ⚙️ Changed: a video stream that drains without ever emitting a frame now reports `ERROR` instead of `ENDED` — dead-decoder failures are visible and no longer retried forever by `repeat()`
+- ⚙️ Added: `PacketQueue#endOfFile()` — distinguishes a clean end-of-stream from an `abort()` teardown so the decode threads know whether to drain or drop
+- ⚙️ Removed: `FFMediaPlayer#pollVideoFrame()` / `pollAudioFrame()` — were public but internal-only (a second consumer was always a data race); inlined into the lifecycle consumption loop
+- ⚙️ Changed: the resolved decoder is logged (`libdav1d` / `libaom-av1` / native) and `DEBUG` logging was added across the lifecycle (start/stop/pause/seek/quality/speed/release); `isHwAccel()` documented
+## ⚡ [NEW] PlatformsAPI — Search
+- ⚙️ Added: `PlatformAPI.search(String)` / `search(String, int limit)` — asynchronous, client-side search across every registered platform; returns a live `PlatformSearch` immediately and fills it off-thread (platforms probed concurrently, hits land in completion order, ≤ `limit` per platform — default 2), a newer search supersedes the previous one
+- ⚙️ Added: `PlatformAPI.searchHistory()` — snapshot of recent queries (newest first, ≤ 10)
+- ⚙️ Added: `PlatformSearch` — live handle (`query()`, `results()` immutable growing snapshot, `history()`, `done()`); a superseded handle simply stops growing
+- ⚙️ Added: `PlatformResult(String platform, String title, URI thumbnail, URI url)` record — one raw, unresolved hit; the URL is resolved through `MRL`/`PlatformAPI.fetch(URI)` only when the user picks it
+- ⚙️ Added: `IPlatform#search(String query, int limit)` default method (returns an empty list) — source/binary compatible; overridden by YouTube, Twitch, Kick, Imgur
+- ⚙️ Added: in-memory result cache — identical `(limit, query)` searches served from memory; bounded LRU (32 entries), whole-cache sweep every `platforms.searchCacheCleanup` minutes; only completed, non-empty searches are cached
+- ⚙️ Added: config `platforms.searchCacheCleanup` (minutes, default 15; `0` disables caching)
+- ⚙️ Changed: `PlatformAPI#release()` now cancels the active search and clears history + cache
+## ⚡ PlatformsAPI — Web platforms
+- ⚙️ Added: `YtDlpPlatform` — drives the bundled **yt-dlp** binary out-of-process and maps its JSON into `DataSource`s; enables **SoundCloud**, **Facebook**, **Instagram** and **Newgrounds** (single videos + playlists, video/muxed/audio-only variants, audio-only sources, subtitles incl. auto-captions, thumbnails, metadata, mature-content gate, per-format headers/UA, URL expiry); hardened subprocess handling (hermetic, 120s timeout, both pipes drained)
+- ⚙️ Added: `YouTubePlatform` — re-adds **YouTube** (removed with no replacement in a prior beta), backed by yt-dlp; separates video vs playlist links, and on the bot-check/age gate retries with a freshly minted **po_token** via the `rustypipe-botguard` binary; implements `search()` through yt-dlp `ytsearchN:` (`--flat-playlist`, playable videos only)
+- ⚙️ Added: search support on **Imgur** (gallery search), **Kick** (channel search) and **Twitch** (inline GraphQL `searchFor`, no persisted hash)
+- ⚙️ Changed: merged the old `platform-extension` module into WaterMedia — yt-dlp/botguard provisioning lives in `libs/binaries`, the platform integration here
+- ⚙️ Changed: platform JSON parsing migrated to the shared `JsonTool` helpers (BiliBili, Odysee, TikTok, Twitch) — no behavior change
+## ⚡ Packaging / licensing
+- ⚙️ Changed: native libraries rebuilt — FFmpeg with AMD **AMF**, OpenHarmony codec support, **x264/x265** encoders and Vulkan, and yt-dlp + rustypipe-botguard provisioning (`libs/binaries`, `libs/tools`)
+- ⚙️ Added: `META-INF/licenses/javacpp-LICENSE.txt` — bundles the JavaCPP / JavaCPP-Presets-FFmpeg JNI-bindings license (Apache 2.0); README points at the bundled license texts under `META-INF/licenses/`
+## ⚡ GENERAL
+- ✨ Search videos by keyword across YouTube, Twitch, Kick and Imgur — results stream in as you type, no need to paste a link
+- ✨ YouTube is back, and SoundCloud, Facebook, Instagram and Newgrounds now play too — all through yt-dlp, with automatic bot-check bypass on YouTube
+- 🛠️ Hardware video decoding now covers AMD GPUs (AMF) and OpenHarmony devices, with Vulkan used as a last-resort GPU decoder
+- 🐛 Fixed: AV1 videos that played for an instant and then "ended" (or showed nothing) when the GPU has no AV1 decoder — they now decode in software
+- 🐛 Fixed: the last moment of some videos getting cut off, and looping/repeat freezing, on certain AV1 / threaded decoders
+
 # 📦 UPDATE 3.0.0.19 (BETA)
 - 🐛 Fixed: Stall opening youtube videos 
 
