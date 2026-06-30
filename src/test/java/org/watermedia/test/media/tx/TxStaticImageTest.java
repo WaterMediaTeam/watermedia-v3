@@ -52,4 +52,34 @@ public class TxStaticImageTest {
         gfx.release();
         assertTrue(gfx.released());
     }
+
+    @Test
+    @DisplayName("Static SVG loads and uploads one frame end-to-end")
+    void testStaticSvgLoadsAndUploadsOneFrame() {
+        // EXERCISES MRL → TxMediaPlayer → openSource → SVGReader: openSource MUST NOT REJECT THE
+        // SOURCE ON ITS CONTENT-TYPE HEADER (MRL ALREADY ROUTED IT AND decodeImage VALIDATES THE BYTES)
+        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.SVG_DIR.resolve("car-filled-color.svg")));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+
+        final FakeGFXEngine gfx = new FakeGFXEngine(false);
+        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
+        assertNotNull(player);
+
+        try {
+            player.start();
+            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
+            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
+
+            assertTrue(player.canPlay());
+            assertTrue(player.width() > 0);
+            assertTrue(player.height() > 0);
+            assertTrue(gfx.uploadCount() >= 1);
+        } finally {
+            player.stop();
+            player.release();
+        }
+
+        gfx.release();
+        assertTrue(gfx.released());
+    }
 }

@@ -46,6 +46,12 @@ public class WaterMediaConfig {
         @Comment("Use the PNG bKGD chunk as the disposal background colour")
         @Comment("When false, transparent disposal is used (recommended for compositing).")
         public boolean pngUseBKGDChunk = false;
+
+        @Spec.Field(suffix = "px")
+        @Comment("Default maximum dimension (px) when rasterizing vector SVG images")
+        @Comment("SVG is resolution-independent; the larger raster side is capped to this, preserving aspect ratio (never upscaled)")
+        @NumberConditions(minInt = 1, maxInt = 8192, math = true)
+        public int svgMaxSize = 512;
     }
 
     @Spec(value = "media", disableStatic = true)

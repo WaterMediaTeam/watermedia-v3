@@ -9,6 +9,7 @@ import org.watermedia.api.codecs.readers.JPEGReader;
 import org.watermedia.api.codecs.readers.NETPBMReader;
 import org.watermedia.api.codecs.readers.PNGReader;
 import org.watermedia.api.codecs.readers.WEBPReader;
+import org.watermedia.api.codecs.readers.svg.SVGReader;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
@@ -42,6 +43,7 @@ public class CodecsAPI extends WaterMediaAPI {
     public static final String CODEC_GIF = "GIF";
     public static final String CODEC_WEBP = "WEBP";
     public static final String CODEC_NETPBM = "NETPBM";
+    public static final String CODEC_SVG = "SVG";
     // GPU BLOCK-COMPRESSION CODECS — AVAILABILITY IS PROBED FROM THE NATIVE LIBRARY AT start().
     // "BC" IS THE FAMILY: available("BC") IS TRUE WHEN ANY VERSION (BC7/BC3/BC1) IS PRESENT.
     public static final String CODEC_BC = "BC";
@@ -146,8 +148,9 @@ public class CodecsAPI extends WaterMediaAPI {
     private static final byte[] WEBVTT_HEADER = { 'W', 'E', 'B', 'V', 'T', 'T' };
     private static final byte[] ASS_HEADER = { '[', 'S', 'c', 'r', 'i', 'p', 't', ' ', 'I', 'n', 'f', 'o', ']' };
 
-    // BYTES READ FROM THE STREAM FOR SNIFFING; LARGE ENOUGH FOR THE MPEG-TS 188-BYTE SYNC CHECK
-    private static final int PROBE_SIZE = 256;
+    // BYTES READ FROM THE STREAM FOR SNIFFING; LARGE ENOUGH FOR THE MPEG-TS 188-BYTE SYNC CHECK AND
+    // FOR AN SVG ROOT THAT TRAILS A LONG XML PROLOG (DECLARATION, LICENCE COMMENTS, DOCTYPE)
+    private static final int PROBE_SIZE = 1024;
 
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
@@ -198,6 +201,11 @@ public class CodecsAPI extends WaterMediaAPI {
                 source.position(start + 2);
                 return new NETPBMReader(source, version - '0');
             }
+        }
+        if (isSVG(source, start)) {
+            // SVG HAS NO FIXED HEADER — THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
+            source.position(start);
+            return new SVGReader(source, requestedFormat);
         }
 
         source.position(start);
@@ -286,6 +294,7 @@ public class CodecsAPI extends WaterMediaAPI {
         if (DataTool.startsWith(b, 0, KTX_HEADER)) return MediaType.IMAGE;
         if (h[0] == 'P' && h[1] >= '1' && h[1] <= '7') return MediaType.IMAGE; // NETPBM (PBM/PGM/PPM/PAM)
         if (h[0] == '#' && h[1] == '?') return MediaType.IMAGE; // RADIANCE HDR ("#?RADIANCE" / "#?RGBE")
+        if (looksLikeSvg(probeText(h, 0))) return MediaType.IMAGE; // SVG (XML, ROOT <svg>)
 
         // VIDEO — CONTAINERS / RAW STREAMS
         if (DataTool.startsWith(b, 0, EBML_HEADER)) return MediaType.VIDEO;
@@ -347,13 +356,78 @@ public class CodecsAPI extends WaterMediaAPI {
         return MediaType.VIDEO;
     }
 
+    // BYTES SCANNED FOR THE SVG ROOT ELEMENT (PROLOG/COMMENTS/DOCTYPE MAY PRECEDE <svg>)
+    private static final int SVG_SNIFF_WINDOW = 4096;
+
+    // SVG HAS NO BINARY MAGIC: SKIP A BOM, THEN VERIFY THE FIRST REAL ELEMENT IS <svg>
+    private static boolean isSVG(final ByteBuffer src, final int start) {
+        final int limit = src.limit();
+        int p = start;
+        if (limit - p >= 3 && (src.get(p) & 0xFF) == 0xEF && (src.get(p + 1) & 0xFF) == 0xBB && (src.get(p + 2) & 0xFF) == 0xBF) p += 3;
+        else if (limit - p >= 2 && (((src.get(p) & 0xFF) == 0xFF && (src.get(p + 1) & 0xFF) == 0xFE) || ((src.get(p) & 0xFF) == 0xFE && (src.get(p + 1) & 0xFF) == 0xFF))) p += 2;
+        final int end = Math.min(limit, p + SVG_SNIFF_WINDOW);
+        final StringBuilder sb = new StringBuilder(Math.max(16, end - p));
+        for (int i = p; i < end; i++) {
+            final int b = src.get(i) & 0xFF;
+            if (b != 0) sb.append((char) b); // DROP NUL BYTES SO UTF-16 MARKUP STILL READS AS ASCII
+        }
+        return looksLikeSvg(sb.toString());
+    }
+
+    private static String probeText(final byte[] h, final int start) {
+        int p = start;
+        if (h.length - p >= 3 && (h[p] & 0xFF) == 0xEF && (h[p + 1] & 0xFF) == 0xBB && (h[p + 2] & 0xFF) == 0xBF) p += 3;
+        else if (h.length - p >= 2 && (((h[p] & 0xFF) == 0xFF && (h[p + 1] & 0xFF) == 0xFE) || ((h[p] & 0xFF) == 0xFE && (h[p + 1] & 0xFF) == 0xFF))) p += 2;
+        final StringBuilder sb = new StringBuilder(Math.max(16, h.length - p));
+        for (int i = p; i < h.length; i++) {
+            final int b = h[i] & 0xFF;
+            if (b != 0) sb.append((char) b);
+        }
+        return sb.toString();
+    }
+
+    // WALKS THE XML PROLOG (DECLARATION, COMMENTS, DOCTYPE) AND CHECKS THAT THE FIRST ELEMENT IS <svg>
+    private static boolean looksLikeSvg(final String s) {
+        int i = 0;
+        final int n = s.length();
+        while (i < n) {
+            while (i < n && Character.isWhitespace(s.charAt(i))) i++;
+            if (i >= n || s.charAt(i) != '<') return false;
+            if (s.startsWith("<?", i)) { final int e = s.indexOf("?>", i); if (e < 0) return false; i = e + 2; continue; }
+            if (s.startsWith("<!--", i)) { final int e = s.indexOf("-->", i); if (e < 0) return false; i = e + 3; continue; }
+            if (s.startsWith("<!", i)) {
+                // DOCTYPE / MARKUP DECL — AN INTERNAL DTD SUBSET [ ... ] MAY CONTAIN '>' (e.g. <!ENTITY ...>)
+                // BEFORE THE REAL END, SO SKIP PAST THE MATCHING ']' FIRST WHEN A SUBSET IS PRESENT
+                final int gt = s.indexOf('>', i);
+                if (gt < 0) return false;
+                final int bracket = s.indexOf('[', i);
+                if (bracket >= 0 && bracket < gt) {
+                    final int endBracket = s.indexOf(']', bracket);
+                    final int close = endBracket < 0 ? -1 : s.indexOf('>', endBracket);
+                    if (close < 0) return false;
+                    i = close + 1;
+                } else {
+                    i = gt + 1;
+                }
+                continue;
+            }
+            int k = i + 1;
+            while (k < n && !Character.isWhitespace(s.charAt(k)) && s.charAt(k) != '>' && s.charAt(k) != '/') k++;
+            String name = s.substring(i + 1, k);
+            final int colon = name.indexOf(':');
+            if (colon >= 0) name = name.substring(colon + 1);
+            return name.equalsIgnoreCase("svg");
+        }
+        return false;
+    }
+
     // ==========================================================================
     // CODEC AVAILABILITY
     // ==========================================================================
     /**
      * Reports whether a codec is available in this runtime. Pure-Java image codecs
      * ({@link #CODEC_PNG}, {@link #CODEC_JPEG}, {@link #CODEC_GIF}, {@link #CODEC_WEBP},
-     * {@link #CODEC_NETPBM}) are always present. GPU block-compression codecs depend on the native
+     * {@link #CODEC_NETPBM}, {@link #CODEC_SVG}) are always present. GPU block-compression codecs depend on the native
      * library probed at {@link #start(WaterMedia)}: pass {@link #CODEC_BC} to ask whether
      * <i>any</i> BC version is available, or a specific id ({@link #CODEC_BC7}, {@link #CODEC_BC3},
      * {@link #CODEC_BC1}) to test that exact version.
@@ -365,7 +439,7 @@ public class CodecsAPI extends WaterMediaAPI {
         if (codec == null) return false;
         return switch (codec.toUpperCase(Locale.ROOT)) {
             case CODEC_PNG, CODEC_JPEG, "JPG", CODEC_GIF, CODEC_WEBP,
-                 CODEC_NETPBM, "PNM", "PBM", "PGM", "PPM", "PAM" -> true;
+                 CODEC_NETPBM, "PNM", "PBM", "PGM", "PPM", "PAM", CODEC_SVG -> true;
             case CODEC_BC -> BCCodec.any();
             case CODEC_BC7, CODEC_BC3, CODEC_BC1 -> BCCodec.available(codec.toUpperCase(Locale.ROOT));
             default -> false;

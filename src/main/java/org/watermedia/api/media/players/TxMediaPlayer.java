@@ -22,7 +22,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayDeque;
 import java.util.Arrays;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -858,11 +857,10 @@ public final class TxMediaPlayer extends MediaPlayer {
         final long maxBytes = this.maxSourceBytes();
         try {
             final NetworkCache.CachedBytes sourceBytes = NetworkCache.read(uri, this.source.headers(), IMAGE_ACCEPT, maxBytes);
-            final String type = sourceBytes.contentType();
-            if (type == null || !type.toLowerCase(Locale.ROOT).startsWith("image/")) {
-                throw new IllegalArgumentException("Invalid content type: " + type);
-            }
-
+            // THE MEDIA TYPE WAS ALREADY DETERMINED AUTHORITATIVELY BY MRL (BY CONTENT-TYPE OR, FOR
+            // AMBIGUOUS MIMES, BY BYTE-SNIFFING) AND decodeImage VALIDATES THE ACTUAL BYTES — SO WE DO
+            // NOT SECOND-GUESS WITH THE SERVER'S CONTENT-TYPE HEADER, WHICH WOULD WRONGLY REJECT IMAGES
+            // SERVED AS application/octet-stream OR text/xml (e.g. SVG)
             final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(sourceBytes.bytes()));
             this.activeReader = reader;
             return reader;

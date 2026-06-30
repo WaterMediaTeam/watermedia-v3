@@ -59,6 +59,8 @@ public class MediaTypeSniffTest {
                 new ByteCase("heif-mp4", ftyp("mif1"), MediaType.IMAGE),
                 new ByteCase("avif", ftyp("avif"), MediaType.IMAGE),
                 new ByteCase("qoi", ascii("qoif"), MediaType.IMAGE),
+                new ByteCase("svg-plain", ascii("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"></svg>"), MediaType.IMAGE),
+                new ByteCase("svg-xml-prolog", ascii("<?xml version=\"1.0\"?>\n<!-- c -->\n<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"), MediaType.IMAGE),
                 // VIDEO
                 new ByteCase("mp4", ftyp("isom"), MediaType.VIDEO),
                 new ByteCase("mov", ftyp("qt  "), MediaType.VIDEO),

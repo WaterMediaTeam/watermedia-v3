@@ -24,6 +24,8 @@ public final class Fixtures {
     public static final Path WEBP_LOSSY_DIR = RESOURCES.resolve("webp").resolve("lossy");
     public static final Path WEBP_ANIMATED_DIR = RESOURCES.resolve("webp").resolve("animated");
     public static final Path NETPBM_DIR = RESOURCES.resolve("netpbm");
+    public static final Path SVG_DIR = RESOURCES.resolve("svg");
+    public static final Path SVG_PNG_DIR = SVG_DIR.resolve("png");
     public static final Path MP4_DIR = RESOURCES.resolve("mp4");
 
     public static final Path MP4_H264 = MP4_DIR.resolve("fibonaccisongh264.mp4");
