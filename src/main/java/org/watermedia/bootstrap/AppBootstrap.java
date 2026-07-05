@@ -165,7 +165,7 @@ public class AppBootstrap {
         final BootstrapScan scan = new BootstrapScan();
 
         // FIND BINARIES
-        final Path binaries = findLocalJar("wm_binaries");
+        final Path binaries = findLocalJar("watermedia_binaries");
         final boolean classpath = hasBinariesOnClasspath();
         scan.binariesFound = binaries != null || classpath;
         if (binaries != null) scan.jars.add(binaries);
