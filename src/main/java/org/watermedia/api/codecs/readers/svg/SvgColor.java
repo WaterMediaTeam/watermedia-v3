@@ -4,13 +4,18 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Parses SVG/CSS colour syntax into a packed {@code 0xAARRGGBB} integer: {@code #rgb}, {@code #rgba},
+ * Parses SVG/CSS colour syntax into a packed {@code 0xAARRGGBB} value: {@code #rgb}, {@code #rgba},
  * {@code #rrggbb}, {@code #rrggbbaa}, {@code rgb()}/{@code rgba()} (numeric or percentage),
  * {@code hsl()}/{@code hsla()}, the SVG named colours, {@code transparent} and {@code currentColor}.
+ *
+ * <p>{@link #parse(String, int)} returns a {@code long} so failure is out-of-band: valid colours are
+ * the unsigned 32-bit range ({@code 0..0xFFFFFFFF}, cast to {@code int} after checking) and
+ * {@link #INVALID} is negative — every 32-bit pattern is a legal ARGB colour, so no int sentinel works.
  */
 final class SvgColor {
-    // SENTINEL RETURNED FOR AN UNPARSEABLE COLOUR TOKEN
-    static final int INVALID = 0x00000001;
+    // SENTINEL RETURNED FOR AN UNPARSEABLE COLOUR TOKEN — NEGATIVE, SO IT CANNOT COLLIDE WITH ANY
+    // PACKED ARGB VALUE (e.g. rgba(0,0,1,0) == 0x00000001 IS A REAL, FULLY TRANSPARENT COLOUR)
+    static final long INVALID = -1L;
 
     private SvgColor() {}
 
@@ -18,8 +23,9 @@ final class SvgColor {
         return (a << 24) | (r << 16) | (g << 8) | b;
     }
 
-    // PARSES A COLOUR; RETURNS currentColor FOR "currentColor", INVALID WHEN UNRECOGNISED
-    static int parse(final String raw, final int currentColor) {
+    // PARSES A COLOUR; RETURNS currentColor FOR "currentColor", INVALID WHEN UNRECOGNISED.
+    // VALID RESULTS ARE UNSIGNED 32-BIT ARGB — CALLERS CHECK AGAINST INVALID THEN CAST TO int
+    static long parse(final String raw, final int currentColor) {
         if (raw == null) return INVALID;
         final String s = raw.trim();
         if (s.isEmpty()) return INVALID;
@@ -28,33 +34,33 @@ final class SvgColor {
 
         final String lower = s.toLowerCase(Locale.ROOT);
         if (lower.equals("transparent")) return 0;
-        if (lower.equals("currentcolor")) return currentColor;
+        if (lower.equals("currentcolor")) return currentColor & 0xFFFFFFFFL;
         if (lower.startsWith("rgb")) return parseRgb(lower);
         if (lower.startsWith("hsl")) return parseHsl(lower);
 
         final Integer named = NAMED.get(lower);
-        return named != null ? named : INVALID;
+        return named != null ? named & 0xFFFFFFFFL : INVALID;
     }
 
-    private static int parseHex(final String s) {
+    private static long parseHex(final String s) {
         final String h = s.substring(1);
         try {
             switch (h.length()) {
                 case 3 -> {
                     final int r = hex(h.charAt(0)) * 17, g = hex(h.charAt(1)) * 17, b = hex(h.charAt(2)) * 17;
-                    return argb(255, r, g, b);
+                    return argb(255, r, g, b) & 0xFFFFFFFFL;
                 }
                 case 4 -> {
                     final int r = hex(h.charAt(0)) * 17, g = hex(h.charAt(1)) * 17, b = hex(h.charAt(2)) * 17, a = hex(h.charAt(3)) * 17;
-                    return argb(a, r, g, b);
+                    return argb(a, r, g, b) & 0xFFFFFFFFL;
                 }
                 case 6 -> {
                     final int v = Integer.parseInt(h, 16);
-                    return argb(255, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+                    return argb(255, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF) & 0xFFFFFFFFL;
                 }
                 case 8 -> {
                     final long v = Long.parseLong(h, 16);
-                    return argb((int) (v & 0xFF), (int) ((v >> 24) & 0xFF), (int) ((v >> 16) & 0xFF), (int) ((v >> 8) & 0xFF));
+                    return argb((int) (v & 0xFF), (int) ((v >> 24) & 0xFF), (int) ((v >> 16) & 0xFF), (int) ((v >> 8) & 0xFF)) & 0xFFFFFFFFL;
                 }
                 default -> { return INVALID; }
             }
@@ -63,7 +69,7 @@ final class SvgColor {
         }
     }
 
-    private static int parseRgb(final String s) {
+    private static long parseRgb(final String s) {
         final int open = s.indexOf('('), close = s.indexOf(')');
         if (open < 0 || close < 0) return INVALID;
         final String[] parts = s.substring(open + 1, close).trim().split("[,\\s/]+");
@@ -73,13 +79,13 @@ final class SvgColor {
             final int g = channel(parts[1]);
             final int b = channel(parts[2]);
             final int a = parts.length >= 4 ? alpha(parts[3]) : 255;
-            return argb(a, r, g, b);
+            return argb(a, r, g, b) & 0xFFFFFFFFL;
         } catch (final NumberFormatException e) {
             return INVALID;
         }
     }
 
-    private static int parseHsl(final String s) {
+    private static long parseHsl(final String s) {
         final int open = s.indexOf('('), close = s.indexOf(')');
         if (open < 0 || close < 0) return INVALID;
         final String[] parts = s.substring(open + 1, close).trim().split("[,\\s/]+");
@@ -90,7 +96,8 @@ final class SvgColor {
             final double sat = pct(parts[1]);
             final double lig = pct(parts[2]);
             final int a = parts.length >= 4 ? alpha(parts[3]) : 255;
-            return hslToArgb(h, sat, lig, a);
+            // MASK TO UNSIGNED — A SIGN-EXTENDED NEGATIVE int (e.g. OPAQUE WHITE == -1) WOULD COLLIDE WITH INVALID
+            return hslToArgb(h, sat, lig, a) & 0xFFFFFFFFL;
         } catch (final NumberFormatException e) {
             return INVALID;
         }

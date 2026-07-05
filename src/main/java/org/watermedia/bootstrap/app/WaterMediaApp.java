@@ -15,9 +15,8 @@ import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.openal.AL;
 import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALC10;
-import org.lwjgl.opengl.ARBDebugOutput;
-import org.lwjgl.opengl.GL;
 import org.lwjgl.stb.STBVorbis;
+import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
@@ -78,7 +77,13 @@ public class WaterMediaApp {
     private static Dimension exitConfirmCloseBounds = Dimension.ZERO;
     private static Dimension errorDialogActionBounds = Dimension.ZERO;
 
-    static { initLogging(); }
+    static {
+        // LWJGL'S DEFAULT 64KB PER-THREAD MemoryStack OVERFLOWS WHEN VULKAN ENUMERATES A GPU'S
+        // (HUNDREDS OF) DEVICE EXTENSIONS DURING VkInstance INIT. RAISE IT BEFORE ANY MemoryStack
+        // IS CREATED (THE FIRST stackPush HAPPENS LATER, IN initWindow → centerWindow).
+        Configuration.STACK_SIZE.set(1024);
+        initLogging();
+    }
 
     public static void start(final Runnable task) {
         // PHASE 1 — get the window on screen ASAP. Window creation, GL setup,
@@ -140,8 +145,6 @@ public class WaterMediaApp {
             }
         });
 
-        ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
-        }, 0);
         RenderSystem.configureFrameState();
 
         final FrameLimiter loadingLimiter = FrameLimiter.forWindow(ctx.windowHandle);
@@ -168,9 +171,10 @@ public class WaterMediaApp {
     }
 
     private static void renderLoadingFrame(final LoadingScreen loadingScreen) {
+        RenderSystem.beginFrame();
         RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
         loadingScreen.render(ctx.windowWidth, ctx.windowHeight);
-        glfwSwapBuffers(ctx.windowHandle);
+        RenderSystem.present();
         glfwPollEvents();
         ctx.mouseClicked = false; // discard input collected during loading
     }
@@ -184,21 +188,36 @@ public class WaterMediaApp {
         GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
 
+        // THE RENDER LAYER OWNS THE ENGINE CHOICE (FROM -Dwatermedia.engine) AND THE BACKEND LIFECYCLE.
+        // THE APP ONLY CREATES THE WINDOW AND, IF VULKAN FAILS TO ATTACH, REBUILDS IT FOR OPENGL.
+        RenderSystem.chooseEngine();
+        createWindow();
+        if (!RenderSystem.attach(ctx.windowHandle)) {
+            glfwFreeCallbacks(ctx.windowHandle);
+            glfwDestroyWindow(ctx.windowHandle);
+            createWindow(); // ENGINE IS NOW OPENGL; REBUILD WITH A GL CONTEXT AND ATTACH AGAIN
+            RenderSystem.attach(ctx.windowHandle);
+        }
+    }
+
+    private static void createWindow() {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
         glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
-        glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+        RenderSystem.applyWindowHints();
 
         ctx.windowHandle = glfwCreateWindow(1280, 720, AppContext.APP_NAME, NULL, NULL);
         if (ctx.windowHandle == NULL) throw new RuntimeException("Failed to create the GLFW window");
         maximized = true;
         ctx.windowMaximized = true;
 
+        installCallbacks();
+        centerWindow();
+    }
+
+    private static void installCallbacks() {
         // CALLBACKS
         glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
         glfwSetCharCallback(ctx.windowHandle, WaterMediaApp::handleCharInput);
@@ -255,7 +274,9 @@ public class WaterMediaApp {
             ctx.windowMaximized = maximized;
             ctx.requestRender();
         });
+    }
 
+    private static void centerWindow() {
         // CENTER WINDOW
         try (final MemoryStack stack = stackPush()) {
             final IntBuffer pWidth = stack.mallocInt(1);
@@ -271,12 +292,6 @@ public class WaterMediaApp {
                         (vidmode.height() - ctx.windowHeight) / 2);
             }
         }
-
-        glfwMakeContextCurrent(ctx.windowHandle);
-        glfwSwapInterval(1);
-        GL.createCapabilities();
-        RenderSystem.init();
-        RenderSystem.configureFrameState();
     }
 
     private static boolean restoreForTitlebarDrag() {
@@ -460,6 +475,7 @@ public class WaterMediaApp {
                 frameLimiter.syncBeforeFrame();
             }
 
+            RenderSystem.beginFrame();
             RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
 
             screens.render(ctx.windowWidth, ctx.windowHeight);
@@ -474,8 +490,7 @@ public class WaterMediaApp {
 
             renderBottomBar();
 
-            RenderSystem.flush();
-            glfwSwapBuffers(ctx.windowHandle);
+            RenderSystem.present();
         }
 
         ctx.releasePlayer();
@@ -1256,6 +1271,9 @@ public class WaterMediaApp {
 
     // CLEANUP
     private static void cleanup() {
+        // FINISH ANY BACKGROUND PLAYER RELEASE BEFORE TEARING DOWN THE RENDER DEVICE, OR A VULKAN
+        // RELEASE COULD DESTROY IMAGES ON AN ALREADY-DESTROYED DEVICE.
+        ctx.awaitPlayerRelease();
         RenderSystem.cleanup();
         glfwFreeCallbacks(ctx.windowHandle);
         glfwDestroyWindow(ctx.windowHandle);

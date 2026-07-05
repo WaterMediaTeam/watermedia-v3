@@ -50,7 +50,12 @@ final class SVGParser {
                     final String style = attrs.get("style");
                     if (style != null) parseStyleInto(attrs, style);
 
-                    final SvgNode node = new SvgNode(r.getLocalName(), attrs);
+                    // NAMESPACE-UNAWARE StAX RETURNS THE RAW QNAME (e.g. "svg:svg") — STRIP THE PREFIX
+                    // SO PREFIXED DOCUMENTS (<svg:svg><svg:path/>) DISPATCH LIKE UNPREFIXED ONES
+                    String tag = r.getLocalName();
+                    final int colon = tag.indexOf(':');
+                    if (colon >= 0) tag = tag.substring(colon + 1);
+                    final SvgNode node = new SvgNode(tag, attrs);
                     if (stack.isEmpty()) {
                         if (root == null) root = node;
                     } else {
@@ -169,6 +174,20 @@ final class SVGParser {
             case "ex" -> num * 8.0;
             default -> num; // INCLUDING "%": HANDLED BY CALLERS THAT HAVE A REFERENCE LENGTH
         };
+    }
+
+    // PARSES A LENGTH, RESOLVING "%" AGAINST THE GIVEN REFERENCE LENGTH (SVG VIEWPORT AXIS/DIAGONAL)
+    static double length(final String v, final double def, final double ref) {
+        if (v == null || v.isBlank()) return def;
+        final String s = v.trim();
+        if (s.endsWith("%")) {
+            try {
+                return Double.parseDouble(s.substring(0, s.length() - 1)) / 100.0 * ref;
+            } catch (final NumberFormatException e) {
+                return def;
+            }
+        }
+        return length(s, def);
     }
 
     static boolean isPercent(final String v) {

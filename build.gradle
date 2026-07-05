@@ -83,6 +83,8 @@ dependencies {
     library "org.lwjgl:lwjgl-glfw:$opengl_version"
     library "org.lwjgl:lwjgl-stb:$opengl_version"
     library "org.lwjgl:lwjgl-openal:$openal_version"
+    library "org.lwjgl:lwjgl-vulkan:$vulkan_version"
+    library "org.lwjgl:lwjgl-shaderc:$vulkan_version"
     library "org.joml:joml:$joml_version"
 
     // TEST DEPENDENCIES
@@ -94,6 +96,14 @@ dependencies {
     testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-glfw:$opengl_version:natives-$osdetector.os"
     testRuntimeOnly "org.lwjgl:lwjgl-openal:$openal_version:natives-$osdetector.os"
+
+    // VULKAN: BINDINGS SHIP FOR EVERY PLATFORM, BUT NATIVES ONLY EXIST FOR MACOS (BUNDLED MOLTENVK).
+    // ON WINDOWS/LINUX THE VULKAN LOADER COMES FROM THE GPU DRIVER, SO THERE IS NO NATIVES JAR TO PULL.
+    if (osdetector.os == 'osx') {
+        testRuntimeOnly "org.lwjgl:lwjgl-vulkan:$vulkan_version:natives-macos${osdetector.arch == 'aarch_64' ? '-arm64' : ''}"
+    }
+    // SHADERC COMPILES GLSL -> SPIR-V AT RUNTIME (VKEngine/Vulkan SHADERS); IT SHIPS NATIVES FOR EVERY PLATFORM
+    testRuntimeOnly "org.lwjgl:lwjgl-shaderc:$vulkan_version:natives-$osdetector.os"
 }
 
 // Process target resources with mod info

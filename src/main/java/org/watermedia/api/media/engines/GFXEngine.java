@@ -62,6 +62,19 @@ public abstract class GFXEngine {
     public abstract long texture();
 
     /**
+     * Whether the engine can upload frame planes in the given pixel format directly.
+     * <p>
+     * The frame producer calls this before choosing an upload path: formats the engine declines are
+     * pre-converted (via the decoder's scaler) to a format it does accept — typically {@code BGRA} —
+     * before {@code upload}. The default accepts every format, so existing engines are unaffected;
+     * a backend that has not yet implemented (for example) GPU YUV conversion can decline the planar
+     * formats and still receive correct frames.
+     * @param format the candidate pixel layout
+     * @return true when the engine handles this format without external conversion
+     */
+    public boolean supportsFormat(final PixelFormat format) { return true; }
+
+    /**
      * Whether this engine can keep a small animated image as one texture per frame.
      * Engines that return false keep using {@link #upload(ByteBuffer, int)} each frame.
      */
@@ -106,6 +119,31 @@ public abstract class GFXEngine {
      * @return true when the engine accepted the compressed frame set
      */
     public boolean uploadCompressedFrames(final ByteBuffer[] frameBlocks, final String codec, final int blockBytes) { return false; }
+
+    /**
+     * Byte alignment the engine needs the {@code upload} plane buffers to satisfy, or 0 when the
+     * engine imposes no constraint.
+     * <p>
+     * Backends that import the decoder's host memory directly into the GPU (zero-copy) can only do
+     * so when the buffer's base address is aligned to a device-specific boundary
+     * (e.g. Vulkan's {@code minImportedHostPointerAlignment}). Returning a non-zero value asks the
+     * frame producer to allocate its plane buffers aligned to (and sized up to a multiple of) this
+     * boundary so the zero-copy path can engage; engines that copy through staging return 0.
+     * @return required base-address alignment in bytes, or 0 for no constraint
+     */
+    public int requiredBufferAlignment() { return 0; }
+
+    /**
+     * Notifies the engine that a previously uploaded plane buffer is about to be freed by its owner.
+     * <p>
+     * Zero-copy backends may hold GPU-side imports of the buffer's host memory (see
+     * {@link #requiredBufferAlignment()}); they must drop those imports here — draining any pending
+     * GPU reads first — because destroying an import after its host memory was freed crashes the
+     * driver. Must be called from the same thread that calls {@code upload}. The default
+     * implementation does nothing, so copy-through engines are unaffected.
+     * @param buffer the direct buffer the producer is about to free
+     */
+    public void releaseBuffer(final ByteBuffer buffer) {}
 
     /**
      * Uploads a single-plane frame (BGRA, RGBA, RGB, GRAY, YUYV).

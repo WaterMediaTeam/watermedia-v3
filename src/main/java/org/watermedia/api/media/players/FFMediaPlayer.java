@@ -30,6 +30,7 @@ import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
+import org.lwjgl.system.MemoryUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -66,6 +67,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
     private static boolean LOADED;
     private static boolean ERROR;
+    private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT LOAD)
 
     // AUDIO OUTPUT FORMAT
     private static final int AUDIO_SAMPLES = 2048;
@@ -179,6 +181,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final int PLANE_POOL_SETS = 4;
     private final ByteBuffer[][] planePool = new ByteBuffer[PLANE_POOL_SETS][];
     private int planePoolIdx;
+    // BASE-ADDRESS ALIGNMENT THE GFXENGINE WANTS FOR ZERO-COPY HOST IMPORT (-1 = NOT YET QUERIED, 0 = NONE).
+    // WHEN > 0 THE POOLED BUFFERS ARE PAGE-ALIGNED VIA MemoryUtil AND MUST BE FREED EXPLICITLY.
+    private int planeAlign = -1;
 
     // TIMES
     private double videoTimeBase;
@@ -287,6 +292,29 @@ public final class FFMediaPlayer extends MediaPlayer {
             ThreadTool.join(lifecycle);
         }
         super.release();
+        // FREE THE PAGE-ALIGNED PLANE POOL LAST: super.release() RELEASED gfx, WHICH (FOR VULKAN) DESTROYED
+        // THE MEMORY IMPORTED FROM THESE BUFFERS. THE DECODE THREADS ARE JOINED, SO NOTHING ELSE READS THEM.
+        this.freePlanePool();
+    }
+
+    // FREES THE ROTATING PLANE POOL. PAGE-ALIGNED BUFFERS (memAlignedAlloc, FOR ZERO-COPY VULKAN IMPORT) ARE
+    // NOT GC-MANAGED AND MUST BE FREED EXPLICITLY; allocateDirect SETS ARE LEFT TO THE GC.
+    private void freePlanePool() {
+        if (this.planeAlign > 0) {
+            for (final ByteBuffer[] set: this.planePool) {
+                if (set == null) continue;
+                for (int i = 0; i < set.length; i++) {
+                    if (set[i] != null) {
+                        this.gfx.releaseBuffer(set[i]); // DROPS A LIVE VULKAN IMPORT; NO-OP AFTER gfx.release()
+                        MemoryUtil.memAlignedFree(set[i]);
+                    }
+                    set[i] = null;
+                }
+            }
+        }
+        Arrays.fill(this.planePool, null);
+        this.planePoolIdx = 0;
+        this.planeAlign = -1;
     }
 
     @Override
@@ -566,6 +594,9 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // COPIES AVFRAME PLANE DATA TO A POOLED BUFFER SET, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
     private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int width, final int height) {
+        // QUERY THE ENGINE'S BUFFER ALIGNMENT ONCE — NON-ZERO ASKS FOR PAGE-ALIGNED POOLS SO A ZERO-COPY ENGINE CAN IMPORT THE HOST POINTER
+        if (this.planeAlign < 0) this.planeAlign = (this.gfx != null) ? this.gfx.requiredBufferAlignment() : 0;
+
         // GRAB THE NEXT BUFFER SET FROM THE ROTATING POOL (SEE planePool), ALLOCATING ON FIRST USE
         ByteBuffer[] planes = this.planePool[this.planePoolIdx];
         if (planes == null) {
@@ -577,7 +608,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             case BGRA, RGBA, RGB, GRAY, YUYV, YUYV2 -> {
                 final int yStride = frame.linesize(0);
                 final long ySize = (long) yStride * height;
-                planes[0] = ensurePlane(planes[0], ySize);
+                planes[0] = this.ensurePlane(planes[0], ySize);
                 copyPlane(frame.data(0), ySize, planes[0]);
                 this.gfx.upload(planes[0], yStride);
             }
@@ -586,8 +617,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final int uvStride = frame.linesize(1);
                 final long ySize = (long) yStride * height;
                 final long uvSize = (long) uvStride * ((height + 1) / 2); // ROUND UP — ODD HEIGHTS HAVE AN EXTRA CHROMA ROW
-                planes[0] = ensurePlane(planes[0], ySize);
-                planes[1] = ensurePlane(planes[1], uvSize);
+                planes[0] = this.ensurePlane(planes[0], ySize);
+                planes[1] = this.ensurePlane(planes[1], uvSize);
                 copyPlane(frame.data(0), ySize, planes[0]);
                 copyPlane(frame.data(1), uvSize, planes[1]);
                 this.gfx.upload(planes[0], yStride, planes[1], uvStride);
@@ -600,9 +631,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final long ySize = (long) yStride * height;
                 final long uSize = (long) uStride * chromaH;
                 final long vSize = (long) vStride * chromaH;
-                planes[0] = ensurePlane(planes[0], ySize);
-                planes[1] = ensurePlane(planes[1], uSize);
-                planes[2] = ensurePlane(planes[2], vSize);
+                planes[0] = this.ensurePlane(planes[0], ySize);
+                planes[1] = this.ensurePlane(planes[1], uSize);
+                planes[2] = this.ensurePlane(planes[2], vSize);
                 copyPlane(frame.data(0), ySize, planes[0]);
                 copyPlane(frame.data(1), uSize, planes[1]);
                 copyPlane(frame.data(2), vSize, planes[2]);
@@ -618,10 +649,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final long uSize = (long) uStride * chromaH;
                 final long vSize = (long) vStride * chromaH;
                 final long aSize = (long) aStride * height;
-                planes[0] = ensurePlane(planes[0], ySize);
-                planes[1] = ensurePlane(planes[1], uSize);
-                planes[2] = ensurePlane(planes[2], vSize);
-                planes[3] = ensurePlane(planes[3], aSize);
+                planes[0] = this.ensurePlane(planes[0], ySize);
+                planes[1] = this.ensurePlane(planes[1], uSize);
+                planes[2] = this.ensurePlane(planes[2], vSize);
+                planes[3] = this.ensurePlane(planes[3], aSize);
                 copyPlane(frame.data(0), ySize, planes[0]);
                 copyPlane(frame.data(1), uSize, planes[1]);
                 copyPlane(frame.data(2), vSize, planes[2]);
@@ -632,11 +663,21 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
     }
 
-    private static ByteBuffer ensurePlane(final ByteBuffer buf, final long needed) {
-        if (buf == null || buf.capacity() < needed) {
-            return ByteBuffer.allocateDirect((int) needed);
+    private ByteBuffer ensurePlane(final ByteBuffer buf, final long needed) {
+        if (buf != null && buf.capacity() >= needed) return buf;
+        if (this.planeAlign > 0) {
+            // PAGE-ALIGNED DIRECT BUFFER SO A VULKAN ENGINE CAN IMPORT THE HOST POINTER (VK_EXT_external_memory_host).
+            // ROUND THE SIZE UP TO THE ALIGNMENT — THE IMPORT REQUIRES BOTH BASE AND SIZE TO BE MULTIPLES OF IT.
+            if (buf != null) {
+                // DROP THE ENGINE'S IMPORT OF THE OLD POINTER FIRST — FREEING HOST MEMORY UNDER A
+                // LIVE IMPORT (OR RECYCLING ITS ADDRESS) CRASHES THE DRIVER ON THE LATER vkFreeMemory.
+                this.gfx.releaseBuffer(buf);
+                MemoryUtil.memAlignedFree(buf);
+            }
+            final long rounded = (needed + this.planeAlign - 1) / this.planeAlign * this.planeAlign;
+            return MemoryUtil.memAlignedAlloc(this.planeAlign, (int) rounded);
         }
-        return buf;
+        return ByteBuffer.allocateDirect((int) needed);
     }
 
     private static void copyPlane(final BytePointer src, final long bytes, final ByteBuffer dst) {
@@ -948,6 +989,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // THE TARGET IS RESOLVED PER FRAME, SO HOT LOD CHANGES APPLY WITHOUT
                         // TOUCHING THE DECODE PIPELINE OR THE CLOCK.
                         PixFmtMapping mapping = mapPixelFormat(slot.format);
+                        // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
+                        // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
+                        if (mapping != null && this.gfx != null && !this.gfx.supportsFormat(mapping.cs)) mapping = null;
                         final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
                         final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
 
@@ -2750,6 +2794,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.swrContext = null;
         }
         if (this.videoCodecContext != null) {
+            // FLUSH BEFORE FREE: A FRAME-THREADED DECODER (E.G. THE MULTI-THREAD SOFTWARE FALLBACK)
+            // INTERRUPTED MID-DECODE CAN LEAVE ITS ASYNC PIPELINE UNBALANCED, WHICH TRIPS
+            // av_assert0(fctx->async_lock) IN pthread_frame.c ON avcodec_free_context. FLUSHING DRAINS
+            // THE WORKER THREADS AND RESETS THAT STATE FIRST.
+            avcodec.avcodec_flush_buffers(this.videoCodecContext);
             avcodec.avcodec_free_context(this.videoCodecContext);
             this.videoCodecContext = null;
         }
@@ -2781,8 +2830,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.scaledFrame = null;
         }
 
-        Arrays.fill(this.planePool, null);
-        this.planePoolIdx = 0;
+        // FREE THE PLANE POOL ON EVERY TEARDOWN SO A STOPPED-BUT-KEPT PLAYER RETAINS NO FRAME MEMORY
+        // (UP TO 4 FULL FRAME SETS). SAFE FOR VULKAN: releaseBuffer DROPS THE ENGINE'S HOST IMPORTS
+        // (DRAINING PENDING GPU READS) BEFORE EACH BUFFER IS FREED. release() CALLS THIS AGAIN AS A
+        // SAFETY NET — IDEMPOTENT.
+        this.freePlanePool();
         this.lastFormat = null;
         this.lastBitsPerComponent = 0;
 
@@ -2855,6 +2907,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             LOGGER.info(IT, "Hardware Acceleration:");
             int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
             int hwCount = 0;
+            boolean vulkanInBuild = false;
             do {
                 hwType = avutil.av_hwdevice_iterate_types(hwType);
                 if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
@@ -2863,6 +2916,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final String hwNameStr = getString(hwName, null);
                 if (hwNameStr != null) {
                     LOGGER.info(IT, "• {}", hwNameStr);
+                    if ("vulkan".equals(hwNameStr)) vulkanInBuild = true;
                     hwCount++;
                 }
                 IOTool.closeQuietly(hwName);
@@ -2871,6 +2925,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (hwCount == 0) {
                 LOGGER.info(IT, "  (none available)");
             }
+
+            // PROBE VULKAN HARDWARE DECODE (BUILD + DRIVER). NOTE: TRUE GPU->GPU ZERO-COPY ALSO NEEDS THE
+            // AVVkFrame / AVVulkanDeviceContext JNI TYPES, WHICH THIS BYTEDECO BUILD DOES NOT EXPOSE — SO
+            // EVEN WHEN AVAILABLE IT IS NOT PREFERRED (IT WOULD ADD A GPU->RAM DOWNLOAD OVER THE SOFTWARE
+            // DECODE + HOST-IMPORT PATH). THE PROBE ANSWERS "DOES THE HARDWARE SUPPORT IT" FOR DIAGNOSTICS.
+            VULKAN_DECODE = vulkanInBuild && probeVulkanDecode();
+            LOGGER.info(IT, "Vulkan hardware decode: {}", VULKAN_DECODE
+                    ? "available (zero-copy GPU import needs AVVkFrame JNI, absent here — software decode + host-import is used)"
+                    : "unavailable");
 
             final BytePointer license = avformat.avformat_license();
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), getString(license, "unknown"));
@@ -2885,6 +2948,27 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     /** @return {@code true} once {@link #load(WaterMedia)} has successfully initialized FFmpeg */
     public static boolean loaded() { return LOADED; }
+
+    /**
+     * Whether this FFmpeg build and the GPU/driver can create a Vulkan hardware-decode device (probed
+     * once at load). Even when {@code true}, frames are still decoded in software and host-imported,
+     * because the shipped FFmpeg JNI does not expose {@code AVVkFrame}/{@code AVVulkanDeviceContext}
+     * for a true GPU-to-GPU import — so Vulkan decode would only add a GPU-to-RAM download here.
+     * @return {@code true} when Vulkan hardware decode is supported and available on this system
+     */
+    public static boolean vulkanDecodeAvailable() { return VULKAN_DECODE; }
+
+    // ATTEMPTS TO CREATE A VULKAN HW DEVICE — CONFIRMS THE BUILD AND DRIVER CAN DECODE WITH VULKAN.
+    private static boolean probeVulkanDecode() {
+        try {
+            final AVBufferRef ref = new AVBufferRef();
+            if (av_hwdevice_ctx_create(ref, AV_HWDEVICE_TYPE_VULKAN, (String) null, null, 0) < 0) return false;
+            av_buffer_unref(ref);
+            return true;
+        } catch (final Throwable t) {
+            return false;
+        }
+    }
 
     /** @return {@code true} if {@link #load(WaterMedia)} failed to initialize FFmpeg */
     public static boolean loadError() { return ERROR; }

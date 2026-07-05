@@ -31,6 +31,7 @@ final class SVGDocument {
     private final boolean hasViewBox;
     private final double vbX, vbY, vbW, vbH;
     private final double intrinsicW, intrinsicH;
+    private final double refW, refH, refD; // PERCENTAGE REFERENCE LENGTHS: VIEWPORT WIDTH/HEIGHT/DIAGONAL
     private final boolean aspectNone; // preserveAspectRatio="none"
 
     private SVGDocument(final SvgNode root) throws IOException {
@@ -59,6 +60,12 @@ final class SVGDocument {
             this.intrinsicH = hAbs ? SVGParser.length(h, DEFAULT_H) : DEFAULT_H;
         }
 
+        // PERCENTAGE REFERENCES PER SVG SPEC: HORIZONTAL LENGTHS RESOLVE AGAINST THE VIEWPORT WIDTH,
+        // VERTICAL AGAINST THE HEIGHT, OTHERS (r, stroke-width) AGAINST sqrt(w^2+h^2)/sqrt(2)
+        this.refW = this.hasViewBox ? this.vbW : this.intrinsicW;
+        this.refH = this.hasViewBox ? this.vbH : this.intrinsicH;
+        this.refD = Math.sqrt((this.refW * this.refW + this.refH * this.refH) / 2);
+
         final String par = root.attr("preserveAspectRatio");
         this.aspectNone = par != null && par.trim().toLowerCase(Locale.ROOT).startsWith("none");
 
@@ -76,7 +83,7 @@ final class SVGDocument {
     void render(final RasterOutput out) throws IOException {
         final Affine view = this.viewTransform(out.width(), out.height());
         // THE ROOT <svg> ITSELF CAN CARRY PRESENTATION ATTRS (e.g. fill="#000000") THAT CASCADE DOWN
-        final RenderState base = RenderState.root(view).derive(this.root, this.gradients);
+        final RenderState base = RenderState.root(view).derive(this.root, this.gradients, this.refD);
         for (final SvgNode child: this.root.children()) {
             this.renderNode(child, base, out, 1);
         }
@@ -104,12 +111,12 @@ final class SVGDocument {
                 // NON-RENDERED OR UNSUPPORTED — SKIP THE SUBTREE
             }
             case "g", "a", "svg" -> {
-                final RenderState child = state.derive(node, this.gradients);
+                final RenderState child = state.derive(node, this.gradients, this.refD);
                 for (final SvgNode c: node.children()) this.renderNode(c, child, out, depth + 1);
             }
             default -> {
-                final RenderState s = state.derive(node, this.gradients);
-                final Path geo = geometry(node);
+                final RenderState s = state.derive(node, this.gradients, this.refD);
+                final Path geo = this.geometry(node);
                 if (geo == null || geo.isEmpty()) return;
                 if (s.fill() != null) out.fill(geo, s.ctm(), s.evenOdd(), s.fill(), s.fillEff());
                 if (s.stroke() != null && s.strokeWidth() > 0) out.stroke(geo, s.ctm(), s.strokeWidth(), s.stroke(), s.strokeEff());
@@ -117,35 +124,35 @@ final class SVGDocument {
         }
     }
 
-    private static Path geometry(final SvgNode node) {
+    private Path geometry(final SvgNode node) {
         final Path p = new Path();
         switch (node.tag().toLowerCase(Locale.ROOT)) {
             case "rect" -> {
-                final double x = SVGParser.length(node.attr("x"), 0), y = SVGParser.length(node.attr("y"), 0);
-                final double w = SVGParser.length(node.attr("width"), 0), h = SVGParser.length(node.attr("height"), 0);
+                final double x = SVGParser.length(node.attr("x"), 0, this.refW), y = SVGParser.length(node.attr("y"), 0, this.refH);
+                final double w = SVGParser.length(node.attr("width"), 0, this.refW), h = SVGParser.length(node.attr("height"), 0, this.refH);
                 if (w <= 0 || h <= 0) return null;
                 final String rxs = node.attr("rx"), rys = node.attr("ry");
-                double rx = rxs != null ? SVGParser.length(rxs, 0) : Double.NaN;
-                double ry = rys != null ? SVGParser.length(rys, 0) : Double.NaN;
+                double rx = rxs != null ? SVGParser.length(rxs, 0, this.refW) : Double.NaN;
+                double ry = rys != null ? SVGParser.length(rys, 0, this.refH) : Double.NaN;
                 if (Double.isNaN(rx)) rx = Double.isNaN(ry) ? 0 : ry;
                 if (Double.isNaN(ry)) ry = rx;
                 p.rect(x, y, w, h, rx, ry);
             }
             case "circle" -> {
-                final double cx = SVGParser.length(node.attr("cx"), 0), cy = SVGParser.length(node.attr("cy"), 0);
-                final double r = SVGParser.length(node.attr("r"), 0);
+                final double cx = SVGParser.length(node.attr("cx"), 0, this.refW), cy = SVGParser.length(node.attr("cy"), 0, this.refH);
+                final double r = SVGParser.length(node.attr("r"), 0, this.refD);
                 if (r <= 0) return null;
                 p.ellipse(cx, cy, r, r);
             }
             case "ellipse" -> {
-                final double cx = SVGParser.length(node.attr("cx"), 0), cy = SVGParser.length(node.attr("cy"), 0);
-                final double rx = SVGParser.length(node.attr("rx"), 0), ry = SVGParser.length(node.attr("ry"), 0);
+                final double cx = SVGParser.length(node.attr("cx"), 0, this.refW), cy = SVGParser.length(node.attr("cy"), 0, this.refH);
+                final double rx = SVGParser.length(node.attr("rx"), 0, this.refW), ry = SVGParser.length(node.attr("ry"), 0, this.refH);
                 if (rx <= 0 || ry <= 0) return null;
                 p.ellipse(cx, cy, rx, ry);
             }
             case "line" -> {
-                final double x1 = SVGParser.length(node.attr("x1"), 0), y1 = SVGParser.length(node.attr("y1"), 0);
-                final double x2 = SVGParser.length(node.attr("x2"), 0), y2 = SVGParser.length(node.attr("y2"), 0);
+                final double x1 = SVGParser.length(node.attr("x1"), 0, this.refW), y1 = SVGParser.length(node.attr("y1"), 0, this.refH);
+                final double x2 = SVGParser.length(node.attr("x2"), 0, this.refW), y2 = SVGParser.length(node.attr("y2"), 0, this.refH);
                 p.moveTo(x1, y1);
                 p.lineTo(x2, y2);
             }
@@ -196,13 +203,11 @@ final class SVGDocument {
         final SvgNode tmpl = templateOf(node, nodes);
         final boolean userSpace = "userSpaceOnUse".equalsIgnoreCase(attr(node, tmpl, "gradientUnits"));
         final Affine gt = SVGParser.parseTransform(attr(node, tmpl, "gradientTransform"));
-        final double vw = this.hasViewBox ? this.vbW : this.intrinsicW;
-        final double vh = this.hasViewBox ? this.vbH : this.intrinsicH;
 
-        final double x1 = coord(attr(node, tmpl, "x1"), 0.0, userSpace, vw);
-        final double y1 = coord(attr(node, tmpl, "y1"), 0.0, userSpace, vh);
-        final double x2 = coord(attr(node, tmpl, "x2"), 1.0, userSpace, vw);
-        final double y2 = coord(attr(node, tmpl, "y2"), 0.0, userSpace, vh);
+        final double x1 = coord(attr(node, tmpl, "x1"), 0.0, userSpace, this.refW);
+        final double y1 = coord(attr(node, tmpl, "y1"), 0.0, userSpace, this.refH);
+        final double x2 = coord(attr(node, tmpl, "x2"), 1.0, userSpace, this.refW);
+        final double y2 = coord(attr(node, tmpl, "y2"), 0.0, userSpace, this.refH);
 
         final List<SvgNode> stopNodes = stopsOf(node, tmpl);
         final List<float[]> offs = new ArrayList<>();
@@ -226,8 +231,8 @@ final class SVGDocument {
     // PARSES A <stop>: stop-color (default black) WITH stop-opacity FOLDED INTO THE ALPHA
     private static int stopColor(final SvgNode stop) {
         final String sc = stop.attr("stop-color");
-        int c = sc == null ? 0xFF000000 : SvgColor.parse(sc, 0xFF000000);
-        if (c == SvgColor.INVALID) c = 0xFF000000;
+        final long parsed = sc == null ? SvgColor.INVALID : SvgColor.parse(sc, 0xFF000000);
+        int c = parsed == SvgColor.INVALID ? 0xFF000000 : (int) parsed;
         final String so = stop.attr("stop-opacity");
         if (so != null) {
             final double a = Math.max(0, Math.min(1, SVGParser.ratioOrNumber(so, 1)));

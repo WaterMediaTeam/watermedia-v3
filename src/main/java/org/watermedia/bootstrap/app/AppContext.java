@@ -5,6 +5,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
+import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
 import java.text.DateFormat;
@@ -84,6 +85,7 @@ public final class AppContext implements Executor {
 
     // PLAYER
     public MediaPlayer player;
+    private volatile Thread releaseThread;
 
     // BANNER
     public int bannerTextureId = -1;
@@ -221,11 +223,39 @@ public final class AppContext implements Executor {
     }
 
     public void releasePlayer() {
-        if (this.player != null) {
-            this.player.stop();
-            this.player.release();
-            this.player = null;
+        final MediaPlayer p = this.player;
+        if (p == null) return;
+        this.player = null; // RENDER-THREAD-ONLY FIELD; SAFE TO CLEAR BEFORE THE BACKGROUND TEARDOWN
+        p.stop();
+        // release() JOINS THE DECODER LIFECYCLE — FFMPEG CONTEXT CLOSE + DECODE-THREAD JOINS + GPU
+        // DRAIN — WHICH BLOCKS ~HUNDREDS OF MS. RUN IT OFF THE RENDER THREAD SO LEAVING THE PLAYER
+        // SCREEN DOES NOT FREEZE THE UI. THE ENGINE RELEASE IS THREAD-SAFE (GL DEFERS TO THE RENDER
+        // EXECUTOR; VULKAN SUBMITS UNDER THE SHARED QUEUE LOCK).
+        // EACH RELEASE CHAINS BEHIND THE PREVIOUS ONE: awaitPlayerRelease() JOINS ONLY THE LATEST
+        // THREAD, SO THE CHAIN GUARANTEES NO EARLIER RELEASE OUTLIVES THE RENDER-DEVICE TEARDOWN.
+        final Thread prev = this.releaseThread;
+        this.releaseThread = ThreadTool.createStarted("WaterMedia-PlayerRelease", () -> {
+            if (prev != null) {
+                while (prev.isAlive()) ThreadTool.join(prev);
+            }
+            p.release();
+        });
+    }
+
+    /**
+     * Blocks until the latest asynchronous {@link #releasePlayer()} finishes. Call this on the render
+     * thread before tearing down the render device on shutdown, so a background Vulkan release never
+     * touches a destroyed device. The executor is pumped meanwhile because a background OpenGL engine
+     * release dispatches its texture deletions onto this thread, which is no longer running the loop.
+     */
+    public void awaitPlayerRelease() {
+        final Thread t = this.releaseThread;
+        if (t == null) return;
+        while (t.isAlive()) {
+            this.processExecutor();
+            ThreadTool.sleep(2);
         }
+        this.processExecutor();
     }
 
     public void playSelectionSound() {

@@ -123,6 +123,9 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // TRIGGERS (CALLER TO LIFECYCLE THREAD); signals WAKES THE LIFECYCLE OUT OF ITS WAITS
     private final Object signals = new Object();
+    // IN-FLIGHT PREPARE TASKS ON THE SHARED POOL (GUARDED BY signals). release() AWAITS ZERO,
+    // BECAUSE Future.cancel() RETURNS IMMEDIATELY EVEN WHILE THE TASK STILL RUNS ON A POOL THREAD.
+    private int prepareActive;
     private volatile boolean paused;
     private volatile boolean triggerStop;
     private volatile boolean triggerPause;
@@ -185,10 +188,20 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.lifecycleSerial = serial;
 
         this.resetForStart(initialPause);
+        synchronized (this.signals) {
+            this.prepareActive++;
+        }
         this.lifecycleTask = SINGLE_FRAME_POOL.submit(() -> {
-            if (old != null) ThreadTool.join(old);
-            if (oldTask != null && !oldTask.isDone()) oldTask.cancel(true);
-            this.prepare(serial);
+            try {
+                if (old != null) ThreadTool.join(old);
+                if (oldTask != null && !oldTask.isDone()) oldTask.cancel(true);
+                this.prepare(serial);
+            } finally {
+                synchronized (this.signals) {
+                    this.prepareActive--;
+                    this.signals.notifyAll();
+                }
+            }
         });
     }
 
@@ -224,6 +237,20 @@ public final class TxMediaPlayer extends MediaPlayer {
         final Thread t = this.lifecycleThread;
         if (t != null) t.interrupt();
         if (t != null && Thread.currentThread() != t) ThreadTool.join(t);
+        // AWAIT ANY PREPARE STILL RUNNING ON THE POOL: THE cancel(true) ABOVE ONLY INTERRUPTS IT,
+        // WHILE super.release() TEARS DOWN THE ENGINE THAT PREPARE MAY STILL BE FEEDING (VULKAN:
+        // CONCURRENT IMPORT-CACHE ACCESS / SUBMISSION OF A JUST-DESTROYED BUFFER).
+        boolean interrupted = false;
+        synchronized (this.signals) {
+            while (this.prepareActive > 0) {
+                try {
+                    this.signals.wait(50L);
+                } catch (final InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
         this.lifecycleThread = null;
         this.lifecycleTask = null;
         this.resetAfterRelease();

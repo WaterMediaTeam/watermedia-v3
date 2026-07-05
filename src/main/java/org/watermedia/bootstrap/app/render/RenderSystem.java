@@ -1,18 +1,112 @@
 package org.watermedia.bootstrap.app.render;
 
+import org.watermedia.WaterMedia;
+import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.bootstrap.app.render.opengl.OpenGLRenderBackend;
+import org.watermedia.bootstrap.app.render.vulkan.VulkanRenderBackend;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;
+import java.util.concurrent.Executor;
+import java.util.function.Supplier;
+
+import static org.lwjgl.glfw.GLFW.*;
+import static org.lwjgl.glfw.GLFWVulkan.glfwVulkanSupported;
 
 /**
- * Static facade for the active UI render engine.
+ * Static facade for the active UI render engine. It also owns the engine lifecycle tied to the
+ * window — choosing OpenGL vs Vulkan, applying the matching GLFW hints, attaching to the created
+ * window and supplying the media graphics engine — so the rest of the app never branches on the
+ * backend.
  */
 public final class RenderSystem {
 
-    private static RenderEngine engine = new RenderEngine(new OpenGLRenderBackend());
+    /** The render backends the app can run on. */
+    public enum Engine { OPENGL, VULKAN }
+
+    private static final String ENGINE_PROP = "watermedia.engine";
+
+    private static Engine kind = Engine.OPENGL;
+    private static RenderEngine engine;
 
     private RenderSystem() {
+    }
+
+    /** Resolves the engine from {@code -Dwatermedia.engine}, downgrading to OpenGL when Vulkan is unsupported. */
+    public static void chooseEngine() {
+        kind = "vulkan".equalsIgnoreCase(System.getProperty(ENGINE_PROP, "opengl")) && glfwVulkanSupported()
+                ? Engine.VULKAN : Engine.OPENGL;
+    }
+
+    /** Applies the GLFW window hints the chosen engine needs. Call right after {@code glfwDefaultWindowHints()}. */
+    public static void applyWindowHints() {
+        if (kind == Engine.VULKAN) {
+            // NO GL CONTEXT — THE VULKAN BACKEND PRESENTS THROUGH ITS OWN SURFACE/SWAPCHAIN
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        } else {
+            glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+        }
+    }
+
+    /**
+     * Creates the backend for the chosen engine, binds it to the window and initializes it. Returns
+     * false when Vulkan was requested but failed — the engine is already switched to OpenGL, so the
+     * caller should rebuild the window with OpenGL hints and call this again.
+     */
+    public static boolean attach(final long window) {
+        if (kind == Engine.VULKAN) {
+            VulkanRenderBackend vk = null;
+            try {
+                vk = new VulkanRenderBackend(window);
+                engine = new RenderEngine(vk);
+                engine.init();
+                engine.configureFrameState();
+                WaterMedia.LOGGER.info("Render engine: Vulkan");
+                return true;
+            } catch (final Throwable t) {
+                WaterMedia.LOGGER.error("Vulkan engine init failed; falling back to OpenGL", t);
+                // DESTROY THE PARTIALLY BUILT BACKEND: THE CALLER REBUILDS THE GLFW WINDOW NEXT, AND
+                // ITS VkSurfaceKHR MUST DIE BEFORE THE WINDOW — OTHERWISE THE FALLBACK CAN CRASH IN
+                // THE DRIVER AND THE DEVICE/INSTANCE LEAK FOR THE PROCESS LIFETIME.
+                if (vk != null) {
+                    try {
+                        vk.cleanup();
+                    } catch (final Throwable ct) {
+                        WaterMedia.LOGGER.error("Vulkan backend cleanup after failed init also failed", ct);
+                    }
+                }
+                engine = null;
+                kind = Engine.OPENGL;
+                return false;
+            }
+        }
+        final OpenGLRenderBackend gl = new OpenGLRenderBackend(window);
+        engine = new RenderEngine(gl);
+        gl.attachContext(); // GL CONTEXT MUST BE CURRENT BEFORE init() COMPILES SHADERS
+        engine.init();
+        engine.configureFrameState();
+        WaterMedia.LOGGER.info("Render engine: OpenGL");
+        return true;
+    }
+
+    /** The active engine kind. */
+    public static Engine engineKind() { return kind; }
+
+    /** Display name of the active engine ("Vulkan"/"OpenGL"). */
+    public static String engineName() { return kind == Engine.VULKAN ? "Vulkan" : "OpenGL"; }
+
+    /** Whether Vulkan is the active engine. */
+    public static boolean vulkanActive() { return kind == Engine.VULKAN; }
+
+    /** Whether a Vulkan loader is present (the engine is active, or Vulkan is selectable on this machine). */
+    public static boolean vulkanAvailable() { return kind == Engine.VULKAN || glfwVulkanSupported(); }
+
+    /** Builds the media graphics engine ({@code GLEngine}/{@code VKEngine}) for the active backend. */
+    public static Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
+        return engine.mediaEngineSupplier(renderThread, renderExecutor);
     }
 
     public static RenderEngine engine() {
@@ -40,6 +134,9 @@ public final class RenderSystem {
     public static void color(final float r, final float g, final float b, final float a) { engine.color(r, g, b, a); }
     public static void color(final float r, final float g, final float b) { engine.color(r, g, b); }
     public static void bindTexture(final int textureId) { engine.bindTexture(textureId); }
+    public static void bindMediaTexture(final long handle) { engine.bindMediaTexture(handle); }
+    public static void beginFrame() { engine.beginFrame(); }
+    public static void present() { engine.present(); }
     public static void clip(final int x, final int y, final int width, final int height, final int canvasHeight) { engine.clip(x, y, width, height, canvasHeight); }
     public static void clearClip() { engine.clearClip(); }
     public static void lineWidth(final float width) { engine.lineWidth(width); }

@@ -1,18 +1,28 @@
 package org.watermedia.bootstrap.app.render.opengl;
 
 import org.joml.Matrix4f;
+import org.lwjgl.opengl.ARBDebugOutput;
+import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryUtil;
+import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.TextureHandle;
 
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
+import java.util.concurrent.Executor;
+import java.util.function.Supplier;
+
+import static org.lwjgl.glfw.GLFW.glfwMakeContextCurrent;
+import static org.lwjgl.glfw.GLFW.glfwSwapBuffers;
+import static org.lwjgl.glfw.GLFW.glfwSwapInterval;
 
 /**
  * OpenGL 3.2 core implementation for the app render backend.
@@ -49,6 +59,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private static final int FLOATS_PER_VERTEX = 8;
     private static final int DEFAULT_VERTEX_CAPACITY = 8192;
 
+    private final long window;
     private int program;
     private int projectionUniform;
     private int useTextureUniform;
@@ -57,6 +68,33 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private FloatBuffer uploadBuffer;
     private FloatBuffer projectionBuffer;
     private boolean initialized;
+
+    public OpenGLRenderBackend(final long window) {
+        this.window = window;
+    }
+
+    /**
+     * Makes the GL context current on this backend's window and loads the GL capabilities. Must run
+     * before {@link #init()} (which compiles shaders). Also silences the debug context output.
+     */
+    public void attachContext() {
+        glfwMakeContextCurrent(this.window);
+        glfwSwapInterval(1);
+        GL.createCapabilities();
+        // SILENCE THE GL DEBUG CONTEXT REQUESTED VIA GLFW_OPENGL_DEBUG_CONTEXT (EMPTY CALLBACK)
+        ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
+        }, 0);
+    }
+
+    @Override
+    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
+        return () -> new GLEngine.Builder(renderThread, renderExecutor).build();
+    }
+
+    @Override
+    public void present() {
+        glfwSwapBuffers(this.window);
+    }
 
     @Override
     public void init() {

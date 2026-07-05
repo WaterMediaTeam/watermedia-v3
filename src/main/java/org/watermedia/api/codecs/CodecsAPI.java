@@ -148,9 +148,11 @@ public class CodecsAPI extends WaterMediaAPI {
     private static final byte[] WEBVTT_HEADER = { 'W', 'E', 'B', 'V', 'T', 'T' };
     private static final byte[] ASS_HEADER = { '[', 'S', 'c', 'r', 'i', 'p', 't', ' ', 'I', 'n', 'f', 'o', ']' };
 
-    // BYTES READ FROM THE STREAM FOR SNIFFING; LARGE ENOUGH FOR THE MPEG-TS 188-BYTE SYNC CHECK AND
-    // FOR AN SVG ROOT THAT TRAILS A LONG XML PROLOG (DECLARATION, LICENCE COMMENTS, DOCTYPE)
-    private static final int PROBE_SIZE = 1024;
+    // BYTES SCANNED FOR THE SVG ROOT ELEMENT (PROLOG/COMMENTS/DOCTYPE MAY PRECEDE <svg>)
+    private static final int SVG_SNIFF_WINDOW = 4096;
+    // BYTES READ FROM THE STREAM FOR SNIFFING; COVERS THE MPEG-TS 188-BYTE SYNC CHECK AND MATCHES
+    // THE SVG SNIFF WINDOW SO getMediaType ACCEPTS THE SAME PROLOG-HEAVY SVGS AS decodeImage
+    private static final int PROBE_SIZE = SVG_SNIFF_WINDOW;
 
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
@@ -355,9 +357,6 @@ public class CodecsAPI extends WaterMediaAPI {
             return MediaType.AUDIO;
         return MediaType.VIDEO;
     }
-
-    // BYTES SCANNED FOR THE SVG ROOT ELEMENT (PROLOG/COMMENTS/DOCTYPE MAY PRECEDE <svg>)
-    private static final int SVG_SNIFF_WINDOW = 4096;
 
     // SVG HAS NO BINARY MAGIC: SKIP A BOM, THEN VERIFY THE FIRST REAL ELEMENT IS <svg>
     private static boolean isSVG(final ByteBuffer src, final int start) {

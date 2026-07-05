@@ -346,11 +346,15 @@ public final class AppChrome {
         int cx = x;
         if (ctx != null && ctx.configStatusVisible) {
             cx += backendTag(text, cx, y, "CONFIG", true, ctx.configStatusPulse,
-                    ctx.configStatusError, ctx.configStatusWarn, ctx.configStatusStrike);
+                    ctx.configStatusError, ctx.configStatusWarn, ctx.configStatusStrike, false);
         }
-        cx += backendTag(text, cx, y, "FFMPEG", FFMediaPlayer.loaded(), pending, FFMediaPlayer.loadError(), false, false);
-        cx += backendTag(text, cx, y, "OpenGL", true, false, false, false, false);
-        backendTag(text, cx, y, "Vulkan", false, false, true, false, true);
+        cx += backendTag(text, cx, y, "FFMPEG", FFMediaPlayer.loaded(), pending, FFMediaPlayer.loadError(), false, false, false);
+        // RENDER ENGINES REFLECT THE ACTIVE BACKEND: GREEN = ACTIVE, FAINT = AVAILABLE BUT INACTIVE,
+        // RED+STRIKE = UNSUPPORTED. OPENGL IS ALWAYS AVAILABLE; VULKAN DEPENDS ON THE LOADER/DEVICE.
+        final boolean vkActive = RenderSystem.vulkanActive();
+        final boolean vkAvail = RenderSystem.vulkanAvailable();
+        cx += backendTag(text, cx, y, "OpenGL", true, false, false, false, false, vkActive);
+        backendTag(text, cx, y, "Vulkan", vkAvail, false, !vkAvail, false, !vkAvail, vkAvail && !vkActive);
     }
 
     public static int backendStripWidth(final TextRenderer text) {
@@ -370,10 +374,11 @@ public final class AppChrome {
 
     private static int backendTag(final TextRenderer text, final int x, final int y,
                                   final String label, final boolean on, final boolean pending,
-                                  final boolean error, final boolean warn, final boolean strike) {
+                                  final boolean error, final boolean warn, final boolean strike, final boolean dim) {
         final int w = backendTagWidth(text, label);
         final float pulse = pending ? 0.42f + 0.35f * (float) ((Math.sin(System.currentTimeMillis() / 180.0) + 1.0) * 0.5) : 1f;
-        final Color base = error || !on ? AppTheme.RED : warn ? AppTheme.AMBER : pending ? AppTheme.TEXT_FAINT : AppTheme.GREEN;
+        // DIM = AVAILABLE BUT NOT THE ACTIVE BACKEND (SOLID FAINT, NO PULSE)
+        final Color base = error || !on ? AppTheme.RED : warn ? AppTheme.AMBER : dim || pending ? AppTheme.TEXT_FAINT : AppTheme.GREEN;
         final Color c = AppTheme.alpha(base, Math.max(70, Math.min(255, (int) (255 * pulse))));
         RenderSystem.fill(x, y, w, 22, AppTheme.alpha(AppTheme.BG_1, 190));
         RenderSystem.rect(x, y, w, 22, AppTheme.STROKE_BRIGHT, 1f);

@@ -3,9 +3,12 @@ package org.watermedia.bootstrap.app.render;
 import org.joml.Matrix4f;
 import org.joml.Vector2f;
 import org.joml.Vector4f;
+import org.watermedia.api.media.engines.GFXEngine;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;
+import java.util.concurrent.Executor;
+import java.util.function.Supplier;
 
 /**
  * Backend-agnostic 2D render engine for the bootstrap app UI.
@@ -111,6 +114,27 @@ public final class RenderEngine {
         this.flush();
         this.boundTextureId = textureId;
         this.backend.bindTexture(textureId);
+    }
+
+    public void bindMediaTexture(final long handle) {
+        this.flush();
+        // SENTINEL: A MEDIA TEXTURE IS BOUND SO blit() EMITS TEXTURED VERTICES. A 64-BIT VULKAN
+        // VkImageView DOES NOT FIT boundTextureId, AND MAX_VALUE NEVER COLLIDES WITH A REAL GL ID.
+        this.boundTextureId = handle != 0L ? Integer.MAX_VALUE : -1;
+        this.backend.bindMediaTexture(handle);
+    }
+
+    public void beginFrame() {
+        this.backend.beginFrame();
+    }
+
+    public void present() {
+        this.flush();
+        this.backend.present();
+    }
+
+    public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
+        return this.backend.mediaEngineSupplier(renderThread, renderExecutor);
     }
 
     public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {

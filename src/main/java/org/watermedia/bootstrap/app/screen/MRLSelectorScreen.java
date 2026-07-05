@@ -2,7 +2,6 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.api.util.MediaType;
@@ -44,7 +43,6 @@ public class MRLSelectorScreen extends Screen {
     private volatile int loadGeneration;
     private long loadStartTime;
     private AppContext.TestURI pendingUri;
-    private GLEngine.Builder glEngineBuilder;
     private int selectedIndex;
     private int scrollOffset;
     private String searchText = "";
@@ -64,8 +62,6 @@ public class MRLSelectorScreen extends Screen {
     public MRLSelectorScreen(final TextRenderer text, final AppContext ctx, final Consumer<HomeScreen.Action> navigator) {
         super(text, ctx);
         this.navigator = navigator;
-
-        this.glEngineBuilder = new GLEngine.Builder(Thread.currentThread(), this.ctx);
     }
 
     @Override
@@ -178,7 +174,7 @@ public class MRLSelectorScreen extends Screen {
                     break;
                 }
                 if (thumbStatus != MRL.Status.LOADED) continue; // ERROR/EXPIRED/BLOCKED/FORGOTTEN — TRY NEXT SOURCE
-                player = MediaAPI.createPlayer(thumbnailMrl, this.glEngineBuilder::build, () -> null);
+                player = MediaAPI.createPlayer(thumbnailMrl, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) break;
             }
 
@@ -188,7 +184,7 @@ public class MRLSelectorScreen extends Screen {
             if (player == null) {
                 for (int i = 0; i < sources.size(); i++) {
                     if (sources.get(i).isImage()) {
-                        player = MediaAPI.createPlayer(mrl, i, this.glEngineBuilder::build, () -> null);
+                        player = MediaAPI.createPlayer(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                         break;
                     }
                 }
@@ -554,9 +550,9 @@ public class MRLSelectorScreen extends Screen {
     private void renderThumbnailContent(final AppContext.TestURI uri, final int x, final int y,
                                         final int w, final int h, final int windowH, final boolean mini) {
         final MediaPlayer player = this.thumbnailPlayers.get(uri.name());
-        if (player != null && player.texture() > 0 && player.width() > 0 && player.height() > 0) {
+        if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
             RenderSystem.clip(x, y, w, h, windowH);
-            RenderSystem.bindTexture((int) player.texture());
+            RenderSystem.bindMediaTexture(player.texture());
             RenderSystem.color(1f, 1f, 1f, 1f);
             final float imgAspect = (float) player.width() / player.height();
             final float boxAspect = (float) w / h;

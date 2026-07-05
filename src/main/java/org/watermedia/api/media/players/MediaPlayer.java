@@ -499,6 +499,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * After calling this method, the media player should not be used again.
      */
     public void release() {
+        // SUBCLASSES STOP/JOIN THEIR DECODE THREADS BEFORE CALLING super.release(), SO NEITHER ENGINE
+        // IS STILL IN USE HERE. RELEASING gfx FREES ITS GPU TEXTURES (FOR VULKAN, VIA DEFERRED DESTRUCTION).
+        if (this.gfx != null) {
+            this.gfx.release();
+        }
         if (this.sfx != null) {
             this.sfx.release();
         }

@@ -2,7 +2,6 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
@@ -83,8 +82,7 @@ public class OpenMultimediaScreen extends Screen {
     private final List<String> historyRowItems = new ArrayList<>();
 
     // RESULT THUMBNAILS RENDER THROUGH SHORT-LIVED IMAGE PLAYERS, KEYED BY THUMBNAIL URI (MIRRORS
-    // MRLSelectorScreen). BUILT LAZILY ON THE GL THREAD DURING render(), RELEASED ON A NEW SEARCH/EXIT.
-    private GLEngine.Builder thumbEngine;
+    // MRLSelectorScreen). THE ACTIVE RENDER BACKEND SUPPLIES THE ENGINE; RELEASED ON A NEW SEARCH/EXIT.
     private final Map<URI, MediaPlayer> thumbPlayers = new LinkedHashMap<>();
     private final Set<URI> thumbAttempted = new HashSet<>();
     private final Set<URI> thumbSubscribed = new HashSet<>();
@@ -324,8 +322,6 @@ public class OpenMultimediaScreen extends Screen {
         if (existing != null) return existing;
         if (this.thumbAttempted.contains(thumbnail)) return null;
 
-        if (this.thumbEngine == null) this.thumbEngine = new GLEngine.Builder(Thread.currentThread(), this.ctx);
-
         final MRL mrl = MediaAPI.getMRL(thumbnail.toString());
         final MRL.Status status = mrl.status();
         if (status == MRL.Status.FETCHING) {
@@ -338,7 +334,7 @@ public class OpenMultimediaScreen extends Screen {
         final var sources = mrl.sources();
         for (int i = 0; i < sources.size(); i++) {
             if (sources.get(i).isImage()) {
-                final MediaPlayer player = MediaAPI.createPlayer(mrl, i, this.thumbEngine::build, () -> null);
+                final MediaPlayer player = MediaAPI.createPlayer(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) {
                     player.repeat(true); // LOOP ANIMATED THUMBNAILS (GIF/WEBP) INSTEAD OF FREEZING ON THE LAST FRAME
                     player.start();
@@ -454,8 +450,8 @@ public class OpenMultimediaScreen extends Screen {
     // ASPECT-FIT (NEVER OVERFLOWS THE CELL), SO IT NEEDS NO CLIP OF ITS OWN INSIDE THE DROPDOWN'S CLIP.
     private void renderThumb(final URI thumbnail, final int x, final int y, final int w, final int h) {
         final MediaPlayer player = this.thumbPlayer(thumbnail);
-        if (player != null && player.texture() > 0 && player.width() > 0 && player.height() > 0) {
-            RenderSystem.bindTexture((int) player.texture());
+        if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
+            RenderSystem.bindMediaTexture(player.texture());
             RenderSystem.color(1f, 1f, 1f, 1f);
             final float imgAspect = (float) player.width() / player.height();
             final float boxAspect = (float) w / h;

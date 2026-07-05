@@ -186,8 +186,9 @@ public class LoadingScreen extends Screen {
 
     private List<StatusLine> statusLines(final WaterMediaAPI api) {
         final List<StatusLine> lines = new ArrayList<>();
-        lines.add(ok("init OpenGL context"));
-        lines.add(ok("render engine: OpenGL"));
+        final String engineName = RenderSystem.engineName();
+        lines.add(ok("init " + engineName + " context"));
+        lines.add(ok("render engine: " + engineName));
 
         if (this.ctx.audioError) {
             lines.add(fail("init audio output"));

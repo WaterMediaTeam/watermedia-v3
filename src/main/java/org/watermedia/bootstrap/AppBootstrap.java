@@ -27,8 +27,10 @@ import java.util.regex.Pattern;
 // THE JVM LOCKS THE CLASSPATH AT STARTUP. SPAWNING A FRESH JVM WITH THE FULL CLASSPATH IS THE ONLY RELIABLE SOLUTION.
 public class AppBootstrap {
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia/libs");
+    private static final Path ENGINE_FILE = LIBS_DIR.resolve("engine.cfg");
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
     private static final String APP_FLAG = "watermedia.app";
+    private static final String ENGINE_PROP = "watermedia.engine";
     private static final String OS = IOTool.platformClassifier();
 
     private static final String[][] DEPS = {
@@ -118,50 +120,60 @@ public class AppBootstrap {
         }
 
         try {
-            final BootstrapScan quickScan = scanBootstrap(false);
-            if (quickScan.ready()) {
-                relaunch(quickScan.jars, args);
-                return;
+            // ENGINE IS PERSISTED IN engine.cfg; --engine FORCES THE CHOOSER EVEN WHEN DEPS ARE READY.
+            final boolean forceChooser = contains(args, "--engine") || contains(args, "--select-engine");
+            final String persisted = readEngine();
+            if (!forceChooser && persisted != null) {
+                final BootstrapScan quickScan = scanBootstrap(false, persisted);
+                if (quickScan.ready()) {
+                    relaunch(quickScan.jars, args, persisted);
+                    return;
+                }
             }
 
-            launchWithConsole(args);
+            launchWithConsole(args, persisted);
         } catch (final Exception e) {
             showError(e);
         }
     }
 
-    private static void launchWithConsole(final String[] args) throws Exception {
+    private static void launchWithConsole(final String[] args, final String persisted) throws Exception {
         window = new BootstrapWindow();
         info("WATERMeDIA: App Bootstrap - On: " + OS);
         info("Dependencies directory: " + LIBS_DIR);
         info("=============================================");
         Files.createDirectories(LIBS_DIR);
 
-        final BootstrapScan scan = scanBootstrap(true);
+        // LET THE USER PICK THE RENDER ENGINE (DEFAULT = PERSISTED OR OPENGL). BLOCKS ON THE WINDOW
+        // BUTTONS / COUNTDOWN, THEN PERSISTS THE CHOICE SO LATER LAUNCHES CAN SKIP THIS SCREEN.
+        final String engine = window.chooseEngine(persisted != null ? persisted : "opengl");
+        writeEngine(engine);
+        info("Render engine: " + engine.toUpperCase());
+
+        final BootstrapScan scan = scanBootstrap(true, engine);
         if (!scan.binariesFound) {
             showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
             return;
         }
 
-        // DOWNLOAD MISSING
+        // DOWNLOAD MISSING (INCLUDES THE VULKAN/SHADERC JARS WHEN VULKAN IS CHOSEN)
         for (final String[] dep: scan.toDownload) {
             final Path d = LIBS_DIR.resolve(dep[0]);
             download(MAVEN + dep[1], d);
         }
 
-        final BootstrapScan launchScan = scanBootstrap(false);
+        final BootstrapScan launchScan = scanBootstrap(false, engine);
         if (!launchScan.ready()) {
             showError("Some dependencies are still missing after bootstrap scan.");
             return;
         }
 
-        waitForLaunch();
         info("Launching...");
         window.dispose();
-        relaunch(launchScan.jars, args);
+        relaunch(launchScan.jars, args, engine);
     }
 
-    private static BootstrapScan scanBootstrap(final boolean log) throws Exception {
+    private static BootstrapScan scanBootstrap(final boolean log, final String engine) throws Exception {
         final BootstrapScan scan = new BootstrapScan();
 
         // FIND BINARIES
@@ -199,6 +211,18 @@ public class AppBootstrap {
             }
         }
 
+        // COLLECT ENGINE-SPECIFIC DEPS (VULKAN + SHADERC JARS/NATIVES WHEN VULKAN IS SELECTED)
+        for (final String[] dep: engineDeps(engine)) {
+            final Path p = LIBS_DIR.resolve(dep[0]);
+            if (Files.isRegularFile(p)) {
+                scan.jars.add(p);
+                if (log) info("[FOUND] " + dep[0]);
+            } else {
+                scan.toDownload.add(dep);
+                if (log) warn("[MISSING] " + dep[0]);
+            }
+        }
+
         scan.jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
 
         // SEARCH FOR EXTENSIONS
@@ -226,29 +250,49 @@ public class AppBootstrap {
         }
     }
 
-    private static void waitForLaunch() {
-        final Object lock = new Object();
-        final boolean[] skip = {false};
-        final KeyEventDispatcher dispatcher = e -> {
-            if (e.getID() == KeyEvent.KEY_PRESSED) {
-                synchronized (lock) {
-                    skip[0] = true;
-                    lock.notifyAll();
-                }
-            }
-            return false;
-        };
-        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(dispatcher);
-        synchronized (lock) {
-            for (int i = LAUNCH_DELAY_S; i > 0 && !skip[0]; i--) {
-                live("[WAIT] Launching in " + i + "s... Press any key to skip");
-                try { lock.wait(1000); } catch (final InterruptedException ignored) {}
-            }
-        }
-        KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(dispatcher);
+    private static boolean contains(final String[] args, final String flag) {
+        for (final String a: args) if (flag.equalsIgnoreCase(a)) return true;
+        return false;
     }
 
-    private static void relaunch(final List<Path> jars, final String[] args) throws Exception {
+    // READS THE PERSISTED ENGINE CHOICE ("opengl"/"vulkan"), OR null IF NEVER CHOSEN.
+    private static String readEngine() {
+        try {
+            if (Files.isRegularFile(ENGINE_FILE)) {
+                final String s = Files.readString(ENGINE_FILE).trim().toLowerCase();
+                if (s.equals("vulkan") || s.equals("opengl")) return s;
+            }
+        } catch (final IOException ignored) {}
+        return null;
+    }
+
+    private static void writeEngine(final String engine) {
+        try {
+            Files.createDirectories(LIBS_DIR);
+            Files.writeString(ENGINE_FILE, engine);
+        } catch (final IOException e) {
+            warn("Failed to persist engine choice: " + e.getMessage());
+        }
+    }
+
+    // EXTRA JARS A GIVEN ENGINE NEEDS ON TOP OF THE BASE DEPS/NATIVES. VULKAN PULLS THE LWJGL VULKAN
+    // BINDINGS (PLUS MOLTENVK NATIVES ONLY ON MACOS) AND LWJGL SHADERC (BINDINGS + NATIVES, EVERY PLATFORM).
+    private static List<String[]> engineDeps(final String engine) {
+        final List<String[]> deps = new ArrayList<>();
+        if ("vulkan".equalsIgnoreCase(engine)) {
+            deps.add(new String[]{"lwjgl-vulkan-3.3.6.jar", "org/lwjgl/lwjgl-vulkan/3.3.6/lwjgl-vulkan-3.3.6.jar"});
+            deps.add(new String[]{"lwjgl-shaderc-3.3.6.jar", "org/lwjgl/lwjgl-shaderc/3.3.6/lwjgl-shaderc-3.3.6.jar"});
+            final String shaderc = "lwjgl-shaderc-3.3.6-natives-" + OS + ".jar";
+            deps.add(new String[]{shaderc, "org/lwjgl/lwjgl-shaderc/3.3.6/" + shaderc});
+            if (OS.startsWith("macos")) {
+                final String vk = "lwjgl-vulkan-3.3.6-natives-" + OS + ".jar";
+                deps.add(new String[]{vk, "org/lwjgl/lwjgl-vulkan/3.3.6/" + vk});
+            }
+        }
+        return deps;
+    }
+
+    private static void relaunch(final List<Path> jars, final String[] args, final String engine) throws Exception {
         final StringJoiner cp = new StringJoiner(File.pathSeparator);
         jars.forEach(j -> cp.add(j.toAbsolutePath().toString()));
 
@@ -267,7 +311,7 @@ public class AppBootstrap {
 
         final List<String> cmd = new ArrayList<>(Arrays.asList(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-D" + APP_FLAG + "=true", "-Dlog4j2.StatusLogger.level=WARN",
+                "-D" + APP_FLAG + "=true", "-D" + ENGINE_PROP + "=" + engine, "-Dlog4j2.StatusLogger.level=WARN",
                 "-cp", cp.toString(), AppBootstrap.class.getName()));
         cmd.addAll(Arrays.asList(args));
         System.exit(new ProcessBuilder(cmd).inheritIO().start().waitFor());
@@ -675,6 +719,49 @@ public class AppBootstrap {
                 if (this.auto) this.off = Math.max(0, this.max - this.vis);
                 this.scrollbar.repaint();
             }
+        }
+
+        // SHOWS TWO ENGINE BUTTONS DURING A COUNTDOWN. A CLICK COMMITS IMMEDIATELY; A TIMEOUT COMMITS
+        // THE DEFAULT (THE PERSISTED ENGINE, OR OPENGL ON FIRST RUN). RETURNS THE CHOSEN ENGINE.
+        String chooseEngine(final String defaultEngine) {
+            final Object lock = new Object();
+            final String[] choice = {null};
+            final Panel bar = new Panel(new FlowLayout(FlowLayout.CENTER, 20, 12));
+            bar.setBackground(C_BLACK);
+            bar.add(engineButton("OpenGL", "opengl", choice, lock));
+            bar.add(engineButton("Vulkan", "vulkan", choice, lock));
+            this.add(bar, BorderLayout.SOUTH);
+            this.validate();
+
+            synchronized (lock) {
+                for (int i = LAUNCH_DELAY_S; i > 0 && choice[0] == null; i--) {
+                    live("[ENGINE] Launching with " + defaultEngine.toUpperCase() + " in " + i + "s... click OpenGL or Vulkan to choose");
+                    try { lock.wait(1000); } catch (final InterruptedException ignored) {}
+                }
+            }
+            final String selected;
+            synchronized (lock) { selected = choice[0] != null ? choice[0] : defaultEngine; }
+            EventQueue.invokeLater(() -> {
+                this.remove(bar);
+                this.validate();
+                this.repaint();
+            });
+            return selected;
+        }
+
+        private static Button engineButton(final String label, final String value, final String[] choice, final Object lock) {
+            final Button b = new Button(label);
+            b.setFont(FONT.deriveFont(Font.BOLD));
+            b.setPreferredSize(new Dimension(BTN_W, BTN_H));
+            b.setBackground(C_GRAY);
+            b.setForeground(C_WHITE);
+            b.addActionListener(e -> {
+                synchronized (lock) {
+                    if (choice[0] == null) choice[0] = value;
+                    lock.notifyAll();
+                }
+            });
+            return b;
         }
     }
 }

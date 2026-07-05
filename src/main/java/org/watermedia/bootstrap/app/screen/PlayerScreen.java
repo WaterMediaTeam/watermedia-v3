@@ -3,7 +3,6 @@ package org.watermedia.bootstrap.app.screen;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.ALEngine;
-import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.MediaQuality;
@@ -44,7 +43,6 @@ public class PlayerScreen extends Screen {
     private static final int RES_FIELD_MAX_DIGITS = 5;
 
     private final Consumer<HomeScreen.Action> navigator;
-    private final GLEngine.Builder glEngineBuilder;
 
     private DialogState dialogState = DialogState.NONE;
     private int qualitySelectedIndex = 0;
@@ -80,8 +78,6 @@ public class PlayerScreen extends Screen {
     public PlayerScreen(final TextRenderer text, final AppContext ctx, final Consumer<HomeScreen.Action> navigator) {
         super(text, ctx);
         this.navigator = navigator;
-
-        this.glEngineBuilder = new GLEngine.Builder(Thread.currentThread(), this.ctx);
     }
 
     @Override
@@ -114,7 +110,8 @@ public class PlayerScreen extends Screen {
         this.ctx.player = MediaAPI.createPlayer(
                 this.ctx.selectedMRL,
                 this.ctx.sourceSelectorIndex,
-                this.glEngineBuilder::build, ALEngine::buildDefault
+                // THE ACTIVE RENDER BACKEND DECIDES THE ENGINE (GLEngine / VKEngine) — THE SCREEN STAYS AGNOSTIC
+                RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), ALEngine::buildDefault
         );
 
         if (this.ctx.player == null) {
@@ -174,7 +171,8 @@ public class PlayerScreen extends Screen {
         RenderSystem.fill(0, 0, windowW, windowH, 0, 0, 0, 1);
         RenderSystem.restoreProjection();
 
-        if (player == null || player.ended() || player.stopped() || player.error() || player.texture() <= 0) return;
+        // 0 = NO FRAME READY. THE HANDLE IS A GL TEXTURE NAME OR A 64-BIT VULKAN VkImageView, SO TEST == 0 (NOT <= 0)
+        if (player == null || player.ended() || player.stopped() || player.error() || player.texture() == 0) return;
 
         final int videoW = player.width();
         final int videoH = player.height();
@@ -216,7 +214,8 @@ public class PlayerScreen extends Screen {
             }
         }
 
-        RenderSystem.bindTexture((int) player.texture());
+        // BIND THE PLAYER'S FRAME AS A 64-BIT MEDIA HANDLE: A GL TEXTURE NAME OR A VULKAN VkImageView
+        RenderSystem.bindMediaTexture(player.texture());
         RenderSystem.color(1, 1, 1, 1);
         RenderSystem.blitNDC(
                 (offsetX / windowW) * 2 - 1,
