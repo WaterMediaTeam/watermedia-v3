@@ -9,10 +9,14 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Map;
+import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.function.IntConsumer;
-import java.util.function.IntSupplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -25,6 +29,18 @@ import static org.watermedia.WaterMedia.LOGGER;
  * and submitting a newer frame before the previous one was consumed replaces it. This bounds
  * render-thread work to one upload per engine per render frame regardless of how fast the
  * producer decodes.
+ * <p>
+ * <b>The engine is self-contained — no host integration is required.</b> Every piece of GL context
+ * state it touches (texture bindings, active unit, sampler bindings, pixel-store parameters,
+ * buffer/VAO/framebuffer bindings, program, viewport and draw toggles) is captured before a batch
+ * of work and restored to its exact prior value afterwards, so any state cache the host keeps
+ * (Minecraft's {@code GlStateManager}, Sodium/Iris trackers, or none at all) stays truthful.
+ * Texture names exposed through {@link #texture()} are deleted safely: storage is freed
+ * immediately on release, but the name itself is only handed back to the driver once no texture
+ * unit binds it anymore — which proves no host binding cache still references it — so a cached
+ * binding can never point at a driver-reused name. All engines sharing a render thread drain
+ * through one batched task per frame, so the capture/restore cost is constant per frame — not per
+ * player — at any scale.
  * <p>
  * When {@code ARB_buffer_storage} (OpenGL 4.4) is available, pixel data is written by the
  * <em>producer</em> thread directly into a persistently-mapped PBO ring, so the render thread only
@@ -172,20 +188,25 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // GL CALLBACKS (ALLOW MOD FRAMEWORKS TO INTERCEPT GL CALLS)
-    private final IntSupplier genTexture;
-    private final BindConsumer bindTexture;
-    private final TexParamConsumer texParameter;
-    private final BindConsumer pixelStore;
-    private final IntConsumer delTexture;
-    private final IntConsumer activeTexture;
-    private final IntConsumer bindVertexArray;
-    private final BindConsumer bindFrameBuffer;
-    private final BindConsumer bindBuffer;
+    // ONE DRAIN HUB PER RENDER THREAD (= PER GL CONTEXT) BATCHES EVERY ENGINE'S PENDING WORK
+    // INTO A SINGLE TASK PER FRAME INSIDE ONE STATE CAPTURE/RESTORE ENVELOPE. ORPHANS HOLDS
+    // EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION (SEE orphanTexture/sweepOrphans),
+    // KEYED BY THE CONTEXT'S GLCapabilities IDENTITY (NOT THE GLFW HANDLE, WHICH THE OS MAY
+    // REUSE FOR A NEW CONTEXT) SO A DESTROYED CONTEXT'S NAMES CAN NEVER LEAK INTO A NEW ONE.
+    private static final Map<Thread, Hub> HUBS = new ConcurrentHashMap<>();
+    private static final Map<GLCapabilities, ArrayDeque<Integer>> ORPHANS =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    // TEXTURE UNITS SCANNED BY THE ORPHAN SWEEP — COVERS MINECRAFT'S 12-UNIT BINDING CACHE
+    // WITH MARGIN; HOSTS BINDING BEYOND THIS USE DSA OR UNCACHED PATHS
+    private static final int ORPHAN_SCAN_UNITS = 32;
 
     // THREAD CONTEXT (OPENGL-SPECIFIC)
     private final Thread renderThread;
     private final Executor renderThreadEx;
+    private final Hub hub;
+    private boolean hubQueued;            // GUARDED BY hub MONITOR
+    private volatile boolean released;    // TERMINAL FLAG — STOPS PRODUCERS AND STALE RENDER TASKS
 
     // MANAGED TEXTURE (WHAT THE DEV BINDS)
     private int managedTexture = 0;
@@ -200,10 +221,9 @@ public final class GLEngine extends GFXEngine {
     private volatile int frameTexReady = 0;
     private int frameTexGen = 0;
 
-    // LATEST-WINS SUBMISSION SLOT (PRODUCER WRITES, RENDER THREAD DRAINS).
-    // AT MOST ONE DRAIN TASK IS QUEUED; A NEWER SUBMISSION REPLACES AN UNDRAINED OLDER ONE.
+    // LATEST-WINS SUBMISSION SLOT (PRODUCER WRITES, RENDER THREAD DRAINS). THE HUB QUEUES AT
+    // MOST ONE DRAIN PER ENGINE PER WAVE; A NEWER SUBMISSION REPLACES AN UNDRAINED OLDER ONE.
     private volatile Submission pending;
-    private volatile boolean drainQueued;
 
     // PERSISTENT-MAPPED PBO RING (ARB_buffer_storage). THE PRODUCER THREAD MEMCPYS PIXELS INTO
     // THE MAPPED REGION SO THE RENDER THREAD NEVER TOUCHES CLIENT MEMORY. SLOT LIFECYCLE:
@@ -282,28 +302,16 @@ public final class GLEngine extends GFXEngine {
     private int uniformYUYVWidth = -1;
     private int uniformYUYVSwap = -1;
 
-    private GLEngine(final Thread renderThread, final Executor renderThreadEx,
-                     final IntSupplier genTexture, final BindConsumer bindTexture,
-                     final TexParamConsumer texParameter, final BindConsumer pixelStore,
-                     final IntConsumer delTexture, final IntConsumer activeTexture,
-                     final IntConsumer bindVertexArray, final BindConsumer bindFrameBuffer,
-                     final BindConsumer bindBuffer) {
+    private GLEngine(final Thread renderThread, final Executor renderThreadEx) {
         WaterMedia.checkIsClientSideOrThrow(GLEngine.class);
-        if (genTexture == null || bindTexture == null || texParameter == null
-                || pixelStore == null || delTexture == null) {
-            throw new IllegalArgumentException("All GL callback parameters must be non-null");
+        if (renderThread != null && renderThreadEx == null) {
+            throw new IllegalArgumentException("renderThreadEx is required when renderThread is set");
         }
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
-        this.genTexture = genTexture;
-        this.bindTexture = bindTexture;
-        this.texParameter = texParameter;
-        this.pixelStore = pixelStore;
-        this.delTexture = delTexture;
-        this.activeTexture = activeTexture;
-        this.bindVertexArray = bindVertexArray;
-        this.bindFrameBuffer = bindFrameBuffer;
-        this.bindBuffer = bindBuffer;
+        // ENGINES SHARING A RENDER THREAD SHARE ITS HUB; THE FIRST ENGINE'S EXECUTOR WINS
+        // (A SINGLE THREAD IMPLIES A SINGLE TASK LOOP FEEDING IT)
+        this.hub = renderThread != null ? HUBS.computeIfAbsent(renderThread, t -> new Hub(renderThreadEx)) : null;
 
         // VALIDATE THREAD PAIR
         if (renderThreadEx != null) {
@@ -333,7 +341,7 @@ public final class GLEngine extends GFXEngine {
 
     @Override
     public boolean uploadFrameTextures(final ByteBuffer[] frames, final int stride) {
-        if (frames == null || frames.length == 0) return false;
+        if (frames == null || frames.length == 0 || this.released) return false;
         for (final ByteBuffer frame: frames) {
             if (frame == null || !frame.isDirect()) return false;
         }
@@ -345,19 +353,24 @@ public final class GLEngine extends GFXEngine {
         if (!this.directTextureUploadSupported()) return false;
 
         // SYNCHRONOUS PATH (ALREADY ON RENDER THREAD): UPLOAD EVERYTHING NOW.
-        this.beginFrameTextures();
-        final int[] textures = new int[frames.length];
-        for (int i = 0; i < frames.length; i++) {
-            textures[i] = this.newTexture();
-            if (!this.uploadDirectTexture(textures[i], frames[i], stride)) {
-                this.deleteTextures(textures);
-                return false;
+        final Env env = Env.save(false);
+        try {
+            this.beginFrameTextures();
+            final int[] textures = new int[frames.length];
+            for (int i = 0; i < frames.length; i++) {
+                textures[i] = this.newTexture();
+                if (!this.uploadDirectTexture(textures[i], frames[i], stride)) {
+                    this.orphanTextures(textures);
+                    return false;
+                }
             }
+            this.frameTextures = textures;
+            this.frameTexReady = textures.length;
+            this.activeFrameTexture = 0;
+            return true;
+        } finally {
+            env.restore();
         }
-        this.frameTextures = textures;
-        this.frameTexReady = textures.length;
-        this.activeFrameTexture = 0;
-        return true;
     }
 
     // ASYNC FRAME-TEXTURE UPLOAD: ONE RENDER TASK PER FRAME SO A LONG ANIMATION NEVER STALLS A
@@ -368,33 +381,43 @@ public final class GLEngine extends GFXEngine {
         final int[] genBox = new int[1];
         final int[][] texBox = new int[1][];
         this.renderThreadEx.execute(() -> {
-            if (this.width <= 0 || this.height <= 0 || !this.directTextureUploadSupported()) {
+            if (this.released || this.width <= 0 || this.height <= 0 || !this.directTextureUploadSupported()) {
                 genBox[0] = -1;
-                LOGGER.warn(IT, "Frame textures rejected: format {} not direct-uploadable", this.pixelFormat);
+                if (!this.released) LOGGER.warn(IT, "Frame textures rejected: format {} not direct-uploadable", this.pixelFormat);
                 return;
             }
-            this.beginFrameTextures();
-            genBox[0] = this.frameTexGen;
-            final int[] textures = new int[frames.length];
-            textures[0] = this.newTexture();
-            if (!this.uploadDirectTexture(textures[0], frames[0], stride)) {
-                this.deleteTextures(textures);
-                genBox[0] = -1;
-                return;
+            final Env env = Env.save(false);
+            try {
+                this.beginFrameTextures();
+                genBox[0] = this.frameTexGen;
+                final int[] textures = new int[frames.length];
+                textures[0] = this.newTexture();
+                if (!this.uploadDirectTexture(textures[0], frames[0], stride)) {
+                    this.orphanTextures(textures);
+                    genBox[0] = -1;
+                    return;
+                }
+                texBox[0] = textures;
+                this.frameTextures = textures;
+                this.frameTexReady = 1;
+                this.activeFrameTexture = 0;
+            } finally {
+                env.restore();
             }
-            texBox[0] = textures;
-            this.frameTextures = textures;
-            this.frameTexReady = 1;
-            this.activeFrameTexture = 0;
         });
         for (int i = 1; i < frames.length; i++) {
             final int index = i;
             this.renderThreadEx.execute(() -> {
-                if (genBox[0] != this.frameTexGen || texBox[0] == null) return; // STALE BATCH
-                final int[] textures = texBox[0];
-                textures[index] = this.newTexture();
-                if (this.uploadDirectTexture(textures[index], frames[index], stride)) {
-                    this.frameTexReady = index + 1;
+                if (this.released || genBox[0] != this.frameTexGen || texBox[0] == null) return; // STALE BATCH
+                final Env env = Env.save(false);
+                try {
+                    final int[] textures = texBox[0];
+                    textures[index] = this.newTexture();
+                    if (this.uploadDirectTexture(textures[index], frames[index], stride)) {
+                        this.frameTexReady = index + 1;
+                    }
+                } finally {
+                    env.restore();
                 }
             });
         }
@@ -430,16 +453,22 @@ public final class GLEngine extends GFXEngine {
      */
     @Override
     public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height, final int bitsPerComponent) {
+        if (this.released) return;
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
             this.renderThreadEx.execute(() -> this.setVideoFormat(pixelFormat, width, height, bitsPerComponent));
             return;
         }
 
         // RELEASE FORMAT-SPECIFIC RESOURCES
-        this.releaseFrameTextures();
-        this.releasePlaneTextures();
-        this.releasePBOs();
-        this.destroyRing();
+        final Env env = Env.save(false);
+        try {
+            this.releaseFrameTextures();
+            this.releasePlaneTextures();
+            this.releasePBOs();
+            this.destroyRing();
+        } finally {
+            env.restore();
+        }
 
         // RESET UPLOAD STATE
         this.pboWriteIdx = 0;
@@ -588,15 +617,21 @@ public final class GLEngine extends GFXEngine {
     // SUBMISSION — PRODUCER SIDE
     // ==========================================================================
     // VALIDATES THE FRAME, TRIES TO WRITE IT INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY),
-    // AND OTHERWISE PARKS THE CLIENT BUFFERS IN THE LATEST-WINS PENDING SLOT. AT MOST ONE
-    // DRAIN TASK IS QUEUED AT ANY TIME.
+    // AND OTHERWISE PARKS THE CLIENT BUFFERS IN THE LATEST-WINS PENDING SLOT. THE SHARED HUB
+    // QUEUES AT MOST ONE BATCHED DRAIN TASK PER RENDER THREAD AT ANY TIME.
     private void submit(final ByteBuffer[] bufs, final int[] strides) {
         for (final ByteBuffer buf: bufs) {
             if (buf == null || !buf.isDirect()) return;
         }
+        if (this.released) return;
         if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
             // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
-            this.renderSubmission(new Submission(bufs, strides, this.sizesOf(bufs), -1L, 0));
+            final Env env = Env.save(this.convert);
+            try {
+                this.renderSubmission(new Submission(bufs, strides, this.sizesOf(bufs), -1L, 0));
+            } finally {
+                env.restore();
+            }
             return;
         }
 
@@ -607,15 +642,7 @@ public final class GLEngine extends GFXEngine {
         if (ring != DROPPED) {
             this.pending = ring != null ? ring : new Submission(bufs, strides, sizes, -1L, 0);
         }
-        if (!this.drainQueued) {
-            this.drainQueued = true;
-            try {
-                this.renderThreadEx.execute(this::drain);
-            } catch (final RuntimeException e) {
-                this.drainQueued = false; // KEEP THE PIPELINE RECOVERABLE IF THE EXECUTOR REJECTS
-                throw e;
-            }
-        }
+        this.hub.schedule(this);
     }
 
     private int[] sizesOf(final ByteBuffer[] bufs) {
@@ -647,8 +674,9 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // SUBMISSION — RENDER THREAD SIDE
     // ==========================================================================
-    private void drain() {
-        this.drainQueued = false;
+    // ONE ENGINE'S SHARE OF A HUB WAVE: CONSUME THE LATEST-WINS SLOT AND RETIRE RING FENCES.
+    // THE CALLER OWNS THE STATE ENVELOPE.
+    private void drainOne() {
         final Submission s = this.pending;
         this.pending = null;
         if (s != null) this.renderSubmission(s);
@@ -656,16 +684,16 @@ public final class GLEngine extends GFXEngine {
     }
 
     private void renderSubmission(final Submission s) {
-        if (this.width <= 0 || this.height <= 0 || this.planes.length == 0) return;
+        if (this.released || this.width <= 0 || this.height <= 0 || this.planes.length == 0) return;
         if (s.sizes.length != this.planes.length) return;                          // STALE FORMAT
         if (s.slot >= 0L && (s.era != this.ringEra || this.ringAddr == 0L)) return; // STALE RING
 
         if (this.frameTextures.length > 0) this.releaseFrameTextures();
         this.ensureTargets();
 
-        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
-        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
-        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
+        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
+        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
 
         if (s.slot >= 0L) {
             // FREE SLOTS THE LATEST-WINS POLICY SKIPPED, THEN CONSUME THIS ONE
@@ -676,9 +704,6 @@ public final class GLEngine extends GFXEngine {
             this.uploadClient(s);
         }
 
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
-        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         this.firstFrame = false;
         if (this.convert) this.convertToRGBA();
     }
@@ -705,13 +730,13 @@ public final class GLEngine extends GFXEngine {
         if (!this.pboInitialized) this.initPBOs(this.planes.length);
 
         if (respec) {
-            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
                 final long needed = (long) p.effStride(s.strides[i]) * p.h;
                 final long addr = MemoryUtil.memAddress(s.bufs[i]);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, p.tex);
-                this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+                GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, addr);
                 this.checkGLError("plane texImage");
                 this.seedPBO(i * NUM_PBOS, needed, addr);
@@ -724,13 +749,13 @@ public final class GLEngine extends GFXEngine {
             final int writeIdx = (readIdx + 1) % NUM_PBOS;
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, p.tex);
-                this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
-                this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + readIdx]);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+                GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
+                GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + readIdx]);
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, 0L);
                 if (GL_CHECKS) this.checkGLError("plane PBO texSub");
             }
-            this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
                 this.seedPBO(i * NUM_PBOS + writeIdx, this.planeBytes[i], MemoryUtil.memAddress(s.bufs[i]));
             }
@@ -747,7 +772,7 @@ public final class GLEngine extends GFXEngine {
     // texSubImage FROM BUFFER OFFSETS AND FENCES THE SLOT. PLANE SIZE CHANGES RE-SPEC VIA
     // texImage SOURCED FROM THE SAME OFFSETS.
     private void uploadRing(final Submission s) {
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.ringBufferId);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.ringBufferId);
         long offset = (s.slot % RING_SLOTS) * this.ringSlotBytes;
         for (int i = 0; i < this.planes.length; i++) {
             final Plane p = this.planes[i];
@@ -756,8 +781,8 @@ public final class GLEngine extends GFXEngine {
                 LOGGER.warn(IT, "Ring plane {} too small: {} < {}", i, s.sizes[i], needed);
                 break;
             }
-            this.bindTexture.accept(GL11.GL_TEXTURE_2D, p.tex);
-            this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+            GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
             if (this.planeBytes[i] != needed) {
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, offset);
                 this.checkGLError("ring plane texImage");
@@ -803,10 +828,10 @@ public final class GLEngine extends GFXEngine {
 
         final int flags = GL30.GL_MAP_WRITE_BIT | GL44.GL_MAP_PERSISTENT_BIT | GL44.GL_MAP_COHERENT_BIT;
         final int id = GL15.glGenBuffers();
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, id);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, id);
         GL44.glBufferStorage(GL21.GL_PIXEL_UNPACK_BUFFER, slotBytes * RING_SLOTS, flags);
         final ByteBuffer mapped = GL30.glMapBufferRange(GL21.GL_PIXEL_UNPACK_BUFFER, 0, slotBytes * RING_SLOTS, flags);
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         this.checkGLError("armRing");
         if (mapped == null) {
             GL15.glDeleteBuffers(id);
@@ -830,9 +855,9 @@ public final class GLEngine extends GFXEngine {
         synchronized (this.ringLock) {
             this.ringAddr = 0L; // UNPUBLISH FIRST SO PRODUCERS STOP WRITING
             if (this.ringBufferId != 0) {
-                this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, this.ringBufferId);
+                GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.ringBufferId);
                 GL15.glUnmapBuffer(GL21.GL_PIXEL_UNPACK_BUFFER);
-                this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+                GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
                 GL15.glDeleteBuffers(this.ringBufferId);
                 this.ringBufferId = 0;
             }
@@ -856,102 +881,106 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     @Override
     public void release() {
+        this.released = true; // STOP PRODUCERS IMMEDIATELY; STALE RENDER TASKS BECOME NO-OPS
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
             this.renderThreadEx.execute(this::release);
             return;
         }
-        this.destroyRing();
-        if (this.fbo != 0) { GL30.glDeleteFramebuffers(this.fbo); this.fbo = 0; }
-        if (this.quadVAO != 0) { GL30.glDeleteVertexArrays(this.quadVAO); this.quadVAO = 0; }
-        if (this.quadVBO != 0) { GL15.glDeleteBuffers(this.quadVBO); this.quadVBO = 0; }
-        this.releaseFrameTextures();
-        this.releasePlaneTextures();
-        if (this.managedTexture != 0) { this.delTexture.accept(this.managedTexture); this.managedTexture = 0; }
-        this.managedTextureW = 0;
-        this.managedTextureH = 0;
-        this.releasePBOs();
-        this.releaseShaders();
-        this.firstFrame = true;
+        final Env env = Env.save(false);
+        try {
+            this.destroyRing();
+            if (this.fbo != 0) { GL30.glDeleteFramebuffers(this.fbo); this.fbo = 0; }
+            if (this.quadVAO != 0) { GL30.glDeleteVertexArrays(this.quadVAO); this.quadVAO = 0; }
+            if (this.quadVBO != 0) { GL15.glDeleteBuffers(this.quadVBO); this.quadVBO = 0; }
+            this.releaseFrameTextures();
+            this.releasePlaneTextures();
+            if (this.managedTexture != 0) { this.orphanTexture(this.managedTexture); this.managedTexture = 0; }
+            this.managedTextureW = 0;
+            this.managedTextureH = 0;
+            this.releasePBOs();
+            this.releaseShaders();
+            this.firstFrame = true;
+        } finally {
+            env.restore();
+        }
     }
 
     // ==========================================================================
     // FBO CONVERSION — RENDERS PLANE TEXTURES THROUGH SHADER INTO managedTexture
     // ==========================================================================
+    // THE HUB/SUBMIT ENVELOPE ALREADY SAVED THE HOST'S PROGRAM/VIEWPORT/FBO/VAO/DRAW TOGGLES
+    // AND FORCED A CLEAN DRAW STATE, SO THIS PASS ONLY SETS WHAT IT USES.
     private void convertToRGBA() {
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
         this.initQuad();
 
         if (this.managedTextureW != this.width || this.managedTextureH != this.height) {
-            this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.managedTexture);
+            // A BOUND UNPACK PBO WOULD TURN THE NULL POINTER INTO OFFSET 0 — UNBIND EXPLICITLY
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.managedTexture);
             GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
             this.checkGLError("managed texture alloc");
             this.managedTextureW = this.width;
             this.managedTextureH = this.height;
         }
 
-        final int savedProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
-        final int[] savedViewport = new int[4];
-        GL11.glGetIntegerv(GL11.GL_VIEWPORT, savedViewport);
-        final int savedFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
-        final int savedVAO = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
-
-        this.bindFrameBuffer.accept(GL30.GL_FRAMEBUFFER, this.fbo);
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.fbo);
         GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, this.managedTexture, 0);
         GL11.glViewport(0, 0, this.width, this.height);
 
         switch (this.pixelFormat) {
             case GRAY -> {
                 GL20.glUseProgram(this.shaderGray);
-                this.activeTexture.accept(GL13.GL_TEXTURE0);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[0].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
                 GL20.glUniform1i(this.uniformGrayTex, 0);
                 GL20.glUniform1f(this.uniformGrayBitScale, this.bitScale);
             }
             case NV12, NV21 -> {
                 GL20.glUseProgram(this.shaderNV);
-                this.activeTexture.accept(GL13.GL_TEXTURE0);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[0].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
                 GL20.glUniform1i(this.uniformNVYTex, 0);
-                this.activeTexture.accept(GL13.GL_TEXTURE1);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[1].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[1].tex);
                 GL20.glUniform1i(this.uniformNVUVTex, 1);
                 GL20.glUniform1f(this.uniformNVSwap, this.pixelFormat == PixelFormat.NV21 ? 1.0f : 0.0f);
                 GL20.glUniform1f(this.uniformNVBitScale, this.bitScale);
             }
             case YUV420P, YUV422P, YUV444P -> {
                 GL20.glUseProgram(this.shaderYUV3);
-                this.activeTexture.accept(GL13.GL_TEXTURE0);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[0].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
                 GL20.glUniform1i(this.uniformYUV3YTex, 0);
-                this.activeTexture.accept(GL13.GL_TEXTURE1);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[1].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[1].tex);
                 GL20.glUniform1i(this.uniformYUV3UTex, 1);
-                this.activeTexture.accept(GL13.GL_TEXTURE2);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[2].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[2].tex);
                 GL20.glUniform1i(this.uniformYUV3VTex, 2);
                 GL20.glUniform1f(this.uniformYUV3BitScale, this.bitScale);
             }
             case YUVA420P, YUVA422P, YUVA444P -> {
                 GL20.glUseProgram(this.shaderYUVA);
-                this.activeTexture.accept(GL13.GL_TEXTURE0);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[0].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
                 GL20.glUniform1i(this.uniformYUVAYTex, 0);
-                this.activeTexture.accept(GL13.GL_TEXTURE1);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[1].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE1);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[1].tex);
                 GL20.glUniform1i(this.uniformYUVAUTex, 1);
-                this.activeTexture.accept(GL13.GL_TEXTURE2);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[2].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE2);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[2].tex);
                 GL20.glUniform1i(this.uniformYUVAVTex, 2);
-                this.activeTexture.accept(GL13.GL_TEXTURE3);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[3].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE3);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[3].tex);
                 GL20.glUniform1i(this.uniformYUVAATex, 3);
                 GL20.glUniform1f(this.uniformYUVABitScale, this.bitScale);
             }
             case YUYV, YUYV2 -> {
                 GL20.glUseProgram(this.shaderYUYV);
-                this.activeTexture.accept(GL13.GL_TEXTURE0);
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, this.planes[0].tex);
+                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
                 GL20.glUniform1i(this.uniformYUYVTex, 0);
                 GL20.glUniform1f(this.uniformYUYVWidth, (float) this.width);
                 GL20.glUniform1f(this.uniformYUYVSwap, this.pixelFormat == PixelFormat.YUYV2 ? 1.0f : 0.0f);
@@ -959,16 +988,10 @@ public final class GLEngine extends GFXEngine {
             default -> {}
         }
 
-        this.bindVertexArray.accept(this.quadVAO);
+        GL30.glBindVertexArray(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
-        this.bindVertexArray.accept(0);
+        GL30.glBindVertexArray(0);
         if (GL_CHECKS) this.checkGLError("FBO convert quad");
-
-        GL20.glUseProgram(savedProgram);
-        this.activeTexture.accept(GL13.GL_TEXTURE0);
-        this.bindFrameBuffer.accept(GL30.GL_FRAMEBUFFER, savedFbo);
-        GL11.glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
-        this.bindVertexArray.accept(savedVAO);
     }
 
     // ==========================================================================
@@ -1040,9 +1063,9 @@ public final class GLEngine extends GFXEngine {
             if (p.tex != 0) continue;
             p.tex = this.newTexture();
             if (packed) {
-                this.bindTexture.accept(GL11.GL_TEXTURE_2D, p.tex);
-                this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
-                this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+                GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
             }
         }
     }
@@ -1090,46 +1113,80 @@ public final class GLEngine extends GFXEngine {
         final long addr = MemoryUtil.memAddress(buffer);
         if (addr == 0L) return false;
 
-        this.bindTexture.accept(GL11.GL_TEXTURE_2D, texture);
-        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 1);
-        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, rowLengthPixels);
-        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_PIXELS, 0);
-        this.pixelStore.accept(GL11.GL_UNPACK_SKIP_ROWS, 0);
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
+        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, rowLengthPixels);
+        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+        GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
         GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
         this.checkGLError("preloaded frame glTexImage2D");
-
-        this.pixelStore.accept(GL11.GL_UNPACK_ROW_LENGTH, 0);
-        this.pixelStore.accept(GL11.GL_UNPACK_ALIGNMENT, 4);
         return true;
     }
 
-    private void deleteTextures(final int[] textures) {
+    // ==========================================================================
+    // EXPOSED TEXTURE DELETION — DEFERRED UNTIL PROVABLY UNREFERENCED
+    // ==========================================================================
+    // NAMES HANDED OUT THROUGH texture() END UP INSIDE HOST BINDING CACHES (E.G. MINECRAFT'S
+    // GlStateManager, SODIUM'S TRACKER). DELETING ONE WHILE A CACHE STILL POINTS AT IT LETS
+    // THE DRIVER REUSE THE NAME AND A FUTURE HOST REBIND GETS SILENTLY SKIPPED — THE EXACT
+    // HAZARD MINECRAFT'S _deleteTexture CLEARS ITS OWN CACHE FOR. BECAUSE THE ENVELOPE KEEPS
+    // EVERY HOST CACHE EQUAL TO ACTUAL GL STATE, "UNBOUND ON EVERY UNIT" PROVES NO CACHE
+    // STILL REFERENCES THE NAME. SO: STORAGE IS FREED IMMEDIATELY (ZERO-SIZE RESPEC) AND THE
+    // NAME IS ORPHANED; THE SWEEP AT THE END OF EVERY ENVELOPE DELETES EACH ORPHAN THE MOMENT
+    // NO TEXTURE UNIT STILL BINDS IT — IN PRACTICE THE NEXT FRAME, ONCE THE HOST REBOUND.
+    private void orphanTexture(final int texture) {
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, 0, 0, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        ORPHANS.computeIfAbsent(GL.getCapabilities(), c -> new ArrayDeque<>()).addFirst(texture);
+    }
+
+    private void orphanTextures(final int[] textures) {
         if (textures == null) return;
         for (final int texture: textures) {
-            if (texture != 0) this.delTexture.accept(texture);
+            if (texture != 0) this.orphanTexture(texture);
         }
+    }
+
+    // RUNS RIGHT AFTER AN ENVELOPE RESTORE (ACTUAL STATE == HOST STATE): SCANS THE TEXTURE
+    // UNITS AND DELETES EVERY ORPHAN NO UNIT STILL BINDS. LEAVES THE ACTIVE UNIT UNTOUCHED.
+    private static void sweepOrphans(final int activeUnit) {
+        final ArrayDeque<Integer> orphans = ORPHANS.get(GL.getCapabilities());
+        if (orphans == null || orphans.isEmpty()) return;
+        final int units = Math.min(GL11.glGetInteger(GL20.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS), ORPHAN_SCAN_UNITS);
+        final int[] bound = new int[units];
+        for (int u = 0; u < units; u++) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + u);
+            bound[u] = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+        }
+        GL13.glActiveTexture(activeUnit);
+        orphans.removeIf(id -> {
+            for (final int b: bound) {
+                if (b == id) return false;
+            }
+            GL11.glDeleteTextures(id);
+            return true;
+        });
     }
 
     private void releaseFrameTextures() {
         final int[] textures = this.frameTextures;
         this.frameTexGen++;
         if (textures.length == 0) return;
-        this.deleteTextures(textures);
+        this.orphanTextures(textures);
         this.frameTextures = EMPTY_TEXTURES;
         this.frameTexReady = 0;
         this.activeFrameTexture = -1;
     }
 
     private int newTexture() {
-        final int tex = this.genTexture.getAsInt();
-        this.bindTexture.accept(GL11.GL_TEXTURE_2D, tex);
-        this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-        this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-        this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        this.texParameter.accept(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        this.bindTexture.accept(GL11.GL_TEXTURE_2D, 0);
+        final int tex = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
         return tex;
     }
 
@@ -1145,10 +1202,10 @@ public final class GLEngine extends GFXEngine {
         };
 
         this.quadVAO = GL30.glGenVertexArrays();
-        this.bindVertexArray.accept(this.quadVAO);
+        GL30.glBindVertexArray(this.quadVAO);
 
         this.quadVBO = GL15.glGenBuffers();
-        this.bindBuffer.accept(GL15.GL_ARRAY_BUFFER, this.quadVBO);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.quadVBO);
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, verts, GL15.GL_STATIC_DRAW);
 
         GL20.glEnableVertexAttribArray(0);
@@ -1156,7 +1213,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glEnableVertexAttribArray(1);
         GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
 
-        this.bindVertexArray.accept(0);
+        GL30.glBindVertexArray(0);
         this.checkGLError("initQuad");
     }
 
@@ -1174,9 +1231,9 @@ public final class GLEngine extends GFXEngine {
     private void seedPBO(final int pboArrayIndex, final long sizeBytes, final long dataAddress) {
         final int pboId = this.pbos[pboArrayIndex];
         if (pboId == 0) return;
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, pboId);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, pboId);
         GL15.nglBufferData(GL21.GL_PIXEL_UNPACK_BUFFER, sizeBytes, dataAddress, GL15.GL_STREAM_DRAW);
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
     }
 
     private int compileShader(final String vertSrc, final String fragSrc) {
@@ -1222,15 +1279,16 @@ public final class GLEngine extends GFXEngine {
 
     private void releasePlaneTextures() {
         for (final Plane p: this.planes) {
-            // PLANE 0 ALIASES managedTexture FOR DIRECT FORMATS — RELEASED SEPARATELY
-            if (p.tex != 0 && p.tex != this.managedTexture) this.delTexture.accept(p.tex);
+            // PLANE 0 ALIASES managedTexture FOR DIRECT FORMATS — RELEASED SEPARATELY.
+            // PLANE TEXTURES ARE NEVER EXPOSED TO THE HOST, SO IMMEDIATE DELETION IS SAFE.
+            if (p.tex != 0 && p.tex != this.managedTexture) GL11.glDeleteTextures(p.tex);
             p.tex = 0;
         }
     }
 
     private void releasePBOs() {
         if (!this.pboInitialized) return;
-        this.bindBuffer.accept(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+        GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
         final int count = this.activePlanes * NUM_PBOS;
         if (count > 0) {
             final int[] toDelete = new int[count];
@@ -1309,54 +1367,193 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // BUILDER + INTERFACES
+    // DRAIN HUB + STATE ENVELOPE
+    // ==========================================================================
+    // BATCHES EVERY ENGINE'S PENDING DRAIN ON ONE RENDER THREAD INTO A SINGLE TASK PER FRAME,
+    // WRAPPED IN ONE STATE ENVELOPE — THE glGet CAPTURE COST IS PER FRAME, NOT PER PLAYER.
+    private static final class Hub {
+        private final Executor ex;
+        private final ArrayList<GLEngine> waiting = new ArrayList<>(); // GUARDED BY this
+        private boolean queued;                                        // GUARDED BY this
+
+        Hub(final Executor ex) {
+            this.ex = ex;
+        }
+
+        void schedule(final GLEngine engine) {
+            final boolean fire;
+            synchronized (this) {
+                if (!engine.hubQueued) {
+                    engine.hubQueued = true;
+                    this.waiting.add(engine);
+                }
+                fire = !this.queued;
+                this.queued = true;
+            }
+            if (fire) {
+                try {
+                    this.ex.execute(this::drainAll);
+                } catch (final RuntimeException e) {
+                    synchronized (this) { this.queued = false; } // KEEP THE PIPELINE RECOVERABLE
+                    throw e;
+                }
+            }
+        }
+
+        private void drainAll() {
+            final GLEngine[] batch;
+            synchronized (this) {
+                this.queued = false;
+                batch = this.waiting.toArray(new GLEngine[0]);
+                this.waiting.clear();
+                for (final GLEngine e: batch) e.hubQueued = false;
+            }
+            if (batch.length == 0) return;
+            boolean convert = false;
+            for (final GLEngine e: batch) convert |= e.convert;
+            final Env env = Env.save(convert);
+            try {
+                for (final GLEngine e: batch) {
+                    try {
+                        e.drainOne();
+                    } catch (final RuntimeException ex) {
+                        // ISOLATE FAILURES — ONE BROKEN ENGINE MUST NOT STARVE THE REST OF THE WAVE
+                        LOGGER.error(IT, "Engine drain failed", ex);
+                    }
+                }
+            } finally {
+                env.restore();
+            }
+        }
+    }
+
+    // EXACT CAPTURE/RESTORE OF EVERY PIECE OF GL CONTEXT STATE THE ENGINE TOUCHES. RESTORING
+    // THE EXACT PRIOR VALUES KEEPS ANY HOST-SIDE SKIP-IF-EQUAL STATE CACHE (MINECRAFT'S
+    // GlStateManager, SODIUM'S TRACKER, ...) TRUTHFUL WITHOUT KNOWING IT EXISTS. THE CONVERT
+    // VARIANT ALSO SAVES THE DRAW STATE AND FORCES IT CLEAN FOR THE FULLSCREEN FBO PASS.
+    private static final class Env {
+        private static final int UNITS = 4; // TEXTURE0..3 — THE UNITS THE CONVERT PASS BINDS
+
+        private final boolean convert;
+        private final boolean samplers;
+        private final int active;
+        private final int activeTex;
+        private final int pixelUnpack;
+        private final int unpackAlign;
+        private final int unpackRow;
+        private final int unpackSkipPx;
+        private final int unpackSkipRows;
+        private final int[] unitTex = new int[UNITS];
+        private final int[] unitSampler = new int[UNITS];
+        private int program;
+        private int readFbo;
+        private int drawFbo;
+        private int vao;
+        private int arrayBuffer;
+        private final int[] polyMode = new int[2]; // GL RETURNS {FRONT, BACK}
+        private final int[] viewport = new int[4];
+        private final int[] colorMask = new int[4];
+        private boolean blend;
+        private boolean scissor;
+        private boolean logicOp;
+        private boolean cull;
+
+        static Env save(final boolean convert) {
+            return new Env(convert);
+        }
+
+        private Env(final boolean convert) {
+            final GLCapabilities caps = convert ? GL.getCapabilities() : null;
+            this.convert = convert;
+            this.samplers = convert && (caps.OpenGL33 || caps.GL_ARB_sampler_objects);
+            this.active = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
+            this.activeTex = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+            this.pixelUnpack = GL11.glGetInteger(GL21.GL_PIXEL_UNPACK_BUFFER_BINDING);
+            this.unpackAlign = GL11.glGetInteger(GL11.GL_UNPACK_ALIGNMENT);
+            this.unpackRow = GL11.glGetInteger(GL11.GL_UNPACK_ROW_LENGTH);
+            this.unpackSkipPx = GL11.glGetInteger(GL11.GL_UNPACK_SKIP_PIXELS);
+            this.unpackSkipRows = GL11.glGetInteger(GL11.GL_UNPACK_SKIP_ROWS);
+            if (!convert) return;
+
+            for (int i = 0; i < UNITS; i++) {
+                GL13.glActiveTexture(GL13.GL_TEXTURE0 + i);
+                this.unitTex[i] = GL13.GL_TEXTURE0 + i == this.active ? this.activeTex : GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+                if (this.samplers) {
+                    // SAMPLER OBJECTS OVERRIDE TEXTURE PARAMETERS — NEUTRALIZE THEM FOR THE PASS
+                    this.unitSampler[i] = GL11.glGetInteger(GL33.GL_SAMPLER_BINDING);
+                    if (this.unitSampler[i] != 0) GL33.glBindSampler(i, 0);
+                }
+            }
+            GL13.glActiveTexture(this.active);
+            this.program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+            this.readFbo = GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);
+            this.drawFbo = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+            this.vao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+            this.arrayBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+            GL11.glGetIntegerv(GL11.GL_POLYGON_MODE, this.polyMode);
+            GL11.glGetIntegerv(GL11.GL_VIEWPORT, this.viewport);
+            GL11.glGetIntegerv(GL11.GL_COLOR_WRITEMASK, this.colorMask);
+            this.blend = GL11.glIsEnabled(GL11.GL_BLEND);
+            this.scissor = GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
+            this.logicOp = GL11.glIsEnabled(GL11.GL_COLOR_LOGIC_OP);
+            this.cull = GL11.glIsEnabled(GL11.GL_CULL_FACE);
+
+            // FORCE A CLEAN DRAW STATE FOR THE FULLSCREEN CONVERT PASS
+            if (this.blend) GL11.glDisable(GL11.GL_BLEND);
+            if (this.scissor) GL11.glDisable(GL11.GL_SCISSOR_TEST);
+            if (this.logicOp) GL11.glDisable(GL11.GL_COLOR_LOGIC_OP);
+            if (this.cull) GL11.glDisable(GL11.GL_CULL_FACE);
+            GL11.glColorMask(true, true, true, true);
+            GL11.glPolygonMode(GL11.GL_FRONT_AND_BACK, GL11.GL_FILL);
+        }
+
+        void restore() {
+            if (this.convert) {
+                for (int i = 0; i < UNITS; i++) {
+                    GL13.glActiveTexture(GL13.GL_TEXTURE0 + i);
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.unitTex[i]);
+                    if (this.samplers && this.unitSampler[i] != 0) GL33.glBindSampler(i, this.unitSampler[i]);
+                }
+                GL20.glUseProgram(this.program);
+                GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, this.readFbo);
+                GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, this.drawFbo);
+                GL30.glBindVertexArray(this.vao);
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.arrayBuffer);
+                GL11.glPolygonMode(GL11.GL_FRONT_AND_BACK, this.polyMode[0]);
+                GL11.glViewport(this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
+                GL11.glColorMask(this.colorMask[0] != 0, this.colorMask[1] != 0, this.colorMask[2] != 0, this.colorMask[3] != 0);
+                if (this.blend) GL11.glEnable(GL11.GL_BLEND);
+                if (this.scissor) GL11.glEnable(GL11.GL_SCISSOR_TEST);
+                if (this.logicOp) GL11.glEnable(GL11.GL_COLOR_LOGIC_OP);
+                if (this.cull) GL11.glEnable(GL11.GL_CULL_FACE);
+            }
+            GL13.glActiveTexture(this.active);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.activeTex);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pixelUnpack);
+            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, this.unpackAlign);
+            GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, this.unpackRow);
+            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, this.unpackSkipPx);
+            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, this.unpackSkipRows);
+
+            // HOST STATE IS EXACT AGAIN — DELETE ANY ORPHANED NAME NO UNIT STILL BINDS
+            sweepOrphans(this.active);
+        }
+    }
+
+    // ==========================================================================
+    // BUILDER
     // ==========================================================================
     public static class Builder {
         private final Thread renderThread;
         private final Executor renderThreadEx;
-        private IntSupplier genTexture = GL11::glGenTextures;
-        private BindConsumer bindTexture = GL11::glBindTexture;
-        private TexParamConsumer texParameter = GL11::glTexParameteri;
-        private BindConsumer pixelStore = GL11::glPixelStorei;
-        private IntConsumer delTexture = GL11::glDeleteTextures;
-        private IntConsumer activeTexture = GL13::glActiveTexture;
-        private IntConsumer bindVertexArray = GL30::glBindVertexArray;
-        private BindConsumer bindFrameBuffer = GL30::glBindFramebuffer;
-        private BindConsumer bindBuffer = GL15::glBindBuffer;
 
         public Builder(final Thread renderThread, final Executor renderThreadEx) {
             this.renderThread = renderThread;
             this.renderThreadEx = renderThreadEx;
         }
 
-        public Builder setGenTexture(final IntSupplier f) { this.genTexture = f; return this; }
-        public Builder setBindTexture(final BindConsumer f) { this.bindTexture = f; return this; }
-        public Builder setTexParameter(final TexParamConsumer f) { this.texParameter = f; return this; }
-        public Builder setPixelStore(final BindConsumer f) { this.pixelStore = f; return this; }
-        public Builder setDelTexture(final IntConsumer f) { this.delTexture = f; return this; }
-        public Builder setActiveTexture(final IntConsumer f) { this.activeTexture = f; return this; }
-        public Builder setBindVertexArray(final IntConsumer f) { this.bindVertexArray = f; return this; }
-        public Builder setBindFrameBuffer(final BindConsumer f) { this.bindFrameBuffer = f; return this; }
-        public Builder setBindBuffer(final BindConsumer f) { this.bindBuffer = f; return this; }
-
-
         public GLEngine build() {
-            return new GLEngine(this.renderThread, this.renderThreadEx,
-                    this.genTexture, this.bindTexture,
-                    this.texParameter, this.pixelStore,
-                    this.delTexture, this.activeTexture,
-                    this.bindVertexArray, this.bindFrameBuffer,
-                    this.bindBuffer);
+            return new GLEngine(this.renderThread, this.renderThreadEx);
         }
-    }
-
-    @FunctionalInterface
-    public interface BindConsumer {
-        void accept(int a, int b);
-    }
-
-    @FunctionalInterface
-    public interface TexParamConsumer {
-        void accept(int a, int b, int c);
     }
 }
