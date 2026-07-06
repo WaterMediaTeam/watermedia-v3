@@ -12,20 +12,27 @@ import org.lwjgl.vulkan.VkQueue;
  * <p>
  * The engine never creates or owns a Vulkan device — it borrows the consumer's
  * {@link VkInstance}/{@link VkDevice} so the {@code VkImageView} it produces is sampleable by the
- * consumer's own pipeline. This mirrors how {@code GLEngine} borrows the host's GL context through
- * callbacks: ownership stays with the consumer, and the engine must never destroy any object
- * returned here. Every object must outlive every {@code VKEngine} built over this context.
+ * consumer's own pipeline. Ownership stays with the consumer, and the engine must never destroy
+ * any object returned here. Every object must outlive every {@code VKEngine} built over this
+ * context.
+ * <p>
+ * Method names are chosen so a Minecraft mod can implement this interface directly on Mojang's
+ * {@code com.mojang.blaze3d.vulkan.VulkanDevice} through a mixin and hand the cast device to
+ * {@code VKEngine.Builder}: no name overloads an existing member by return type alone — the JVM
+ * resolves methods by full descriptor so the merged class would be legal, but duplicate names
+ * muddy stack traces and crash reports — and its own {@code vkDevice()} accessor already
+ * satisfies {@link #vkDevice()} verbatim.
  */
 public interface VKContext {
 
-    /** The Vulkan instance {@link #device()} was created from. */
-    VkInstance instance();
+    /** The Vulkan instance {@link #vkDevice()} was created from. */
+    VkInstance vkInstance();
 
-    /** The physical device backing {@link #device()}. */
+    /** The physical device backing {@link #vkDevice()}. */
     VkPhysicalDevice physicalDevice();
 
     /** The logical device the engine uploads and converts through. */
-    VkDevice device();
+    VkDevice vkDevice();
 
     /**
      * A queue the engine submits its transfer and compute work to. It may be shared with the
@@ -47,7 +54,7 @@ public interface VKContext {
     VkPhysicalDeviceMemoryProperties memoryProperties();
 
     /**
-     * Whether {@code VK_EXT_external_memory_host} is enabled on {@link #device()}, letting the engine
+     * Whether {@code VK_EXT_external_memory_host} is enabled on {@link #vkDevice()}, letting the engine
      * import the decoder's host buffers directly (zero-copy) instead of staging a copy through
      * device-local memory.
      */
@@ -61,7 +68,7 @@ public interface VKContext {
 
     /**
      * Whether the {@code samplerYcbcrConversion} feature (Vulkan 1.1) was enabled on
-     * {@link #device()}. When true the engine may convert multi-planar YUV content through a
+     * {@link #vkDevice()}. When true the engine may convert multi-planar YUV content through a
      * {@code VkSamplerYcbcrConversion} immutable sampler instead of its arithmetic compute shader.
      */
     boolean ycbcrSampler();

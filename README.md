@@ -42,9 +42,11 @@ to compile or install FFMPEG or any other native application, plug and play as y
 ```java
 MRL mrl = MediaAPI.getMrl(URI.create("https://imgur.com/gallery/snow-ducks-YcDd9x"));
 
-// In a tick-loop method
+// IN A TICK-LOOP METHOD
 if (mrl.status == MRL.Status.LOADED) {
-    MediaPlayer player = MediaAPI.createPlayer(mrl, 0, new GLEngine.Builder().build(), new AlEngine.Builder().build());
+    MediaPlayer player = MediaAPI.createPlayer(mrl,
+            () -> new GLEngine.Builder(renderThread, renderExecutor).build(),
+            () -> new ALEngine.Builder().build());
 }
 ```
 
@@ -55,12 +57,121 @@ Explanation of these 2 classes is simple
 Failing MRLs means there's no multimedia that watermedia can open (broken links or you're trying to open a docx)
 
 ## 🚙 ENGINES
-``GLEngine``: Is a proxy class required in OpenGL applications with a GlStateManager with a very 
-sensitive texture and shader management, without it can break the GLStateManager.
+``GLEngine``: OpenGL video connector. Self-contained — it captures and restores the host's GL
+state around every upload, so state managers with sensitive caches (like Minecraft's
+GlStateManager or Sodium) are never desynced. No GL wiring is required.
+
+``VKEngine``: Vulkan video connector. It never creates or owns a Vulkan device — your app lends
+it one through a ``VKContext`` implementation, and every frame comes back as a ready-to-sample
+``VkImageView``. See the Vulkan section below.
 
 ``ALEngine``: OpenAL sound connector.
 
-**NOTE:** sending null gl and al engine suppliers disables video and audio output
+**NOTE:** sending null gfx and sfx engine suppliers disables video and audio output
+
+## 🌋 VULKAN (VKEngine)
+Unlike OpenGL there is no global context to detect, so you lend the engine the device you render
+with by implementing ``VKContext``. The engine only creates its own resources over it and never
+destroys anything you returned:
+
+```java
+public final class MyVKContext implements VKContext {
+    public VkInstance vkInstance() { return this.instance; }
+    public VkPhysicalDevice physicalDevice() { return this.physicalDevice; }
+    public VkDevice vkDevice() { return this.device; }
+    public VkQueue queue() { return this.graphicsQueue; }
+    public int queueFamily() { return this.graphicsFamily; }
+    public Object queueLock() { return this.queueLock; }
+    public VkPhysicalDeviceMemoryProperties memoryProperties() { return this.memProps; }
+    public boolean hostImportSupported() { return this.hasExtMemoryHost; }
+    public long minImportedHostPointerAlignment() { return this.hostPointerAlign; }
+    public boolean ycbcrSampler() { return this.hasYcbcrFeature; }
+    public void retire(Runnable destroy) { this.endOfFrameQueue.add(destroy); }
+}
+```
+
+```java
+MediaPlayer player = MediaAPI.createPlayer(mrl,
+        () -> new VKEngine.Builder(myContext).build(),
+        () -> null);
+
+// EACH FRAME: texture() IS A VkImageView HANDLE (RGBA, SHADER_READ_ONLY) — 0 MEANS NO FRAME YET
+long imageView = player.texture();
+```
+
+The contract in short:
+- **``queueLock()``** — Vulkan requires queue submission to be externally synchronized. The engine
+  holds this monitor around every ``vkQueueSubmit``; if you share the queue, hold the same lock
+  around your own submits and presents.
+- **``retire(Runnable)``** — the engine never destroys an image view your in-flight frames might
+  still sample. Run the callback once those frames completed (end-of-frame destruction queue),
+  and flush any pending callbacks before tearing down the device.
+- **Everything you return must outlive every engine built over the context.**
+
+Optional device features the engine uses when you enable them at device creation:
+- ``VK_EXT_external_memory_host`` — zero-copy uploads: decoder buffers are imported straight into
+  a ``VkBuffer`` (no CPU copy). Report it via ``hostImportSupported()`` + the physical device's
+  ``minImportedHostPointerAlignment``. Without it the engine falls back to staging buffers.
+- ``samplerYcbcrConversion`` (Vulkan 1.1) — YUV→RGB conversion in sampler hardware for NV12 and
+  planar YUV; otherwise a compute pass does the exact same BT.709 math.
+
+### Minecraft 26.x (Vulkan backend)
+WaterMedia stays engine-agnostic and never touches Mojang's Blaze3D internals — bridging is the
+mod's job. The recommended pattern is a **mixin that implements ``VKContext`` directly on Mojang's
+``VulkanDevice``**, so the device itself IS the context and the builder only needs a cast.
+``VKContext``'s method names avoid overloading that class's members by return type alone (the
+merged bytecode would be legal — the JVM resolves by full descriptor — but duplicate names muddy
+stack traces and crash reports), and MC's own ``vkDevice()`` accessor already satisfies the
+interface verbatim:
+
+```java
+@Mixin(VulkanDevice.class)
+public abstract class VulkanDeviceMixin implements VKContext {
+    @Shadow public abstract VulkanInstance instance();
+    @Shadow public abstract VulkanQueue graphicsQueue();
+    @Shadow public abstract VkDevice vkDevice(); // ALREADY SATISFIES VKContext#vkDevice()
+
+    @Unique private VkPhysicalDeviceMemoryProperties wm$memProps;
+
+    @Override public VkInstance vkInstance() { return this.instance().vkInstance(); }
+    @Override public VkPhysicalDevice physicalDevice() { return this.vkDevice().getPhysicalDevice(); }
+    @Override public VkQueue queue() { return this.graphicsQueue().vkQueue(); }
+    @Override public int queueFamily() { return this.graphicsQueue().queueFamilyIndex(); }
+    @Override public Object queueLock() { return this; } // THE DEVICE ITSELF SERVES AS THE MONITOR
+
+    @Override public VkPhysicalDeviceMemoryProperties memoryProperties() {
+        if (this.wm$memProps == null) { // MC DOES NOT EXPOSE THEM — QUERY ONCE
+            this.wm$memProps = VkPhysicalDeviceMemoryProperties.calloc();
+            VK10.vkGetPhysicalDeviceMemoryProperties(this.physicalDevice(), this.wm$memProps);
+        }
+        return this.wm$memProps;
+    }
+
+    @Override public boolean hostImportSupported() { return false; }  // MC DOES NOT ENABLE THE EXTENSION
+    @Override public long minImportedHostPointerAlignment() { return 0; }
+    @Override public boolean ycbcrSampler() { return false; }         // NOT ENABLED EITHER
+    @Override public void retire(Runnable destroy) { RenderSystem.queueFencedTask(destroy); }
+}
+```
+
+Unwrap the backend once (``GpuDevice#backend`` is private — one accessor mixin or AT/AW line) and
+cast it in the builder:
+
+```java
+GpuDeviceBackend backend = ((GpuDeviceAccessor) RenderSystem.getDevice()).wm$backend();
+MediaPlayer player = MediaAPI.createPlayer(mrl,
+        () -> new VKEngine.Builder((VKContext) backend).build(),
+        () -> null);
+```
+
+Two caveats verified against the 26.2 sources:
+- MC submits to the graphics queue **without holding any lock** (the single submit site is
+  ``VulkanQueue.Submission#close``). Since the engine submits from its producer thread, add one
+  more tiny mixin wrapping that method in ``synchronized (device)`` — the same monitor
+  ``queueLock()`` returns above — or the two submit paths can race.
+- MC's device is created without ``VK_EXT_external_memory_host`` and without
+  ``samplerYcbcrConversion``, hence the hardcoded ``false`` above: the engine transparently uses
+  its staging-buffer path and compute-shader YUV conversion.
 
 # 🔌 AVAILABLE APIs
 - CodecsAPI: Picture, ~~Audio~~ and ~~Video~~ decoding

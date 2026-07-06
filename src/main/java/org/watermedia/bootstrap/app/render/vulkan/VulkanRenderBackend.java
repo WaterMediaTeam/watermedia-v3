@@ -52,7 +52,7 @@ import static org.lwjgl.vulkan.VK11.*;
  * viewport so the existing {@code ortho2D(0,w,h,0)} and NDC blit math render identically.
  * <p>
  * <b>Threading.</b> Every {@link RenderBackend} method runs on the app's render/main thread. The
- * {@link VKContext} accessors ({@link #device()}, {@link #queue()}, {@link #queueLock()} and the
+ * {@link VKContext} accessors ({@link #vkDevice()}, {@link #queue()}, {@link #queueLock()} and the
  * rest) are the only surface the {@code VKEngine}'s producer thread touches; the engine produces the
  * media texture this backend samples. Because both threads submit to the same queue, every
  * {@code vkQueueSubmit}/{@code vkQueuePresentKHR} on either side runs inside {@code synchronized
@@ -1358,7 +1358,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // VKContext
     // ==========================================================================
     @Override
-    public VkInstance instance() {
+    public VkInstance vkInstance() {
         return this.instance;
     }
 
@@ -1368,7 +1368,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     @Override
-    public VkDevice device() {
+    public VkDevice vkDevice() {
         return this.device;
     }
 

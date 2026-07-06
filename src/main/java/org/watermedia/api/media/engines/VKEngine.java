@@ -238,7 +238,7 @@ public final class VKEngine extends GFXEngine {
         WaterMedia.checkIsClientSideOrThrow(VKEngine.class);
         if (ctx == null) throw new IllegalArgumentException("VKContext must be non-null");
         this.ctx = ctx;
-        this.device = ctx.device();
+        this.device = ctx.vkDevice();
         this.memProps = ctx.memoryProperties();
         this.minAlign = ctx.hostImportSupported() ? (int) ctx.minImportedHostPointerAlignment() : 0;
         this.init();
