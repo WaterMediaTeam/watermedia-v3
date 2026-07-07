@@ -176,6 +176,10 @@ public class AppBootstrap {
     private static BootstrapScan scanBootstrap(final boolean log, final String engine) throws Exception {
         final BootstrapScan scan = new BootstrapScan();
 
+        // WATERMEDIA'S OWN JAR GOES FIRST ON THE CLASSPATH SO ITS RESOURCES (icon.png, pack.png, banner.png)
+        // WIN OVER watermedia-binaries' COLLIDING RESOURCES DURING CLASSLOADER LOOKUPS IN THE CHILD JVM
+        scan.jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
+
         // FIND BINARIES
         final Path binaries = findLocalJar("watermedia_binaries");
         final boolean classpath = hasBinariesOnClasspath();
@@ -222,8 +226,6 @@ public class AppBootstrap {
                 if (log) warn("[MISSING] " + dep[0]);
             }
         }
-
-        scan.jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
 
         // SEARCH FOR EXTENSIONS
         final File[] files = new File("").getAbsoluteFile().listFiles();
