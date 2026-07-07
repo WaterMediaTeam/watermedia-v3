@@ -50,10 +50,16 @@ public class HomeScreen extends Screen {
     private Dimension cleanupDialogCloseBounds = Dimension.ZERO;
     private Dimension cleanupDialogXBounds = Dimension.ZERO;
     private Dimension cleanupDialogPrimaryBounds = Dimension.ZERO;
+    private final List<RepoHit> repoHits = new ArrayList<>();
+    private int repoSelected;
+    private int repoScrollOffset;
+    private int repoVisibleRows = 1;
     private static final int UPLOAD_ROW_H = 52;
     private static final int UPLOAD_ROW_DETAIL_H = 58;
     private static final int UPLOAD_PANEL_PAD = 14;
     private static final int CLEANUP_ROW_H = 58;
+    private static final int REPO_ROW_H = 56;
+    private static final int REPO_ROW_STEP = 64;
 
     public HomeScreen(final TextRenderer text, final AppContext ctx, final Consumer<Action> navigator) {
         super(text, ctx);
@@ -307,10 +313,18 @@ public class HomeScreen extends Screen {
     }
 
     private void renderUploadLogsDialog(final int windowW, final int windowH) {
-        final int dialogW = Math.min(890, windowW - 48);
-        final int filePanelH = this.uploadFilePanelHeight();
-        final int issueBlockH = this.ctx.uploadDialogStage >= 3 ? 20 + 120 : 0;
-        final int dialogH = Math.min(166 + filePanelH + issueBlockH + 28 + 86, windowH - 36);
+        final boolean report = this.ctx.uploadDialogStage >= 3;
+        // OUTSIDE THE REPORT STAGE THE REPO PICKER STATE IS DORMANT — KEEP IT RESET SO IT STARTS FRESH.
+        if (!report) {
+            this.repoScrollOffset = 0;
+            this.repoSelected = 0;
+            this.repoHits.clear();
+        }
+        final int dialogW = Math.min(report ? 900 : 890, windowW - 48);
+        final int filePanelH = report ? 0 : this.uploadFilePanelHeight();
+        final int dialogH = report
+                ? Math.min(648, windowH - 36)
+                : Math.min(166 + filePanelH + 28 + 86, windowH - 36);
         final Dimension dialog = Dimension.centered(windowW, windowH, dialogW, dialogH);
         final int x = dialog.x();
         final int y = dialog.y();
@@ -335,15 +349,199 @@ public class HomeScreen extends Screen {
         final int contentX = x + 28;
         final int contentY = y + 166;
         final int contentW = dialogW - 56;
-        this.renderUploadFilesPanel(contentX, contentY, contentW, filePanelH);
-        if (this.ctx.uploadDialogStage >= 3) {
-            this.renderUploadIssuePanel(contentX, contentY + filePanelH + 20, contentW, 120);
+        if (report) {
+            this.renderUploadReport(y, contentX, contentY, contentW, dialogH, windowH);
+        } else {
+            this.renderUploadFilesPanel(contentX, contentY, contentW, filePanelH);
         }
 
         RenderSystem.lineH(x, y + dialogH - 86, dialogW, AppTheme.STROKE_BRIGHT, 1f);
         AppChrome.amberCube(x + 4, y + dialogH - 12, 8);
         AppChrome.amberCube(x + dialogW - 12, y + dialogH - 12, 8);
         this.renderUploadDialogButtons(x, y, dialogW, dialogH);
+    }
+
+    // STAGE 3 — REPORT SCREEN: A LARGE WATERMEDIA BANNER (PRIMARY TARGET) PLUS A SCROLLABLE LIST OF
+    // SUSPECTED-MOD REPOSITORIES, EACH WITH ITS OWN SUBMIT BUTTON. THE LIST SCROLLS SO THE DIALOG STAYS COMPACT.
+    private void renderUploadReport(final int y, final int contentX, final int contentY,
+                                    final int contentW, final int dialogH, final int windowH) {
+        final List<RepoTarget> repos = this.uploadRepoTargets();
+        this.repoHits.clear();
+
+        // CLIPBOARD CONFIRMATION STRIP
+        final int confH = 30;
+        final boolean copied = this.ctx.uploadIssueCopied;
+        RenderSystem.fill(contentX, contentY, contentW, confH, AppTheme.alpha(copied ? AppTheme.GREEN : AppTheme.BG_2, copied ? 26 : 164));
+        RenderSystem.rect(contentX, contentY, contentW, confH, copied ? AppTheme.GREEN : AppTheme.STROKE_BRIGHT, 1f);
+        PixelIcon.draw(copied ? "check" : "copy", contentX + 12, contentY + (confH - 14) / 2, 14, copied ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
+        final String confMsg = copied
+                ? "Report template copied to clipboard — paste it into the issue body"
+                : "Clipboard copy unavailable — write the report manually";
+        this.text.render(this.text.truncateToWidth(confMsg, contentW - 44, AppTheme.TEXT_BODY),
+                contentX + 34, this.centerTextY(contentY, confH, AppTheme.TEXT_BODY), copied ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
+
+        // HERO — WATERMEDIA (PRIMARY REPO, GOES FIRST)
+        final int heroY = contentY + confH + 14;
+        final int heroH = 104;
+        this.renderRepoHero(repos.get(0), contentX, heroY, contentW, heroH);
+
+        // SUSPECTED-MOD LIST HEADER
+        final int listHeadY = heroY + heroH + 16;
+        this.text.renderBold("SUSPECTED MODS", contentX, this.centerBoldTextY(listHeadY, 20, AppTheme.TEXT_BUTTON), AppTheme.NEON, AppTheme.TEXT_BUTTON);
+        this.text.render("SUBMIT TO THE MATCHING REPOSITORY", contentX + this.text.widthBold("SUSPECTED MODS", AppTheme.TEXT_BUTTON) + 14,
+                this.centerTextY(listHeadY, 20, AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+
+        // SCROLLABLE LIST OF SMALLER MOD BANNERS (TARGETS 1..n)
+        final int mods = repos.size() - 1;
+        final int listTop = listHeadY + 26;
+        if (mods == 0) {
+            this.repoVisibleRows = 0;
+            this.repoScrollOffset = 0;
+            this.text.render("No known suspect mods detected in this instance — submit to WaterMedia above.",
+                    contentX, listTop + 4, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+            return;
+        }
+        final int listBottom = y + dialogH - 86 - 12;
+        final int listH = Math.max(REPO_ROW_H, listBottom - listTop);
+        this.repoVisibleRows = Math.max(1, Math.min(mods, (listH + (REPO_ROW_STEP - REPO_ROW_H)) / REPO_ROW_STEP));
+        final boolean needsScroll = mods > this.repoVisibleRows;
+        this.repoScrollOffset = Math.max(0, Math.min(Math.max(0, mods - this.repoVisibleRows), this.repoScrollOffset));
+        final int cardW = contentW - (needsScroll ? 16 : 0);
+
+        RenderSystem.clip(contentX, listTop, contentW, listH, windowH);
+        for (int i = 0; i < this.repoVisibleRows && i + this.repoScrollOffset < mods; i++) {
+            final int targetIdx = i + this.repoScrollOffset + 1;
+            this.renderRepoCard(repos.get(targetIdx), targetIdx, contentX, listTop + i * REPO_ROW_STEP, cardW, REPO_ROW_H);
+        }
+        RenderSystem.clearClip();
+        if (needsScroll) {
+            this.renderRepoScrollBar(contentX + contentW - 5, listTop, listH, mods);
+        }
+    }
+
+    private void renderRepoHero(final RepoTarget repo, final int x, final int y, final int w, final int h) {
+        final boolean selected = this.repoSelected == 0;
+        final int pad = 14;
+        RenderSystem.glowRect(x, y, w, h, 0f, AppTheme.GREEN, selected ? 0.26f : 0.12f);
+        RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.GREEN, selected ? 30 : 18));
+        RenderSystem.rect(x, y, w, h, AppTheme.GREEN, selected ? 2f : 1.5f);
+        RenderSystem.fill(x, y, 4, h, AppTheme.GREEN);
+
+        // PACK.PNG LOGO — SQUARE, ASPECT-PRESERVED, CENTERED IN ITS BOX
+        final int logoBox = h - pad * 2;
+        final int logoX = x + pad + 8;
+        if (this.ctx.iconTextureId > 0 && this.ctx.iconWidth > 0 && this.ctx.iconHeight > 0) {
+            final float s = Math.min((float) logoBox / this.ctx.iconWidth, (float) logoBox / this.ctx.iconHeight);
+            final int lw = (int) (this.ctx.iconWidth * s);
+            final int lh = (int) (this.ctx.iconHeight * s);
+            RenderSystem.bindTexture(this.ctx.iconTextureId);
+            RenderSystem.color(1f, 1f, 1f, 1f);
+            RenderSystem.blit(logoX + (logoBox - lw) / 2f, y + pad + (logoBox - lh) / 2f, lw, lh);
+        }
+
+        final int textX = logoX + logoBox + 20;
+        final int textRight = x + w - pad;
+        // PRIMARY BADGE TOP-RIGHT
+        final int badgeW = this.text.width("PRIMARY", AppTheme.TEXT_SUBTITLE) + 20;
+        RenderSystem.fill(textRight - badgeW, y + pad, badgeW, 20, AppTheme.alpha(AppTheme.GREEN, 40));
+        RenderSystem.rect(textRight - badgeW, y + pad, badgeW, 20, AppTheme.GREEN, 1f);
+        this.text.render("PRIMARY", textRight - badgeW + 10, this.centerTextY(y + pad, 20, AppTheme.TEXT_SUBTITLE), AppTheme.GREEN, AppTheme.TEXT_SUBTITLE);
+
+        // SUBMIT BUTTON — BOTTOM-RIGHT
+        final Dimension submit = new Dimension(textRight - 150, y + h - pad - 32, 150, 32);
+        final boolean active = selected || submit.contains(this.ctx.mouseX, this.ctx.mouseY);
+
+        // TEXT — EACH LINE CLAMPED SO IT NEVER SPILLS PAST THE BADGE, THE BUTTON OR THE HERO EDGE
+        this.text.renderBold(this.text.truncateToWidth("SUBMIT A BUG REPORT ON WATERMEDIA ISSUE TRACKER",
+                        textRight - badgeW - 12 - textX, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
+                textX, y + 16, AppTheme.GREEN, AppTheme.TEXT_BUTTON);
+        this.text.render(this.text.truncateToWidth("AND — if a listed mod is the suspect — also file it in that mod's repo below.",
+                        textRight - textX, AppTheme.TEXT_BODY),
+                textX, y + 40, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
+        this.text.render(this.text.truncateToWidth(repo.slug(), submit.x() - 12 - textX, AppTheme.TEXT_SUBTITLE),
+                textX, y + 64, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+
+        this.renderRepoSubmit(submit, AppTheme.GREEN, active);
+        this.repoHits.add(new RepoHit(0, new Dimension(x, y, w, h), submit));
+    }
+
+    private void renderRepoCard(final RepoTarget repo, final int targetIdx, final int x, final int y, final int w, final int h) {
+        final boolean selected = this.repoSelected == targetIdx;
+        final Color accent = repo.accent();
+        RenderSystem.fill(x, y, w, h, selected ? AppTheme.alpha(accent, 30) : AppTheme.alpha(AppTheme.BG_2, 210));
+        RenderSystem.rect(x, y, w, h, selected ? accent : AppTheme.STROKE_BRIGHT, selected ? 2f : 1f);
+        if (selected) RenderSystem.glowRect(x, y, w, h, 0f, accent, 0.18f);
+        RenderSystem.fill(x, y, 4, h, accent);
+        AppChrome.statusPip(x + 16, y + (h - 10) / 2, 10, accent, true);
+        this.text.renderBold(repo.name().toUpperCase(), x + 36, y + 12, selected ? accent : AppTheme.TEXT, AppTheme.TEXT_BUTTON);
+        this.text.render(repo.slug(), x + 36, y + 32, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+
+        final Dimension submit = new Dimension(x + w - 138, y + (h - 32) / 2, 122, 32);
+        final boolean active = selected || submit.contains(this.ctx.mouseX, this.ctx.mouseY);
+        this.renderRepoSubmit(submit, accent, active);
+        this.repoHits.add(new RepoHit(targetIdx, new Dimension(x, y, w, h), submit));
+    }
+
+    private void renderRepoSubmit(final Dimension b, final Color accent, final boolean active) {
+        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), active ? AppTheme.alpha(accent, 60) : AppTheme.alpha(AppTheme.BG_1, 200));
+        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), accent, active ? 1.8f : 1.3f);
+        if (active) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, accent, 0.22f);
+        PixelIcon.draw("link", b.x() + 12, b.y() + (b.height() - 14) / 2, 14, accent);
+        this.text.renderBold("SUBMIT", b.x() + 34, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), accent, AppTheme.TEXT_BUTTON);
+    }
+
+    private void renderRepoScrollBar(final int x, final int y, final int h, final int total) {
+        RenderSystem.fill(x, y, 4, h, AppTheme.alpha(AppTheme.BG_3, 190));
+        final int thumbH = Math.max(24, Math.round(h * (this.repoVisibleRows / (float) total)));
+        final int maxScroll = Math.max(1, total - this.repoVisibleRows);
+        final int thumbY = y + Math.round((h - thumbH) * (this.repoScrollOffset / (float) maxScroll));
+        RenderSystem.fill(x, thumbY, 4, thumbH, AppTheme.NEON);
+        RenderSystem.glowRect(x, thumbY, 4, thumbH, 0f, AppTheme.NEON, 0.24f);
+    }
+
+    private List<RepoTarget> uploadRepoTargets() {
+        final String wmUrl = this.ctx.uploadIssueUrl != null && this.ctx.uploadIssueUrl.startsWith("http")
+                ? this.ctx.uploadIssueUrl
+                : "https://github.com/WaterMediaTeam/watermedia/issues/new";
+        final List<RepoTarget> repos = new ArrayList<>();
+        repos.add(new RepoTarget("WaterMedia", "WaterMediaTeam/watermedia", wmUrl, AppTheme.GREEN));
+        // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE WaterMediaApp.scanSuspectMods)
+        final Color[] palette = {AppTheme.AMBER, AppTheme.CYAN, AppTheme.NEON_LIGHT, AppTheme.NEON};
+        int idx = 0;
+        for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
+            if (this.ctx.suspectModIds.contains(mod.id())) {
+                repos.add(new RepoTarget(mod.name(), mod.slug(), mod.url(), palette[idx % palette.length]));
+            }
+            idx++;
+        }
+        return repos;
+    }
+
+    private RepoTarget selectedRepo() {
+        final List<RepoTarget> repos = this.uploadRepoTargets();
+        return repos.get(Math.max(0, Math.min(repos.size() - 1, this.repoSelected)));
+    }
+
+    private void submitRepo(final RepoTarget repo, final int index) {
+        this.repoSelected = index;
+        this.ctx.uploadRepoUrl = repo.url();
+        this.navigator.accept(Action.UPLOAD_LOGS);
+        this.ctx.playSelectionSound();
+    }
+
+    private void moveRepoSelection(final int delta) {
+        final int count = this.uploadRepoTargets().size();
+        this.repoSelected = Math.max(0, Math.min(count - 1, this.repoSelected + delta));
+        // KEEP THE SELECTED MOD (TARGETS 1..n-1) INSIDE THE SCROLL VIEWPORT
+        if (this.repoSelected >= 1) {
+            final int modIdx = this.repoSelected - 1;
+            if (modIdx < this.repoScrollOffset) this.repoScrollOffset = modIdx;
+            if (modIdx >= this.repoScrollOffset + this.repoVisibleRows) this.repoScrollOffset = modIdx - this.repoVisibleRows + 1;
+            final int mods = count - 1;
+            this.repoScrollOffset = Math.max(0, Math.min(Math.max(0, mods - this.repoVisibleRows), this.repoScrollOffset));
+        }
+        this.ctx.playSelectionSound();
+        this.ctx.requestRender();
     }
 
     private void renderUploadStepper(final int x, final int y) {
@@ -466,19 +664,6 @@ public class HomeScreen extends Screen {
         return files;
     }
 
-    private void renderUploadIssuePanel(final int x, final int y, final int w, final int h) {
-        RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.GREEN, 22));
-        RenderSystem.rect(x, y, w, h, AppTheme.GREEN, 1.5f);
-        PixelIcon.draw("check", x + 22, y + 24, 14, this.ctx.uploadIssueCopied ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
-        this.text.render("Issue template copied to clipboard", x + 52, y + 20,
-                this.ctx.uploadIssueCopied ? AppTheme.GREEN : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-        PixelIcon.draw("link", x + 22, y + 54, 14, AppTheme.CYAN);
-        this.text.render(this.text.truncateToWidth(this.ctx.uploadIssueUrl, w - 74, AppTheme.TEXT_BODY),
-                x + 52, y + 50, AppTheme.CYAN, AppTheme.TEXT_BODY);
-        this.text.render("Paste the template in the new issue body to share log links.",
-                x + 22, y + 88, AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
-    }
-
     private void renderUploadDialogButtons(final int x, final int y, final int dialogW, final int dialogH) {
         this.uploadDialogCloseBounds = new Dimension(x + 22, y + dialogH - 68, 170, 48);
         final boolean cancelHover = this.uploadDialogCloseBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
@@ -525,7 +710,7 @@ public class HomeScreen extends Screen {
     private String uploadPrimaryLabel() {
         if (this.ctx.uploadDialogStage <= 1) return "UPLOAD TO MCLO.GS";
         if (this.ctx.uploadDialogStage == 2) return "GENERATE REPORT";
-        return "OPEN GITHUB";
+        return "OPEN " + this.selectedRepo().name().toUpperCase();
     }
 
     private boolean uploadPrimaryEnabled() {
@@ -538,7 +723,7 @@ public class HomeScreen extends Screen {
             for (final AppContext.UploadFileEntry entry: this.ctx.uploadDialogFiles) if (entry.uploaded) return true;
             return false;
         }
-        return this.ctx.uploadDialogDone || this.ctx.uploadIssueCopied;
+        return true;
     }
 
     private void renderCleanupDialog(final int windowW, final int windowH) {
@@ -719,6 +904,18 @@ public class HomeScreen extends Screen {
         }
 
         if (this.ctx.uploadDialogVisible) {
+            if (this.ctx.uploadDialogStage >= 3) {
+                switch (key) {
+                    case GLFW_KEY_ESCAPE -> {
+                        this.ctx.uploadDialogVisible = false;
+                        this.ctx.playSelectionSound();
+                    }
+                    case GLFW_KEY_UP -> this.moveRepoSelection(-1);
+                    case GLFW_KEY_DOWN -> this.moveRepoSelection(1);
+                    case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.submitRepo(this.selectedRepo(), this.repoSelected);
+                }
+                return;
+            }
             if (key == GLFW_KEY_ESCAPE) {
                 this.ctx.uploadDialogVisible = false;
                 this.ctx.playSelectionSound();
@@ -753,6 +950,8 @@ public class HomeScreen extends Screen {
 
     @Override
     public void handleMouseMove(final double mx, final double my) {
+        // THE REPORT LIST DOES NOT HIGHLIGHT ON HOVER — ONLY THE SUBMIT BUTTON REACTS TO THE MOUSE,
+        // AND CARD SELECTION IS DRIVEN BY KEYBOARD/CLICK.
         if (this.ctx.uploadDialogVisible || this.ctx.cleanupDialogVisible) return;
         for (final Hit hit: this.hits) {
             if (hit.bounds.contains(mx, my)) {
@@ -789,7 +988,30 @@ public class HomeScreen extends Screen {
             if (this.uploadDialogCloseBounds.contains(mx, my) || this.uploadDialogXBounds.contains(mx, my)) {
                 this.ctx.uploadDialogVisible = false;
                 this.ctx.playSelectionSound();
-            } else if (this.uploadPrimaryEnabled() && this.uploadDialogPrimaryBounds.contains(mx, my)) {
+                return;
+            }
+            if (this.ctx.uploadDialogStage >= 3) {
+                for (final RepoHit hit: this.repoHits) {
+                    if (hit.submit().contains(mx, my)) {
+                        this.submitRepo(this.uploadRepoTargets().get(hit.index()), hit.index());
+                        return;
+                    }
+                    if (hit.card().contains(mx, my)) {
+                        // CARD BODY ONLY SELECTS; THE SUBMIT BUTTON OPENS THE ISSUE TRACKER
+                        if (this.repoSelected != hit.index()) {
+                            this.repoSelected = hit.index();
+                            this.ctx.playSelectionSound();
+                            this.ctx.requestRender();
+                        }
+                        return;
+                    }
+                }
+                if (this.uploadPrimaryEnabled() && this.uploadDialogPrimaryBounds.contains(mx, my)) {
+                    this.submitRepo(this.selectedRepo(), this.repoSelected);
+                }
+                return;
+            }
+            if (this.uploadPrimaryEnabled() && this.uploadDialogPrimaryBounds.contains(mx, my)) {
                 this.navigator.accept(Action.UPLOAD_LOGS);
                 this.ctx.playSelectionSound();
             }
@@ -856,7 +1078,25 @@ public class HomeScreen extends Screen {
     }
 
     @Override
+    public void handleScroll(final double yOffset) {
+        if (this.ctx.uploadDialogVisible && this.ctx.uploadDialogStage >= 3) {
+            final int mods = this.uploadRepoTargets().size() - 1;
+            final int max = Math.max(0, mods - this.repoVisibleRows);
+            this.repoScrollOffset = Math.max(0, Math.min(max, this.repoScrollOffset - (int) Math.signum(yOffset)));
+            this.ctx.requestRender();
+        }
+    }
+
+    @Override
     public String instructions() {
+        if (this.ctx.uploadDialogVisible) {
+            return this.ctx.uploadDialogStage >= 3
+                    ? "UP/DOWN: Repository | ENTER: Submit | ESC: Close"
+                    : "ENTER: Continue | ESC: Cancel";
+        }
+        if (this.ctx.cleanupDialogVisible) {
+            return "ENTER: Continue | ESC: Close";
+        }
         return "ARROWS: Navigate | ENTER: Select | ESC: Exit";
     }
 
@@ -864,5 +1104,11 @@ public class HomeScreen extends Screen {
     }
 
     private record Hit(Dimension bounds, MenuEntry entry, int panel, int index) {
+    }
+
+    private record RepoTarget(String name, String slug, String url, Color accent) {
+    }
+
+    private record RepoHit(int index, Dimension card, Dimension submit) {
     }
 }

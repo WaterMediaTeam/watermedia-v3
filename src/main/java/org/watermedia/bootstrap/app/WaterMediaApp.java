@@ -19,8 +19,17 @@ import org.lwjgl.stb.STBVorbis;
 import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.bytedeco.ffmpeg.avcodec.AVCodec;
+import org.bytedeco.ffmpeg.global.avcodec;
+import org.bytedeco.ffmpeg.global.avformat;
+import org.bytedeco.ffmpeg.global.avutil;
+import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.Pointer;
+import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
@@ -36,9 +45,11 @@ import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
 import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -46,12 +57,20 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.ShortBuffer;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+import java.util.ServiceLoader;
+import java.util.TreeSet;
+import java.util.regex.Pattern;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -424,7 +443,8 @@ public class WaterMediaApp {
                     if (!hasUploadedLog()) return;
                     ThreadTool.createStarted("WaterMediaApp-UploadIssueReport", WaterMediaApp::uploadIssueReport);
                 } else {
-                    ThreadTool.createStarted("WaterMediaApp-OpenIssuePage", WaterMediaApp::openIssuePage);
+                    if (ctx.uploadRepoUrl == null || ctx.uploadRepoUrl.isBlank()) return;
+                    ThreadTool.createStarted("WaterMediaApp-OpenRepoPage", WaterMediaApp::openRepoPage);
                 }
             }
 
@@ -644,6 +664,7 @@ public class WaterMediaApp {
         ctx.uploadDialogStage = 1;
         ctx.uploadDialogStatus = "SCAN";
         ctx.uploadIssueUrl = "github.com/watermedia/issues/new";
+        ctx.uploadRepoUrl = null;
         ctx.uploadDialogFiles.clear();
     }
 
@@ -703,21 +724,33 @@ public class WaterMediaApp {
     // Icon and banner are decoded with ImageIO so they're available before
     // CodecsAPI loads — this lets the loading splash render the banner.
     private static void loadIcon() {
-        try (final InputStream in = openFirstResource("pack.png", "icon.png")) {
+        // WINDOW/TASKBAR ICON — THE OS SCALES IT DOWN SMALL, SO USE THE DEDICATED icon.png
+        try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
+            if (in != null) {
+                final BufferedImage img = ImageIO.read(in);
+                if (img != null) {
+                    final int w = img.getWidth(), h = img.getHeight();
+                    final ByteBuffer buffer = argbToRgbaBuffer(img);
+
+                    final GLFWImage.Buffer icons = GLFWImage.malloc(1);
+                    icons.position(0).width(w).height(h).pixels(buffer);
+                    glfwSetWindowIcon(ctx.windowHandle, icons);
+
+                    icons.free();
+                    MemoryUtil.memFree(buffer);
+                }
+            }
+        } catch (final Exception e) {
+            System.err.println("Failed to load window icon: " + e.getMessage());
+        }
+
+        // ON-SCREEN LOGO (TITLE BAR, LOADING SPLASH, HOME HERO) — RENDERED LARGE, SO USE THE HIGHER-RES pack.png
+        try (final InputStream in = IOTool.jarOpenFile("pack.png")) {
             if (in == null) return;
             final BufferedImage img = ImageIO.read(in);
             if (img == null) return;
 
             final int w = img.getWidth(), h = img.getHeight();
-            final ByteBuffer buffer = argbToRgbaBuffer(img);
-
-            final GLFWImage.Buffer icons = GLFWImage.malloc(1);
-            icons.position(0).width(w).height(h).pixels(buffer);
-            glfwSetWindowIcon(ctx.windowHandle, icons);
-
-            icons.free();
-            MemoryUtil.memFree(buffer);
-
             final ByteBuffer textureBuffer = argbToRgbaBuffer(img);
             ctx.iconWidth = w;
             ctx.iconHeight = h;
@@ -729,7 +762,7 @@ public class WaterMediaApp {
             ctx.iconGlowWidth = glow.width();
             ctx.iconGlowHeight = glow.height();
         } catch (final Exception e) {
-            System.err.println("Failed to load window icon: " + e.getMessage());
+            System.err.println("Failed to load logo texture: " + e.getMessage());
         }
     }
 
@@ -762,16 +795,6 @@ public class WaterMediaApp {
         ctx.duckFrameTextureIds = frames.stream().mapToInt(Integer::intValue).toArray();
         ctx.duckFrameWidth = frameWidth;
         ctx.duckFrameHeight = frameHeight;
-    }
-
-    private static InputStream openFirstResource(final String... names) {
-        for (final String name: names) {
-            try {
-                return IOTool.jarOpenFile(name);
-            } catch (final Exception ignored) {
-            }
-        }
-        return null;
     }
 
     private static void loadBanner() {
@@ -937,11 +960,39 @@ public class WaterMediaApp {
         final Path logsDir = baseDir.resolve("logs");
         final Path crashDir = baseDir.resolve("crash-reports");
         final Path crashReport = findLatestCrashReport(crashDir);
+        // JVM FATAL ERROR LOGS (hs_err_pid<pid>.log) LAND IN THE PROCESS WORKING DIR BY DEFAULT
+        final Path hsErr = findLatestHsErr(baseDir);
 
         addScannedUploadFile("latest.log", logsDir.resolve("latest.log"));
         addScannedUploadFile(crashReport != null ? crashReport.getFileName().toString() : "crash-reports", crashReport != null ? crashReport : crashDir);
         addScannedUploadFile("watermedia-app.log", logsDir.resolve("watermedia-app.log"));
+        addScannedUploadFile(hsErr != null ? hsErr.getFileName().toString() : "hs_err_pid.log", hsErr != null ? hsErr : baseDir.resolve("hs_err_pid.log"));
+        scanSuspectMods();
         ctx.requestRender();
+    }
+
+    private static void scanSuspectMods() {
+        ctx.suspectModIds.clear();
+        if (!AppContext.IN_MODS) return;
+        // IN_MODS MEANS THE WORKING DIR IS THE MODS FOLDER — A CANDIDATE COUNTS ONLY IF A JAR WHOSE
+        // FILENAME CONTAINS ITS ID IS PRESENT (id "fancymenu" MATCHES "FancyMenu-Forge-1.20.1-x.y.z.jar").
+        final Path modsDir = Path.of("").toAbsolutePath();
+        try (final var stream = Files.list(modsDir)) {
+            final List<String> jars = stream
+                    .filter(Files::isRegularFile)
+                    .map(p -> p.getFileName().toString().toLowerCase(Locale.ROOT))
+                    .filter(n -> n.endsWith(".jar"))
+                    .toList();
+            for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
+                for (final String jar: jars) {
+                    if (jar.contains(mod.id())) {
+                        ctx.suspectModIds.add(mod.id());
+                        break;
+                    }
+                }
+            }
+        } catch (final IOException ignored) {
+        }
     }
 
     private static void addScannedUploadFile(final String name, final Path path) {
@@ -976,9 +1027,21 @@ public class WaterMediaApp {
     }
 
     private static boolean exceedsLineLimit(final Path path, final int maxLines) throws IOException {
-        try (final var lines = Files.lines(path, StandardCharsets.UTF_8)) {
-            return lines.limit(maxLines + 1L).count() > maxLines;
+        try (final BufferedReader reader = lenientReader(path)) {
+            int lines = 0;
+            while (reader.readLine() != null) {
+                if (++lines > maxLines) return true;
+            }
+            return false;
         }
+    }
+
+    // hs_err DUMPS AND SOME LOGS CARRY NON-UTF-8 BYTES; REPLACE THEM INSTEAD OF FAILING THE WHOLE READ.
+    private static BufferedReader lenientReader(final Path path) throws IOException {
+        final CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        return new BufferedReader(new InputStreamReader(Files.newInputStream(path), decoder));
     }
 
     private static void uploadLogs() {
@@ -1028,9 +1091,12 @@ public class WaterMediaApp {
             final String issueText = generateIssueTemplate(
                     uploadedUrl("latest.log"),
                     uploadedUrl("watermedia-app.log"),
-                    firstUploadedCrashUrl()
+                    firstUploadedCrashUrl(),
+                    uploadedHsErrUrl()
             );
             ctx.uploadIssueUrl = buildGithubIssueUrl(issueText);
+            // DEFAULT SUBMIT TARGET IS WATERMEDIA; THE STAGE-3 SCREEN LETS THE USER PICK A SUSPECTED MOD INSTEAD.
+            ctx.uploadRepoUrl = ctx.uploadIssueUrl;
 
             try {
                 final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
@@ -1041,7 +1107,7 @@ public class WaterMediaApp {
                 ctx.uploadDialogStatus = "ERROR";
             }
 
-            openIssuePage();
+            // DO NOT OPEN THE BROWSER AUTOMATICALLY — THE USER CHOOSES WHICH ISSUE TRACKER TO SUBMIT TO.
             ctx.uploadDialogDone = !ctx.uploadDialogError;
         } finally {
             ctx.uploadDialogWorking = false;
@@ -1049,17 +1115,17 @@ public class WaterMediaApp {
         }
     }
 
-    private static void openIssuePage() {
+    private static void openRepoPage() {
         try {
-            final String url = ctx.uploadIssueUrl != null && ctx.uploadIssueUrl.startsWith("https://")
-                    ? ctx.uploadIssueUrl
-                    : buildGithubIssueUrl("");
+            final String target = ctx.uploadRepoUrl;
+            final String url = target != null && target.startsWith("http") ? target : buildGithubIssueUrl("");
             Desktop.getDesktop().browse(URI.create(url));
             ctx.uploadIssueOpened = true;
         } catch (final Exception e) {
             ctx.uploadDialogError = true;
             ctx.uploadDialogStatus = "ERROR";
         }
+        ctx.requestRender();
     }
 
     private static String buildGithubIssueUrl(final String body) {
@@ -1108,13 +1174,45 @@ public class WaterMediaApp {
 
     private static String readUploadContent(final AppContext.UploadFileEntry entry) {
         try {
-            return Files.readString(entry.path, StandardCharsets.UTF_8);
+            // REDACT SESSION/ACCESS TOKENS AND OTHER SECRETS BEFORE THEY EVER LEAVE THE MACHINE.
+            // hs_err DUMPS AND LAUNCH LOGS OFTEN CARRY THE FULL --accessToken IN THE JVM COMMAND LINE.
+            final StringBuilder sb = new StringBuilder();
+            try (final BufferedReader reader = lenientReader(entry.path)) {
+                final char[] buf = new char[8192];
+                int n;
+                while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
+            }
+            return sanitizeUpload(sb.toString());
         } catch (final Exception e) {
             entry.state = "READ ERROR";
             entry.progress = 0;
             ctx.uploadDialogError = true;
             return null;
         }
+    }
+
+    // SECRET REDACTION — MASK APPLIED IN PLACE OF ANY TOKEN-LIKE VALUE
+    private static final String SECRET_MASK = "********";
+    // MINECRAFT/MSA ACCESS TOKENS ARE JWTS (eyJ<header>.<payload>.<signature>)
+    private static final Pattern JWT = Pattern.compile("eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{4,}");
+    // LAUNCH ARGS THAT CARRY THE SESSION/ACCESS TOKEN: --accessToken <v>, --session <v> (token:<token>:<uuid>)
+    private static final Pattern LAUNCH_ARG = Pattern.compile("(?i)(--(?:accessToken|session)\\s+)(\\S+)");
+    // BARE LEGACY SESSION STRING token:<accessToken>:<profileId>
+    private static final Pattern SESSION_TRIPLE = Pattern.compile("(?i)\\btoken:[^\\s:]+(?::[0-9a-fA-F-]+)?");
+    // Authorization: Bearer <token> / Authorization: <token>
+    private static final Pattern AUTH_HEADER = Pattern.compile("(?i)(authorization\\s*[:=]\\s*(?:bearer\\s+)?)(\\S+)");
+    // SENSITIVE KEY = VALUE / KEY: VALUE / "key":"value"
+    private static final Pattern SECRET_KV = Pattern.compile(
+            "(?i)(\"?\\b(?:access[_-]?token|session[_-]?token|sessionId|auth[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd|api[_-]?key|apikey)\\b\"?\\s*[:=]\\s*\"?)([^\\s\"',&}]+)");
+
+    private static String sanitizeUpload(final String content) {
+        if (content == null || content.isEmpty()) return content;
+        String out = JWT.matcher(content).replaceAll(SECRET_MASK);
+        out = LAUNCH_ARG.matcher(out).replaceAll("$1" + SECRET_MASK);
+        out = AUTH_HEADER.matcher(out).replaceAll("$1" + SECRET_MASK);
+        out = SECRET_KV.matcher(out).replaceAll("$1" + SECRET_MASK);
+        out = SESSION_TRIPLE.matcher(out).replaceAll("token:" + SECRET_MASK);
+        return out;
     }
 
     private static String uploadedUrl(final String name) {
@@ -1126,9 +1224,17 @@ public class WaterMediaApp {
 
     private static String firstUploadedCrashUrl() {
         for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
-            if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log") && entry.uploaded) {
+            if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log")
+                    && !entry.name.startsWith("hs_err_pid") && entry.uploaded) {
                 return entry.url;
             }
+        }
+        return null;
+    }
+
+    private static String uploadedHsErrUrl() {
+        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            if (entry.name.startsWith("hs_err_pid") && entry.uploaded) return entry.url;
         }
         return null;
     }
@@ -1222,6 +1328,23 @@ public class WaterMediaApp {
         }
     }
 
+    private static Path findLatestHsErr(final Path baseDir) {
+        if (!Files.isDirectory(baseDir)) return null;
+        try (final var stream = Files.list(baseDir)) {
+            return stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().startsWith("hs_err_pid"))
+                    .max(Comparator.comparingLong(p -> {
+                        try {
+                            return Files.getLastModifiedTime(p).toMillis();
+                        } catch (final Exception e) {
+                            return 0L;
+                        }
+                    })).orElse(null);
+        } catch (final Exception e) {
+            return null;
+        }
+    }
+
     private static String uploadToMclogs(final String content, final AppContext.UploadFileEntry entry) {
         try {
             final HttpClient client = HttpClient.newHttpClient();
@@ -1255,18 +1378,292 @@ public class WaterMediaApp {
         return null;
     }
 
-    private static String generateIssueTemplate(final String latestUrl, final String wmUrl, final String crashUrl) {
+    private static String generateIssueTemplate(final String latestUrl, final String wmUrl, final String crashUrl, final String hsErrUrl) {
+        final Runtime rt = Runtime.getRuntime();
         return "This is an automated issue report generated by WATERMeDIA: Multimedia API.\n\n" +
+                "## Alerts\n" +
+                alertsSection() + "\n" +
                 "## Files\n" +
                 "- Logs: " + (latestUrl != null ? latestUrl : "N/A") + "\n" +
                 "- Crash-report: " + (crashUrl != null ? crashUrl : "N/A") + "\n" +
+                "- JVM crash (hs_err): " + (hsErrUrl != null ? hsErrUrl : "N/A") + "\n" +
                 "- WM Logs: " + (wmUrl != null ? wmUrl : "N/A") + "\n\n" +
+                "## Environment\n" +
+                "- WaterMedia: " + WaterMedia.VERSION + " (" + RenderSystem.engineVersionLabel() + ")\n" +
+                "- Binaries: " + binariesVersion() + "\n" +
+                "- FFmpeg: " + ffmpegVersion() + "\n" +
+                "- FFmpeg HW accel: " + ffmpegHwAccel() + "\n" +
+                "- FFmpeg codecs (SW): " + ffmpegSoftwareCodecs() + "\n" +
+                "- Extensions: " + detectedExtensions() + "\n\n" +
                 "## System Properties\n" +
-                "- OS: " + System.getProperty("os.name") + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")\n" +
+                "- OS: " + osInfo() + "\n" +
+                "- CPU: " + cpuInfo() + "\n" +
+                "- GPU: " + gpuInfo() + "\n" +
+                "- RAM (JVM max): " + rt.maxMemory() / 1024 / 1024 + " MB\n" +
+                "- RAM (system): " + systemRam() + "\n" +
                 "- Java: " + System.getProperty("java.version") + " (" + System.getProperty("java.vendor") + ")\n" +
                 "- Java Home: " + System.getProperty("java.home") + "\n" +
-                "- User Dir: " + System.getProperty("user.dir") + "\n" +
-                "- FFmpeg Loaded: " + FFMediaPlayer.loaded() + "\n";
+                "- FFmpeg Path: " + ffmpegPath() + "\n" +
+                "- FFmpeg Loaded: " + FFMediaPlayer.loaded() + "\n" +
+                "- User Dir: " + System.getProperty("user.dir") + "\n";
+    }
+
+    // ENVIRONMENT / DIAGNOSTICS HELPERS FOR THE ISSUE TEMPLATE
+
+    private static String binariesVersion() {
+        // BINARIES SHIP AS THEIR OWN ARTIFACT; READ ITS JAR MANIFEST Implementation-Version WHEN NOT SHADED.
+        try {
+            final Package pkg = WaterMediaBinaries.class.getPackage();
+            final String v = pkg == null ? null : pkg.getImplementationVersion();
+            if (v != null && !v.isBlank()) return v;
+        } catch (final Throwable ignored) {
+        }
+        return "unknown";
+    }
+
+    private static String ffmpegVersion() {
+        if (!FFMediaPlayer.loaded()) return "not loaded";
+        try {
+            return "avutil " + avVersion(avutil.avutil_version())
+                    + ", avcodec " + avVersion(avcodec.avcodec_version())
+                    + ", avformat " + avVersion(avformat.avformat_version());
+        } catch (final Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static String avVersion(final int packed) {
+        // FFMPEG PACKS LIBRARY VERSIONS AS (major << 16) | (minor << 8) | micro
+        return ((packed >> 16) & 0xFF) + "." + ((packed >> 8) & 0xFF) + "." + (packed & 0xFF);
+    }
+
+    private static String ffmpegHwAccel() {
+        // WATERMEDIA'S OWN IMAGE CODECS ARE PURE-JAVA (ALWAYS PRESENT), SO THE USEFUL, VARIABLE SIGNAL IS
+        // WHICH FFMPEG HARDWARE ACCELERATIONS THE PLATFORM BUILD/GPU EXPOSES (dxva2/d3d11va/cuda/qsv/vaapi...).
+        if (!FFMediaPlayer.loaded()) return "not loaded";
+        try {
+            final StringBuilder sb = new StringBuilder();
+            int type = avutil.AV_HWDEVICE_TYPE_NONE;
+            while ((type = avutil.av_hwdevice_iterate_types(type)) != avutil.AV_HWDEVICE_TYPE_NONE) {
+                final BytePointer name = avutil.av_hwdevice_get_type_name(type);
+                if (name == null) continue;
+                final String s = name.getString();
+                if (s != null && !s.isBlank()) {
+                    if (sb.length() > 0) sb.append(", ");
+                    sb.append(s);
+                }
+            }
+            return sb.length() == 0 ? "none" : sb.toString();
+        } catch (final Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static String ffmpegSoftwareCodecs() {
+        // SOFTWARE (NON-HW) DECODERS COMPILED INTO THIS BUILD. UNLIKE WATERMEDIA'S PURE-JAVA IMAGE CODECS,
+        // THIS SET CAN DIFFER BY OS/ARCH (e.g. AN EXTERNAL-LIB DECODER PRESENT ON x64 BUT NOT ARM), SO IT IS
+        // WORTH CAPTURING TO VALIDATE WHETHER A CODEC IS SIMPLY MISSING FROM THE PLATFORM BUILD.
+        if (!FFMediaPlayer.loaded()) return "not loaded";
+        try {
+            final TreeSet<String> names = new TreeSet<>();
+            try (final PointerPointer<Pointer> opaque = new PointerPointer<>(1L)) {
+                opaque.put(0L, (Pointer) null);
+                AVCodec c;
+                while ((c = avcodec.av_codec_iterate(opaque)) != null) {
+                    if (avcodec.av_codec_is_decoder(c) == 0) continue;
+                    final int type = c.type();
+                    if (type != avutil.AVMEDIA_TYPE_VIDEO && type != avutil.AVMEDIA_TYPE_AUDIO) continue;
+                    if ((c.capabilities() & avcodec.AV_CODEC_CAP_HARDWARE) != 0) continue;
+                    final BytePointer name = c.name();
+                    if (name == null) continue;
+                    final String s = name.getString();
+                    if (s != null && !s.isBlank()) names.add(s);
+                }
+            }
+            return names.isEmpty() ? "none" : String.join(", ", names);
+        } catch (final Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static String alertsSection() {
+        final List<String> alerts = new ArrayList<>();
+        final String nvidia = nvidiaThreadedOptimizationAlert();
+        if (nvidia != null) alerts.add(nvidia);
+        if (FFMediaPlayer.loadError()) {
+            alerts.add("FFmpeg failed to load — media playback is unavailable. See the attached logs for the native load error.");
+        }
+        if (alerts.isEmpty()) return "- None detected\n";
+        final StringBuilder sb = new StringBuilder();
+        for (final String a: alerts) sb.append("- ").append(a).append('\n');
+        return sb.toString();
+    }
+
+    private static String nvidiaThreadedOptimizationAlert() {
+        // "Threaded Optimization" IS AN OPENGL DRIVER SETTING KNOWN TO CRASH/STUTTER LWJGL APPS. THERE IS NO
+        // PURE-JAVA API TO READ IT (NVAPI IS NATIVE), SO WE INFER THE RUNTIME STATE FROM THE DEDICATED GL WORKER
+        // THREAD THE DRIVER SPAWNS INSIDE nvoglv64.dll WHEN IT IS ACTIVE. WINDOWS + OPENGL + NVIDIA ONLY.
+        try {
+            if (RenderSystem.engineKind() != RenderSystem.Engine.OPENGL) return null;
+            final String os = System.getProperty("os.name");
+            if (os == null || !os.toLowerCase(Locale.ROOT).contains("win")) return null;
+            final String gpu = RenderSystem.deviceName();
+            if (gpu == null || !gpu.toLowerCase(Locale.ROOT).contains("nvidia")) return null;
+
+            final long pid = ProcessHandle.current().pid();
+            final String out = runCommand(4000, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "$p=Get-Process -Id " + pid + "; $m=$p.Modules|?{$_.ModuleName -ieq 'nvoglv64.dll'}|select -First 1; "
+                            + "if($m){$b=[int64]$m.BaseAddress;$e=$b+$m.ModuleMemorySize;"
+                            + "($p.Threads|?{$a=[int64]$_.StartAddress;$a -ge $b -and $a -lt $e}).Count}else{'nomodule'}");
+            if (out == null) return null;
+            final int workers = parseIntOr(out.trim(), -1);
+            if (workers > 0) {
+                return "NVIDIA \"Threaded Optimization\" appears ENABLED (" + workers + " GL worker thread(s) inside nvoglv64.dll). "
+                        + "It is a known cause of OpenGL crashes/stutter with LWJGL — turn it Off in "
+                        + "NVIDIA Control Panel > Manage 3D Settings > Threaded Optimization.";
+            }
+        } catch (final Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String detectedExtensions() {
+        // ENUMERATE THE BOOTSTRAP EXTENSION SPI PROVIDERS BY CLASS — provider.type() DOES NOT INSTANTIATE THEM.
+        try {
+            final StringBuilder sb = new StringBuilder();
+            for (final var provider: ServiceLoader.load(AppBootstrap.Extension.class).stream().toList()) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(provider.type().getSimpleName());
+            }
+            return sb.length() == 0 ? "none" : sb.toString();
+        } catch (final Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static String osInfo() {
+        final String name = System.getProperty("os.name");
+        final String base = name + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")";
+        if (name != null && name.toLowerCase(Locale.ROOT).contains("win")) {
+            final String build = windowsBuild();
+            if (build != null) return base + " [Build " + build + "]";
+        }
+        return base;
+    }
+
+    private static String windowsBuild() {
+        // os.version ON WINDOWS IS ONLY "10.0" — THE REAL BUILD NUMBER COMES FROM "cmd /c ver".
+        // MATCH THE DOTTED VERSION ITSELF, NOT THE WORD "Version" (cmd IS LOCALIZED, e.g. "Versión").
+        final String out = runCommand(2500, "cmd", "/c", "ver");
+        if (out == null) return null;
+        final var m = Pattern.compile("(\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)").matcher(out);
+        return m.find() ? m.group(1) : null;
+    }
+
+    private static String cpuInfo() {
+        // COMMERCIAL NAME (e.g. "AMD Ryzen 7 2700X") THEN THE RAW IDENTIFIER IN PARENTHESES, THEN CORE/THREAD COUNTS.
+        final int logical = Runtime.getRuntime().availableProcessors();
+        final String identifier = firstNonBlank(System.getenv("PROCESSOR_IDENTIFIER"), System.getProperty("os.arch"), "unknown").trim();
+        String name = null;
+        int cores = -1;
+        int threads = logical;
+
+        final String os = System.getProperty("os.name");
+        if (os != null && os.toLowerCase(Locale.ROOT).contains("win")) {
+            final String[] cpu = queryWindowsCpu();
+            if (cpu != null) {
+                if (!cpu[0].isBlank()) name = cleanCpuName(cpu[0]);
+                cores = parseIntOr(cpu[1], -1);
+                threads = parseIntOr(cpu[2], logical);
+            }
+        }
+
+        final String counts = cores > 0 ? cores + " cores / " + threads + " threads" : threads + " threads";
+        return (name != null && !name.isBlank() ? name + " (" + identifier + ")" : identifier) + " - " + counts;
+    }
+
+    private static String cleanCpuName(String name) {
+        // STRIP MARKETING FLUFF: "AMD Ryzen 7 2700X Eight-Core Processor" -> "AMD Ryzen 7 2700X",
+        // "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz" -> "Intel Xeon E5-2680 v4".
+        name = name.replaceAll("\\((?:R|r|TM|tm)\\)", "");   // (R) / (TM) MARKS
+        name = name.replaceAll("(?i)\\s*@.*$", "");          // "@ 3.60GHz" CLOCK TAIL
+        name = name.replaceAll("(?i)\\s+\\w+-Core Processor\\b", ""); // "Eight-Core Processor" / "16-Core Processor"
+        name = name.replaceAll("(?i)\\bCPU\\b", "");         // STANDALONE "CPU" TOKEN (INTEL PUTS IT BEFORE THE MODEL)
+        name = name.replaceAll("(?i)\\s+Processor\\b", "");  // TRAILING "Processor"
+        return name.replaceAll("\\s+", " ").trim();
+    }
+
+    private static String[] queryWindowsCpu() {
+        // {commercialName, physicalCores, logicalThreads} FROM Win32_Processor, OR null ON FAILURE.
+        final String out = runCommand(4000, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "$p=@(Get-CimInstance Win32_Processor)[0]; '{0}|{1}|{2}' -f $p.Name,$p.NumberOfCores,$p.NumberOfLogicalProcessors");
+        if (out == null) return null;
+        for (final String raw: out.split("\\R")) {
+            final String[] parts = raw.trim().split("\\|", -1);
+            if (parts.length >= 3 && !parts[0].isBlank()) {
+                return new String[]{parts[0].trim(), parts[1].trim(), parts[2].trim()};
+            }
+        }
+        return null;
+    }
+
+    private static String runCommand(final long timeoutMs, final String... command) {
+        Process p = null;
+        try {
+            p = new ProcessBuilder(command).redirectErrorStream(true).start();
+            if (!p.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                p.destroyForcibly();
+                return null;
+            }
+            try (final InputStream in = p.getInputStream()) {
+                return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        } catch (final Throwable t) {
+            if (p != null) p.destroyForcibly();
+            return null;
+        }
+    }
+
+    private static String firstNonBlank(final String... values) {
+        for (final String v: values) if (v != null && !v.isBlank()) return v;
+        return "";
+    }
+
+    private static int parseIntOr(final String s, final int fallback) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (final Exception e) {
+            return fallback;
+        }
+    }
+
+    private static String gpuInfo() {
+        try {
+            final String gpu = RenderSystem.deviceName();
+            return gpu != null && !gpu.isBlank() ? gpu : "unknown";
+        } catch (final Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static String systemRam() {
+        try {
+            final java.lang.management.OperatingSystemMXBean bean = java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+            if (bean instanceof com.sun.management.OperatingSystemMXBean sun) {
+                return sun.getTotalMemorySize() / 1024 / 1024 + " MB";
+            }
+        } catch (final Throwable ignored) {
+        }
+        return "unknown";
+    }
+
+    private static String ffmpegPath() {
+        try {
+            final Path p = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
+            return p != null ? p.toAbsolutePath().toString() : "N/A";
+        } catch (final Throwable t) {
+            return "N/A";
+        }
     }
 
     // CLEANUP

@@ -73,4 +73,20 @@ public interface RenderBackend {
     default void bindMediaTexture(final long handle) {
         this.bindTexture((int) handle);
     }
+
+    /**
+     * Human-readable name of the GPU/renderer this backend runs on ({@code GL_RENDERER} for OpenGL,
+     * the physical device name for Vulkan). Captured at init so it is safe to read from any thread.
+     */
+    default String deviceName() {
+        return "Unknown";
+    }
+
+    /**
+     * Highest API version this backend runs at as {@code "major.minor"} (the GL context version for
+     * OpenGL, the physical device's supported Vulkan API version). Captured at init; empty if unknown.
+     */
+    default String deviceVersion() {
+        return "";
+    }
 }

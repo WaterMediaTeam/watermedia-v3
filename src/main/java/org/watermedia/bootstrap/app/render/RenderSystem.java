@@ -104,6 +104,16 @@ public final class RenderSystem {
     /** Whether a Vulkan loader is present (the engine is active, or Vulkan is selectable on this machine). */
     public static boolean vulkanAvailable() { return kind == Engine.VULKAN || glfwVulkanSupported(); }
 
+    /** Name of the active GPU/renderer, captured at engine init (safe to read off the render thread). */
+    public static String deviceName() { return engine != null ? engine.deviceName() : "Unknown"; }
+
+    /** Short active-engine label with its max API version, e.g. {@code "GL 4.6"} or {@code "VK 1.3"}. */
+    public static String engineVersionLabel() {
+        final String prefix = kind == Engine.VULKAN ? "VK" : "GL";
+        final String v = engine != null ? engine.deviceVersion() : "";
+        return v == null || v.isBlank() ? prefix : prefix + " " + v;
+    }
+
     /** Builds the media graphics engine ({@code GLEngine}/{@code VKEngine}) for the active backend. */
     public static Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
         return engine.mediaEngineSupplier(renderThread, renderExecutor);

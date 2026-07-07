@@ -102,6 +102,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private VkInstance instance;
     private long surface;
     private VkPhysicalDevice physicalDevice;
+    private String deviceName = "Unknown";
+    private String deviceVersion = "";
     private VkDevice device;
     private VkQueue queue;
     private int queueFamily;
@@ -310,6 +312,11 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             // CAN CONVERT MULTIPLANAR YUV IN SAMPLER HARDWARE INSTEAD OF ITS ARITHMETIC COMPUTE SHADER.
             final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
             vkGetPhysicalDeviceProperties(this.physicalDevice, props);
+            // CAPTURE THE GPU NAME + MAX API VERSION ONCE FOR DIAGNOSTICS (SAFE TO READ OFF-THREAD AFTERWARDS)
+            final String name = props.deviceNameString();
+            if (name != null && !name.isBlank()) this.deviceName = name;
+            final int api = props.apiVersion();
+            this.deviceVersion = ((api >>> 22) & 0x7F) + "." + ((api >>> 12) & 0x3FF);
             if (props.apiVersion() >= VK_API_VERSION_1_1) {
                 final VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr =
                         VkPhysicalDeviceSamplerYcbcrConversionFeatures.calloc(stack).sType$Default();
@@ -1365,6 +1372,16 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public VkPhysicalDevice physicalDevice() {
         return this.physicalDevice;
+    }
+
+    @Override
+    public String deviceName() {
+        return this.deviceName;
+    }
+
+    @Override
+    public String deviceVersion() {
+        return this.deviceVersion;
     }
 
     @Override

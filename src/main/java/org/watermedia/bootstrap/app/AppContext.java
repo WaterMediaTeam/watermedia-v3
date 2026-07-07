@@ -11,6 +11,7 @@ import java.io.File;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -28,6 +29,15 @@ public final class AppContext implements Executor {
     public static final Gson GSON = new Gson();
     public static final DateFormat TIME_FORMAT = new SimpleDateFormat("HH:mm:ss");
     public static final boolean IN_MODS = new File("").getAbsoluteFile().getName().equalsIgnoreCase("mods");
+
+    // KNOWN MODS THAT BUILD ON WATERMEDIA — CANDIDATES FOR THE STAGE-3 "SUSPECTED MODS" LIST. THE SIMPLE
+    // NAME IS THE MOD ID; A CANDIDATE IS ONLY SHOWN WHEN A JAR WHOSE FILENAME CONTAINS THAT ID IS PRESENT.
+    public static final List<SuspectMod> SUSPECT_MODS = List.of(
+            new SuspectMod("fancymenu", "FancyMenu", "Keksuccino/FancyMenu", "https://github.com/Keksuccino/FancyMenu/issues/new"),
+            new SuspectMod("waterframes", "WaterFrames", "SrRapero720/waterframes", "https://github.com/SrRapero720/waterframes/issues/new"),
+            new SuspectMod("watervision", "WaterVision", "SrRapero720/watervision", "https://github.com/SrRapero720/watervision/issues/new"),
+            new SuspectMod("littleframes", "LittleFrames", "CreativeMD/littleframes", "https://github.com/CreativeMD/littleframes/issues/new")
+    );
 
     public static final int PADDING = 20;
     public static final int MENU_WIDTH = 500;
@@ -110,6 +120,8 @@ public final class AppContext implements Executor {
     public int soundSource = -1;
     public boolean audioReady;
     public boolean audioError;
+    // AUDIO BACKEND CHOSEN FOR THE NEXT CREATED PLAYER (SETTINGS SCREEN) — NOT A FALLBACK
+    public AudioEngine audioEngine = AudioEngine.OPENAL;
 
     public String customUrlText = "";
 
@@ -124,7 +136,11 @@ public final class AppContext implements Executor {
     public volatile int uploadDialogStage = 1;
     public volatile String uploadDialogStatus = "READY";
     public volatile String uploadIssueUrl = "github.com/watermedia/issues/new";
+    // REPOSITORY THE STAGE-3 SUBMIT ACTION WILL OPEN (WATERMEDIA BY DEFAULT, OR A SUSPECTED MOD)
+    public volatile String uploadRepoUrl;
     public final List<UploadFileEntry> uploadDialogFiles = new CopyOnWriteArrayList<>();
+    // IDS OF SUSPECT_MODS WHOSE JAR WAS FOUND IN THE MODS FOLDER (POPULATED DURING THE UPLOAD SCAN)
+    public final Set<String> suspectModIds = ConcurrentHashMap.newKeySet();
 
     // CLEANUP CACHE DIALOG STATE
     public volatile boolean cleanupDialogVisible;
@@ -150,6 +166,9 @@ public final class AppContext implements Executor {
     }
 
     public record IptvCatalog(String generatedAt, IptvChannel[] channels) {
+    }
+
+    public record SuspectMod(String id, String name, String slug, String url) {
     }
 
     public record IptvChannel(String name, String url, String logo, String region,

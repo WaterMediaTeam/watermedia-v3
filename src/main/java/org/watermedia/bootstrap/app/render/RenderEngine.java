@@ -137,6 +137,14 @@ public final class RenderEngine {
         return this.backend.mediaEngineSupplier(renderThread, renderExecutor);
     }
 
+    public String deviceName() {
+        return this.backend.deviceName();
+    }
+
+    public String deviceVersion() {
+        return this.backend.deviceVersion();
+    }
+
     public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
         this.flush();
         this.backend.enableClip(x, y, width, height, canvasHeight);

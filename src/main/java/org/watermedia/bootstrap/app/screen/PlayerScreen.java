@@ -2,7 +2,6 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.MediaQuality;
@@ -111,7 +110,9 @@ public class PlayerScreen extends Screen {
                 this.ctx.selectedMRL,
                 this.ctx.sourceSelectorIndex,
                 // THE ACTIVE RENDER BACKEND DECIDES THE ENGINE (GLEngine / VKEngine) — THE SCREEN STAYS AGNOSTIC
-                RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), ALEngine::buildDefault
+                RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx),
+                // AUDIO BACKEND PICKED BY THE USER IN SETTINGS (OpenAL / Java Sound), RESOLVED AT CREATION
+                this.ctx.audioEngine.supplier()
         );
 
         if (this.ctx.player == null) {

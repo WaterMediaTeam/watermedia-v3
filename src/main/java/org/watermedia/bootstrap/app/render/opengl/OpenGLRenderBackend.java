@@ -20,9 +20,7 @@ import java.nio.FloatBuffer;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
-import static org.lwjgl.glfw.GLFW.glfwMakeContextCurrent;
-import static org.lwjgl.glfw.GLFW.glfwSwapBuffers;
-import static org.lwjgl.glfw.GLFW.glfwSwapInterval;
+import static org.lwjgl.glfw.GLFW.*;
 
 /**
  * OpenGL 3.2 core implementation for the app render backend.
@@ -68,6 +66,10 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private FloatBuffer uploadBuffer;
     private FloatBuffer projectionBuffer;
     private boolean initialized;
+    private String deviceName = "Unknown";
+    private String deviceVersion = "";
+    private int glVerMajor;
+    private int glVerMinor;
 
     public OpenGLRenderBackend(final long window) {
         this.window = window;
@@ -78,12 +80,50 @@ public final class OpenGLRenderBackend implements RenderBackend {
      * before {@link #init()} (which compiles shaders). Also silences the debug context output.
      */
     public void attachContext() {
+        // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (e.g. NVIDIA) REPORT VERBATIM RATHER
+        // THAN THE GPU MAX. PROBE THE DRIVER'S HIGHEST VERSION VIA A THROWAWAY DEFAULT-HINTS CONTEXT FIRST,
+        // FULLY TORN DOWN BEFORE THE REAL CONTEXT IS MADE CURRENT. captureInfo() KEEPS THE HIGHER VERSION.
+        try {
+            glfwDefaultWindowHints();
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            final long probe = glfwCreateWindow(1, 1, "wm-gl-probe", 0L, 0L);
+            if (probe != 0L) {
+                glfwMakeContextCurrent(probe);
+                GL.createCapabilities();
+                this.captureInfo();
+                glfwMakeContextCurrent(0L);
+                glfwDestroyWindow(probe);
+            }
+        } catch (final Throwable ignored) {
+        }
+
         glfwMakeContextCurrent(this.window);
         glfwSwapInterval(1);
         GL.createCapabilities();
+        // FALLBACK / GPU NAME FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
+        this.captureInfo();
         // SILENCE THE GL DEBUG CONTEXT REQUESTED VIA GLFW_OPENGL_DEBUG_CONTEXT (EMPTY CALLBACK)
         ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
         }, 0);
+    }
+
+    // READS GL_RENDERER + THE CURRENT CONTEXT VERSION; KEEPS THE HIGHEST VERSION SEEN ACROSS CONTEXTS.
+    private void captureInfo() {
+        try {
+            final String renderer = GL11.glGetString(GL11.GL_RENDERER);
+            if (renderer != null && !renderer.isBlank()) this.deviceName = renderer;
+        } catch (final Throwable ignored) {
+        }
+        try {
+            final int major = GL11.glGetInteger(GL30.GL_MAJOR_VERSION);
+            final int minor = GL11.glGetInteger(GL30.GL_MINOR_VERSION);
+            if (major > 0 && (major > this.glVerMajor || (major == this.glVerMajor && minor > this.glVerMinor))) {
+                this.glVerMajor = major;
+                this.glVerMinor = minor;
+                this.deviceVersion = major + "." + minor;
+            }
+        } catch (final Throwable ignored) {
+        }
     }
 
     @Override
@@ -94,6 +134,16 @@ public final class OpenGLRenderBackend implements RenderBackend {
     @Override
     public void present() {
         glfwSwapBuffers(this.window);
+    }
+
+    @Override
+    public String deviceName() {
+        return this.deviceName;
+    }
+
+    @Override
+    public String deviceVersion() {
+        return this.deviceVersion;
     }
 
     @Override
