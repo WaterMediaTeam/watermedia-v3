@@ -8,6 +8,7 @@ import me.srrapero720.waterconfig.api.IConfigField;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.AudioEngine;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
@@ -112,6 +113,12 @@ public final class SettingsScreen extends Screen {
                 () -> this.ctx.selectionSoundEnabled,
                 value -> this.ctx.selectionSoundEnabled = value,
                 true));
+        general.settings.add(new RuntimeEnumSetting<>("Audio engine", "app.general.audioEngine", "ENUM",
+                "Audio backend used when opening a player: OpenAL or the native Java Sound engine. Applies to the next media you open.",
+                AudioEngine.values(),
+                () -> this.ctx.audioEngine,
+                value -> this.ctx.audioEngine = value,
+                AudioEngine.OPENAL));
         general.settings.add(new ReadOnlySetting("Audio device", "app.general.audioDevice", "STATE",
                 "OpenAL output used by the bootstrap shell.",
                 () -> this.ctx.audioError ? "ERROR" : this.ctx.audioReady ? "READY" : "OFFLINE"));
@@ -1343,6 +1350,89 @@ public final class SettingsScreen extends Screen {
         @Override
         Color accent() {
             return this.getter.get() ? AppTheme.CYAN : AppTheme.TEXT_FAINT;
+        }
+    }
+
+    // RUNTIME ENUM SELECTOR (LIST_SPINNER) BACKED BY A getter/setter — THE ENUM ANALOGUE OF
+    // RuntimeSetting. CYCLES THROUGH THE CONSTANTS WITH LEFT/RIGHT OR A CLICK ON EITHER HALF.
+    private static final class RuntimeEnumSetting<E extends Enum<E>> extends Setting {
+        private final E[] options;
+        private final Supplier<E> getter;
+        private final Consumer<E> setter;
+        private final E defaultValue;
+
+        private RuntimeEnumSetting(final String label, final String key, final String type, final String note,
+                                   final E[] options, final Supplier<E> getter, final Consumer<E> setter, final E defaultValue) {
+            super(label, key, type, note, true);
+            this.options = options;
+            this.getter = getter;
+            this.setter = setter;
+            this.defaultValue = defaultValue;
+        }
+
+        @Override
+        String valueLabel() {
+            return this.getter.get().name();
+        }
+
+        @Override
+        boolean isEnumControl() {
+            return true;
+        }
+
+        @Override
+        Control control() {
+            return Control.LIST_SPINNER;
+        }
+
+        @Override
+        List<String> optionLabels() {
+            final List<String> labels = new ArrayList<>(this.options.length);
+            for (final E option: this.options) labels.add(option.name());
+            return labels;
+        }
+
+        @Override
+        int selectedOptionIndex() {
+            final E current = this.getter.get();
+            for (int i = 0; i < this.options.length; i++) if (this.options[i] == current) return i;
+            return 0;
+        }
+
+        @Override
+        boolean selectOption(final int index) {
+            if (index < 0 || index >= this.options.length) return false;
+            this.setter.accept(this.options[index]);
+            return true;
+        }
+
+        @Override
+        String widestValueLabel() {
+            String widest = this.valueLabel();
+            for (final E option: this.options) if (option.name().length() > widest.length()) widest = option.name();
+            return widest;
+        }
+
+        @Override
+        boolean adjust(final int direction, final int step) {
+            final int next = Math.floorMod(this.selectedOptionIndex() + direction, this.options.length);
+            this.setter.accept(this.options[next]);
+            return true;
+        }
+
+        @Override
+        boolean click(final Dimension control, final double mx) {
+            return this.adjust(mx < control.x() + control.width() / 2d ? -1 : 1, 1);
+        }
+
+        @Override
+        void reset() {
+            this.setter.accept(this.defaultValue);
+        }
+
+        @Override
+        Color accent() {
+            return AppTheme.CYAN;
         }
     }
 
