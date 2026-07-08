@@ -13,6 +13,9 @@ import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.view.Button;
+import org.watermedia.bootstrap.app.view.IconButton;
+import org.watermedia.bootstrap.app.view.View;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,7 +32,7 @@ import static org.lwjgl.glfw.GLFW.*;
 /**
  * Screen for media playback with overlay and dialogs.
  */
-public class PlayerScreen extends Screen {
+public class PlayerScreen extends ViewScreen {
 
     private enum DialogState {NONE, QUALITY, VIDEO}
 
@@ -40,6 +43,8 @@ public class PlayerScreen extends Screen {
     private static final float[] SPEED_VALUES = {0.25f, 0.50f, 0.75f, 1.0f, 1.25f, 1.50f, 1.75f, 2.0f, 2.5f, 3.0f, 4.0f};
     private static final String[] SPEED_LABELS = {"0.25x", "0.50x", "0.75x", "1.0x", "1.25x", "1.50x", "1.75x", "2.0x", "2.5x", "3.0x", "4.0x"};
     private static final int RES_FIELD_MAX_DIGITS = 5;
+    // HOISTED FORMATTER: REBUILDING IT PER FRAME (UP TO TWICE) WAS PURE OVERHEAD
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(ZoneId.systemDefault());
 
     private final Consumer<HomeScreen.Action> navigator;
 
@@ -47,6 +52,9 @@ public class PlayerScreen extends Screen {
     private int qualitySelectedIndex = 0;
     private int sourceSelectedIndex = 0;
     private int sourceScrollOffset = 0;
+    // TRACKS THE LAST SELECTION WE AUTO-SCROLLED INTO VIEW; -1 FORCES A FOLLOW ON FIRST RENDER.
+    // THE KEEP-VISIBLE CLAMP RUNS ONLY WHEN THE SELECTION CHANGES SO FREE WHEEL/SCROLLBAR SCROLLING SURVIVES.
+    private int sourceFollowedIndex = -1;
     private int sourceVisibleRows = 0;
     private int debugPanelWidth = 250;
     private boolean debugOpen = true;
@@ -58,6 +66,10 @@ public class PlayerScreen extends Screen {
     private String resHeightText = "";
     private int videoFocusField; // 0 NONE, 1 WIDTH, 2 HEIGHT
     private int lodSelectedIndex;
+    // ACTIVE HUD DRAG TARGET: 0 NONE, 1 SEEK BAR, 2 VOLUME BAR. THE BARS ARE DRAWN IN renderChrome; A PRESS
+    // CAPTURES ONE, EVERY MOVE SCRUBS IT, AND RELEASE ENDS THE DRAG THEN SWALLOWS THE TRAILING CLICK (dragEnded).
+    private int dragBar;
+    private boolean dragEnded;
 
     // CACHED BOUNDS FOR QUALITY DIALOG ITEMS
     private Dimension qualityDialogBounds = Dimension.ZERO;
@@ -81,6 +93,7 @@ public class PlayerScreen extends Screen {
 
     @Override
     public void onEnter() {
+        super.onEnter(); // ENSURES THE (EMPTY) CONTENT TREE IS BUILT
         this.dialogState = DialogState.NONE;
         this.debugOpen = true;
         this.endedSoundPlayed = false;
@@ -91,7 +104,17 @@ public class PlayerScreen extends Screen {
         this.resHeightText = "";
         this.videoFocusField = 0;
         this.lodSelectedIndex = 0;
+        this.dragBar = 0;
+        this.dragEnded = false;
         this.startPlayer();
+    }
+
+    // NO CONTENT TREE: THE ENTIRE PLAYER SURFACE (VIDEO BLIT, HUD, TRANSPORT/SEEK/VOLUME BARS, DIALOGS) IS
+    // PIXEL-EXACT IMPERATIVE DRAW IN renderChrome + THE OVERLAY PASS, AND SEEK/VOLUME DRAG IS BRIDGED IN THE
+    // handleMousePress/Move/Release OVERRIDES. THE STOCK SeekBar LOOK DOES NOT MATCH THE HUD BARS, SO NONE IS HOSTED.
+    @Override
+    protected View<?> build() {
+        return null;
     }
 
     @Override
@@ -132,9 +155,11 @@ public class PlayerScreen extends Screen {
 
     @Override
     public boolean wantsContinuousRender() {
+        // super = A FOCUSED RESOLUTION FIELD (CARET BLINK); PLUS THE PLAYER-ACTIVE TRIGGER (VIDEO NEEDS FRAMES)
         final MediaPlayer player = this.ctx.player;
-        return player != null && !player.error() && !player.stopped()
-                && (!player.ended() || !this.endedSoundPlayed);
+        return super.wantsContinuousRender()
+                || (player != null && !player.error() && !player.stopped()
+                    && (!player.ended() || !this.endedSoundPlayed));
     }
 
     @Override
@@ -153,15 +178,20 @@ public class PlayerScreen extends Screen {
             }
         }
 
-        // RENDER VIDEO
-        this.renderVideo(windowW, windowH);
-        this.renderOverlay(windowW, windowH);
+        // renderChrome() BLITS THE VIDEO AND PAINTS THE HUD; THE EMPTY CONTENT TREE IS A NO-OP
+        super.render(windowW, windowH);
 
         // RENDER ACTIVE DIALOG ON TOP
         switch (this.dialogState) {
             case QUALITY -> this.renderQualityDialog(windowW, windowH);
             case VIDEO -> this.renderVideoDialog(windowW, windowH);
         }
+    }
+
+    @Override
+    protected void renderChrome(final int windowW, final int windowH) {
+        this.renderVideo(windowW, windowH);
+        this.renderOverlay(windowW, windowH);
     }
 
     private void renderVideo(final int windowW, final int windowH) {
@@ -229,7 +259,16 @@ public class PlayerScreen extends Screen {
 
     private void renderOverlay(final int windowW, final int windowH) {
         final MediaPlayer player = this.ctx.player;
-        if (player == null || player.error()) return;
+        if (player == null || player.error()) {
+            // A FAILED/ABSENT PLAYER OTHERWISE SHOWS ONLY A BLACK SCREEN — STILL DRAW AND ROUTE BACK SO THE
+            // MOUSE CAN ALWAYS LEAVE IT. PLACING topBackBounds AT ITS CONSTANT SPOT ALSO FIXES THE IMMEDIATE-
+            // ERROR CASE, WHERE NO PRIOR OVERLAY FRAME HAD SET IT AND BACK WAS UNCLICKABLE AT ZERO (M-13).
+            RenderSystem.setupOrtho(windowW, windowH);
+            RenderSystem.disableDepthTest();
+            this.topBackBounds = new Dimension(16, AppChrome.TITLEBAR_H + 24, 76, 34);
+            this.renderHudButton("BACK", this.topBackBounds, AppTheme.TEXT_SOFT, "arrow-left");
+            return;
+        }
 
         RenderSystem.setupOrtho(windowW, windowH);
         RenderSystem.disableDepthTest();
@@ -424,10 +463,18 @@ public class PlayerScreen extends Screen {
     }
 
     private int fitPrefix(final String value, final int maxPixelWidth, final float scale) {
-        int lastFit = 1;
-        for (int i = 1; i <= value.length(); i++) {
-            if (this.text.width(value.substring(0, i), scale) > maxPixelWidth) break;
-            lastFit = i;
+        // width() IS MONOTONIC NON-DECREASING IN PREFIX LENGTH (PER-GLYPH ADVANCE >= 1, TRACKING >= 0), SO
+        // BINARY-SEARCH THE LONGEST FITTING PREFIX INSTEAD OF RE-MEASURING EVERY GROWING SUBSTRING (WAS
+        // O(n^2) EACH FRAME). RESULT IS PIXEL-IDENTICAL TO THE LINEAR SCAN; ALWAYS CONSUME >= 1 CHAR SO wrap() CANNOT STALL.
+        int lo = 1, hi = value.length(), lastFit = 1;
+        while (lo <= hi) {
+            final int mid = (lo + hi) >>> 1;
+            if (this.text.width(value.substring(0, mid), scale) > maxPixelWidth) {
+                hi = mid - 1;
+            } else {
+                lastFit = mid;
+                lo = mid + 1;
+            }
         }
         return lastFit;
     }
@@ -447,9 +494,7 @@ public class PlayerScreen extends Screen {
     }
 
     private String formatDate(final Metadata meta) {
-        return DateTimeFormatter.ofPattern("dd/MM/yyyy")
-                .withZone(ZoneId.systemDefault())
-                .format(meta.postedAt());
+        return DATE_FORMAT.format(meta.postedAt());
     }
 
     private MediaType currentMediaType() {
@@ -577,14 +622,9 @@ public class PlayerScreen extends Screen {
 
     private void renderHudButton(final String label, final Dimension bounds, final java.awt.Color color, final String icon) {
         final boolean hover = bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 84) : AppTheme.alpha(AppTheme.BG_1, 192));
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 2f);
-        RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, 0.18f);
-        PixelIcon.draw(icon, bounds.x() + 10, bounds.y() + 10, 13, color);
-        this.text.renderBold(label, bounds.x() + 30,
-                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
-                color, AppTheme.TEXT_BUTTON);
+        // NO HOTKEY CHIP, ALWAYS ENABLED — color IS BOTH ACCENT AND LABEL COLOR
+        Button.render(this.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                label, "", icon, 12, color, color, false, hover, true);
     }
 
     private void renderHudLabel(final String label, final Dimension bounds, final java.awt.Color color, final String icon) {
@@ -603,31 +643,14 @@ public class PlayerScreen extends Screen {
         final Dimension bounds = new Dimension(x, y, w, h);
         this.transportButtons.put(id, bounds);
         final boolean hover = bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        RenderSystem.fill(x, y, w, h, hover ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.alpha(AppTheme.BG_2, 212));
-        RenderSystem.rect(x, y, w, h, color, 2f);
-        RenderSystem.glowRect(x, y, w, h, 0f, color, 0.14f);
         final String icon = this.transportIcon(id, label);
-        int textX = x + 8;
-        if (icon != null) {
-            PixelIcon.draw(icon, label.isEmpty() ? x + (w - 14) / 2 : x + 8, y + 8, 14, color);
-            textX = x + 28;
-        }
-        if (!label.isEmpty()) {
-            final String badge = "quality".equals(id) || "lod".equals(id) ? this.maxSizeLabel() : null;
-            final int badgeW = badge == null ? 0 : this.text.width(badge, AppTheme.TEXT_SUBTITLE) + 14;
-            final int maxLabelW = w - (textX - x) - 8 - (badgeW == 0 ? 0 : badgeW + 8);
-            this.text.renderBold(this.text.truncateToWidth(label, maxLabelW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
-                    textX, y + Math.max(0, (h - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f), color, AppTheme.TEXT_BUTTON);
-            if (badge != null) {
-                final int badgeH = 20;
-                final int badgeX = x + w - badgeW - 7;
-                final int badgeY = y + (h - badgeH) / 2;
-                RenderSystem.fill(badgeX, badgeY, badgeW, badgeH, AppTheme.alpha(AppTheme.BG_1, 190));
-                RenderSystem.rect(badgeX, badgeY, badgeW, badgeH, AppTheme.STROKE_BRIGHT, 1f);
-                this.text.render(badge, badgeX + 7,
-                        badgeY + Math.max(0, (badgeH - this.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f),
-                        AppTheme.CYAN, AppTheme.TEXT_SUBTITLE);
-            }
+        if (label.isEmpty()) {
+            // ICON-ONLY TRANSPORT KEY (PREV/REWIND/STOP/PLAY/FORWARD/NEXT): CENTERED ICON, SHARED BUTTON BOX
+            IconButton.render(x, y, w, h, icon == null ? "" : icon, 14, color, color, false, hover, true);
+        } else {
+            // LABELED CONTROL (DEBUG/QUALITY/LOD/LOOP/SPEED): ICON + LABEL, MAX-SIZE VALUE AS A CYAN RIGHT CHIP
+            final String badge = "quality".equals(id) || "lod".equals(id) ? this.maxSizeLabel() : "";
+            Button.render(this.text, x, y, w, h, label, badge, icon == null ? "" : icon, 12, color, color, AppTheme.CYAN, false, hover, true);
         }
         return bounds.right();
     }
@@ -727,9 +750,14 @@ public class PlayerScreen extends Screen {
         final int sourceH = dialogH - 90;
         final int sourceRowH = 58;
         this.sourceVisibleRows = Math.max(1, sourceH / sourceRowH);
-        if (this.sourceSelectedIndex < this.sourceScrollOffset) this.sourceScrollOffset = this.sourceSelectedIndex;
-        if (this.sourceSelectedIndex >= this.sourceScrollOffset + this.sourceVisibleRows) {
-            this.sourceScrollOffset = this.sourceSelectedIndex - this.sourceVisibleRows + 1;
+        // FOLLOW THE SELECTION INTO VIEW ONLY WHEN IT ACTUALLY CHANGED, SO WHEEL/SCROLLBAR OFFSETS ARE NOT
+        // STOLEN BACK ON THE NEXT FRAME WHEN THE USER FREELY SCROLLS WITHOUT MOVING THE SELECTION
+        if (this.sourceSelectedIndex != this.sourceFollowedIndex) {
+            if (this.sourceSelectedIndex < this.sourceScrollOffset) this.sourceScrollOffset = this.sourceSelectedIndex;
+            if (this.sourceSelectedIndex >= this.sourceScrollOffset + this.sourceVisibleRows) {
+                this.sourceScrollOffset = this.sourceSelectedIndex - this.sourceVisibleRows + 1;
+            }
+            this.sourceFollowedIndex = this.sourceSelectedIndex;
         }
         this.sourceScrollOffset = Math.max(0, Math.min(Math.max(0, sourceCount - this.sourceVisibleRows), this.sourceScrollOffset));
         this.sourceRowBounds.clear();
@@ -1005,6 +1033,11 @@ public class PlayerScreen extends Screen {
     }
 
     @Override
+    public boolean textInputFocused() {
+        return this.dialogState == DialogState.VIDEO && this.videoFocusField != 0;
+    }
+
+    @Override
     public void handleChar(final int codepoint) {
         if (this.dialogState != DialogState.VIDEO || this.videoFocusField == 0 || this.ctx.ctrlDown) return;
         if (codepoint < '0' || codepoint > '9') return;
@@ -1183,7 +1216,36 @@ public class PlayerScreen extends Screen {
     }
 
     @Override
+    public void handleMousePress(final double mx, final double my) {
+        // CAPTURE THE SEEK/VOLUME BAR UNDER THE PRESS AND SNAP TO IT, LIKE THE SeekBar VIEW'S onPress. THE PRESS
+        // ALSO CHIMES ONCE (MATCHING THE LEGACY CLICK); DRAG MOVES STAY SILENT.
+        if (this.dialogState != DialogState.NONE) return;
+        // AN OPEN SPEED SPINNER OVERLAPS THE SEEK BAR — LET THE CLICK PATH CONSUME IT (SELECT/DISMISS), LIKE LEGACY
+        if (this.speedSpinnerOpen) return;
+        final MediaPlayer player = this.ctx.player;
+        if (player == null || player.error()) return;
+        if (this.seekBounds.contains(mx, my) && player.duration() > 0) {
+            this.dragBar = 1;
+            this.applySeek(player, mx);
+            this.ctx.playSelectionSound();
+        } else if (this.volumeBounds.contains(mx, my)) {
+            this.dragBar = 2;
+            this.applyVolume(player, mx);
+            this.ctx.playSelectionSound();
+        }
+    }
+
+    @Override
     public void handleMouseMove(final double mx, final double my) {
+        // WHILE A BAR IS CAPTURED, EVERY MOVE SCRUBS IT (THE CURSOR CALLBACK ALREADY REQUESTS A REPAINT)
+        if (this.dragBar != 0) {
+            final MediaPlayer player = this.ctx.player;
+            if (player != null && !player.error()) {
+                if (this.dragBar == 1) this.applySeek(player, mx);
+                else this.applyVolume(player, mx);
+            }
+            return;
+        }
         switch (this.dialogState) {
             case QUALITY -> this.handleQualityHover(mx, my);
             // VIDEO ROWS COMPUTE HOVER DIRECTLY FROM ctx.mouse DURING RENDER
@@ -1193,7 +1255,18 @@ public class PlayerScreen extends Screen {
     }
 
     @Override
+    public void handleMouseRelease(final double mx, final double my) {
+        // END THE DRAG AND FLAG THE TRAILING CLICK FOR SUPPRESSION SO A SCRUB NEVER ALSO FIRES THE HUD CLICK LOGIC
+        this.dragEnded = this.dragBar != 0;
+        this.dragBar = 0;
+    }
+
+    @Override
     public void handleMouseClick(final double mx, final double my) {
+        if (this.dragEnded) {
+            this.dragEnded = false;
+            return;
+        }
         switch (this.dialogState) {
             case QUALITY -> this.handleQualityClick(mx, my);
             case VIDEO -> this.handleVideoClick(mx, my);
@@ -1201,8 +1274,26 @@ public class PlayerScreen extends Screen {
         }
     }
 
+    // MAPS A CURSOR X ON THE SEEK BAR TO A TIMESTAMP AND SEEKS THERE (SHARED BY THE PRESS AND DRAG PATHS)
+    private void applySeek(final MediaPlayer player, final double mx) {
+        final float ratio = (float) Math.max(0, Math.min(1, (mx - this.seekBounds.x()) / Math.max(1, this.seekBounds.width())));
+        player.seek((long) (player.duration() * ratio));
+    }
+
+    // MAPS A CURSOR X ON THE VOLUME BAR TO A 0..100 LEVEL (SHARED BY THE PRESS AND DRAG PATHS)
+    private void applyVolume(final MediaPlayer player, final double mx) {
+        final float ratio = (float) Math.max(0, Math.min(1, (mx - this.volumeBounds.x()) / Math.max(1, this.volumeBounds.width())));
+        player.volume(Math.round(ratio * 100f));
+    }
+
     private void handlePlayerMouse(final double mx, final double my) {
         final MediaPlayer player = this.ctx.player;
+
+        // ROUTE BACK EVEN ON A PLAYER ERROR SO THE MOUSE CAN ALWAYS LEAVE THE SCREEN (PREVIOUSLY ONLY ESC WORKED)
+        if (this.topBackBounds.contains(mx, my)) {
+            this.returnToMenu();
+            return;
+        }
         if (player == null || player.error()) return;
 
         if (this.speedSpinnerOpen) {
@@ -1215,31 +1306,17 @@ public class PlayerScreen extends Screen {
             }
             final Dimension speedButton = this.transportButtons.get("speed");
             if (speedButton == null || !speedButton.contains(mx, my)) {
+                // DISMISS THE OPEN SPINNER WITHOUT ACTUATING A TRANSPORT BUTTON BEHIND THE CLICK
                 this.speedSpinnerOpen = false;
+                return;
             }
-        }
-
-        if (this.topBackBounds.contains(mx, my)) {
-            this.returnToMenu();
-            return;
         }
         if (this.topDebugBounds.contains(mx, my)) {
             this.debugOpen = !this.debugOpen;
             this.ctx.playSelectionSound();
             return;
         }
-        if (this.seekBounds.contains(mx, my) && player.duration() > 0) {
-            final float ratio = (float) Math.max(0, Math.min(1, (mx - this.seekBounds.x()) / Math.max(1, this.seekBounds.width())));
-            player.seek((long) (player.duration() * ratio));
-            this.ctx.playSelectionSound();
-            return;
-        }
-        if (this.volumeBounds.contains(mx, my)) {
-            final float ratio = (float) Math.max(0, Math.min(1, (mx - this.volumeBounds.x()) / Math.max(1, this.volumeBounds.width())));
-            player.volume(Math.round(ratio * 100f));
-            this.ctx.playSelectionSound();
-            return;
-        }
+        // SEEK AND VOLUME BARS ARE DRIVEN BY THE PRESS/DRAG PATH (handleMousePress/Move/Release), NOT BY CLICKS
 
         for (final Map.Entry<String, Dimension> entry : this.transportButtons.entrySet()) {
             if (!entry.getValue().contains(mx, my)) continue;

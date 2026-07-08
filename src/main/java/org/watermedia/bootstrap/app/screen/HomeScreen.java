@@ -9,6 +9,11 @@ import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.view.Button;
+import org.watermedia.bootstrap.app.view.Canvas;
+import org.watermedia.bootstrap.app.view.View;
+import org.watermedia.bootstrap.app.view.ViewGroup;
+import org.watermedia.tools.ThreadTool;
 
 import java.awt.Color;
 import java.io.IOException;
@@ -24,7 +29,7 @@ import static org.lwjgl.glfw.GLFW.*;
 /**
  * Main home screen with grid-based menu options grouped by sections.
  */
-public class HomeScreen extends Screen {
+public class HomeScreen extends ViewScreen {
 
     public enum Action {
         OPEN_MULTIMEDIA, UPLOAD_LOGS, CLEANUP,
@@ -38,10 +43,12 @@ public class HomeScreen extends Screen {
     private final List<MenuEntry> actions = new ArrayList<>();
     private final List<MenuEntry> mediaTests = new ArrayList<>();
     private final List<MenuEntry> entertainment = new ArrayList<>();
-    private final List<Hit> hits = new ArrayList<>();
     private int selectedPanel;
     private int selectedAction;
     private int selectedMedia;
+    // NUMBER OF MEDIA TILES THAT ACTUALLY FIT/ARE DRAWN THIS FRAME; KEYBOARD SELECTION IS CLAMPED TO IT
+    // SO ARROWS/ENTER CANNOT LAND ON AN OVERFLOWING TILE THAT IS NEITHER HIGHLIGHTED NOR CLICKABLE
+    private int visibleMediaCount;
     private int selectedEntertainment;
     private Dimension uploadTooltipAnchor;
     private Dimension uploadDialogCloseBounds = Dimension.ZERO;
@@ -61,6 +68,11 @@ public class HomeScreen extends Screen {
     private static final int REPO_ROW_H = 56;
     private static final int REPO_ROW_STEP = 64;
 
+    // CACHE-SIZE LABEL FOR THE CLEANUP ENTRY, COMPUTED OFF THE RENDER THREAD (Files.walk BLOCKS ON LARGE
+    // CACHES). rebuildMenu() READS THE LAST PUBLISHED VALUE; cacheWalking COALESCES OVERLAPPING WALKS.
+    private volatile String cacheLabel = "-- MB";
+    private volatile boolean cacheWalking;
+
     public HomeScreen(final TextRenderer text, final AppContext ctx, final Consumer<Action> navigator) {
         super(text, ctx);
         this.navigator = navigator;
@@ -69,6 +81,7 @@ public class HomeScreen extends Screen {
     @Override
     public void onEnter() {
         this.rebuildMenu();
+        this.refreshCacheSize();
     }
 
     private void rebuildMenu() {
@@ -78,7 +91,7 @@ public class HomeScreen extends Screen {
 
         this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
         this.actions.add(new MenuEntry("Upload Logs", AppContext.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
-        this.actions.add(new MenuEntry("Cleanup cache", this.cacheSizeLabel(), Action.CLEANUP, -1));
+        this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
         // TODO: Settings is still WIP; keep it debug-only until the menu is production-ready.
         this.actions.add(new MenuEntry("Settings", WaterMedia.LOGGER.isDebugEnabled() ? "S" : "WIP", Action.SETTINGS, -1));
         this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
@@ -96,6 +109,8 @@ public class HomeScreen extends Screen {
         if (this.ctx.iptvChannels.length > 0) {
             this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
         }
+        // REBUILD THE CONTENT TREE SO THE TILE VIEWS MATCH THE CURRENT MENU ENTRIES
+        this.rebuild();
     }
 
     private void handleSelect(final MenuEntry entry) {
@@ -131,145 +146,72 @@ public class HomeScreen extends Screen {
 
     @Override
     public boolean wantsContinuousRender() {
-        return this.ctx.backendsLoading || this.ctx.uploadDialogWorking || this.ctx.cleanupDialogWorking;
+        return super.wantsContinuousRender() || this.ctx.backendsLoading || this.ctx.upload.working || this.ctx.cleanup.working;
+    }
+
+    @Override
+    protected View<?> build() {
+        final HomeBody body = new HomeBody();
+        for (int i = 0; i < this.actions.size(); i++) {
+            final ActionTile tile = new ActionTile(i);
+            body.actionViews.add(tile);
+            body.add(tile);
+        }
+        for (int i = 0; i < this.mediaTests.size(); i++) {
+            final MediaTile tile = new MediaTile(i);
+            body.mediaViews.add(tile);
+            body.add(tile);
+        }
+        for (int i = 0; i < this.entertainment.size(); i++) {
+            final EntertainmentTile tile = new EntertainmentTile(i);
+            body.entViews.add(tile);
+            body.add(tile);
+        }
+        return body.width(View.MATCH_PARENT).height(View.MATCH_PARENT);
+    }
+
+    @Override
+    protected void renderChrome(final int windowW, final int windowH) {
+        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Multimedia API", "main menu", "v" + WaterMedia.VERSION);
+    }
+
+    // CONTENT RECT — MIRRORS THE LEGACY x/y/contentH: LEFT MARGIN 22, TOP contentTop()+10, RIGHT AT windowW-22
+    @Override
+    protected int contentX(final int windowW, final int windowH) {
+        return 22;
+    }
+
+    @Override
+    protected int contentY(final int windowW, final int windowH) {
+        return AppChrome.contentTop() + 10;
+    }
+
+    @Override
+    protected int contentW(final int windowW, final int windowH) {
+        return windowW - 44;
+    }
+
+    @Override
+    protected int contentH(final int windowW, final int windowH) {
+        return AppChrome.contentBottom(windowH) - (AppChrome.contentTop() + 10);
     }
 
     @Override
     public void render(final int windowW, final int windowH) {
-        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Multimedia API", "main menu", "v" + org.watermedia.WaterMedia.VERSION);
-
-        this.hits.clear();
-        final int x = 22;
-        final int y = AppChrome.contentTop() + 10;
-        final int gap = 18;
-        final int contentH = AppChrome.contentBottom(windowH) - y;
-        final int leftW = Math.max(330, (windowW - x * 2 - gap) / 2);
-        final int rightX = x + leftW + gap;
-        final int rightW = windowW - rightX - x;
-
-        RenderSystem.setupOrtho(windowW, windowH);
-        this.uploadTooltipAnchor = null;
-        AppChrome.sectionHead(this.text, "Actions", this.actions.size() + " available", x, y);
-        int rowY = y + 36;
-        for (int i = 0; i < this.actions.size(); i++) {
-            final MenuEntry entry = this.actions.get(i);
-            final Dimension bounds = new Dimension(x, rowY, leftW, 56);
-            this.drawAction(entry, bounds, this.selectedPanel == 0 && this.selectedAction == i, windowW, windowH);
-            this.hits.add(new Hit(bounds, entry, 0, i));
-            rowY += 64;
+        super.render(windowW, windowH); // WINDOW CHROME (renderChrome) THEN THE MENU VIEW TREE
+        // THE UPLOAD/CLEANUP DIALOGS ARE FULL-WINDOW MODALS PAINTED ON TOP OF THE MENU
+        if (this.ctx.upload.visible || this.ctx.cleanup.visible) {
+            RenderSystem.setupOrtho(windowW, windowH);
+            if (this.ctx.upload.visible) this.renderUploadLogsDialog(windowW, windowH);
+            if (this.ctx.cleanup.visible) this.renderCleanupDialog(windowW, windowH);
+            RenderSystem.restoreProjection();
         }
-
-        AppChrome.sectionHead(this.text, "Media tests", this.mediaTests.size() + " categories", rightX, y);
-        final int colGap = 10;
-        final int tileW = Math.max(160, (rightW - colGap) / 2);
-        final int tileH = 94;
-        for (int i = 0; i < this.mediaTests.size(); i++) {
-            final int col = i % 2;
-            final int row = i / 2;
-            final int tx = rightX + col * (tileW + colGap);
-            final int ty = y + 36 + row * (tileH + 10);
-            if (ty + tileH > y + contentH) break;
-            final Dimension bounds = new Dimension(tx, ty, tileW, tileH);
-            this.drawMediaTile(this.mediaTests.get(i), bounds, this.selectedPanel == 1 && this.selectedMedia == i, windowW, windowH);
-            this.hits.add(new Hit(bounds, this.mediaTests.get(i), 1, i));
-        }
-        if (!this.entertainment.isEmpty()) {
-            final int mediaRows = Math.max(1, (this.mediaTests.size() + 1) / 2);
-            final int entertainmentY = y + 36 + mediaRows * (tileH + 10) + 24;
-            if (entertainmentY + 112 <= y + contentH) {
-                AppChrome.sectionHead(this.text, "Entertaiment", this.entertainment.size() + " available", rightX, entertainmentY);
-                int entertainmentRowY = entertainmentY + 36;
-                for (int i = 0; i < this.entertainment.size(); i++) {
-                    final Dimension bounds = new Dimension(rightX, entertainmentRowY, rightW, 72);
-                    this.drawEntertainmentTile(this.entertainment.get(i), bounds, this.selectedPanel == 2 && this.selectedEntertainment == i);
-                    this.hits.add(new Hit(bounds, this.entertainment.get(i), 2, i));
-                    entertainmentRowY += 82;
-                }
-            }
-        }
-        if (this.uploadTooltipAnchor != null) {
-            this.renderUploadLogsTooltip(this.uploadTooltipAnchor);
-        }
-        if (this.ctx.uploadDialogVisible) {
-            this.renderUploadLogsDialog(windowW, windowH);
-        }
-        if (this.ctx.cleanupDialogVisible) {
-            this.renderCleanupDialog(windowW, windowH);
-        }
-        RenderSystem.restoreProjection();
-    }
-
-    private void drawAction(final MenuEntry entry, final Dimension b, final boolean selected,
-                            final int windowW, final int windowH) {
-        final boolean enabled = this.actionEnabled(entry);
-        final Color accent = !enabled ? AppTheme.TEXT_FAINT : switch (entry.action()) {
-            case OPEN_MULTIMEDIA -> AppTheme.GREEN;
-            case EXIT -> AppTheme.RED;
-            default -> AppTheme.NEON_LIGHT;
-        };
-        final Color borderColor = !enabled
-                ? AppTheme.STROKE
-                : selected || entry.action() == Action.OPEN_MULTIMEDIA || entry.action() == Action.EXIT
-                ? accent
-                : AppTheme.STROKE_BRIGHT;
-        final Color textColor = !enabled
-                ? AppTheme.TEXT_FAINT
-                : entry.action() == Action.OPEN_MULTIMEDIA || entry.action() == Action.EXIT
-                ? accent
-                : selected ? accent : AppTheme.TEXT;
-        if (selected && enabled) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, accent, 0.35f);
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
-                !enabled ? 0.06f : entry.action() == Action.EXIT ? (selected ? 0.26f : 0.20f) : AppTheme.BG_2.getRed() / 255f,
-                !enabled ? 0.08f : entry.action() == Action.EXIT ? (selected ? 0.07f : 0.04f) : (selected ? 34f / 255f : AppTheme.BG_2.getGreen() / 255f),
-                !enabled ? 0.14f : entry.action() == Action.EXIT ? (selected ? 0.11f : 0.08f) : (selected ? 66f / 255f : AppTheme.BG_2.getBlue() / 255f),
-                enabled ? 0.92f : 0.58f);
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), borderColor, 2f);
-        RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, enabled ? selected ? accent : AppTheme.NEON : AppTheme.STROKE_BRIGHT, enabled ? selected ? 0.28f : 0.08f : 0.03f);
-        PixelIcon.draw(this.actionIcon(entry.action()), b.x() + 14, b.y() + 17, 18, accent);
-        this.text.renderBold(entry.label().toUpperCase(), b.x() + 48, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), textColor, AppTheme.TEXT_BUTTON);
-        final int hintW = this.text.width(entry.meta(), AppTheme.TEXT_BODY) + 14;
-        RenderSystem.fill(b.right() - hintW - 12, b.y() + 17, hintW, 22, AppTheme.alpha(AppTheme.BG_1, 180));
-        RenderSystem.rect(b.right() - hintW - 12, b.y() + 17, hintW, 22, AppTheme.STROKE, 1f);
-        this.text.render(entry.meta(), b.right() - hintW - 5, this.centerTextY(b.y() + 17, 22, AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-        if (entry.action() == Action.UPLOAD_LOGS && selected && !this.ctx.uploadDialogVisible) this.uploadTooltipAnchor = b;
     }
 
     private boolean actionEnabled(final MenuEntry entry) {
         if (entry.action() == Action.UPLOAD_LOGS) return AppContext.IN_MODS;
         if (entry.action() == Action.SETTINGS) return WaterMedia.LOGGER.isDebugEnabled();
         return true;
-    }
-
-    private void drawMediaTile(final MenuEntry entry, final Dimension b, final boolean selected,
-                               final int windowW, final int windowH) {
-        final Color folderColor = this.categoryColor(entry.groupIndex(), 0);
-        final Color titleColor = folderColor;
-        final Color accent = selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
-        if (selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.NEON, 0.28f);
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
-                selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), accent, 2f);
-        PixelIcon.draw("folder", b.x() + 14, b.y() + 15, 18, folderColor);
-        this.text.renderBold(this.text.truncateToWidth(entry.label().toUpperCase(), b.width() - 62, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
-                b.x() + 42, this.centerBoldTextY(b.y() + 15, 18, AppTheme.TEXT_BUTTON), titleColor, AppTheme.TEXT_BUTTON);
-        this.text.render((entry.meta() + " - click to load").toUpperCase(Locale.ROOT), b.x() + 14, b.y() + 50, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-    }
-
-    private void drawEntertainmentTile(final MenuEntry entry, final Dimension b, final boolean selected) {
-        final Color accent = selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT;
-        if (selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.GREEN, 0.30f);
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
-                selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.GREEN : AppTheme.STROKE_BRIGHT, 2f);
-        final String label = entry.label().toUpperCase(Locale.ROOT);
-        final int iconSize = 34;
-        final int gap = 18;
-        final int labelW = this.text.widthBold(label, AppTheme.TEXT_DISPLAY);
-        final int groupW = iconSize + gap + labelW;
-        final int groupX = b.x() + Math.max(0, (b.width() - groupW) / 2);
-        PixelIcon.draw("tv", groupX, b.y() + Math.max(0, (b.height() - iconSize) / 2), iconSize, accent);
-        this.text.renderBold(label, groupX + iconSize + gap,
-                this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_DISPLAY), accent, AppTheme.TEXT_DISPLAY);
     }
 
     private String actionIcon(final Action action) {
@@ -313,7 +255,7 @@ public class HomeScreen extends Screen {
     }
 
     private void renderUploadLogsDialog(final int windowW, final int windowH) {
-        final boolean report = this.ctx.uploadDialogStage >= 3;
+        final boolean report = this.ctx.upload.stage >= 3;
         // OUTSIDE THE REPORT STAGE THE REPO PICKER STATE IS DORMANT — KEEP IT RESET SO IT STARTS FRESH.
         if (!report) {
             this.repoScrollOffset = 0;
@@ -331,16 +273,16 @@ public class HomeScreen extends Screen {
 
         RenderSystem.fill(0, 0, windowW, windowH, 0f, 0f, 0f, 0.58f);
         RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.55f);
-        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, this.ctx.uploadDialogDone ? AppTheme.GREEN : AppTheme.NEON, 0.26f);
+        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, this.ctx.upload.done ? AppTheme.GREEN : AppTheme.NEON, 0.26f);
         RenderSystem.fill(x, y, dialogW, dialogH, AppTheme.alpha(AppTheme.BG_1, 248));
-        RenderSystem.rect(x, y, dialogW, dialogH, this.ctx.uploadDialogDone ? AppTheme.GREEN : AppTheme.NEON_LIGHT, 1.5f);
+        RenderSystem.rect(x, y, dialogW, dialogH, this.ctx.upload.done ? AppTheme.GREEN : AppTheme.NEON_LIGHT, 1.5f);
         RenderSystem.fill(x, y, dialogW, 64, AppTheme.alpha(AppTheme.BG_2, 244));
         RenderSystem.lineH(x, y + 64, dialogW, AppTheme.STROKE_BRIGHT, 1f);
 
         this.uploadDialogXBounds = new Dimension(x + dialogW - 52, y + 18, 32, 32);
         final boolean closeHover = this.uploadDialogXBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.text.renderBold(this.ctx.uploadDialogDone ? "SUCCESS" : "UPLOAD LOG FILES",
-                x + 22, y + 24, this.ctx.uploadDialogDone ? AppTheme.GREEN : AppTheme.CYAN, AppTheme.TEXT_BUTTON);
+        this.text.renderBold(this.ctx.upload.done ? "SUCCESS" : "UPLOAD LOG FILES",
+                x + 22, y + 24, this.ctx.upload.done ? AppTheme.GREEN : AppTheme.CYAN, AppTheme.TEXT_BUTTON);
         AppChrome.dialogCloseButton(this.uploadDialogXBounds, closeHover);
 
         this.renderUploadStepper(x + 46, y + 86);
@@ -370,7 +312,7 @@ public class HomeScreen extends Screen {
 
         // CLIPBOARD CONFIRMATION STRIP
         final int confH = 30;
-        final boolean copied = this.ctx.uploadIssueCopied;
+        final boolean copied = this.ctx.upload.issueCopied;
         RenderSystem.fill(contentX, contentY, contentW, confH, AppTheme.alpha(copied ? AppTheme.GREEN : AppTheme.BG_2, copied ? 26 : 164));
         RenderSystem.rect(contentX, contentY, contentW, confH, copied ? AppTheme.GREEN : AppTheme.STROKE_BRIGHT, 1f);
         PixelIcon.draw(copied ? "check" : "copy", contentX + 12, contentY + (confH - 14) / 2, 14, copied ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
@@ -430,11 +372,11 @@ public class HomeScreen extends Screen {
         // PACK.PNG LOGO — SQUARE, ASPECT-PRESERVED, CENTERED IN ITS BOX
         final int logoBox = h - pad * 2;
         final int logoX = x + pad + 8;
-        if (this.ctx.iconTextureId > 0 && this.ctx.iconWidth > 0 && this.ctx.iconHeight > 0) {
-            final float s = Math.min((float) logoBox / this.ctx.iconWidth, (float) logoBox / this.ctx.iconHeight);
-            final int lw = (int) (this.ctx.iconWidth * s);
-            final int lh = (int) (this.ctx.iconHeight * s);
-            RenderSystem.bindTexture(this.ctx.iconTextureId);
+        if (this.ctx.assets.iconId > 0 && this.ctx.assets.iconWidth > 0 && this.ctx.assets.iconHeight > 0) {
+            final float s = Math.min((float) logoBox / this.ctx.assets.iconWidth, (float) logoBox / this.ctx.assets.iconHeight);
+            final int lw = (int) (this.ctx.assets.iconWidth * s);
+            final int lh = (int) (this.ctx.assets.iconHeight * s);
+            RenderSystem.bindTexture(this.ctx.assets.iconId);
             RenderSystem.color(1f, 1f, 1f, 1f);
             RenderSystem.blit(logoX + (logoBox - lw) / 2f, y + pad + (logoBox - lh) / 2f, lw, lh);
         }
@@ -483,11 +425,8 @@ public class HomeScreen extends Screen {
     }
 
     private void renderRepoSubmit(final Dimension b, final Color accent, final boolean active) {
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), active ? AppTheme.alpha(accent, 60) : AppTheme.alpha(AppTheme.BG_1, 200));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), accent, active ? 1.8f : 1.3f);
-        if (active) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, accent, 0.22f);
-        PixelIcon.draw("link", b.x() + 12, b.y() + (b.height() - 14) / 2, 14, accent);
-        this.text.renderBold("SUBMIT", b.x() + 34, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), accent, AppTheme.TEXT_BUTTON);
+        Button.render(this.text, b.x(), b.y(), b.width(), b.height(),
+                "SUBMIT", "", "link", 12, accent, accent, false, active, true);
     }
 
     private void renderRepoScrollBar(final int x, final int y, final int h, final int total) {
@@ -500,8 +439,8 @@ public class HomeScreen extends Screen {
     }
 
     private List<RepoTarget> uploadRepoTargets() {
-        final String wmUrl = this.ctx.uploadIssueUrl != null && this.ctx.uploadIssueUrl.startsWith("http")
-                ? this.ctx.uploadIssueUrl
+        final String wmUrl = this.ctx.upload.issueUrl != null && this.ctx.upload.issueUrl.startsWith("http")
+                ? this.ctx.upload.issueUrl
                 : "https://github.com/WaterMediaTeam/watermedia/issues/new";
         final List<RepoTarget> repos = new ArrayList<>();
         repos.add(new RepoTarget("WaterMedia", "WaterMediaTeam/watermedia", wmUrl, AppTheme.GREEN));
@@ -509,7 +448,7 @@ public class HomeScreen extends Screen {
         final Color[] palette = {AppTheme.AMBER, AppTheme.CYAN, AppTheme.NEON_LIGHT, AppTheme.NEON};
         int idx = 0;
         for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
-            if (this.ctx.suspectModIds.contains(mod.id())) {
+            if (this.ctx.upload.suspectModIds.contains(mod.id())) {
                 repos.add(new RepoTarget(mod.name(), mod.slug(), mod.url(), palette[idx % palette.length]));
             }
             idx++;
@@ -524,7 +463,7 @@ public class HomeScreen extends Screen {
 
     private void submitRepo(final RepoTarget repo, final int index) {
         this.repoSelected = index;
-        this.ctx.uploadRepoUrl = repo.url();
+        this.ctx.upload.repoUrl = repo.url();
         this.navigator.accept(Action.UPLOAD_LOGS);
         this.ctx.playSelectionSound();
     }
@@ -556,10 +495,10 @@ public class HomeScreen extends Screen {
     }
 
     private int renderUploadStep(final int step, final String label, final int x, final int y) {
-        final boolean complete = this.ctx.uploadDialogStage > step
-                || this.ctx.uploadDialogDone
-                || (step == 2 && this.ctx.uploadUploadsDone);
-        final boolean active = this.ctx.uploadDialogStage == step && !this.ctx.uploadDialogDone;
+        final boolean complete = this.ctx.upload.stage > step
+                || this.ctx.upload.done
+                || (step == 2 && this.ctx.upload.uploadsDone);
+        final boolean active = this.ctx.upload.stage == step && !this.ctx.upload.done;
         final Color color = complete ? AppTheme.GREEN : active ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
         RenderSystem.fill(x, y, 30, 30, AppTheme.alpha(AppTheme.BG_2, 220));
         RenderSystem.rect(x, y, 30, 30, color, active || complete ? 2f : 1f);
@@ -595,14 +534,14 @@ public class HomeScreen extends Screen {
                 ? AppTheme.AMBER
                 : entry.present && !"FAILED".equals(entry.state) && !"READ ERROR".equals(entry.state) ? AppTheme.TEXT_FAINT : AppTheme.RED;
         final boolean errored = "FAILED".equals(entry.state) || "READ ERROR".equals(entry.state);
-        final boolean detailed = (this.ctx.uploadDialogStage >= 3 && entry.uploaded && !entry.url.isBlank())
-                || (this.ctx.uploadDialogStage == 2 && entry.present && entry.valid && !errored);
+        final boolean detailed = (this.ctx.upload.stage >= 3 && entry.uploaded && !entry.url.isBlank())
+                || (this.ctx.upload.stage == 2 && entry.present && entry.valid && !errored);
         final int nameY = detailed ? this.centerTextY(y, 28, AppTheme.TEXT_BODY) : this.centerTextY(y, h, AppTheme.TEXT_BODY);
         AppChrome.statusPip(x + 4, y + Math.max(0, (h - 10) / 2), 10, stateColor, true);
         this.text.render(entry.name, x + 28, nameY, entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-        if (this.ctx.uploadDialogStage >= 3 && entry.uploaded && !entry.url.isBlank()) {
+        if (this.ctx.upload.stage >= 3 && entry.uploaded && !entry.url.isBlank()) {
             this.text.render(entry.url, x + 28, y + 28, AppTheme.CYAN, AppTheme.TEXT_SUBTITLE);
-        } else if (this.ctx.uploadDialogStage == 2 && entry.present) {
+        } else if (this.ctx.upload.stage == 2 && entry.present) {
             final int barX = x + 28;
             final int barY = y + 31;
             final int barW = Math.max(120, w - 124);
@@ -616,9 +555,9 @@ public class HomeScreen extends Screen {
         final int tagY = y + Math.max(0, (h - tagH) / 2);
         final int sizeY = detailed ? nameY : this.centerTextY(tagY, tagH, AppTheme.TEXT_SUBTITLE);
         this.text.render(entry.sizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        final String tag = this.ctx.uploadDialogStage == 2 && errored
+        final String tag = this.ctx.upload.stage == 2 && errored
                 ? "ERROR"
-                : this.ctx.uploadDialogStage == 2 && entry.present && entry.valid && !entry.uploaded
+                : this.ctx.upload.stage == 2 && entry.present && entry.valid && !entry.uploaded
                 ? Math.max(0, Math.min(100, entry.progress)) + "%"
                 : entry.state;
         final int tagW = Math.max(84, this.text.width(tag, AppTheme.TEXT_SUBTITLE) + 22);
@@ -646,15 +585,15 @@ public class HomeScreen extends Screen {
     }
 
     private int uploadRowHeight() {
-        return this.ctx.uploadDialogStage >= 2 ? UPLOAD_ROW_DETAIL_H : UPLOAD_ROW_H;
+        return this.ctx.upload.stage >= 2 ? UPLOAD_ROW_DETAIL_H : UPLOAD_ROW_H;
     }
 
     private List<AppContext.UploadFileEntry> visibleUploadFiles() {
         final List<AppContext.UploadFileEntry> files = new ArrayList<>();
-        for (final AppContext.UploadFileEntry entry: this.ctx.uploadDialogFiles) {
-            if (this.ctx.uploadDialogStage <= 1) {
+        for (final AppContext.UploadFileEntry entry: this.ctx.upload.files) {
+            if (this.ctx.upload.stage <= 1) {
                 files.add(entry);
-            } else if (this.ctx.uploadDialogStage == 2) {
+            } else if (this.ctx.upload.stage == 2) {
                 if (entry.present && entry.valid) files.add(entry);
                 else if ("FAILED".equals(entry.state) || "READ ERROR".equals(entry.state)) files.add(entry);
             } else if (entry.uploaded) {
@@ -667,7 +606,7 @@ public class HomeScreen extends Screen {
     private void renderUploadDialogButtons(final int x, final int y, final int dialogW, final int dialogH) {
         this.uploadDialogCloseBounds = new Dimension(x + 22, y + dialogH - 68, 170, 48);
         final boolean cancelHover = this.uploadDialogCloseBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.renderDialogButton(this.uploadDialogCloseBounds, this.ctx.uploadDialogDone ? "CLOSE" : "CANCEL", "ESC",
+        this.renderDialogButton(this.uploadDialogCloseBounds, this.ctx.upload.done ? "CLOSE" : "CANCEL", "ESC",
                 AppTheme.TEXT, AppTheme.STROKE_BRIGHT, cancelHover);
 
         final String label = this.uploadPrimaryLabel();
@@ -675,7 +614,7 @@ public class HomeScreen extends Screen {
         this.uploadDialogPrimaryBounds = new Dimension(x + dialogW - primaryW - 22, y + dialogH - 68, primaryW, 48);
         final boolean primaryEnabled = this.uploadPrimaryEnabled();
         final boolean primaryHover = primaryEnabled && this.uploadDialogPrimaryBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        final Color primaryColor = !primaryEnabled ? AppTheme.TEXT_FAINT : (this.ctx.uploadDialogDone || this.ctx.uploadUploadsDone) ? AppTheme.GREEN : AppTheme.CYAN;
+        final Color primaryColor = !primaryEnabled ? AppTheme.TEXT_FAINT : (this.ctx.upload.done || this.ctx.upload.uploadsDone) ? AppTheme.GREEN : AppTheme.CYAN;
         this.renderDialogButton(this.uploadDialogPrimaryBounds, label, "ENTER", primaryColor, primaryColor, primaryHover, primaryEnabled);
     }
 
@@ -687,40 +626,26 @@ public class HomeScreen extends Screen {
     private void renderDialogButton(final Dimension b, final String label, final String key,
                                     final Color textColor, final Color borderColor, final boolean hover,
                                     final boolean enabled) {
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
-                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 92) : AppTheme.alpha(AppTheme.BG_2, 220));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), borderColor, 1.5f);
-        if (hover) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, borderColor, 0.24f);
-        final String icon = label.startsWith("UPLOAD") ? "upload" : label.startsWith("OPEN") ? "link" : label.startsWith("GENERATE") ? "check" : label.startsWith("CLEAN") ? "broom" : null;
-        int textX = b.x() + 22;
-        if (icon != null) {
-            PixelIcon.draw(icon, b.x() + 20, b.y() + 17, 14, textColor);
-            textX = b.x() + 52;
-        }
-        final int keyW = Math.max(46, this.text.width(key, AppTheme.TEXT_SUBTITLE) + 16);
-        final int keyX = b.right() - keyW - 18;
-        final int maxLabelW = Math.max(40, keyX - textX - 18);
-        this.text.renderBold(this.text.truncateToWidth(label, maxLabelW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
-                textX, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), textColor, AppTheme.TEXT_BUTTON);
-        RenderSystem.fill(keyX, b.y() + 14, keyW, 22, AppTheme.alpha(AppTheme.BG_1, 180));
-        RenderSystem.rect(keyX, b.y() + 14, keyW, 22, AppTheme.STROKE, 1f);
-        this.text.render(key, keyX + 8, this.centerTextY(b.y() + 14, 22, AppTheme.TEXT_SUBTITLE), enabled ? AppTheme.TEXT_FAINT : AppTheme.alpha(AppTheme.TEXT_FAINT, 110), AppTheme.TEXT_SUBTITLE);
+        // ICON DERIVED FROM THE LABEL PREFIX (EMPTY = NO ICON); borderColor IS THE ACCENT, key IS THE HOTKEY CHIP
+        final String icon = label.startsWith("UPLOAD") ? "upload" : label.startsWith("OPEN") ? "link" : label.startsWith("GENERATE") ? "check" : label.startsWith("CLEAN") ? "broom" : "";
+        Button.render(this.text, b.x(), b.y(), b.width(), b.height(),
+                label, key, icon, 12, borderColor, textColor, false, hover, enabled);
     }
 
     private String uploadPrimaryLabel() {
-        if (this.ctx.uploadDialogStage <= 1) return "UPLOAD TO MCLO.GS";
-        if (this.ctx.uploadDialogStage == 2) return "GENERATE REPORT";
+        if (this.ctx.upload.stage <= 1) return "UPLOAD TO MCLO.GS";
+        if (this.ctx.upload.stage == 2) return "GENERATE REPORT";
         return "OPEN " + this.selectedRepo().name().toUpperCase();
     }
 
     private boolean uploadPrimaryEnabled() {
-        if (this.ctx.uploadDialogWorking) return false;
-        if (this.ctx.uploadDialogStage <= 1) {
-            for (final AppContext.UploadFileEntry entry: this.ctx.uploadDialogFiles) if (entry.present) return true;
+        if (this.ctx.upload.working) return false;
+        if (this.ctx.upload.stage <= 1) {
+            for (final AppContext.UploadFileEntry entry: this.ctx.upload.files) if (entry.present) return true;
             return false;
         }
-        if (this.ctx.uploadDialogStage == 2) {
-            for (final AppContext.UploadFileEntry entry: this.ctx.uploadDialogFiles) if (entry.uploaded) return true;
+        if (this.ctx.upload.stage == 2) {
+            for (final AppContext.UploadFileEntry entry: this.ctx.upload.files) if (entry.uploaded) return true;
             return false;
         }
         return true;
@@ -733,7 +658,7 @@ public class HomeScreen extends Screen {
         final Dimension dialog = Dimension.centered(windowW, windowH, dialogW, dialogH);
         final int x = dialog.x();
         final int y = dialog.y();
-        final Color accent = this.ctx.cleanupDialogError ? AppTheme.RED : this.ctx.cleanupDialogDone ? AppTheme.GREEN : AppTheme.CYAN;
+        final Color accent = this.ctx.cleanup.error ? AppTheme.RED : this.ctx.cleanup.done ? AppTheme.GREEN : AppTheme.CYAN;
 
         RenderSystem.fill(0, 0, windowW, windowH, 0f, 0f, 0f, 0.58f);
         RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.55f);
@@ -745,7 +670,7 @@ public class HomeScreen extends Screen {
 
         this.cleanupDialogXBounds = new Dimension(x + dialogW - 52, y + 18, 32, 32);
         final boolean closeHover = this.cleanupDialogXBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.text.renderBold(this.ctx.cleanupDialogDone ? "CACHE CLEANED" : "CLEAN CACHE",
+        this.text.renderBold(this.ctx.cleanup.done ? "CACHE CLEANED" : "CLEAN CACHE",
                 x + 22, y + 24, accent, AppTheme.TEXT_BUTTON);
         AppChrome.dialogCloseButton(this.cleanupDialogXBounds, closeHover);
 
@@ -771,8 +696,8 @@ public class HomeScreen extends Screen {
     }
 
     private int renderCleanupStep(final int step, final String label, final int x, final int y) {
-        final boolean complete = this.ctx.cleanupDialogStage > step || (step == 2 && this.ctx.cleanupDialogDone);
-        final boolean active = this.ctx.cleanupDialogStage == step && !this.ctx.cleanupDialogDone;
+        final boolean complete = this.ctx.cleanup.stage > step || (step == 2 && this.ctx.cleanup.done);
+        final boolean active = this.ctx.cleanup.stage == step && !this.ctx.cleanup.done;
         final Color color = complete ? AppTheme.GREEN : active ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
         RenderSystem.fill(x, y, 30, 30, AppTheme.alpha(AppTheme.BG_2, 220));
         RenderSystem.rect(x, y, 30, 30, color, active || complete ? 2f : 1f);
@@ -793,19 +718,19 @@ public class HomeScreen extends Screen {
 
     private void renderCleanupRow(final int x, final int y, final int w, final int h) {
         final Color stateColor = this.cleanupStateColor();
-        final String name = this.ctx.cleanupFileCount == 1 ? "1 FILE" : this.ctx.cleanupFileCount + " FILES";
+        final String name = this.ctx.cleanup.fileCount == 1 ? "1 FILE" : this.ctx.cleanup.fileCount + " FILES";
         final String tag = this.cleanupStateLabel();
-        final boolean progress = this.ctx.cleanupDialogStage == 2 && this.ctx.cleanupDialogWorking;
+        final boolean progress = this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working;
         final int nameY = progress ? this.centerTextY(y, 28, AppTheme.TEXT_BODY) : this.centerTextY(y, h, AppTheme.TEXT_BODY);
 
         AppChrome.statusPip(x + 4, y + Math.max(0, (h - 10) / 2), 10, stateColor, true);
-        this.text.render(name, x + 28, nameY, this.ctx.cleanupFileCount > 0 ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
+        this.text.render(name, x + 28, nameY, this.ctx.cleanup.fileCount > 0 ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         if (progress) {
             final int barX = x + 28;
             final int barY = y + 31;
             final int barW = Math.max(120, w - 124);
             RenderSystem.fill(barX, barY, barW, 6, AppTheme.BG_3);
-            RenderSystem.fillGradientH(barX, barY, barW * (Math.max(0, Math.min(100, this.ctx.cleanupProgress)) / 100f), 6,
+            RenderSystem.fillGradientH(barX, barY, barW * (Math.max(0, Math.min(100, this.ctx.cleanup.progress)) / 100f), 6,
                     AppTheme.NEON_DARK.getRed() / 255f, AppTheme.NEON_DARK.getGreen() / 255f, AppTheme.NEON_DARK.getBlue() / 255f, 1f,
                     AppTheme.NEON_LIGHT.getRed() / 255f, AppTheme.NEON_LIGHT.getGreen() / 255f, AppTheme.NEON_LIGHT.getBlue() / 255f, 1f);
         }
@@ -813,7 +738,7 @@ public class HomeScreen extends Screen {
         final int tagH = 26;
         final int tagY = y + Math.max(0, (h - tagH) / 2);
         final int sizeY = progress ? nameY : this.centerTextY(tagY, tagH, AppTheme.TEXT_SUBTITLE);
-        this.text.render(this.ctx.cleanupSizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+        this.text.render(this.ctx.cleanup.sizeLabel, x + w - 180, sizeY, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
         final int tagW = Math.max(84, this.text.width(tag, AppTheme.TEXT_SUBTITLE) + 22);
         final int tagX = x + w - tagW;
         RenderSystem.fill(tagX, tagY, tagW, tagH, AppTheme.alpha(AppTheme.BG_1, 210));
@@ -822,24 +747,24 @@ public class HomeScreen extends Screen {
     }
 
     private Color cleanupStateColor() {
-        if (this.ctx.cleanupDialogError) return AppTheme.RED;
-        if ("EMPTY".equals(this.ctx.cleanupDialogState)) return AppTheme.AMBER;
-        if (this.ctx.cleanupDialogWorking) return AppTheme.NEON_LIGHT;
-        if (this.ctx.cleanupDialogDone || "FOUND".equals(this.ctx.cleanupDialogState)) return AppTheme.GREEN;
+        if (this.ctx.cleanup.error) return AppTheme.RED;
+        if ("EMPTY".equals(this.ctx.cleanup.state)) return AppTheme.AMBER;
+        if (this.ctx.cleanup.working) return AppTheme.NEON_LIGHT;
+        if (this.ctx.cleanup.done || "FOUND".equals(this.ctx.cleanup.state)) return AppTheme.GREEN;
         return AppTheme.TEXT_FAINT;
     }
 
     private String cleanupStateLabel() {
-        if (this.ctx.cleanupDialogStage == 2 && this.ctx.cleanupDialogWorking) {
-            return Math.max(0, Math.min(100, this.ctx.cleanupProgress)) + "%";
+        if (this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working) {
+            return Math.max(0, Math.min(100, this.ctx.cleanup.progress)) + "%";
         }
-        return this.ctx.cleanupDialogState;
+        return this.ctx.cleanup.state;
     }
 
     private void renderCleanupDialogButtons(final int x, final int y, final int dialogW, final int dialogH) {
         this.cleanupDialogCloseBounds = new Dimension(x + 22, y + dialogH - 68, 170, 48);
         final boolean cancelHover = this.cleanupDialogCloseBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        this.renderDialogButton(this.cleanupDialogCloseBounds, this.ctx.cleanupDialogDone ? "CLOSE" : "CANCEL", "ESC",
+        this.renderDialogButton(this.cleanupDialogCloseBounds, this.ctx.cleanup.done ? "CLOSE" : "CANCEL", "ESC",
                 AppTheme.TEXT, AppTheme.STROKE_BRIGHT, cancelHover);
 
         final String label = this.cleanupPrimaryLabel();
@@ -847,52 +772,61 @@ public class HomeScreen extends Screen {
         this.cleanupDialogPrimaryBounds = new Dimension(x + dialogW - primaryW - 22, y + dialogH - 68, primaryW, 48);
         final boolean primaryEnabled = this.cleanupPrimaryEnabled();
         final boolean primaryHover = primaryEnabled && this.cleanupDialogPrimaryBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        final Color primaryColor = !primaryEnabled ? AppTheme.TEXT_FAINT : this.ctx.cleanupDialogDone ? AppTheme.GREEN : AppTheme.CYAN;
+        final Color primaryColor = !primaryEnabled ? AppTheme.TEXT_FAINT : this.ctx.cleanup.done ? AppTheme.GREEN : AppTheme.CYAN;
         this.renderDialogButton(this.cleanupDialogPrimaryBounds, label, "ENTER", primaryColor, primaryColor, primaryHover, primaryEnabled);
     }
 
     private String cleanupPrimaryLabel() {
-        return this.ctx.cleanupDialogStage <= 1 ? "CLEAN CACHE" : "CLOSE";
+        return this.ctx.cleanup.stage <= 1 ? "CLEAN CACHE" : "CLOSE";
     }
 
     private boolean cleanupPrimaryEnabled() {
-        if (this.ctx.cleanupDialogWorking) return false;
-        return this.ctx.cleanupDialogStage > 1 || (this.ctx.cleanupFileCount > 0 && !this.ctx.cleanupDialogError);
+        if (this.ctx.cleanup.working) return false;
+        return this.ctx.cleanup.stage > 1 || (this.ctx.cleanup.fileCount > 0 && !this.ctx.cleanup.error);
     }
 
     private void closeCleanupDialog() {
-        this.ctx.cleanupDialogVisible = false;
+        this.ctx.cleanup.visible = false;
         this.rebuildMenu();
+        this.refreshCacheSize();
         this.ctx.requestRender();
     }
 
-    private String cacheSizeLabel() {
-        final Path cache = WaterMedia.tmp().resolve("cache");
-        long bytes = 0L;
-        if (Files.exists(cache)) {
-            try (final var stream = Files.walk(cache)) {
-                bytes = stream.filter(Files::isRegularFile).mapToLong(path -> {
-                    try {
-                        return Files.size(path);
-                    } catch (final IOException ignored) {
-                        return 0L;
-                    }
-                }).sum();
-            } catch (final IOException ignored) {
+    private void refreshCacheSize() {
+        // COALESCE: SKIP IF A WALK IS ALREADY RUNNING SO RE-ENTERING HOME DOES NOT SPAWN REDUNDANT WALKS
+        if (this.cacheWalking) return;
+        this.cacheWalking = true;
+        ThreadTool.createStarted("WaterMedia-CacheSize", () -> {
+            final Path cache = WaterMedia.tmp().resolve("cache");
+            long bytes = 0L;
+            if (Files.exists(cache)) {
+                try (final var stream = Files.walk(cache)) {
+                    bytes = stream.filter(Files::isRegularFile).mapToLong(path -> {
+                        try {
+                            return Files.size(path);
+                        } catch (final IOException ignored) {
+                            return 0L;
+                        }
+                    }).sum();
+                } catch (final IOException ignored) {
+                }
             }
-        }
-        return Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
+            this.cacheLabel = Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
+            this.cacheWalking = false;
+            // REBUILD ON THE RENDER THREAD SO THE CLEANUP ENTRY PICKS UP THE NEW LABEL
+            this.ctx.execute(this::rebuildMenu);
+        });
     }
 
     @Override
     protected void onKeyRelease(final int key) {
-        if (this.ctx.cleanupDialogVisible) {
+        if (this.ctx.cleanup.visible) {
             if (key == GLFW_KEY_ESCAPE) {
                 this.closeCleanupDialog();
                 this.ctx.playSelectionSound();
             } else if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
                 if (this.cleanupPrimaryEnabled()) {
-                    if (this.ctx.cleanupDialogStage > 1) {
+                    if (this.ctx.cleanup.stage > 1) {
                         this.closeCleanupDialog();
                     } else {
                         this.navigator.accept(Action.CLEANUP);
@@ -903,11 +837,11 @@ public class HomeScreen extends Screen {
             return;
         }
 
-        if (this.ctx.uploadDialogVisible) {
-            if (this.ctx.uploadDialogStage >= 3) {
+        if (this.ctx.upload.visible) {
+            if (this.ctx.upload.stage >= 3) {
                 switch (key) {
                     case GLFW_KEY_ESCAPE -> {
-                        this.ctx.uploadDialogVisible = false;
+                        this.ctx.upload.visible = false;
                         this.ctx.playSelectionSound();
                     }
                     case GLFW_KEY_UP -> this.moveRepoSelection(-1);
@@ -917,7 +851,7 @@ public class HomeScreen extends Screen {
                 return;
             }
             if (key == GLFW_KEY_ESCAPE) {
-                this.ctx.uploadDialogVisible = false;
+                this.ctx.upload.visible = false;
                 this.ctx.playSelectionSound();
             } else if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
                 if (this.uploadPrimaryEnabled()) {
@@ -950,31 +884,21 @@ public class HomeScreen extends Screen {
 
     @Override
     public void handleMouseMove(final double mx, final double my) {
-        // THE REPORT LIST DOES NOT HIGHLIGHT ON HOVER — ONLY THE SUBMIT BUTTON REACTS TO THE MOUSE,
-        // AND CARD SELECTION IS DRIVEN BY KEYBOARD/CLICK.
-        if (this.ctx.uploadDialogVisible || this.ctx.cleanupDialogVisible) return;
-        for (final Hit hit: this.hits) {
-            if (hit.bounds.contains(mx, my)) {
-                if (hit.panel != this.selectedPanel || hit.index != this.selectedIndex(hit.panel)) {
-                    this.selectedPanel = hit.panel;
-                    if (hit.panel == 0) this.selectedAction = hit.index;
-                    else if (hit.panel == 1) this.selectedMedia = hit.index;
-                    else this.selectedEntertainment = hit.index;
-                    this.ctx.playSelectionSound();
-                }
-                return;
-            }
-        }
+        // A VISIBLE DIALOG IS MODAL — SUPPRESS TREE HOVER SO THE MENU BEHIND IT DOES NOT SELF-SELECT.
+        // THE REPORT LIST DOES NOT HIGHLIGHT ON HOVER; ITS SUBMIT BUTTON READS ctx.mouseX/Y DIRECTLY.
+        if (this.ctx.upload.visible || this.ctx.cleanup.visible) return;
+        // HOVER FEEDS THE TILE VIEWS, WHICH SELF-SELECT THEIR PANEL/INDEX AND CHIME ON CHANGE
+        super.handleMouseMove(mx, my);
     }
 
     @Override
     public void handleMouseClick(final double mx, final double my) {
-        if (this.ctx.cleanupDialogVisible) {
+        if (this.ctx.cleanup.visible) {
             if (this.cleanupDialogCloseBounds.contains(mx, my) || this.cleanupDialogXBounds.contains(mx, my)) {
                 this.closeCleanupDialog();
                 this.ctx.playSelectionSound();
             } else if (this.cleanupPrimaryEnabled() && this.cleanupDialogPrimaryBounds.contains(mx, my)) {
-                if (this.ctx.cleanupDialogStage > 1) {
+                if (this.ctx.cleanup.stage > 1) {
                     this.closeCleanupDialog();
                 } else {
                     this.navigator.accept(Action.CLEANUP);
@@ -984,13 +908,13 @@ public class HomeScreen extends Screen {
             return;
         }
 
-        if (this.ctx.uploadDialogVisible) {
+        if (this.ctx.upload.visible) {
             if (this.uploadDialogCloseBounds.contains(mx, my) || this.uploadDialogXBounds.contains(mx, my)) {
-                this.ctx.uploadDialogVisible = false;
+                this.ctx.upload.visible = false;
                 this.ctx.playSelectionSound();
                 return;
             }
-            if (this.ctx.uploadDialogStage >= 3) {
+            if (this.ctx.upload.stage >= 3) {
                 for (final RepoHit hit: this.repoHits) {
                     if (hit.submit().contains(mx, my)) {
                         this.submitRepo(this.uploadRepoTargets().get(hit.index()), hit.index());
@@ -1018,12 +942,8 @@ public class HomeScreen extends Screen {
             return;
         }
 
-        for (final Hit hit: this.hits) {
-            if (hit.bounds.contains(mx, my)) {
-                this.handleSelect(hit.entry);
-                return;
-            }
-        }
+        // OUTSIDE A DIALOG THE TILE VIEWS OWN HIT-TESTING — LET THE TREE DISPATCH THE CLICK
+        super.handleMouseClick(mx, my);
     }
 
     private void moveSelection(final int delta) {
@@ -1032,7 +952,7 @@ public class HomeScreen extends Screen {
         } else if (this.selectedPanel == 2) {
             if (delta < 0 && !this.mediaTests.isEmpty()) {
                 this.selectedPanel = 1;
-                this.selectedMedia = Math.max(0, this.mediaTests.size() - 1);
+                this.selectedMedia = Math.max(0, this.visibleMediaCount - 1);
             } else {
                 this.selectedEntertainment = Math.max(0, Math.min(this.entertainment.size() - 1, this.selectedEntertainment + delta));
             }
@@ -1042,7 +962,7 @@ public class HomeScreen extends Screen {
                 this.selectedPanel = 2;
                 this.selectedEntertainment = 0;
             } else {
-                this.selectedMedia = Math.max(0, Math.min(this.mediaTests.size() - 1, next));
+                this.selectedMedia = Math.max(0, Math.min(this.visibleMediaCount - 1, next));
             }
         } else if (!this.entertainment.isEmpty()) {
             this.selectedPanel = 2;
@@ -1061,25 +981,16 @@ public class HomeScreen extends Screen {
     private void confirmSelection() {
         if (this.selectedPanel == 0 && this.selectedAction < this.actions.size()) {
             this.handleSelect(this.actions.get(this.selectedAction));
-        } else if (this.selectedPanel == 1 && this.selectedMedia < this.mediaTests.size()) {
+        } else if (this.selectedPanel == 1 && this.selectedMedia < this.visibleMediaCount) {
             this.handleSelect(this.mediaTests.get(this.selectedMedia));
         } else if (this.selectedPanel == 2 && this.selectedEntertainment < this.entertainment.size()) {
             this.handleSelect(this.entertainment.get(this.selectedEntertainment));
         }
     }
 
-    private int selectedIndex(final int panel) {
-        return switch (panel) {
-            case 0 -> this.selectedAction;
-            case 1 -> this.selectedMedia;
-            case 2 -> this.selectedEntertainment;
-            default -> -1;
-        };
-    }
-
     @Override
     public void handleScroll(final double yOffset) {
-        if (this.ctx.uploadDialogVisible && this.ctx.uploadDialogStage >= 3) {
+        if (this.ctx.upload.visible && this.ctx.upload.stage >= 3) {
             final int mods = this.uploadRepoTargets().size() - 1;
             final int max = Math.max(0, mods - this.repoVisibleRows);
             this.repoScrollOffset = Math.max(0, Math.min(max, this.repoScrollOffset - (int) Math.signum(yOffset)));
@@ -1089,21 +1000,253 @@ public class HomeScreen extends Screen {
 
     @Override
     public String instructions() {
-        if (this.ctx.uploadDialogVisible) {
-            return this.ctx.uploadDialogStage >= 3
+        if (this.ctx.upload.visible) {
+            return this.ctx.upload.stage >= 3
                     ? "UP/DOWN: Repository | ENTER: Submit | ESC: Close"
                     : "ENTER: Continue | ESC: Cancel";
         }
-        if (this.ctx.cleanupDialogVisible) {
+        if (this.ctx.cleanup.visible) {
             return "ENTER: Continue | ESC: Close";
         }
         return "ARROWS: Navigate | ENTER: Select | ESC: Exit";
     }
 
-    private record MenuEntry(String label, String meta, Action action, int groupIndex) {
+    // ==========================================================================
+    // CONTENT VIEW TREE — THE MENU GRID PORTED ONTO THE RETAINED VIEW FRAMEWORK
+    // ==========================================================================
+
+    // FIXED TWO-PANEL GRID: THE ACTION COLUMN ON THE LEFT, THE MEDIA-TILE GRID (PLUS THE ENTERTAINMENT
+    // ROWS) ON THE RIGHT. GEOMETRY MIRRORS THE LEGACY render() EXACTLY, INCLUDING THE visibleMediaCount
+    // OVERFLOW RULE (TILES THAT DO NOT FIT ARE HIDDEN, SO THEY ARE NEITHER DRAWN NOR HIT-TESTED) AND THE
+    // ENTERTAINMENT-FITS CHECK. THE SECTION HEADS AND THE UPLOAD TOOLTIP ARE PAINTED HERE.
+    private final class HomeBody extends ViewGroup<HomeBody> {
+
+        private static final int TILE_H = 94;
+        private final List<ActionTile> actionViews = new ArrayList<>();
+        private final List<MediaTile> mediaViews = new ArrayList<>();
+        private final List<EntertainmentTile> entViews = new ArrayList<>();
+        private int leftW;
+        private int rightXRel;
+        private int rightW;
+        private int tileW;
+        private int rightXAbs;
+        private int entYAbs;
+        private boolean entHeadVisible;
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            final int gap = 18;
+            final int colGap = 10;
+            this.leftW = Math.max(330, (innerAvailWidth - gap) / 2);
+            this.rightXRel = this.leftW + gap;
+            this.rightW = innerAvailWidth - this.rightXRel;
+            this.tileW = Math.max(160, (this.rightW - colGap) / 2);
+            for (final ActionTile tile: this.actionViews) {
+                tile.size(this.leftW, 56);
+                tile.measure(this.leftW, 56);
+            }
+            for (final MediaTile tile: this.mediaViews) {
+                tile.size(this.tileW, TILE_H);
+                tile.measure(this.tileW, TILE_H);
+            }
+            for (final EntertainmentTile tile: this.entViews) {
+                tile.size(this.rightW, 72);
+                tile.measure(this.rightW, 72);
+            }
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            final int colGap = 10;
+            final int contentH = this.measuredHeight;
+            int rowY = this.top + 36;
+            for (final ActionTile tile: this.actionViews) {
+                tile.layout(this.left, rowY);
+                rowY += 64;
+            }
+            this.rightXAbs = this.left + this.rightXRel;
+            int fit = this.mediaViews.size();
+            for (int i = 0; i < this.mediaViews.size(); i++) {
+                final int col = i % 2;
+                final int row = i / 2;
+                final int tx = this.rightXAbs + col * (this.tileW + colGap);
+                final int ty = this.top + 36 + row * (TILE_H + 10);
+                // TILES THAT OVERFLOW THE PANEL ARE HIDDEN — NEITHER DRAWN NOR HIT-TESTED
+                if (ty + TILE_H > this.top + contentH) {
+                    fit = i;
+                    break;
+                }
+                this.mediaViews.get(i).visible(true).layout(tx, ty);
+            }
+            for (int i = fit; i < this.mediaViews.size(); i++) this.mediaViews.get(i).visible(false);
+            HomeScreen.this.visibleMediaCount = fit;
+
+            this.entHeadVisible = false;
+            if (!this.entViews.isEmpty()) {
+                final int mediaRows = Math.max(1, (this.mediaViews.size() + 1) / 2);
+                this.entYAbs = this.top + 36 + mediaRows * (TILE_H + 10) + 24;
+                if (this.entYAbs + 112 <= this.top + contentH) {
+                    this.entHeadVisible = true;
+                    int entRowY = this.entYAbs + 36;
+                    for (final EntertainmentTile tile: this.entViews) {
+                        tile.visible(true).layout(this.rightXAbs, entRowY);
+                        entRowY += 82;
+                    }
+                } else {
+                    for (final EntertainmentTile tile: this.entViews) tile.visible(false);
+                }
+            }
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            uploadTooltipAnchor = null;
+            AppChrome.sectionHead(text, "Actions", actions.size() + " available", this.left, this.top);
+            AppChrome.sectionHead(text, "Media tests", mediaTests.size() + " categories", this.rightXAbs, this.top);
+            if (this.entHeadVisible) {
+                AppChrome.sectionHead(text, "Entertaiment", entertainment.size() + " available", this.rightXAbs, this.entYAbs);
+            }
+            super.onDraw(canvas); // TILES
+            // THE UPLOAD-LOGS TOOLTIP IS ANCHORED TO ITS ACTION TILE (SET DURING THE TILE DRAW) AND SITS ON TOP
+            if (uploadTooltipAnchor != null) renderUploadLogsTooltip(uploadTooltipAnchor);
+        }
     }
 
-    private record Hit(Dimension bounds, MenuEntry entry, int panel, int index) {
+    // ONE ACTION ROW — PORTS THE LEGACY drawAction ONTO ITS OWN BOX AND READS THE SCREEN'S selectedPanel/
+    // selectedAction. HOVER SELF-SELECTS (CHIMING ON CHANGE); CLICK ROUTES THROUGH handleSelect (WHICH NO-OPS
+    // FOR DISABLED ACTIONS). DISABLED ACTIONS STAY HOVERABLE/CLICKABLE, EXACTLY LIKE THE LEGACY MENU.
+    private final class ActionTile extends View<ActionTile> {
+
+        private final int index;
+
+        private ActionTile(final int index) {
+            this.index = index;
+            this.onHover(v -> {
+                if (selectedPanel != 0 || selectedAction != this.index) {
+                    selectedPanel = 0;
+                    selectedAction = this.index;
+                    HomeScreen.this.ctx.playSelectionSound();
+                }
+            });
+            this.onClick(v -> handleSelect(actions.get(this.index)));
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final MenuEntry entry = actions.get(this.index);
+            final boolean selected = selectedPanel == 0 && selectedAction == this.index;
+            final Dimension b = new Dimension(this.left, this.top, this.measuredWidth, this.measuredHeight);
+            final boolean enabled = actionEnabled(entry);
+            final Color accent = !enabled ? AppTheme.TEXT_FAINT : switch (entry.action()) {
+                case OPEN_MULTIMEDIA -> AppTheme.GREEN;
+                case EXIT -> AppTheme.RED;
+                default -> AppTheme.NEON_LIGHT;
+            };
+            final Color borderColor = !enabled
+                    ? AppTheme.STROKE
+                    : selected || entry.action() == Action.OPEN_MULTIMEDIA || entry.action() == Action.EXIT
+                    ? accent
+                    : AppTheme.STROKE_BRIGHT;
+            final Color textColor = !enabled
+                    ? AppTheme.TEXT_FAINT
+                    : entry.action() == Action.OPEN_MULTIMEDIA || entry.action() == Action.EXIT
+                    ? accent
+                    : selected ? accent : AppTheme.TEXT;
+            if (selected && enabled) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, accent, 0.35f);
+            RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
+                    !enabled ? 0.06f : entry.action() == Action.EXIT ? (selected ? 0.26f : 0.20f) : AppTheme.BG_2.getRed() / 255f,
+                    !enabled ? 0.08f : entry.action() == Action.EXIT ? (selected ? 0.07f : 0.04f) : (selected ? 34f / 255f : AppTheme.BG_2.getGreen() / 255f),
+                    !enabled ? 0.14f : entry.action() == Action.EXIT ? (selected ? 0.11f : 0.08f) : (selected ? 66f / 255f : AppTheme.BG_2.getBlue() / 255f),
+                    enabled ? 0.92f : 0.58f);
+            RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), borderColor, 2f);
+            RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, enabled ? selected ? accent : AppTheme.NEON : AppTheme.STROKE_BRIGHT, enabled ? selected ? 0.28f : 0.08f : 0.03f);
+            PixelIcon.draw(actionIcon(entry.action()), b.x() + 14, b.y() + 17, 18, accent);
+            text.renderBold(entry.label().toUpperCase(), b.x() + 48, centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON), textColor, AppTheme.TEXT_BUTTON);
+            final int hintW = text.width(entry.meta(), AppTheme.TEXT_BODY) + 14;
+            RenderSystem.fill(b.right() - hintW - 12, b.y() + 17, hintW, 22, AppTheme.alpha(AppTheme.BG_1, 180));
+            RenderSystem.rect(b.right() - hintW - 12, b.y() + 17, hintW, 22, AppTheme.STROKE, 1f);
+            text.render(entry.meta(), b.right() - hintW - 5, centerTextY(b.y() + 17, 22, AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+            if (entry.action() == Action.UPLOAD_LOGS && selected && !HomeScreen.this.ctx.upload.visible) uploadTooltipAnchor = b;
+        }
+    }
+
+    // ONE MEDIA-TEST TILE — PORTS THE LEGACY drawMediaTile.
+    private final class MediaTile extends View<MediaTile> {
+
+        private final int index;
+
+        private MediaTile(final int index) {
+            this.index = index;
+            this.onHover(v -> {
+                if (selectedPanel != 1 || selectedMedia != this.index) {
+                    selectedPanel = 1;
+                    selectedMedia = this.index;
+                    HomeScreen.this.ctx.playSelectionSound();
+                }
+            });
+            this.onClick(v -> handleSelect(mediaTests.get(this.index)));
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final MenuEntry entry = mediaTests.get(this.index);
+            final boolean selected = selectedPanel == 1 && selectedMedia == this.index;
+            final Dimension b = new Dimension(this.left, this.top, this.measuredWidth, this.measuredHeight);
+            final Color folderColor = categoryColor(entry.groupIndex(), 0);
+            final Color titleColor = folderColor;
+            final Color accent = selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
+            if (selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.NEON, 0.28f);
+            RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
+                    selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
+            RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), accent, 2f);
+            PixelIcon.draw("folder", b.x() + 14, b.y() + 15, 18, folderColor);
+            text.renderBold(text.truncateToWidth(entry.label().toUpperCase(), b.width() - 62, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
+                    b.x() + 42, centerBoldTextY(b.y() + 15, 18, AppTheme.TEXT_BUTTON), titleColor, AppTheme.TEXT_BUTTON);
+            text.render((entry.meta() + " - click to load").toUpperCase(Locale.ROOT), b.x() + 14, b.y() + 50, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+        }
+    }
+
+    // ONE ENTERTAINMENT ROW — PORTS THE LEGACY drawEntertainmentTile.
+    private final class EntertainmentTile extends View<EntertainmentTile> {
+
+        private final int index;
+
+        private EntertainmentTile(final int index) {
+            this.index = index;
+            this.onHover(v -> {
+                if (selectedPanel != 2 || selectedEntertainment != this.index) {
+                    selectedPanel = 2;
+                    selectedEntertainment = this.index;
+                    HomeScreen.this.ctx.playSelectionSound();
+                }
+            });
+            this.onClick(v -> handleSelect(entertainment.get(this.index)));
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final MenuEntry entry = entertainment.get(this.index);
+            final boolean selected = selectedPanel == 2 && selectedEntertainment == this.index;
+            final Dimension b = new Dimension(this.left, this.top, this.measuredWidth, this.measuredHeight);
+            final Color accent = selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT;
+            if (selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.GREEN, 0.30f);
+            RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
+                    selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
+            RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.GREEN : AppTheme.STROKE_BRIGHT, 2f);
+            final String label = entry.label().toUpperCase(Locale.ROOT);
+            final int iconSize = 34;
+            final int gap = 18;
+            final int labelW = text.widthBold(label, AppTheme.TEXT_DISPLAY);
+            final int groupW = iconSize + gap + labelW;
+            final int groupX = b.x() + Math.max(0, (b.width() - groupW) / 2);
+            PixelIcon.draw("tv", groupX, b.y() + Math.max(0, (b.height() - iconSize) / 2), iconSize, accent);
+            text.renderBold(label, groupX + iconSize + gap, centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_DISPLAY), accent, AppTheme.TEXT_DISPLAY);
+        }
+    }
+
+    private record MenuEntry(String label, String meta, Action action, int groupIndex) {
     }
 
     private record RepoTarget(String name, String slug, String url, Color accent) {

@@ -5,11 +5,14 @@ import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
-import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
+import org.watermedia.bootstrap.app.view.Canvas;
+import org.watermedia.bootstrap.app.view.ListView;
+import org.watermedia.bootstrap.app.view.View;
 
 import java.awt.Color;
+import java.awt.Font;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -23,22 +26,27 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Region selector for IPTV channels.
+ * Region selector for IPTV channels, built on the view tree: the window chrome and panel frame are drawn
+ * by {@link AppChrome}, and the selectable region rows live in a {@link ListView} that owns scrolling,
+ * hit-testing and the selection highlight.
  */
-public final class RegionSelectorScreen extends Screen {
+public final class RegionSelectorScreen extends ViewScreen {
 
     private static final int ROW_H = 54;
-    private static final int ROW_STEP = 62;
+    private static final int ROW_GAP = 8;
 
     private final Consumer<HomeScreen.Action> navigator;
     private final List<String> regions = new ArrayList<>();
-    private final List<Hit> hits = new ArrayList<>();
     private final Map<String, Integer> counts = new LinkedHashMap<>();
     private int totalChannels;
-    private int selectedIndex;
-    private int scrollOffset;
-    private int visibleRows = 1;
     private String detectedRegion = "UNKNOWN";
+
+    private ListView<Integer> list;
+    // PANEL ROWS RECT, COMPUTED IN renderChrome AND CONSUMED BY THE CONTENT-RECT OVERRIDES
+    private int rowsX;
+    private int rowsY;
+    private int rowsW;
+    private int rowsH;
 
     public RegionSelectorScreen(final TextRenderer text, final AppContext ctx,
                                 final Consumer<HomeScreen.Action> navigator) {
@@ -47,10 +55,33 @@ public final class RegionSelectorScreen extends Screen {
     }
 
     @Override
+    protected View<?> build() {
+        this.list = new ListView<Integer>()
+                .rowHeight(ROW_H)
+                .spacing(ROW_GAP)
+                .rowFactory((index, pos) -> new RegionRow(this, index))
+                .onSelect((index, pos) -> this.openSelected())
+                .selectOnHover(true)
+                // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
+                .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .width(View.MATCH_PARENT)
+                .height(View.MATCH_PARENT);
+        return this.list;
+    }
+
+    @Override
     public void onEnter() {
+        super.onEnter();
         this.rebuildRegions();
-        this.selectedIndex = 0;
-        this.scrollOffset = 0;
+        this.populate();
+        this.list.selection(0);
+    }
+
+    private void populate() {
+        final List<Integer> options = new ArrayList<>();
+        for (int i = 0; i < this.optionCount(); i++) options.add(i);
+        this.list.items(options);
     }
 
     private void rebuildRegions() {
@@ -73,9 +104,8 @@ public final class RegionSelectorScreen extends Screen {
     }
 
     @Override
-    public void render(final int windowW, final int windowH) {
+    protected void renderChrome(final int windowW, final int windowH) {
         AppChrome.screen(this.text, this.ctx, windowW, windowH, "Television", "region selector", "v" + WaterMedia.VERSION);
-        this.hits.clear();
 
         final int top = AppChrome.contentTop() + 18;
         final int bottom = AppChrome.contentBottom(windowH) - 18;
@@ -87,66 +117,50 @@ public final class RegionSelectorScreen extends Screen {
         AppChrome.panel(panelX, top, panelW, panelH, true);
         AppChrome.sectionHead(this.text, "Regions", this.optionCount() + " available", panelX + 18, top + 18);
 
-        final int rowX = panelX + 24;
-        final int rowW = panelW - 48;
-        int rowY = top + 58;
-        this.drawRegionRow(rowX, rowY, rowW, ROW_H, 0, true);
-        rowY += ROW_STEP;
-        this.drawRegionRow(rowX, rowY, rowW, ROW_H, 1, true);
-        rowY += ROW_STEP + 10;
-        RenderSystem.lineH(rowX, rowY - 10, rowW, AppTheme.STROKE_BRIGHT, 1f);
-
-        final int listY = rowY;
-        final int listH = Math.max(ROW_H, top + panelH - listY - 20);
-        this.visibleRows = Math.max(1, listH / ROW_STEP);
-        this.ensureVisible(this.visibleRows);
-        RenderSystem.clip(rowX, listY, rowW, listH, windowH);
-        for (int i = 0; i < this.visibleRows && i + this.scrollOffset < this.regions.size(); i++) {
-            this.drawRegionRow(rowX, listY + i * ROW_STEP, rowW, ROW_H, i + this.scrollOffset + 2, false);
-        }
-        RenderSystem.clearClip();
-        if (this.regions.size() > this.visibleRows) {
-            this.renderScrollBar(panelX + panelW - 14, listY, listH, this.visibleRows);
-        }
-        RenderSystem.restoreProjection();
+        this.rowsX = panelX + 24;
+        this.rowsY = top + 58;
+        this.rowsW = panelW - 48;
+        this.rowsH = Math.max(ROW_H, top + panelH - this.rowsY - 20);
     }
 
-    private void drawRegionRow(final int x, final int y, final int w, final int h,
-                               final int index, final boolean fixed) {
-        final String region = this.regionFor(index);
-        final boolean selected = this.selectedIndex == index;
-        final boolean detected = index == 1;
-        final Color accent = selected ? AppTheme.GREEN : fixed ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
-        if (selected) RenderSystem.glowRect(x, y, w, h, 0f, AppTheme.GREEN, 0.26f);
-        RenderSystem.fill(x, y, w, h, selected ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.alpha(AppTheme.BG_2, 220));
-        RenderSystem.rect(x, y, w, h, accent, selected ? 2f : 1.5f);
-        PixelIcon.draw("tv", x + 16, y + Math.max(0, (h - 24) / 2), 24, selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT);
+    @Override
+    protected int contentX(final int windowW, final int windowH) {
+        return this.rowsX;
+    }
 
-        final String label = index == 0 ? "GLOBAL" : region.toUpperCase(Locale.ROOT);
-        final int count = index == 0 ? this.totalChannels : this.counts.getOrDefault(region, 0);
-        final String meta = count + (count == 1 ? " CHANNEL" : " CHANNELS");
-        final int tagW = Math.max(98, this.text.width(meta, AppTheme.TEXT_SUBTITLE) + 22);
-        final int labelMax = Math.max(80, w - 72 - tagW - (detected ? 96 : 20));
-        this.text.renderBold(this.text.truncateToWidth(label, labelMax, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
-                x + 52, this.centerBoldTextY(y, h, AppTheme.TEXT_BUTTON), selected ? AppTheme.GREEN : AppTheme.TEXT, AppTheme.TEXT_BUTTON);
+    @Override
+    protected int contentY(final int windowW, final int windowH) {
+        return this.rowsY;
+    }
 
-        if (detected) {
-            final int badgeX = x + 62 + Math.min(labelMax, this.text.widthBold(label, AppTheme.TEXT_BUTTON));
-            RenderSystem.fill(badgeX, y + 16, 76, 22, AppTheme.alpha(AppTheme.BG_1, 190));
-            RenderSystem.rect(badgeX, y + 16, 76, 22, AppTheme.AMBER, 1f);
-            this.text.render("SYSTEM", badgeX + 10, this.centerTextY(y + 16, 22, AppTheme.TEXT_SUBTITLE), AppTheme.AMBER, AppTheme.TEXT_SUBTITLE);
+    @Override
+    protected int contentW(final int windowW, final int windowH) {
+        return this.rowsW;
+    }
+
+    @Override
+    protected int contentH(final int windowW, final int windowH) {
+        return this.rowsH;
+    }
+
+    @Override
+    protected void onKeyRelease(final int key) {
+        switch (key) {
+            case GLFW_KEY_UP -> {
+                this.list.moveSelection(-1);
+                this.ctx.playSelectionSound();
+            }
+            case GLFW_KEY_DOWN -> {
+                this.list.moveSelection(1);
+                this.ctx.playSelectionSound();
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openSelected();
+            case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
         }
-
-        final int tagX = x + w - tagW - 12;
-        RenderSystem.fill(tagX, y + 16, tagW, 22, AppTheme.alpha(AppTheme.BG_1, 190));
-        RenderSystem.rect(tagX, y + 16, tagW, 22, selected ? AppTheme.GREEN : AppTheme.STROKE, 1f);
-        this.text.render(meta, tagX + 11, this.centerTextY(y + 16, 22, AppTheme.TEXT_SUBTITLE),
-                selected ? AppTheme.GREEN : AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        this.hits.add(new Hit(new Dimension(x, y, w, h), index));
     }
 
     private void openSelected() {
-        final String region = this.regionFor(this.selectedIndex);
+        final String region = this.regionFor(this.list.selectedIndex());
         final List<AppContext.IptvChannel> channels = new ArrayList<>();
         for (final AppContext.IptvChannel channel: this.ctx.iptvChannels) {
             if (channel == null || blank(channel.url())) continue;
@@ -170,76 +184,13 @@ public final class RegionSelectorScreen extends Screen {
         this.ctx.selectedIptvRegion = region == null ? "GLOBAL" : region;
         final String groupName = region == null ? "TELEVISION" : "TELEVISION " + region.toUpperCase(Locale.ROOT);
         this.ctx.selectedGroup = new AppContext.URIGroup(groupName, uris.toArray(AppContext.TestURI[]::new));
+        this.ctx.playSelectionSound();
         this.navigator.accept(HomeScreen.Action.MRL_SELECTOR);
-    }
-
-    @Override
-    protected void onKeyRelease(final int key) {
-        switch (key) {
-            case GLFW_KEY_UP -> this.move(-1);
-            case GLFW_KEY_DOWN -> this.move(1);
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openSelected();
-            case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
-        }
-    }
-
-    @Override
-    public void handleMouseMove(final double mx, final double my) {
-        for (final Hit hit: this.hits) {
-            if (!hit.bounds.contains(mx, my)) continue;
-            if (this.selectedIndex != hit.index) {
-                this.selectedIndex = hit.index;
-                this.ctx.playSelectionSound();
-                this.ctx.requestRender();
-            }
-            return;
-        }
-    }
-
-    @Override
-    public void handleMouseClick(final double mx, final double my) {
-        for (final Hit hit: this.hits) {
-            if (!hit.bounds.contains(mx, my)) continue;
-            this.selectedIndex = hit.index;
-            this.openSelected();
-            this.ctx.playSelectionSound();
-            return;
-        }
-    }
-
-    @Override
-    public void handleScroll(final double yOffset) {
-        final int max = Math.max(0, this.regions.size() - this.visibleRows);
-        this.scrollOffset = Math.max(0, Math.min(max, this.scrollOffset - (int) Math.signum(yOffset)));
-        this.ctx.requestRender();
     }
 
     @Override
     public String instructions() {
         return "UP/DOWN: Region | ENTER: Select | ESC: Back";
-    }
-
-    private void move(final int delta) {
-        this.selectedIndex = Math.max(0, Math.min(this.optionCount() - 1, this.selectedIndex + delta));
-        this.ctx.playSelectionSound();
-        this.ctx.requestRender();
-    }
-
-    private void ensureVisible(final int visibleRows) {
-        if (this.selectedIndex < 2) return;
-        final int listIndex = this.selectedIndex - 2;
-        if (listIndex < this.scrollOffset) this.scrollOffset = listIndex;
-        if (listIndex >= this.scrollOffset + visibleRows) this.scrollOffset = listIndex - visibleRows + 1;
-        this.scrollOffset = Math.max(0, Math.min(Math.max(0, this.regions.size() - visibleRows), this.scrollOffset));
-    }
-
-    private void renderScrollBar(final int x, final int y, final int h, final int visibleRows) {
-        RenderSystem.fill(x, y, 4, h, AppTheme.alpha(AppTheme.BG_3, 190));
-        final int thumbH = Math.max(24, Math.round(h * (visibleRows / (float) this.regions.size())));
-        final int maxScroll = Math.max(1, this.regions.size() - visibleRows);
-        final int thumbY = y + Math.round((h - thumbH) * (this.scrollOffset / (float) maxScroll));
-        RenderSystem.fill(x, thumbY, 4, thumbH, AppTheme.NEON);
-        RenderSystem.glowRect(x, thumbY, 4, thumbH, 0f, AppTheme.NEON, 0.24f);
     }
 
     private int optionCount() {
@@ -263,7 +214,8 @@ public final class RegionSelectorScreen extends Screen {
                 if (region.endsWith("_" + country)) return region;
             }
         }
-        return exact.isBlank() ? "UNKNOWN" : exact;
+        // ONLY SURFACE A DETECTED REGION THAT ACTUALLY HAS CHANNELS; OTHERWISE FALL BACK TO GLOBAL (NULL)
+        return null;
     }
 
     private String channelName(final AppContext.IptvChannel channel, final Set<String> used) {
@@ -286,14 +238,60 @@ public final class RegionSelectorScreen extends Screen {
         return value == null || value.isBlank();
     }
 
-    private int centerTextY(final int y, final int h, final float scale) {
-        return y + Math.max(0, (h - this.text.glyphHeight(scale)) / 2);
-    }
+    // ONE SELECTABLE REGION ROW — PORTS THE ORIGINAL drawRegionRow ONTO ITS OWN left/top/measured BOX AND
+    // READS THE ListView-DRIVEN selected/hovered STATE. index 0 = GLOBAL, index 1 = DETECTED/SYSTEM, 2+ = REGION.
+    private static final class RegionRow extends View<RegionRow> {
 
-    private int centerBoldTextY(final int y, final int h, final float scale) {
-        return y + Math.max(0, (h - this.text.glyphHeightBold(scale)) / 2);
-    }
+        private final RegionSelectorScreen screen;
+        private final int index;
 
-    private record Hit(Dimension bounds, int index) {
+        private RegionRow(final RegionSelectorScreen screen, final int index) {
+            this.screen = screen;
+            this.index = index;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final TextRenderer text = canvas.text();
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            final String region = this.screen.regionFor(this.index);
+            final boolean fixed = this.index == 0 || this.index == 1;
+            final boolean detected = this.index == 1;
+            final Color accent = this.selected ? AppTheme.GREEN : fixed ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
+
+            if (this.selected) canvas.glow(x, y, w, h, 0f, AppTheme.GREEN, 0.26f);
+            canvas.fill(x, y, w, h, this.selected ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.alpha(AppTheme.BG_2, 220));
+            canvas.stroke(x, y, w, h, accent, this.selected ? 2f : 1.5f);
+            PixelIcon.draw("tv", x + 16, y + Math.max(0, (h - 24) / 2), 24, this.selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT);
+
+            final String label = this.index == 0 || region == null ? "GLOBAL" : region.toUpperCase(Locale.ROOT);
+            final int count = this.index == 0 || region == null ? this.screen.totalChannels : this.screen.counts.getOrDefault(region, 0);
+            final String meta = count + (count == 1 ? " CHANNEL" : " CHANNELS");
+            final int tagW = Math.max(98, text.width(meta, AppTheme.TEXT_SUBTITLE) + 22);
+            final int labelMax = Math.max(80, w - 72 - tagW - (detected ? 96 : 20));
+            final int labelY = y + Math.max(0, (h - text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2);
+            canvas.text(text.truncateToWidth(label, labelMax, AppTheme.TEXT_BUTTON, Font.BOLD),
+                    x + 52, labelY, this.selected ? AppTheme.GREEN : AppTheme.TEXT, AppTheme.TEXT_BUTTON, true);
+
+            if (detected) {
+                final int badgeX = x + 62 + Math.min(labelMax, text.widthBold(label, AppTheme.TEXT_BUTTON));
+                canvas.fill(badgeX, y + 16, 76, 22, AppTheme.alpha(AppTheme.BG_1, 190));
+                canvas.stroke(badgeX, y + 16, 76, 22, AppTheme.AMBER, 1f);
+                canvas.text("SYSTEM", badgeX + 10, this.centerY(text, y + 16, 22), AppTheme.AMBER, AppTheme.TEXT_SUBTITLE, false);
+            }
+
+            final int tagX = x + w - tagW - 12;
+            canvas.fill(tagX, y + 16, tagW, 22, AppTheme.alpha(AppTheme.BG_1, 190));
+            canvas.stroke(tagX, y + 16, tagW, 22, this.selected ? AppTheme.GREEN : AppTheme.STROKE, 1f);
+            canvas.text(meta, tagX + 11, this.centerY(text, y + 16, 22),
+                    this.selected ? AppTheme.GREEN : AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
+        }
+
+        private int centerY(final TextRenderer text, final int y, final int h) {
+            return y + Math.max(0, (h - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2);
+        }
     }
 }

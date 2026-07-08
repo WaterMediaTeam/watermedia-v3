@@ -48,7 +48,11 @@ public final class PixelIcon {
             Map.entry("arrow-left", new String[]{"0010", "0110", "1111", "0110", "0010"}),
             Map.entry("arrow-right", new String[]{"0100", "0110", "1111", "0110", "0100"}),
             Map.entry("check", new String[]{"00001", "00010", "10100", "01000", "00000"}),
-            Map.entry("arrows", new String[]{"00100", "01110", "10101", "01110", "00100"})
+            Map.entry("arrows", new String[]{"00100", "01110", "10101", "01110", "00100"}),
+            // WINDOW TITLEBAR CONTROLS
+            Map.entry("minimize", new String[]{"00000", "00000", "00000", "11111"}),
+            Map.entry("maximize", new String[]{"11111", "10001", "10001", "10001", "11111"}),
+            Map.entry("restore", new String[]{"001111", "001001", "111101", "101101", "100100", "111100"})
     );
 
     private PixelIcon() {

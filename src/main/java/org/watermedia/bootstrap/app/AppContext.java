@@ -11,9 +11,7 @@ import java.io.File;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 
 import static org.lwjgl.glfw.GLFW.glfwPostEmptyEvent;
@@ -63,12 +61,7 @@ public final class AppContext implements Executor {
     public boolean selectionSoundEnabled = true;
 
     // CONFIG STATUS SHOWN BY SETTINGS IN THE ENGINE STRIP
-    public volatile boolean configStatusVisible;
-    public volatile String configStatusText = "READY";
-    public volatile boolean configStatusPulse;
-    public volatile boolean configStatusWarn;
-    public volatile boolean configStatusError;
-    public volatile boolean configStatusStrike;
+    public final ConfigStatus configStatus = new ConfigStatus();
 
     // TEXT RENDERER
     public TextRenderer text;
@@ -97,22 +90,8 @@ public final class AppContext implements Executor {
     public MediaPlayer player;
     private volatile Thread releaseThread;
 
-    // BANNER
-    public int bannerTextureId = -1;
-    public int bannerWidth;
-    public int bannerHeight;
-    public int bannerGlowTextureId = -1;
-    public int bannerGlowWidth;
-    public int bannerGlowHeight;
-    public int iconTextureId = -1;
-    public int iconWidth;
-    public int iconHeight;
-    public int iconGlowTextureId = -1;
-    public int iconGlowWidth;
-    public int iconGlowHeight;
-    public int[] duckFrameTextureIds = new int[0];
-    public int duckFrameWidth;
-    public int duckFrameHeight;
+    // BANNER, ICON AND DUCK GPU TEXTURE HANDLES
+    public final Assets assets = new Assets();
     public boolean backendsLoading = true;
 
     // AUDIO
@@ -126,37 +105,13 @@ public final class AppContext implements Executor {
     public String customUrlText = "";
 
     // UPLOAD LOGS DIALOG STATE
-    public volatile boolean uploadDialogVisible;
-    public volatile boolean uploadDialogWorking;
-    public volatile boolean uploadDialogDone;
-    public volatile boolean uploadDialogError;
-    public volatile boolean uploadUploadsDone;
-    public volatile boolean uploadIssueCopied;
-    public volatile boolean uploadIssueOpened;
-    public volatile int uploadDialogStage = 1;
-    public volatile String uploadDialogStatus = "READY";
-    public volatile String uploadIssueUrl = "github.com/watermedia/issues/new";
-    // REPOSITORY THE STAGE-3 SUBMIT ACTION WILL OPEN (WATERMEDIA BY DEFAULT, OR A SUSPECTED MOD)
-    public volatile String uploadRepoUrl;
-    public final List<UploadFileEntry> uploadDialogFiles = new CopyOnWriteArrayList<>();
-    // IDS OF SUSPECT_MODS WHOSE JAR WAS FOUND IN THE MODS FOLDER (POPULATED DURING THE UPLOAD SCAN)
-    public final Set<String> suspectModIds = ConcurrentHashMap.newKeySet();
+    public final UploadState upload = new UploadState();
 
     // CLEANUP CACHE DIALOG STATE
-    public volatile boolean cleanupDialogVisible;
-    public volatile boolean cleanupDialogWorking;
-    public volatile boolean cleanupDialogDone;
-    public volatile boolean cleanupDialogError;
-    public volatile int cleanupDialogStage = 1;
-    public volatile int cleanupFileCount;
-    public volatile String cleanupSizeLabel = "0 B";
-    public volatile String cleanupDialogState = "READY";
-    public volatile int cleanupProgress;
+    public final CleanupState cleanup = new CleanupState();
 
     // GLOBAL ERROR DIALOG
-    public String globalErrorTitle;
-    public String globalErrorMessage;
-    public Runnable globalErrorOnClose;
+    public final ErrorState error = new ErrorState();
 
     // RECORDS
     public record TestURI(String name, String uri, boolean debug) {
@@ -248,24 +203,33 @@ public final class AppContext implements Executor {
         p.stop();
         // release() JOINS THE DECODER LIFECYCLE — FFMPEG CONTEXT CLOSE + DECODE-THREAD JOINS + GPU
         // DRAIN — WHICH BLOCKS ~HUNDREDS OF MS. RUN IT OFF THE RENDER THREAD SO LEAVING THE PLAYER
-        // SCREEN DOES NOT FREEZE THE UI. THE ENGINE RELEASE IS THREAD-SAFE (GL DEFERS TO THE RENDER
-        // EXECUTOR; VULKAN SUBMITS UNDER THE SHARED QUEUE LOCK).
-        // EACH RELEASE CHAINS BEHIND THE PREVIOUS ONE: awaitPlayerRelease() JOINS ONLY THE LATEST
-        // THREAD, SO THE CHAIN GUARANTEES NO EARLIER RELEASE OUTLIVES THE RENDER-DEVICE TEARDOWN.
+        // SCREEN DOES NOT FREEZE THE UI.
+        this.releaseAsync("WaterMedia-PlayerRelease", p::release);
+    }
+
+    /**
+     * Runs a blocking media teardown off the render thread, chained behind any prior release. Since
+     * {@link #awaitPlayerRelease()} joins only the latest thread, this chain guarantees no earlier
+     * release — the main player or a batch of thumbnails — outlives the render-device teardown. The
+     * engine release is thread-safe (OpenGL defers its texture deletes to the render executor; Vulkan
+     * submits under the shared queue lock). Call on the render thread; {@code release} runs off it.
+     */
+    public void releaseAsync(final String name, final Runnable release) {
         final Thread prev = this.releaseThread;
-        this.releaseThread = ThreadTool.createStarted("WaterMedia-PlayerRelease", () -> {
+        this.releaseThread = ThreadTool.createStarted(name, () -> {
             if (prev != null) {
                 while (prev.isAlive()) ThreadTool.join(prev);
             }
-            p.release();
+            release.run();
         });
     }
 
     /**
-     * Blocks until the latest asynchronous {@link #releasePlayer()} finishes. Call this on the render
-     * thread before tearing down the render device on shutdown, so a background Vulkan release never
-     * touches a destroyed device. The executor is pumped meanwhile because a background OpenGL engine
-     * release dispatches its texture deletions onto this thread, which is no longer running the loop.
+     * Blocks until the latest asynchronous {@link #releaseAsync} finishes (the main player or the last
+     * thumbnail batch). Call this on the render thread before tearing down the render device on shutdown,
+     * so a background Vulkan release never touches a destroyed device. The executor is pumped meanwhile
+     * because a background OpenGL engine release dispatches its texture deletions onto this thread, which
+     * is no longer running the loop.
      */
     public void awaitPlayerRelease() {
         final Thread t = this.releaseThread;
@@ -288,33 +252,27 @@ public final class AppContext implements Executor {
      * Shows a global error dialog.
      */
     public void showError(final String title, final String message, final Runnable onClose) {
-        this.globalErrorTitle = title;
-        this.globalErrorMessage = message;
-        this.globalErrorOnClose = onClose;
+        this.error.show(title, message, onClose);
     }
 
     /**
      * Shows a global error dialog with default title.
      */
     public void showError(final String message, final Runnable onClose) {
-        this.showError("Error", message, onClose);
+        this.error.show(message, onClose);
     }
 
     /**
      * Checks if there's an active error dialog.
      */
     public boolean hasError() {
-        return this.globalErrorMessage != null;
+        return this.error.has();
     }
 
     /**
      * Clears the error dialog.
      */
     public void clearError() {
-        final Runnable callback = this.globalErrorOnClose;
-        this.globalErrorTitle = null;
-        this.globalErrorMessage = null;
-        this.globalErrorOnClose = null;
-        if (callback != null) callback.run();
+        this.error.clear();
     }
 }

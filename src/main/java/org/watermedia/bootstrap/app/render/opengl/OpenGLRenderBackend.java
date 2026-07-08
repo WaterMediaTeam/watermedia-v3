@@ -13,6 +13,7 @@ import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.engines.GLEngine;
 import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
+import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.render.TextureHandle;
 
 import java.nio.ByteBuffer;
@@ -54,6 +55,42 @@ public final class OpenGLRenderBackend implements RenderBackend {
             }
             """;
 
+    // SDF SOFT-RECT SHADER — DRAWS A ROUNDED RECT WHOSE ALPHA IS SOLID INSIDE AND FADES OVER uSoftness
+    // OUTSIDE THE EDGE, REPLACING THE MULTI-PASS GLOW/SHADOW STACK WITH ONE QUAD. READS ONLY position.
+    private static final String VERT_SDF = """
+            #version 150 core
+            in vec2 position;
+            uniform mat4 projection;
+            out vec2 vPos;
+            void main() {
+                vPos = position;
+                gl_Position = projection * vec4(position, 0.0, 1.0);
+            }
+            """;
+
+    private static final String FRAG_SDF = """
+            #version 150 core
+            in vec2 vPos;
+            uniform vec2 uCenter;
+            uniform vec2 uHalf;
+            uniform float uRadius;
+            uniform float uSoftness;
+            uniform vec4 uColor;
+            out vec4 fragColor;
+            float sdRoundBox(vec2 p, vec2 b, float r) {
+                vec2 q = abs(p) - b + vec2(r);
+                return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
+            }
+            void main() {
+                float d = sdRoundBox(vPos - uCenter, uHalf, uRadius);
+                // CONCENTRATE THE INTENSITY NEAR THE EDGE (LIKE THE OLD STACKED-FILL GLOW) — A HIGH POWER
+                // FALLS OFF FAST WITH A FAINT TAIL, NOT THE FLAT/LINEAR RAMP A smoothstep GIVES
+                float t = clamp(d / uSoftness, 0.0, 1.0);
+                float falloff = pow(1.0 - t, 2.2);
+                fragColor = vec4(uColor.rgb, uColor.a * falloff);
+            }
+            """;
+
     private static final int FLOATS_PER_VERTEX = 8;
     private static final int DEFAULT_VERTEX_CAPACITY = 8192;
 
@@ -61,11 +98,22 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private int program;
     private int projectionUniform;
     private int useTextureUniform;
+    private int sdfProgram;
+    private int sdfProjectionUniform;
+    private int sdfCenterUniform;
+    private int sdfHalfUniform;
+    private int sdfRadiusUniform;
+    private int sdfSoftnessUniform;
+    private int sdfColorUniform;
+    private final float[] softQuad = new float[6 * FLOATS_PER_VERTEX];
     private int vao;
     private int vbo;
     private FloatBuffer uploadBuffer;
     private FloatBuffer projectionBuffer;
     private boolean initialized;
+    private boolean frameActive;            // BETWEEN beginFrame/present THE PROGRAM+VAO+VBO STAY BOUND FOR THE WHOLE FRAME
+    private boolean projectionDirty = true; // RE-UPLOAD THE PROJECTION UNIFORM ONLY AFTER IT ACTUALLY CHANGED
+    private float boundUseTexture = -1f;    // LAST useTexture UNIFORM VALUE — SKIPS RE-SETTING IT EVERY DRAW
     private String deviceName = "Unknown";
     private String deviceVersion = "";
     private int glVerMajor;
@@ -102,9 +150,12 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL.createCapabilities();
         // FALLBACK / GPU NAME FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
         this.captureInfo();
-        // SILENCE THE GL DEBUG CONTEXT REQUESTED VIA GLFW_OPENGL_DEBUG_CONTEXT (EMPTY CALLBACK)
-        ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
-        }, 0);
+        // ONLY WHEN A DEBUG CONTEXT WAS ACTUALLY REQUESTED: SILENCE ITS OUTPUT WITH AN EMPTY CALLBACK.
+        // WITHOUT THE DEBUG CONTEXT (THE DEFAULT) THERE IS NOTHING TO SILENCE AND ARB_debug_output MAY BE ABSENT.
+        if (RenderSystem.GL_DEBUG) {
+            ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
+            }, 0);
+        }
     }
 
     // READS GL_RENDERER + THE CURRENT CONTEXT VERSION; KEEPS THE HIGHEST VERSION SEEN ACROSS CONTEXTS.
@@ -132,7 +183,25 @@ public final class OpenGLRenderBackend implements RenderBackend {
     }
 
     @Override
+    public void beginFrame() {
+        this.init();
+        // BIND THE UI PROGRAM/VAO/VBO ONCE FOR THE WHOLE FRAME INSTEAD OF PER DRAW CALL. present() UNBINDS
+        // THEM SO THE MEDIA GLEngine (WHICH SHARES THIS CONTEXT) STILL SEES THE CLEAN STATE IT DID BEFORE.
+        GL20.glUseProgram(this.program);
+        GL30.glBindVertexArray(this.vao);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
+        this.frameActive = true;
+        this.projectionDirty = true;
+        this.boundUseTexture = -1f;
+    }
+
+    @Override
     public void present() {
+        if (this.frameActive) {
+            GL30.glBindVertexArray(0);
+            GL20.glUseProgram(0);
+            this.frameActive = false;
+        }
         glfwSwapBuffers(this.window);
     }
 
@@ -176,6 +245,28 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glUniform1i(GL20.glGetUniformLocation(this.program, "tex"), 0);
         GL20.glUseProgram(0);
 
+        // SDF SOFT-RECT PROGRAM — GLOW / SHADOW IN ONE PASS (SHARES THE VAO; READS ONLY THE position ATTRIB)
+        final int sdfVertex = compileShader(GL20.GL_VERTEX_SHADER, VERT_SDF);
+        final int sdfFragment = compileShader(GL20.GL_FRAGMENT_SHADER, FRAG_SDF);
+        this.sdfProgram = GL20.glCreateProgram();
+        GL20.glAttachShader(this.sdfProgram, sdfVertex);
+        GL20.glAttachShader(this.sdfProgram, sdfFragment);
+        GL20.glBindAttribLocation(this.sdfProgram, 0, "position");
+        GL20.glLinkProgram(this.sdfProgram);
+        if (GL20.glGetProgrami(this.sdfProgram, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
+            throw new IllegalStateException("OpenGL SDF program link failed: " + GL20.glGetProgramInfoLog(this.sdfProgram, 2048));
+        }
+        GL20.glDetachShader(this.sdfProgram, sdfVertex);
+        GL20.glDetachShader(this.sdfProgram, sdfFragment);
+        GL20.glDeleteShader(sdfVertex);
+        GL20.glDeleteShader(sdfFragment);
+        this.sdfProjectionUniform = GL20.glGetUniformLocation(this.sdfProgram, "projection");
+        this.sdfCenterUniform = GL20.glGetUniformLocation(this.sdfProgram, "uCenter");
+        this.sdfHalfUniform = GL20.glGetUniformLocation(this.sdfProgram, "uHalf");
+        this.sdfRadiusUniform = GL20.glGetUniformLocation(this.sdfProgram, "uRadius");
+        this.sdfSoftnessUniform = GL20.glGetUniformLocation(this.sdfProgram, "uSoftness");
+        this.sdfColorUniform = GL20.glGetUniformLocation(this.sdfProgram, "uColor");
+
         this.vao = GL30.glGenVertexArrays();
         this.vbo = GL15.glGenBuffers();
 
@@ -203,6 +294,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     public void cleanup() {
         if (!this.initialized) return;
         GL20.glDeleteProgram(this.program);
+        GL20.glDeleteProgram(this.sdfProgram);
         GL30.glDeleteVertexArrays(this.vao);
         GL15.glDeleteBuffers(this.vbo);
         MemoryUtil.memFree(this.uploadBuffer);
@@ -248,6 +340,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height,
                 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, rgba);
+        // RESTORE THE DEFAULT ROW LENGTH SO THE SHARED GL STATE DOES NOT MIS-FEED A LATER CONSUMER (M-04/L-04)
+        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, 0);
         return new TextureHandle(id, width, height);
     }
 
@@ -268,6 +362,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.init();
         this.projectionBuffer.clear();
         projection.get(this.projectionBuffer);
+        this.projectionDirty = true;
     }
 
     @Override
@@ -280,12 +375,26 @@ public final class OpenGLRenderBackend implements RenderBackend {
             throw new IllegalArgumentException("Too many UI vertices in one draw call: " + vertexCount);
         }
 
-        GL20.glUseProgram(this.program);
-        GL20.glUniformMatrix4fv(this.projectionUniform, false, this.projectionBuffer);
-        GL20.glUniform1f(this.useTextureUniform, textured ? 1f : 0f);
+        // OUTSIDE A FRAME (E.G. A FLUSH TRIGGERED BY createTexture DURING LOADING) BIND/UNBIND LOCALLY;
+        // INSIDE A FRAME beginFrame ALREADY BOUND THE PROGRAM/VAO/VBO AND present() WILL UNBIND THEM.
+        final boolean standalone = !this.frameActive;
+        if (standalone) {
+            GL20.glUseProgram(this.program);
+            GL30.glBindVertexArray(this.vao);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
+            this.projectionDirty = true;
+            this.boundUseTexture = -1f;
+        }
 
-        GL30.glBindVertexArray(this.vao);
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
+        if (this.projectionDirty) {
+            GL20.glUniformMatrix4fv(this.projectionUniform, false, this.projectionBuffer);
+            this.projectionDirty = false;
+        }
+        final float useTexture = textured ? 1f : 0f;
+        if (useTexture != this.boundUseTexture) {
+            GL20.glUniform1f(this.useTextureUniform, useTexture);
+            this.boundUseTexture = useTexture;
+        }
 
         this.uploadBuffer.clear();
         this.uploadBuffer.put(vertices, 0, floats);
@@ -294,8 +403,73 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
         GL11.glDrawArrays(toGLMode(mode), 0, vertexCount);
 
-        GL30.glBindVertexArray(0);
-        GL20.glUseProgram(0);
+        if (standalone) {
+            GL30.glBindVertexArray(0);
+            GL20.glUseProgram(0);
+        }
+    }
+
+    @Override
+    public boolean supportsSoftRect() {
+        return true;
+    }
+
+    @Override
+    public void softRect(final float x, final float y, final float w, final float h, final float radius,
+                         final float r, final float g, final float b, final float a, final float softness) {
+        this.init();
+        final float soft = Math.max(0.5f, softness);
+        final float x0 = x - soft;
+        final float y0 = y - soft;
+        final float x1 = x + w + soft;
+        final float y1 = y + h + soft;
+        // A QUAD (2 TRIS) COVERING THE RECT PLUS THE SOFTNESS MARGIN — THE SDF SHADER READS ONLY position
+        this.softVertex(0, x0, y0);
+        this.softVertex(1, x1, y0);
+        this.softVertex(2, x1, y1);
+        this.softVertex(3, x0, y0);
+        this.softVertex(4, x1, y1);
+        this.softVertex(5, x0, y1);
+
+        GL20.glUseProgram(this.sdfProgram);
+        GL20.glUniformMatrix4fv(this.sdfProjectionUniform, false, this.projectionBuffer);
+        GL20.glUniform2f(this.sdfCenterUniform, x + w / 2f, y + h / 2f);
+        GL20.glUniform2f(this.sdfHalfUniform, w / 2f, h / 2f);
+        GL20.glUniform1f(this.sdfRadiusUniform, Math.max(0f, radius));
+        GL20.glUniform1f(this.sdfSoftnessUniform, soft);
+        GL20.glUniform4f(this.sdfColorUniform, r, g, b, a);
+
+        if (!this.frameActive) {
+            GL30.glBindVertexArray(this.vao);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
+        }
+        this.uploadBuffer.clear();
+        this.uploadBuffer.put(this.softQuad, 0, this.softQuad.length);
+        this.uploadBuffer.flip();
+        GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, this.uploadBuffer);
+        GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
+
+        if (this.frameActive) {
+            // BACK TO THE UI PROGRAM FOR THE FOLLOWING BATCHED DRAWS; FORCE ITS UNIFORMS TO BE RE-SET NEXT DRAW
+            GL20.glUseProgram(this.program);
+            this.projectionDirty = true;
+            this.boundUseTexture = -1f;
+        } else {
+            GL30.glBindVertexArray(0);
+            GL20.glUseProgram(0);
+        }
+    }
+
+    private void softVertex(final int index, final float x, final float y) {
+        final int off = index * FLOATS_PER_VERTEX;
+        this.softQuad[off] = x;
+        this.softQuad[off + 1] = y;
+        this.softQuad[off + 2] = 0f;
+        this.softQuad[off + 3] = 0f;
+        this.softQuad[off + 4] = 0f;
+        this.softQuad[off + 5] = 0f;
+        this.softQuad[off + 6] = 0f;
+        this.softQuad[off + 7] = 0f;
     }
 
     @Override

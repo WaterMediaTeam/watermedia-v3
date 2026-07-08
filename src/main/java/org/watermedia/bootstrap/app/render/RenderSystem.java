@@ -7,6 +7,8 @@ import org.watermedia.bootstrap.app.render.vulkan.VulkanRenderBackend;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
@@ -25,11 +27,42 @@ public final class RenderSystem {
     public enum Engine { OPENGL, VULKAN }
 
     private static final String ENGINE_PROP = "watermedia.engine";
+    // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD — OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
+    public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
+    // THE ENGINE CHOICE IS PERSISTED IN THE SAME FILE THE AppBootstrap LAUNCHER READS ON THE NEXT LAUNCH
+    // (IT RELAUNCHES THE CHILD JVM WITH -Dwatermedia.engine FROM THIS FILE). KEEP IN SYNC WITH
+    // AppBootstrap.ENGINE_FILE = <java.io.tmpdir>/watermedia/libs/engine.cfg.
+    private static final Path ENGINE_PREF_FILE =
+            Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs", "engine.cfg");
 
     private static Engine kind = Engine.OPENGL;
     private static RenderEngine engine;
 
     private RenderSystem() {
+    }
+
+    /** The engine the user picked in Settings for the next launch, or {@code null} if unset/unreadable. */
+    public static Engine enginePreference() {
+        try {
+            if (Files.exists(ENGINE_PREF_FILE)) {
+                final String value = Files.readString(ENGINE_PREF_FILE).trim();
+                if ("vulkan".equalsIgnoreCase(value)) return Engine.VULKAN;
+                if ("opengl".equalsIgnoreCase(value)) return Engine.OPENGL;
+            }
+        } catch (final Exception ignored) {
+        }
+        return null;
+    }
+
+    /** Persists the engine to use on the next launch (written from the Settings screen). */
+    public static void saveEnginePreference(final Engine choice) {
+        try {
+            final Path parent = ENGINE_PREF_FILE.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Files.writeString(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl");
+        } catch (final Exception e) {
+            WaterMedia.LOGGER.warn("Failed to save the render engine preference", e);
+        }
     }
 
     /** Resolves the engine from {@code -Dwatermedia.engine}, downgrading to OpenGL when Vulkan is unsupported. */
@@ -44,7 +77,7 @@ public final class RenderSystem {
             // NO GL CONTEXT — THE VULKAN BACKEND PRESENTS THROUGH ITS OWN SURFACE/SWAPCHAIN
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         } else {
-            glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+            glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_DEBUG ? GLFW_TRUE : GLFW_FALSE);
             glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);

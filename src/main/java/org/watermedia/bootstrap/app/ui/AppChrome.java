@@ -4,6 +4,7 @@ import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.view.IconButton;
 
 import java.awt.Color;
 
@@ -59,8 +60,8 @@ public final class AppChrome {
                 AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 1f,
                 AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 1f);
         RenderSystem.lineH(0, TITLEBAR_H - 1, windowW, AppTheme.STROKE_BRIGHT, 1f);
-        if (ctx.iconTextureId > 0) {
-            RenderSystem.bindTexture(ctx.iconTextureId);
+        if (ctx.assets.iconId > 0) {
+            RenderSystem.bindTexture(ctx.assets.iconId);
             RenderSystem.color(1f, 1f, 1f, 1f);
             RenderSystem.blit(8, 6, 16, 16);
         }
@@ -72,19 +73,9 @@ public final class AppChrome {
             final Color color = i == 2
                     ? (hover ? AppTheme.RED : AppTheme.alpha(AppTheme.RED, 190))
                     : (hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT);
-            final int cx = bx + WIN_BUTTON_W / 2;
-            if (i == 0) {
-                RenderSystem.lineH(cx - 5, 17, 10, color, 1f);
-            } else if (i == 1) {
-                if (ctx.windowMaximized) {
-                    RenderSystem.rect(cx - 7, 11, 9, 8, color, 1f);
-                    RenderSystem.rect(cx - 3, 8, 9, 8, color, 1f);
-                } else {
-                    RenderSystem.rect(cx - 5, 9, 10, 10, color, 1f);
-                }
-            } else {
-                PixelIcon.draw("x", cx - 6, 8, 12, color);
-            }
+            final String icon = i == 0 ? "minimize" : i == 1 ? (ctx.windowMaximized ? "restore" : "maximize") : "x";
+            // BORDERLESS ICON BUTTON: BARE GLYPH WITH THE SAME COLOR-ON-HOVER FEEDBACK, NO BOX (WINDOW-CHROME LOOK)
+            IconButton.render(bx, 0, WIN_BUTTON_W, TITLEBAR_H, icon, 12, color, color, false, hover, true, false);
         }
         RenderSystem.restoreProjection();
     }
@@ -153,6 +144,11 @@ public final class AppChrome {
     }
 
     private static void renderBindings(final TextRenderer text, final String instructions, final int x, final int y) {
+        final int keyH = 22;
+        final int bandTop = y - 1;
+        // CENTER THE TEXT THE SAME WAY THE BUTTONS DO (CELL-CENTERED, NO EXTRA +1px NUDGE) SO THE KEY CHIP
+        // TEXT AND THE LABEL SHARE ONE BASELINE AND SIT LIKE THE BUTTON LABELS — THE OLD +1 DROPPED THEM LOW.
+        final int lineY = bandTop + (keyH - text.glyphHeight(AppTheme.TEXT_BODY)) / 2;
         int cx = x;
         for (final String raw : instructions.split("\\|")) {
             final String part = raw.trim();
@@ -163,15 +159,13 @@ public final class AppChrome {
             if (!key.isEmpty()) {
                 final float keyScale = AppTheme.TEXT_BODY;
                 final int keyW = Math.max(36, scaledWidth(text, key, keyScale) + 36);
-                final int keyH = 22;
-                final int keyY = y - 1;
-                RenderSystem.fill(cx, keyY, keyW, keyH, AppTheme.alpha(AppTheme.BG_2, 220));
-                RenderSystem.rect(cx, keyY, keyW, keyH, AppTheme.STROKE_BRIGHT, 1f);
-                PixelIcon.draw(iconForKey(key), cx + 7, keyY + 5, 12, AppTheme.TEXT_FAINT);
-                text.render(key.toUpperCase(), cx + 24, textY(text, keyY, keyH, keyScale) + 1, AppTheme.TEXT_SOFT, keyScale);
+                RenderSystem.fill(cx, bandTop, keyW, keyH, AppTheme.alpha(AppTheme.BG_2, 220));
+                RenderSystem.rect(cx, bandTop, keyW, keyH, AppTheme.STROKE_BRIGHT, 1f);
+                PixelIcon.draw(iconForKey(key), cx + 7, bandTop + (keyH - 12) / 2, 12, AppTheme.TEXT_FAINT);
+                text.render(key.toUpperCase(), cx + 24, lineY, AppTheme.TEXT_SOFT, keyScale);
                 cx += keyW + 6;
             }
-            text.render(label, cx, textY(text, y - 1, 22, AppTheme.TEXT_BODY) + 1, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
+            text.render(label, cx, lineY, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
             cx += text.width(label, AppTheme.TEXT_BODY) + 18;
         }
     }
@@ -302,12 +296,9 @@ public final class AppChrome {
     }
 
     public static void dialogCloseButton(final Dimension bounds, final boolean hover) {
+        // ICON-ONLY BUTTON IN THE DESTRUCTIVE RED HUE; THE ACCENT BRIGHTENS ON HOVER (BORDER + GLOW + ICON)
         final Color color = hover ? new Color(255, 132, 160) : AppTheme.RED;
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover ? AppTheme.alpha(AppTheme.RED, 76) : AppTheme.alpha(AppTheme.BG_1, 200));
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 1.4f);
-        if (hover) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, 0.28f);
-        PixelIcon.draw("x", bounds.x() + (bounds.width() - 14) / 2, bounds.y() + (bounds.height() - 14) / 2, 14, color);
+        IconButton.render(bounds.x(), bounds.y(), bounds.width(), bounds.height(), "x", 14, color, color, false, hover, true);
     }
 
     private static int scaledWidth(final TextRenderer text, final String value, final float scale) {
@@ -344,9 +335,9 @@ public final class AppChrome {
     public static void backendStrip(final TextRenderer text, final AppContext ctx, final int x, final int y) {
         final boolean pending = ctx != null && ctx.backendsLoading && !FFMediaPlayer.loaded() && !FFMediaPlayer.loadError();
         int cx = x;
-        if (ctx != null && ctx.configStatusVisible) {
-            cx += backendTag(text, cx, y, "CONFIG", true, ctx.configStatusPulse,
-                    ctx.configStatusError, ctx.configStatusWarn, ctx.configStatusStrike, false);
+        if (ctx != null && ctx.configStatus.visible) {
+            cx += backendTag(text, cx, y, "CONFIG", true, ctx.configStatus.pulse,
+                    ctx.configStatus.error, ctx.configStatus.warn, ctx.configStatus.strike, false);
         }
         cx += backendTag(text, cx, y, "FFMPEG", FFMediaPlayer.loaded(), pending, FFMediaPlayer.loadError(), false, false, false);
         // RENDER ENGINES REFLECT THE ACTIVE BACKEND: GREEN = ACTIVE, FAINT = AVAILABLE BUT INACTIVE,
@@ -362,7 +353,7 @@ public final class AppChrome {
     }
 
     public static int backendStripWidth(final TextRenderer text, final AppContext ctx) {
-        final int config = ctx != null && ctx.configStatusVisible
+        final int config = ctx != null && ctx.configStatus.visible
                 ? backendTagWidth(text, "CONFIG")
                 : 0;
         return config + backendTagWidth(text, "FFMPEG") + backendTagWidth(text, "OpenGL") + backendTagWidth(text, "Vulkan");
@@ -394,19 +385,19 @@ public final class AppChrome {
     }
 
     public static void renderBanner(final AppContext ctx, final int x, final int y, final int maxW, final int maxH) {
-        if (ctx.bannerTextureId <= 0 || ctx.bannerWidth <= 0 || ctx.bannerHeight <= 0) return;
-        final float scale = Math.min((float) maxW / ctx.bannerWidth, (float) maxH / ctx.bannerHeight);
-        final int w = (int) (ctx.bannerWidth * scale);
-        final int h = (int) (ctx.bannerHeight * scale);
-        RenderSystem.bindTexture(ctx.bannerTextureId);
+        if (ctx.assets.bannerId <= 0 || ctx.assets.bannerWidth <= 0 || ctx.assets.bannerHeight <= 0) return;
+        final float scale = Math.min((float) maxW / ctx.assets.bannerWidth, (float) maxH / ctx.assets.bannerHeight);
+        final int w = (int) (ctx.assets.bannerWidth * scale);
+        final int h = (int) (ctx.assets.bannerHeight * scale);
+        RenderSystem.bindTexture(ctx.assets.bannerId);
         RenderSystem.color(1f, 1f, 1f, 1f);
         RenderSystem.blit(x, y + (maxH - h) / 2f, w, h);
     }
 
     private static int bannerRenderedWidth(final AppContext ctx, final int maxW, final int maxH) {
-        if (ctx.bannerTextureId <= 0 || ctx.bannerWidth <= 0 || ctx.bannerHeight <= 0) return maxW;
-        final float scale = Math.min((float) maxW / ctx.bannerWidth, (float) maxH / ctx.bannerHeight);
-        return (int) (ctx.bannerWidth * scale);
+        if (ctx.assets.bannerId <= 0 || ctx.assets.bannerWidth <= 0 || ctx.assets.bannerHeight <= 0) return maxW;
+        final float scale = Math.min((float) maxW / ctx.assets.bannerWidth, (float) maxH / ctx.assets.bannerHeight);
+        return (int) (ctx.assets.bannerWidth * scale);
     }
 
     public static boolean isTitlebarControl(final double mx, final int windowW) {

@@ -35,6 +35,23 @@ public interface RenderBackend {
 
     void draw(DrawMode mode, float[] vertices, int vertexCount, boolean textured);
 
+    /**
+     * Whether this backend can draw a soft-edged rectangle in a single pass (an SDF shader). When false,
+     * the engine falls back to stacking translucent fills for glow/shadow.
+     */
+    default boolean supportsSoftRect() {
+        return false;
+    }
+
+    /**
+     * Paints a filled rounded rectangle whose alpha is solid inside and fades to zero over {@code
+     * softness} pixels outside its edge — one draw call instead of the multi-pass glow/shadow stack.
+     * Only called when {@link #supportsSoftRect()} is true.
+     */
+    default void softRect(final float x, final float y, final float w, final float h, final float radius,
+                          final float r, final float g, final float b, final float a, final float softness) {
+    }
+
     void lineWidth(float width);
 
     void enableClip(int x, int y, int width, int height, int canvasHeight);

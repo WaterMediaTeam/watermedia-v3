@@ -1,6 +1,8 @@
 package org.watermedia.bootstrap.app.ui;
 
 import java.awt.Color;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Hi-fi handoff theme tokens.
@@ -8,6 +10,9 @@ import java.awt.Color;
 public final class AppTheme {
 
     private static final float FONT_BASE_PX = 20f;
+    // CACHE OF alpha() RESULTS — alpha() IS CALLED MANY TIMES PER FRAME FROM DRAW CODE, SO REUSING THE
+    // IMMUTABLE Color AVOIDS ALLOCATING GARBAGE EVERY FRAME. RENDER-THREAD-ONLY (UI DRAW), SO NO SYNC.
+    private static final Map<Integer, Color> ALPHA_CACHE = new HashMap<>();
 
     private AppTheme() {
     }
@@ -50,7 +55,14 @@ public final class AppTheme {
     }
 
     public static Color alpha(final Color color, final int alpha) {
-        return new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha);
+        final int a = alpha < 0 ? 0 : Math.min(alpha, 255);
+        final int key = (color.getRGB() & 0xFFFFFF) << 8 | a;
+        Color cached = ALPHA_CACHE.get(key);
+        if (cached == null) {
+            cached = new Color(color.getRed(), color.getGreen(), color.getBlue(), a);
+            ALPHA_CACHE.put(key, cached);
+        }
+        return cached;
     }
 
     private static float textScale(final int px) {

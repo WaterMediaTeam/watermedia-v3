@@ -58,11 +58,11 @@ public class LoadingScreen extends Screen {
         final int bodyTop = AppChrome.TITLEBAR_H;
         final int bodyBottom = windowH - AppChrome.FOOTER_H;
         final int bodyH = Math.max(1, bodyBottom - bodyTop);
-        final ImageBox banner = this.fitImage(this.ctx.bannerWidth, this.ctx.bannerHeight,
+        final ImageBox banner = this.fitImage(this.ctx.assets.bannerWidth, this.ctx.assets.bannerHeight,
                 Math.min(BANNER_MAX_W, Math.max(180, windowW - 96)), BANNER_MAX_H);
         final List<StatusLine> statusLines = this.statusLines(api);
 
-        final int loadingImageSize = this.ctx.duckFrameTextureIds.length > 0 ? DUCK_SIZE : ICON_SIZE;
+        final int loadingImageSize = this.ctx.assets.duckFrameIds.length > 0 ? DUCK_SIZE : ICON_SIZE;
         final int contentH = banner.h() + 24 + loadingImageSize + 22
                 + this.text.glyphHeight(TITLE_SCALE) + 24
                 + BAR_H + 26
@@ -72,24 +72,24 @@ public class LoadingScreen extends Screen {
 
         if (banner.valid()) {
             final int bannerX = (windowW - banner.w()) / 2;
-            this.renderImageGlow(this.ctx.bannerGlowTextureId, this.ctx.bannerGlowWidth, this.ctx.bannerGlowHeight,
-                    this.ctx.bannerWidth, this.ctx.bannerHeight, bannerX, y - bannerShift, banner.w(), banner.h());
-            this.renderTexture(this.ctx.bannerTextureId, bannerX, y - bannerShift, banner.w(), banner.h());
+            this.renderImageGlow(this.ctx.assets.bannerGlowId, this.ctx.assets.bannerGlowWidth, this.ctx.assets.bannerGlowHeight,
+                    this.ctx.assets.bannerWidth, this.ctx.assets.bannerHeight, bannerX, y - bannerShift, banner.w(), banner.h());
+            this.renderTexture(this.ctx.assets.bannerId, bannerX, y - bannerShift, banner.w(), banner.h());
             y += banner.h() + 24;
         }
 
-        if (this.ctx.duckFrameTextureIds.length > 0 && this.ctx.duckFrameWidth > 0 && this.ctx.duckFrameHeight > 0) {
-            final ImageBox duck = this.fitImage(this.ctx.duckFrameWidth, this.ctx.duckFrameHeight, DUCK_SIZE, DUCK_SIZE);
+        if (this.ctx.assets.duckFrameIds.length > 0 && this.ctx.assets.duckFrameWidth > 0 && this.ctx.assets.duckFrameHeight > 0) {
+            final ImageBox duck = this.fitImage(this.ctx.assets.duckFrameWidth, this.ctx.assets.duckFrameHeight, DUCK_SIZE, DUCK_SIZE);
             final int duckX = (windowW - duck.w()) / 2;
-            final int frame = (int) ((System.currentTimeMillis() / 90L) % this.ctx.duckFrameTextureIds.length);
-            this.renderTexture(this.ctx.duckFrameTextureIds[frame], duckX, y, duck.w(), duck.h());
+            final int frame = (int) ((System.currentTimeMillis() / 90L) % this.ctx.assets.duckFrameIds.length);
+            this.renderTexture(this.ctx.assets.duckFrameIds[frame], duckX, y, duck.w(), duck.h());
             y += DUCK_SIZE + 22;
-        } else if (this.ctx.iconTextureId > 0) {
-            final ImageBox icon = this.fitImage(this.ctx.iconWidth, this.ctx.iconHeight, ICON_SIZE, ICON_SIZE);
+        } else if (this.ctx.assets.iconId > 0) {
+            final ImageBox icon = this.fitImage(this.ctx.assets.iconWidth, this.ctx.assets.iconHeight, ICON_SIZE, ICON_SIZE);
             final int iconX = (windowW - icon.w()) / 2;
-            this.renderImageGlow(this.ctx.iconGlowTextureId, this.ctx.iconGlowWidth, this.ctx.iconGlowHeight,
-                    this.ctx.iconWidth, this.ctx.iconHeight, iconX, y, icon.w(), icon.h());
-            this.renderTexture(this.ctx.iconTextureId, iconX, y, icon.w(), icon.h());
+            this.renderImageGlow(this.ctx.assets.iconGlowId, this.ctx.assets.iconGlowWidth, this.ctx.assets.iconGlowHeight,
+                    this.ctx.assets.iconWidth, this.ctx.assets.iconHeight, iconX, y, icon.w(), icon.h());
+            this.renderTexture(this.ctx.assets.iconId, iconX, y, icon.w(), icon.h());
             y += ICON_SIZE + 22;
         }
 

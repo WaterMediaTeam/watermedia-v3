@@ -25,6 +25,8 @@ public class ScreenManager {
         }
         final Screen next = this.screens.get(screenName);
         if (next == null) return;
+        // NAVIGATING TO THE ALREADY-CURRENT SCREEN MUST NOT RE-RUN onExit/onEnter (WHICH RESET ITS STATE)
+        if (next == this.current && screenName.equals(this.currentName)) return;
 
         if (this.current != null) {
             this.current.onExit();
@@ -108,5 +110,9 @@ public class ScreenManager {
 
     public boolean wantsContinuousRender() {
         return this.current != null && this.current.wantsContinuousRender();
+    }
+
+    public boolean textInputFocused() {
+        return this.current != null && this.current.textInputFocused();
     }
 }

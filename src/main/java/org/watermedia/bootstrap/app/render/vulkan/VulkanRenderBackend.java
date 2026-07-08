@@ -67,6 +67,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private static final int MAX_FRAMES_IN_FLIGHT = 2;
     private static final int SETS_PER_POOL = 256;            // TEXTURED-DRAW DESCRIPTOR SETS PER PER-FRAME POOL CHUNK
     private static final int PUSH_BYTES = 68;               // mat4 proj (64) + int useTexture (4)
+    // SDF SOFT-RECT PUSH: mat4 proj (64) + vec4 color (@64) + vec2 center (@80) + vec2 halfExt (@88) +
+    // float radius (@96) + float softness (@100) — REORDERED SO vec4/vec2 STAY std430-ALIGNED, TOTAL 104
+    private static final int PUSH_SDF_BYTES = 104;
     private static final long BLOCK = 0xFFFFFFFFFFFFFFFFL;   // UINT64_MAX: BLOCKING WAIT/ACQUIRE
 
     private static final String VERT_GLSL = """
@@ -96,6 +99,40 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
             """;
 
+    // SDF SOFT-RECT SHADERS — MATCH THE OpenGL SDF PATH: SOLID INSIDE, POWER FALLOFF OVER softness OUTSIDE.
+    // PUSH CONSTANT STRUCT ORDER MATCHES PUSH_SDF_BYTES (proj, color, center, halfExt, radius, softness).
+    private static final String VERT_SDF_GLSL = """
+            #version 450
+            layout(location = 0) in vec2 pos;
+            layout(push_constant) uniform PC {
+                mat4 proj; vec4 color; vec2 center; vec2 halfExt; float radius; float softness;
+            } pc;
+            layout(location = 0) out vec2 vPos;
+            void main() {
+                vPos = pos;
+                gl_Position = pc.proj * vec4(pos, 0.0, 1.0);
+            }
+            """;
+
+    private static final String FRAG_SDF_GLSL = """
+            #version 450
+            layout(location = 0) in vec2 vPos;
+            layout(push_constant) uniform PC {
+                mat4 proj; vec4 color; vec2 center; vec2 halfExt; float radius; float softness;
+            } pc;
+            layout(location = 0) out vec4 fragColor;
+            float sdRoundBox(vec2 p, vec2 b, float r) {
+                vec2 q = abs(p) - b + vec2(r);
+                return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
+            }
+            void main() {
+                float d = sdRoundBox(vPos - pc.center, pc.halfExt, pc.radius);
+                float t = clamp(d / pc.softness, 0.0, 1.0);
+                float falloff = pow(1.0 - t, 2.2);
+                fragColor = vec4(pc.color.rgb, pc.color.a * falloff);
+            }
+            """;
+
     // CONTEXT (CREATED IN THE CONSTRUCTOR; SHARED WITH THE VKEngine)
     private final long window;
     private final Object queueLock = new Object();
@@ -122,6 +159,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private long descLayout;
     private long pipeLayout;
     private long pipeTriList, pipeLineList, pipeLineStrip;
+    private long sdfPipeLayout;  // NO DESCRIPTOR SET; LARGER PUSH RANGE FOR THE SOFT-RECT PARAMS
+    private long sdfPipe;        // SDF SOFT-RECT PIPELINE (TRIANGLE LIST)
     private long cmdPool;       // PER-FRAME COMMAND BUFFERS
     private long uploadPool;    // ONE-TIME TEXTURE UPLOADS (SEPARATE SO MID-FRAME UPLOADS NEVER TOUCH THE FRAME POOL)
     private VkCommandBuffer uploadCmd;
@@ -458,6 +497,14 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final LongBuffer ppl = stack.mallocLong(1);
             check(vkCreatePipelineLayout(this.device, plci, null, ppl), "create pipeline layout");
             this.pipeLayout = ppl.get(0);
+
+            // SDF PIPELINE LAYOUT: NO DESCRIPTOR SET (NO TEXTURE), A LARGER PUSH RANGE FOR THE SOFT-RECT PARAMS
+            final VkPushConstantRange.Buffer spcr = VkPushConstantRange.calloc(1, stack);
+            spcr.get(0).stageFlags(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT).offset(0).size(PUSH_SDF_BYTES);
+            final VkPipelineLayoutCreateInfo splci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default().pPushConstantRanges(spcr);
+            final LongBuffer sppl = stack.mallocLong(1);
+            check(vkCreatePipelineLayout(this.device, splci, null, sppl), "create SDF pipeline layout");
+            this.sdfPipeLayout = sppl.get(0);
         }
 
         this.createRenderPass();
@@ -522,19 +569,24 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private void createPipelines() {
         final long vert = this.compileShaderModule(VERT_GLSL, shaderc_glsl_vertex_shader, "ui.vert");
         final long frag = this.compileShaderModule(FRAG_GLSL, shaderc_glsl_fragment_shader, "ui.frag");
+        final long sdfVert = this.compileShaderModule(VERT_SDF_GLSL, shaderc_glsl_vertex_shader, "sdf.vert");
+        final long sdfFrag = this.compileShaderModule(FRAG_SDF_GLSL, shaderc_glsl_fragment_shader, "sdf.frag");
         try {
             // NO TRIANGLE_FAN PIPELINE: FAN TOPOLOGY IS NOT PORTABLE (MoltenVK/PORTABILITY-SUBSET
             // DEVICES REJECT IT), SO draw() EXPANDS FANS INTO THE TRIANGLE LIST INSTEAD.
-            this.pipeTriList = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, vert, frag);
-            this.pipeLineList = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, vert, frag);
-            this.pipeLineStrip = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, vert, frag);
+            this.pipeTriList = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, vert, frag, this.pipeLayout);
+            this.pipeLineList = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, vert, frag, this.pipeLayout);
+            this.pipeLineStrip = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, vert, frag, this.pipeLayout);
+            this.sdfPipe = this.createPipeline(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, sdfVert, sdfFrag, this.sdfPipeLayout);
         } finally {
             vkDestroyShaderModule(this.device, vert, null);
             vkDestroyShaderModule(this.device, frag, null);
+            vkDestroyShaderModule(this.device, sdfVert, null);
+            vkDestroyShaderModule(this.device, sdfFrag, null);
         }
     }
 
-    private long createPipeline(final int topology, final long vert, final long frag) {
+    private long createPipeline(final int topology, final long vert, final long frag, final long layout) {
         try (MemoryStack stack = stackPush()) {
             final VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
             stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vert).pName(stack.UTF8("main"));
@@ -578,7 +630,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final VkGraphicsPipelineCreateInfo.Buffer gpci = VkGraphicsPipelineCreateInfo.calloc(1, stack);
             gpci.get(0).sType$Default().pStages(stages).pVertexInputState(vin).pInputAssemblyState(ia)
                     .pViewportState(vp).pRasterizationState(rs).pMultisampleState(ms).pColorBlendState(cb).pDynamicState(dyn)
-                    .layout(this.pipeLayout).renderPass(this.renderPass).subpass(0);
+                    .layout(layout).renderPass(this.renderPass).subpass(0);
             final LongBuffer pPipe = stack.mallocLong(1);
             check(vkCreateGraphicsPipelines(this.device, VK_NULL_HANDLE, gpci, null, pPipe), "create graphics pipeline");
             return pPipe.get(0);
@@ -926,6 +978,75 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
             vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
         }
+    }
+
+    @Override
+    public boolean supportsSoftRect() {
+        return true;
+    }
+
+    @Override
+    public void softRect(final float x, final float y, final float w, final float h, final float radius,
+                         final float r, final float g, final float b, final float a, final float softness) {
+        if (!this.frameValid) return;
+        if (!this.renderPassActive) this.beginRenderPass();
+        final float soft = Math.max(0.5f, softness);
+        final Frame f = this.frames[this.currentFrame];
+        final int drawVerts = 6;
+        if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
+        final long base = f.vboMapped + (long) f.vertexOffset * VERTEX_BYTES;
+        final FloatBuffer dst = MemoryUtil.memFloatBuffer(base, drawVerts * FLOATS_PER_VERTEX);
+        final float x0 = x - soft, y0 = y - soft, x1 = x + w + soft, y1 = y + h + soft;
+        // 6-VERTEX QUAD (ONLY position IS READ; uv/col PADDED TO KEEP THE 8-FLOAT STRIDE)
+        putSoftVertex(dst, x0, y0);
+        putSoftVertex(dst, x1, y0);
+        putSoftVertex(dst, x1, y1);
+        putSoftVertex(dst, x0, y0);
+        putSoftVertex(dst, x1, y1);
+        putSoftVertex(dst, x0, y1);
+        final int firstVertex = f.vertexOffset;
+        f.vertexOffset += drawVerts;
+
+        final VkCommandBuffer cmd = f.cmd;
+        try (MemoryStack stack = stackPush()) {
+            if (this.sdfPipe != this.boundPipeline) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.sdfPipe);
+                this.boundPipeline = this.sdfPipe;
+            }
+            if (f.vbo != this.boundVbo) {
+                vkCmdBindVertexBuffers(cmd, 0, stack.longs(f.vbo), stack.longs(0L));
+                this.boundVbo = f.vbo;
+            }
+            if (this.vpDirty) {
+                final VkViewport.Buffer v = VkViewport.calloc(1, stack);
+                v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
+                vkCmdSetViewport(cmd, 0, v);
+                this.vpDirty = false;
+            }
+            if (this.scDirty) {
+                vkCmdSetScissor(cmd, 0, this.scissor(stack));
+                this.scDirty = false;
+            }
+
+            final ByteBuffer push = stack.malloc(PUSH_SDF_BYTES);
+            for (int i = 0; i < 16; i++) push.putFloat(i * 4, this.proj[i]);
+            push.putFloat(64, r).putFloat(68, g).putFloat(72, b).putFloat(76, a);
+            push.putFloat(80, x + w / 2f).putFloat(84, y + h / 2f);
+            push.putFloat(88, w / 2f).putFloat(92, h / 2f);
+            push.putFloat(96, Math.max(0f, radius));
+            push.putFloat(100, soft);
+            vkCmdPushConstants(cmd, this.sdfPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, push);
+
+            vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
+        }
+        // THE SDF LAYOUT IS INCOMPATIBLE WITH THE UI ONE (NO SET 0, DIFFERENT PUSH) — FORCE THE NEXT UI DRAW
+        // TO REBIND ITS PIPELINE AND DESCRIPTOR SET (IT RE-PUSHES ITS CONSTANTS EVERY DRAW ANYWAY)
+        this.boundPipeline = VK_NULL_HANDLE;
+        this.boundSet = VK_NULL_HANDLE;
+    }
+
+    private static void putSoftVertex(final FloatBuffer dst, final float x, final float y) {
+        dst.put(x).put(y).put(0f).put(0f).put(0f).put(0f).put(0f).put(0f);
     }
 
     @Override
@@ -1344,7 +1465,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             if (this.pipeTriList != 0L) vkDestroyPipeline(this.device, this.pipeTriList, null);
             if (this.pipeLineList != 0L) vkDestroyPipeline(this.device, this.pipeLineList, null);
             if (this.pipeLineStrip != 0L) vkDestroyPipeline(this.device, this.pipeLineStrip, null);
+            if (this.sdfPipe != 0L) vkDestroyPipeline(this.device, this.sdfPipe, null);
             if (this.pipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
+            if (this.sdfPipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.sdfPipeLayout, null);
             if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
             if (this.renderPass != 0L) vkDestroyRenderPass(this.device, this.renderPass, null);
             if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);

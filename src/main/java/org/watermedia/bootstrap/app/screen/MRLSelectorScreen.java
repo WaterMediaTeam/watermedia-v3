@@ -11,11 +11,24 @@ import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Colors;
 import org.watermedia.bootstrap.app.ui.Dimension;
+import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
+import org.watermedia.bootstrap.app.ui.Spacing;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.view.Badge;
+import org.watermedia.bootstrap.app.view.Box;
+import org.watermedia.bootstrap.app.view.Button;
+import org.watermedia.bootstrap.app.view.Canvas;
+import org.watermedia.bootstrap.app.view.LinearLayout;
+import org.watermedia.bootstrap.app.view.ListView;
+import org.watermedia.bootstrap.app.view.TextView;
+import org.watermedia.bootstrap.app.view.View;
+import org.watermedia.bootstrap.app.view.ViewGroup;
 import org.watermedia.tools.ThreadTool;
 
+import java.awt.Color;
+import java.awt.Font;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.net.URI;
@@ -32,9 +45,11 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Screen for selecting MRLs from a group, displayed as a grid with thumbnail backgrounds.
+ * Media (MRL) selector built on the view tree: {@link AppChrome} paints the window frame, the left-column
+ * background and the live preview panel in {@link #renderChrome}, while the filter field and the selectable
+ * media rows live in the content tree — a {@link ListView} that owns scrolling, hit-testing and selection.
  */
-public class MRLSelectorScreen extends Screen {
+public final class MRLSelectorScreen extends ViewScreen {
 
     private static final long LOAD_TIMEOUT_MS = 30000L;
 
@@ -43,15 +58,21 @@ public class MRLSelectorScreen extends Screen {
     private volatile int loadGeneration;
     private long loadStartTime;
     private AppContext.TestURI pendingUri;
-    private int selectedIndex;
-    private int scrollOffset;
-    private String searchText = "";
-    private boolean searchFocused;
-    private Dimension searchBounds = Dimension.ZERO;
+
+    private SearchField search;
+    private ListView<AppContext.TestURI> list;
+    // HEADER ROW VIEWS — TEXT REFRESHED EACH FRAME FROM THE LIVE GROUP NAME / ITEM COUNT / FAILED COUNT
+    private TextView headerLabel;
+    private TextView headerCount;
+    private Badge headerFailed;
+    // CURRENTLY VISIBLE (SEARCH-FILTERED) ITEMS — THE ListView'S BACKING DATA
+    private List<AppContext.TestURI> filtered = new ArrayList<>();
+    // LEFT-COLUMN RECT, COMPUTED IN renderChrome AND RETURNED FROM THE CONTENT-RECT OVERRIDES
+    private int leftW;
+    private int listH;
+    // PREVIEW-PANEL BUTTON HIT RECTS — DRAWN IN renderChrome, CLICKED IN handleMouseClick (OUTSIDE THE TREE)
     private Dimension copyBounds = Dimension.ZERO;
     private Dimension playBounds = Dimension.ZERO;
-    private final List<Dimension> rowBounds = new ArrayList<>();
-    private final List<Integer> rowIndices = new ArrayList<>();
 
     // THUMBNAIL PLAYERS KEYED BY MRL NAME
     private final Map<String, MediaPlayer> thumbnailPlayers = new LinkedHashMap<>();
@@ -65,15 +86,70 @@ public class MRLSelectorScreen extends Screen {
     }
 
     @Override
+    protected View<?> build() {
+        this.search = new SearchField()
+                .onChange(v -> this.applyFilter())
+                .width(View.MATCH_PARENT)
+                .height(30);
+
+        // HEADER ROW — A HORIZONTAL LAYOUT: NEON BAR + GROUP LABEL + ITEM COUNT + [FLEX SPACER] + FAILED BADGE.
+        // COMPOSED FROM PARAMETRIC VIEWS INSTEAD OF HARDCODED DRAW CALLS, SO IT KEEPS ITS OWN BOX ABOVE THE LIST.
+        this.headerLabel = new TextView().bold(true).scale(AppTheme.TEXT_SECTION).color(AppTheme.NEON).gravity(Gravity.CENTER);
+        this.headerCount = new TextView().scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_FAINT).gravity(Gravity.CENTER);
+        this.headerFailed = new Badge().gravity(Gravity.CENTER);
+        final LinearLayout header = LinearLayout.row()
+                .spacing(8)
+                .width(View.MATCH_PARENT)
+                .height(24)
+                .add(new Box().size(4, 20).background(AppTheme.NEON).glow(AppTheme.NEON, 0.16f).gravity(Gravity.CENTER))
+                .add(this.headerLabel)
+                .add(this.headerCount)
+                .add(new Box().size(0, 1).weight(1f))
+                .add(this.headerFailed);
+
+        this.list = new ListView<AppContext.TestURI>()
+                .rowHeight(60)
+                .spacing(6)
+                .rowFactory((uri, index) -> {
+                    final MediaRow row = new MediaRow(uri);
+                    // HOVER SELECTS THE ROW (selectOnHover) AND, LIKE THE LEGACY handleMouseMove, CHIMES ON CHANGE
+                    row.onHover(v -> { if (!v.selected()) this.ctx.playSelectionSound(); });
+                    return row;
+                })
+                .onSelect((uri, index) -> this.openRow(uri))
+                .selectOnHover(true)
+                // ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
+                .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                // WEIGHT 1 → THE LIST FILLS THE LEFTOVER VERTICAL SPACE AND SCISSORS ROWS WITHIN ITS OWN BOX,
+                // WHICH SITS BELOW THE HEADER — SO A SCROLLED ROW CAN NEVER REACH THE HEADER OR THE CHROME
+                .width(View.MATCH_PARENT)
+                .weight(1f);
+
+        // VERTICAL COLUMN: SEARCH, HEADER, LIST — EACH CONFINED TO ITS BOX BY THE LAYOUT (PADDING/SPACING)
+        final LinearLayout column = LinearLayout.column()
+                .spacing(8)
+                .padding(new Spacing(8, 4, 8, 10))
+                .width(View.MATCH_PARENT)
+                .height(View.MATCH_PARENT)
+                .add(this.search)
+                .add(header)
+                .add(this.list);
+
+        return new Body().add(column).width(View.MATCH_PARENT).height(View.MATCH_PARENT);
+    }
+
+    @Override
     public void onEnter() {
+        super.onEnter();
         this.loading = false;
         this.loadGeneration++;
         this.pendingUri = null;
-        this.selectedIndex = 0;
-        this.scrollOffset = 0;
-        this.searchFocused = false;
         this.groupSubscriptions.clear();
         this.thumbnailSubscriptions.clear();
+        this.search.value("").focused(false);
+        this.applyFilter();
+        this.list.selection(0);
         this.subscribeGroupMRLs();
     }
 
@@ -83,6 +159,40 @@ public class MRLSelectorScreen extends Screen {
         this.loadGeneration++;
         this.pendingUri = null;
         this.releaseThumbnailPlayers();
+    }
+
+    // RECOMPUTES THE SEARCH-FILTERED ITEM LIST, KEEPING THE SAME ITEM SELECTED WHEN IT SURVIVES THE FILTER
+    private void applyFilter() {
+        final AppContext.TestURI prev = this.selectedUri();
+        final List<AppContext.TestURI> next = new ArrayList<>();
+        if (this.ctx.selectedGroup != null) {
+            final String q = this.search.value() == null ? "" : this.search.value().trim().toLowerCase();
+            for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
+                if (q.isEmpty() || uri.name().toLowerCase().contains(q) || uri.uri().toLowerCase().contains(q)) {
+                    next.add(uri);
+                }
+            }
+        }
+        this.filtered = next;
+        this.list.items(next);
+        final int idx = prev == null ? 0 : next.indexOf(prev);
+        this.list.selection(idx < 0 ? 0 : idx);
+    }
+
+    // THE ITEM DRIVING THE PREVIEW/ACTIONS: THE SELECTED ROW, OR THE FIRST ITEM WHEN THE FILTER HIDES EVERYTHING
+    private AppContext.TestURI selectedUri() {
+        if (this.ctx.selectedGroup == null) return null;
+        final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
+        if (!this.filtered.isEmpty()) {
+            final int i = this.list.selectedIndex();
+            if (i >= 0 && i < this.filtered.size()) return this.filtered.get(i);
+        }
+        return uris.length > 0 ? uris[0] : null;
+    }
+
+    private void openRow(final AppContext.TestURI uri) {
+        this.search.focused(false); // A ROW ACTIVATION BLURS THE FILTER FIELD (LEGACY BEHAVIOR)
+        this.handleSelect(uri);
     }
 
     private void subscribeGroupMRLs() {
@@ -127,14 +237,32 @@ public class MRLSelectorScreen extends Screen {
     }
 
     private void releaseInactiveThumbnailPlayers(final Set<String> activeNames) {
+        List<MediaPlayer> evicted = null;
         final Iterator<Map.Entry<String, MediaPlayer>> it = this.thumbnailPlayers.entrySet().iterator();
         while (it.hasNext()) {
             final Map.Entry<String, MediaPlayer> entry = it.next();
             if (activeNames.contains(entry.getKey())) continue;
-            entry.getValue().release();
+            // REMOVE FROM THE ACTIVE MAP FIRST, THEN HAND OFF FOR BACKGROUND RELEASE (SEE releaseAsync)
+            if (evicted == null) evicted = new ArrayList<>();
+            evicted.add(entry.getValue());
             it.remove();
             this.thumbnailAttempted.remove(entry.getKey());
         }
+        if (evicted != null) this.releaseAsync(evicted);
+    }
+
+    // HANDS THUMBNAIL PLAYERS OFF FOR BACKGROUND RELEASE — MIRRORS AppContext.releasePlayer. THE PLAYERS
+    // MUST ALREADY BE REMOVED FROM thumbnailPlayers SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER.
+    // stop() IS NON-BLOCKING; release() JOINS THE DECODE THREADS (~HUNDREDS OF MS) AND SO RUNS OFF THE RENDER
+    // THREAD. THE ENGINE TEARDOWN IS THREAD-SAFE (GL DEFERS ITS TEXTURE DELETES TO THE RENDER EXECUTOR).
+    private void releaseAsync(final List<MediaPlayer> players) {
+        if (players.isEmpty()) return;
+        for (final MediaPlayer player: players) player.stop();
+        // HAND THE BLOCKING release() TO THE SHARED, SHUTDOWN-AWAITED RELEASE CHAIN SO A THUMBNAIL TEARDOWN
+        // IN FLIGHT CANNOT OUTLIVE THE RENDER-DEVICE DESTROY ON EXIT (VULKAN SAFETY).
+        this.ctx.releaseAsync("WaterMedia-ThumbnailRelease", () -> {
+            for (final MediaPlayer player: players) player.release();
+        });
     }
 
     // KEEPS THUMBNAIL PLAYERS SCOPED TO ENTRIES THE SELECTOR IS CURRENTLY SHOWING.
@@ -201,16 +329,18 @@ public class MRLSelectorScreen extends Screen {
     }
 
     private void releaseThumbnailPlayers() {
-        for (final MediaPlayer player: this.thumbnailPlayers.values()) {
-            player.release();
+        if (!this.thumbnailPlayers.isEmpty()) {
+            // SNAPSHOT AND CLEAR FIRST SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER
+            final List<MediaPlayer> players = new ArrayList<>(this.thumbnailPlayers.values());
+            this.thumbnailPlayers.clear();
+            this.releaseAsync(players);
         }
-        this.thumbnailPlayers.clear();
         this.thumbnailAttempted.clear();
         this.thumbnailSubscriptions.clear();
         this.groupSubscriptions.clear();
     }
 
-    private void handleSelect(final int index, final AppContext.TestURI uri) {
+    private void handleSelect(final AppContext.TestURI uri) {
         this.ctx.selectedMRLName = uri.name();
         final MRL mrl = this.mrlFor(uri);
         this.ctx.selectedMRL = mrl;
@@ -256,7 +386,7 @@ public class MRLSelectorScreen extends Screen {
         }
 
         final MediaPlayer thumbnail = this.thumbnailPlayers.remove(name);
-        if (thumbnail != null) thumbnail.release();
+        if (thumbnail != null) this.releaseAsync(List.of(thumbnail));
         this.thumbnailAttempted.remove(name);
         this.groupSubscriptions.remove(name);
         if (!loaded(mrl) && this.groupSubscriptions.add(name)) {
@@ -350,7 +480,8 @@ public class MRLSelectorScreen extends Screen {
 
     @Override
     public boolean wantsContinuousRender() {
-        return AppChrome.crtEnabled() || this.loading || this.searchFocused || this.hasActiveAnimatedThumbnail();
+        // super = A FOCUSED FILTER FIELD (CARET BLINK); PLUS THE SCREEN'S OWN ANIMATION TRIGGERS
+        return super.wantsContinuousRender() || AppChrome.crtEnabled() || this.loading || this.hasActiveAnimatedThumbnail();
     }
 
     private boolean hasActiveAnimatedThumbnail() {
@@ -367,93 +498,59 @@ public class MRLSelectorScreen extends Screen {
 
     @Override
     public void render(final int windowW, final int windowH) {
-        if (this.ctx.selectedGroup == null) return;
-
-        if (this.loading) {
-            this.checkLoadingState();
+        // REFRESH THE HEADER-ROW VIEWS FROM LIVE DATA BEFORE THE TREE MEASURES/DRAWS
+        if (this.ctx.selectedGroup != null) {
+            this.headerLabel.text(this.ctx.selectedGroup.name().toUpperCase());
+            this.headerCount.text(this.filtered.size() + " ITEMS");
+            int failed = 0;
+            for (final MRL mrl: this.ctx.groupMRLs.values()) {
+                if (failed(mrl)) failed++;
+            }
+            this.headerFailed.label(failed + " FAILED").color(failed > 0 ? AppTheme.RED : AppTheme.TEXT_FAINT);
         }
-
-        this.subscribeGroupMRLs();
-
-        final String groupName = this.ctx.selectedGroup != null ? this.ctx.selectedGroup.name() : "";
-        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Select media", groupName, "v" + WaterMedia.VERSION);
-
-        this.renderSelectorLayout(windowW, windowH);
-
-        if (this.loading) {
-            this.renderLoadingDialog(windowW, windowH);
-        }
+        super.render(windowW, windowH); // CHROME + PREVIEW (renderChrome) THEN THE VIEW TREE
+        // THE LOAD MODAL OVERLAYS EVERYTHING AND IS CENTERED IN THE FULL WINDOW, SO IT PAINTS LAST
+        if (this.loading) this.renderLoadingDialog(windowW, windowH);
     }
 
-    private void renderSelectorLayout(final int windowW, final int windowH) {
-        final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
-        if (uris.length == 0) return;
-        final List<Integer> visible = this.visibleIndices(uris);
-        if (visible.isEmpty()) {
-            this.selectedIndex = 0;
-        } else if (!visible.contains(this.selectedIndex)) {
-            this.selectedIndex = visible.get(0);
-        }
-
+    @Override
+    protected void renderChrome(final int windowW, final int windowH) {
+        this.leftW = Math.min(380, Math.max(320, windowW / 3));
         final int top = AppChrome.contentTop();
         final int bottom = AppChrome.contentBottom(windowH);
-        final int leftW = Math.min(380, Math.max(320, windowW / 3));
-        final int rowH = 66;
-        final int listX = 0;
-        final int listY = top;
-        final int listH = bottom - top;
-        final int searchH = 44;
-        final int rowsY = listY + searchH + 44;
-        final int visibleRows = Math.max(1, (listY + listH - rowsY) / rowH);
-        final int selectedPos = Math.max(0, visible.indexOf(this.selectedIndex));
-        if (selectedPos < this.scrollOffset) this.scrollOffset = selectedPos;
-        if (selectedPos >= this.scrollOffset + visibleRows) this.scrollOffset = selectedPos - visibleRows + 1;
-        this.scrollOffset = Math.max(0, Math.min(Math.max(0, visible.size() - visibleRows), this.scrollOffset));
-        this.updateThumbnailPlayers(this.activeThumbnailNames(uris, visible, visibleRows));
+        this.listH = bottom - top;
+        if (this.ctx.selectedGroup == null) return;
+
+        if (this.loading) this.checkLoadingState();
+        this.subscribeGroupMRLs();
+        this.updateThumbnailPlayers(this.activeThumbnailNames());
+
+        final String groupName = this.ctx.selectedGroup.name();
+        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Select media", groupName, "v" + WaterMedia.VERSION);
+
+        final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
+        if (uris.length == 0) return; // NO ITEMS — CHROME ONLY (LEGACY)
 
         RenderSystem.setupOrtho(windowW, windowH);
-        RenderSystem.fill(listX, listY, leftW, listH, AppTheme.alpha(AppTheme.BG_1, 150));
-        RenderSystem.lineV(leftW, listY, listH, AppTheme.STROKE_BRIGHT, 1f);
-        this.searchBounds = new Dimension(12, listY + 8, leftW - 24, 30);
-        RenderSystem.fill(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(), AppTheme.BG_2);
-        RenderSystem.rect(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(),
-                this.searchFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
-        if (this.searchFocused) RenderSystem.glowRect(this.searchBounds.x(), this.searchBounds.y(), this.searchBounds.width(), this.searchBounds.height(), 0f, AppTheme.NEON, 0.24f);
-        final float searchScale = AppTheme.TEXT_BODY;
-        final int searchTextX = this.searchBounds.x() + 30;
-        final int searchTextY = this.searchBounds.y() + Math.max(0, (this.searchBounds.height() - this.text.glyphHeight(searchScale)) / 2);
-        PixelIcon.draw("search", this.searchBounds.x() + 8, this.searchBounds.y() + (this.searchBounds.height() - 14) / 2, 14, AppTheme.TEXT_FAINT);
-        this.text.render(this.searchText.isEmpty() ? "filter..." : this.searchText,
-                searchTextX, searchTextY,
-                this.searchText.isEmpty() ? AppTheme.TEXT_FAINT : AppTheme.TEXT, searchScale);
-        if (this.searchFocused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-            final int textW = this.searchText.isEmpty() ? 0 : this.text.width(this.searchText, searchScale);
-            final int caretX = Math.min(this.searchBounds.right() - 8, searchTextX + textW + (this.searchText.isEmpty() ? -5 : 1));
-            RenderSystem.fill(caretX, searchTextY, 2, this.text.glyphHeight(searchScale), AppTheme.NEON_LIGHT);
-        }
-        AppChrome.sectionHead(this.text, this.ctx.selectedGroup.name(), visible.size() + " items", 14, listY + searchH + 8);
-        this.renderFailedTag(leftW, listY + searchH + 8);
+        RenderSystem.fill(0, top, this.leftW, this.listH, AppTheme.alpha(AppTheme.BG_1, 150));
+        RenderSystem.lineV(this.leftW, top, this.listH, AppTheme.STROKE_BRIGHT, 1f);
+        // THE SEARCH FIELD, THE HEADER ROW (LABEL / ITEM COUNT / FAILED BADGE) AND THE ROWS ARE ALL DRAWN
+        // BY THE VIEW TREE NOW, EACH INSIDE ITS OWN LAYOUT BOX
 
-        this.rowBounds.clear();
-        this.rowIndices.clear();
-        for (int i = 0; i < visibleRows && i + this.scrollOffset < visible.size(); i++) {
-            final int index = visible.get(i + this.scrollOffset);
-            final AppContext.TestURI uri = uris[index];
-            final Dimension row = new Dimension(8, rowsY + i * rowH, leftW - 16, rowH - 6);
-            this.rowBounds.add(row);
-            this.rowIndices.add(index);
-            this.renderMediaRow(uri, index, row, index == this.selectedIndex, windowH);
-        }
-
-        final int previewX = leftW + 18;
+        // ===== RIGHT PREVIEW STACK =====
+        final int previewX = this.leftW + 18;
         final int previewW = windowW - previewX - 18;
         final int stackMargin = 18;
         final int stackGap = 16;
-        final int panelH = Math.min(112, Math.max(96, (bottom - top) / 5));
-        final int previewH = Math.max(220, bottom - top - panelH - stackGap - stackMargin * 2);
+        final int panelH = Math.min(112, Math.max(96, this.listH / 5));
+        final int previewH = Math.max(220, this.listH - panelH - stackGap - stackMargin * 2);
         final int stackH = previewH + stackGap + panelH;
-        final int previewY = top + Math.max(0, (bottom - top - stackH) / 2);
-        final AppContext.TestURI selected = uris[this.selectedIndex];
+        final int previewY = top + Math.max(0, (this.listH - stackH) / 2);
+        final AppContext.TestURI selected = this.selectedUri();
+        if (selected == null) {
+            RenderSystem.restoreProjection();
+            return;
+        }
         AppChrome.tvFrame(previewX, previewY, previewW, previewH, true);
         this.renderThumbnailContent(selected, previewX + 8, previewY + 8, previewW - 16, previewH - 16, windowH, false);
 
@@ -462,7 +559,7 @@ public class MRLSelectorScreen extends Screen {
         AppChrome.amberTriangle(previewX - 1, panelY - 1, 10, true);
         AppChrome.amberTriangle(previewX + previewW - 9, panelY + panelH - 9, 10, false);
         final MRL mrl = this.mrlFor(selected);
-        final String title = this.text.truncateToWidth(selected.name().toUpperCase(), previewW - 410, AppTheme.TEXT_SECTION, java.awt.Font.BOLD);
+        final String title = this.text.truncateToWidth(selected.name().toUpperCase(), previewW - 410, AppTheme.TEXT_SECTION, Font.BOLD);
         this.text.renderBold(title, previewX + 16, panelY + 14, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION);
         final MediaType type = this.firstMediaType(mrl);
         if (type != null) {
@@ -471,7 +568,7 @@ public class MRLSelectorScreen extends Screen {
         this.text.render(this.text.truncateToWidth(selected.uri(), previewW - 270, AppTheme.TEXT_BODY),
                 previewX + 16, panelY + 42, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         final String status = statusLabel(mrl);
-        final java.awt.Color statusColor = statusColor(mrl);
+        final Color statusColor = statusColor(mrl);
         final String quality = this.bestQuality(mrl);
         final int statusPipY = panelY + 72;
         AppChrome.statusPip(previewX + 18, statusPipY, 10, statusColor, true);
@@ -480,7 +577,7 @@ public class MRLSelectorScreen extends Screen {
         final boolean regen = regenerable(mrl);
         final String playLabel = regen ? "RELOAD" : "PLAY";
         final String playIcon = regen ? "reload" : "play";
-        final int playW = Math.max(130, this.panelButtonWidth(playLabel, "ENTER", AppTheme.TEXT_BUTTON));
+        final int playW = Math.max(130, this.panelButtonWidth(playLabel, "ENTER", playIcon));
         this.playBounds = new Dimension(previewX + previewW - playW - 18, panelY + 34, playW, 38);
         this.copyBounds = new Dimension(this.playBounds.x() - 166, panelY + 34, 154, 38);
         this.renderPanelButton("copy", "COPY LINK", null, this.copyBounds, AppTheme.NEON_LIGHT, mrl != null);
@@ -490,62 +587,42 @@ public class MRLSelectorScreen extends Screen {
         RenderSystem.restoreProjection();
     }
 
-    private Set<String> activeThumbnailNames(final AppContext.TestURI[] uris,
-                                             final List<Integer> visible,
-                                             final int visibleRows) {
+    // THE SELECTED ITEM PLUS EVERY ROW CURRENTLY ON SCREEN (FROM THE PREVIOUS FRAME'S LAYOUT). THIS SCOPES
+    // THUMBNAIL PLAYERS TO WHAT THE SELECTOR IS SHOWING, EXACTLY LIKE THE LEGACY VISIBLE-WINDOW COMPUTATION.
+    private Set<String> activeThumbnailNames() {
         final Set<String> active = new LinkedHashSet<>();
-        if (this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
-            active.add(uris[this.selectedIndex].name());
-        }
-        for (int i = 0; i < visibleRows && i + this.scrollOffset < visible.size(); i++) {
-            final int index = visible.get(i + this.scrollOffset);
-            if (index >= 0 && index < uris.length) active.add(uris[index].name());
+        final AppContext.TestURI selected = this.selectedUri();
+        if (selected != null) active.add(selected.name());
+        final int viewTop = this.list.top();
+        final int viewBottom = viewTop + this.list.measuredHeight();
+        for (final View<?> child: this.list.children()) {
+            if (!(child instanceof MediaRow row) || row.measuredHeight() <= 0) continue;
+            final int rowTop = row.top();
+            if (rowTop + row.measuredHeight() > viewTop && rowTop < viewBottom) active.add(row.uri.name());
         }
         return active;
     }
 
-    private void renderFailedTag(final int rightEdge, final int sectionY) {
-        int failed = 0;
-        for (final MRL mrl: this.ctx.groupMRLs.values()) {
-            if (failed(mrl)) failed++;
-        }
-        final String label = failed + " FAILED";
-        final int tagW = AppChrome.tagWidth(this.text, label);
-        AppChrome.tag(this.text, rightEdge - tagW - 18, sectionY + 2, label, failed > 0 ? AppTheme.RED : AppTheme.TEXT_FAINT);
+    @Override
+    protected int contentX(final int windowW, final int windowH) {
+        return 0;
     }
 
-    private List<Integer> visibleIndices(final AppContext.TestURI[] uris) {
-        final List<Integer> visible = new ArrayList<>();
-        final String q = this.searchText == null ? "" : this.searchText.trim().toLowerCase();
-        for (int i = 0; i < uris.length; i++) {
-            if (q.isEmpty() || uris[i].name().toLowerCase().contains(q) || uris[i].uri().toLowerCase().contains(q)) {
-                visible.add(i);
-            }
-        }
-        return visible;
+    @Override
+    protected int contentY(final int windowW, final int windowH) {
+        return AppChrome.contentTop();
     }
 
-    private void renderMediaRow(final AppContext.TestURI uri, final int index, final Dimension row,
-                                final boolean selected, final int windowH) {
-        final MRL mrl = this.mrlFor(uri);
-        final java.awt.Color stateColor = statusColor(mrl);
-        if (selected) {
-            RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
-                    AppTheme.NEON.getRed() / 255f, AppTheme.NEON.getGreen() / 255f, AppTheme.NEON.getBlue() / 255f, 0.10f);
-            RenderSystem.rect(row.x(), row.y(), row.width(), row.height(), AppTheme.NEON, 1f);
-            RenderSystem.glowRect(row.x(), row.y(), row.width(), row.height(), 0f, AppTheme.NEON, 0.20f);
-        }
-        AppChrome.tvFrame(row.x() + 6, row.y() + 8, 70, 46, selected);
-        this.renderThumbnailContent(uri, row.x() + 12, row.y() + 14, 58, 34, windowH, true);
-        final int textX = row.x() + 88;
-        final int statusX = row.right() - 19;
-        final int maxTextW = Math.max(40, statusX - textX - 14);
-        this.text.renderBold(this.text.truncateToWidth(uri.name().toUpperCase(), maxTextW, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD),
-                textX, row.y() + 12, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, AppTheme.TEXT_BUTTON);
-        this.text.render(this.text.truncateToWidth(uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
-                textX, row.y() + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        AppChrome.statusPip(statusX, row.y() + 25, 8, stateColor, false);
+    @Override
+    protected int contentW(final int windowW, final int windowH) {
+        return this.leftW;
     }
+
+    @Override
+    protected int contentH(final int windowW, final int windowH) {
+        return this.listH;
+    }
+
 
     private void renderThumbnailContent(final AppContext.TestURI uri, final int x, final int y,
                                         final int w, final int h, final int windowH, final boolean mini) {
@@ -590,7 +667,7 @@ public class MRLSelectorScreen extends Screen {
             }
             final String label = failed ? (mini ? "[" + statusLabel(mrl) + "]" : statusLabel(mrl))
                     : ready ? "[ media thumbnail ]" : "LOADING...";
-            final java.awt.Color color = failed ? statusColor(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
+            final Color color = failed ? statusColor(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
             if (!mini && failed) {
                 PixelIcon.draw("warn", x + w / 2 - (mini ? 5 : 14), y + h / 2 - (mini ? 12 : 36), mini ? 10 : 28, statusColor(mrl));
             }
@@ -605,39 +682,15 @@ public class MRLSelectorScreen extends Screen {
     }
 
     private void renderPanelButton(final String icon, final String label, final String hotkey, final Dimension bounds,
-                                   final java.awt.Color color, final boolean enabled) {
-        final java.awt.Color actual = enabled ? color : AppTheme.TEXT_FAINT;
+                                   final Color color, final boolean enabled) {
         final boolean hover = enabled && bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 84) : AppTheme.alpha(AppTheme.BG_2, 220));
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), actual, 2f);
-        if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, actual, 0.18f);
-        final float scale = AppTheme.TEXT_BUTTON;
-        final int iconSize = 15;
-        PixelIcon.draw(icon, bounds.x() + 11, bounds.y() + (bounds.height() - iconSize) / 2, iconSize, actual);
-        final int keyReserve = hotkey == null ? 0 : this.text.width(hotkey, AppTheme.TEXT_SUBTITLE) + 28;
-        final int labelMaxW = Math.max(24, bounds.width() - 42 - keyReserve);
-        this.text.renderBold(this.text.truncateToWidth(label, labelMaxW, scale, java.awt.Font.BOLD), bounds.x() + 34,
-                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(scale)) / 2f),
-                actual, scale);
-        if (hotkey != null) {
-            final int keyW = this.text.width(hotkey, AppTheme.TEXT_SUBTITLE) + 12;
-            final int keyH = 20;
-            final int keyX = bounds.right() - keyW - 8;
-            final int keyY = bounds.y() + (bounds.height() - keyH) / 2;
-            RenderSystem.rect(keyX, keyY, keyW, keyH, AppTheme.STROKE, 1f);
-            this.text.render(hotkey, keyX + 6,
-                    keyY + Math.max(0, (keyH - this.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f),
-                    AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        }
+        // SHARED BUTTON LOOK: color IS BOTH THE ACCENT (BORDER) AND THE LABEL COLOR; ICON + HOTKEY CHIP CONSISTENT
+        Button.render(this.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                label, hotkey == null ? "" : hotkey, icon, 12, color, color, false, hover, enabled);
     }
 
-    private int panelButtonWidth(final String label, final String hotkey, final float scale) {
-        final int iconAndLeft = 42;
-        final int rightPad = 8;
-        final int keyW = hotkey == null ? 0 : this.text.width(hotkey, AppTheme.TEXT_SUBTITLE) + 20;
-        final int keyGap = hotkey == null ? 0 : 10;
-        return iconAndLeft + this.text.widthBold(label, scale) + keyGap + keyW + rightPad;
+    private int panelButtonWidth(final String label, final String hotkey, final String icon) {
+        return Button.width(this.text, label, hotkey == null ? "" : hotkey, icon, 12);
     }
 
     // ===== MRL STATUS HELPERS =====
@@ -669,7 +722,7 @@ public class MRLSelectorScreen extends Screen {
         };
     }
 
-    private static java.awt.Color statusColor(final MRL mrl) {
+    private static Color statusColor(final MRL mrl) {
         if (mrl == null) return AppTheme.TEXT_FAINT;
         return switch (mrl.status()) {
             case LOADED -> AppTheme.GREEN;
@@ -705,123 +758,248 @@ public class MRLSelectorScreen extends Screen {
         }
 
         switch (key) {
-            case GLFW_KEY_SLASH -> this.searchFocused = true;
-            case GLFW_KEY_BACKSPACE -> {
-                if (this.searchFocused && !this.searchText.isEmpty()) {
-                    this.searchText = this.searchText.substring(0, this.searchText.length() - 1);
-                    this.scrollOffset = 0;
-                }
+            // BACKSPACE/ENTER/ESC ARE CONSUMED BY A FOCUSED SearchField; THEY REACH HERE ONLY WHEN IT IS BLURRED
+            case GLFW_KEY_SLASH -> this.search.focused(true).invalidate();
+            case GLFW_KEY_UP -> {
+                this.list.moveSelection(-1);
+                this.ctx.playSelectionSound();
             }
-            case GLFW_KEY_UP -> this.moveSelection(-1);
-            case GLFW_KEY_DOWN -> this.moveSelection(1);
+            case GLFW_KEY_DOWN -> {
+                this.list.moveSelection(1);
+                this.ctx.playSelectionSound();
+            }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
-                if (this.searchFocused) {
-                    this.searchFocused = false;
-                    return;
-                }
-                final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
-                if (uris.length > 0) {
-                    final AppContext.TestURI uri = uris[this.selectedIndex];
+                final AppContext.TestURI uri = this.selectedUri();
+                if (uri != null) {
                     final MRL mrl = this.mrlFor(uri);
                     if (regenerable(mrl)) this.reloadMRL(uri);
-                    else this.handleSelect(this.selectedIndex, uri);
+                    else this.handleSelect(uri);
                 }
             }
-            case GLFW_KEY_ESCAPE -> {
-                if (this.searchFocused) {
-                    this.searchFocused = false;
-                    if (!this.searchText.isEmpty()) {
-                        this.searchText = "";
-                        this.scrollOffset = 0;
-                    }
-                } else {
-                    this.goBack();
-                }
-            }
-        }
-    }
-
-    private void moveSelection(final int delta) {
-        if (this.ctx.selectedGroup == null || this.ctx.selectedGroup.uris().length == 0) return;
-        final List<Integer> visible = this.visibleIndices(this.ctx.selectedGroup.uris());
-        if (visible.isEmpty()) return;
-        final int pos = Math.max(0, visible.indexOf(this.selectedIndex));
-        this.selectedIndex = visible.get(Math.max(0, Math.min(visible.size() - 1, pos + delta)));
-        this.ctx.playSelectionSound();
-    }
-
-    @Override
-    public void handleChar(final int codepoint) {
-        if (!this.searchFocused || this.loading) return;
-        if (codepoint < 32 || codepoint == 127) return;
-        this.searchText += new String(Character.toChars(codepoint));
-        this.scrollOffset = 0;
-    }
-
-    @Override
-    public void handleMouseMove(final double mx, final double my) {
-        if (this.loading) return;
-        if (this.searchBounds.contains(mx, my)) {
-            this.searchFocused = true;
-            return;
-        }
-        for (int i = 0; i < this.rowBounds.size(); i++) {
-            if (this.rowBounds.get(i).contains(mx, my)) {
-                final int index = this.rowIndices.get(i);
-                if (index != this.selectedIndex) {
-                    this.selectedIndex = index;
-                    this.ctx.playSelectionSound();
-                }
-                return;
-            }
+            case GLFW_KEY_ESCAPE -> this.goBack();
         }
     }
 
     @Override
     public void handleMouseClick(final double mx, final double my) {
-        if (this.loading) return;
-        if (this.searchBounds.contains(mx, my)) {
-            this.searchFocused = true;
-            return;
-        }
-        this.searchFocused = false;
-        final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
-        if (this.copyBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
-            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(uris[this.selectedIndex].uri()), null);
+        if (this.loading) return; // MODAL — ESC CANCELS VIA onKeyRelease
+        super.handleMouseClick(mx, my); // TREE: FILTER FOCUS/BLUR + ROW ACTIVATION
+        // COPY/PLAY LIVE IN THE renderChrome PREVIEW PANEL, OUTSIDE THE TREE — HIT-TEST THEM HERE
+        final AppContext.TestURI selected = this.selectedUri();
+        if (selected == null) return;
+        if (this.copyBounds.contains(mx, my)) {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(selected.uri()), null);
             this.ctx.playSelectionSound();
-            return;
+        } else if (this.playBounds.contains(mx, my)) {
+            final MRL mrl = this.mrlFor(selected);
+            if (regenerable(mrl)) this.reloadMRL(selected);
+            else this.handleSelect(selected);
         }
-        if (this.playBounds.contains(mx, my) && this.selectedIndex >= 0 && this.selectedIndex < uris.length) {
-            final AppContext.TestURI uri = uris[this.selectedIndex];
-            final MRL mrl = this.mrlFor(uri);
-            if (regenerable(mrl)) this.reloadMRL(uri);
-            else this.handleSelect(this.selectedIndex, uri);
-            return;
-        }
-        for (int i = 0; i < this.rowBounds.size(); i++) {
-            if (this.rowBounds.get(i).contains(mx, my)) {
-                final int index = this.rowIndices.get(i);
-                if (index >= 0 && index < uris.length) {
-                    this.selectedIndex = index;
-                    this.handleSelect(index, uris[index]);
-                }
-                return;
-            }
-        }
-    }
-
-    @Override
-    public void handleScroll(final double yOffset) {
-        if (this.loading) return;
-        if (this.ctx.selectedGroup == null) return;
-        final int visibleRows = Math.max(1, this.rowBounds.size());
-        final int max = Math.max(0, this.visibleIndices(this.ctx.selectedGroup.uris()).size() - visibleRows);
-        this.scrollOffset = Math.max(0, Math.min(max, this.scrollOffset + (int) (-yOffset)));
     }
 
     @Override
     public String instructions() {
         if (this.loading) return "ESC: Cancel";
         return "ARROWS: Navigate | ENTER: Select | ESC: Back";
+    }
+
+    // FILLS ITS SINGLE CHILD (THE LEFT-COLUMN LAYOUT) TO THE CONTENT RECT AND SWALLOWS ALL POINTER/SCROLL/
+    // TEXT INPUT WHILE A LOAD IS IN FLIGHT (THE SELECTOR IS MODAL THEN).
+    private final class Body extends ViewGroup<Body> {
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            for (final View<?> child: this.children) child.measure(innerAvailWidth, innerAvailHeight);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            for (final View<?> child: this.children) child.layout(this.innerLeft(), this.innerTop());
+        }
+
+        @Override
+        public boolean dispatchClick(final double mx, final double my) {
+            return loading || super.dispatchClick(mx, my);
+        }
+
+        @Override
+        public boolean dispatchHover(final double mx, final double my) {
+            return !loading && super.dispatchHover(mx, my);
+        }
+
+        @Override
+        public View<?> dispatchPress(final double mx, final double my) {
+            return loading ? null : super.dispatchPress(mx, my);
+        }
+
+        @Override
+        public boolean dispatchScroll(final double mx, final double my, final double amount) {
+            return !loading && super.dispatchScroll(mx, my, amount);
+        }
+
+        @Override
+        public boolean dispatchKey(final int key, final int action) {
+            return !loading && super.dispatchKey(key, action);
+        }
+
+        @Override
+        public boolean dispatchChar(final int codepoint) {
+            return !loading && super.dispatchChar(codepoint);
+        }
+    }
+
+    // ONE SELECTABLE MEDIA ROW — PORTS THE LEGACY renderMediaRow ONTO ITS OWN BOX AND READS ITS
+    // ListView-DRIVEN selected STATE (THUMBNAIL / LABEL / URI / STATUS PIP, EXACT COLORS AND OFFSETS).
+    private final class MediaRow extends View<MediaRow> {
+
+        private final AppContext.TestURI uri;
+
+        private MediaRow(final AppContext.TestURI uri) {
+            this.uri = uri;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            final int right = x + w;
+            final int windowH = canvas.windowHeight();
+            final MRL mrl = mrlFor(this.uri);
+            final Color stateColor = statusColor(mrl);
+            if (this.selected) {
+                RenderSystem.fill(x, y, w, h,
+                        AppTheme.NEON.getRed() / 255f, AppTheme.NEON.getGreen() / 255f, AppTheme.NEON.getBlue() / 255f, 0.10f);
+                RenderSystem.rect(x, y, w, h, AppTheme.NEON, 1f);
+                RenderSystem.glowRect(x, y, w, h, 0f, AppTheme.NEON, 0.20f);
+            }
+            AppChrome.tvFrame(x + 6, y + 8, 70, 46, this.selected);
+            renderThumbnailContent(this.uri, x + 12, y + 14, 58, 34, windowH, true);
+            final int textX = x + 88;
+            final int statusX = right - 19;
+            final int maxTextW = Math.max(40, statusX - textX - 14);
+            text.renderBold(text.truncateToWidth(this.uri.name().toUpperCase(), maxTextW, AppTheme.TEXT_BUTTON, Font.BOLD),
+                    textX, y + 12, this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, AppTheme.TEXT_BUTTON);
+            text.render(text.truncateToWidth(this.uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
+                    textX, y + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+            AppChrome.statusPip(statusX, y + 25, 8, stateColor, false);
+        }
+    }
+
+    // THE FILTER FIELD — A DELIBERATE PORT OF THE LEGACY SEARCH BOX (BG_2 FILL, NEON/STROKE BORDER + GLOW ON
+    // FOCUS, SEARCH GLYPH, 2px NEON_LIGHT CARET AT 480ms). THE BUILT-IN TextField DIFFERS, SO IT IS NOT USED.
+    private static final class SearchField extends View<SearchField> {
+
+        private String value = "";
+        private Consumer<String> onChange;
+
+        private SearchField onChange(final Consumer<String> handler) {
+            this.onChange = handler;
+            return this;
+        }
+
+        private SearchField value(final String v) {
+            this.value = v == null ? "" : v;
+            return this;
+        }
+
+        private String value() {
+            return this.value;
+        }
+
+        @Override
+        public boolean textInputActive() {
+            return this.focused;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            final float scale = AppTheme.TEXT_BODY;
+            canvas.fill(x, y, w, h, AppTheme.BG_2);
+            canvas.stroke(x, y, w, h, this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
+            if (this.focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.24f);
+            PixelIcon.draw("search", x + 8, y + (h - 14) / 2, 14, AppTheme.TEXT_FAINT);
+            final boolean empty = this.value.isEmpty();
+            final int textX = x + 30;
+            final int textH = canvas.textHeight(scale, false);
+            final int textY = y + Math.max(0, (h - textH) / 2);
+            canvas.text(empty ? "filter..." : this.value, textX, textY, empty ? AppTheme.TEXT_FAINT : AppTheme.TEXT, scale, false);
+            if (this.focused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
+                final int textW = empty ? 0 : canvas.textWidth(this.value, scale, false);
+                final int caretX = Math.min(x + w - 8, textX + textW + (empty ? -5 : 1));
+                canvas.fill(caretX, textY, 2, textH, AppTheme.NEON_LIGHT);
+            }
+        }
+
+        @Override
+        public boolean dispatchHover(final double mx, final double my) {
+            // LEGACY handleMouseMove FOCUSED THE FILTER ON HOVER (STICKY — NEVER BLURS ON LEAVE)
+            final boolean inside = this.contains(mx, my);
+            this.hovered = inside;
+            if (inside && !this.focused) {
+                this.focused = true;
+                this.invalidate();
+            }
+            return inside;
+        }
+
+        @Override
+        public boolean dispatchClick(final double mx, final double my) {
+            if (this.contains(mx, my)) {
+                this.focused = true;
+                this.invalidate();
+                return true;
+            }
+            this.focused = false;
+            return false;
+        }
+
+        @Override
+        public boolean dispatchChar(final int codepoint) {
+            if (!this.focused || codepoint < 32 || codepoint == 127) return false;
+            this.value += new String(Character.toChars(codepoint));
+            this.invalidate();
+            if (this.onChange != null) this.onChange.accept(this.value);
+            return true;
+        }
+
+        @Override
+        public boolean dispatchKey(final int key, final int action) {
+            if (!this.focused) return false; // ARROWS/SLASH/ENTER/ESC FALL THROUGH TO SCREEN NAV WHEN BLURRED
+            switch (key) {
+                case GLFW_KEY_BACKSPACE -> {
+                    if (action != GLFW_RELEASE && !this.value.isEmpty()) {
+                        this.value = this.value.substring(0, this.value.length() - 1);
+                        this.invalidate();
+                        if (this.onChange != null) this.onChange.accept(this.value);
+                    }
+                    return true;
+                }
+                case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
+                    if (action == GLFW_RELEASE) this.focused = false;
+                    return true;
+                }
+                case GLFW_KEY_ESCAPE -> {
+                    if (action == GLFW_RELEASE) {
+                        this.focused = false;
+                        if (!this.value.isEmpty()) {
+                            this.value = "";
+                            if (this.onChange != null) this.onChange.accept(this.value);
+                        }
+                    }
+                    return true;
+                }
+                default -> {
+                    return false;
+                }
+            }
+        }
     }
 }

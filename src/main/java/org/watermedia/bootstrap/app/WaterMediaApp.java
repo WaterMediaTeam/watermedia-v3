@@ -37,6 +37,7 @@ import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.view.Button;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -62,6 +63,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -91,6 +93,9 @@ public class WaterMediaApp {
     private static boolean exitConfirmVisible;
     private static int dragOffsetX;
     private static int dragOffsetY;
+    // LAST CURSOR POSITION A HOVER DISPATCH WAS ISSUED FOR — NaN SO THE FIRST FRAME ALWAYS DISPATCHES
+    private static double lastMoveX = Double.NaN;
+    private static double lastMoveY = Double.NaN;
     private static Dimension exitConfirmCancelBounds = Dimension.ZERO;
     private static Dimension exitConfirmExitBounds = Dimension.ZERO;
     private static Dimension exitConfirmCloseBounds = Dimension.ZERO;
@@ -155,12 +160,14 @@ public class WaterMediaApp {
     }
 
     private static void runLoadingPhase(final LoadingScreen loadingScreen) {
-        final java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        // SINGLE-SLOT HOLDER FOR THE LOADER THREAD'S FAILURE — loader.join() BELOW ESTABLISHES THE
+        // HAPPENS-BEFORE THAT MAKES THE WRITE VISIBLE HERE, SO NO Atomic*/volatile IS NEEDED.
+        final Throwable[] failure = new Throwable[1];
         final Thread loader = ThreadTool.createStarted("WaterMediaApp-Init", () -> {
             try {
                 WaterMedia.start("WaterMediaApp", null, null, true);
             } catch (final Throwable t) {
-                failure.set(t);
+                failure[0] = t;
             }
         });
 
@@ -181,7 +188,7 @@ public class WaterMediaApp {
         ctx.backendsLoading = false;
         renderLoadingFrame(loadingScreen);
 
-        final Throwable t = failure.get();
+        final Throwable t = failure[0];
         if (t != null) {
             if (t instanceof RuntimeException re) throw re;
             if (t instanceof Error err) throw err;
@@ -209,6 +216,11 @@ public class WaterMediaApp {
 
         // THE RENDER LAYER OWNS THE ENGINE CHOICE (FROM -Dwatermedia.engine) AND THE BACKEND LIFECYCLE.
         // THE APP ONLY CREATES THE WINDOW AND, IF VULKAN FAILS TO ATTACH, REBUILDS IT FOR OPENGL.
+        // APPLY THE SETTINGS-PERSISTED ENGINE CHOICE UNLESS AN EXPLICIT -Dwatermedia.engine OVERRIDES IT.
+        if (System.getProperty("watermedia.engine") == null) {
+            final RenderSystem.Engine pref = RenderSystem.enginePreference();
+            if (pref != null) System.setProperty("watermedia.engine", pref == RenderSystem.Engine.VULKAN ? "vulkan" : "opengl");
+        }
         RenderSystem.chooseEngine();
         createWindow();
         if (!RenderSystem.attach(ctx.windowHandle)) {
@@ -306,9 +318,11 @@ public class WaterMediaApp {
 
             if (!maximized) {
                 final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-                glfwSetWindowPos(ctx.windowHandle,
-                        (vidmode.width() - ctx.windowWidth) / 2,
-                        (vidmode.height() - ctx.windowHeight) / 2);
+                if (vidmode != null) {
+                    glfwSetWindowPos(ctx.windowHandle,
+                            (vidmode.width() - ctx.windowWidth) / 2,
+                            (vidmode.height() - ctx.windowHeight) / 2);
+                }
             }
         }
     }
@@ -353,7 +367,6 @@ public class WaterMediaApp {
             if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
             final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
             ALC10.alcMakeContextCurrent(context);
-            ALC.createCapabilities(device);
             AL.createCapabilities(ALC.createCapabilities(device));
 
             loadSoundClick();
@@ -423,47 +436,47 @@ public class WaterMediaApp {
 
             case UPLOAD_LOGS -> {
                 if (!AppContext.IN_MODS) {
-                    ctx.uploadDialogVisible = false;
+                    ctx.upload.visible = false;
                     return;
                 }
-                if (!ctx.uploadDialogVisible) {
+                if (!ctx.upload.visible) {
                     openUploadLogsDialog();
                     scanUploadLogFiles();
                     return;
                 }
-                if (ctx.uploadDialogWorking) {
-                    ctx.uploadDialogVisible = true;
+                if (ctx.upload.working) {
+                    ctx.upload.visible = true;
                     return;
                 }
-                if (ctx.uploadDialogStage <= 1) {
+                if (ctx.upload.stage <= 1) {
                     if (!hasUploadCandidate()) return;
-                    ctx.uploadDialogWorking = true;
+                    ctx.upload.working = true;
                     ThreadTool.createStarted("WaterMediaApp-UploadLogs", WaterMediaApp::uploadLogs);
-                } else if (ctx.uploadDialogStage == 2) {
+                } else if (ctx.upload.stage == 2) {
                     if (!hasUploadedLog()) return;
                     ThreadTool.createStarted("WaterMediaApp-UploadIssueReport", WaterMediaApp::uploadIssueReport);
                 } else {
-                    if (ctx.uploadRepoUrl == null || ctx.uploadRepoUrl.isBlank()) return;
+                    if (ctx.upload.repoUrl == null || ctx.upload.repoUrl.isBlank()) return;
                     ThreadTool.createStarted("WaterMediaApp-OpenRepoPage", WaterMediaApp::openRepoPage);
                 }
             }
 
             case CLEANUP -> {
-                if (!ctx.cleanupDialogVisible) {
+                if (!ctx.cleanup.visible) {
                     openCleanupDialog();
                     scanCleanupCache();
                     return;
                 }
-                if (ctx.cleanupDialogWorking) {
-                    ctx.cleanupDialogVisible = true;
+                if (ctx.cleanup.working) {
+                    ctx.cleanup.visible = true;
                     return;
                 }
-                if (ctx.cleanupDialogStage <= 1) {
-                    if (ctx.cleanupFileCount <= 0) return;
-                    ctx.cleanupDialogWorking = true;
+                if (ctx.cleanup.stage <= 1) {
+                    if (ctx.cleanup.fileCount <= 0) return;
+                    ctx.cleanup.working = true;
                     ThreadTool.createStarted("WaterMediaApp-CacheCleanup", WaterMediaApp::cleanupCache);
                 } else {
-                    ctx.cleanupDialogVisible = false;
+                    ctx.cleanup.visible = false;
                     scanCleanupCache();
                 }
             }
@@ -474,6 +487,14 @@ public class WaterMediaApp {
     private static void mainLoop() {
         final FrameLimiter frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         ctx.requestRender();
+        // DRIVE THE SLOW GLOW HEARTBEAT ON RENDER-ON-DEMAND SCREENS: NUDGE A REDRAW ~15x/s SO THE PULSE
+        // ADVANCES. CONTINUOUS SCREENS (VIDEO / CRT) ALREADY REPAINT FASTER; requestRender COALESCES.
+        ThreadTool.createStarted("WaterMedia-GlowPulse", () -> {
+            while (running) {
+                ctx.requestRender();
+                ThreadTool.sleep(66);
+            }
+        });
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
             final boolean continuous = screens.wantsContinuousRender();
             if (continuous) {
@@ -552,7 +573,13 @@ public class WaterMediaApp {
                 ctx.mousePressed = false;
                 screens.handleMousePress(ctx.mouseX, ctx.mouseY);
             }
-            screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
+            // ONLY DISPATCH HOVER ON REAL CURSOR MOVEMENT — A STATIONARY CURSOR PARKED OVER A HIT BOX MUST
+            // NOT RE-ASSERT HOVER SELECTION EVERY FRAME AND SILENTLY OVERRIDE KEYBOARD NAVIGATION (H-01).
+            if (ctx.mouseX != lastMoveX || ctx.mouseY != lastMoveY) {
+                lastMoveX = ctx.mouseX;
+                lastMoveY = ctx.mouseY;
+                screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
+            }
             if (ctx.mouseClicked) {
                 ctx.mouseClicked = false;
                 screens.handleMouseRelease(ctx.mouseX, ctx.mouseY);
@@ -562,8 +589,8 @@ public class WaterMediaApp {
     }
 
     private static void renderErrorDialog() {
-        renderInfoDialog(ctx.globalErrorTitle == null ? "ERROR" : ctx.globalErrorTitle.toUpperCase(),
-                ctx.globalErrorMessage == null ? "" : ctx.globalErrorMessage,
+        renderInfoDialog(ctx.error.title == null ? "ERROR" : ctx.error.title.toUpperCase(),
+                ctx.error.message == null ? "" : ctx.error.message,
                 "OK", "ENTER", AppTheme.RED);
     }
 
@@ -628,25 +655,12 @@ public class WaterMediaApp {
     private static void renderDialogAction(final Dimension bounds, final String label, final String hotkey,
                                            final String icon, final Color accent) {
         final boolean hover = bounds.contains(ctx.mouseX, ctx.mouseY);
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover ? AppTheme.alpha(accent, 52) : AppTheme.BG_2);
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), accent, 1.2f);
-        PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, accent);
-        ctx.text.renderBold(label, bounds.x() + 32,
-                bounds.y() + Math.max(0, (bounds.height() - ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
-                accent, AppTheme.TEXT_BUTTON);
-        final float keyScale = AppTheme.TEXT_SUBTITLE;
-        final int keyW = ctx.text.width(hotkey, keyScale) + 12;
-        final int keyH = 20;
-        final int keyX = bounds.right() - keyW - 8;
-        final int keyY = bounds.y() + (bounds.height() - keyH) / 2;
-        RenderSystem.rect(keyX, keyY, keyW, keyH, AppTheme.STROKE, 1f);
-        ctx.text.render(hotkey, keyX + 6, keyY + Math.max(0, (keyH - ctx.text.glyphHeight(keyScale)) / 2f),
-                AppTheme.TEXT_FAINT, keyScale);
+        Button.render(ctx.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                label, hotkey, icon, 12, accent, accent, false, hover, true);
     }
 
     private static void renderBottomBar() {
-        ctx.configStatusVisible = "settings".equals(screens.currentName());
+        ctx.configStatus.visible = "settings".equals(screens.currentName());
         final String instructions = exitConfirmVisible ? "ENTER: Exit | ESC: Cancel"
                 : ctx.hasError() ? "ENTER/ESC: Close"
                 : screens.currentInstructions() + " | C: CRT " + (AppChrome.crtEnabled() ? "ON" : "OFF");
@@ -654,30 +668,30 @@ public class WaterMediaApp {
     }
 
     private static void openUploadLogsDialog() {
-        ctx.uploadDialogVisible = true;
-        ctx.uploadDialogWorking = false;
-        ctx.uploadDialogDone = false;
-        ctx.uploadDialogError = false;
-        ctx.uploadUploadsDone = false;
-        ctx.uploadIssueCopied = false;
-        ctx.uploadIssueOpened = false;
-        ctx.uploadDialogStage = 1;
-        ctx.uploadDialogStatus = "SCAN";
-        ctx.uploadIssueUrl = "github.com/watermedia/issues/new";
-        ctx.uploadRepoUrl = null;
-        ctx.uploadDialogFiles.clear();
+        ctx.upload.visible = true;
+        ctx.upload.working = false;
+        ctx.upload.done = false;
+        ctx.upload.error = false;
+        ctx.upload.uploadsDone = false;
+        ctx.upload.issueCopied = false;
+        ctx.upload.issueOpened = false;
+        ctx.upload.stage = 1;
+        ctx.upload.status = "SCAN";
+        ctx.upload.issueUrl = "github.com/watermedia/issues/new";
+        ctx.upload.repoUrl = null;
+        ctx.upload.files.clear();
     }
 
     private static void openCleanupDialog() {
-        ctx.cleanupDialogVisible = true;
-        ctx.cleanupDialogWorking = false;
-        ctx.cleanupDialogDone = false;
-        ctx.cleanupDialogError = false;
-        ctx.cleanupDialogStage = 1;
-        ctx.cleanupDialogState = "SCAN";
-        ctx.cleanupFileCount = 0;
-        ctx.cleanupSizeLabel = "0 B";
-        ctx.cleanupProgress = 0;
+        ctx.cleanup.visible = true;
+        ctx.cleanup.working = false;
+        ctx.cleanup.done = false;
+        ctx.cleanup.error = false;
+        ctx.cleanup.stage = 1;
+        ctx.cleanup.state = "SCAN";
+        ctx.cleanup.fileCount = 0;
+        ctx.cleanup.sizeLabel = "0 B";
+        ctx.cleanup.progress = 0;
     }
 
     // INPUT HANDLING
@@ -687,7 +701,9 @@ public class WaterMediaApp {
                 || glfwGetKey(ctx.windowHandle, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
                 || glfwGetKey(ctx.windowHandle, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
 
-        if (action == GLFW_RELEASE && key == GLFW_KEY_C) {
+        // GLOBAL CRT TOGGLE — BUT NOT WHILE A TEXT FIELD IS FOCUSED, OR TYPING A 'c' WOULD BOTH INSERT THE
+        // CHARACTER (VIA THE CHAR CALLBACK) AND FLIP THE CRT OVERLAY (M-02).
+        if (action == GLFW_RELEASE && key == GLFW_KEY_C && !screens.textInputFocused()) {
             AppChrome.toggleCrt();
             return;
         }
@@ -752,15 +768,15 @@ public class WaterMediaApp {
 
             final int w = img.getWidth(), h = img.getHeight();
             final ByteBuffer textureBuffer = argbToRgbaBuffer(img);
-            ctx.iconWidth = w;
-            ctx.iconHeight = h;
-            ctx.iconTextureId = RenderSystem.createTexture(w, h, textureBuffer);
+            ctx.assets.iconWidth = w;
+            ctx.assets.iconHeight = h;
+            ctx.assets.iconId = RenderSystem.createTexture(w, h, textureBuffer);
             MemoryUtil.memFree(textureBuffer);
 
             final TextureData glow = createGlowTexture(img, new Color(110, 168, 255), 12, 0.72f);
-            ctx.iconGlowTextureId = glow.textureId();
-            ctx.iconGlowWidth = glow.width();
-            ctx.iconGlowHeight = glow.height();
+            ctx.assets.iconGlowId = glow.textureId();
+            ctx.assets.iconGlowWidth = glow.width();
+            ctx.assets.iconGlowHeight = glow.height();
         } catch (final Exception e) {
             System.err.println("Failed to load logo texture: " + e.getMessage());
         }
@@ -792,9 +808,9 @@ public class WaterMediaApp {
             }
         }
 
-        ctx.duckFrameTextureIds = frames.stream().mapToInt(Integer::intValue).toArray();
-        ctx.duckFrameWidth = frameWidth;
-        ctx.duckFrameHeight = frameHeight;
+        ctx.assets.duckFrameIds = frames.stream().mapToInt(Integer::intValue).toArray();
+        ctx.assets.duckFrameWidth = frameWidth;
+        ctx.assets.duckFrameHeight = frameHeight;
     }
 
     private static void loadBanner() {
@@ -802,17 +818,17 @@ public class WaterMediaApp {
             final BufferedImage img = ImageIO.read(in);
             if (img == null) return;
 
-            ctx.bannerWidth = img.getWidth();
-            ctx.bannerHeight = img.getHeight();
+            ctx.assets.bannerWidth = img.getWidth();
+            ctx.assets.bannerHeight = img.getHeight();
 
             final ByteBuffer buffer = argbToRgbaBuffer(img);
-            ctx.bannerTextureId = RenderSystem.createTexture(ctx.bannerWidth, ctx.bannerHeight, buffer);
+            ctx.assets.bannerId = RenderSystem.createTexture(ctx.assets.bannerWidth, ctx.assets.bannerHeight, buffer);
             MemoryUtil.memFree(buffer);
 
             final TextureData glow = createGlowTexture(img, new Color(110, 168, 255), 48, 0.8f);
-            ctx.bannerGlowTextureId = glow.textureId();
-            ctx.bannerGlowWidth = glow.width();
-            ctx.bannerGlowHeight = glow.height();
+            ctx.assets.bannerGlowId = glow.textureId();
+            ctx.assets.bannerGlowWidth = glow.width();
+            ctx.assets.bannerGlowHeight = glow.height();
         } catch (final Exception e) {
             System.err.println("Failed to load banner: " + e.getMessage());
         }
@@ -950,11 +966,11 @@ public class WaterMediaApp {
 
     // BACKGROUND OPERATIONS
     private static void scanUploadLogFiles() {
-        ctx.uploadDialogStage = 1;
-        ctx.uploadDialogStatus = "SCAN";
-        ctx.uploadDialogError = false;
-        ctx.uploadDialogDone = false;
-        ctx.uploadDialogFiles.clear();
+        ctx.upload.stage = 1;
+        ctx.upload.status = "SCAN";
+        ctx.upload.error = false;
+        ctx.upload.done = false;
+        ctx.upload.files.clear();
 
         final Path baseDir = uploadBaseDir();
         final Path logsDir = baseDir.resolve("logs");
@@ -972,7 +988,7 @@ public class WaterMediaApp {
     }
 
     private static void scanSuspectMods() {
-        ctx.suspectModIds.clear();
+        ctx.upload.suspectModIds.clear();
         if (!AppContext.IN_MODS) return;
         // IN_MODS MEANS THE WORKING DIR IS THE MODS FOLDER — A CANDIDATE COUNTS ONLY IF A JAR WHOSE
         // FILENAME CONTAINS ITS ID IS PRESENT (id "fancymenu" MATCHES "FancyMenu-Forge-1.20.1-x.y.z.jar").
@@ -986,7 +1002,7 @@ public class WaterMediaApp {
             for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
                 for (final String jar: jars) {
                     if (jar.contains(mod.id())) {
-                        ctx.suspectModIds.add(mod.id());
+                        ctx.upload.suspectModIds.add(mod.id());
                         break;
                     }
                 }
@@ -1006,7 +1022,7 @@ public class WaterMediaApp {
                 if (size > 10L * 1024L * 1024L || exceedsLineLimit(path, 25_000)) {
                     entry.valid = false;
                     entry.state = "INVALID";
-                    ctx.uploadDialogError = true;
+                    ctx.upload.error = true;
                 } else {
                     entry.state = "READ OK";
                 }
@@ -1015,7 +1031,7 @@ public class WaterMediaApp {
                 entry.valid = false;
                 entry.state = "READ ERROR";
                 entry.sizeLabel = "-";
-                ctx.uploadDialogError = true;
+                ctx.upload.error = true;
             }
         } else {
             entry.present = false;
@@ -1023,7 +1039,7 @@ public class WaterMediaApp {
             entry.state = "NOT FOUND";
             entry.sizeLabel = "-";
         }
-        ctx.uploadDialogFiles.add(entry);
+        ctx.upload.files.add(entry);
     }
 
     private static boolean exceedsLineLimit(final Path path, final int maxLines) throws IOException {
@@ -1046,14 +1062,14 @@ public class WaterMediaApp {
 
     private static void uploadLogs() {
         try {
-            ctx.uploadDialogStage = 2;
+            ctx.upload.stage = 2;
             setUploadStatus("UPLOAD");
-            ctx.uploadDialogError = false;
-            ctx.uploadDialogDone = false;
-            ctx.uploadUploadsDone = false;
+            ctx.upload.error = false;
+            ctx.upload.done = false;
+            ctx.upload.uploadsDone = false;
 
             boolean anyUploaded = false;
-            for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+            for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
                 if (!isUploadable(entry)) continue;
                 entry.state = "UPLOADING";
                 entry.progress = 18;
@@ -1066,27 +1082,27 @@ public class WaterMediaApp {
 
             if (anyUploaded) {
                 setUploadStatus("REPORT READY");
-                ctx.uploadUploadsDone = !ctx.uploadDialogError && uploadsComplete();
+                ctx.upload.uploadsDone = !ctx.upload.error && uploadsComplete();
             } else {
                 setUploadStatus("ERROR");
-                ctx.uploadDialogError = true;
+                ctx.upload.error = true;
             }
         } catch (final Exception e) {
             setUploadStatus("ERROR");
-            ctx.uploadDialogError = true;
+            ctx.upload.error = true;
         } finally {
-            ctx.uploadDialogWorking = false;
-            ctx.uploadDialogDone = false;
+            ctx.upload.working = false;
+            ctx.upload.done = false;
             ctx.requestRender();
         }
     }
 
     private static void uploadIssueReport() {
         try {
-            ctx.uploadDialogWorking = true;
-            ctx.uploadDialogStage = 3;
-            ctx.uploadDialogStatus = "SUCCESS";
-            ctx.uploadDialogError = false;
+            ctx.upload.working = true;
+            ctx.upload.stage = 3;
+            ctx.upload.status = "SUCCESS";
+            ctx.upload.error = false;
 
             final String issueText = generateIssueTemplate(
                     uploadedUrl("latest.log"),
@@ -1094,36 +1110,36 @@ public class WaterMediaApp {
                     firstUploadedCrashUrl(),
                     uploadedHsErrUrl()
             );
-            ctx.uploadIssueUrl = buildGithubIssueUrl(issueText);
+            ctx.upload.issueUrl = buildGithubIssueUrl(issueText);
             // DEFAULT SUBMIT TARGET IS WATERMEDIA; THE STAGE-3 SCREEN LETS THE USER PICK A SUSPECTED MOD INSTEAD.
-            ctx.uploadRepoUrl = ctx.uploadIssueUrl;
+            ctx.upload.repoUrl = ctx.upload.issueUrl;
 
             try {
                 final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
                 clipboard.setContents(new StringSelection(issueText), null);
-                ctx.uploadIssueCopied = true;
+                ctx.upload.issueCopied = true;
             } catch (final Exception e) {
-                ctx.uploadDialogError = true;
-                ctx.uploadDialogStatus = "ERROR";
+                ctx.upload.error = true;
+                ctx.upload.status = "ERROR";
             }
 
             // DO NOT OPEN THE BROWSER AUTOMATICALLY — THE USER CHOOSES WHICH ISSUE TRACKER TO SUBMIT TO.
-            ctx.uploadDialogDone = !ctx.uploadDialogError;
+            ctx.upload.done = !ctx.upload.error;
         } finally {
-            ctx.uploadDialogWorking = false;
+            ctx.upload.working = false;
             ctx.requestRender();
         }
     }
 
     private static void openRepoPage() {
         try {
-            final String target = ctx.uploadRepoUrl;
+            final String target = ctx.upload.repoUrl;
             final String url = target != null && target.startsWith("http") ? target : buildGithubIssueUrl("");
             Desktop.getDesktop().browse(URI.create(url));
-            ctx.uploadIssueOpened = true;
+            ctx.upload.issueOpened = true;
         } catch (final Exception e) {
-            ctx.uploadDialogError = true;
-            ctx.uploadDialogStatus = "ERROR";
+            ctx.upload.error = true;
+            ctx.upload.status = "ERROR";
         }
         ctx.requestRender();
     }
@@ -1140,19 +1156,19 @@ public class WaterMediaApp {
     }
 
     private static void setUploadStatus(final String status) {
-        ctx.uploadDialogStatus = status;
+        ctx.upload.status = status;
         ctx.requestRender();
     }
 
     private static boolean hasUploadCandidate() {
-        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
             if (isUploadable(entry)) return true;
         }
         return false;
     }
 
     private static boolean hasUploadedLog() {
-        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
             if (entry.uploaded) return true;
         }
         return false;
@@ -1160,7 +1176,7 @@ public class WaterMediaApp {
 
     private static boolean uploadsComplete() {
         boolean hadUploadable = false;
-        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
             if (!entry.present || !entry.valid) continue;
             hadUploadable = true;
             if (!entry.uploaded) return false;
@@ -1186,7 +1202,7 @@ public class WaterMediaApp {
         } catch (final Exception e) {
             entry.state = "READ ERROR";
             entry.progress = 0;
-            ctx.uploadDialogError = true;
+            ctx.upload.error = true;
             return null;
         }
     }
@@ -1216,14 +1232,14 @@ public class WaterMediaApp {
     }
 
     private static String uploadedUrl(final String name) {
-        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
             if (entry.name.equalsIgnoreCase(name) && entry.uploaded) return entry.url;
         }
         return null;
     }
 
     private static String firstUploadedCrashUrl() {
-        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
             if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log")
                     && !entry.name.startsWith("hs_err_pid") && entry.uploaded) {
                 return entry.url;
@@ -1233,7 +1249,7 @@ public class WaterMediaApp {
     }
 
     private static String uploadedHsErrUrl() {
-        for (final AppContext.UploadFileEntry entry: ctx.uploadDialogFiles) {
+        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
             if (entry.name.startsWith("hs_err_pid") && entry.uploaded) return entry.url;
         }
         return null;
@@ -1247,16 +1263,16 @@ public class WaterMediaApp {
     }
 
     private static void scanCleanupCache() {
-        ctx.cleanupDialogStage = 1;
-        ctx.cleanupDialogDone = false;
-        ctx.cleanupDialogError = false;
-        ctx.cleanupProgress = 0;
+        ctx.cleanup.stage = 1;
+        ctx.cleanup.done = false;
+        ctx.cleanup.error = false;
+        ctx.cleanup.progress = 0;
 
         final long[] stats = cleanupCacheStats();
-        ctx.cleanupFileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
-        ctx.cleanupSizeLabel = formatBytes(stats[1]);
-        if (!ctx.cleanupDialogError) {
-            ctx.cleanupDialogState = stats[0] > 0 ? "FOUND" : "EMPTY";
+        ctx.cleanup.fileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
+        ctx.cleanup.sizeLabel = formatBytes(stats[1]);
+        if (!ctx.cleanup.error) {
+            ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
         }
         ctx.requestRender();
     }
@@ -1274,8 +1290,8 @@ public class WaterMediaApp {
                 }
             });
         } catch (final IOException e) {
-            ctx.cleanupDialogError = true;
-            ctx.cleanupDialogState = "ERROR";
+            ctx.cleanup.error = true;
+            ctx.cleanup.state = "ERROR";
         }
         return stats;
     }
@@ -1286,11 +1302,11 @@ public class WaterMediaApp {
 
     private static void cleanupCache() {
         try {
-            ctx.cleanupDialogStage = 2;
-            ctx.cleanupDialogState = "CLEANING";
-            ctx.cleanupDialogError = false;
-            ctx.cleanupDialogDone = false;
-            ctx.cleanupProgress = 12;
+            ctx.cleanup.stage = 2;
+            ctx.cleanup.state = "CLEANING";
+            ctx.cleanup.error = false;
+            ctx.cleanup.done = false;
+            ctx.cleanup.progress = 12;
             ctx.requestRender();
 
             final Path cache = cleanupCacheDir();
@@ -1299,15 +1315,15 @@ public class WaterMediaApp {
             }
             Files.createDirectories(cache);
 
-            ctx.cleanupProgress = 100;
-            ctx.cleanupDialogState = "CLEANED";
-            ctx.cleanupDialogDone = true;
+            ctx.cleanup.progress = 100;
+            ctx.cleanup.state = "CLEANED";
+            ctx.cleanup.done = true;
         } catch (final Exception e) {
-            ctx.cleanupProgress = 0;
-            ctx.cleanupDialogState = "ERROR";
-            ctx.cleanupDialogError = true;
+            ctx.cleanup.progress = 0;
+            ctx.cleanup.state = "ERROR";
+            ctx.cleanup.error = true;
         } finally {
-            ctx.cleanupDialogWorking = false;
+            ctx.cleanup.working = false;
             ctx.requestRender();
         }
     }
@@ -1369,11 +1385,11 @@ public class WaterMediaApp {
             }
             entry.progress = 0;
             entry.state = "FAILED";
-            ctx.uploadDialogError = true;
+            ctx.upload.error = true;
         } catch (final Exception e) {
             entry.progress = 0;
             entry.state = "FAILED";
-            ctx.uploadDialogError = true;
+            ctx.upload.error = true;
         }
         return null;
     }
@@ -1683,7 +1699,10 @@ public class WaterMediaApp {
     private static void initLogging() {
         final String filename = "logs/watermedia-app.log";
         final File logfile = new File(filename);
-        if (logfile.exists() && !logfile.renameTo(new File("logs/watermedia-app-" + new Date() + ".log"))) {
+        // FILESYSTEM-SAFE STAMP — new Date().toString() EMITS ':' AND SPACES, ILLEGAL IN WINDOWS FILENAMES,
+        // SO renameTo() SILENTLY FAILED EVERY LAUNCH AND THE LOG NEVER ROTATED (GREW UNBOUNDED) (M-01).
+        final String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
+        if (logfile.exists() && !logfile.renameTo(new File("logs/watermedia-app-" + stamp + ".log"))) {
             System.err.println("Failed to rotate log file");
         }
 

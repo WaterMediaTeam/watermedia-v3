@@ -15,6 +15,11 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
+import org.watermedia.bootstrap.app.view.Button;
+import org.watermedia.bootstrap.app.view.Canvas;
+import org.watermedia.bootstrap.app.view.ListView;
+import org.watermedia.bootstrap.app.view.View;
+import org.watermedia.tools.ThreadTool;
 
 import java.awt.Color;
 import java.lang.reflect.Field;
@@ -33,7 +38,7 @@ import static org.lwjgl.glfw.GLFW.*;
 /**
  * Settings screen built from app-runtime settings plus WaterMediaConfig metadata.
  */
-public final class SettingsScreen extends Screen {
+public final class SettingsScreen extends ViewScreen {
 
     private static final int SIDEBAR_W = 248;
     private static final int ROW_H = 64;
@@ -47,14 +52,20 @@ public final class SettingsScreen extends Screen {
 
     private final Consumer<HomeScreen.Action> navigator;
     private final List<SettingSpec> specs = new ArrayList<>();
+    // SIDEBAR (SPEC/SECTION) AND RESET HIT-RECTS — DRAWN IN renderChrome, HIT-TESTED IN handleMouseClick
     private final List<Hit> hits = new ArrayList<>();
+
+    // THE SECTION/SETTING ROWS LIVE IN A ListView THAT OWNS SCROLLING, HIT-TESTING AND KEYBOARD SELECTION
+    private ListView<Setting> list;
+    // ROWS CONTENT RECT, COMPUTED IN renderChrome AND RETURNED FROM THE CONTENT-RECT OVERRIDES
+    private int rowsX;
+    private int rowsY;
+    private int rowsW;
+    private int rowsH;
 
     private int activeSpecIndex;
     private int activeSectionIndex;
-    private int selectedRow;
-    private int rowScroll;
 
-    private Dimension resetBounds = Dimension.ZERO;
     private boolean editing;
     private Setting editingSetting;
     private String editBuffer = "";
@@ -70,6 +81,15 @@ public final class SettingsScreen extends Screen {
     private final List<Dimension> dropdownOptionBounds = new ArrayList<>();
     private SaveState saveState = SaveState.READY;
     private int saveFailures;
+    // AUTOSAVE RUNS THE BLOCKING ConfigSpec.save() OFF THE RENDER THREAD. saving GATES CONCURRENT WRITERS;
+    // resavePending COALESCES A CHANGE THAT ARRIVES MID-SAVE INTO ONE FOLLOW-UP SAVE. TOUCHED ON THE RENDER
+    // THREAD (autosave + THE ctx.execute COMPLETION), VOLATILE SINCE A BACKGROUND SAVE IS IN PLAY.
+    private volatile boolean saving;
+    private volatile boolean resavePending;
+    // CACHE-SIZE LABEL FOR THE "Cache size" ROW — THE DIRECTORY WALK RUNS OFF THE RENDER THREAD SO THE ROW
+    // SUPPLIER NEVER BLOCKS render(). cacheSizeComputing GATES OVERLAPPING WALKS. "-- MB" IS THE UNCOMPUTED SENTINEL.
+    private volatile String cacheSize = "-- MB";
+    private volatile boolean cacheSizeComputing;
 
     public SettingsScreen(final TextRenderer text, final AppContext ctx,
                           final Consumer<HomeScreen.Action> navigator) {
@@ -78,13 +98,43 @@ public final class SettingsScreen extends Screen {
     }
 
     @Override
+    protected View<?> build() {
+        this.list = new ListView<Setting>()
+                .rowHeight(ROW_H - 8)
+                .spacing(8)
+                .rowFactory((setting, index) -> {
+                    final RowView row = new RowView(setting, index);
+                    // HOVER SELECTS THE ROW (selectOnHover) AND CHIMES ON CHANGE, LIKE THE LEGACY handleMouseMove
+                    row.onHover(v -> { if (!v.selected()) this.ctx.playSelectionSound(); });
+                    return row;
+                })
+                .selectOnHover(true)
+                .scrollbarWidth(4)
+                // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
+                .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .width(View.MATCH_PARENT)
+                .height(View.MATCH_PARENT);
+        return this.list;
+    }
+
+    @Override
     public void onEnter() {
+        super.onEnter(); // ensureBuilt() — CONSTRUCTS THE ROW ListView ONCE
         this.rebuildSpecs();
         this.editing = false;
         this.editingSetting = null;
         this.editBuffer = "";
-        this.clampSelection();
+        this.populateRows();
         this.updateConfigStatus(this.activeSpec());
+        this.refreshCacheSize(); // RE-WALK THE CACHE OFF-THREAD ON ENTRY SO A POST-CLEANUP SIZE STAYS FRESH
+    }
+
+    // (RE)LOADS THE ACTIVE SECTION'S SETTINGS INTO THE ROW LIST AND RESETS THE SELECTION TO THE TOP
+    private void populateRows() {
+        final SettingSection section = this.activeSection();
+        this.list.items(section == null ? List.of() : section.settings);
+        this.list.selection(section == null || section.settings.isEmpty() ? -1 : 0);
     }
 
     private void rebuildSpecs() {
@@ -126,8 +176,17 @@ public final class SettingsScreen extends Screen {
 
         final SettingSection renderer = new SettingSection("Renderer", "Current bootstrap render backend");
         renderer.settings.add(new ReadOnlySetting("Render backend", "app.renderer.backend", "STATE",
-                "The refactored app renderer is using the OpenGL backend.",
-                () -> "OPENGL"));
+                "The graphics engine the app is running on right now.",
+                () -> RenderSystem.engineName().toUpperCase(Locale.ROOT)));
+        renderer.settings.add(new RuntimeEnumSetting<>("Engine (next launch)", "app.renderer.engine", "ENUM",
+                "Graphics engine used the next time the app launches — OpenGL or Vulkan. Restart the app to apply. Vulkan falls back to OpenGL if unsupported.",
+                RenderSystem.Engine.values(),
+                () -> {
+                    final RenderSystem.Engine pref = RenderSystem.enginePreference();
+                    return pref != null ? pref : RenderSystem.engineKind();
+                },
+                RenderSystem::saveEnginePreference,
+                RenderSystem.Engine.OPENGL));
         renderer.settings.add(new ReadOnlySetting("Window", "app.renderer.window", "SIZE",
                 "Current framebuffer size.",
                 () -> this.ctx.windowWidth + "x" + this.ctx.windowHeight));
@@ -218,6 +277,17 @@ public final class SettingsScreen extends Screen {
 
     @Override
     public void render(final int windowW, final int windowH) {
+        super.render(windowW, windowH); // CHROME (renderChrome) THEN THE ROW TREE (ListView)
+        // THE DROPDOWN MENU OVERLAYS EVERYTHING, FULL-WINDOW AND UN-CLIPPED, SO IT PAINTS LAST
+        if (this.dropdownSetting != null) {
+            RenderSystem.setupOrtho(windowW, windowH);
+            this.renderDropdownMenu();
+            RenderSystem.restoreProjection();
+        }
+    }
+
+    @Override
+    protected void renderChrome(final int windowW, final int windowH) {
         final SettingSpec spec = this.activeSpec();
         final SettingSection section = this.activeSection();
         this.updateConfigStatus(spec);
@@ -226,33 +296,66 @@ public final class SettingsScreen extends Screen {
                 "Settings", section == null ? "" : section.name.toLowerCase(Locale.ROOT), version);
 
         this.hits.clear();
+        // THE OPEN DROPDOWN CONTROL RE-CAPTURES ITS BOUNDS EACH FRAME WHILE THE ROW TREE DRAWS; RESET THEM HERE
+        this.dropdownBounds = Dimension.ZERO;
+        this.dropdownOptionBounds.clear();
+
         this.renderHeaderReset(windowW);
         final int x = 22;
         final int y = AppChrome.contentTop() + 10;
         final int bottom = AppChrome.contentBottom(windowH);
         final int h = Math.max(160, bottom - y);
-        final int contentX = x + SIDEBAR_W + 18;
-        final int contentW = Math.max(320, windowW - contentX - x);
+        final int paneX = x + SIDEBAR_W + 18;
+        final int paneW = Math.max(320, windowW - paneX - x);
 
         RenderSystem.setupOrtho(windowW, windowH);
         this.renderSidebar(x, y, SIDEBAR_W, h, spec);
-        this.renderSettingsPane(contentX, y, contentW, h, spec, section);
+        this.renderPaneFrame(paneX, y, paneW, h, section);
         RenderSystem.restoreProjection();
+
+        // STORE THE ROWS CONTENT RECT — THE ListView LAYS ITS ROWS OUT INSIDE THIS BOX (SEE controlBounds MATH)
+        final int headerH = 74;
+        this.rowsX = paneX + 20;
+        this.rowsY = y + headerH + 10;
+        this.rowsW = paneW - 40;
+        this.rowsH = Math.max(ROW_H, h - headerH - 20);
+    }
+
+    @Override
+    protected int contentX(final int windowW, final int windowH) {
+        return this.rowsX;
+    }
+
+    @Override
+    protected int contentY(final int windowW, final int windowH) {
+        return this.rowsY;
+    }
+
+    @Override
+    protected int contentW(final int windowW, final int windowH) {
+        return this.rowsW;
+    }
+
+    @Override
+    protected int contentH(final int windowW, final int windowH) {
+        return this.rowsH;
     }
 
     @Override
     public boolean wantsContinuousRender() {
-        return this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING;
+        // ALSO REPAINT WHILE EDITING TEXT (CARET BLINK) OR WHILE A DROPDOWN IS OPEN (HOVER/ANIM)
+        return this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING
+                || this.editing || this.dropdownSetting != null;
     }
 
     private void renderHeaderReset(final int windowW) {
         final String label = "RESET TO DEFAULT";
         final int w = Math.max(190, this.text.widthBold(label, AppTheme.TEXT_BUTTON) + 58);
-        this.resetBounds = new Dimension(windowW - w - 32, AppChrome.TITLEBAR_H + 58, w, BUTTON_H);
+        final Dimension bounds = new Dimension(windowW - w - 32, AppChrome.TITLEBAR_H + 58, w, BUTTON_H);
         RenderSystem.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
-        this.renderActionButton(this.resetBounds, label, AppTheme.AMBER, this.resetBounds.contains(this.ctx.mouseX, this.ctx.mouseY));
+        this.renderActionButton(bounds, label, AppTheme.AMBER, bounds.contains(this.ctx.mouseX, this.ctx.mouseY));
         RenderSystem.restoreProjection();
-        this.hits.add(new Hit(this.resetBounds, HitType.RESET, -1));
+        this.hits.add(new Hit(bounds, HitType.RESET, -1));
     }
 
     private void renderSidebar(final int x, final int y, final int w, final int h, final SettingSpec active) {
@@ -314,10 +417,10 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    private void renderSettingsPane(final int x, final int y, final int w, final int h,
-                                    final SettingSpec spec, final SettingSection section) {
+    // DRAWS THE SETTINGS PANE FRAME (PANEL + SECTION HEADER + DIVIDER); THE ROWS THEMSELVES ARE THE ListView
+    private void renderPaneFrame(final int x, final int y, final int w, final int h, final SettingSection section) {
         AppChrome.panel(x, y, w, h, true);
-        if (spec == null || section == null) return;
+        if (section == null) return;
 
         final int headerH = 74;
         final int titleX = x + 20;
@@ -326,51 +429,12 @@ public final class SettingsScreen extends Screen {
                 titleX, y + 44, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
 
         RenderSystem.lineH(x, y + headerH, w, AppTheme.STROKE_BRIGHT, 1f);
-
-        final int rowsY = y + headerH + 10;
-        final int rowsH = Math.max(ROW_H, h - headerH - 20);
-        this.ensureSelectedVisible(rowsH);
-        this.dropdownBounds = Dimension.ZERO;
-        this.dropdownOptionBounds.clear();
-        RenderSystem.clip(x + 12, rowsY, w - 24, rowsH, this.ctx.windowHeight);
-        final int visibleRows = Math.max(1, rowsH / ROW_H);
-        for (int i = 0; i < visibleRows && i + this.rowScroll < section.settings.size(); i++) {
-            final int rowIndex = i + this.rowScroll;
-            final Setting setting = section.settings.get(rowIndex);
-            final Dimension row = new Dimension(x + 20, rowsY + i * ROW_H, w - 40, ROW_H - 8);
-            this.renderSettingRow(setting, row, rowIndex == this.selectedRow);
-            this.hits.add(new Hit(row, HitType.ROW, rowIndex));
-        }
-        RenderSystem.clearClip();
-
-        if (section.settings.size() > visibleRows) {
-            this.renderScrollBar(x + w - 10, rowsY, rowsH, section.settings.size(), visibleRows);
-        }
-        this.renderDropdownMenu();
-    }
-
-    private void renderStatusStrip(final int x, final int y, final int w,
-                                   final SettingSpec spec, final SettingSection section) {
-        final int h = 26;
-        RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, 180));
-        RenderSystem.rect(x, y, w, h, AppTheme.STROKE, 1f);
-        AppChrome.statusPip(x + 9, y + 8, 10, this.statusColor, true);
-        this.text.render(this.text.truncateToWidth(this.statusText, Math.max(60, w / 2)),
-                x + 28, this.centerTextY(y, h, AppTheme.TEXT_SUBTITLE), this.statusColor, AppTheme.TEXT_SUBTITLE);
-        final String count = section.settings.size() + " FIELDS";
-        final String file = spec.persistent && spec.configSpec != null ? spec.configSpec.path().getFileName().toString() : "RUNTIME";
-        final String right = count + " / " + file;
-        this.text.render(right, x + w - this.text.width(right, AppTheme.TEXT_SUBTITLE) - 10,
-                this.centerTextY(y, h, AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
     }
 
     private void renderActionButton(final Dimension b, final String label, final Color accent, final boolean hover) {
-        if (hover) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, accent, 0.24f);
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), hover ? AppTheme.alpha(AppTheme.BG_3, 230) : AppTheme.alpha(AppTheme.BG_2, 210));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), hover ? accent : AppTheme.STROKE_BRIGHT, 1f);
-        final int iconSize = 13;
-        PixelIcon.draw("check", b.x() + 10, b.y() + Math.round((b.height() - iconSize) / 2f), iconSize, accent);
-        this.text.renderBold(label, b.x() + 30, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BUTTON) + 1, hover ? accent : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON);
+        // ALWAYS ENABLED, NO HOTKEY; accent IS THE BORDER, TEXT_SOFT DRIVES THE CHECK ICON + LABEL
+        Button.render(this.text, b.x(), b.y(), b.width(), b.height(),
+                label, "", "check", 12, accent, AppTheme.TEXT_SOFT, false, hover, true);
     }
 
     private void renderSettingRow(final Setting setting, final Dimension b, final boolean selected) {
@@ -490,7 +554,9 @@ public final class SettingsScreen extends Screen {
         PixelIcon.draw("arrow-left", b.x() + 8, b.y() + 8, 10, AppTheme.TEXT_FAINT);
         PixelIcon.draw("arrow-right", b.right() - 18, b.y() + 8, 10, AppTheme.TEXT_FAINT);
         final String value = setting.valueLabel().toUpperCase(Locale.ROOT);
-        this.text.renderBold(this.text.truncateToWidth(value, b.width() - 68),
+        // TRUNCATE WITH THE SAME BOLD/TEXT_BODY METRIC USED TO RENDER (AND TO SIZE THE CONTROL) —
+        // THE 2-ARG truncateToWidth MEASURES AT SCALE 1f REGULAR, WHICH OVER-TRUNCATED WIDER LABELS
+        this.text.renderBold(this.text.truncateToWidth(value, b.width() - 68, AppTheme.TEXT_BODY, java.awt.Font.BOLD),
                 b.x() + 36, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY), selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
     }
 
@@ -642,13 +708,36 @@ public final class SettingsScreen extends Screen {
         return AppTheme.TEXT_FAINT;
     }
 
-    private void renderScrollBar(final int x, final int y, final int h, final int total, final int visible) {
-        RenderSystem.fill(x, y, 4, h, AppTheme.alpha(AppTheme.BG_3, 190));
-        final int thumbH = Math.max(24, Math.round(h * (visible / (float) total)));
-        final int maxScroll = Math.max(1, total - visible);
-        final int thumbY = y + Math.round((h - thumbH) * (this.rowScroll / (float) maxScroll));
-        RenderSystem.fill(x, thumbY, 4, thumbH, AppTheme.NEON);
-        RenderSystem.glowRect(x, thumbY, 4, thumbH, 0f, AppTheme.NEON, 0.24f);
+    // ONE SELECTABLE SETTING ROW — PORTS renderSettingRow ONTO ITS OWN ListView-LAID-OUT BOX AND READS THE
+    // ListView-DRIVEN selected STATE. EVERY ROW-TYPE DRAW (VALUE/TOGGLE/ENUM/SLIDER/SPINNER/EDIT/DROPDOWN)
+    // FLOWS THROUGH renderSettingRow, SO THE LOOK IS PIXEL-IDENTICAL TO THE LEGACY IMMEDIATE-MODE ROW.
+    private final class RowView extends View<RowView> {
+
+        private final Setting setting;
+        private final int index;
+
+        private RowView(final Setting setting, final int index) {
+            this.setting = setting;
+            this.index = index;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            renderSettingRow(this.setting, new Dimension(this.left, this.top, this.measuredWidth, this.measuredHeight), this.selected);
+        }
+    }
+
+    // THE ROW UNDER THE POINTER, OR null — SCOPED TO THE LIST VIEWPORT SO A SCROLLED-OUT ROW NEVER MATCHES
+    private RowView rowAt(final double mx, final double my) {
+        if (!this.list.contains(mx, my)) return null;
+        for (final View<?> child: this.list.children()) {
+            if (child instanceof RowView row && row.visible() && row.contains(mx, my)) return row;
+        }
+        return null;
+    }
+
+    private Dimension rowBox(final RowView row) {
+        return new Dimension(row.left(), row.top(), row.measuredWidth(), row.measuredHeight());
     }
 
     @Override
@@ -663,8 +752,14 @@ public final class SettingsScreen extends Screen {
         }
 
         switch (key) {
-            case GLFW_KEY_UP -> this.moveRow(-1);
-            case GLFW_KEY_DOWN -> this.moveRow(1);
+            case GLFW_KEY_UP -> {
+                this.list.moveSelection(-1);
+                this.ctx.playSelectionSound();
+            }
+            case GLFW_KEY_DOWN -> {
+                this.list.moveSelection(1);
+                this.ctx.playSelectionSound();
+            }
             case GLFW_KEY_PAGE_UP -> this.moveSection(-1);
             case GLFW_KEY_PAGE_DOWN -> this.moveSection(1);
             case GLFW_KEY_TAB -> this.switchSpec(this.activeSpecIndex + 1);
@@ -690,6 +785,11 @@ public final class SettingsScreen extends Screen {
     }
 
     @Override
+    public boolean textInputFocused() {
+        return this.editing;
+    }
+
+    @Override
     public void handleChar(final int codepoint) {
         if (!this.editing || codepoint < 32 || codepoint == 127) return;
         this.editBuffer += new String(Character.toChars(codepoint));
@@ -709,36 +809,25 @@ public final class SettingsScreen extends Screen {
         }
         if (this.editing) return;
         if (this.dropdownSetting != null) return;
-        for (final Hit hit: this.hits) {
-            if (hit.type == HitType.ROW && hit.bounds.contains(mx, my)) {
-                if (this.selectedRow != hit.index) {
-                    this.selectedRow = hit.index;
-                    this.ensureSelectedVisible(this.visibleRowsHeight());
-                    this.ctx.playSelectionSound();
-                }
-                return;
-            }
-        }
+        super.handleMouseMove(mx, my); // TREE HOVER → ListView ROW SELECTION (+ CHIME VIA THE ROW'S onHover)
     }
 
     @Override
     public void handleMousePress(final double mx, final double my) {
         if (this.editing) return;
-        for (final Hit hit: this.hits) {
-            if (hit.type != HitType.ROW || !hit.bounds.contains(mx, my)) continue;
-            this.selectedRow = hit.index;
-            final Setting setting = this.selectedSetting();
-            if (setting == null || !setting.mutable || !setting.isSeekbarControl()) return;
-            final Dimension control = this.controlBounds(hit.bounds, setting);
-            if (!control.contains(mx, my)) return;
-            this.seekbarDragging = true;
-            this.skipDragClick = true;
-            this.draggedSeekbar = setting;
-            this.draggedSeekbarBounds = control;
-            this.dragSeekbar(mx);
-            this.ctx.playSelectionSound();
-            return;
-        }
+        final RowView row = this.rowAt(mx, my);
+        if (row == null) return;
+        this.list.selection(row.index);
+        final Setting setting = row.setting;
+        if (setting == null || !setting.mutable || !setting.isSeekbarControl()) return;
+        final Dimension control = this.controlBounds(this.rowBox(row), setting);
+        if (!control.contains(mx, my)) return;
+        this.seekbarDragging = true;
+        this.skipDragClick = true;
+        this.draggedSeekbar = setting;
+        this.draggedSeekbarBounds = control;
+        this.dragSeekbar(mx);
+        this.ctx.playSelectionSound();
     }
 
     private void handleDropdownKey(final int key) {
@@ -782,49 +871,49 @@ public final class SettingsScreen extends Screen {
             this.ctx.requestRender();
             return;
         }
+        // SIDEBAR SPEC/SECTION BUTTONS AND THE RESET BUTTON — DRAWN IN renderChrome, OUTSIDE THE ROW TREE
         for (final Hit hit: this.hits) {
             if (!hit.bounds.contains(mx, my)) continue;
             switch (hit.type) {
                 case SPEC -> this.switchSpec(hit.index);
                 case SECTION -> this.switchSection(hit.index);
-                case ROW -> {
-                    this.selectedRow = hit.index;
-                    final Setting setting = this.selectedSetting();
-                    if (setting != null && setting.mutable) {
-                        final Dimension control = this.controlBounds(hit.bounds, setting);
-                        if (control.contains(mx, my)) {
-                            this.activateControl(setting, control, mx);
-                        } else {
-                            this.activateSelected();
-                        }
-                    }
-                }
                 case RESET -> this.resetActiveSection();
             }
             this.ctx.playSelectionSound();
             return;
         }
+        // ROWS — ACTIVATE THE CONTROL SUB-ZONE UNDER THE POINTER, ELSE THE ROW ITSELF (LEGACY BEHAVIOR)
+        final RowView row = this.rowAt(mx, my);
+        if (row == null) return;
+        this.list.selection(row.index);
+        final Setting setting = row.setting;
+        if (setting != null && setting.mutable) {
+            final Dimension control = this.controlBounds(this.rowBox(row), setting);
+            if (control.contains(mx, my)) {
+                this.activateControl(setting, control, mx);
+            } else {
+                this.activateSelected();
+            }
+        }
+        this.ctx.playSelectionSound();
     }
 
     @Override
     public void handleScroll(final double yOffset) {
-        final SettingSection section = this.activeSection();
-        if (section == null) return;
-        this.dropdownSetting = null;
-        final int visibleRows = Math.max(1, this.visibleRowsHeight() / ROW_H);
-        final int maxScroll = Math.max(0, section.settings.size() - visibleRows);
-        this.rowScroll = Math.max(0, Math.min(maxScroll, this.rowScroll - (int) Math.signum(yOffset)));
-        this.ctx.requestRender();
+        if (this.dropdownSetting != null) {
+            this.dropdownSetting = null;
+            this.ctx.requestRender();
+        }
+        super.handleScroll(yOffset); // TREE: ListView OWNS SCROLLING/CLAMPING
     }
 
     private void switchSpec(final int index) {
         if (this.specs.isEmpty()) return;
         this.activeSpecIndex = Math.floorMod(index, this.specs.size());
         this.activeSectionIndex = 0;
-        this.selectedRow = 0;
-        this.rowScroll = 0;
         this.editing = false;
         this.dropdownSetting = null;
+        this.populateRows();
         this.setStatus("READY", AppTheme.TEXT_FAINT);
         this.updateConfigStatus(this.activeSpec());
     }
@@ -833,10 +922,9 @@ public final class SettingsScreen extends Screen {
         final SettingSpec spec = this.activeSpec();
         if (spec == null || spec.sections.isEmpty()) return;
         this.activeSectionIndex = Math.max(0, Math.min(spec.sections.size() - 1, index));
-        this.selectedRow = 0;
-        this.rowScroll = 0;
         this.editing = false;
         this.dropdownSetting = null;
+        this.populateRows();
         this.setStatus("READY", AppTheme.TEXT_FAINT);
         this.updateConfigStatus(this.activeSpec());
     }
@@ -845,14 +933,6 @@ public final class SettingsScreen extends Screen {
         final SettingSpec spec = this.activeSpec();
         if (spec == null || spec.sections.isEmpty()) return;
         this.switchSection(Math.floorMod(this.activeSectionIndex + delta, spec.sections.size()));
-        this.ctx.playSelectionSound();
-    }
-
-    private void moveRow(final int delta) {
-        final SettingSection section = this.activeSection();
-        if (section == null || section.settings.isEmpty()) return;
-        this.selectedRow = Math.max(0, Math.min(section.settings.size() - 1, this.selectedRow + delta));
-        this.ensureSelectedVisible(this.visibleRowsHeight());
         this.ctx.playSelectionSound();
     }
 
@@ -984,22 +1064,53 @@ public final class SettingsScreen extends Screen {
             this.updateConfigStatus(spec);
             return;
         }
+        // A SAVE IS ALREADY IN FLIGHT — COALESCE THIS CHANGE INTO ONE FOLLOW-UP SAVE RATHER THAN
+        // SPAWNING A SECOND WRITER AGAINST THE SAME CONFIG FILE.
+        if (this.saving) {
+            this.resavePending = true;
+            return;
+        }
+        this.startSave(spec);
+    }
+
+    private void startSave(final SettingSpec spec) {
+        this.saving = true;
         this.saveState = this.saveFailures > 0 ? SaveState.RESAVING : SaveState.SAVING;
         this.updateConfigStatus(spec);
         this.ctx.requestRender();
-        try {
-            final Method save = ConfigSpec.class.getDeclaredMethod("save");
-            save.setAccessible(true);
-            save.invoke(spec.configSpec);
+        final ConfigSpec configSpec = spec.configSpec;
+        // RUN THE REFLECTIVE DISK WRITE OFF THE RENDER THREAD, THEN PUBLISH THE OUTCOME BACK ON IT VIA
+        // ctx.execute SO THE SAVE STATE STAYS RENDER-THREAD-CONFINED AND THE SAVING FRAME ACTUALLY RENDERS.
+        ThreadTool.createStarted("WaterMedia-ConfigSave", () -> {
+            ReflectiveOperationException error = null;
+            try {
+                final Method save = ConfigSpec.class.getDeclaredMethod("save");
+                save.setAccessible(true);
+                save.invoke(configSpec);
+            } catch (final ReflectiveOperationException e) {
+                error = e;
+            }
+            final ReflectiveOperationException outcome = error;
+            this.ctx.execute(() -> this.finishSave(spec, outcome));
+        });
+    }
+
+    private void finishSave(final SettingSpec spec, final ReflectiveOperationException error) {
+        if (error == null) {
             this.saveFailures = 0;
             this.saveState = SaveState.SAVED;
             this.setStatus("SAVED " + spec.configSpec.path().getFileName(), AppTheme.GREEN);
-        } catch (final ReflectiveOperationException e) {
+        } else {
             this.saveFailures++;
             this.saveState = this.saveFailures >= 2 ? SaveState.FAILED_TWICE : SaveState.FAILED_ONCE;
-            this.setStatus("SAVE FAILED: " + compactError(e), this.saveFailures >= 2 ? AppTheme.RED : AppTheme.AMBER);
-        } finally {
-            this.updateConfigStatus(spec);
+            this.setStatus("SAVE FAILED: " + compactError(error), this.saveFailures >= 2 ? AppTheme.RED : AppTheme.AMBER);
+        }
+        this.saving = false;
+        this.updateConfigStatus(spec);
+        // A CHANGE ARRIVED WHILE SAVING — PERSIST IT NOW WITH ONE COALESCED FOLLOW-UP SAVE.
+        if (this.resavePending) {
+            this.resavePending = false;
+            this.startSave(spec);
         }
     }
 
@@ -1007,32 +1118,9 @@ public final class SettingsScreen extends Screen {
         final SettingSpec spec = this.activeSpec();
         if (spec == null || spec.sections.isEmpty()) {
             this.activeSectionIndex = 0;
-            this.selectedRow = 0;
-            this.rowScroll = 0;
             return;
         }
         this.activeSectionIndex = Math.max(0, Math.min(spec.sections.size() - 1, this.activeSectionIndex));
-        final SettingSection section = this.activeSection();
-        if (section == null || section.settings.isEmpty()) {
-            this.selectedRow = 0;
-            this.rowScroll = 0;
-            return;
-        }
-        this.selectedRow = Math.max(0, Math.min(section.settings.size() - 1, this.selectedRow));
-        this.rowScroll = Math.max(0, Math.min(this.rowScroll, section.settings.size() - 1));
-    }
-
-    private void ensureSelectedVisible(final int rowsH) {
-        final SettingSection section = this.activeSection();
-        if (section == null || section.settings.isEmpty()) return;
-        final int visible = Math.max(1, rowsH / ROW_H);
-        if (this.selectedRow < this.rowScroll) this.rowScroll = this.selectedRow;
-        if (this.selectedRow >= this.rowScroll + visible) this.rowScroll = this.selectedRow - visible + 1;
-        this.rowScroll = Math.max(0, Math.min(Math.max(0, section.settings.size() - visible), this.rowScroll));
-    }
-
-    private int visibleRowsHeight() {
-        return Math.max(ROW_H, AppChrome.contentBottom(this.ctx.windowHeight) - (AppChrome.contentTop() + 10) - 94);
     }
 
     private SettingSpec activeSpec() {
@@ -1047,10 +1135,7 @@ public final class SettingsScreen extends Screen {
     }
 
     private Setting selectedSetting() {
-        final SettingSection section = this.activeSection();
-        return section == null || section.settings.isEmpty()
-                ? null
-                : section.settings.get(Math.max(0, Math.min(section.settings.size() - 1, this.selectedRow)));
+        return this.list.selectedItem();
     }
 
     private void setStatus(final String status, final Color color) {
@@ -1060,23 +1145,23 @@ public final class SettingsScreen extends Screen {
     }
 
     private void updateConfigStatus(final SettingSpec spec) {
-        this.ctx.configStatusText = switch (this.saveState) {
+        this.ctx.configStatus.text = switch (this.saveState) {
             case SAVING -> "SAVING";
             case SAVED -> "SAVED";
             case FAILED_ONCE, FAILED_TWICE -> "FAILED TO SAVE";
             case RESAVING -> "RESAVING";
             case READY -> "READY";
         };
-        this.ctx.configStatusPulse = this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING;
-        this.ctx.configStatusWarn = this.saveState == SaveState.FAILED_ONCE || this.saveState == SaveState.RESAVING;
-        this.ctx.configStatusError = this.saveState == SaveState.FAILED_TWICE;
-        this.ctx.configStatusStrike = this.saveState == SaveState.FAILED_TWICE;
+        this.ctx.configStatus.pulse = this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING;
+        this.ctx.configStatus.warn = this.saveState == SaveState.FAILED_ONCE || this.saveState == SaveState.RESAVING;
+        this.ctx.configStatus.error = this.saveState == SaveState.FAILED_TWICE;
+        this.ctx.configStatus.strike = this.saveState == SaveState.FAILED_TWICE;
         if (spec == null || !spec.persistent || spec.configSpec == null) {
-            this.ctx.configStatusText = "READY";
-            this.ctx.configStatusPulse = false;
-            this.ctx.configStatusWarn = false;
-            this.ctx.configStatusError = false;
-            this.ctx.configStatusStrike = false;
+            this.ctx.configStatus.text = "READY";
+            this.ctx.configStatus.pulse = false;
+            this.ctx.configStatus.warn = false;
+            this.ctx.configStatus.error = false;
+            this.ctx.configStatus.strike = false;
         }
     }
 
@@ -1088,22 +1173,39 @@ public final class SettingsScreen extends Screen {
     }
 
     private String cacheSizeLabel() {
-        try {
-            final Path cache = WaterMedia.tmp().resolve("cache");
-            if (!java.nio.file.Files.exists(cache)) return "0 MB";
-            try (final var stream = java.nio.file.Files.walk(cache)) {
-                final long bytes = stream.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
-                    try {
-                        return java.nio.file.Files.size(path);
-                    } catch (final Exception ignored) {
-                        return 0L;
+        // ROW SUPPLIER — CALLED DURING render(); RETURN THE CACHED LABEL AND KICK OFF THE FIRST WALK LAZILY
+        if ("-- MB".equals(this.cacheSize)) this.refreshCacheSize();
+        return this.cacheSize;
+    }
+
+    private void refreshCacheSize() {
+        if (this.cacheSizeComputing) return;
+        this.cacheSizeComputing = true;
+        ThreadTool.createStarted("WaterMedia-SettingsCacheSize", () -> {
+            String label;
+            try {
+                final Path cache = WaterMedia.tmp().resolve("cache");
+                if (!java.nio.file.Files.exists(cache)) {
+                    label = "0 MB";
+                } else {
+                    try (final var stream = java.nio.file.Files.walk(cache)) {
+                        final long bytes = stream.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
+                            try {
+                                return java.nio.file.Files.size(path);
+                            } catch (final Exception ignored) {
+                                return 0L;
+                            }
+                        }).sum();
+                        label = Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
                     }
-                }).sum();
-                return Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
+                }
+            } catch (final Exception e) {
+                label = "UNKNOWN";
             }
-        } catch (final Exception e) {
-            return "UNKNOWN";
-        }
+            this.cacheSize = label;
+            this.cacheSizeComputing = false;
+            this.ctx.requestRender();
+        });
     }
 
     private int centerTextY(final int y, final int h, final float scale) {
@@ -1151,7 +1253,7 @@ public final class SettingsScreen extends Screen {
     }
 
     private enum HitType {
-        SPEC, SECTION, ROW, RESET
+        SPEC, SECTION, RESET
     }
 
     private enum SaveState {
@@ -1585,7 +1687,8 @@ public final class SettingsScreen extends Screen {
             final double value = ((Number) this.field.get()).doubleValue();
             final double min = this.minValue;
             final double max = this.maxValue;
-            return (float) Math.max(0d, Math.min(1d, (value - min) / Math.max(1d, max - min)));
+            // HASUSABLERANGE() ALREADY GUARANTEES MAX > MIN, SO THE SPAN IS SAFE TO DIVIDE BY DIRECTLY
+            return (float) Math.max(0d, Math.min(1d, (value - min) / (max - min)));
         }
 
         @Override
@@ -1630,10 +1733,13 @@ public final class SettingsScreen extends Screen {
             }
             if (this.isNumber()) {
                 final Number current = (Number) this.field.get();
+                // FRACTIONAL FIELD: DERIVE THE PER-PRESS DELTA FROM THE SPAN WITHOUT FLOORING IT TO 1.0
+                // SO INTERMEDIATE FLOAT VALUES STAY REACHABLE BY KEYBOARD
                 final double delta = this.hasUsableRange()
-                        ? Math.max(1d, (this.maxValue - this.minValue) / 100d) * direction * Math.max(1, step)
-                        : direction * Math.max(1, step);
-                this.setValue(this.numberOf(current.doubleValue() + delta));
+                        ? (this.maxValue - this.minValue) / 100d * direction * step
+                        : direction * step;
+                // CLAMP TO [MIN, MAX] LIKE THE INTEGER BRANCH DOES
+                this.setValue(this.clampNumber(current.doubleValue() + delta));
                 return true;
             }
             return false;

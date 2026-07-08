@@ -120,9 +120,11 @@ public class AppBootstrap {
         }
 
         try {
-            // ENGINE IS PERSISTED IN engine.cfg; --engine FORCES THE CHOOSER EVEN WHEN DEPS ARE READY.
+            // ENGINE IS PERSISTED IN engine.cfg; --engine FORCES THE CHOOSER EVEN WHEN DEPS ARE READY. AN
+            // EXPLICIT -Dwatermedia.engine ON THIS LAUNCHER JVM WINS OVER THE PERSISTED FILE (RUN CONFIGS).
             final boolean forceChooser = contains(args, "--engine") || contains(args, "--select-engine");
-            final String persisted = readEngine();
+            final String forced = normalizeEngine(System.getProperty(ENGINE_PROP));
+            final String persisted = forced != null ? forced : readEngine();
             if (!forceChooser && persisted != null) {
                 final BootstrapScan quickScan = scanBootstrap(false, persisted);
                 if (quickScan.ready()) {
@@ -255,6 +257,13 @@ public class AppBootstrap {
     private static boolean contains(final String[] args, final String flag) {
         for (final String a: args) if (flag.equalsIgnoreCase(a)) return true;
         return false;
+    }
+
+    // NORMALIZES AN ENGINE STRING TO "opengl"/"vulkan", OR null IF ABSENT/UNRECOGNIZED.
+    private static String normalizeEngine(final String value) {
+        if (value == null) return null;
+        final String v = value.trim().toLowerCase();
+        return v.equals("vulkan") || v.equals("opengl") ? v : null;
     }
 
     // READS THE PERSISTED ENGINE CHOICE ("opengl"/"vulkan"), OR null IF NEVER CHOSEN.

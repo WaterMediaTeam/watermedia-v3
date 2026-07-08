@@ -26,6 +26,12 @@ public abstract class Screen {
         return false;
     }
 
+    // WHETHER A TEXT FIELD ON THIS SCREEN HAS KEYBOARD FOCUS — THE APP SUPPRESSES SINGLE-KEY GLOBAL
+    // SHORTCUTS (E.G. THE CRT TOGGLE) WHILE TRUE SO TYPING A LETTER DOES NOT ALSO TRIGGER THEM.
+    public boolean textInputFocused() {
+        return false;
+    }
+
     public void onEnter() {
     }
 

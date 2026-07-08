@@ -16,6 +16,10 @@ import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.view.Button;
+import org.watermedia.bootstrap.app.view.Canvas;
+import org.watermedia.bootstrap.app.view.View;
+import org.watermedia.bootstrap.app.view.ViewGroup;
 import org.watermedia.tools.ThreadTool;
 
 import java.awt.*;
@@ -34,11 +38,12 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Screen with dialog for opening custom multimedia URLs.
- * Renders HomeScreen as background with dialog overlay.
- * Instructions are shown in the bottom bar, not in the dialog.
+ * Screen with dialog for opening custom multimedia URLs, built on the retained view tree: the HomeScreen
+ * background, the centered dialog frame and the live preview panel are painted in {@link #renderChrome},
+ * while the URL/search field and the results/history dropdown live in the content tree as ported custom
+ * views. Instructions are shown in the bottom bar, not in the dialog.
  */
-public class OpenMultimediaScreen extends Screen {
+public class OpenMultimediaScreen extends ViewScreen {
 
     private static final long LOAD_TIMEOUT_MS = 30000L;
     private static final int SEARCH_PREVIEW_H = 130;      // SHRUNK PREVIEW HEIGHT WHILE SEARCHING
@@ -81,6 +86,15 @@ public class OpenMultimediaScreen extends Screen {
     private final List<Dimension> historyRowBounds = new ArrayList<>();
     private final List<String> historyRowItems = new ArrayList<>();
 
+    // CONTENT TREE + THE RECT IT OCCUPIES (INPUT FIELD + RESULTS DROPDOWN), COMPUTED IN renderChrome
+    private Body body;
+    private InputField field;
+    private DropdownView dropdown;
+    private int contentBoxX;
+    private int contentBoxY;
+    private int contentBoxW;
+    private int contentBoxH;
+
     // RESULT THUMBNAILS RENDER THROUGH SHORT-LIVED IMAGE PLAYERS, KEYED BY THUMBNAIL URI (MIRRORS
     // MRLSelectorScreen). THE ACTIVE RENDER BACKEND SUPPLIES THE ENGINE; RELEASED ON A NEW SEARCH/EXIT.
     private final Map<URI, MediaPlayer> thumbPlayers = new LinkedHashMap<>();
@@ -96,7 +110,16 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     @Override
+    protected View<?> build() {
+        this.field = new InputField().width(View.MATCH_PARENT).height(40);
+        this.dropdown = new DropdownView().width(View.MATCH_PARENT).height(View.WRAP_CONTENT);
+        this.body = new Body().add(this.field).add(this.dropdown).width(View.MATCH_PARENT).height(View.MATCH_PARENT);
+        return this.body;
+    }
+
+    @Override
     public void onEnter() {
+        super.onEnter();
         this.loading = false;
         this.loadGeneration++;
         this.previewGeneration++;
@@ -235,7 +258,7 @@ public class OpenMultimediaScreen extends Screen {
 
     // TRUE WHEN THE INPUT IS NOT A LOADABLE URI/FILE, SO THE DIALOG SEARCHES INSTEAD OF PLAYING. SHARES
     // loadable() WITH ensurePreviewMRL SO THE "URL/PATH VS QUERY" RULE CAN NEVER DRIFT. THIS RUNS EVERY FRAME
-    // (render() AND instructions()) ON A CONTINUOUSLY-REDRAWN SCREEN, SO THE RESULT IS MEMOIZED AGAINST THE
+    // (renderChrome() AND instructions()) ON A CONTINUOUSLY-REDRAWN SCREEN, SO THE RESULT IS MEMOIZED AGAINST THE
     // INPUT TEXT: THE BLOCKING file.exists() STAT AND URI PARSE ONLY RE-RUN WHEN THE TEXT ACTUALLY CHANGES.
     private boolean searchMode() {
         final String text = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
@@ -273,7 +296,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     // LAUNCHES AN ASYNC SEARCH FOR THE CURRENT QUERY. PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; WE DROP
-    // THE OLD THUMBNAILS AND LET render() POLL THE FRESH HANDLE AS RESULTS LAND OFF-THREAD.
+    // THE OLD THUMBNAILS AND LET renderChrome() POLL THE FRESH HANDLE AS RESULTS LAND OFF-THREAD.
     private void doSearch() {
         final String query = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
         if (query.isEmpty()) return;
@@ -308,10 +331,28 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void releaseThumbs() {
-        for (final MediaPlayer player: this.thumbPlayers.values()) player.release();
-        this.thumbPlayers.clear();
+        if (!this.thumbPlayers.isEmpty()) {
+            // SNAPSHOT AND CLEAR FIRST SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER
+            final List<MediaPlayer> players = new ArrayList<>(this.thumbPlayers.values());
+            this.thumbPlayers.clear();
+            this.releaseAsync(players);
+        }
         this.thumbAttempted.clear();
         this.thumbSubscribed.clear();
+    }
+
+    // HANDS RESULT-THUMBNAIL PLAYERS OFF FOR BACKGROUND RELEASE — MIRRORS AppContext.releasePlayer. THE
+    // PLAYERS MUST ALREADY BE REMOVED FROM thumbPlayers SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING
+    // PLAYER. stop() IS NON-BLOCKING; release() JOINS THE DECODE THREADS AND SO RUNS OFF THE RENDER THREAD.
+    // THE ENGINE TEARDOWN IS THREAD-SAFE (GL DEFERS ITS TEXTURE DELETES TO THE RENDER EXECUTOR).
+    private void releaseAsync(final List<MediaPlayer> players) {
+        if (players.isEmpty()) return;
+        for (final MediaPlayer player: players) player.stop();
+        // HAND THE BLOCKING release() TO THE SHARED, SHUTDOWN-AWAITED RELEASE CHAIN SO A THUMBNAIL TEARDOWN
+        // IN FLIGHT CANNOT OUTLIVE THE RENDER-DEVICE DESTROY ON EXIT (VULKAN SAFETY).
+        this.ctx.releaseAsync("WaterMedia-ThumbnailRelease", () -> {
+            for (final MediaPlayer player: players) player.release();
+        });
     }
 
     // LAZILY BUILDS AN IMAGE PLAYER FOR A RESULT THUMBNAIL (KEYED BY URI). RETURNS null WHILE THE THUMBNAIL
@@ -344,84 +385,6 @@ public class OpenMultimediaScreen extends Screen {
             }
         }
         return null;
-    }
-
-    // RENDERS THE RESULTS DROPDOWN BELOW THE INPUT: A RESULTS SECTION, THEN A SEPARATOR AND THE RECENT-QUERY
-    // HISTORY. CONTENT SCROLLS WITHIN [top, maxBottom] (CLIPPED) AND THE PER-ROW HIT BOXES ARE RECORDED FOR
-    // handleMouseClick. Thumbnails are aspect-fit so they never spill their cell — no nested clipping needed.
-    private void renderDropdown(final int x, final int top, final int width, final int maxBottom, final int windowH) {
-        this.resultRowBounds.clear();
-        this.resultRowItems.clear();
-        this.historyRowBounds.clear();
-        this.historyRowItems.clear();
-        this.dropdownBounds = Dimension.ZERO;
-
-        final List<PlatformResult> results = this.search != null ? this.search.results() : List.of();
-        final List<String> history = this.search != null ? this.search.history() : PlatformAPI.searchHistory();
-        final boolean searching = this.search != null && !this.search.done();
-        if (results.isEmpty() && history.isEmpty() && !searching) return;
-
-        final boolean hasSearch = this.search != null;
-        final int rowH = 38;
-        final int histH = 26;
-        final int headH = 20;
-        final int pad = 6;
-
-        int contentH = pad;
-        if (hasSearch) contentH += headH + (results.isEmpty() && searching ? rowH : results.size() * rowH);
-        if (!history.isEmpty()) contentH += headH + history.size() * histH;
-        contentH += pad;
-
-        final int availH = Math.max(rowH, maxBottom - top);
-        final int boxH = Math.min(contentH, availH);
-        this.dropdownScroll = Math.max(0, Math.min(this.dropdownScroll, contentH - boxH));
-        this.dropdownBounds = new Dimension(x, top, width, boxH);
-
-        RenderSystem.shadowRect(x, top, width, boxH, 0f, 0.45f);
-        RenderSystem.fill(x, top, width, boxH, AppTheme.BG_2_ALPHA);
-        RenderSystem.rect(x, top, width, boxH, AppTheme.NEON, 1f);
-
-        RenderSystem.clip(x, top, width, boxH, windowH);
-        int y = top + pad - this.dropdownScroll;
-
-        if (hasSearch) {
-            final String resultsHead = searching ? "SEARCHING..." : "RESULTS (" + results.size() + ")";
-            this.text.render(resultsHead, x + 10, y + (headH - this.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-            y += headH;
-
-            if (results.isEmpty() && searching) {
-                this.text.render("Looking across platforms...", x + 14, y + (rowH - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, AppTheme.NEON, AppTheme.TEXT_BODY);
-                y += rowH;
-            } else {
-                for (final PlatformResult result: results) {
-                    final Dimension row = new Dimension(x + 2, y, width - 4, rowH);
-                    this.resultRowBounds.add(row);
-                    this.resultRowItems.add(result);
-                    this.renderResultRow(result, row);
-                    y += rowH;
-                }
-            }
-        }
-
-        if (!history.isEmpty()) {
-            RenderSystem.lineH(x + 10, y + headH / 2f, width - 20, AppTheme.STROKE, 1f);
-            this.text.render("RECENT", x + 10, y + (headH - this.text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-            y += headH;
-            for (final String entry: history) {
-                final Dimension row = new Dimension(x + 2, y, width - 4, histH);
-                this.historyRowBounds.add(row);
-                this.historyRowItems.add(entry);
-                if (this.dropdownBounds.contains(this.ctx.mouseX, this.ctx.mouseY) && row.contains(this.ctx.mouseX, this.ctx.mouseY)) {
-                    RenderSystem.fill(row.x(), row.y(), row.width(), row.height(), AppTheme.alpha(AppTheme.NEON_DARK, 60));
-                }
-                PixelIcon.draw("search", x + 12, y + (histH - 11) / 2, 11, AppTheme.TEXT_FAINT);
-                this.text.render(this.text.truncateToWidth(entry, width - 44, AppTheme.TEXT_BODY), x + 32,
-                        y + (histH - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-                y += histH;
-            }
-        }
-
-        RenderSystem.clearClip();
     }
 
     private void renderResultRow(final PlatformResult result, final Dimension row) {
@@ -583,14 +546,22 @@ public class OpenMultimediaScreen extends Screen {
 
     @Override
     public boolean wantsContinuousRender() {
-        // POLL THE SEARCH HANDLE WHILE RESULTS ARRIVE, AND KEEP TICKING WHILE THE PREVIEW IS ANIMATING
-        return AppChrome.crtEnabled() || this.loading || this.inputFocused
+        // super = A FOCUSED FIELD (VIA THE TREE'S textInputActive); PLUS THE SCREEN'S OWN TRIGGERS: POLL THE
+        // SEARCH HANDLE WHILE RESULTS ARRIVE, AND KEEP TICKING WHILE THE PREVIEW IS ANIMATING
+        return super.wantsContinuousRender() || AppChrome.crtEnabled() || this.loading || this.inputFocused
                 || (this.search != null && !this.searchRenderedDone)
                 || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS;
     }
 
     @Override
     public void render(final int windowW, final int windowH) {
+        super.render(windowW, windowH); // HOMESCREEN BG + DIALOG CHROME (renderChrome) THEN THE VIEW TREE
+        // THE LOAD MODAL OVERLAYS EVERYTHING AND IS CENTERED IN THE FULL WINDOW, SO IT PAINTS LAST
+        if (this.loading) this.renderLoadingDialog(windowW, windowH);
+    }
+
+    @Override
+    protected void renderChrome(final int windowW, final int windowH) {
         // RENDER HOME SCREEN AS BACKGROUND
         this.homeScreen.render(windowW, windowH);
         this.ensurePreviewMRL();
@@ -674,36 +645,14 @@ public class OpenMultimediaScreen extends Screen {
         this.reloadBounds = new Dimension(this.pasteBounds.right() + gap, y, reloadW, tbH);
         this.inputBounds = new Dimension(tbX, y, tbW, tbH);
 
+        // THE INPUT LABEL (THE FIELD BOX/TEXT/CARET ITSELF IS DRAWN BY THE VIEW TREE — SEE InputField)
         this.text.render(searchMode ? "SEARCH" : "URL OR PATH", tbX, y - 20,
                 searchMode ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-        if (this.inputFocused) RenderSystem.glowRect(tbX, y, tbW, tbH, 0f, AppTheme.NEON, 0.28f);
-        RenderSystem.fill(tbX, y, tbW, tbH, AppTheme.BG_2);
-        RenderSystem.rect(tbX, y, tbW, tbH, this.inputFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1);
-        PixelIcon.draw(searchMode ? "search" : "link", tbX + 10, y + (tbH - 14) / 2, 14, searchMode ? AppTheme.CYAN : AppTheme.TEXT_FAINT);
         final boolean pasteHover = this.pasteBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        RenderSystem.fill(this.pasteBounds.x(), this.pasteBounds.y(), this.pasteBounds.width(), this.pasteBounds.height(),
-                pasteHover ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.BG_2);
-        RenderSystem.rect(this.pasteBounds.x(), this.pasteBounds.y(), this.pasteBounds.width(), this.pasteBounds.height(), AppTheme.NEON, 1f);
-        PixelIcon.draw("copy", this.pasteBounds.x() + 12, this.pasteBounds.y() + (this.pasteBounds.height() - 12) / 2, 12, AppTheme.NEON_LIGHT);
-        this.text.renderBold("PASTE", this.pasteBounds.x() + 32,
-                this.pasteBounds.y() + Math.max(0, (this.pasteBounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
-                AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
+        Button.render(this.text, this.pasteBounds.x(), this.pasteBounds.y(), this.pasteBounds.width(), this.pasteBounds.height(),
+                "PASTE", "", "copy", 12, AppTheme.NEON, AppTheme.NEON_LIGHT, false, pasteHover, true);
         // RELOAD ONLY MAKES SENSE FOR A VALID URI/MRL — DISABLED WHEN EMPTY OR IN SEARCH MODE
         this.renderInlineButton(this.reloadBounds, "RELOAD", "reload", AppTheme.NEON_LIGHT, !searchMode && !displayUrl.isEmpty());
-
-        final float inputScale = AppTheme.TEXT_BUTTON;
-        final int inputTextX = tbX + 32;
-        final int inputTextY = y + Math.max(0, (tbH - this.text.glyphHeight(inputScale)) / 2);
-        final String truncatedUrl = this.text.truncateToWidth(displayUrl, tbW - 46, inputScale);
-        final boolean emptyInput = truncatedUrl.isEmpty();
-        this.text.render(emptyInput ? "search, or paste a URL / path..." : truncatedUrl,
-                inputTextX, inputTextY,
-                emptyInput ? AppTheme.TEXT_FAINT : AppTheme.TEXT, inputScale);
-        if (this.inputFocused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-            final int caretTextW = emptyInput ? 0 : this.text.width(truncatedUrl, inputScale);
-            final int caretX = Math.min(tbX + tbW - 10, inputTextX + caretTextW + (emptyInput ? -5 : 1));
-            RenderSystem.fill(caretX, inputTextY, 2, this.text.glyphHeight(inputScale), AppTheme.NEON_LIGHT);
-        }
 
         final int detectedY = y + tbH + 12;
         final String detected;
@@ -728,23 +677,37 @@ public class OpenMultimediaScreen extends Screen {
         this.text.render(detected, tbX + 24, detectedY + 5, detectedColor, AppTheme.TEXT_BODY);
 
         final int footY = dialogY + dialogH - 58;
-        this.cancelBounds = new Dimension(dialogX + padding, footY, 128, 36);
-        this.playBounds = new Dimension(dialogX + dialogW - padding - 128, footY, 128, 36);
-        this.saveBounds = new Dimension(this.playBounds.x() - 140, footY, 128, 36);
-        renderDialogButton("CANCEL", "ESC", "x", this.cancelBounds, AppTheme.TEXT_SOFT);
+        // BUTTONS SIZE TO THEIR CONTENT SO THE LABEL AND THE HOTKEY CHIP KEEP A CONSISTENT 12px GAP (NO
+        // OVERLAP LIKE THE OLD FIXED 128px WIDTH, NO EXCESS EITHER)
+        final String playLabel = searchMode ? "SEARCH" : "PLAY";
+        // WIDTHS MATCH THE DRAWN BUTTON EXACTLY BY PASSING EACH BUTTON'S ICON (SEE renderDialogButton CALLS BELOW)
+        final int cancelW = this.dialogButtonWidth("CANCEL", "ESC", "x");
+        final int saveW = this.dialogButtonWidth("SAVE", "SPACE", "save");
+        final int playW = this.dialogButtonWidth(playLabel, "ENTER", searchMode ? "search" : "play");
+        this.cancelBounds = new Dimension(dialogX + padding, footY, cancelW, 36);
+        this.playBounds = new Dimension(dialogX + dialogW - padding - playW, footY, playW, 36);
+        this.saveBounds = new Dimension(this.playBounds.x() - saveW - 12, footY, saveW, 36);
+        this.renderDialogButton("CANCEL", "ESC", "x", this.cancelBounds, AppTheme.TEXT_SOFT);
         // SAVE STORES A URL/PATH; IT MAKES NO SENSE FOR A SEARCH QUERY, SO IT IS DISABLED IN SEARCH MODE
-        renderDialogButton("SAVE", "SPACE", "save", this.saveBounds,
+        this.renderDialogButton("SAVE", "SPACE", "save", this.saveBounds,
                 displayUrl.isEmpty() || searchMode ? AppTheme.TEXT_FAINT : AppTheme.NEON_LIGHT);
         // PRIMARY ACTION TOGGLES PLAY (GREEN) ↔ SEARCH (CYAN) WITH THE INPUT
-        renderDialogButton(searchMode ? "SEARCH" : "PLAY", "ENTER", searchMode ? "search" : "play", this.playBounds,
+        this.renderDialogButton(playLabel, "ENTER", searchMode ? "search" : "play", this.playBounds,
                 displayUrl.isEmpty() ? AppTheme.TEXT_FAINT : (searchMode ? AppTheme.CYAN : AppTheme.GREEN));
 
-        // RESULTS DROPDOWN OVERLAYS THE AREA BETWEEN THE INPUT AND THE FOOTER (CLAMPED, SO BUTTONS STAY CLICKABLE)
+        // THE TREE CONTENT RECT: THE INPUT FIELD SITS AT THE TOP AND THE RESULTS DROPDOWN OVERLAYS THE AREA
+        // DOWN TO JUST ABOVE THE FOOTER (CLAMPED, SO THE BUTTONS STAY CLICKABLE — SAME BUDGET AS THE LEGACY DRAW)
+        this.contentBoxX = tbX;
+        this.contentBoxY = y;
+        this.contentBoxW = tbW;
+        this.contentBoxH = Math.max(tbH, (this.cancelBounds.y() - 10) - y);
+
+        // RESULTS DROPDOWN IS ONLY LIVE IN SEARCH MODE; LEAVING IT (E.G. THE QUERY BECAME A URL) DROPS ANY
+        // STALE SEARCH/THUMBNAILS. THE BOX ITSELF IS PAINTED BY THE VIEW TREE (DropdownView).
         if (searchMode) {
-            this.renderDropdown(this.inputBounds.x(), this.inputBounds.bottom() + 2,
-                    this.inputBounds.width(), this.cancelBounds.y() - 10, windowH);
+            this.dropdown.visible(true);
         } else {
-            // LEFT SEARCH MODE (E.G. THE QUERY BECAME A URL) — DROP ANY STALE SEARCH/THUMBNAILS
+            this.dropdown.visible(false);
             if (this.search != null) this.clearSearch();
             this.dropdownBounds = Dimension.ZERO;
             this.resultRowBounds.clear();
@@ -754,24 +717,34 @@ public class OpenMultimediaScreen extends Screen {
         this.searchRenderedDone = this.search == null || this.search.done();
 
         RenderSystem.restoreProjection();
+    }
 
-        if (this.loading) {
-            this.renderLoadingDialog(windowW, windowH);
-        }
+    @Override
+    protected int contentX(final int windowW, final int windowH) {
+        return this.contentBoxX;
+    }
+
+    @Override
+    protected int contentY(final int windowW, final int windowH) {
+        return this.contentBoxY;
+    }
+
+    @Override
+    protected int contentW(final int windowW, final int windowH) {
+        return this.contentBoxW;
+    }
+
+    @Override
+    protected int contentH(final int windowW, final int windowH) {
+        return this.contentBoxH;
     }
 
     private void renderInlineButton(final Dimension bounds, final String label, final String icon,
                                     final java.awt.Color color, final boolean enabled) {
-        final java.awt.Color actual = enabled ? color : AppTheme.TEXT_FAINT;
         final boolean hover = enabled && bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.BG_2);
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), actual, 1f);
-        if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, actual, hover ? 0.24f : 0.12f);
-        PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, actual);
-        this.text.renderBold(label, bounds.x() + 32,
-                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
-                actual, AppTheme.TEXT_BUTTON);
+        // NO HOTKEY CHIP — color IS BOTH ACCENT AND LABEL COLOR
+        Button.render(this.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                label, "", icon, 12, color, color, false, hover, enabled);
     }
 
     private void renderPreview(final int x, final int y, final int w, final int h) {
@@ -857,28 +830,18 @@ public class OpenMultimediaScreen extends Screen {
         return q == MediaQuality.UNKNOWN ? null : q.name();
     }
 
+    // INTRINSIC WIDTH THAT FITS THE ICON + LABEL + 12px GAP + HOTKEY CHIP, MATCHING renderDialogButton EXACTLY
+    private int dialogButtonWidth(final String label, final String hotkey, final String icon) {
+        return Button.width(this.text, label, hotkey, icon, 12);
+    }
+
     private void renderDialogButton(final String label, final String hotkey, final String icon,
                                     final Dimension bounds, final java.awt.Color color) {
         final boolean hover = bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
         final boolean enabled = color != AppTheme.TEXT_FAINT;
-        RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                hover && enabled ? AppTheme.alpha(color, 54) : AppTheme.BG_2);
-        RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color, 1.6f);
-        if (enabled) RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, color, hover ? 0.28f : 0.16f);
-        final float labelScale = AppTheme.TEXT_BUTTON;
-        PixelIcon.draw(icon, bounds.x() + 12, bounds.y() + (bounds.height() - 13) / 2, 13, color);
-        this.text.renderBold(label, bounds.x() + 32,
-                bounds.y() + Math.max(0, (bounds.height() - this.text.glyphHeightBold(labelScale)) / 2f),
-                color, labelScale);
-        final float hotkeyScale = AppTheme.TEXT_SUBTITLE;
-        final int hkW = this.text.width(hotkey, hotkeyScale) + 12;
-        final int hkH = 20;
-        final int hkX = bounds.right() - hkW - 8;
-        final int hkY = bounds.y() + (bounds.height() - hkH) / 2;
-        RenderSystem.rect(hkX, hkY, hkW, hkH, AppTheme.STROKE, 1f);
-        this.text.render(hotkey, hkX + 6,
-                hkY + Math.max(0, (hkH - this.text.glyphHeight(hotkeyScale)) / 2f),
-                AppTheme.TEXT_FAINT, hotkeyScale);
+        // color IS BOTH THE ACCENT (BORDER) AND THE LABEL COLOR; hotkey RENDERS AS THE TRAILING CHIP
+        Button.render(this.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+                label, hotkey, icon, 12, color, color, false, hover, enabled);
     }
 
     @Override
@@ -893,16 +856,12 @@ public class OpenMultimediaScreen extends Screen {
             return;
         }
 
+        // LET THE FOCUSED FIELD CONSUME BACKSPACE/DELETE (PRESS+REPEAT) VIA THE TREE FIRST
+        if (this.root.key(key, action)) return;
+
         switch (key) {
-            case GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE -> {
-                if (this.inputFocused && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) {
-                    this.ctx.customUrlText = this.ctx.ctrlDown ? this.deleteLastWord(this.ctx.customUrlText) : this.ctx.customUrlText.substring(0, this.ctx.customUrlText.length() - 1);
-                    this.lastEditMs = System.currentTimeMillis();
-                    this.ensurePreviewMRL();
-                }
-            }
             case GLFW_KEY_SPACE -> {
-                // IN SEARCH MODE SPACE IS A QUERY CHARACTER (HANDLED BY handleChar), NOT THE SAVE SHORTCUT
+                // IN SEARCH MODE SPACE IS A QUERY CHARACTER (HANDLED BY THE FIELD), NOT THE SAVE SHORTCUT
                 if (action == GLFW_PRESS && !this.searchMode() && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) this.saveCustomUrl();
             }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
@@ -930,37 +889,15 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     @Override
-    public void handleChar(final int codepoint) {
-        if (!this.inputFocused || this.loading) return;
-        if (this.ctx.ctrlDown) return;
-        if (codepoint < 32 || codepoint == 127) return;
-        this.ctx.customUrlText = (this.ctx.customUrlText == null ? "" : this.ctx.customUrlText) + new String(Character.toChars(codepoint));
-        this.lastEditMs = System.currentTimeMillis();
-        this.ensurePreviewMRL();
-    }
-
-    @Override
     public void handleMouseClick(final double mx, final double my) {
         if (this.loading) return;
 
-        // DROPDOWN TAKES PRIORITY AND KEEPS THE INPUT FOCUSED. A RESULT REPLACES THE INPUT WITH ITS RAW URL;
-        // A HISTORY ENTRY REFILLS THE QUERY AND RE-SEARCHES.
-        if (this.dropdownBounds.contains(mx, my)) {
-            for (int i = 0; i < this.resultRowBounds.size(); i++) {
-                if (this.resultRowBounds.get(i).contains(mx, my)) {
-                    this.selectResult(this.resultRowItems.get(i));
-                    return;
-                }
-            }
-            for (int i = 0; i < this.historyRowBounds.size(); i++) {
-                if (this.historyRowBounds.get(i).contains(mx, my)) {
-                    this.ctx.customUrlText = this.historyRowItems.get(i);
-                    this.doSearch();
-                    return;
-                }
-            }
-            return; // INSIDE THE DROPDOWN BUT NOT ON A ROW — SWALLOW THE CLICK
-        }
+        // CAPTURE THE DROPDOWN HIT BEFORE THE TREE POSSIBLY CLEARS ITS BOUNDS (selectResult -> clearSearch).
+        // THE DROPDOWN TAKES PRIORITY AND KEEPS THE INPUT FOCUSED: A RESULT REPLACES THE INPUT WITH ITS RAW URL;
+        // A HISTORY ENTRY REFILLS THE QUERY AND RE-SEARCHES (SEE DropdownView#dispatchClick).
+        final boolean inDropdown = this.dropdownBounds.contains(mx, my);
+        super.handleMouseClick(mx, my);
+        if (inDropdown) return; // INSIDE THE DROPDOWN — THE TREE HANDLED IT (OR SWALLOWED THE CLICK)
 
         this.inputFocused = this.inputBounds.contains(mx, my);
         if (this.closeBounds.contains(mx, my)) {
@@ -980,18 +917,238 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     @Override
-    public void handleScroll(final double yOffset) {
-        if (this.loading) return;
-        if (this.dropdownBounds.contains(this.ctx.mouseX, this.ctx.mouseY)) {
-            this.dropdownScroll = Math.max(0, this.dropdownScroll - (int) (yOffset * 28));
-            this.ctx.requestRender();
-        }
-    }
-
-    @Override
     public String instructions() {
         if (this.loading) return "ESC: Cancel";
         if (this.searchMode()) return "TYPE: Search | CLICK: Pick result | V: Paste | ESC: Cancel";
         return "ENTER: Play | SPACE: Save | V: Paste | R: Reload | ESC: Cancel";
+    }
+
+    // ROOT CONTENT: STACKS THE INPUT FIELD AT THE TOP OF THE CONTENT RECT AND THE RESULTS DROPDOWN 2px BELOW
+    // IT (inputBounds.bottom() + 2), EXACTLY WHERE THE LEGACY DRAW PLACED THEM.
+    private final class Body extends ViewGroup<Body> {
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            field.measure(innerAvailWidth, 40);
+            dropdown.measure(innerAvailWidth, Math.max(0, innerAvailHeight - 42));
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            field.layout(this.left, this.top);
+            dropdown.layout(this.left, this.top + 42);
+        }
+    }
+
+    // THE URL/SEARCH FIELD — A DELIBERATE PORT OF THE LEGACY INPUT BOX (FOCUS GLOW, BG_2 FILL, NEON/STROKE
+    // BORDER, LINK/SEARCH GLYPH, TRUNCATED VALUE OR PLACEHOLDER, 2px NEON_LIGHT CARET AT 480ms). FOCUS AND
+    // TEXT MUTATION STAY ON THE SCREEN (inputFocused/customUrlText); THE FIELD DRIVES textInputActive AND
+    // CHAR/BACKSPACE INPUT THROUGH THE TREE.
+    private final class InputField extends View<InputField> {
+
+        @Override
+        public boolean textInputActive() {
+            return inputFocused;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            final boolean search = searchMode();
+            final String displayUrl = ctx.customUrlText != null ? ctx.customUrlText : "";
+            if (inputFocused) RenderSystem.glowRect(x, y, w, h, 0f, AppTheme.NEON, 0.28f);
+            RenderSystem.fill(x, y, w, h, AppTheme.BG_2);
+            RenderSystem.rect(x, y, w, h, inputFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1);
+            PixelIcon.draw(search ? "search" : "link", x + 10, y + (h - 14) / 2, 14, search ? AppTheme.CYAN : AppTheme.TEXT_FAINT);
+
+            final float inputScale = AppTheme.TEXT_BUTTON;
+            final int inputTextX = x + 32;
+            final int inputTextY = y + Math.max(0, (h - text.glyphHeight(inputScale)) / 2);
+            final String truncatedUrl = text.truncateToWidth(displayUrl, w - 46, inputScale);
+            final boolean emptyInput = truncatedUrl.isEmpty();
+            text.render(emptyInput ? "search, or paste a URL / path..." : truncatedUrl,
+                    inputTextX, inputTextY,
+                    emptyInput ? AppTheme.TEXT_FAINT : AppTheme.TEXT, inputScale);
+            if (inputFocused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
+                final int caretTextW = emptyInput ? 0 : text.width(truncatedUrl, inputScale);
+                final int caretX = Math.min(x + w - 10, inputTextX + caretTextW + (emptyInput ? -5 : 1));
+                RenderSystem.fill(caretX, inputTextY, 2, text.glyphHeight(inputScale), AppTheme.NEON_LIGHT);
+            }
+        }
+
+        @Override
+        public boolean dispatchChar(final int codepoint) {
+            if (!inputFocused || loading) return false;
+            if (ctx.ctrlDown) return false;
+            if (codepoint < 32 || codepoint == 127) return false;
+            ctx.customUrlText = (ctx.customUrlText == null ? "" : ctx.customUrlText) + new String(Character.toChars(codepoint));
+            lastEditMs = System.currentTimeMillis();
+            ensurePreviewMRL();
+            return true;
+        }
+
+        @Override
+        public boolean dispatchKey(final int key, final int action) {
+            // BACKSPACE/DELETE ARE FIELD KEYS ONLY WHILE FOCUSED; OTHERWISE THEY FALL THROUGH TO SCREEN NAV.
+            // handleKey ALREADY GATED action TO PRESS+REPEAT, SO DELETION REPEATS WHEN THE KEY IS HELD.
+            if (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE) return false;
+            if (!inputFocused) return false;
+            if (ctx.customUrlText != null && !ctx.customUrlText.isEmpty()) {
+                ctx.customUrlText = ctx.ctrlDown ? deleteLastWord(ctx.customUrlText) : ctx.customUrlText.substring(0, ctx.customUrlText.length() - 1);
+                lastEditMs = System.currentTimeMillis();
+                ensurePreviewMRL();
+            }
+            return true;
+        }
+    }
+
+    // THE RESULTS DROPDOWN — A DELIBERATE PORT OF THE LEGACY renderDropdown: A SHADOWED, NEON-BORDERED BOX
+    // BELOW THE INPUT WITH A RESULTS SECTION (OR "SEARCHING..." PLACEHOLDER) THEN A SEPARATOR AND THE
+    // RECENT-QUERY HISTORY, CLIPPED AND SCROLLED WITHIN ITS BUDGET. onMeasure SIZES THE BOX (SO contains()
+    // MATCHES dropdownBounds); onDraw PAINTS IT AND RECORDS THE PER-ROW HIT BOXES. IT OWNS ITS OWN SCROLL AND
+    // CLICK ROUTING. THE STRUCTURE (SECTION HEADERS, TWO ROW HEIGHTS) DOES NOT MAP ONTO A UNIFORM ListView,
+    // SO A FAITHFUL PORT BEATS DEDUP.
+    private final class DropdownView extends View<DropdownView> {
+
+        private int boxH;
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            this.contentWidth = innerAvailWidth;
+            if (!this.visible) {
+                this.contentHeight = 0;
+                this.boxH = 0;
+                return;
+            }
+            final List<PlatformResult> results = search != null ? search.results() : List.of();
+            final List<String> history = search != null ? search.history() : PlatformAPI.searchHistory();
+            final boolean searching = search != null && !search.done();
+            if (results.isEmpty() && history.isEmpty() && !searching) {
+                this.contentHeight = 0;
+                this.boxH = 0;
+                return;
+            }
+
+            final boolean hasSearch = search != null;
+            final int rowH = 38;
+            final int histH = 26;
+            final int headH = 20;
+            final int pad = 6;
+
+            int contentH = pad;
+            if (hasSearch) contentH += headH + (results.isEmpty() && searching ? rowH : results.size() * rowH);
+            if (!history.isEmpty()) contentH += headH + history.size() * histH;
+            contentH += pad;
+
+            final int availH = Math.max(rowH, innerAvailHeight);
+            this.boxH = Math.min(contentH, availH);
+            dropdownScroll = Math.max(0, Math.min(dropdownScroll, contentH - this.boxH));
+            this.contentHeight = this.boxH;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            resultRowBounds.clear();
+            resultRowItems.clear();
+            historyRowBounds.clear();
+            historyRowItems.clear();
+            dropdownBounds = Dimension.ZERO;
+            if (this.boxH <= 0) return;
+
+            final int x = this.left;
+            final int top = this.top;
+            final int width = this.measuredWidth;
+            final int boxH = this.boxH;
+            final int windowH = canvas.windowHeight();
+
+            final List<PlatformResult> results = search != null ? search.results() : List.of();
+            final List<String> history = search != null ? search.history() : PlatformAPI.searchHistory();
+            final boolean searching = search != null && !search.done();
+            final boolean hasSearch = search != null;
+            final int rowH = 38;
+            final int histH = 26;
+            final int headH = 20;
+            final int pad = 6;
+
+            dropdownBounds = new Dimension(x, top, width, boxH);
+
+            RenderSystem.shadowRect(x, top, width, boxH, 0f, 0.45f);
+            RenderSystem.fill(x, top, width, boxH, AppTheme.BG_2_ALPHA);
+            RenderSystem.rect(x, top, width, boxH, AppTheme.NEON, 1f);
+
+            RenderSystem.clip(x, top, width, boxH, windowH);
+            int y = top + pad - dropdownScroll;
+
+            if (hasSearch) {
+                final String resultsHead = searching ? "SEARCHING..." : "RESULTS (" + results.size() + ")";
+                text.render(resultsHead, x + 10, y + (headH - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+                y += headH;
+
+                if (results.isEmpty() && searching) {
+                    text.render("Looking across platforms...", x + 14, y + (rowH - text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, AppTheme.NEON, AppTheme.TEXT_BODY);
+                    y += rowH;
+                } else {
+                    for (final PlatformResult result: results) {
+                        final Dimension row = new Dimension(x + 2, y, width - 4, rowH);
+                        resultRowBounds.add(row);
+                        resultRowItems.add(result);
+                        renderResultRow(result, row);
+                        y += rowH;
+                    }
+                }
+            }
+
+            if (!history.isEmpty()) {
+                RenderSystem.lineH(x + 10, y + headH / 2f, width - 20, AppTheme.STROKE, 1f);
+                text.render("RECENT", x + 10, y + (headH - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
+                y += headH;
+                for (final String entry: history) {
+                    final Dimension row = new Dimension(x + 2, y, width - 4, histH);
+                    historyRowBounds.add(row);
+                    historyRowItems.add(entry);
+                    if (dropdownBounds.contains(ctx.mouseX, ctx.mouseY) && row.contains(ctx.mouseX, ctx.mouseY)) {
+                        RenderSystem.fill(row.x(), row.y(), row.width(), row.height(), AppTheme.alpha(AppTheme.NEON_DARK, 60));
+                    }
+                    PixelIcon.draw("search", x + 12, y + (histH - 11) / 2, 11, AppTheme.TEXT_FAINT);
+                    text.render(text.truncateToWidth(entry, width - 44, AppTheme.TEXT_BODY), x + 32,
+                            y + (histH - text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
+                    y += histH;
+                }
+            }
+
+            RenderSystem.clearClip();
+        }
+
+        @Override
+        public boolean dispatchClick(final double mx, final double my) {
+            if (!this.visible || !dropdownBounds.contains(mx, my)) return false;
+            for (int i = 0; i < resultRowBounds.size(); i++) {
+                if (resultRowBounds.get(i).contains(mx, my)) {
+                    selectResult(resultRowItems.get(i));
+                    return true;
+                }
+            }
+            for (int i = 0; i < historyRowBounds.size(); i++) {
+                if (historyRowBounds.get(i).contains(mx, my)) {
+                    ctx.customUrlText = historyRowItems.get(i);
+                    doSearch();
+                    return true;
+                }
+            }
+            return true; // INSIDE THE DROPDOWN BUT NOT ON A ROW — SWALLOW THE CLICK
+        }
+
+        @Override
+        public boolean dispatchScroll(final double mx, final double my, final double amount) {
+            if (!this.visible || !dropdownBounds.contains(mx, my)) return false;
+            dropdownScroll = Math.max(0, dropdownScroll - (int) (amount * 28));
+            this.invalidate();
+            return true;
+        }
     }
 }
