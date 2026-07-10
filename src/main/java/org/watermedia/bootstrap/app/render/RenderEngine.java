@@ -44,6 +44,10 @@ public final class RenderEngine {
     // setupOrtho()/restoreProjection() CALLS WITH THE SAME VALUE SKIP THE FLUSH + RE-UPLOAD (BATCH COALESCING).
     private int orthoW = Integer.MIN_VALUE;
     private int orthoH = Integer.MIN_VALUE;
+    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX). APPLIED AT THE TWO LOGICAL->PHYSICAL SEAMS ONLY:
+    // SCISSOR RECTS AND RASTERIZED LINE WIDTHS. GEOMETRY AND THE VIEWPORT ARE NOT TOUCHED — QUADS
+    // ALREADY SCALE THROUGH THE ORTHO PROJECTION AND THE VIEWPORT STAYS PHYSICAL. DORMANT AT 1f.
+    private float uiScale = 1f;
 
     public RenderEngine(final RenderBackend backend) {
         this.backend = backend;
@@ -162,9 +166,30 @@ public final class RenderEngine {
         return this.backend.deviceVersion();
     }
 
+    /**
+     * Sets the UI scale (physical pixels per logical pixel) this engine converts with. Scissor
+     * rectangles and rasterized line widths arrive in logical pixels and are mapped to physical
+     * pixels using this factor; quad geometry and the viewport are unaffected.
+     */
+    public void uiScale(final float scale) {
+        this.uiScale = scale > 0f ? scale : 1f;
+    }
+
+    /** The UI scale (physical pixels per logical pixel) this engine converts with. */
+    public float uiScale() {
+        return this.uiScale;
+    }
+
     public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
         this.flush();
-        this.backend.enableClip(x, y, width, height, canvasHeight);
+        // LOGICAL -> PHYSICAL: ROUND THE EDGES (NOT THE SIZES) SO ADJACENT CLIPS STAY GAP-FREE AT ANY
+        // SCALE; AT uiScale=1 EVERY ROUND IS AN EXACT IDENTITY. THE BACKENDS ONLY FLIP/CLAMP PHYSICAL INTS.
+        final float s = this.uiScale;
+        final int px = Math.round(x * s);
+        final int py = Math.round(y * s);
+        final int pw = Math.round((x + width) * s) - px;
+        final int ph = Math.round((y + height) * s) - py;
+        this.backend.enableClip(px, py, pw, ph, Math.round(canvasHeight * s));
     }
 
     public void clearClip() {
@@ -174,7 +199,9 @@ public final class RenderEngine {
 
     public void lineWidth(final float width) {
         this.flush();
-        this.backend.lineWidth(width);
+        // RASTERIZER LINE WIDTH (glLineWidth / vkCmdSetLineWidth) IS PHYSICAL PIXELS — SCALE IT HERE.
+        // QUAD-BASED STROKES (strokeQuads) ARE LOGICAL GEOMETRY AND ALREADY SCALE WITH THE ORTHO.
+        this.backend.lineWidth(width * this.uiScale);
     }
 
     public void flush() {

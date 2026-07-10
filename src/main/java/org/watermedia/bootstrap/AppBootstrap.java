@@ -87,10 +87,19 @@ public class AppBootstrap {
     private static class BootstrapScan {
         private final List<Path> jars = new ArrayList<>();
         private final List<String[]> toDownload = new ArrayList<>();
+        // VULKAN + SHADERC JARS/NATIVES — PROVISIONED UNCONDITIONALLY BUT BEST-EFFORT, SO A DOWNLOAD FAILURE
+        // NEVER BLOCKS THE LAUNCH (THE APP STILL RUNS ON OPENGL; RUNTIME HOT-SWAP TO VULKAN IS JUST UNAVAILABLE).
+        private final List<String[]> optionalDownload = new ArrayList<>();
         private boolean binariesFound;
 
+        // MANDATORY READINESS — VULKAN DEPS ARE BEST-EFFORT AND NEVER GATE THE LAUNCH.
         private boolean ready() {
             return this.binariesFound && this.toDownload.isEmpty();
+        }
+
+        // FULLY PROVISIONED, INCLUDING VULKAN — GATES THE FAST PATH SO A FIRST LAUNCH PULLS VULKAN ONCE.
+        private boolean complete() {
+            return this.ready() && this.optionalDownload.isEmpty();
         }
     }
 
@@ -126,8 +135,10 @@ public class AppBootstrap {
             final String forced = normalizeEngine(System.getProperty(ENGINE_PROP));
             final String persisted = forced != null ? forced : readEngine();
             if (!forceChooser && persisted != null) {
-                final BootstrapScan quickScan = scanBootstrap(false, persisted);
-                if (quickScan.ready()) {
+                final BootstrapScan quickScan = scanBootstrap(false);
+                // FAST PATH REQUIRES VULKAN TO BE FULLY CACHED TOO, SO A FIRST LAUNCH FALLS THROUGH TO THE
+                // CONSOLE ONCE TO PULL IT (BEST-EFFORT); AFTERWARDS EVERY LAUNCH FAST-PATHS AS BEFORE.
+                if (quickScan.complete()) {
                     relaunch(quickScan.jars, args, persisted);
                     return;
                 }
@@ -152,19 +163,32 @@ public class AppBootstrap {
         writeEngine(engine);
         info("Render engine: " + engine.toUpperCase());
 
-        final BootstrapScan scan = scanBootstrap(true, engine);
+        final BootstrapScan scan = scanBootstrap(true);
         if (!scan.binariesFound) {
             showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
             return;
         }
 
-        // DOWNLOAD MISSING (INCLUDES THE VULKAN/SHADERC JARS WHEN VULKAN IS CHOSEN)
+        // DOWNLOAD MANDATORY DEPS (BASE LWJGL + NATIVES) — A FAILURE HERE IS FATAL.
         for (final String[] dep: scan.toDownload) {
             final Path d = LIBS_DIR.resolve(dep[0]);
             download(MAVEN + dep[1], d);
         }
 
-        final BootstrapScan launchScan = scanBootstrap(false, engine);
+        // DOWNLOAD VULKAN DEPS BEST-EFFORT — A FAILURE DEGRADES TO OPENGL-ONLY WITHOUT ABORTING THE LAUNCH.
+        for (final String[] dep: scan.optionalDownload) {
+            final Path d = LIBS_DIR.resolve(dep[0]);
+            try {
+                download(MAVEN + dep[1], d);
+            } catch (final Exception e) {
+                warn("[SKIP] Optional Vulkan dependency failed: " + dep[0] + " (" + e.getMessage() + ")");
+                try {
+                    Files.deleteIfExists(d);
+                } catch (final IOException ignored) {}
+            }
+        }
+
+        final BootstrapScan launchScan = scanBootstrap(false);
         if (!launchScan.ready()) {
             showError("Some dependencies are still missing after bootstrap scan.");
             return;
@@ -175,7 +199,7 @@ public class AppBootstrap {
         relaunch(launchScan.jars, args, engine);
     }
 
-    private static BootstrapScan scanBootstrap(final boolean log, final String engine) throws Exception {
+    private static BootstrapScan scanBootstrap(final boolean log) throws Exception {
         final BootstrapScan scan = new BootstrapScan();
 
         // WATERMEDIA'S OWN JAR GOES FIRST ON THE CLASSPATH SO ITS RESOURCES (icon.png, pack.png, banner.png)
@@ -217,14 +241,16 @@ public class AppBootstrap {
             }
         }
 
-        // COLLECT ENGINE-SPECIFIC DEPS (VULKAN + SHADERC JARS/NATIVES WHEN VULKAN IS SELECTED)
-        for (final String[] dep: engineDeps(engine)) {
+        // COLLECT VULKAN DEPS UNCONDITIONALLY (VULKAN + SHADERC JARS/NATIVES) SO THE CHILD JVM CAN HOT-SWAP
+        // TO VULKAN AT RUNTIME REGARDLESS OF THE ENGINE IT BOOTS WITH. THESE ARE OPTIONAL: A MISSING ONE GOES
+        // TO optionalDownload (BEST-EFFORT) RATHER THAN toDownload, SO IT NEVER GATES THE LAUNCH.
+        for (final String[] dep: vulkanDeps()) {
             final Path p = LIBS_DIR.resolve(dep[0]);
             if (Files.isRegularFile(p)) {
                 scan.jars.add(p);
                 if (log) info("[FOUND] " + dep[0]);
             } else {
-                scan.toDownload.add(dep);
+                scan.optionalDownload.add(dep);
                 if (log) warn("[MISSING] " + dep[0]);
             }
         }
@@ -286,19 +312,18 @@ public class AppBootstrap {
         }
     }
 
-    // EXTRA JARS A GIVEN ENGINE NEEDS ON TOP OF THE BASE DEPS/NATIVES. VULKAN PULLS THE LWJGL VULKAN
-    // BINDINGS (PLUS MOLTENVK NATIVES ONLY ON MACOS) AND LWJGL SHADERC (BINDINGS + NATIVES, EVERY PLATFORM).
-    private static List<String[]> engineDeps(final String engine) {
+    // VULKAN JARS PROVISIONED ON TOP OF THE BASE DEPS/NATIVES SO A RUNTIME HOT-SWAP TO VULKAN IS ALWAYS
+    // POSSIBLE: THE LWJGL VULKAN BINDINGS (PLUS MOLTENVK NATIVES ONLY ON MACOS) AND LWJGL SHADERC (BINDINGS +
+    // NATIVES, EVERY PLATFORM). RETURNED UNCONDITIONALLY — THE INITIAL ENGINE CHOICE NO LONGER DECIDES THESE.
+    private static List<String[]> vulkanDeps() {
         final List<String[]> deps = new ArrayList<>();
-        if ("vulkan".equalsIgnoreCase(engine)) {
-            deps.add(new String[]{"lwjgl-vulkan-3.3.6.jar", "org/lwjgl/lwjgl-vulkan/3.3.6/lwjgl-vulkan-3.3.6.jar"});
-            deps.add(new String[]{"lwjgl-shaderc-3.3.6.jar", "org/lwjgl/lwjgl-shaderc/3.3.6/lwjgl-shaderc-3.3.6.jar"});
-            final String shaderc = "lwjgl-shaderc-3.3.6-natives-" + OS + ".jar";
-            deps.add(new String[]{shaderc, "org/lwjgl/lwjgl-shaderc/3.3.6/" + shaderc});
-            if (OS.startsWith("macos")) {
-                final String vk = "lwjgl-vulkan-3.3.6-natives-" + OS + ".jar";
-                deps.add(new String[]{vk, "org/lwjgl/lwjgl-vulkan/3.3.6/" + vk});
-            }
+        deps.add(new String[]{"lwjgl-vulkan-3.3.6.jar", "org/lwjgl/lwjgl-vulkan/3.3.6/lwjgl-vulkan-3.3.6.jar"});
+        deps.add(new String[]{"lwjgl-shaderc-3.3.6.jar", "org/lwjgl/lwjgl-shaderc/3.3.6/lwjgl-shaderc-3.3.6.jar"});
+        final String shaderc = "lwjgl-shaderc-3.3.6-natives-" + OS + ".jar";
+        deps.add(new String[]{shaderc, "org/lwjgl/lwjgl-shaderc/3.3.6/" + shaderc});
+        if (OS.startsWith("macos")) {
+            final String vk = "lwjgl-vulkan-3.3.6-natives-" + OS + ".jar";
+            deps.add(new String[]{vk, "org/lwjgl/lwjgl-vulkan/3.3.6/" + vk});
         }
         return deps;
     }

@@ -2,14 +2,14 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.bootstrap.app.AppContext;
-import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
-import org.watermedia.bootstrap.app.view.Canvas;
-import org.watermedia.bootstrap.app.view.ListView;
-import org.watermedia.bootstrap.app.view.View;
+import org.watermedia.bootstrap.app.element.Canvas;
+import org.watermedia.bootstrap.app.element.Element;
+import org.watermedia.bootstrap.app.element.Group;
+import org.watermedia.bootstrap.app.element.ListView;
+import org.watermedia.bootstrap.app.element.Parent;
 
 import java.awt.Color;
 import java.awt.Font;
@@ -26,11 +26,11 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Region selector for IPTV channels, built on the view tree: the window chrome and panel frame are drawn
- * by {@link AppChrome}, and the selectable region rows live in a {@link ListView} that owns scrolling,
- * hit-testing and the selection highlight.
+ * Region selector for IPTV channels as a fully-retained screen: a {@link Header} band, a panel frame
+ * container that ports the imperative panel chrome (gradient plate, section head, amber anchor cubes),
+ * and a {@link ListView} of selectable region rows that owns scrolling, hit-testing and selection.
  */
-public final class RegionSelectorScreen extends ViewScreen {
+public final class RegionSelectorScreen extends Screen {
 
     private static final int ROW_H = 54;
     private static final int ROW_GAP = 8;
@@ -42,11 +42,6 @@ public final class RegionSelectorScreen extends ViewScreen {
     private String detectedRegion = "UNKNOWN";
 
     private ListView<Integer> list;
-    // PANEL ROWS RECT, COMPUTED IN renderChrome AND CONSUMED BY THE CONTENT-RECT OVERRIDES
-    private int rowsX;
-    private int rowsY;
-    private int rowsW;
-    private int rowsH;
 
     public RegionSelectorScreen(final TextRenderer text, final AppContext ctx,
                                 final Consumer<HomeScreen.Action> navigator) {
@@ -55,7 +50,7 @@ public final class RegionSelectorScreen extends ViewScreen {
     }
 
     @Override
-    protected View<?> build() {
+    protected Element<?> build() {
         this.list = new ListView<Integer>()
                 .rowHeight(ROW_H)
                 .spacing(ROW_GAP)
@@ -65,9 +60,13 @@ public final class RegionSelectorScreen extends ViewScreen {
                 // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
                 .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
                 .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
-                .width(View.MATCH_PARENT)
-                .height(View.MATCH_PARENT);
-        return this.list;
+                .width(Element.MAX_PARENT)
+                .height(Element.MAX_PARENT);
+        return Parent.column()
+                .width(Element.MAX_PARENT)
+                .height(Element.MAX_PARENT)
+                .add(new Header().name("Television").sub("region selector").right("v" + WaterMedia.VERSION))
+                .add(new PanelPane().width(Element.MAX_PARENT).weight(1f).add(this.list));
     }
 
     @Override
@@ -76,6 +75,34 @@ public final class RegionSelectorScreen extends ViewScreen {
         this.rebuildRegions();
         this.populate();
         this.list.selection(0);
+    }
+
+    @Override
+    public List<Keybind> keybinds() {
+        return List.of(new Keybind("UP/DOWN", "Region"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
+    }
+
+    @Override
+    public boolean dispatchKey(final int key, final int action) {
+        // THE TREE (LIST ROWS, DIALOGS) GETS THE KEY FIRST; SCREEN NAVIGATION ONLY ON UNCONSUMED RELEASES
+        if (super.dispatchKey(key, action)) return true;
+        if (action != GLFW_RELEASE) return false;
+        switch (key) {
+            case GLFW_KEY_UP -> {
+                this.list.moveSelection(-1);
+                this.ctx.playSelectionSound();
+            }
+            case GLFW_KEY_DOWN -> {
+                this.list.moveSelection(1);
+                this.ctx.playSelectionSound();
+            }
+            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openSelected();
+            case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
+            default -> {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void populate() {
@@ -100,62 +127,6 @@ public final class RegionSelectorScreen extends ViewScreen {
         this.detectedRegion = this.detectRegion(available);
         for (final String region: available) {
             if (!region.equalsIgnoreCase(this.detectedRegion)) this.regions.add(region);
-        }
-    }
-
-    @Override
-    protected void renderChrome(final int windowW, final int windowH) {
-        AppChrome.screen(this.text, this.ctx, windowW, windowH, "Television", "region selector", "v" + WaterMedia.VERSION);
-
-        final int top = AppChrome.contentTop() + 18;
-        final int bottom = AppChrome.contentBottom(windowH) - 18;
-        final int panelW = Math.min(760, windowW - 64);
-        final int panelX = (windowW - panelW) / 2;
-        final int panelH = Math.max(260, bottom - top);
-
-        RenderSystem.setupOrtho(windowW, windowH);
-        AppChrome.panel(panelX, top, panelW, panelH, true);
-        AppChrome.sectionHead(this.text, "Regions", this.optionCount() + " available", panelX + 18, top + 18);
-
-        this.rowsX = panelX + 24;
-        this.rowsY = top + 58;
-        this.rowsW = panelW - 48;
-        this.rowsH = Math.max(ROW_H, top + panelH - this.rowsY - 20);
-    }
-
-    @Override
-    protected int contentX(final int windowW, final int windowH) {
-        return this.rowsX;
-    }
-
-    @Override
-    protected int contentY(final int windowW, final int windowH) {
-        return this.rowsY;
-    }
-
-    @Override
-    protected int contentW(final int windowW, final int windowH) {
-        return this.rowsW;
-    }
-
-    @Override
-    protected int contentH(final int windowW, final int windowH) {
-        return this.rowsH;
-    }
-
-    @Override
-    protected void onKeyRelease(final int key) {
-        switch (key) {
-            case GLFW_KEY_UP -> {
-                this.list.moveSelection(-1);
-                this.ctx.playSelectionSound();
-            }
-            case GLFW_KEY_DOWN -> {
-                this.list.moveSelection(1);
-                this.ctx.playSelectionSound();
-            }
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openSelected();
-            case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
         }
     }
 
@@ -188,19 +159,16 @@ public final class RegionSelectorScreen extends ViewScreen {
         this.navigator.accept(HomeScreen.Action.MRL_SELECTOR);
     }
 
-    @Override
-    public String instructions() {
-        return "UP/DOWN: Region | ENTER: Select | ESC: Back";
-    }
-
     private int optionCount() {
-        return 2 + this.regions.size();
+        // NO DETECTED REGION → NO SYSTEM ROW; OTHERWISE A DUPLICATE "GLOBAL" ROW WOULD APPEAR AT INDEX 1
+        return (this.detectedRegion != null ? 2 : 1) + this.regions.size();
     }
 
     private String regionFor(final int index) {
         if (index == 0) return null;
-        if (index == 1) return this.detectedRegion;
-        return this.regions.get(Math.max(0, Math.min(this.regions.size() - 1, index - 2)));
+        final int firstRegion = this.detectedRegion != null ? 2 : 1;
+        if (this.detectedRegion != null && index == 1) return this.detectedRegion;
+        return this.regions.get(Math.max(0, Math.min(this.regions.size() - 1, index - firstRegion)));
     }
 
     private String detectRegion(final Set<String> available) {
@@ -238,9 +206,68 @@ public final class RegionSelectorScreen extends ViewScreen {
         return value == null || value.isBlank();
     }
 
+    // PANEL FRAME AROUND THE REGION LIST — PORTS THE IMPERATIVE PANEL CHROME (GRADIENT PLATE, HAIRLINE
+    // BORDER, AMBER ANCHOR CUBES, SECTION HEAD) AND SIZES/CENTERS THE LIST WITH THE LEGACY RECT MATH.
+    private final class PanelPane extends Group<PanelPane> {
+
+        private int panelX;
+        private int panelY;
+        private int panelW;
+        private int panelH;
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            // LEGACY INSETS: 10px CONTENT GAP + 18px STACK MARGIN → 28px ON EACH VERTICAL SIDE OF THIS PANE
+            this.panelW = Math.min(760, innerAvailWidth - 64);
+            this.panelH = Math.max(260, innerAvailHeight - 56);
+            final int rowsW = this.panelW - 48;
+            final int rowsH = Math.max(ROW_H, this.panelH - 78);
+            for (final Element<?> child: this.children) child.measure(rowsW, rowsH);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            this.panelX = this.innerLeft() + (this.innerWidth() - this.panelW) / 2;
+            this.panelY = this.innerTop() + 28;
+            for (final Element<?> child: this.children) child.layout(this.panelX + 24, this.panelY + 58);
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            canvas.gradientV(this.panelX, this.panelY, this.panelW, this.panelH,
+                    AppTheme.alpha(AppTheme.BG_2, 217), AppTheme.alpha(AppTheme.BG_1, 217));
+            canvas.stroke(this.panelX, this.panelY, this.panelW, this.panelH, AppTheme.STROKE_BRIGHT, 1f);
+            this.cube(canvas, this.panelX - 1, this.panelY - 1);
+            this.cube(canvas, this.panelX + this.panelW - 9, this.panelY + this.panelH - 9);
+
+            // SECTION HEAD — NEON TAB + BOLD TITLE + FAINT LIVE COUNT
+            final TextRenderer text = canvas.text();
+            final int headX = this.panelX + 18;
+            final int headY = this.panelY + 21;
+            canvas.fill(headX, headY, 4, 21, AppTheme.NEON);
+            canvas.glow(headX, headY, 4, 21, 0f, AppTheme.NEON, 0.16f);
+            canvas.text("REGIONS", headX + 18,
+                    headY + Math.max(0, (21 - text.glyphHeightBold(AppTheme.TEXT_SECTION)) / 2),
+                    AppTheme.NEON, AppTheme.TEXT_SECTION, true);
+            canvas.text(optionCount() + " AVAILABLE",
+                    headX + 30 + text.widthBold("REGIONS", AppTheme.TEXT_SECTION),
+                    headY + Math.max(0, (21 - text.glyphHeight(AppTheme.TEXT_BODY)) / 2),
+                    AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
+            super.onDraw(canvas);
+        }
+
+        private void cube(final Canvas canvas, final int x, final int y) {
+            canvas.glow(x, y, 10, 10, 0f, AppTheme.AMBER, 0.32f);
+            canvas.fill(x, y, 10, 10, AppTheme.AMBER);
+        }
+    }
+
     // ONE SELECTABLE REGION ROW — PORTS THE ORIGINAL drawRegionRow ONTO ITS OWN left/top/measured BOX AND
-    // READS THE ListView-DRIVEN selected/hovered STATE. index 0 = GLOBAL, index 1 = DETECTED/SYSTEM, 2+ = REGION.
-    private static final class RegionRow extends View<RegionRow> {
+    // READS THE ListView-DRIVEN selected/hovered STATE. index 0 = GLOBAL, THEN THE DETECTED/SYSTEM ROW
+    // (ONLY WHEN A REGION WAS DETECTED), THEN THE REMAINING REGIONS.
+    private static final class RegionRow extends Element<RegionRow> {
 
         private final RegionSelectorScreen screen;
         private final int index;
@@ -258,8 +285,8 @@ public final class RegionSelectorScreen extends ViewScreen {
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
             final String region = this.screen.regionFor(this.index);
-            final boolean fixed = this.index == 0 || this.index == 1;
-            final boolean detected = this.index == 1;
+            final boolean detected = this.index == 1 && this.screen.detectedRegion != null;
+            final boolean fixed = this.index == 0 || detected;
             final Color accent = this.selected ? AppTheme.GREEN : fixed ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
 
             if (this.selected) canvas.glow(x, y, w, h, 0f, AppTheme.GREEN, 0.26f);

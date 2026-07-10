@@ -49,6 +49,30 @@ public final class PixelIcon {
             Map.entry("arrow-right", new String[]{"0100", "0110", "1111", "0110", "0100"}),
             Map.entry("check", new String[]{"00001", "00010", "10100", "01000", "00000"}),
             Map.entry("arrows", new String[]{"00100", "01110", "10101", "01110", "00100"}),
+            // RESET — CIRCULAR CLOCKWISE ARROW (RING BROKEN ON THE RIGHT, ARROWHEAD AT TOP-RIGHT) WITH A CENTER DOT
+            Map.entry("reset", new String[]{
+                    "001111110",
+                    "010000110",
+                    "100000010",
+                    "100000000",
+                    "100010001",
+                    "100000001",
+                    "100000001",
+                    "010000010",
+                    "001111100"
+            }),
+            // EXIT — DOOR FRAME OPEN ON THE RIGHT WITH AN ARROW LEAVING THROUGH IT
+            Map.entry("exit", new String[]{
+                    "1111100000",
+                    "1000100000",
+                    "1000100100",
+                    "1000000010",
+                    "1001111111",
+                    "1000000010",
+                    "1000100100",
+                    "1000100000",
+                    "1111100000"
+            }),
             // WINDOW TITLEBAR CONTROLS
             Map.entry("minimize", new String[]{"00000", "00000", "00000", "11111"}),
             Map.entry("maximize", new String[]{"11111", "10001", "10001", "10001", "11111"}),

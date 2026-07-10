@@ -34,9 +34,14 @@ public final class RenderSystem {
     // AppBootstrap.ENGINE_FILE = <java.io.tmpdir>/watermedia/libs/engine.cfg.
     private static final Path ENGINE_PREF_FILE =
             Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs", "engine.cfg");
+    // GLOBAL UI SCALE PREFERENCE — PERSISTED NEXT TO engine.cfg AS EITHER "auto" OR A FLOAT FACTOR
+    private static final Path UI_SCALE_PREF_FILE =
+            Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs", "uiscale.cfg");
 
     private static Engine kind = Engine.OPENGL;
     private static RenderEngine engine;
+    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — REMEMBERED HERE SO ENGINES ATTACHED LATER INHERIT IT
+    private static volatile float uiScale = 1f;
 
     private RenderSystem() {
     }
@@ -62,6 +67,29 @@ public final class RenderSystem {
             Files.writeString(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl");
         } catch (final Exception e) {
             WaterMedia.LOGGER.warn("Failed to save the render engine preference", e);
+        }
+    }
+
+    /** The persisted UI scale preference: {@code "auto"} or a float factor; {@code "auto"} when unset/unreadable. */
+    public static String uiScalePreference() {
+        try {
+            if (Files.exists(UI_SCALE_PREF_FILE)) {
+                final String value = Files.readString(UI_SCALE_PREF_FILE).trim();
+                if (!value.isEmpty()) return value;
+            }
+        } catch (final Exception ignored) {
+        }
+        return "auto";
+    }
+
+    /** Persists the UI scale preference ({@code "auto"} or a float factor), written from the Settings screen. */
+    public static void saveUiScalePreference(final String value) {
+        try {
+            final Path parent = UI_SCALE_PREF_FILE.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Files.writeString(UI_SCALE_PREF_FILE, value == null || value.isBlank() ? "auto" : value.trim());
+        } catch (final Exception e) {
+            WaterMedia.LOGGER.warn("Failed to save the UI scale preference", e);
         }
     }
 
@@ -95,6 +123,7 @@ public final class RenderSystem {
             try {
                 vk = new VulkanRenderBackend(window);
                 engine = new RenderEngine(vk);
+                engine.uiScale(uiScale);
                 engine.init();
                 engine.configureFrameState();
                 WaterMedia.LOGGER.info("Render engine: Vulkan");
@@ -118,6 +147,7 @@ public final class RenderSystem {
         }
         final OpenGLRenderBackend gl = new OpenGLRenderBackend(window);
         engine = new RenderEngine(gl);
+        engine.uiScale(uiScale);
         gl.attachContext(); // GL CONTEXT MUST BE CURRENT BEFORE init() COMPILES SHADERS
         engine.init();
         engine.configureFrameState();
@@ -159,14 +189,47 @@ public final class RenderSystem {
     public static void setEngine(final RenderEngine nextEngine) {
         if (nextEngine == null) throw new IllegalArgumentException("Render engine cannot be null");
         engine = nextEngine;
+        nextEngine.uiScale(uiScale);
+    }
+
+    /**
+     * Sets the global UI scale (physical pixels per logical pixel) on the active render engine and
+     * remembers it for engines attached later. The engine applies it to scissor rectangles and
+     * rasterized line widths only; geometry scales through the ortho projection and the viewport
+     * stays physical. NOTE: this facade does not reach the app-owned text renderer — the caller
+     * must also push the same value into {@code TextRenderer#setUiScale(float)}.
+     */
+    public static void uiScale(final float scale) {
+        uiScale = scale > 0f ? scale : 1f;
+        if (engine != null) engine.uiScale(uiScale);
+    }
+
+    /** The global UI scale (physical pixels per logical pixel). */
+    public static float uiScale() {
+        return uiScale;
     }
 
     public static void init() { engine.init(); }
-    public static void cleanup() { engine.cleanup(); }
+
+    // NULLS THE ENGINE SO WINDOW-CREATION MESSAGES BETWEEN A TEARDOWN AND THE NEXT attach() (ENGINE
+    // HOT-SWAP) CANNOT REACH A DEAD BACKEND WHOSE CONTEXT DIED WITH THE OLD WINDOW
+    public static void cleanup() {
+        final RenderEngine current = engine;
+        engine = null;
+        if (current != null) current.cleanup();
+    }
+
     public static void flush() { engine.flush(); }
     public static void configureFrameState() { engine.configureFrameState(); }
     public static void clear(final float r, final float g, final float b, final float a) { engine.clear(r, g, b, a); }
-    public static void viewport(final int width, final int height) { engine.viewport(width, height); }
+
+    // NULL-SAFE: THE GLFW SIZE CALLBACK FIRES SYNCHRONOUSLY DURING WINDOW CREATION (WinFrame'S
+    // SWP_FRAMECHANGED TRIGGERS WM_SIZE) BEFORE attach() BUILT THE ENGINE; GL SETS ITS INITIAL VIEWPORT
+    // FROM THE FRAMEBUFFER AT CONTEXT CREATION AND THE SWAP PATH RE-CALLS viewport() AFTER attach()
+    public static void viewport(final int width, final int height) {
+        final RenderEngine current = engine;
+        if (current != null) current.viewport(width, height);
+    }
     public static void disableDepthTest() { engine.disableDepthTest(); }
     public static int createTexture(final int width, final int height, final ByteBuffer rgba) { return engine.createTexture(width, height, rgba); }
     public static TextureHandle createTextureHandle(final int width, final int height, final ByteBuffer rgba) { return engine.createTextureHandle(width, height, rgba); }

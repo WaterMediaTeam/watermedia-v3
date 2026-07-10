@@ -3,31 +3,38 @@ package org.watermedia.bootstrap.app.screen;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.platform.PlatformSearch;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.bootstrap.app.AppContext;
-import org.watermedia.bootstrap.app.ui.AppChrome;
+import org.watermedia.bootstrap.app.element.Box;
+import org.watermedia.bootstrap.app.element.Button;
+import org.watermedia.bootstrap.app.element.Canvas;
+import org.watermedia.bootstrap.app.element.Dialog;
+import org.watermedia.bootstrap.app.element.Element;
+import org.watermedia.bootstrap.app.element.Group;
+import org.watermedia.bootstrap.app.element.IconButton;
+import org.watermedia.bootstrap.app.element.ListView;
+import org.watermedia.bootstrap.app.element.Parent;
+import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.ui.AppTheme;
-import org.watermedia.bootstrap.app.ui.Colors;
-import org.watermedia.bootstrap.app.ui.Dimension;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
+import org.watermedia.bootstrap.app.ui.Spacing;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
-import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.view.Button;
-import org.watermedia.bootstrap.app.view.Canvas;
-import org.watermedia.bootstrap.app.view.View;
-import org.watermedia.bootstrap.app.view.ViewGroup;
 import org.watermedia.tools.ThreadTool;
 
-import java.awt.*;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
 import java.io.File;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,40 +43,49 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 import static org.lwjgl.glfw.GLFW.*;
+import static org.watermedia.bootstrap.app.render.RenderSystem.mediaEngineSupplier;
 
 /**
- * Screen with dialog for opening custom multimedia URLs, built on the retained view tree: the HomeScreen
- * background, the centered dialog frame and the live preview panel are painted in {@link #renderChrome},
- * while the URL/search field and the results/history dropdown live in the content tree as ported custom
- * views. Instructions are shown in the bottom bar, not in the dialog.
+ * Screen with a dialog for opening custom multimedia URLs, fully retained: a scrim over the live
+ * {@link HomeScreen} (mounted underneath via {@link #under()}), a centered dialog panel composed of a
+ * title row, the live preview (with a localized {@link CrtOverlay}), the URL/search field with its
+ * inline buttons, the results/history dropdown as a real {@link ListView}, and the footer actions —
+ * all laid out and hit-tested by the view tree. The loading modal is a {@link Dialog} on the screen
+ * overlay, and thumbnail players are torn down off the render thread.
  */
-public class OpenMultimediaScreen extends ViewScreen {
+public class OpenMultimediaScreen extends Screen {
 
     private static final long LOAD_TIMEOUT_MS = 30000L;
     private static final int SEARCH_PREVIEW_H = 130;      // SHRUNK PREVIEW HEIGHT WHILE SEARCHING
     private static final long PREVIEW_ANIM_MS = 220L;     // PREVIEW GROW/SHRINK EASE DURATION
     private static final long SEARCH_DEBOUNCE_MS = 320L;  // QUIET PERIOD AFTER TYPING BEFORE AUTO-SEARCHING
 
+    // LEGACY SCRIM 0.02/0.03/0.10 @ 0.65 — HOME STAYS VISIBLE (AND ANIMATING) BEHIND IT
+    private static final Color SCRIM_COLOR = AppTheme.rgba(5, 8, 26, 166);
+    private static final Color CLOSE_HOVER = AppTheme.rgba(255, 132, 160, 255);
+    private static final Color GRADIENT_TOP = AppTheme.rgba(0, 0, 0, 0);
+
+    // DROPDOWN ROW KINDS — ONE FLAT Row LIST DRIVES THE ListView (HEADERS, PLACEHOLDER, RESULTS, HISTORY)
+    private static final int ROW_HEAD = 0;
+    private static final int ROW_WAIT = 1;
+    private static final int ROW_RESULT = 2;
+    private static final int ROW_RECENT = 3;
+    private static final int ROW_HISTORY = 4;
+
+    private record Row(int kind, PlatformResult result, String text) {
+    }
+
     private final Consumer<HomeScreen.Action> navigator;
-    private final HomeScreen homeScreen;
     private volatile boolean loading;
     private volatile int loadGeneration;
     private volatile int previewGeneration;
     private long loadStartTime;
-    private Dimension pasteBounds = Dimension.ZERO;
-    private Dimension reloadBounds = Dimension.ZERO;
-    private Dimension cancelBounds = Dimension.ZERO;
-    private Dimension playBounds = Dimension.ZERO;
-    private Dimension saveBounds = Dimension.ZERO;
-    private Dimension inputBounds = Dimension.ZERO;
-    private Dimension closeBounds = Dimension.ZERO;
-    private boolean inputFocused = true;
     private volatile MRL previewMRL;
     private String previewUrl = "";
 
     // SEARCH MODE: WHEN THE INPUT IS NOT A VALID URI THE PLAY BUTTON BECOMES SEARCH AND A RESULTS
-    // DROPDOWN OPENS BELOW THE INPUT. THE PlatformSearch HANDLE FILLS IN OFF-THREAD; WE POLL IT WHILE
-    // RENDERING. searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE THE SEARCH COMPLETES.
+    // DROPDOWN OPENS BELOW THE INPUT. THE PlatformSearch HANDLE FILLS IN OFF-THREAD; onUpdate POLLS IT
+    // EVERY FRAME. searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE THE SEARCH COMPLETES.
     private PlatformSearch search;
     private boolean searchRenderedDone = true;
     private long lastEditMs;                // TIMESTAMP OF THE LAST INPUT EDIT (DRIVES THE AUTO-SEARCH DEBOUNCE)
@@ -79,21 +95,25 @@ public class OpenMultimediaScreen extends ViewScreen {
     private float animPreviewFrom;          // PREVIEW HEIGHT WHEN THE CURRENT ANIMATION BEGAN
     private int animPreviewTarget = -1;     // HEIGHT THE ANIMATION IS EASING TOWARD (-1 = UNINITIALIZED)
     private long animPreviewStart;          // START TIMESTAMP OF THE CURRENT PREVIEW ANIMATION
-    private int dropdownScroll;
-    private Dimension dropdownBounds = Dimension.ZERO;
-    private final List<Dimension> resultRowBounds = new ArrayList<>();
-    private final List<PlatformResult> resultRowItems = new ArrayList<>();
-    private final List<Dimension> historyRowBounds = new ArrayList<>();
-    private final List<String> historyRowItems = new ArrayList<>();
 
-    // CONTENT TREE + THE RECT IT OCCUPIES (INPUT FIELD + RESULTS DROPDOWN), COMPUTED IN renderChrome
-    private Body body;
+    // DROPDOWN ROW CACHE — REBUILD THE ListView ITEMS ONLY WHEN THE POLLED SEARCH DATA ACTUALLY CHANGED
+    private PlatformSearch rowsSearch;
+    private int rowsResults;
+    private int rowsHistory;
+    private boolean rowsSearching;
+    private boolean rowsBuilt;
+
+    // TREE ELEMENTS BOUND FROM LIVE STATE IN onUpdate
     private InputField field;
-    private DropdownView dropdown;
-    private int contentBoxX;
-    private int contentBoxY;
-    private int contentBoxW;
-    private int contentBoxH;
+    private Button reload;
+    private Button save;
+    private Button play;
+    private PreviewPanel preview;
+    private StatusChip chip;
+    private ListView<Row> dropdown;
+    private Dialog loadDialog;
+    private Text loadUrl;
+    private boolean loadShown;
 
     // RESULT THUMBNAILS RENDER THROUGH SHORT-LIVED IMAGE PLAYERS, KEYED BY THUMBNAIL URI (MIRRORS
     // MRLSelectorScreen). THE ACTIVE RENDER BACKEND SUPPLIES THE ENGINE; RELEASED ON A NEW SEARCH/EXIT.
@@ -102,32 +122,106 @@ public class OpenMultimediaScreen extends ViewScreen {
     private final Set<URI> thumbSubscribed = new HashSet<>();
 
     public OpenMultimediaScreen(final TextRenderer text, final AppContext ctx,
-                                final Consumer<HomeScreen.Action> navigator,
-                                final HomeScreen homeScreen) {
+                                final Consumer<HomeScreen.Action> navigator) {
         super(text, ctx);
         this.navigator = navigator;
-        this.homeScreen = homeScreen;
+    }
+
+    // THE HOME SCREEN STAYS MOUNTED (AND ANIMATING) UNDERNEATH — THE SHELL STACKS BOTH IN THE CENTER SLOT
+    @Override
+    public String under() {
+        return "home";
     }
 
     @Override
-    protected View<?> build() {
-        this.field = new InputField().width(View.MATCH_PARENT).height(40);
-        this.dropdown = new DropdownView().width(View.MATCH_PARENT).height(View.WRAP_CONTENT);
-        this.body = new Body().add(this.field).add(this.dropdown).width(View.MATCH_PARENT).height(View.MATCH_PARENT);
-        return this.body;
+    protected Element<?> build() {
+        this.field = new InputField().size(Element.MAX_PARENT, 40);
+        this.reload = new Button("RELOAD").icon("reload")
+                .accent(AppTheme.NEON_LIGHT).textColor(AppTheme.NEON_LIGHT)
+                .size(112, 40).onClick(b -> this.reloadPreviewMRL());
+        this.preview = new PreviewPanel().width(Element.MAX_PARENT).margin(new Spacing(20, 20, 0, 20));
+        this.chip = new StatusChip();
+        this.dropdown = new ListView<Row>()
+                .rowFactory((row, index) -> this.rowFor(row))
+                .onSelect((row, index) -> this.pickRow(row))
+                // ROWS SELF-DRAW THEIR HOVER FILL (TWO DIFFERENT ALPHAS), SO SUPPRESS THE LIST HIGHLIGHTS
+                .selectionColor(AppTheme.alpha(AppTheme.NEON, 0))
+                .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
+                .padding(new Spacing(6, 2, 6, 2))
+                .background(AppTheme.BG_2_ALPHA)
+                .border(AppTheme.NEON, 1f)
+                .shadow(0.45f)
+                // A CLICK INSIDE THE BOX BUT NOT ON A ROW IS SWALLOWED (LEGACY BEHAVIOR)
+                .consumeTouch(true)
+                .visible(false)
+                .width(Element.MAX_PARENT);
+
+        final Button cancel = new Button("CANCEL").subText("ESC").icon("x")
+                .accent(AppTheme.TEXT_SOFT).textColor(AppTheme.TEXT_SOFT).height(36)
+                .onClick(b -> this.navigator.accept(HomeScreen.Action.BACK));
+        this.save = new Button("SAVE").subText("SPACE").icon("save")
+                .accent(AppTheme.NEON_LIGHT).textColor(AppTheme.NEON_LIGHT).height(36)
+                .onClick(b -> this.saveCustomUrl());
+        this.play = new Button("PLAY").subText("ENTER").icon("play")
+                .accent(AppTheme.GREEN).textColor(AppTheme.GREEN).height(36)
+                .onClick(b -> {
+                    if (this.searchMode()) this.doSearch();
+                    else this.playCustomUrl();
+                });
+
+        final Parent footer = Parent.row().spacing(12)
+                .width(Element.MAX_PARENT).height(36)
+                .margin(new Spacing(0, 20, 22, 20))
+                .add(cancel)
+                .add(new Box().size(0, 1).weight(1f))
+                .add(this.save)
+                .add(this.play);
+
+        final Parent column = Parent.column()
+                .size(Element.MAX_PARENT, Element.MAX_PARENT)
+                .add(new TitleRow().width(Element.MAX_PARENT).height(56))
+                .add(this.preview)
+                .add(new InputBlock().width(Element.MAX_PARENT).height(68).margin(new Spacing(0, 20, 0, 20)))
+                .add(new MiddleZone().width(Element.MAX_PARENT).weight(1f).margin(new Spacing(0, 20, 0, 20)))
+                .add(footer);
+
+        final PanelBox panel = new PanelBox().add(column)
+                .size(Element.MAX_PARENT, Element.MAX_PARENT)
+                .background(AppTheme.BG_1)
+                .border(AppTheme.NEON, 1f)
+                .glow(AppTheme.NEON, 0.35f)
+                .shadow(0.55f);
+
+        // LOADING MODAL — A REAL Dialog ON THE SCREEN OVERLAY (TITLE DOTS AND URL REFRESHED IN onUpdate)
+        this.loadUrl = new Text().scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT).width(Element.MAX_PARENT);
+        this.loadDialog = new Dialog()
+                .title("Loading")
+                .accent(AppTheme.NEON)
+                .panelWidth(480)
+                .content(this.loadUrl)
+                .content(new Text("ESC to cancel").scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT))
+                .onDismiss(this::cancelLoading);
+
+        final Box scrim = new Box().size(Element.MAX_PARENT, Element.MAX_PARENT)
+                .background(SCRIM_COLOR)
+                .consumeTouch(true)
+                // A CLICK OUTSIDE THE PANEL BLURS THE FIELD (LEGACY OUTSIDE-CLICK BEHAVIOR), NEVER REACHES HOME
+                .onClick(b -> this.field.focused(false).invalidate());
+        return new Body(scrim, panel);
     }
 
     @Override
     public void onEnter() {
-        super.onEnter();
+        super.onEnter(); // BUILDS THE TREE ON FIRST ENTRY
         this.loading = false;
         this.loadGeneration++;
         this.previewGeneration++;
-        this.inputFocused = true;
         this.previewMRL = null;
         this.previewUrl = "";
         this.animPreviewTarget = -1; // SNAP THE PREVIEW TO ITS CORRECT SIZE ON ENTRY (NO STRAY ANIMATION)
         this.clearSearch();
+        this.field.focused(true);
+        this.syncLoadDialog();
     }
 
     @Override
@@ -138,7 +232,142 @@ public class OpenMultimediaScreen extends ViewScreen {
         this.previewMRL = null;
         this.previewUrl = "";
         this.clearSearch();
+        this.syncLoadDialog();
     }
+
+    // HOT-SWAP HOOK: DROP EVERY THUMBNAIL PLAYER (RELEASED OFF-THREAD, SEE releaseAsync)
+    @Override
+    public void releaseMedia() {
+        this.releaseThumbs();
+    }
+
+    @Override
+    public List<Keybind> keybinds() {
+        if (this.loading) return List.of(new Keybind("ESC", "Cancel"));
+        if (this.searchMode()) {
+            return List.of(new Keybind("TYPE", "Search"), new Keybind("CLICK", "Pick result"),
+                    new Keybind("CTRL+V", "Paste"), new Keybind("ESC", "Cancel"));
+        }
+        return List.of(new Keybind("ENTER", "Play"), new Keybind("SPACE", "Save"),
+                new Keybind("CTRL+V", "Paste"), new Keybind("R", "Reload"), new Keybind("ESC", "Cancel"));
+    }
+
+    @Override
+    public boolean continuous() {
+        // FIELD CARET BLINK + LOADING DOTS + SEARCH POLLING + PREVIEW EASE + ANIMATED THUMBNAILS (GIF/WEBP)
+        return this.textInputActive() || this.loading
+                || (this.search != null && !this.searchRenderedDone)
+                || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS
+                || this.thumbsAnimating();
+    }
+
+    // ==========================================================================
+    // PER-FRAME BINDING — PULLS LIVE STATE INTO THE TREE BEFORE MEASURE/DRAW
+    // ==========================================================================
+
+    @Override
+    protected void onUpdate() {
+        this.ensurePreviewMRL();
+        if (this.loading) this.checkLoadingState();
+        this.syncLoadDialog();
+
+        final String url = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
+        if (this.loading) {
+            this.loadDialog.title("Loading" + ".".repeat((int) ((System.currentTimeMillis() / 500) % 4)));
+            this.loadUrl.text(url.isEmpty() ? "(empty)" : url);
+        }
+
+        final boolean search = this.searchMode();
+
+        // AUTO-SEARCH: ONCE TYPING SETTLES (DEBOUNCE), SEARCH THE CURRENT QUERY — NO ENTER NEEDED
+        if (search) {
+            final String query = url.trim();
+            final boolean stale = this.search == null || !this.search.query().equals(query);
+            if (stale && !query.isEmpty() && System.currentTimeMillis() - this.lastEditMs >= SEARCH_DEBOUNCE_MS) {
+                this.doSearch();
+            }
+        }
+
+        // BUTTON BINDINGS — SAME ENABLE/ACCENT RULES AS THE LEGACY DRAW: RELOAD/SAVE ONLY FOR A URL/PATH,
+        // THE PRIMARY ACTION TOGGLES PLAY (GREEN) <-> SEARCH (CYAN) WITH THE INPUT
+        final boolean empty = url.isEmpty();
+        this.reload.enabled(!search && !empty);
+        this.save.accent(search || empty ? AppTheme.TEXT_FAINT : AppTheme.NEON_LIGHT).enabled(!search && !empty);
+        final Color playColor = empty ? AppTheme.TEXT_FAINT : search ? AppTheme.CYAN : AppTheme.GREEN;
+        this.play.label(search ? "SEARCH" : "PLAY").icon(search ? "search" : "play")
+                .accent(playColor).textColor(playColor).enabled(!empty);
+
+        // DETECTED-STATUS CHIP: RESULT COUNT/WORKING STATE IN SEARCH MODE, OTHERWISE THE PREVIEW MRL STATE
+        if (search) {
+            final boolean done = this.search != null && this.search.done();
+            this.chip.set(done ? this.search.results().size() + " RESULTS" : "SEARCHING",
+                    done ? AppTheme.CYAN : AppTheme.NEON);
+        } else {
+            this.chip.set(this.statusLabel(), this.statusColor());
+        }
+
+        this.syncDropdown(search);
+        // POLLED SEARCH: GUARANTEES ONE FINAL FRAME AFTER COMPLETION (SEE continuous)
+        this.searchRenderedDone = this.search == null || this.search.done();
+    }
+
+    // SHOWS/HIDES THE LOADING Dialog WHEN THE loading FLAG FLIPS (THE FLAG ALSO CHANGES OFF-EVENT PATHS)
+    private void syncLoadDialog() {
+        if (this.loading == this.loadShown || this.loadDialog == null) return;
+        this.loadShown = this.loading;
+        if (this.loading) this.showDialog(this.loadDialog);
+        else this.hideDialog(this.loadDialog);
+    }
+
+    private void cancelLoading() {
+        this.loading = false;
+        this.loadGeneration++;
+        this.ctx.selectedMRL = null;
+        this.ctx.requestRender();
+    }
+
+    // ==========================================================================
+    // INPUT — THE TREE HANDLES POINTERS; ONLY THE SCREEN SHORTCUTS LIVE HERE
+    // ==========================================================================
+
+    @Override
+    public boolean dispatchKey(final int key, final int action) {
+        // TREE FIRST: THE LOADING DIALOG (FULLY MODAL) AND THE FOCUSED FIELD (BACKSPACE/DELETE) CONSUME THEIRS
+        if (super.dispatchKey(key, action)) return true;
+        if (action == GLFW_RELEASE) {
+            final String url = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
+            switch (key) {
+                // IN SEARCH MODE SPACE IS A QUERY CHARACTER (TYPED VIA dispatchChar), NOT THE SAVE SHORTCUT
+                case GLFW_KEY_SPACE -> {
+                    if (!this.searchMode() && !url.isEmpty()) this.saveCustomUrl();
+                }
+                case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
+                    if (!url.isEmpty()) {
+                        if (this.searchMode()) this.doSearch();
+                        else this.playCustomUrl();
+                    }
+                }
+                case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
+                case GLFW_KEY_V -> {
+                    if (this.ctx.ctrlDown) this.pasteFromClipboard();
+                }
+                case GLFW_KEY_R -> {
+                    if (!this.searchMode() && !url.isEmpty()) this.reloadPreviewMRL();
+                }
+            }
+        }
+        return true; // MODAL OVER HOME — THE LIVE UNDERLAY MUST NEVER SEE KEYS
+    }
+
+    @Override
+    public boolean dispatchScroll(final double mx, final double my, final double amount) {
+        if (super.dispatchScroll(mx, my, amount)) return true; // DROPDOWN / LOADING DIALOG
+        return this.contains(mx, my); // SWALLOW INSIDE THE SLOT — HOME UNDERNEATH MUST NOT SCROLL
+    }
+
+    // ==========================================================================
+    // ACTIONS (STATE LAYER — UNCHANGED SEMANTICS FROM THE LEGACY SCREEN)
+    // ==========================================================================
 
     private void pasteFromClipboard() {
         try {
@@ -254,12 +483,14 @@ public class OpenMultimediaScreen extends ViewScreen {
         this.previewUrl = "";
     }
 
-    // ===== SEARCH MODE =====
+    // ==========================================================================
+    // SEARCH MODE
+    // ==========================================================================
 
     // TRUE WHEN THE INPUT IS NOT A LOADABLE URI/FILE, SO THE DIALOG SEARCHES INSTEAD OF PLAYING. SHARES
-    // loadable() WITH ensurePreviewMRL SO THE "URL/PATH VS QUERY" RULE CAN NEVER DRIFT. THIS RUNS EVERY FRAME
-    // (renderChrome() AND instructions()) ON A CONTINUOUSLY-REDRAWN SCREEN, SO THE RESULT IS MEMOIZED AGAINST THE
-    // INPUT TEXT: THE BLOCKING file.exists() STAT AND URI PARSE ONLY RE-RUN WHEN THE TEXT ACTUALLY CHANGES.
+    // loadable() WITH ensurePreviewMRL SO THE "URL/PATH VS QUERY" RULE CAN NEVER DRIFT. THIS RUNS EVERY
+    // FRAME ON A CONTINUOUSLY-REDRAWN SCREEN, SO THE RESULT IS MEMOIZED AGAINST THE INPUT TEXT: THE
+    // BLOCKING file.exists() STAT AND URI PARSE ONLY RE-RUN WHEN THE TEXT ACTUALLY CHANGES.
     private boolean searchMode() {
         final String text = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
         if (!text.equals(this.searchModeText)) {
@@ -296,13 +527,13 @@ public class OpenMultimediaScreen extends ViewScreen {
     }
 
     // LAUNCHES AN ASYNC SEARCH FOR THE CURRENT QUERY. PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; WE DROP
-    // THE OLD THUMBNAILS AND LET renderChrome() POLL THE FRESH HANDLE AS RESULTS LAND OFF-THREAD.
+    // THE OLD THUMBNAILS AND LET onUpdate POLL THE FRESH HANDLE AS RESULTS LAND OFF-THREAD.
     private void doSearch() {
         final String query = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
         if (query.isEmpty()) return;
         this.releaseThumbs();
-        this.dropdownScroll = 0;
         this.searchRenderedDone = false;
+        this.rowsBuilt = false;
         this.search = PlatformAPI.search(query);
         this.ctx.requestRender();
     }
@@ -312,23 +543,89 @@ public class OpenMultimediaScreen extends ViewScreen {
         if (result == null || result.url() == null) return;
         this.ctx.customUrlText = result.url().toString();
         this.clearSearch();
-        this.inputFocused = true;
+        this.field.focused(true);
         this.ensurePreviewMRL();
         this.ctx.playSelectionSound();
         this.ctx.requestRender();
     }
 
+    // DROPDOWN ROW ACTIVATION: A RESULT REPLACES THE INPUT WITH ITS RAW URL AND KEEPS THE FIELD FOCUSED;
+    // A HISTORY ENTRY REFILLS THE QUERY AND RE-SEARCHES IMMEDIATELY.
+    private void pickRow(final Row row) {
+        if (row == null) return;
+        if (row.kind() == ROW_RESULT) {
+            this.selectResult(row.result());
+        } else if (row.kind() == ROW_HISTORY) {
+            this.ctx.customUrlText = row.text();
+            this.doSearch();
+        }
+    }
+
     private void clearSearch() {
         this.search = null;
         this.searchRenderedDone = true;
-        this.dropdownScroll = 0;
-        this.dropdownBounds = Dimension.ZERO;
-        this.resultRowBounds.clear();
-        this.resultRowItems.clear();
-        this.historyRowBounds.clear();
-        this.historyRowItems.clear();
+        this.rowsBuilt = false;
+        if (this.dropdown != null) {
+            this.dropdown.items(List.of());
+            this.dropdown.visible(false);
+        }
         this.releaseThumbs();
     }
+
+    // REBUILDS THE DROPDOWN'S FLAT ROW LIST FROM THE POLLED SEARCH STATE. OUTSIDE SEARCH MODE ANY STALE
+    // SEARCH/THUMBNAILS ARE DROPPED; INSIDE IT THE ROWS ONLY REBUILD WHEN THE BACKING DATA CHANGED, SO THE
+    // PER-FRAME POLL NEVER CHURNS ELEMENTS.
+    private void syncDropdown(final boolean searchMode) {
+        if (!searchMode) {
+            if (this.search != null) this.clearSearch();
+            if (this.dropdown.visible()) this.dropdown.visible(false);
+            this.rowsBuilt = false;
+            return;
+        }
+
+        final boolean searching = this.search != null && !this.search.done();
+        final List<PlatformResult> results = this.search != null ? this.search.results() : List.of();
+        final List<String> history = this.search != null ? this.search.history() : PlatformAPI.searchHistory();
+        if (this.rowsBuilt && this.search == this.rowsSearch && results.size() == this.rowsResults
+                && history.size() == this.rowsHistory && searching == this.rowsSearching) {
+            return;
+        }
+        this.rowsSearch = this.search;
+        this.rowsResults = results.size();
+        this.rowsHistory = history.size();
+        this.rowsSearching = searching;
+        this.rowsBuilt = true;
+
+        final List<Row> rows = new ArrayList<>();
+        if (this.search != null) {
+            rows.add(new Row(ROW_HEAD, null, searching ? "SEARCHING..." : "RESULTS (" + results.size() + ")"));
+            if (results.isEmpty() && searching) {
+                rows.add(new Row(ROW_WAIT, null, null));
+            } else {
+                for (final PlatformResult result: results) rows.add(new Row(ROW_RESULT, result, null));
+            }
+        }
+        if (!history.isEmpty()) {
+            rows.add(new Row(ROW_RECENT, null, null));
+            for (final String entry: history) rows.add(new Row(ROW_HISTORY, null, entry));
+        }
+        this.dropdown.items(rows);
+        this.dropdown.visible(!rows.isEmpty());
+    }
+
+    private Element<?> rowFor(final Row row) {
+        return switch (row.kind()) {
+            case ROW_HEAD -> new HeadRow(row.text(), false).height(20).enabled(false);
+            case ROW_RECENT -> new HeadRow("RECENT", true).height(20).enabled(false);
+            case ROW_WAIT -> new WaitRow().height(38).enabled(false);
+            case ROW_RESULT -> new ResultRow(row.result()).height(38);
+            default -> new HistoryRow(row.text()).height(26);
+        };
+    }
+
+    // ==========================================================================
+    // THUMBNAIL PLAYERS
+    // ==========================================================================
 
     private void releaseThumbs() {
         if (!this.thumbPlayers.isEmpty()) {
@@ -341,8 +638,8 @@ public class OpenMultimediaScreen extends ViewScreen {
         this.thumbSubscribed.clear();
     }
 
-    // HANDS RESULT-THUMBNAIL PLAYERS OFF FOR BACKGROUND RELEASE — MIRRORS AppContext.releasePlayer. THE
-    // PLAYERS MUST ALREADY BE REMOVED FROM thumbPlayers SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING
+    // HANDS RESULT-THUMBNAIL PLAYERS OFF FOR BACKGROUND RELEASE (M-08) — MIRRORS AppContext.releasePlayer.
+    // THE PLAYERS MUST ALREADY BE REMOVED FROM thumbPlayers SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING
     // PLAYER. stop() IS NON-BLOCKING; release() JOINS THE DECODE THREADS AND SO RUNS OFF THE RENDER THREAD.
     // THE ENGINE TEARDOWN IS THREAD-SAFE (GL DEFERS ITS TEXTURE DELETES TO THE RENDER EXECUTOR).
     private void releaseAsync(final List<MediaPlayer> players) {
@@ -375,7 +672,8 @@ public class OpenMultimediaScreen extends ViewScreen {
         final var sources = mrl.sources();
         for (int i = 0; i < sources.size(); i++) {
             if (sources.get(i).isImage()) {
-                final MediaPlayer player = MediaAPI.createPlayer(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
+                final MediaPlayer player = MediaAPI.createPlayer(mrl, i,
+                        mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) {
                     player.repeat(true); // LOOP ANIMATED THUMBNAILS (GIF/WEBP) INSTEAD OF FREEZING ON THE LAST FRAME
                     player.start();
@@ -387,47 +685,22 @@ public class OpenMultimediaScreen extends ViewScreen {
         return null;
     }
 
-    private void renderResultRow(final PlatformResult result, final Dimension row) {
-        if (this.dropdownBounds.contains(this.ctx.mouseX, this.ctx.mouseY) && row.contains(this.ctx.mouseX, this.ctx.mouseY)) {
-            RenderSystem.fill(row.x(), row.y(), row.width(), row.height(), AppTheme.alpha(AppTheme.NEON_DARK, 70));
+    // TRUE WHILE ANY DROPDOWN THUMBNAIL IS ACTIVELY ANIMATING — DRIVES continuous()
+    private boolean thumbsAnimating() {
+        for (final MediaPlayer player: this.thumbPlayers.values()) {
+            if (player == null || player.error() || player.stopped() || player.ended()) continue;
+            if (player instanceof TxMediaPlayer) {
+                if (player.duration() > 0L && !player.paused()) return true;
+            } else if (!player.paused()) {
+                return true;
+            }
         }
-
-        final int thumbH = row.height() - 8;
-        final int thumbW = Math.round(thumbH * 16f / 9f);
-        final int thumbX = row.x() + 6;
-        final int thumbY = row.y() + 4;
-        this.renderThumb(result.thumbnail(), thumbX, thumbY, thumbW, thumbH);
-
-        final int textX = thumbX + thumbW + 10;
-        final int textMaxW = Math.max(20, row.right() - textX - 8);
-        final String platform = result.platform() == null ? "?" : result.platform();
-        final String platformTag = platform + ":";
-        final int platformW = this.text.widthBold(platformTag, AppTheme.TEXT_BODY);
-        final float textY = row.y() + (row.height() - this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f;
-        this.text.renderBold(platformTag, textX, textY, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY);
-        final String title = result.title() == null || result.title().isEmpty() ? "(untitled)" : result.title();
-        this.text.render(this.text.truncateToWidth(title, Math.max(20, textMaxW - platformW - 6), AppTheme.TEXT_BODY),
-                textX + platformW + 6, textY, AppTheme.TEXT, AppTheme.TEXT_BODY);
+        return false;
     }
 
-    // ASPECT-FIT (NEVER OVERFLOWS THE CELL), SO IT NEEDS NO CLIP OF ITS OWN INSIDE THE DROPDOWN'S CLIP.
-    private void renderThumb(final URI thumbnail, final int x, final int y, final int w, final int h) {
-        final MediaPlayer player = this.thumbPlayer(thumbnail);
-        if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
-            RenderSystem.bindMediaTexture(player.texture());
-            RenderSystem.color(1f, 1f, 1f, 1f);
-            final float imgAspect = (float) player.width() / player.height();
-            final float boxAspect = (float) w / h;
-            float bw = w;
-            float bh = h;
-            if (imgAspect > boxAspect) bh = w / imgAspect; else bw = h * imgAspect;
-            RenderSystem.blit(x + (w - bw) / 2f, y + (h - bh) / 2f, bw, bh);
-        } else {
-            RenderSystem.fill(x, y, w, h, AppTheme.BG_0);
-            RenderSystem.rect(x, y, w, h, AppTheme.STROKE, 1f);
-            PixelIcon.draw(thumbnail == null ? "warn" : "tv", x + (w - 12) / 2, y + (h - 12) / 2, 12, AppTheme.TEXT_FAINT);
-        }
-    }
+    // ==========================================================================
+    // PREVIEW / LOADING STATE
+    // ==========================================================================
 
     private void subscribePreviewMRL(final MRL mrl, final int generation) {
         if (mrl == null || loaded(mrl)) return;
@@ -498,7 +771,9 @@ public class OpenMultimediaScreen extends ViewScreen {
 
             this.ctx.sourceSelectorIndex = 0;
             this.ctx.selectedSource = this.ctx.availableSources[0];
-            this.navigator.accept(HomeScreen.Action.PLAYER);
+            // M-07: THIS RUNS INSIDE THE FRAME'S UPDATE PASS — QUEUE THE NAVIGATION SO THE MOUNT SWAP
+            // HAPPENS BETWEEN FRAMES (AppContext.execute DRAINS BEFORE THE NEXT RENDER), NEVER MID-TREE
+            this.ctx.execute(() -> this.navigator.accept(HomeScreen.Action.PLAYER));
             return;
         }
 
@@ -508,279 +783,6 @@ public class OpenMultimediaScreen extends ViewScreen {
             this.ctx.showError("Load Error", "Failed to load URL: Timeout", null);
             this.ctx.selectedMRL = null;
         }
-    }
-
-    private void renderLoadingDialog(final int windowW, final int windowH) {
-        RenderSystem.setupOrtho(windowW, windowH);
-
-        final int dots = (int) ((System.currentTimeMillis() / 500) % 4);
-        final String loadingText = "Loading" + ".".repeat(dots);
-        final String urlText = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
-
-        final int padding = 20;
-        final int lineH = this.text.lineHeight(AppTheme.TEXT_BODY);
-
-        final int contentW = Math.max(this.text.widthBold(loadingText, AppTheme.TEXT_BUTTON),
-                Math.max(this.text.width(urlText, AppTheme.TEXT_BODY), this.text.width("ESC to cancel", AppTheme.TEXT_BODY)));
-        final int dialogW = Math.min(Math.max(contentW + padding * 2 + 40, 400), windowW - 100);
-        final int dialogH = padding + lineH + 15 + lineH + 10 + lineH + padding;
-
-        final int dialogX = (windowW - dialogW) / 2;
-        final int dialogY = (windowH - dialogH) / 2;
-
-        RenderSystem.dialogBox(dialogX, dialogY, dialogW, dialogH, Colors.BLUE, 3);
-
-        int y = dialogY + padding;
-        this.text.renderBold(loadingText, dialogX + padding, y, Colors.BLUE, AppTheme.TEXT_BUTTON);
-        y += lineH + 15;
-
-        final String truncatedUrl = this.text.truncateToWidth(urlText, dialogW - padding * 2, AppTheme.TEXT_BODY);
-        this.text.render(truncatedUrl.isEmpty() ? "(empty)" : truncatedUrl,
-                dialogX + padding, y, Colors.GRAY, AppTheme.TEXT_BODY);
-        y += lineH + 10;
-
-        this.text.render("ESC to cancel", dialogX + padding, y, Colors.GRAY, AppTheme.TEXT_BODY);
-
-        RenderSystem.restoreProjection();
-    }
-
-    @Override
-    public boolean wantsContinuousRender() {
-        // super = A FOCUSED FIELD (VIA THE TREE'S textInputActive); PLUS THE SCREEN'S OWN TRIGGERS: POLL THE
-        // SEARCH HANDLE WHILE RESULTS ARRIVE, AND KEEP TICKING WHILE THE PREVIEW IS ANIMATING
-        return super.wantsContinuousRender() || AppChrome.crtEnabled() || this.loading || this.inputFocused
-                || (this.search != null && !this.searchRenderedDone)
-                || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS;
-    }
-
-    @Override
-    public void render(final int windowW, final int windowH) {
-        super.render(windowW, windowH); // HOMESCREEN BG + DIALOG CHROME (renderChrome) THEN THE VIEW TREE
-        // THE LOAD MODAL OVERLAYS EVERYTHING AND IS CENTERED IN THE FULL WINDOW, SO IT PAINTS LAST
-        if (this.loading) this.renderLoadingDialog(windowW, windowH);
-    }
-
-    @Override
-    protected void renderChrome(final int windowW, final int windowH) {
-        // RENDER HOME SCREEN AS BACKGROUND
-        this.homeScreen.render(windowW, windowH);
-        this.ensurePreviewMRL();
-        if (this.loading) {
-            this.checkLoadingState();
-        }
-
-        RenderSystem.setupOrtho(windowW, windowH);
-
-        final String displayUrl = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
-        final boolean searchMode = this.searchMode();
-
-        // AUTO-SEARCH: ONCE TYPING SETTLES (DEBOUNCE), SEARCH THE CURRENT QUERY — NO ENTER NEEDED
-        if (searchMode) {
-            final String query = displayUrl.trim();
-            final boolean stale = this.search == null || !this.search.query().equals(query);
-            if (stale && !query.isEmpty() && System.currentTimeMillis() - this.lastEditMs >= SEARCH_DEBOUNCE_MS) {
-                this.doSearch();
-            }
-        }
-
-        final int padding = 20;
-        final int titleH = 56;
-        final int verticalMargin = 36;
-        final int dialogH = Math.max(260, windowH - AppChrome.FOOTER_H - verticalMargin * 2);
-        final int reservedH = titleH + 20 + 28 + 18 + 42 + 12 + 26 + 20 + 38 + 18;
-        final int targetPreviewH = Math.max(80, dialogH - reservedH);
-        final int maxDialogW = Math.max(360, windowW - 100);
-        int dialogW = Math.min(Math.max(Math.round(targetPreviewH * 16f / 9f) + padding * 2, 660), maxDialogW);
-        final int previewW = dialogW - padding * 2;
-        // SEARCH MODE HAS NOTHING TO PREVIEW ("NO MEDIA"), SO SHRINK THE PREVIEW AND HAND THE FREED VERTICAL
-        // SPACE TO THE RESULTS DROPDOWN (THE INPUT RISES; THE FOOTER STAYS PUT). animatePreviewH EASES BETWEEN
-        // THE TWO HEIGHTS SO THE PREVIEW GROWS/SHRINKS SMOOTHLY INSTEAD OF SNAPPING WHEN THE MODE FLIPS.
-        final int fullPreviewH = Math.round(previewW * 9f / 16f);
-        final int previewH = this.animatePreviewH(searchMode ? Math.min(fullPreviewH, SEARCH_PREVIEW_H) : fullPreviewH);
-
-        final int dialogX = (windowW - dialogW) / 2;
-        final int dialogY = verticalMargin;
-
-        RenderSystem.fill(0, 0, windowW, windowH, 0.02f, 0.03f, 0.10f, 0.65f);
-        RenderSystem.shadowRect(dialogX, dialogY, dialogW, dialogH, 0f, 0.55f);
-        RenderSystem.glowRect(dialogX, dialogY, dialogW, dialogH, 0f, AppTheme.NEON, 0.35f);
-        RenderSystem.fill(dialogX, dialogY, dialogW, dialogH, AppTheme.BG_1);
-        RenderSystem.rect(dialogX, dialogY, dialogW, dialogH, AppTheme.NEON, 1f);
-        AppChrome.amberCube(dialogX - 1, dialogY - 1, 10);
-        AppChrome.amberCube(dialogX + dialogW - 9, dialogY - 1, 10);
-        AppChrome.amberCube(dialogX - 1, dialogY + dialogH - 9, 10);
-        AppChrome.amberCube(dialogX + dialogW - 9, dialogY + dialogH - 9, 10);
-        RenderSystem.fill(dialogX, dialogY, dialogW, titleH, AppTheme.BG_2);
-        RenderSystem.lineH(dialogX, dialogY + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
-        this.text.renderBold("OPEN MULTIMEDIA", dialogX + 20,
-                dialogY + Math.max(0, (titleH - this.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f),
-                AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
-        this.closeBounds = new Dimension(dialogX + dialogW - 44, dialogY + 14, 26, 26);
-        final boolean closeHover = this.closeBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        AppChrome.dialogCloseButton(this.closeBounds, closeHover);
-
-        final int previewX = dialogX + padding;
-        final int previewY = dialogY + titleH + 20;
-        AppChrome.tvFrame(previewX, previewY, previewW, previewH, true);
-        this.renderPreview(previewX + 6, previewY + 6, previewW - 12, previewH - 12);
-        final String chip = this.bestQuality();
-        if (chip != null) {
-            final int chipW = this.text.width(chip, AppTheme.TEXT_BODY) + 18;
-            final int chipX = previewX + previewW - chipW - 8;
-            final int chipY = previewY;
-            RenderSystem.fill(chipX, chipY, chipW, 22, AppTheme.alpha(AppTheme.BG_1, 235));
-            RenderSystem.rect(chipX, chipY, chipW, 22, AppTheme.NEON, 1f);
-            RenderSystem.glowRect(chipX, chipY, chipW, 22, 0f, AppTheme.NEON, 0.34f);
-            this.text.render(chip, chipX + 9, chipY + 5, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY);
-        }
-
-        final int y = previewY + previewH + 28;
-        final int tbX = dialogX + padding;
-        final int pasteW = 104;
-        final int reloadW = 112;
-        final int gap = 8;
-        final int tbW = dialogW - padding * 2 - pasteW - reloadW - gap * 2;
-        final int tbH = 40;
-        this.pasteBounds = new Dimension(tbX + tbW + gap, y, pasteW, tbH);
-        this.reloadBounds = new Dimension(this.pasteBounds.right() + gap, y, reloadW, tbH);
-        this.inputBounds = new Dimension(tbX, y, tbW, tbH);
-
-        // THE INPUT LABEL (THE FIELD BOX/TEXT/CARET ITSELF IS DRAWN BY THE VIEW TREE — SEE InputField)
-        this.text.render(searchMode ? "SEARCH" : "URL OR PATH", tbX, y - 20,
-                searchMode ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-        final boolean pasteHover = this.pasteBounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        Button.render(this.text, this.pasteBounds.x(), this.pasteBounds.y(), this.pasteBounds.width(), this.pasteBounds.height(),
-                "PASTE", "", "copy", 12, AppTheme.NEON, AppTheme.NEON_LIGHT, false, pasteHover, true);
-        // RELOAD ONLY MAKES SENSE FOR A VALID URI/MRL — DISABLED WHEN EMPTY OR IN SEARCH MODE
-        this.renderInlineButton(this.reloadBounds, "RELOAD", "reload", AppTheme.NEON_LIGHT, !searchMode && !displayUrl.isEmpty());
-
-        final int detectedY = y + tbH + 12;
-        final String detected;
-        final java.awt.Color detectedColor;
-        if (searchMode) {
-            // SEARCH IS AUTOMATIC NOW: SHOW RESULT COUNT WHEN DONE, OTHERWISE THE WORKING STATE (NO ENTER PROMPT)
-            if (this.search != null && this.search.done()) {
-                detected = this.search.results().size() + " RESULTS";
-                detectedColor = AppTheme.CYAN;
-            } else {
-                detected = "SEARCHING";
-                detectedColor = AppTheme.NEON;
-            }
-        } else {
-            detected = this.statusLabel();
-            detectedColor = this.statusColor();
-        }
-        final int detectedW = this.text.width(detected, AppTheme.TEXT_BODY) + 34;
-        RenderSystem.fill(tbX, detectedY, detectedW, 24, AppTheme.alpha(detectedColor, detectedColor == AppTheme.TEXT_FAINT ? 24 : 36));
-        RenderSystem.rect(tbX, detectedY, detectedW, 24, detectedColor, 1f);
-        AppChrome.statusPip(tbX + 8, detectedY + 8, 8, detectedColor, false);
-        this.text.render(detected, tbX + 24, detectedY + 5, detectedColor, AppTheme.TEXT_BODY);
-
-        final int footY = dialogY + dialogH - 58;
-        // BUTTONS SIZE TO THEIR CONTENT SO THE LABEL AND THE HOTKEY CHIP KEEP A CONSISTENT 12px GAP (NO
-        // OVERLAP LIKE THE OLD FIXED 128px WIDTH, NO EXCESS EITHER)
-        final String playLabel = searchMode ? "SEARCH" : "PLAY";
-        // WIDTHS MATCH THE DRAWN BUTTON EXACTLY BY PASSING EACH BUTTON'S ICON (SEE renderDialogButton CALLS BELOW)
-        final int cancelW = this.dialogButtonWidth("CANCEL", "ESC", "x");
-        final int saveW = this.dialogButtonWidth("SAVE", "SPACE", "save");
-        final int playW = this.dialogButtonWidth(playLabel, "ENTER", searchMode ? "search" : "play");
-        this.cancelBounds = new Dimension(dialogX + padding, footY, cancelW, 36);
-        this.playBounds = new Dimension(dialogX + dialogW - padding - playW, footY, playW, 36);
-        this.saveBounds = new Dimension(this.playBounds.x() - saveW - 12, footY, saveW, 36);
-        this.renderDialogButton("CANCEL", "ESC", "x", this.cancelBounds, AppTheme.TEXT_SOFT);
-        // SAVE STORES A URL/PATH; IT MAKES NO SENSE FOR A SEARCH QUERY, SO IT IS DISABLED IN SEARCH MODE
-        this.renderDialogButton("SAVE", "SPACE", "save", this.saveBounds,
-                displayUrl.isEmpty() || searchMode ? AppTheme.TEXT_FAINT : AppTheme.NEON_LIGHT);
-        // PRIMARY ACTION TOGGLES PLAY (GREEN) ↔ SEARCH (CYAN) WITH THE INPUT
-        this.renderDialogButton(playLabel, "ENTER", searchMode ? "search" : "play", this.playBounds,
-                displayUrl.isEmpty() ? AppTheme.TEXT_FAINT : (searchMode ? AppTheme.CYAN : AppTheme.GREEN));
-
-        // THE TREE CONTENT RECT: THE INPUT FIELD SITS AT THE TOP AND THE RESULTS DROPDOWN OVERLAYS THE AREA
-        // DOWN TO JUST ABOVE THE FOOTER (CLAMPED, SO THE BUTTONS STAY CLICKABLE — SAME BUDGET AS THE LEGACY DRAW)
-        this.contentBoxX = tbX;
-        this.contentBoxY = y;
-        this.contentBoxW = tbW;
-        this.contentBoxH = Math.max(tbH, (this.cancelBounds.y() - 10) - y);
-
-        // RESULTS DROPDOWN IS ONLY LIVE IN SEARCH MODE; LEAVING IT (E.G. THE QUERY BECAME A URL) DROPS ANY
-        // STALE SEARCH/THUMBNAILS. THE BOX ITSELF IS PAINTED BY THE VIEW TREE (DropdownView).
-        if (searchMode) {
-            this.dropdown.visible(true);
-        } else {
-            this.dropdown.visible(false);
-            if (this.search != null) this.clearSearch();
-            this.dropdownBounds = Dimension.ZERO;
-            this.resultRowBounds.clear();
-            this.historyRowBounds.clear();
-        }
-        // POLLED SEARCH: ENSURES ONE FINAL FRAME AFTER COMPLETION (SEE wantsContinuousRender)
-        this.searchRenderedDone = this.search == null || this.search.done();
-
-        RenderSystem.restoreProjection();
-    }
-
-    @Override
-    protected int contentX(final int windowW, final int windowH) {
-        return this.contentBoxX;
-    }
-
-    @Override
-    protected int contentY(final int windowW, final int windowH) {
-        return this.contentBoxY;
-    }
-
-    @Override
-    protected int contentW(final int windowW, final int windowH) {
-        return this.contentBoxW;
-    }
-
-    @Override
-    protected int contentH(final int windowW, final int windowH) {
-        return this.contentBoxH;
-    }
-
-    private void renderInlineButton(final Dimension bounds, final String label, final String icon,
-                                    final java.awt.Color color, final boolean enabled) {
-        final boolean hover = enabled && bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        // NO HOTKEY CHIP — color IS BOTH ACCENT AND LABEL COLOR
-        Button.render(this.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                label, "", icon, 12, color, color, false, hover, enabled);
-    }
-
-    private void renderPreview(final int x, final int y, final int w, final int h) {
-        RenderSystem.fill(x, y, w, h, AppTheme.BG_0);
-        AppChrome.crtOverlay(x, y, w, h, this.ctx.windowHeight);
-        if (this.previewMRL == null) {
-            PixelIcon.draw("copy", x + w / 2 - 16, y + h / 2 - 32, 32, AppTheme.TEXT_FAINT);
-            this.text.render("NO MEDIA", x + w / 2 - this.text.width("NO MEDIA", AppTheme.TEXT_BODY) / 2, y + h / 2 + 12, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-            return;
-        }
-        final MRL.Status status = this.previewMRL.status();
-        if (status == MRL.Status.FETCHING) {
-            this.text.renderBold("LOADING", x + 22, y + h - 48, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
-            this.text.render(this.text.truncateToWidth(this.previewUrl, w - 44, AppTheme.TEXT_SUBTITLE), x + 22, y + h - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-            return;
-        }
-        if (status != MRL.Status.LOADED) {
-            // ERROR/BLOCKED/EXPIRED/FORGOTTEN — SHOW THE EXACT STATE.
-            final java.awt.Color color = this.statusColor();
-            final String label = this.statusLabel();
-            PixelIcon.draw("warn", x + w / 2 - 16, y + h / 2 - 36, 32, color);
-            this.text.renderBold(label, x + w / 2 - this.text.widthBold(label, AppTheme.TEXT_BUTTON) / 2, y + h / 2 + 8, color, AppTheme.TEXT_BUTTON);
-            return;
-        }
-
-        final MRL.Source src = this.firstSource();
-        final Metadata meta = src != null ? src.metadata() : null;
-        final String title = meta != null && meta.title() != null ? meta.title() : this.previewTitle();
-        final String desc = meta != null && meta.desc() != null ? meta.desc() : this.previewUrl;
-        final String duration = meta != null && meta.duration() > 0 ? this.ctx.formatTime(meta.duration()) : "--:--";
-        RenderSystem.fillGradientV(x, y + h / 2f, w, h / 2f,
-                0f, 0f, 0f, 0f,
-                AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 0.88f);
-        this.text.renderBold(this.text.truncateToWidth(title.toUpperCase(), w - 44, AppTheme.TEXT_BUTTON, java.awt.Font.BOLD), x + 22, y + h - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON);
-        this.text.render(this.text.truncateToWidth(desc, w - 44, AppTheme.TEXT_SUBTITLE), x + 22, y + h - 48, AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
-        this.text.render(duration, x + 22, y + h - 24, AppTheme.CYAN, AppTheme.TEXT_BODY);
     }
 
     private static boolean loaded(final MRL mrl) {
@@ -799,7 +801,7 @@ public class OpenMultimediaScreen extends ViewScreen {
         };
     }
 
-    private java.awt.Color statusColor() {
+    private Color statusColor() {
         if (this.previewMRL == null) return AppTheme.TEXT_FAINT;
         return switch (this.previewMRL.status()) {
             case LOADED -> AppTheme.GREEN;
@@ -825,59 +827,9 @@ public class OpenMultimediaScreen extends ViewScreen {
         final MRL.Source src = this.firstSource();
         if (src == null || src.availableQualities().isEmpty()) return null;
         final MediaQuality q = src.availableQualities().stream()
-                .max(java.util.Comparator.comparingInt(value -> value.threshold))
+                .max(Comparator.comparingInt(value -> value.threshold))
                 .orElse(MediaQuality.UNKNOWN);
         return q == MediaQuality.UNKNOWN ? null : q.name();
-    }
-
-    // INTRINSIC WIDTH THAT FITS THE ICON + LABEL + 12px GAP + HOTKEY CHIP, MATCHING renderDialogButton EXACTLY
-    private int dialogButtonWidth(final String label, final String hotkey, final String icon) {
-        return Button.width(this.text, label, hotkey, icon, 12);
-    }
-
-    private void renderDialogButton(final String label, final String hotkey, final String icon,
-                                    final Dimension bounds, final java.awt.Color color) {
-        final boolean hover = bounds.contains(this.ctx.mouseX, this.ctx.mouseY);
-        final boolean enabled = color != AppTheme.TEXT_FAINT;
-        // color IS BOTH THE ACCENT (BORDER) AND THE LABEL COLOR; hotkey RENDERS AS THE TRAILING CHIP
-        Button.render(this.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                label, hotkey, icon, 12, color, color, false, hover, enabled);
-    }
-
-    @Override
-    public void handleKey(final int key, final int action) {
-        if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
-        if (this.loading) {
-            if (key == GLFW_KEY_ESCAPE) {
-                this.loading = false;
-                this.loadGeneration++;
-                this.ctx.selectedMRL = null;
-            }
-            return;
-        }
-
-        // LET THE FOCUSED FIELD CONSUME BACKSPACE/DELETE (PRESS+REPEAT) VIA THE TREE FIRST
-        if (this.root.key(key, action)) return;
-
-        switch (key) {
-            case GLFW_KEY_SPACE -> {
-                // IN SEARCH MODE SPACE IS A QUERY CHARACTER (HANDLED BY THE FIELD), NOT THE SAVE SHORTCUT
-                if (action == GLFW_PRESS && !this.searchMode() && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) this.saveCustomUrl();
-            }
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
-                if (action == GLFW_PRESS && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) {
-                    if (this.searchMode()) this.doSearch();
-                    else this.playCustomUrl();
-                }
-            }
-            case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
-            case GLFW_KEY_V -> {
-                if (action == GLFW_PRESS && this.ctx.ctrlDown) this.pasteFromClipboard();
-            }
-            case GLFW_KEY_R -> {
-                if (action == GLFW_PRESS && !this.searchMode() && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) this.reloadPreviewMRL();
-            }
-        }
     }
 
     private String deleteLastWord(final String value) {
@@ -888,69 +840,336 @@ public class OpenMultimediaScreen extends ViewScreen {
         return value.substring(0, Math.max(0, i));
     }
 
-    @Override
-    public void handleMouseClick(final double mx, final double my) {
-        if (this.loading) return;
+    // LEGACY amberCube — GLOWING AMBER ACCENT SQUARE (PANEL AND TV-FRAME CORNERS)
+    private static void amberCube(final Canvas canvas, final int x, final int y) {
+        canvas.glow(x, y, 10, 10, 0f, AppTheme.AMBER, 0.32f);
+        canvas.fill(x, y, 10, 10, AppTheme.AMBER);
+    }
 
-        // CAPTURE THE DROPDOWN HIT BEFORE THE TREE POSSIBLY CLEARS ITS BOUNDS (selectResult -> clearSearch).
-        // THE DROPDOWN TAKES PRIORITY AND KEEPS THE INPUT FOCUSED: A RESULT REPLACES THE INPUT WITH ITS RAW URL;
-        // A HISTORY ENTRY REFILLS THE QUERY AND RE-SEARCHES (SEE DropdownView#dispatchClick).
-        final boolean inDropdown = this.dropdownBounds.contains(mx, my);
-        super.handleMouseClick(mx, my);
-        if (inDropdown) return; // INSIDE THE DROPDOWN — THE TREE HANDLED IT (OR SWALLOWED THE CLICK)
+    // ==========================================================================
+    // TREE — BODY (SCRIM + CENTERED DIALOG PANEL WITH THE LEGACY GEOMETRY)
+    // ==========================================================================
 
-        this.inputFocused = this.inputBounds.contains(mx, my);
-        if (this.closeBounds.contains(mx, my)) {
-            this.navigator.accept(HomeScreen.Action.BACK);
-        } else if (this.pasteBounds.contains(mx, my)) {
-            this.pasteFromClipboard();
-        } else if (this.reloadBounds.contains(mx, my) && !this.searchMode() && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) {
-            this.reloadPreviewMRL();
-        } else if (this.cancelBounds.contains(mx, my)) {
-            this.navigator.accept(HomeScreen.Action.BACK);
-        } else if (this.saveBounds.contains(mx, my) && !this.searchMode() && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) {
-            this.saveCustomUrl();
-        } else if (this.playBounds.contains(mx, my) && this.ctx.customUrlText != null && !this.ctx.customUrlText.isEmpty()) {
-            if (this.searchMode()) this.doSearch();
-            else this.playCustomUrl();
+    // FULL-SLOT ROOT: THE SCRIM COVERS THE WHOLE SLOT (HOME LIVES BEHIND IT) AND THE PANEL IS CENTERED
+    // WITH THE LEGACY DIALOG MATH, SLOT-RELATIVE: 8px TOP MARGIN AND A 36px BOTTOM GAP.
+    private final class Body extends Group<Body> {
+
+        private final Box scrim;
+        private final PanelBox panel;
+
+        private Body(final Box scrim, final PanelBox panel) {
+            this.scrim = scrim;
+            this.panel = panel;
+            this.width = MAX_PARENT;
+            this.height = MAX_PARENT;
+            this.add(scrim);
+            this.add(panel);
         }
-    }
-
-    @Override
-    public String instructions() {
-        if (this.loading) return "ESC: Cancel";
-        if (this.searchMode()) return "TYPE: Search | CLICK: Pick result | V: Paste | ESC: Cancel";
-        return "ENTER: Play | SPACE: Save | V: Paste | R: Reload | ESC: Cancel";
-    }
-
-    // ROOT CONTENT: STACKS THE INPUT FIELD AT THE TOP OF THE CONTENT RECT AND THE RESULTS DROPDOWN 2px BELOW
-    // IT (inputBounds.bottom() + 2), EXACTLY WHERE THE LEGACY DRAW PLACED THEM.
-    private final class Body extends ViewGroup<Body> {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            field.measure(innerAvailWidth, 40);
-            dropdown.measure(innerAvailWidth, Math.max(0, innerAvailHeight - 42));
+            this.scrim.measure(innerAvailWidth, innerAvailHeight);
+            final boolean search = searchMode();
+            final int dialogH = Math.max(260, innerAvailHeight - 44);
+            final int reserved = 56 + 20 + 28 + 18 + 42 + 12 + 26 + 20 + 38 + 18;
+            final int targetPreviewH = Math.max(80, dialogH - reserved);
+            final int maxDialogW = Math.max(360, innerAvailWidth - 100);
+            final int dialogW = Math.min(Math.max(Math.round(targetPreviewH * 16f / 9f) + 40, 660), maxDialogW);
+            // SEARCH MODE HAS NOTHING TO PREVIEW ("NO MEDIA"), SO SHRINK THE PREVIEW AND HAND THE FREED
+            // VERTICAL SPACE TO THE RESULTS DROPDOWN. animatePreviewH EASES BETWEEN THE TWO HEIGHTS SO THE
+            // PREVIEW GROWS/SHRINKS SMOOTHLY INSTEAD OF SNAPPING WHEN THE MODE FLIPS.
+            final int fullPreviewH = Math.round((dialogW - 40) * 9f / 16f);
+            preview.height(animatePreviewH(search ? Math.min(fullPreviewH, SEARCH_PREVIEW_H) : fullPreviewH));
+            this.panel.measure(dialogW, dialogH);
             this.contentWidth = innerAvailWidth;
             this.contentHeight = innerAvailHeight;
         }
 
         @Override
         protected void onLayout() {
-            field.layout(this.left, this.top);
-            dropdown.layout(this.left, this.top + 42);
+            this.scrim.layout(this.left, this.top);
+            this.panel.layout(this.left + Math.max(0, (this.measuredWidth - this.panel.measuredWidth()) / 2),
+                    this.top + 8);
         }
     }
 
-    // THE URL/SEARCH FIELD — A DELIBERATE PORT OF THE LEGACY INPUT BOX (FOCUS GLOW, BG_2 FILL, NEON/STROKE
-    // BORDER, LINK/SEARCH GLYPH, TRUNCATED VALUE OR PLACEHOLDER, 2px NEON_LIGHT CARET AT 480ms). FOCUS AND
-    // TEXT MUTATION STAY ON THE SCREEN (inputFocused/customUrlText); THE FIELD DRIVES textInputActive AND
-    // CHAR/BACKSPACE INPUT THROUGH THE TREE.
-    private final class InputField extends View<InputField> {
+    // THE DIALOG PANEL BOX — DECOR (SHADOW/GLOW/FILL/BORDER) VIA THE ELEMENT DECORATORS, PLUS THE FOUR
+    // AMBER CORNER CUBES DRAWN UNDER THE CHILDREN, EXACTLY LIKE THE LEGACY DRAW ORDER.
+    private static final class PanelBox extends Group<PanelBox> {
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            for (final Element<?> child: this.children) child.measure(innerAvailWidth, innerAvailHeight);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            for (final Element<?> child: this.children) child.layout(this.innerLeft(), this.innerTop());
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            amberCube(canvas, this.left - 1, this.top - 1);
+            amberCube(canvas, this.left + this.measuredWidth - 9, this.top - 1);
+            amberCube(canvas, this.left - 1, this.top + this.measuredHeight - 9);
+            amberCube(canvas, this.left + this.measuredWidth - 9, this.top + this.measuredHeight - 9);
+            super.onDraw(canvas);
+        }
+    }
+
+    // DIALOG TITLE ROW — BG_2 STRIP, BOLD TITLE, BOTTOM DIVIDER AND THE RED CLOSE BUTTON PINNED RIGHT
+    private final class TitleRow extends Group<TitleRow> {
+
+        private final CloseBtn close = new CloseBtn();
+
+        private TitleRow() {
+            this.add(this.close.onClick(b -> navigator.accept(HomeScreen.Action.BACK)));
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            this.close.measure(26, 26);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            this.close.layout(this.left + this.measuredWidth - 44, this.top + 14);
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.BG_2);
+            canvas.fill(this.left, this.top + this.measuredHeight, this.measuredWidth, 1, AppTheme.STROKE_BRIGHT);
+            canvas.text("OPEN MULTIMEDIA", this.left + 20,
+                    this.top + Math.max(0, (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BUTTON, true)) / 2f),
+                    AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
+            super.onDraw(canvas);
+        }
+    }
+
+    // LEGACY DIALOG CLOSE — AN ICON-ONLY BUTTON IN THE DESTRUCTIVE RED HUE THAT BRIGHTENS ON HOVER
+    private static final class CloseBtn extends Element<CloseBtn> {
+
+        private CloseBtn() {
+            this.width = 26;
+            this.height = 26;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final Color color = this.hovered ? CLOSE_HOVER : AppTheme.RED;
+            IconButton.render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight,
+                    "x", 14, color, color, false, this.hovered, true);
+        }
+    }
+
+    // LABEL + INPUT ROW — THE "URL OR PATH"/"SEARCH" LABEL SITS 20px ABOVE THE FIELD, WITH THE PASTE(104)
+    // AND RELOAD(112) BUTTONS TRAILING AT 8px GAPS, EXACTLY LIKE THE LEGACY ROW.
+    private final class InputBlock extends Group<InputBlock> {
+
+        private final Button paste = new Button("PASTE").icon("copy")
+                .accent(AppTheme.NEON).textColor(AppTheme.NEON_LIGHT)
+                .size(104, 40).onClick(b -> pasteFromClipboard());
+
+        private InputBlock() {
+            this.add(field);
+            this.add(this.paste);
+            this.add(reload);
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            field.measure(Math.max(0, innerAvailWidth - 232), 40);
+            this.paste.measure(104, 40);
+            reload.measure(112, 40);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            final int y = this.top + 28; // LABEL ZONE ABOVE (LEGACY LABEL AT INPUT TOP - 20)
+            field.layout(this.left, y);
+            this.paste.layout(this.left + field.measuredWidth() + 8, y);
+            reload.layout(this.paste.left() + 104 + 8, y);
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final boolean search = searchMode();
+            canvas.text(search ? "SEARCH" : "URL OR PATH", this.left, this.top + 8,
+                    search ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
+            super.onDraw(canvas);
+        }
+    }
+
+    // ZONE BETWEEN THE INPUT ROW AND THE FOOTER: THE STATUS CHIP AT +12 AND THE RESULTS DROPDOWN AT +2
+    // OVERLAYING IT (LEGACY STACKING), WITH THE DROPDOWN CAPPED 10px ABOVE THE FOOTER AND ALIGNED TO THE
+    // INPUT FIELD'S COLUMN.
+    private final class MiddleZone extends Group<MiddleZone> {
+
+        private MiddleZone() {
+            this.add(chip);     // UNDER THE DROPDOWN, SAME PAINT ORDER AS THE LEGACY DRAW
+            this.add(dropdown);
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            chip.measure(innerAvailWidth, 24);
+            dropdown.measure(Math.max(0, innerAvailWidth - 232), Math.max(0, innerAvailHeight - 12));
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            chip.layout(this.left, this.top + 12);
+            dropdown.layout(this.left, this.top + 2);
+        }
+    }
+
+    // DETECTED-STATUS CHIP — TINTED FILL + OUTLINE + SQUARE STATUS PIP + LABEL (LEGACY GEOMETRY)
+    private final class StatusChip extends Element<StatusChip> {
+
+        private String label = "";
+        private Color color = AppTheme.TEXT_FAINT;
+
+        private void set(final String label, final Color color) {
+            this.label = label;
+            this.color = color;
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            this.contentWidth = (this.ctx != null && this.ctx.text != null
+                    ? this.ctx.text.width(this.label, AppTheme.TEXT_BODY) : 0) + 34;
+            this.contentHeight = 24;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            canvas.fill(x, y, w, h, AppTheme.alpha(this.color, this.color == AppTheme.TEXT_FAINT ? 24 : 36));
+            canvas.stroke(x, y, w, h, this.color, 1f);
+            canvas.fill(x + 8, y + 8, 8, 8, this.color);
+            canvas.glow(x + 8, y + 8, 8, 8, 0f, this.color, 0.5f);
+            canvas.text(this.label, x + 24, y + 5, this.color, AppTheme.TEXT_BODY, false);
+        }
+    }
+
+    // ==========================================================================
+    // TREE — PREVIEW PANEL (TV FRAME + LOCALIZED CRT + STATE CONTENT + QUALITY CHIP)
+    // ==========================================================================
+
+    private final class PreviewPanel extends Group<PreviewPanel> {
+
+        private final CrtOverlay crt = new CrtOverlay();
+
+        private PreviewPanel() {
+            this.add(this.crt);
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            this.crt.measure(Math.max(0, innerAvailWidth - 12), Math.max(0, innerAvailHeight - 12));
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            this.crt.layout(this.left + 6, this.top + 6);
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+
+            // TV FRAME (LEGACY LOOK, ALWAYS FOCUSED) WITH THE INNER SCREEN WELL
+            canvas.fill(x, y, w, h, AppTheme.BG_2);
+            canvas.stroke(x, y, w, h, AppTheme.NEON, 2f);
+            canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.48f);
+            canvas.fill(x + 6, y + 6, w - 12, h - 12, AppTheme.BG_0);
+            canvas.stroke(x + 6, y + 6, w - 12, h - 12, AppTheme.STROKE, 1f);
+            amberCube(canvas, x + 2, y + h - 12);
+            amberCube(canvas, x + w - 12, y + h - 12);
+
+            super.onDraw(canvas); // LOCALIZED CRT SCANLINES/BANDS, UNDER THE STATE TEXT
+
+            final int ix = x + 6;
+            final int iy = y + 6;
+            final int iw = w - 12;
+            final int ih = h - 12;
+            final MRL mrl = previewMRL; // READ ONCE PER DRAW — THE FIELD FLIPS OFF-THREAD
+            if (mrl == null) {
+                PixelIcon.draw("copy", ix + iw / 2 - 16, iy + ih / 2 - 32, 32, AppTheme.TEXT_FAINT);
+                canvas.text("NO MEDIA", ix + iw / 2 - canvas.textWidth("NO MEDIA", AppTheme.TEXT_BODY, false) / 2,
+                        iy + ih / 2 + 12, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
+            } else {
+                final MRL.Status status = mrl.status();
+                if (status == MRL.Status.FETCHING) {
+                    canvas.text("LOADING", ix + 22, iy + ih - 48, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
+                    canvas.text(canvas.text().truncateToWidth(previewUrl, iw - 44, AppTheme.TEXT_SUBTITLE),
+                            ix + 22, iy + ih - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
+                } else if (status != MRL.Status.LOADED) {
+                    // ERROR/BLOCKED/EXPIRED/FORGOTTEN — SHOW THE EXACT STATE.
+                    final Color color = statusColor();
+                    final String label = statusLabel();
+                    PixelIcon.draw("warn", ix + iw / 2 - 16, iy + ih / 2 - 36, 32, color);
+                    canvas.text(label, ix + iw / 2 - canvas.textWidth(label, AppTheme.TEXT_BUTTON, true) / 2,
+                            iy + ih / 2 + 8, color, AppTheme.TEXT_BUTTON, true);
+                } else {
+                    final MRL.Source src = firstSource();
+                    final Metadata meta = src != null ? src.metadata() : null;
+                    final String title = meta != null && meta.title() != null ? meta.title() : previewTitle();
+                    final String desc = meta != null && meta.desc() != null ? meta.desc() : previewUrl;
+                    final String duration = meta != null && meta.duration() > 0 ? ctx.formatTime(meta.duration()) : "--:--";
+                    canvas.gradientV(ix, iy + ih / 2f, iw, ih / 2f, GRADIENT_TOP, AppTheme.alpha(AppTheme.BG_1, 224));
+                    canvas.text(canvas.text().truncateToWidth(title.toUpperCase(), iw - 44, AppTheme.TEXT_BUTTON, Font.BOLD),
+                            ix + 22, iy + ih - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
+                    canvas.text(canvas.text().truncateToWidth(desc, iw - 44, AppTheme.TEXT_SUBTITLE),
+                            ix + 22, iy + ih - 48, AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE, false);
+                    canvas.text(duration, ix + 22, iy + ih - 24, AppTheme.CYAN, AppTheme.TEXT_BODY, false);
+                }
+            }
+
+            // BEST-QUALITY CHIP OVER THE FRAME'S TOP-RIGHT CORNER
+            final String chipLabel = bestQuality();
+            if (chipLabel != null) {
+                final int chipW = canvas.textWidth(chipLabel, AppTheme.TEXT_BODY, false) + 18;
+                final int chipX = x + w - chipW - 8;
+                canvas.fill(chipX, y, chipW, 22, AppTheme.alpha(AppTheme.BG_1, 235));
+                canvas.stroke(chipX, y, chipW, 22, AppTheme.NEON, 1f);
+                canvas.glow(chipX, y, chipW, 22, 0f, AppTheme.NEON, 0.34f);
+                canvas.text(chipLabel, chipX + 9, y + 5, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, false);
+            }
+        }
+    }
+
+    // ==========================================================================
+    // TREE — URL/SEARCH FIELD (CUSTOM: SHARED ctx.customUrlText STATE, CTRL-AWARE EDITING)
+    // ==========================================================================
+
+    // A DELIBERATE PORT OF THE LEGACY INPUT BOX (FOCUS GLOW, BG_2 FILL, NEON/STROKE BORDER, LINK/SEARCH
+    // GLYPH, TRUNCATED VALUE OR PLACEHOLDER, 2px NEON_LIGHT CARET AT 480ms). THE FRAMEWORK TextField IS NOT
+    // USED BECAUSE THIS FIELD BINDS TO THE SHARED ctx.customUrlText (WRITTEN BY PASTE/RESULT/HISTORY),
+    // FEEDS THE AUTO-SEARCH DEBOUNCE + LIVE PREVIEW ON EVERY EDIT, SUPPORTS DELETE AND CTRL+BACKSPACE
+    // WORD-DELETE, IGNORES CHARS WHILE CTRL IS HELD, AND ACCEPTS FULL UNICODE INPUT.
+    private final class InputField extends Element<InputField> {
 
         @Override
         public boolean textInputActive() {
-            return inputFocused;
+            return this.focused;
         }
 
         @Override
@@ -960,33 +1179,46 @@ public class OpenMultimediaScreen extends ViewScreen {
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
             final boolean search = searchMode();
-            final String displayUrl = ctx.customUrlText != null ? ctx.customUrlText : "";
-            if (inputFocused) RenderSystem.glowRect(x, y, w, h, 0f, AppTheme.NEON, 0.28f);
-            RenderSystem.fill(x, y, w, h, AppTheme.BG_2);
-            RenderSystem.rect(x, y, w, h, inputFocused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1);
-            PixelIcon.draw(search ? "search" : "link", x + 10, y + (h - 14) / 2, 14, search ? AppTheme.CYAN : AppTheme.TEXT_FAINT);
+            final String value = ctx.customUrlText != null ? ctx.customUrlText : "";
+            if (this.focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.28f);
+            canvas.fill(x, y, w, h, AppTheme.BG_2);
+            canvas.stroke(x, y, w, h, this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
+            PixelIcon.draw(search ? "search" : "link", x + 10, y + (h - 14) / 2, 14,
+                    search ? AppTheme.CYAN : AppTheme.TEXT_FAINT);
 
-            final float inputScale = AppTheme.TEXT_BUTTON;
-            final int inputTextX = x + 32;
-            final int inputTextY = y + Math.max(0, (h - text.glyphHeight(inputScale)) / 2);
-            final String truncatedUrl = text.truncateToWidth(displayUrl, w - 46, inputScale);
-            final boolean emptyInput = truncatedUrl.isEmpty();
-            text.render(emptyInput ? "search, or paste a URL / path..." : truncatedUrl,
-                    inputTextX, inputTextY,
-                    emptyInput ? AppTheme.TEXT_FAINT : AppTheme.TEXT, inputScale);
-            if (inputFocused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-                final int caretTextW = emptyInput ? 0 : text.width(truncatedUrl, inputScale);
-                final int caretX = Math.min(x + w - 10, inputTextX + caretTextW + (emptyInput ? -5 : 1));
-                RenderSystem.fill(caretX, inputTextY, 2, text.glyphHeight(inputScale), AppTheme.NEON_LIGHT);
+            final float scale = AppTheme.TEXT_BUTTON;
+            final int textX = x + 32;
+            final int textY = y + Math.max(0, (h - canvas.textHeight(scale, false)) / 2);
+            final String draw = canvas.text().truncateToWidth(value, w - 46, scale);
+            final boolean empty = draw.isEmpty();
+            canvas.text(empty ? "search, or paste a URL / path..." : draw, textX, textY,
+                    empty ? AppTheme.TEXT_FAINT : AppTheme.TEXT, scale, false);
+            if (this.focused && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
+                final int caretW = empty ? 0 : canvas.textWidth(draw, scale, false);
+                final int caretX = Math.min(x + w - 10, textX + caretW + (empty ? -5 : 1));
+                canvas.fill(caretX, textY, 2, canvas.textHeight(scale, false), AppTheme.NEON_LIGHT);
             }
         }
 
         @Override
+        public boolean dispatchClick(final double mx, final double my) {
+            if (this.contains(mx, my)) {
+                if (!this.focused) {
+                    this.focused = true;
+                    this.invalidate();
+                }
+                return true;
+            }
+            this.focused = false;
+            return false;
+        }
+
+        @Override
         public boolean dispatchChar(final int codepoint) {
-            if (!inputFocused || loading) return false;
-            if (ctx.ctrlDown) return false;
+            if (!this.focused || loading || ctx.ctrlDown) return false;
             if (codepoint < 32 || codepoint == 127) return false;
-            ctx.customUrlText = (ctx.customUrlText == null ? "" : ctx.customUrlText) + new String(Character.toChars(codepoint));
+            ctx.customUrlText = (ctx.customUrlText == null ? "" : ctx.customUrlText)
+                    + new String(Character.toChars(codepoint));
             lastEditMs = System.currentTimeMillis();
             ensurePreviewMRL();
             return true;
@@ -994,12 +1226,13 @@ public class OpenMultimediaScreen extends ViewScreen {
 
         @Override
         public boolean dispatchKey(final int key, final int action) {
-            // BACKSPACE/DELETE ARE FIELD KEYS ONLY WHILE FOCUSED; OTHERWISE THEY FALL THROUGH TO SCREEN NAV.
-            // handleKey ALREADY GATED action TO PRESS+REPEAT, SO DELETION REPEATS WHEN THE KEY IS HELD.
-            if (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE) return false;
-            if (!inputFocused) return false;
-            if (ctx.customUrlText != null && !ctx.customUrlText.isEmpty()) {
-                ctx.customUrlText = ctx.ctrlDown ? deleteLastWord(ctx.customUrlText) : ctx.customUrlText.substring(0, ctx.customUrlText.length() - 1);
+            // BACKSPACE/DELETE ARE FIELD KEYS ONLY WHILE FOCUSED (EDIT ON PRESS+REPEAT, RELEASE SWALLOWED);
+            // EVERYTHING ELSE FALLS THROUGH TO THE SCREEN SHORTCUTS
+            if (!this.focused || (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE)) return false;
+            if (action != GLFW_RELEASE && ctx.customUrlText != null && !ctx.customUrlText.isEmpty()) {
+                ctx.customUrlText = ctx.ctrlDown
+                        ? deleteLastWord(ctx.customUrlText)
+                        : ctx.customUrlText.substring(0, ctx.customUrlText.length() - 1);
                 lastEditMs = System.currentTimeMillis();
                 ensurePreviewMRL();
             }
@@ -1007,148 +1240,116 @@ public class OpenMultimediaScreen extends ViewScreen {
         }
     }
 
-    // THE RESULTS DROPDOWN — A DELIBERATE PORT OF THE LEGACY renderDropdown: A SHADOWED, NEON-BORDERED BOX
-    // BELOW THE INPUT WITH A RESULTS SECTION (OR "SEARCHING..." PLACEHOLDER) THEN A SEPARATOR AND THE
-    // RECENT-QUERY HISTORY, CLIPPED AND SCROLLED WITHIN ITS BUDGET. onMeasure SIZES THE BOX (SO contains()
-    // MATCHES dropdownBounds); onDraw PAINTS IT AND RECORDS THE PER-ROW HIT BOXES. IT OWNS ITS OWN SCROLL AND
-    // CLICK ROUTING. THE STRUCTURE (SECTION HEADERS, TWO ROW HEIGHTS) DOES NOT MAP ONTO A UNIFORM ListView,
-    // SO A FAITHFUL PORT BEATS DEDUP.
-    private final class DropdownView extends View<DropdownView> {
+    // ==========================================================================
+    // TREE — DROPDOWN ROWS (CANVAS-ONLY, SAME LOOK AS THE LEGACY DROPDOWN)
+    // ==========================================================================
 
-        private int boxH;
+    // SECTION HEADER ("RESULTS (n)"/"SEARCHING..."/"RECENT"); THE RECENT VARIANT DRAWS THE SEPARATOR LINE
+    private static final class HeadRow extends Element<HeadRow> {
 
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.contentWidth = innerAvailWidth;
-            if (!this.visible) {
-                this.contentHeight = 0;
-                this.boxH = 0;
-                return;
-            }
-            final List<PlatformResult> results = search != null ? search.results() : List.of();
-            final List<String> history = search != null ? search.history() : PlatformAPI.searchHistory();
-            final boolean searching = search != null && !search.done();
-            if (results.isEmpty() && history.isEmpty() && !searching) {
-                this.contentHeight = 0;
-                this.boxH = 0;
-                return;
-            }
+        private final String label;
+        private final boolean separator;
 
-            final boolean hasSearch = search != null;
-            final int rowH = 38;
-            final int histH = 26;
-            final int headH = 20;
-            final int pad = 6;
-
-            int contentH = pad;
-            if (hasSearch) contentH += headH + (results.isEmpty() && searching ? rowH : results.size() * rowH);
-            if (!history.isEmpty()) contentH += headH + history.size() * histH;
-            contentH += pad;
-
-            final int availH = Math.max(rowH, innerAvailHeight);
-            this.boxH = Math.min(contentH, availH);
-            dropdownScroll = Math.max(0, Math.min(dropdownScroll, contentH - this.boxH));
-            this.contentHeight = this.boxH;
+        private HeadRow(final String label, final boolean separator) {
+            this.label = label;
+            this.separator = separator;
         }
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            resultRowBounds.clear();
-            resultRowItems.clear();
-            historyRowBounds.clear();
-            historyRowItems.clear();
-            dropdownBounds = Dimension.ZERO;
-            if (this.boxH <= 0) return;
-
             final int x = this.left;
-            final int top = this.top;
-            final int width = this.measuredWidth;
-            final int boxH = this.boxH;
-            final int windowH = canvas.windowHeight();
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            if (this.separator) canvas.fill(x + 8, y + h / 2f, w - 16, 1, AppTheme.STROKE);
+            canvas.text(this.label, x + 8, y + (h - canvas.textHeight(AppTheme.TEXT_SUBTITLE, false)) / 2f,
+                    AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
+        }
+    }
 
-            final List<PlatformResult> results = search != null ? search.results() : List.of();
-            final List<String> history = search != null ? search.history() : PlatformAPI.searchHistory();
-            final boolean searching = search != null && !search.done();
-            final boolean hasSearch = search != null;
-            final int rowH = 38;
-            final int histH = 26;
-            final int headH = 20;
-            final int pad = 6;
+    // "LOOKING ACROSS PLATFORMS..." PLACEHOLDER WHILE THE FIRST RESULTS ARE STILL IN FLIGHT
+    private static final class WaitRow extends Element<WaitRow> {
 
-            dropdownBounds = new Dimension(x, top, width, boxH);
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            canvas.text("Looking across platforms...", this.left + 12,
+                    this.top + (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f,
+                    AppTheme.NEON, AppTheme.TEXT_BODY, false);
+        }
+    }
 
-            RenderSystem.shadowRect(x, top, width, boxH, 0f, 0.45f);
-            RenderSystem.fill(x, top, width, boxH, AppTheme.BG_2_ALPHA);
-            RenderSystem.rect(x, top, width, boxH, AppTheme.NEON, 1f);
+    // ONE SEARCH RESULT: HOVER FILL + 16:9 THUMBNAIL (LIVE MEDIA TEXTURE, ASPECT-FIT) + PLATFORM TAG + TITLE
+    private final class ResultRow extends Element<ResultRow> {
 
-            RenderSystem.clip(x, top, width, boxH, windowH);
-            int y = top + pad - dropdownScroll;
+        private final PlatformResult result;
 
-            if (hasSearch) {
-                final String resultsHead = searching ? "SEARCHING..." : "RESULTS (" + results.size() + ")";
-                text.render(resultsHead, x + 10, y + (headH - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-                y += headH;
-
-                if (results.isEmpty() && searching) {
-                    text.render("Looking across platforms...", x + 14, y + (rowH - text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, AppTheme.NEON, AppTheme.TEXT_BODY);
-                    y += rowH;
-                } else {
-                    for (final PlatformResult result: results) {
-                        final Dimension row = new Dimension(x + 2, y, width - 4, rowH);
-                        resultRowBounds.add(row);
-                        resultRowItems.add(result);
-                        renderResultRow(result, row);
-                        y += rowH;
-                    }
-                }
-            }
-
-            if (!history.isEmpty()) {
-                RenderSystem.lineH(x + 10, y + headH / 2f, width - 20, AppTheme.STROKE, 1f);
-                text.render("RECENT", x + 10, y + (headH - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2f, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-                y += headH;
-                for (final String entry: history) {
-                    final Dimension row = new Dimension(x + 2, y, width - 4, histH);
-                    historyRowBounds.add(row);
-                    historyRowItems.add(entry);
-                    if (dropdownBounds.contains(ctx.mouseX, ctx.mouseY) && row.contains(ctx.mouseX, ctx.mouseY)) {
-                        RenderSystem.fill(row.x(), row.y(), row.width(), row.height(), AppTheme.alpha(AppTheme.NEON_DARK, 60));
-                    }
-                    PixelIcon.draw("search", x + 12, y + (histH - 11) / 2, 11, AppTheme.TEXT_FAINT);
-                    text.render(text.truncateToWidth(entry, width - 44, AppTheme.TEXT_BODY), x + 32,
-                            y + (histH - text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-                    y += histH;
-                }
-            }
-
-            RenderSystem.clearClip();
+        private ResultRow(final PlatformResult result) {
+            this.result = result;
         }
 
         @Override
-        public boolean dispatchClick(final double mx, final double my) {
-            if (!this.visible || !dropdownBounds.contains(mx, my)) return false;
-            for (int i = 0; i < resultRowBounds.size(); i++) {
-                if (resultRowBounds.get(i).contains(mx, my)) {
-                    selectResult(resultRowItems.get(i));
-                    return true;
-                }
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            if (this.hovered) canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON_DARK, 70));
+
+            final int thumbH = h - 8;
+            final int thumbW = Math.round(thumbH * 16f / 9f);
+            final int thumbX = x + 6;
+            final int thumbY = y + 4;
+            // MEDIA TEXTURE READ PER DRAW; ASPECT-FIT NEVER OVERFLOWS THE CELL, SO THE LIST CLIP SUFFICES
+            final MediaPlayer player = thumbPlayer(this.result.thumbnail());
+            if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
+                final float imgAspect = (float) player.width() / player.height();
+                final float boxAspect = (float) thumbW / thumbH;
+                float bw = thumbW;
+                float bh = thumbH;
+                if (imgAspect > boxAspect) bh = thumbW / imgAspect;
+                else bw = thumbH * imgAspect;
+                canvas.mediaImage(player.texture(), thumbX + (thumbW - bw) / 2f, thumbY + (thumbH - bh) / 2f, bw, bh);
+            } else {
+                canvas.fill(thumbX, thumbY, thumbW, thumbH, AppTheme.BG_0);
+                canvas.stroke(thumbX, thumbY, thumbW, thumbH, AppTheme.STROKE, 1f);
+                PixelIcon.draw(this.result.thumbnail() == null ? "warn" : "tv",
+                        thumbX + (thumbW - 12) / 2, thumbY + (thumbH - 12) / 2, 12, AppTheme.TEXT_FAINT);
             }
-            for (int i = 0; i < historyRowBounds.size(); i++) {
-                if (historyRowBounds.get(i).contains(mx, my)) {
-                    ctx.customUrlText = historyRowItems.get(i);
-                    doSearch();
-                    return true;
-                }
-            }
-            return true; // INSIDE THE DROPDOWN BUT NOT ON A ROW — SWALLOW THE CLICK
+
+            final int textX = thumbX + thumbW + 10;
+            final int textMaxW = Math.max(20, x + w - textX - 8);
+            final String platform = this.result.platform() == null ? "?" : this.result.platform();
+            final String tag = platform + ":";
+            final int tagW = canvas.textWidth(tag, AppTheme.TEXT_BODY, true);
+            final float textY = y + (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f;
+            canvas.text(tag, textX, textY, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, true);
+            final String title = this.result.title() == null || this.result.title().isEmpty()
+                    ? "(untitled)" : this.result.title();
+            canvas.text(canvas.text().truncateToWidth(title, Math.max(20, textMaxW - tagW - 6), AppTheme.TEXT_BODY),
+                    textX + tagW + 6, textY, AppTheme.TEXT, AppTheme.TEXT_BODY, false);
+        }
+    }
+
+    // ONE RECENT-QUERY ENTRY: HOVER FILL + SEARCH GLYPH + TRUNCATED QUERY TEXT
+    private static final class HistoryRow extends Element<HistoryRow> {
+
+        private final String entry;
+
+        private HistoryRow(final String entry) {
+            this.entry = entry;
         }
 
         @Override
-        public boolean dispatchScroll(final double mx, final double my, final double amount) {
-            if (!this.visible || !dropdownBounds.contains(mx, my)) return false;
-            dropdownScroll = Math.max(0, dropdownScroll - (int) (amount * 28));
-            this.invalidate();
-            return true;
+        protected void onDraw(final Canvas canvas) {
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            if (this.hovered) canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON_DARK, 60));
+            PixelIcon.draw("search", x + 10, y + (h - 11) / 2, 11, AppTheme.TEXT_FAINT);
+            canvas.text(canvas.text().truncateToWidth(this.entry, w - 40, AppTheme.TEXT_BODY), x + 30,
+                    y + (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f,
+                    AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
         }
     }
 }

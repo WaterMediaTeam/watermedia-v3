@@ -1,0 +1,97 @@
+package org.watermedia.bootstrap.app.element;
+
+import org.watermedia.bootstrap.app.ui.AppTheme;
+
+import java.awt.Color;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+
+/**
+ * A bordered status chip: a glowing status pip on the left plus an uppercase label, both tinted by the
+ * live {@link StatusSquare.Status} — the retained port of the imperative backend tag (fixed 22px band,
+ * {@code textWidth + 44} wide). An optional strike-through crosses the label for unsupported features.
+ * Status and strike are resolved on every draw so live backend state never goes stale.
+ */
+public final class StatusText extends Element<StatusText> {
+
+    private static final int H = 22;
+
+    private String label = "";
+    private Supplier<StatusSquare.Status> status = () -> StatusSquare.Status.OFF;
+    private BooleanSupplier strike = () -> false;
+
+    public StatusText() {
+    }
+
+    public StatusText(final String label) {
+        this.label(label);
+    }
+
+    /** Sets the chip label (rendered uppercase). */
+    public StatusText label(final String value) {
+        this.label = value == null ? "" : value;
+        return this;
+    }
+
+    /** Sets a fixed status. */
+    public StatusText status(final StatusSquare.Status value) {
+        final StatusSquare.Status fixed = value == null ? StatusSquare.Status.OFF : value;
+        this.status = () -> fixed;
+        return this;
+    }
+
+    /** Sets a live status source, re-read on every draw. */
+    public StatusText status(final Supplier<StatusSquare.Status> supplier) {
+        this.status = supplier == null ? () -> StatusSquare.Status.OFF : supplier;
+        return this;
+    }
+
+    /** Sets a fixed strike-through flag. */
+    public StatusText strike(final boolean value) {
+        this.strike = () -> value;
+        return this;
+    }
+
+    /** Sets a live strike-through source, re-read on every draw. */
+    public StatusText strike(final BooleanSupplier supplier) {
+        this.strike = supplier == null ? () -> false : supplier;
+        return this;
+    }
+
+    @Override
+    protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        if (this.ctx == null || this.ctx.text == null) {
+            this.contentWidth = 0;
+            this.contentHeight = H;
+            return;
+        }
+        // UPPERCASE LABEL WIDTH PLUS THE PIP/PADDING BAND
+        this.contentWidth = this.ctx.text.width(this.label.toUpperCase(), AppTheme.TEXT_BODY) + 44;
+        this.contentHeight = H;
+    }
+
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        if (this.ctx == null || this.ctx.text == null) return;
+        // FILL, OUTLINE, PIP AT (+8,+7), UPPERCASE LABEL, OPTIONAL STRIKE
+        final Color c = StatusSquare.tint(this.status.get());
+        final int x = this.left;
+        final int y = this.top;
+        final int w = this.measuredWidth;
+        final int h = this.measuredHeight;
+        canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, 190));
+        canvas.stroke(x, y, w, h, AppTheme.STROKE_BRIGHT, 1f);
+        canvas.fill(x + 8, y + 7, 8, 8, c);
+        canvas.glow(x + 8, y + 7, 8, 8, 0f, c, 0.42f);
+
+        final String upper = this.label.toUpperCase();
+        final int textX = x + 24;
+        final int glyphH = this.ctx.text.glyphHeight(AppTheme.TEXT_BODY);
+        final int textY = y + Math.max(0, (h - glyphH) / 2);
+        canvas.text(upper, textX, textY, c, AppTheme.TEXT_BODY, false);
+        if (this.strike.getAsBoolean()) {
+            canvas.lineH(textX, textY + Math.max(1, glyphH / 2),
+                    this.ctx.text.width(upper, AppTheme.TEXT_BODY), c, 1f);
+        }
+    }
+}

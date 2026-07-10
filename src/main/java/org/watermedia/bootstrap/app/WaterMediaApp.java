@@ -10,7 +10,6 @@ import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilder;
 import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFactory;
 import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.lwjgl.glfw.GLFWErrorCallback;
-import org.lwjgl.glfw.GLFWImage;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.openal.AL;
 import org.lwjgl.openal.ALC;
@@ -31,21 +30,19 @@ import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
-import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
-import org.watermedia.bootstrap.app.ui.Dimension;
-import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.view.Button;
+import org.watermedia.bootstrap.app.element.Button;
+import org.watermedia.bootstrap.app.element.Dialog;
+import org.watermedia.bootstrap.app.element.Parent;
+import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
-import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
-import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
@@ -56,6 +53,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.ShortBuffer;
 import java.nio.charset.CharsetDecoder;
@@ -89,17 +87,21 @@ public class WaterMediaApp {
 
     private static boolean running = true;
     private static boolean maximized;
-    private static boolean draggingTitlebar;
-    private static boolean exitConfirmVisible;
-    private static int dragOffsetX;
-    private static int dragOffsetY;
+    // PENDING RENDER-ENGINE HOT-SWAP TARGET (null = NONE). SET FROM THE SETTINGS SCREEN, CONSUMED AT THE TOP
+    // OF THE MAIN LOOP — NEVER MID-FRAME OR INSIDE A CALLBACK. THE MAIN LOOP OWNS THE FrameLimiter, WHICH THE
+    // SWAP REBUILDS FOR THE NEW WINDOW, SO IT LIVES AS A FIELD RATHER THAN A LOOP LOCAL.
+    private static volatile RenderSystem.Engine swapTarget;
+    private static FrameLimiter frameLimiter;
     // LAST CURSOR POSITION A HOVER DISPATCH WAS ISSUED FOR — NaN SO THE FIRST FRAME ALWAYS DISPATCHES
     private static double lastMoveX = Double.NaN;
     private static double lastMoveY = Double.NaN;
-    private static Dimension exitConfirmCancelBounds = Dimension.ZERO;
-    private static Dimension exitConfirmExitBounds = Dimension.ZERO;
-    private static Dimension exitConfirmCloseBounds = Dimension.ZERO;
-    private static Dimension errorDialogActionBounds = Dimension.ZERO;
+
+    // WINDOW SHELL — THE WHOLE WINDOW RENDERS THROUGH THIS RETAINED TREE
+    private static RootScreen root;
+    private static Dialog errorDialog;
+    private static Parent errorLines;
+    private static String errorShownMsg;
+    private static Dialog exitDialog;
 
     static {
         // LWJGL'S DEFAULT 64KB PER-THREAD MemoryStack OVERFLOWS WHEN VULKAN ENUMERATES A GPU'S
@@ -114,21 +116,35 @@ public class WaterMediaApp {
         // text renderer, and icon/banner decoding (via ImageIO so they don't
         // need CodecsAPI yet). Audio is deferred to phase 3 so AppBootstrap's
         // countdown end → visible window has the shortest possible gap.
+        // THE SHELL CONFIG SPEC REGISTERS FIRST: ITS FILE LOAD RUNS ON THE WATERCONFIG IO POOL AND
+        // OVERLAPS THE (MUCH SLOWER) WINDOW/ENGINE BOOT. THIS RUNS ONLY IN THE APP JVM — THE
+        // AppBootstrap LAUNCHER NEVER TOUCHES WATERCONFIG IN ITS EARLY PHASE.
+        AppConfig.register();
         initWindow();
         ctx.text = new TextRenderer();
         ctx.text.margin(6);
-        loadIcon();
-        loadDuckFrames();
-        loadBanner();
+        // ACTIVATE THE UI SCALE BEFORE ANY FRAME: RESOLVES THE PERSISTED PREFERENCE (OR THE MONITOR-DERIVED
+        // AUTO FACTOR) AND PUSHES IT INTO THE ENGINE + TEXT RENDERER. THE WINDOW AND ENGINE EXIST BY NOW.
+        // uiscale.cfg/engine.cfg STAY OUTSIDE THE SHELL SPEC ON PURPOSE — THE LAUNCHER AND THIS EARLY
+        // BOOT READ THEM BEFORE ANY SPEC EXISTS.
+        reapplyUiScale();
+        // DUMP THE PERSISTED SHELL SETTINGS (CRT/SOUND/AUDIO ENGINE) INTO THE LIVE STATE BEFORE THE
+        // FIRST FRAME SO THE LOADING SCREEN ALREADY RESPECTS THEM.
+        AppConfig.applyBoot(ctx);
+        ctx.assets.load(ctx);
+        initShell();
         glfwShowWindow(ctx.windowHandle);
 
-        // PHASE 2 — show the loading splash, initialize the app-side audio
-        // output, then run WaterMedia.start() in the background. The splash
-        // polls WaterMedia progress each frame and renders the boot stack.
-        final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx);
-        renderLoadingFrame(loadingScreen);
+        // PHASE 2 — show the loading splash INSIDE the shell (live titlebar +
+        // pulsing backend strip), initialize the app-side audio output, then
+        // run WaterMedia.start() in the background. The splash polls WaterMedia
+        // progress each frame and renders the boot stack.
+        final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx, RenderSystem.engineName());
+        loadingScreen.onEnter();
+        root.mount(loadingScreen);
+        renderLoadingFrame();
         initAudio();
-        runLoadingPhase(loadingScreen);
+        runLoadingPhase();
 
         // PHASE 3 — final init that depends on WaterMedia (or that we delayed
         // to keep phase 1 fast).
@@ -159,7 +175,7 @@ public class WaterMediaApp {
         }
     }
 
-    private static void runLoadingPhase(final LoadingScreen loadingScreen) {
+    private static void runLoadingPhase() {
         // SINGLE-SLOT HOLDER FOR THE LOADER THREAD'S FAILURE — loader.join() BELOW ESTABLISHES THE
         // HAPPENS-BEFORE THAT MAKES THE WRITE VISIBLE HERE, SO NO Atomic*/volatile IS NEEDED.
         final Throwable[] failure = new Throwable[1];
@@ -176,7 +192,7 @@ public class WaterMediaApp {
         final FrameLimiter loadingLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         while (loader.isAlive() && running && !glfwWindowShouldClose(ctx.windowHandle)) {
             loadingLimiter.syncBeforeFrame();
-            renderLoadingFrame(loadingScreen);
+            renderLoadingFrame();
         }
 
         try {
@@ -186,7 +202,7 @@ public class WaterMediaApp {
         }
 
         ctx.backendsLoading = false;
-        renderLoadingFrame(loadingScreen);
+        renderLoadingFrame();
 
         final Throwable t = failure[0];
         if (t != null) {
@@ -196,13 +212,17 @@ public class WaterMediaApp {
         }
     }
 
-    private static void renderLoadingFrame(final LoadingScreen loadingScreen) {
+    private static void renderLoadingFrame() {
         RenderSystem.beginFrame();
         RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
-        loadingScreen.render(ctx.windowWidth, ctx.windowHeight);
+        syncShell();
+        // PASS LOGICAL DIMS: THE UI TREE LIVES IN LOGICAL PX AND SCALES TO PHYSICAL THROUGH THE ORTHO;
+        // THE PHYSICAL VIEWPORT/SWAPCHAIN STAYS FULL-SIZE (OWNED BY THE BACKEND)
+        root.render(ctx.logicalWidth(), ctx.logicalHeight());
         RenderSystem.present();
         glfwPollEvents();
-        ctx.mouseClicked = false; // discard input collected during loading
+        // THE SHELL IS LIVE DURING BOOT — TITLEBAR DRAG/BUTTONS AND THE EXIT DIALOG ALREADY WORK
+        handleFrameInput();
     }
 
     public static void log(final String message) {
@@ -224,6 +244,7 @@ public class WaterMediaApp {
         RenderSystem.chooseEngine();
         createWindow();
         if (!RenderSystem.attach(ctx.windowHandle)) {
+            WinFrame.uninstall();
             glfwFreeCallbacks(ctx.windowHandle);
             glfwDestroyWindow(ctx.windowHandle);
             createWindow(); // ENGINE IS NOW OPENGL; REBUILD WITH A GL CONTEXT AND ATTACH AGAIN
@@ -246,6 +267,9 @@ public class WaterMediaApp {
 
         installCallbacks();
         centerWindow();
+        // WINDOWS ONLY: SUBCLASS THE WIN32 WINDOW SO THE BORDERLESS FRAME GETS NATIVE SNAP/RESIZE/
+        // CAPTION BEHAVIOR. EVERY WINDOW REBUILD PASSES THROUGH HERE, SO THE HOT-SWAP RE-INSTALLS TOO.
+        WinFrame.install(ctx.windowHandle, ctx);
     }
 
     private static void installCallbacks() {
@@ -253,45 +277,29 @@ public class WaterMediaApp {
         glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
         glfwSetCharCallback(ctx.windowHandle, WaterMediaApp::handleCharInput);
         glfwSetCursorPosCallback(ctx.windowHandle, (w, x, y) -> {
-            ctx.mouseX = x;
-            ctx.mouseY = y;
+            // RAW = PHYSICAL CURSOR (TITLEBAR WINDOW DRAG); mouseX/Y = LOGICAL (THE UI TREE LIVES IN
+            // LOGICAL PX, SO EVERY HIT-TEST DIVIDES BY THE UI SCALE EXACTLY ONCE, HERE)
+            ctx.mouseRawX = x;
+            ctx.mouseRawY = y;
+            final float scale = ctx.uiScale;
+            ctx.mouseX = x / scale;
+            ctx.mouseY = y / scale;
             ctx.requestRender();
-            if (draggingTitlebar) {
-                try (final MemoryStack stack = stackPush()) {
-                    final IntBuffer wx = stack.mallocInt(1);
-                    final IntBuffer wy = stack.mallocInt(1);
-                    glfwGetWindowPos(ctx.windowHandle, wx, wy);
-                    glfwSetWindowPos(ctx.windowHandle,
-                            wx.get(0) + (int) x - dragOffsetX,
-                            wy.get(0) + (int) y - dragOffsetY);
-                }
-            }
         });
         glfwSetMouseButtonCallback(ctx.windowHandle, (w, button, action, mods) -> {
             if (button != GLFW_MOUSE_BUTTON_LEFT) return;
             ctx.requestRender();
             if (action == GLFW_PRESS) {
                 ctx.mouseDown = true;
-                if (ctx.mouseY < AppChrome.TITLEBAR_H && !AppChrome.isTitlebarControl(ctx.mouseX, ctx.windowWidth)) {
-                    final boolean restored = restoreForTitlebarDrag();
-                    draggingTitlebar = true;
-                    if (!restored) {
-                        dragOffsetX = (int) ctx.mouseX;
-                        dragOffsetY = (int) ctx.mouseY;
-                    }
-                } else if (ctx.mouseY >= AppChrome.TITLEBAR_H) {
-                    ctx.mousePressed = true;
-                }
+                ctx.mousePressed = true;
             } else if (action == GLFW_RELEASE) {
                 ctx.mouseDown = false;
-                draggingTitlebar = false;
                 ctx.mouseClicked = true;
             }
         });
         glfwSetScrollCallback(ctx.windowHandle, (w, xOffset, yOffset) -> {
-            if (!ctx.hasError()) {
-                screens.handleScroll(yOffset);
-            }
+            // THE TREE RESOLVES THE TARGET TOPMOST-FIRST; A VISIBLE GLOBAL DIALOG SWALLOWS THE SCROLL
+            root.scroll(ctx.mouseX, ctx.mouseY, yOffset);
             ctx.requestRender();
         });
         glfwSetWindowSizeCallback(ctx.windowHandle, (w, width, height) -> {
@@ -303,6 +311,9 @@ public class WaterMediaApp {
         glfwSetWindowMaximizeCallback(ctx.windowHandle, (w, isMaximized) -> {
             maximized = isMaximized;
             ctx.windowMaximized = maximized;
+            // WINDOWS: A RESTORE RECLAMPS AN OVERSIZED FLOATING WINDOW INTO THE MONITOR WORK AREA (THE
+            // RDP-MONITOR-SHRINK BUG). DEFERRED — THIS CALLBACK FIRES INSIDE THE WIN32 MESSAGE DISPATCH.
+            if (!isMaximized && WinFrame.ACTIVE) ctx.execute(() -> WinFrame.reclamp(ctx));
             ctx.requestRender();
         });
     }
@@ -327,36 +338,58 @@ public class WaterMediaApp {
         }
     }
 
-    private static boolean restoreForTitlebarDrag() {
-        if (!maximized) return false;
-        try (final MemoryStack stack = stackPush()) {
-            final IntBuffer winX = stack.mallocInt(1);
-            final IntBuffer winY = stack.mallocInt(1);
-            glfwGetWindowPos(ctx.windowHandle, winX, winY);
+    // GLOBAL UI SCALE — RESOLUTION, PERSISTENCE AND LIVE APPLICATION
+    // ==========================================================================
 
-            final double globalCursorX = winX.get(0) + ctx.mouseX;
-            final double globalCursorY = winY.get(0) + ctx.mouseY;
-            final double xRatio = ctx.windowWidth <= 0 ? 0.5d : Math.max(0d, Math.min(1d, ctx.mouseX / ctx.windowWidth));
-
-            glfwRestoreWindow(ctx.windowHandle);
-            maximized = false;
-            ctx.windowMaximized = false;
-
-            final IntBuffer restoredW = stack.mallocInt(1);
-            final IntBuffer restoredH = stack.mallocInt(1);
-            glfwGetWindowSize(ctx.windowHandle, restoredW, restoredH);
-            final int newW = restoredW.get(0);
-            final int newH = restoredH.get(0);
-            ctx.windowWidth = newW;
-            ctx.windowHeight = newH;
-            RenderSystem.viewport(newW, newH);
-
-            dragOffsetX = Math.max(0, Math.min(newW - 1, (int) Math.round(newW * xRatio)));
-            dragOffsetY = (int) Math.max(0, Math.min(AppChrome.TITLEBAR_H - 1, ctx.mouseY));
-            glfwSetWindowPos(ctx.windowHandle, (int) Math.round(globalCursorX - dragOffsetX), (int) Math.round(globalCursorY - dragOffsetY));
-            ctx.requestRender();
-            return true;
+    /**
+     * Re-reads the persisted UI scale preference and applies it. A non-AUTO preference wins; AUTO (or an
+     * unreadable value) recomputes the monitor-derived factor. Called at boot and whenever the setting
+     * changes.
+     */
+    public static void reapplyUiScale() {
+        final String pref = RenderSystem.uiScalePreference();
+        float factor;
+        if (pref == null || pref.equalsIgnoreCase("auto")) {
+            factor = computeAutoUiScale();
+        } else {
+            try {
+                factor = clampScale(Float.parseFloat(pref.trim()));
+            } catch (final NumberFormatException e) {
+                factor = computeAutoUiScale();
+            }
         }
+        applyUiScale(factor);
+    }
+
+    // APPLIES A SCALE EVERYWHERE IT MATTERS: THE APP STATE, THE RENDER ENGINE (SCISSOR/LINE WIDTH) AND THE
+    // TEXT ATLAS (WHICH REGENERATES LAZILY AT THE NEW PHYSICAL PX). NEXT FRAME'S RELAYOUT PICKS UP THE REST.
+    private static void applyUiScale(final float scale) {
+        final float s = clampScale(scale);
+        ctx.uiScale = s;
+        RenderSystem.uiScale(s);
+        if (ctx.text != null) ctx.text.setUiScale(s);
+        ctx.requestRender();
+    }
+
+    // AUTO FACTOR — max(WINDOW-MONITOR CONTENT SCALE, RESOLUTION HEURISTIC height/1080), SNAPPED TO 0.25
+    // STEPS AND CLAMPED TO [1.0, 3.0]. THE RESOLUTION TERM CATCHES HIGH-RES PANELS THE OS REPORTS AT 100%.
+    private static float computeAutoUiScale() {
+        float contentScale = 1f;
+        try (final MemoryStack stack = stackPush()) {
+            final FloatBuffer sx = stack.mallocFloat(1);
+            final FloatBuffer sy = stack.mallocFloat(1);
+            glfwGetWindowContentScale(ctx.windowHandle, sx, sy);
+            contentScale = Math.max(sx.get(0), sy.get(0));
+        }
+        float heuristic = 1f;
+        final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+        if (vidmode != null) heuristic = vidmode.height() / 1080f;
+        final float factor = Math.round(Math.max(contentScale, heuristic) * 4f) / 4f;
+        return clampScale(factor);
+    }
+
+    private static float clampScale(final float scale) {
+        return Math.max(1.0f, Math.min(3.0f, scale));
     }
 
     private static void initAudio() {
@@ -377,6 +410,82 @@ public class WaterMediaApp {
         }
     }
 
+    // WINDOW SHELL — ROOT TREE, GLOBAL DIALOGS AND THE NAVIGATION BINDINGS THE SHELL NEEDS
+    private static void initShell() {
+        root = new RootScreen(ctx, ctx.text, WaterMediaApp::footerKeybinds);
+        root.titleBar().close(() -> {
+            ctx.exitConfirm = true;
+            ctx.requestRender();
+        });
+
+        // GLOBAL ERROR DIALOG — CONTENT AND VISIBILITY BOUND TO ctx.error EVERY FRAME IN syncShell
+        errorLines = Parent.column().spacing(6);
+        errorDialog = new Dialog()
+                .accent(AppTheme.RED)
+                .title("ERROR")
+                .content(errorLines)
+                .actions(new Button("OK").subText("ENTER").icon("check").accent(AppTheme.RED)
+                        .onClick(b -> ctx.clearError()))
+                .onDismiss(ctx::clearError)
+                .onPrimary(ctx::clearError)
+                .panelWidth(600)
+                .visible(false);
+
+        // EXIT-CONFIRM DIALOG — BOUND TO ctx.exitConfirm; CONFIRMING ENDS THE MAIN LOOP
+        exitDialog = new Dialog()
+                .accent(AppTheme.RED)
+                .title("EXIT WATERMEDIA")
+                .content(Parent.column().spacing(8)
+                        .add(new Text("CONFIRM EXIT").bold(true).scale(AppTheme.TEXT_BUTTON))
+                        .add(new Text("Press ENTER to close the app or ESC to return.")
+                                .scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT)))
+                .actions(
+                        new Button("CANCEL").subText("ESC").icon("x").accent(AppTheme.TEXT_SOFT)
+                                .onClick(b -> dismissExit()),
+                        new Button("EXIT").subText("ENTER").icon("exit").accent(AppTheme.RED)
+                                .onClick(b -> running = false))
+                .onDismiss(WaterMediaApp::dismissExit)
+                .onPrimary(() -> running = false)
+                .panelWidth(520)
+                .visible(false);
+        root.overlay().add(errorDialog).add(exitDialog);
+
+        screens.root(root);
+        // THE PLAYER OWNS A CUSTOM WINDOW TITLE; EVERY OTHER SCREEN RESTORES THE DEFAULT
+        screens.onNavigate((previous, next) -> root.titleBar().title("player".equals(screens.currentName())
+                ? "WATERMeDIA - Now Playing" : AppContext.APP_NAME));
+    }
+
+    private static void dismissExit() {
+        ctx.exitConfirm = false;
+        ctx.requestRender();
+    }
+
+    // FOOTER SHORTCUTS — A VISIBLE GLOBAL DIALOG OVERRIDES THE ACTIVE SCREEN'S HINTS, AS THE OLD BOTTOM BAR DID
+    private static List<Keybind> footerKeybinds() {
+        if (ctx.hasError()) return List.of(new Keybind("ENTER/ESC", "Close"));
+        if (ctx.exitConfirm) return List.of(new Keybind("ENTER", "Exit"), new Keybind("ESC", "Cancel"));
+        return screens.currentKeybinds();
+    }
+
+    // PER-FRAME SHELL BINDINGS: GLOBAL DIALOG VISIBILITY AND CONTENT
+    private static void syncShell() {
+        final boolean hasError = ctx.hasError();
+        if (hasError) {
+            errorDialog.title(ctx.error.title == null ? "ERROR" : ctx.error.title.toUpperCase());
+            final String message = ctx.error.message == null ? "" : ctx.error.message;
+            if (!message.equals(errorShownMsg)) {
+                errorShownMsg = message;
+                errorLines.clear();
+                for (final String line: message.split("\n")) {
+                    errorLines.add(new Text(line).scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT));
+                }
+            }
+        }
+        errorDialog.visible(hasError);
+        exitDialog.visible(ctx.exitConfirm);
+    }
+
     private static void initScreens() {
         final HomeScreen homeScreen = new HomeScreen(ctx.text, ctx, WaterMediaApp::navigateAction);
 
@@ -384,7 +493,7 @@ public class WaterMediaApp {
         screens.register("mrl", new MRLSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("regions", new RegionSelectorScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("player", new PlayerScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
-        screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction, homeScreen));
+        screens.register("multimedia", new OpenMultimediaScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
         screens.register("settings", new SettingsScreen(ctx.text, ctx, WaterMediaApp::navigateAction));
 
         screens.navigate("home");
@@ -398,7 +507,7 @@ public class WaterMediaApp {
         }
 
         switch (action) {
-            case EXIT -> exitConfirmVisible = true;
+            case EXIT -> ctx.exitConfirm = true;
 
             case BACK -> screens.backToHome();
 
@@ -485,7 +594,7 @@ public class WaterMediaApp {
 
     // MAIN LOOP — GL state was already configured during the loading phase.
     private static void mainLoop() {
-        final FrameLimiter frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
+        frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         ctx.requestRender();
         // DRIVE THE SLOW GLOW HEARTBEAT ON RENDER-ON-DEMAND SCREENS: NUDGE A REDRAW ~15x/s SO THE PULSE
         // ADVANCES. CONTINUOUS SCREENS (VIDEO / CRT) ALREADY REPAINT FASTER; requestRender COALESCES.
@@ -496,175 +605,220 @@ public class WaterMediaApp {
             }
         });
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
-            final boolean continuous = screens.wantsContinuousRender();
-            if (continuous) {
+            // ENGINE HOT-SWAP RUNS AT THE TOP OF THE LOOP ON THE RENDER THREAD — NEVER MID-FRAME
+            if (swapTarget != null) performEngineSwap();
+            // A CONTINUOUS SCREEN (VIDEO/CRT) OR AN ACTIVE POINTER DRAG IS PACED TO THE REFRESH RATE AND
+            // THEN POLLS THE FRESHEST INPUT *AFTER* THE PACE SLEEP, SO A SLIDER REFLECTS THE CURSOR AT
+            // RENDER TIME. THE OLD NON-CONTINUOUS PATH SAMPLED INPUT, THEN SLEPT A WHOLE FRAME, THEN
+            // RENDERED THAT STALE INPUT (PLUS ANY MOTION THAT ARRIVED DURING THE SLEEP, WHICH RUNS NO
+            // CALLBACKS) — THAT ORDER WAS THE DRAG LATENCY THE USER REPORTED ON SEEKBARS.
+            final boolean continuous = root.continuous();
+            final boolean paced = continuous || root.dragging();
+            if (paced) {
                 frameLimiter.syncBeforeFrame();
                 glfwPollEvents();
-            } else if (!ctx.renderRequested()) {
-                glfwWaitEventsTimeout(frameLimiter.idleTimeoutSeconds());
-            } else {
+            } else if (ctx.renderRequested()) {
                 glfwPollEvents();
+            } else {
+                glfwWaitEventsTimeout(frameLimiter.idleTimeoutSeconds());
             }
 
             handleFrameInput();
             ctx.processExecutor();
 
+            // ON-DEMAND FRAMES RENDER ONLY WHEN SOMETHING ASKED FOR ONE; A STILL DRAG-HOLD FALLS THROUGH
+            // HERE TOO AND SKIPS THE REDUNDANT REPAINT UNTIL THE POINTER MOVES AGAIN
             if (!continuous && !ctx.consumeRenderRequest()) {
                 continue;
-            }
-            if (!continuous) {
-                frameLimiter.syncBeforeFrame();
             }
 
             RenderSystem.beginFrame();
             RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
-
-            screens.render(ctx.windowWidth, ctx.windowHeight);
-
-            // RENDER GLOBAL ERROR DIALOG ON TOP IF PRESENT
-            if (ctx.hasError()) {
-                renderErrorDialog();
-            }
-            if (exitConfirmVisible) {
-                renderExitConfirmDialog();
-            }
-
-            renderBottomBar();
-
+            syncShell();
+            // LOGICAL DIMS — THE TREE LIVES IN LOGICAL PX AND SCALES TO PHYSICAL THROUGH THE ORTHO
+            root.render(ctx.logicalWidth(), ctx.logicalHeight());
             RenderSystem.present();
         }
 
         ctx.releasePlayer();
     }
 
+    /**
+     * Requests a live render-engine hot-swap (OpenGL &harr; Vulkan). The swap itself runs at the top of the
+     * next main-loop iteration on the render thread; this only records the target and wakes the loop, so it is
+     * safe to call from an input callback or a Settings widget. A no-op when the target already runs.
+     */
+    public static void requestEngineSwap(final RenderSystem.Engine target) {
+        swapTarget = target;
+        ctx.requestRender();
+    }
+
+    // LIVE RENDER-ENGINE SWAP — REBUILDS THE WINDOW AND ENGINE IN PLACE WITHOUT RESTARTING THE JVM OR THE
+    // MEDIA API. RUNS ONLY FROM THE TOP OF mainLoop() (RENDER THREAD). THE SEQUENCE MIRRORS initWindow() +
+    // cleanup(): DRAIN MEDIA, DROP GPU CACHES, TEAR DOWN THE OLD ENGINE/WINDOW, THEN CHOOSE + BUILD + ATTACH
+    // THE TARGET (KEEPING THE VK->GL FALLBACK) AND RECREATE THE ASSETS. THE ctx EXECUTOR AND THE GLOW-PULSE
+    // THREAD SURVIVE; ONLY ctx.windowHandle AND THE GPU RESOURCES ARE REPLACED.
+    private static void performEngineSwap() {
+        final RenderSystem.Engine target = swapTarget;
+        swapTarget = null;
+        if (target == null || target == RenderSystem.engineKind()) return;
+
+        // CAPTURE THE CURRENT WINDOW PLACEMENT SO THE REBUILT WINDOW LANDS EXACTLY WHERE IT WAS
+        final boolean wasMaximized = maximized;
+        int px = 0, py = 0, pw = ctx.windowWidth, ph = ctx.windowHeight;
+        if (!wasMaximized) {
+            try (final MemoryStack stack = stackPush()) {
+                final IntBuffer bx = stack.mallocInt(1);
+                final IntBuffer by = stack.mallocInt(1);
+                final IntBuffer bw = stack.mallocInt(1);
+                final IntBuffer bh = stack.mallocInt(1);
+                glfwGetWindowPos(ctx.windowHandle, bx, by);
+                glfwGetWindowSize(ctx.windowHandle, bw, bh);
+                px = bx.get(0);
+                py = by.get(0);
+                pw = bw.get(0);
+                ph = bh.get(0);
+            }
+        }
+
+        WaterMedia.LOGGER.info("Hot-swapping render engine {} -> {}", RenderSystem.engineName(), target);
+        try {
+            // 1) DRAIN ALL MEDIA — SAME ORDER AS cleanup(): RELEASE PLAYERS/THUMBNAILS, THEN JOIN THE
+            //    BACKGROUND RELEASE QUEUE SO NOTHING TOUCHES THE DEVICE AFTER IT IS DESTROYED
+            screens.releaseMediaAll();
+            ctx.releasePlayer();
+            ctx.awaitPlayerRelease();
+
+            // 2) DROP GPU CACHES BOUND TO THE OLD CONTEXT — THEY REBUILD LAZILY (TEXT) OR ARE RECREATED BELOW
+            ctx.text.reset();
+            ctx.assets.dispose();
+
+            // 3) TEAR DOWN THE OLD ENGINE AND ITS WINDOW (MIRRORS cleanup() MINUS glfwTerminate)
+            RenderSystem.cleanup();
+            WinFrame.uninstall();
+            glfwFreeCallbacks(ctx.windowHandle);
+            glfwDestroyWindow(ctx.windowHandle);
+            ctx.windowHandle = NULL;
+
+            // 4) SELECT THE TARGET ENGINE AND REBUILD THE WINDOW WITH ITS HINTS (MIRRORS initWindow())
+            System.setProperty("watermedia.engine", target == RenderSystem.Engine.VULKAN ? "vulkan" : "opengl");
+            RenderSystem.chooseEngine();
+            createWindow();
+            if (!RenderSystem.attach(ctx.windowHandle)) {
+                // VK->GL FALLBACK: THE ENGINE IS ALREADY OPENGL; REBUILD THE WINDOW WITH GL HINTS AND RE-ATTACH
+                WinFrame.uninstall();
+                glfwFreeCallbacks(ctx.windowHandle);
+                glfwDestroyWindow(ctx.windowHandle);
+                createWindow();
+                RenderSystem.attach(ctx.windowHandle);
+            }
+
+            restoreWindowPlacement(wasMaximized, px, py, pw, ph);
+
+            // RE-APPLY UI SCALE (MIRRORS BOOT), RE-CREATE ASSET TEXTURES + WINDOW ICON, SHOW, RE-PACE THE LIMITER
+            reapplyUiScale();
+            ctx.assets.load(ctx);
+            glfwShowWindow(ctx.windowHandle);
+            frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
+
+            // IF VULKAN WAS REQUESTED BUT ATTACH FELL BACK TO OPENGL, REVERT THE PERSISTED PREFERENCE TO WHAT
+            // ACTUALLY RUNS SO THE NEXT BOOT IS CONSISTENT, AND TELL THE USER
+            if (target == RenderSystem.Engine.VULKAN && RenderSystem.engineKind() != RenderSystem.Engine.VULKAN) {
+                RenderSystem.saveEnginePreference(RenderSystem.Engine.OPENGL);
+                ctx.showError("Vulkan unavailable",
+                        "Vulkan could not be initialized on this system.\nThe app is running on OpenGL.", null);
+            }
+            WaterMedia.LOGGER.info("Render engine hot-swap complete: {}", RenderSystem.engineName());
+        } catch (final Throwable t) {
+            WaterMedia.LOGGER.error("Render engine hot-swap failed; attempting OpenGL recovery", t);
+            if (!recoverToOpenGL(wasMaximized, px, py, pw, ph)) {
+                WaterMedia.LOGGER.error("OpenGL recovery after a failed hot-swap also failed; shutting down");
+                running = false; // LET THE MAIN LOOP EXIT SO cleanup() TEARS DOWN CLEANLY
+            }
+        } finally {
+            ctx.requestRender();
+        }
+    }
+
+    // RE-APPLIES THE PRE-SWAP WINDOW PLACEMENT: createWindow() ALWAYS BUILDS MAXIMIZED, SO A PREVIOUSLY
+    // WINDOWED STATE IS RESTORED HERE. THE FRAMEBUFFER SIZE IS FORCE-SYNCED BECAUSE THE RESIZE CALLBACK MAY
+    // NOT HAVE FIRED FOR THE PROGRAMMATIC PLACEMENT YET, THEN PUSHED INTO THE ENGINE VIEWPORT.
+    private static void restoreWindowPlacement(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
+        if (!wasMaximized) {
+            glfwRestoreWindow(ctx.windowHandle);
+            glfwSetWindowSize(ctx.windowHandle, pw, ph);
+            glfwSetWindowPos(ctx.windowHandle, px, py);
+            maximized = false;
+            ctx.windowMaximized = false;
+        }
+        try (final MemoryStack stack = stackPush()) {
+            final IntBuffer wBuf = stack.mallocInt(1);
+            final IntBuffer hBuf = stack.mallocInt(1);
+            glfwGetWindowSize(ctx.windowHandle, wBuf, hBuf);
+            ctx.windowWidth = wBuf.get(0);
+            ctx.windowHeight = hBuf.get(0);
+        }
+        RenderSystem.viewport(ctx.windowWidth, ctx.windowHeight);
+    }
+
+    // LAST-RESORT RECOVERY AFTER A FAILED HOT-SWAP: FORCE OPENGL AND REBUILD A FRESH WINDOW/ENGINE/ASSETS FROM
+    // WHATEVER STATE THE SWAP LEFT BEHIND. RETURNS true WHEN THE APP IS RENDERABLE AGAIN, false WHEN IT MUST EXIT.
+    private static boolean recoverToOpenGL(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
+        try {
+            // THE OLD WINDOW MAY OR MAY NOT STILL EXIST; A ZEROED HANDLE MEANS IT WAS ALREADY DESTROYED
+            if (ctx.windowHandle != NULL) {
+                WinFrame.uninstall();
+                glfwFreeCallbacks(ctx.windowHandle);
+                glfwDestroyWindow(ctx.windowHandle);
+                ctx.windowHandle = NULL;
+            }
+            System.setProperty("watermedia.engine", "opengl");
+            RenderSystem.chooseEngine();
+            createWindow();
+            if (!RenderSystem.attach(ctx.windowHandle)) {
+                WinFrame.uninstall();
+                glfwFreeCallbacks(ctx.windowHandle);
+                glfwDestroyWindow(ctx.windowHandle);
+                createWindow();
+                RenderSystem.attach(ctx.windowHandle);
+            }
+            RenderSystem.saveEnginePreference(RenderSystem.Engine.OPENGL);
+            restoreWindowPlacement(wasMaximized, px, py, pw, ph);
+            reapplyUiScale();
+            ctx.assets.load(ctx);
+            glfwShowWindow(ctx.windowHandle);
+            frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
+            ctx.showError("Engine switch failed",
+                    "The render engine could not be switched.\nThe app recovered on OpenGL.", null);
+            return true;
+        } catch (final Throwable t) {
+            WaterMedia.LOGGER.error("OpenGL recovery failed", t);
+            return false;
+        }
+    }
+
     private static void handleFrameInput() {
-        if (exitConfirmVisible) {
-            if (ctx.mouseClicked) {
-                ctx.mouseClicked = false;
-                if (exitConfirmExitBounds.contains(ctx.mouseX, ctx.mouseY)) {
-                    running = false;
-                } else if (exitConfirmCancelBounds.contains(ctx.mouseX, ctx.mouseY) || exitConfirmCloseBounds.contains(ctx.mouseX, ctx.mouseY)) {
-                    exitConfirmVisible = false;
-                }
+        if (ctx.mousePressed) {
+            ctx.mousePressed = false;
+            // GLOBAL DIALOGS ARE TRULY MODAL — A PRESS MUST NOT START A DRAG ON CONTENT BENEATH THE SCRIM
+            if (!ctx.hasError() && !ctx.exitConfirm) {
+                root.press(ctx.mouseX, ctx.mouseY);
             }
-        } else if (ctx.mouseClicked && AppChrome.handleTitlebarClick(ctx.mouseX, ctx.mouseY, ctx.windowWidth,
-                () -> glfwIconifyWindow(ctx.windowHandle),
-                () -> {
-                    if (maximized) {
-                        glfwRestoreWindow(ctx.windowHandle);
-                        maximized = false;
-                    } else {
-                        glfwMaximizeWindow(ctx.windowHandle);
-                        maximized = true;
-                    }
-                    ctx.windowMaximized = maximized;
-                },
-                () -> running = false)) {
+        }
+        // ONLY DISPATCH HOVER ON REAL CURSOR MOVEMENT — A STATIONARY CURSOR PARKED OVER A HIT BOX MUST
+        // NOT RE-ASSERT HOVER SELECTION EVERY FRAME AND SILENTLY OVERRIDE KEYBOARD NAVIGATION (H-01).
+        if (ctx.mouseX != lastMoveX || ctx.mouseY != lastMoveY) {
+            lastMoveX = ctx.mouseX;
+            lastMoveY = ctx.mouseY;
+            root.hover(ctx.mouseX, ctx.mouseY);
+            root.drag(ctx.mouseX, ctx.mouseY);
+        }
+        if (ctx.mouseClicked) {
             ctx.mouseClicked = false;
-        } else if (ctx.hasError()) {
-            if (ctx.mouseClicked) {
-                ctx.mouseClicked = false;
-                if (errorDialogActionBounds.contains(ctx.mouseX, ctx.mouseY)) {
-                    ctx.clearError();
-                }
-            }
-        } else {
-            if (ctx.mousePressed) {
-                ctx.mousePressed = false;
-                screens.handleMousePress(ctx.mouseX, ctx.mouseY);
-            }
-            // ONLY DISPATCH HOVER ON REAL CURSOR MOVEMENT — A STATIONARY CURSOR PARKED OVER A HIT BOX MUST
-            // NOT RE-ASSERT HOVER SELECTION EVERY FRAME AND SILENTLY OVERRIDE KEYBOARD NAVIGATION (H-01).
-            if (ctx.mouseX != lastMoveX || ctx.mouseY != lastMoveY) {
-                lastMoveX = ctx.mouseX;
-                lastMoveY = ctx.mouseY;
-                screens.handleMouseMove(ctx.mouseX, ctx.mouseY);
-            }
-            if (ctx.mouseClicked) {
-                ctx.mouseClicked = false;
-                screens.handleMouseRelease(ctx.mouseX, ctx.mouseY);
-                screens.handleMouseClick(ctx.mouseX, ctx.mouseY);
-            }
+            // RELEASE ENDS ANY CAPTURE FIRST; THE SHELL SUPPRESSES THE CLICK WHEN IT ENDED A REAL DRAG
+            root.release(ctx.mouseX, ctx.mouseY);
+            root.click(ctx.mouseX, ctx.mouseY);
         }
-    }
-
-    private static void renderErrorDialog() {
-        renderInfoDialog(ctx.error.title == null ? "ERROR" : ctx.error.title.toUpperCase(),
-                ctx.error.message == null ? "" : ctx.error.message,
-                "OK", "ENTER", AppTheme.RED);
-    }
-
-    private static void renderExitConfirmDialog() {
-        final int dialogW = Math.min(560, ctx.windowWidth - 64);
-        final int dialogH = 230;
-        final Dimension dialog = Dimension.centered(ctx.windowWidth, ctx.windowHeight, dialogW, dialogH);
-        final int x = dialog.x();
-        final int y = dialog.y();
-        final int titleH = 58;
-        RenderSystem.setupOrtho(ctx.windowWidth, ctx.windowHeight);
-        RenderSystem.fill(0, 0, ctx.windowWidth, ctx.windowHeight, 0f, 0f, 0f, 0.58f);
-        RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.55f);
-        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, AppTheme.RED, 0.25f);
-        RenderSystem.fill(x, y, dialogW, dialogH, AppTheme.alpha(AppTheme.BG_1, 248));
-        RenderSystem.rect(x, y, dialogW, dialogH, AppTheme.RED, 1.5f);
-        RenderSystem.fill(x, y, dialogW, titleH, AppTheme.alpha(AppTheme.BG_2, 244));
-        RenderSystem.lineH(x, y + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
-        ctx.text.renderBold("EXIT WATERMEDIA", x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f), AppTheme.RED, AppTheme.TEXT_BUTTON);
-        exitConfirmCloseBounds = new Dimension(x + dialogW - 48, y + 14, 30, 30);
-        AppChrome.dialogCloseButton(exitConfirmCloseBounds, exitConfirmCloseBounds.contains(ctx.mouseX, ctx.mouseY));
-        PixelIcon.draw("warn", x + 28, y + 88, 26, AppTheme.RED);
-        ctx.text.renderBold("CONFIRM EXIT", x + 68, y + 84, AppTheme.TEXT, AppTheme.TEXT_BUTTON);
-        ctx.text.render("Press ENTER to close the app or ESC to return.", x + 68, y + 116, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-        exitConfirmCancelBounds = new Dimension(x + 24, y + dialogH - 58, 150, 36);
-        exitConfirmExitBounds = new Dimension(x + dialogW - 174, y + dialogH - 58, 150, 36);
-        renderDialogAction(exitConfirmCancelBounds, "CANCEL", "ESC", "x", AppTheme.TEXT_SOFT);
-        renderDialogAction(exitConfirmExitBounds, "EXIT", "ENTER", "x", AppTheme.RED);
-        RenderSystem.restoreProjection();
-    }
-
-    private static void renderInfoDialog(final String title, final String message, final String buttonLabel,
-                                         final String hotkey, final Color accent) {
-        final int dialogW = Math.min(640, ctx.windowWidth - 64);
-        final String[] lines = message.split("\n");
-        final int dialogH = Math.min(Math.max(220, 134 + lines.length * 26), ctx.windowHeight - 72);
-        final Dimension dialog = Dimension.centered(ctx.windowWidth, ctx.windowHeight, dialogW, dialogH);
-        final int x = dialog.x();
-        final int y = dialog.y();
-        final int titleH = 58;
-        RenderSystem.setupOrtho(ctx.windowWidth, ctx.windowHeight);
-        RenderSystem.fill(0, 0, ctx.windowWidth, ctx.windowHeight, 0f, 0f, 0f, 0.58f);
-        RenderSystem.shadowRect(x, y, dialogW, dialogH, 0f, 0.55f);
-        RenderSystem.glowRect(x, y, dialogW, dialogH, 0f, accent, 0.25f);
-        RenderSystem.fill(x, y, dialogW, dialogH, AppTheme.alpha(AppTheme.BG_1, 248));
-        RenderSystem.rect(x, y, dialogW, dialogH, accent, 1.5f);
-        RenderSystem.fill(x, y, dialogW, titleH, AppTheme.alpha(AppTheme.BG_2, 244));
-        RenderSystem.lineH(x, y + titleH, dialogW, AppTheme.STROKE_BRIGHT, 1f);
-        ctx.text.renderBold(title, x + 22, y + Math.max(0, (titleH - ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2f), accent, AppTheme.TEXT_BUTTON);
-        PixelIcon.draw("warn", x + 28, y + 84, 28, accent);
-        int lineY = y + 86;
-        for (final String line : lines) {
-            ctx.text.render(line, x + 72, lineY, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-            lineY += 26;
-        }
-        final Dimension ok = new Dimension(x + dialogW - 174, y + dialogH - 58, 150, 36);
-        errorDialogActionBounds = ok;
-        renderDialogAction(ok, buttonLabel, hotkey, "check", accent);
-        RenderSystem.restoreProjection();
-    }
-
-    private static void renderDialogAction(final Dimension bounds, final String label, final String hotkey,
-                                           final String icon, final Color accent) {
-        final boolean hover = bounds.contains(ctx.mouseX, ctx.mouseY);
-        Button.render(ctx.text, bounds.x(), bounds.y(), bounds.width(), bounds.height(),
-                label, hotkey, icon, 12, accent, accent, false, hover, true);
-    }
-
-    private static void renderBottomBar() {
-        ctx.configStatus.visible = "settings".equals(screens.currentName());
-        final String instructions = exitConfirmVisible ? "ENTER: Exit | ESC: Cancel"
-                : ctx.hasError() ? "ENTER/ESC: Close"
-                : screens.currentInstructions() + " | C: CRT " + (AppChrome.crtEnabled() ? "ON" : "OFF");
-        AppChrome.footer(ctx.text, ctx, ctx.windowWidth, ctx.windowHeight, instructions, -1f);
     }
 
     private static void openUploadLogsDialog() {
@@ -703,229 +857,24 @@ public class WaterMediaApp {
 
         // GLOBAL CRT TOGGLE — BUT NOT WHILE A TEXT FIELD IS FOCUSED, OR TYPING A 'c' WOULD BOTH INSERT THE
         // CHARACTER (VIA THE CHAR CALLBACK) AND FLIP THE CRT OVERLAY (M-02).
-        if (action == GLFW_RELEASE && key == GLFW_KEY_C && !screens.textInputFocused()) {
-            AppChrome.toggleCrt();
+        if (action == GLFW_RELEASE && key == GLFW_KEY_C && !root.textInputFocused()) {
+            ctx.crt = !ctx.crt;
+            // KEEP THE SHELL SPEC FIELD IN SYNC AND LET THE WATERCONFIG WORKER PERSIST THE TOGGLE
+            AppConfig.crt(ctx.crt);
+            ctx.requestRender();
             return;
         }
 
-        if (exitConfirmVisible) {
-            if (action == GLFW_RELEASE) {
-                if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
-                    running = false;
-                } else if (key == GLFW_KEY_ESCAPE) {
-                    exitConfirmVisible = false;
-                }
-            }
-            return;
-        }
-
-        // ERROR DIALOG TAKES PRIORITY
-        if (ctx.hasError()) {
-            if (action == GLFW_RELEASE && (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE)) {
-                ctx.clearError();
-            }
-            return;
-        }
-
-        screens.handleKey(key, action);
+        // THE TREE RESOLVES PRIORITY TOPMOST-FIRST — A VISIBLE GLOBAL DIALOG CONSUMES ESC/ENTER ITSELF
+        root.key(key, action);
     }
 
     private static void handleCharInput(final long window, final int codepoint) {
         ctx.requestRender();
-        if (ctx.hasError()) return;
-        screens.handleChar(codepoint);
+        root.character(codepoint);
     }
 
     // RESOURCE LOADING
-    // Icon and banner are decoded with ImageIO so they're available before
-    // CodecsAPI loads — this lets the loading splash render the banner.
-    private static void loadIcon() {
-        // WINDOW/TASKBAR ICON — THE OS SCALES IT DOWN SMALL, SO USE THE DEDICATED icon.png
-        try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
-            if (in != null) {
-                final BufferedImage img = ImageIO.read(in);
-                if (img != null) {
-                    final int w = img.getWidth(), h = img.getHeight();
-                    final ByteBuffer buffer = argbToRgbaBuffer(img);
-
-                    final GLFWImage.Buffer icons = GLFWImage.malloc(1);
-                    icons.position(0).width(w).height(h).pixels(buffer);
-                    glfwSetWindowIcon(ctx.windowHandle, icons);
-
-                    icons.free();
-                    MemoryUtil.memFree(buffer);
-                }
-            }
-        } catch (final Exception e) {
-            System.err.println("Failed to load window icon: " + e.getMessage());
-        }
-
-        // ON-SCREEN LOGO (TITLE BAR, LOADING SPLASH, HOME HERO) — RENDERED LARGE, SO USE THE HIGHER-RES pack.png
-        try (final InputStream in = IOTool.jarOpenFile("pack.png")) {
-            if (in == null) return;
-            final BufferedImage img = ImageIO.read(in);
-            if (img == null) return;
-
-            final int w = img.getWidth(), h = img.getHeight();
-            final ByteBuffer textureBuffer = argbToRgbaBuffer(img);
-            ctx.assets.iconWidth = w;
-            ctx.assets.iconHeight = h;
-            ctx.assets.iconId = RenderSystem.createTexture(w, h, textureBuffer);
-            MemoryUtil.memFree(textureBuffer);
-
-            final TextureData glow = createGlowTexture(img, new Color(110, 168, 255), 12, 0.72f);
-            ctx.assets.iconGlowId = glow.textureId();
-            ctx.assets.iconGlowWidth = glow.width();
-            ctx.assets.iconGlowHeight = glow.height();
-        } catch (final Exception e) {
-            System.err.println("Failed to load logo texture: " + e.getMessage());
-        }
-    }
-
-    private static void loadDuckFrames() {
-        final java.util.ArrayList<Integer> frames = new java.util.ArrayList<>();
-        int frameWidth = 0;
-        int frameHeight = 0;
-
-        for (int i = 0; ; i++) {
-            final String resource = String.format("assets/duck/%02d.png", i);
-            final InputStream stream = IOTool.jarOpenFile(resource);
-            if (stream == null) break;
-
-            try (stream) {
-                final BufferedImage img = ImageIO.read(stream);
-                if (img == null) continue;
-                if (frameWidth <= 0 || frameHeight <= 0) {
-                    frameWidth = img.getWidth();
-                    frameHeight = img.getHeight();
-                }
-
-                final ByteBuffer buffer = argbToRgbaBuffer(img);
-                frames.add(RenderSystem.createTexture(img.getWidth(), img.getHeight(), buffer));
-                MemoryUtil.memFree(buffer);
-            } catch (final Exception e) {
-                System.err.println("Failed to load duck frame " + resource + ": " + e.getMessage());
-            }
-        }
-
-        ctx.assets.duckFrameIds = frames.stream().mapToInt(Integer::intValue).toArray();
-        ctx.assets.duckFrameWidth = frameWidth;
-        ctx.assets.duckFrameHeight = frameHeight;
-    }
-
-    private static void loadBanner() {
-        try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
-            final BufferedImage img = ImageIO.read(in);
-            if (img == null) return;
-
-            ctx.assets.bannerWidth = img.getWidth();
-            ctx.assets.bannerHeight = img.getHeight();
-
-            final ByteBuffer buffer = argbToRgbaBuffer(img);
-            ctx.assets.bannerId = RenderSystem.createTexture(ctx.assets.bannerWidth, ctx.assets.bannerHeight, buffer);
-            MemoryUtil.memFree(buffer);
-
-            final TextureData glow = createGlowTexture(img, new Color(110, 168, 255), 48, 0.8f);
-            ctx.assets.bannerGlowId = glow.textureId();
-            ctx.assets.bannerGlowWidth = glow.width();
-            ctx.assets.bannerGlowHeight = glow.height();
-        } catch (final Exception e) {
-            System.err.println("Failed to load banner: " + e.getMessage());
-        }
-    }
-
-    private static TextureData createGlowTexture(final BufferedImage source, final Color color,
-                                                 final int radius, final float strength) {
-        final BufferedImage glow = createAlphaGlow(source, color, radius, strength);
-        final ByteBuffer buffer = argbToRgbaBuffer(glow);
-        final int textureId = RenderSystem.createTexture(glow.getWidth(), glow.getHeight(), buffer);
-        MemoryUtil.memFree(buffer);
-        return new TextureData(textureId, glow.getWidth(), glow.getHeight());
-    }
-
-    private static BufferedImage createAlphaGlow(final BufferedImage source, final Color color,
-                                                final int radius, final float strength) {
-        final int pad = Math.max(1, radius * 3);
-        final int w = source.getWidth() + pad * 2;
-        final int h = source.getHeight() + pad * 2;
-        int[] alpha = new int[w * h];
-
-        // EXTRAE SOLO LA SILUETA ALFA PARA QUE EL GLOW RESPETE PNGS TRANSPARENTES.
-        for (int y = 0; y < source.getHeight(); y++) {
-            for (int x = 0; x < source.getWidth(); x++) {
-                alpha[(y + pad) * w + x + pad] = (source.getRGB(x, y) >>> 24) & 0xFF;
-            }
-        }
-
-        for (int i = 0; i < 3; i++) {
-            alpha = boxBlur(alpha, w, h, radius);
-        }
-
-        final int[] pixels = new int[w * h];
-        final int rgb = color.getRGB() & 0x00FFFFFF;
-        for (int i = 0; i < alpha.length; i++) {
-            final int a = Math.min(255, Math.round(alpha[i] * strength));
-            pixels[i] = (a << 24) | rgb;
-        }
-
-        final BufferedImage glow = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-        glow.setRGB(0, 0, w, h, pixels, 0, w);
-        return glow;
-    }
-
-    private static int[] boxBlur(final int[] source, final int w, final int h, final int radius) {
-        final int[] horizontal = new int[w * h];
-        final int[] output = new int[w * h];
-        final int window = radius * 2 + 1;
-
-        // DOS PASADAS CON VENTANA DESLIZANTE: O(W*H) EN VEZ DE O(W*H*R).
-        for (int y = 0; y < h; y++) {
-            int sum = 0;
-            for (int x = -radius; x <= radius; x++) {
-                sum += source[y * w + clamp(x, 0, w - 1)];
-            }
-            for (int x = 0; x < w; x++) {
-                horizontal[y * w + x] = sum / window;
-                final int removeX = clamp(x - radius, 0, w - 1);
-                final int addX = clamp(x + radius + 1, 0, w - 1);
-                sum += source[y * w + addX] - source[y * w + removeX];
-            }
-        }
-
-        for (int x = 0; x < w; x++) {
-            int sum = 0;
-            for (int y = -radius; y <= radius; y++) {
-                sum += horizontal[clamp(y, 0, h - 1) * w + x];
-            }
-            for (int y = 0; y < h; y++) {
-                output[y * w + x] = sum / window;
-                final int removeY = clamp(y - radius, 0, h - 1);
-                final int addY = clamp(y + radius + 1, 0, h - 1);
-                sum += horizontal[addY * w + x] - horizontal[removeY * w + x];
-            }
-        }
-        return output;
-    }
-
-    private static int clamp(final int value, final int min, final int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static ByteBuffer argbToRgbaBuffer(final BufferedImage img) {
-        final int w = img.getWidth(), h = img.getHeight();
-        final int[] argb = new int[w * h];
-        img.getRGB(0, 0, w, h, argb, 0, w);
-        final ByteBuffer buffer = MemoryUtil.memAlloc(w * h * 4);
-        for (final int p: argb) {
-            buffer.put((byte) ((p >> 16) & 0xFF)); // R
-            buffer.put((byte) ((p >> 8) & 0xFF));  // G
-            buffer.put((byte) (p & 0xFF));         // B
-            buffer.put((byte) ((p >> 24) & 0xFF)); // A
-        }
-        buffer.flip();
-        return buffer;
-    }
-
     private static void loadSoundClick() {
         try (final InputStream in = IOTool.jarOpenFile("assets/duck.ogg")) {
             final byte[] soundBytes = in.readAllBytes();
@@ -959,9 +908,6 @@ public class WaterMediaApp {
         } catch (final Exception e) {
             System.err.println("Failed to load sound effect: " + e.getMessage());
         }
-    }
-
-    private record TextureData(int textureId, int width, int height) {
     }
 
     // BACKGROUND OPERATIONS
@@ -1688,6 +1634,7 @@ public class WaterMediaApp {
         // RELEASE COULD DESTROY IMAGES ON AN ALREADY-DESTROYED DEVICE.
         ctx.awaitPlayerRelease();
         RenderSystem.cleanup();
+        WinFrame.uninstall();
         glfwFreeCallbacks(ctx.windowHandle);
         glfwDestroyWindow(ctx.windowHandle);
         glfwTerminate();

@@ -63,9 +63,9 @@ public class ImgurPlatform implements IPlatform {
                     : String.format(GALLERY_URL, id);
 
             final GalleryResponse res = this.fetch(requestUrl, GalleryResponse.class);
-            if (res == null || !res.success() || res.data() == null || res.data().images() == null) {
+            if (!res.success() || res.data() == null || res.data().images() == null) {
                 throw new PlatformException(ImgurPlatform.class, "Gallery '" + id + "' response was empty or unsuccessful (status "
-                        + (res != null ? res.status() : "n/a") + ")");
+                        + res.status() + ")");
             }
 
             final Gallery data = res.data();

@@ -6,22 +6,37 @@ import me.srrapero720.waterconfig.WaterConfig;
 import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.IConfigField;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.bootstrap.app.AppConfig;
 import org.watermedia.bootstrap.app.AppContext;
-import org.watermedia.bootstrap.app.AudioEngine;
+import org.watermedia.bootstrap.app.element.Box;
+import org.watermedia.bootstrap.app.element.Button;
+import org.watermedia.bootstrap.app.element.Canvas;
+import org.watermedia.bootstrap.app.element.CheckBox;
+import org.watermedia.bootstrap.app.element.Dropdown;
+import org.watermedia.bootstrap.app.element.Element;
+import org.watermedia.bootstrap.app.element.Group;
+import org.watermedia.bootstrap.app.element.ListView;
+import org.watermedia.bootstrap.app.element.Parent;
+import org.watermedia.bootstrap.app.element.ParentScroll;
+import org.watermedia.bootstrap.app.element.SeekBar;
+import org.watermedia.bootstrap.app.element.SegmentedControl;
+import org.watermedia.bootstrap.app.element.Spinner;
+import org.watermedia.bootstrap.app.element.StatusSquare;
+import org.watermedia.bootstrap.app.element.Switch;
+import org.watermedia.bootstrap.app.element.Text;
+import org.watermedia.bootstrap.app.element.TextField;
+import org.watermedia.bootstrap.app.element.Theme;
+import org.watermedia.bootstrap.app.UiScale;
+import org.watermedia.bootstrap.app.WaterMediaApp;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.ui.AppChrome;
 import org.watermedia.bootstrap.app.ui.AppTheme;
-import org.watermedia.bootstrap.app.ui.Dimension;
-import org.watermedia.bootstrap.app.ui.PixelIcon;
+import org.watermedia.bootstrap.app.ui.Gravity;
+import org.watermedia.bootstrap.app.ui.Spacing;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
-import org.watermedia.bootstrap.app.view.Button;
-import org.watermedia.bootstrap.app.view.Canvas;
-import org.watermedia.bootstrap.app.view.ListView;
-import org.watermedia.bootstrap.app.view.View;
 import org.watermedia.tools.ThreadTool;
 
 import java.awt.Color;
+import java.awt.Font;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
@@ -30,66 +45,76 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Settings screen built from app-runtime settings plus WaterMediaConfig metadata.
+ * Settings screen reflecting WaterConfig specs as a fully retained view tree: a {@link Header} band, a
+ * horizontal strip of spec folder tabs with the reset action on its right edge, a clean left column of
+ * section entries and a {@link ListView} of setting rows whose controls are real widgets (switch,
+ * checkbox, segmented control, spinner, seek bar, text field). Enum settings that do not fit a segmented
+ * control use a {@link Dropdown} that opens a floating menu anchored to the control.
+ *
+ * <p>Both specs — the shell's own {@link AppConfig} and the instance {@code watermedia.toml} — are built
+ * through one reflective path over their registered {@link ConfigSpec}: the spec root acts as a "home"
+ * group named after the spec (listed first, hidden when the root has no settings) and nested groups
+ * render as an indented tree in the SECTIONS column, one indent level per nesting level. Selecting a
+ * node lists only its DIRECT settings — descendants are reached through their own tree nodes. The shell
+ * spec additionally carries two strictly non-portable runtime rows inside its {@code engines} section:
+ * the render engine and the UI scale (their {@code engine.cfg}/{@code uiscale.cfg} stores are read by
+ * the launcher and the early boot before any spec exists). Every row is a real option — no diagnostics.
+ * A row's description shows as an amber tooltip glued to the cursor while the row is hovered, and each
+ * spec tab carries a status pip fed by that spec's own autosave machine.</p>
  */
-public final class SettingsScreen extends ViewScreen {
+public final class SettingsScreen extends Screen {
 
-    private static final int SIDEBAR_W = 248;
-    private static final int ROW_H = 64;
-    private static final int BUTTON_H = 34;
+    private static final int SIDEBAR_W = 220;
+    private static final int ROW_H = 56;
     private static final int CONTROL_W = 320;
     private static final int CONTROL_H = 26;
-    private static final int SPEC_H = 56;
-    private static final int SPEC_STEP = 64;
-    private static final int SECTION_H = 46;
-    private static final int SECTION_STEP = 54;
+    // TALL ENOUGH FOR THE TITLE+SUBTITLE BLOCK (~35px) PLUS REAL BREATHING ROOM ABOVE AND BELOW —
+    // AT 48 THE TITLE SAT FLUSH AGAINST THE FOLDER'S TOP EDGE
+    private static final int TAB_H = 64;
+    private static final int SECTION_H = 36;
 
     private final Consumer<HomeScreen.Action> navigator;
     private final List<SettingSpec> specs = new ArrayList<>();
-    // SIDEBAR (SPEC/SECTION) AND RESET HIT-RECTS — DRAWN IN renderChrome, HIT-TESTED IN handleMouseClick
-    private final List<Hit> hits = new ArrayList<>();
+    // EVERY TEXT FIELD OF THE CURRENT ROWS — FOCUS IS RECONCILED AFTER EACH CLICK (ONE EDIT AT MOST)
+    private final List<TextField> textFields = new ArrayList<>();
 
-    // THE SECTION/SETTING ROWS LIVE IN A ListView THAT OWNS SCROLLING, HIT-TESTING AND KEYBOARD SELECTION
+    // TREE SLOTS — BUILT ONCE IN build(), REFILLED ON SPEC/SECTION SWITCHES
+    private Header header;
+    private TabRow tabs;
+    private Button reset;
+    private Parent sectionColumn;
+    private Text paneTitle;
+    private Text paneDetail;
     private ListView<Setting> list;
-    // ROWS CONTENT RECT, COMPUTED IN renderChrome AND RETURNED FROM THE CONTENT-RECT OVERRIDES
-    private int rowsX;
-    private int rowsY;
-    private int rowsW;
-    private int rowsH;
 
     private int activeSpecIndex;
     private int activeSectionIndex;
 
-    private boolean editing;
-    private Setting editingSetting;
-    private String editBuffer = "";
-    private String statusText = "READY";
-    private Color statusColor = AppTheme.TEXT_FAINT;
-    private boolean seekbarDragging;
-    private boolean skipDragClick;
-    private boolean saveAfterDrag;
-    private Setting draggedSeekbar;
-    private Dimension draggedSeekbarBounds = Dimension.ZERO;
-    private Setting dropdownSetting;
-    private Dimension dropdownBounds = Dimension.ZERO;
-    private final List<Dimension> dropdownOptionBounds = new ArrayList<>();
-    private SaveState saveState = SaveState.READY;
-    private int saveFailures;
-    // AUTOSAVE RUNS THE BLOCKING ConfigSpec.save() OFF THE RENDER THREAD. saving GATES CONCURRENT WRITERS;
-    // resavePending COALESCES A CHANGE THAT ARRIVES MID-SAVE INTO ONE FOLLOW-UP SAVE. TOUCHED ON THE RENDER
-    // THREAD (autosave + THE ctx.execute COMPLETION), VOLATILE SINCE A BACKGROUND SAVE IS IN PLAY.
-    private volatile boolean saving;
-    private volatile boolean resavePending;
-    // CACHE-SIZE LABEL FOR THE "Cache size" ROW — THE DIRECTORY WALK RUNS OFF THE RENDER THREAD SO THE ROW
-    // SUPPLIER NEVER BLOCKS render(). cacheSizeComputing GATES OVERLAPPING WALKS. "-- MB" IS THE UNCOMPUTED SENTINEL.
-    private volatile String cacheSize = "-- MB";
-    private volatile boolean cacheSizeComputing;
+    // ACTIVE TEXT EDIT — ENTER COMMITS THROUGH Setting.commit, ESC CANCELS (VALUE RE-SYNCS FROM THE SETTING)
+    private TextField editField;
+    private Setting editSetting;
+
+    // ENUM DROPDOWN POPUPS MOUNT INTO this.overlay(); popupKey REMEMBERS A NAV/DISMISS KEY A POPUP CONSUMED
+    // ON PRESS SO THE MATCHING RELEASE IS SWALLOWED INSTEAD OF FIRING A SCREEN SHORTCUT (BACK/ACTIVATE)
+    private int popupKey = -1;
+
+    // SEEKBAR GESTURES COALESCE INTO ONE SAVE, FLUSHED WHEN THE POINTER RELEASES (SEE onUpdate)
+    private boolean dragSave;
+
+    // ONE AUTOSAVE MACHINE PER SPEC (0 = APP, 1 = INSTANCE) FEEDING THAT SPEC'S TAB PIP. THE MACHINES
+    // OUTLIVE rebuildSpecs SO AN IN-FLIGHT SAVE KEEPS ITS COALESCING GATE ACROSS SCREEN RE-ENTRIES.
+    private final SaveMachine[] saves = {new SaveMachine(), new SaveMachine()};
+
+    // HOVERED ROW DESCRIPTION, REPUBLISHED EVERY DRAW PASS — FEEDS THE CURSOR TOOLTIP (SEE onDraw)
+    private String hoverNote;
 
     public SettingsScreen(final TextRenderer text, final AppContext ctx,
                           final Consumer<HomeScreen.Action> navigator) {
@@ -98,659 +123,211 @@ public final class SettingsScreen extends ViewScreen {
     }
 
     @Override
-    protected View<?> build() {
+    protected Element<?> build() {
+        // HEADER — VERSION TAG ONLY; THE RESET ACTION LIVES IN THE SPEC TAB STRIP BELOW
+        this.header = new Header().name("Settings").right("v" + WaterMedia.VERSION);
+
+        // SPEC TAB STRIP — HORIZONTAL FOLDER TABS UNDER THE HEADER WITH RESET PUSHED TO THE RIGHT EDGE:
+        // [ APP ] [ INSTANCE CONFIG ] .............................. [ RESET TO DEFAULT ]
+        this.reset = new Button("RESET TO DEFAULT").icon("reset")
+                .accent(AppTheme.AMBER).textColor(AppTheme.TEXT_SOFT)
+                .size(Math.max(190, Button.width(this.text, "RESET TO DEFAULT", "", "reset", 12) + 24), Theme.BUTTON)
+                .gravity(Gravity.CENTER)
+                .onClick(v -> {
+                    this.resetActiveSection();
+                    this.ctx.playSelectionSound();
+                });
+        this.tabs = new TabRow();
+        this.tabs.spacing(6).width(MAX_PARENT).height(TAB_H).padding(new Spacing(12, 22, 0, 22));
+
+        // SECTIONS — CLEAN LEFT COLUMN, MRL-STYLE: HEAD ROW (NEON BAR + LABEL) OVER A FLAT PLATE
+        this.sectionColumn = Parent.column().spacing(2).width(MAX_PARENT);
+        final Parent sections = Parent.column().spacing(10)
+                .size(SIDEBAR_W, MAX_PARENT)
+                .padding(new Spacing(8, 4, 8, 4))
+                .background(AppTheme.alpha(AppTheme.BG_1, 150))
+                .add(Parent.row().spacing(8).width(MAX_PARENT).height(24)
+                        .add(new Box().size(4, 20).background(AppTheme.NEON).glow(AppTheme.NEON, 0.16f).gravity(Gravity.CENTER))
+                        .add(new Text("SECTIONS").bold(true).scale(AppTheme.TEXT_SECTION).color(AppTheme.NEON).gravity(Gravity.CENTER)))
+                .add(new ParentScroll().scrollbarWidth(3).size(MAX_PARENT, MAX_PARENT).add(this.sectionColumn));
+
+        // SETTINGS PANE — MRL-STYLE HEAD ROW (NEON BAR + TITLE + DETAIL) OVER THE OPEN ROW LIST
+        this.paneTitle = new Text().bold(true).color(AppTheme.NEON).scale(AppTheme.TEXT_SECTION).gravity(Gravity.CENTER);
+        this.paneDetail = new Text().color(AppTheme.TEXT_FAINT).scale(AppTheme.TEXT_BODY).gravity(Gravity.CENTER).width(MAX_PARENT);
         this.list = new ListView<Setting>()
-                .rowHeight(ROW_H - 8)
+                .rowHeight(ROW_H)
                 .spacing(8)
                 .rowFactory((setting, index) -> {
-                    final RowView row = new RowView(setting, index);
-                    // HOVER SELECTS THE ROW (selectOnHover) AND CHIMES ON CHANGE, LIKE THE LEGACY handleMouseMove
-                    row.onHover(v -> { if (!v.selected()) this.ctx.playSelectionSound(); });
+                    final RowElement row = new RowElement(setting);
+                    // HOVER SELECTS THE ROW (selectOnHover) AND CHIMES ON CHANGE, LIKE THE LEGACY SCREEN
+                    row.onHover(v -> {
+                        if (!v.selected()) this.ctx.playSelectionSound();
+                    });
                     return row;
                 })
+                .onSelect((setting, index) -> this.activateBody(setting))
                 .selectOnHover(true)
                 .scrollbarWidth(4)
                 // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
                 .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
                 .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
-                .width(View.MATCH_PARENT)
-                .height(View.MATCH_PARENT);
-        return this.list;
+                .size(MAX_PARENT, MAX_PARENT);
+        final Parent pane = Parent.column().spacing(10)
+                .size(MAX_PARENT, MAX_PARENT)
+                .padding(new Spacing(8, 0, 0, 18))
+                .add(Parent.row().spacing(8).width(MAX_PARENT).height(24)
+                        .add(new Box().size(4, 20).background(AppTheme.NEON).glow(AppTheme.NEON, 0.16f).gravity(Gravity.CENTER))
+                        .add(this.paneTitle)
+                        .add(this.paneDetail))
+                .add(this.list);
+
+        // CONTENT — SECTIONS PLATE | HAIRLINE RULE | OPEN ROWS, ALL DIRECTLY OVER THE SHELL BACKGROUND
+        return Parent.column().size(MAX_PARENT, MAX_PARENT)
+                .add(this.header)
+                .add(this.tabs)
+                .add(Parent.row().size(MAX_PARENT, MAX_PARENT)
+                        .padding(new Spacing(14, 22, 10, 22))
+                        .add(sections)
+                        .add(new Box().size(1, MAX_PARENT).background(AppTheme.STROKE_BRIGHT))
+                        .add(pane));
     }
 
     @Override
     public void onEnter() {
-        super.onEnter(); // ensureBuilt() — CONSTRUCTS THE ROW ListView ONCE
+        super.onEnter(); // ensureBuilt() — CONSTRUCTS THE TREE ONCE
         this.rebuildSpecs();
-        this.editing = false;
-        this.editingSetting = null;
-        this.editBuffer = "";
+        this.syncNav();
         this.populateRows();
-        this.updateConfigStatus(this.activeSpec());
-        this.refreshCacheSize(); // RE-WALK THE CACHE OFF-THREAD ON ENTRY SO A POST-CLEANUP SIZE STAYS FRESH
     }
 
-    // (RE)LOADS THE ACTIVE SECTION'S SETTINGS INTO THE ROW LIST AND RESETS THE SELECTION TO THE TOP
-    private void populateRows() {
+    @Override
+    protected void onUpdate() {
         final SettingSection section = this.activeSection();
-        this.list.items(section == null ? List.of() : section.settings);
-        this.list.selection(section == null || section.settings.isEmpty() ? -1 : 0);
-    }
-
-    private void rebuildSpecs() {
-        this.specs.clear();
-        this.specs.add(this.buildAppSpec());
-        this.specs.add(this.buildInstanceSpec());
-        if (this.activeSpecIndex >= this.specs.size()) this.activeSpecIndex = Math.max(0, this.specs.size() - 1);
-        this.clampSelection();
-    }
-
-    private SettingSpec buildAppSpec() {
-        final SettingSpec spec = new SettingSpec("App", "runtime shell", false, null);
-
-        final SettingSection general = new SettingSection("General", "Bootstrap UI behavior");
-        general.settings.add(new RuntimeSetting("CRT overlay", "app.general.crtOverlay", "BOOL",
-                "Global scanline/glow treatment. Keyboard shortcut: C.",
-                () -> AppChrome.crtEnabled() ? "ON" : "OFF",
-                () -> AppChrome.crtEnabled(),
-                value -> {
-                    if (value != AppChrome.crtEnabled()) AppChrome.toggleCrt();
-                },
-                true));
-        general.settings.add(new RuntimeSetting("Selection sound", "app.general.selectionSound", "BOOL",
-                "Enable the UI tick used by menu and settings navigation.",
-                () -> this.ctx.selectionSoundEnabled ? "ON" : "OFF",
-                () -> this.ctx.selectionSoundEnabled,
-                value -> this.ctx.selectionSoundEnabled = value,
-                true));
-        general.settings.add(new RuntimeEnumSetting<>("Audio engine", "app.general.audioEngine", "ENUM",
-                "Audio backend used when opening a player: OpenAL or the native Java Sound engine. Applies to the next media you open.",
-                AudioEngine.values(),
-                () -> this.ctx.audioEngine,
-                value -> this.ctx.audioEngine = value,
-                AudioEngine.OPENAL));
-        general.settings.add(new ReadOnlySetting("Audio device", "app.general.audioDevice", "STATE",
-                "OpenAL output used by the bootstrap shell.",
-                () -> this.ctx.audioError ? "ERROR" : this.ctx.audioReady ? "READY" : "OFFLINE"));
-        spec.sections.add(general);
-
-        final SettingSection renderer = new SettingSection("Renderer", "Current bootstrap render backend");
-        renderer.settings.add(new ReadOnlySetting("Render backend", "app.renderer.backend", "STATE",
-                "The graphics engine the app is running on right now.",
-                () -> RenderSystem.engineName().toUpperCase(Locale.ROOT)));
-        renderer.settings.add(new RuntimeEnumSetting<>("Engine (next launch)", "app.renderer.engine", "ENUM",
-                "Graphics engine used the next time the app launches — OpenGL or Vulkan. Restart the app to apply. Vulkan falls back to OpenGL if unsupported.",
-                RenderSystem.Engine.values(),
-                () -> {
-                    final RenderSystem.Engine pref = RenderSystem.enginePreference();
-                    return pref != null ? pref : RenderSystem.engineKind();
-                },
-                RenderSystem::saveEnginePreference,
-                RenderSystem.Engine.OPENGL));
-        renderer.settings.add(new ReadOnlySetting("Window", "app.renderer.window", "SIZE",
-                "Current framebuffer size.",
-                () -> this.ctx.windowWidth + "x" + this.ctx.windowHeight));
-        renderer.settings.add(new ReadOnlySetting("FFmpeg", "app.renderer.ffmpeg", "STATE",
-                "Media playback backend availability.",
-                () -> FFMediaPlayer.loaded() ? "LOADED" : FFMediaPlayer.loadError() ? "ERROR" : "UNLOADED"));
-        spec.sections.add(renderer);
-
-        final SettingSection cache = new SettingSection("Cache", "App cache and diagnostics helpers");
-        cache.settings.add(new ReadOnlySetting("Cache path", "app.cache.path", "PATH",
-                "WaterMedia temporary cache directory.",
-                () -> safePath(() -> WaterMedia.tmp().resolve("cache"))));
-        cache.settings.add(new ReadOnlySetting("Cache size", "app.cache.size", "STATE",
-                "Use the main menu cleanup flow to remove these files.",
-                this::cacheSizeLabel));
-        cache.settings.add(new ReadOnlySetting("Upload logs", "app.diagnostics.uploadLogs", "STATE",
-                "Minecraft context is required for log collection.",
-                () -> AppContext.IN_MODS ? "AVAILABLE" : "MINECRAFT ONLY"));
-        spec.sections.add(cache);
-
-        return spec;
-    }
-
-    private SettingSpec buildInstanceSpec() {
-        final ConfigSpec configSpec = this.waterMediaConfigSpec();
-        final SettingSpec spec = new SettingSpec("Instance config", "watermedia.toml", true, configSpec);
-        if (configSpec == null) {
-            final SettingSection unavailable = new SettingSection("Unavailable", "WaterConfig did not expose the active spec");
-            unavailable.settings.add(new ReadOnlySetting("WaterMediaConfig", "watermedia", "STATE",
-                    "The app could not read the registered WaterConfig spec.",
-                    () -> WaterConfig.isRegistered(WaterMedia.ID) ? "REGISTERED" : "NOT REGISTERED"));
-            spec.sections.add(unavailable);
-            return spec;
-        }
-
-        this.collectConfigSections(configSpec, "", spec);
-        if (spec.sections.isEmpty()) {
-            final SettingSection empty = new SettingSection("Empty", "No fields were discovered");
-            empty.settings.add(new ReadOnlySetting("WaterMediaConfig", WaterMedia.ID, "STATE",
-                    "No configurable fields were discovered in the active spec.",
-                    () -> "EMPTY"));
-            spec.sections.add(empty);
-        }
-        return spec;
-    }
-
-    @SuppressWarnings("unchecked")
-    private ConfigSpec waterMediaConfigSpec() {
-        if (!WaterConfig.isRegistered(WaterMedia.ID)) return null;
-        try {
-            final Class<?> registry = Class.forName("me.srrapero720.waterconfig.WaterConfigRegistry");
-            final Field specsField = registry.getDeclaredField("SPECS");
-            specsField.setAccessible(true);
-            final Map<String, ConfigSpec> registered = (Map<String, ConfigSpec>) specsField.get(null);
-            return registered.get(WaterMedia.ID);
-        } catch (final ReflectiveOperationException | ClassCastException e) {
-            return null;
+        // THE HEADER SUBTITLE SHOWS THE ACTIVE TREE PATH ("engines" OR "group1 / group2")
+        this.header.sub(section == null ? "" : section.path.toLowerCase(Locale.ROOT));
+        this.paneTitle.text(section == null ? "" : section.name.toUpperCase(Locale.ROOT));
+        this.paneDetail.text(section == null ? "" : section.detail);
+        // FLUSH THE PER-GESTURE SEEKBAR SAVE ONCE THE POINTER RELEASED (LEGACY saveAfterDrag SEMANTICS)
+        if (this.dragSave && !this.ctx.mouseDown) {
+            this.dragSave = false;
+            this.autosave();
         }
     }
 
-    private void collectConfigSections(final ConfigGroup group, final String parentPath, final SettingSpec spec) {
-        final String groupName = group.name();
-        final boolean root = group instanceof ConfigSpec;
-        final String groupPath = root ? "" : parentPath.isEmpty() ? groupName : parentPath + "." + groupName;
-        final SettingSection section = root ? null : new SettingSection(titleCase(groupName), groupPath);
-        final Collection<IConfigField<?, ?>> fields = group.getFields();
+    @Override
+    public boolean continuous() {
+        // KEEP PAINTING WHILE ANY SPEC'S SAVE PULSES ITS TAB PIP, WHILE A CARET BLINKS, OR UNTIL A
+        // DRAG-SAVE FLUSHES
+        for (final SaveMachine save: this.saves) {
+            if (save.state == SaveState.SAVING || save.state == SaveState.RESAVING) return true;
+        }
+        return this.textInputActive() || this.dragSave;
+    }
 
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof ConfigGroup child) {
-                continue;
+    @Override
+    protected void onDraw(final Canvas canvas) {
+        // THE HOVERED ROW REPUBLISHES ITS DESCRIPTION WHILE THE TREE DRAWS; THE TOOLTIP THEN PAINTS
+        // LAST SO IT FLOATS ABOVE EVERYTHING (ROWS, SECTION COLUMN AND DROPDOWN POPUPS) WITHOUT EVER
+        // ENTERING INPUT DISPATCH — IT IS PURE PAINT, HENCE INPUT-TRANSPARENT BY CONSTRUCTION
+        this.hoverNote = null;
+        super.onDraw(canvas);
+        final String note = this.hoverNote;
+        // NO NOTE, NO TOOLTIP; HOVER IS FROZEN DURING A TEXT EDIT, SO THE TOOLTIP HIDES THERE TOO
+        if (note == null || this.editField != null) return;
+        // AMBER CURSOR TOOLTIP — GREEDY WORD WRAP INTO THE WIDTH BUDGET, POSITIONED AT A SMALL OFFSET
+        // FROM THE CURSOR AND CLAMPED TO THE WINDOW EDGES (FLIPS ABOVE THE CURSOR NEAR THE BOTTOM)
+        final int pad = 10;
+        final int maxW = Math.min(340, canvas.windowWidth() - pad * 2 - 8);
+        final List<String> lines = new ArrayList<>();
+        String line = "";
+        int textW = 0;
+        for (String word: note.split(" ")) {
+            if (word.isEmpty()) continue;
+            if (canvas.textWidth(word, AppTheme.TEXT_BODY, false) > maxW) {
+                word = canvas.text().truncateToWidth(word, maxW, AppTheme.TEXT_BODY);
             }
-            if (section != null) {
-                final String path = groupPath.isEmpty() ? field.name() : groupPath + "." + field.name();
-                section.settings.add(new ConfigSetting(field, path));
+            final String joined = line.isEmpty() ? word : line + " " + word;
+            if (!line.isEmpty() && canvas.textWidth(joined, AppTheme.TEXT_BODY, false) > maxW) {
+                textW = Math.max(textW, canvas.textWidth(line, AppTheme.TEXT_BODY, false));
+                lines.add(line);
+                line = word;
+            } else {
+                line = joined;
             }
         }
-
-        if (section != null && !section.settings.isEmpty()) {
-            spec.sections.add(section);
+        if (!line.isEmpty()) {
+            textW = Math.max(textW, canvas.textWidth(line, AppTheme.TEXT_BODY, false));
+            lines.add(line);
         }
-
-        for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof ConfigGroup child) {
-                this.collectConfigSections(child, groupPath, spec);
-            }
+        if (lines.isEmpty()) return;
+        final int lineH = canvas.textHeight(AppTheme.TEXT_BODY, false) + 4;
+        final int boxW = textW + pad * 2;
+        final int boxH = lines.size() * lineH - 4 + pad * 2;
+        int tx = (int) this.ctx.mouseX + 14;
+        int ty = (int) this.ctx.mouseY + 18;
+        if (tx + boxW > canvas.windowWidth() - 4) tx = canvas.windowWidth() - 4 - boxW;
+        if (ty + boxH > canvas.windowHeight() - 4) ty = (int) this.ctx.mouseY - boxH - 10;
+        tx = Math.max(4, tx);
+        ty = Math.max(4, ty);
+        canvas.fill(tx, ty, boxW, boxH, AppTheme.alpha(AppTheme.BG_1, 244));
+        canvas.stroke(tx, ty, boxW, boxH, AppTheme.AMBER, 1f);
+        canvas.glow(tx, ty, boxW, boxH, 0f, AppTheme.AMBER, 0.14f);
+        int lineY = ty + pad;
+        for (final String row: lines) {
+            canvas.text(row, tx + pad, lineY, AppTheme.TEXT, AppTheme.TEXT_BODY, false);
+            lineY += lineH;
         }
     }
 
     @Override
-    public void render(final int windowW, final int windowH) {
-        super.render(windowW, windowH); // CHROME (renderChrome) THEN THE ROW TREE (ListView)
-        // THE DROPDOWN MENU OVERLAYS EVERYTHING, FULL-WINDOW AND UN-CLIPPED, SO IT PAINTS LAST
-        if (this.dropdownSetting != null) {
-            RenderSystem.setupOrtho(windowW, windowH);
-            this.renderDropdownMenu();
-            RenderSystem.restoreProjection();
+    public List<Keybind> keybinds() {
+        if (this.editField != null) {
+            return List.of(
+                    new Keybind("ENTER", "Commit"),
+                    new Keybind("BACKSPACE", "Delete"),
+                    new Keybind("ESC", "Cancel"));
         }
+        return List.of(
+                new Keybind("UP/DOWN", "Field"),
+                new Keybind("LEFT/RIGHT", "Change"),
+                new Keybind("TAB", "Spec"),
+                new Keybind("PGUP/PGDN", "Section"),
+                new Keybind("R", "Reset"),
+                new Keybind("ESC", "Back"));
     }
+
+    // ==========================================================================
+    // INPUT — TREE DISPATCH FIRST, THEN THE SCREEN SHORTCUTS (GLFW_RELEASE, LEGACY SEMANTICS)
+    // ==========================================================================
 
     @Override
-    protected void renderChrome(final int windowW, final int windowH) {
-        final SettingSpec spec = this.activeSpec();
-        final SettingSection section = this.activeSection();
-        this.updateConfigStatus(spec);
-        final String version = "v" + WaterMedia.VERSION;
-        AppChrome.screen(this.text, this.ctx, windowW, windowH,
-                "Settings", section == null ? "" : section.name.toLowerCase(Locale.ROOT), version);
-
-        this.hits.clear();
-        // THE OPEN DROPDOWN CONTROL RE-CAPTURES ITS BOUNDS EACH FRAME WHILE THE ROW TREE DRAWS; RESET THEM HERE
-        this.dropdownBounds = Dimension.ZERO;
-        this.dropdownOptionBounds.clear();
-
-        this.renderHeaderReset(windowW);
-        final int x = 22;
-        final int y = AppChrome.contentTop() + 10;
-        final int bottom = AppChrome.contentBottom(windowH);
-        final int h = Math.max(160, bottom - y);
-        final int paneX = x + SIDEBAR_W + 18;
-        final int paneW = Math.max(320, windowW - paneX - x);
-
-        RenderSystem.setupOrtho(windowW, windowH);
-        this.renderSidebar(x, y, SIDEBAR_W, h, spec);
-        this.renderPaneFrame(paneX, y, paneW, h, section);
-        RenderSystem.restoreProjection();
-
-        // STORE THE ROWS CONTENT RECT — THE ListView LAYS ITS ROWS OUT INSIDE THIS BOX (SEE controlBounds MATH)
-        final int headerH = 74;
-        this.rowsX = paneX + 20;
-        this.rowsY = y + headerH + 10;
-        this.rowsW = paneW - 40;
-        this.rowsH = Math.max(ROW_H, h - headerH - 20);
-    }
-
-    @Override
-    protected int contentX(final int windowW, final int windowH) {
-        return this.rowsX;
-    }
-
-    @Override
-    protected int contentY(final int windowW, final int windowH) {
-        return this.rowsY;
-    }
-
-    @Override
-    protected int contentW(final int windowW, final int windowH) {
-        return this.rowsW;
-    }
-
-    @Override
-    protected int contentH(final int windowW, final int windowH) {
-        return this.rowsH;
-    }
-
-    @Override
-    public boolean wantsContinuousRender() {
-        // ALSO REPAINT WHILE EDITING TEXT (CARET BLINK) OR WHILE A DROPDOWN IS OPEN (HOVER/ANIM)
-        return this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING
-                || this.editing || this.dropdownSetting != null;
-    }
-
-    private void renderHeaderReset(final int windowW) {
-        final String label = "RESET TO DEFAULT";
-        final int w = Math.max(190, this.text.widthBold(label, AppTheme.TEXT_BUTTON) + 58);
-        final Dimension bounds = new Dimension(windowW - w - 32, AppChrome.TITLEBAR_H + 58, w, BUTTON_H);
-        RenderSystem.setupOrtho(this.ctx.windowWidth, this.ctx.windowHeight);
-        this.renderActionButton(bounds, label, AppTheme.AMBER, bounds.contains(this.ctx.mouseX, this.ctx.mouseY));
-        RenderSystem.restoreProjection();
-        this.hits.add(new Hit(bounds, HitType.RESET, -1));
-    }
-
-    private void renderSidebar(final int x, final int y, final int w, final int h, final SettingSpec active) {
-        AppChrome.panel(x, y, w, h, true);
-        this.text.renderBold("SPECS", x + 18, y + 18, AppTheme.NEON, AppTheme.TEXT_BODY);
-
-        int cursorY = y + 46;
-        for (int i = 0; i < this.specs.size(); i++) {
-            final SettingSpec spec = this.specs.get(i);
-            final Dimension bounds = new Dimension(x + 14, cursorY, w - 28, SPEC_H);
-            this.renderSidebarButton(bounds, spec.title, spec.subtitle, i == this.activeSpecIndex, i == 0 ? AppTheme.CYAN : AppTheme.AMBER);
-            this.hits.add(new Hit(bounds, HitType.SPEC, i));
-            cursorY += SPEC_STEP;
+    public boolean dispatchKey(final int key, final int action) {
+        // AN OPEN ENUM DROPDOWN MENU IS MODAL FOR THE KEYBOARD (LEGACY PARITY): IT OWNS ITS DISMISS KEYS
+        // AND THE SCREEN SWALLOWS EVERYTHING ELSE SO NO SHORTCUT FIRES UNDER THE MENU. BECAUSE THE MENU
+        // CLOSES ON THE ESC/ENTER *PRESS*, popupKey CARRIES THAT KEY TO ITS RELEASE SO THE SCREEN'S BACK /
+        // ACTIVATE NEVER DOUBLE-FIRES ON THE FOLLOW-UP RELEASE.
+        final boolean popupOpen = !this.overlay().children().isEmpty();
+        if (super.dispatchKey(key, action)) { // POPUP DISMISS / FOCUSED FIELD BACKSPACE
+            if (popupOpen && action != GLFW_RELEASE) this.popupKey = key;
+            return true;
         }
-
-        cursorY += 8;
-        RenderSystem.lineH(x + 14, cursorY, w - 28, AppTheme.STROKE_BRIGHT, 1f);
-        cursorY += 18;
-        this.text.renderBold("SECTIONS", x + 18, cursorY, AppTheme.NEON, AppTheme.TEXT_BODY);
-        cursorY += 28;
-
-        if (active == null) return;
-        for (int i = 0; i < active.sections.size(); i++) {
-            final SettingSection section = active.sections.get(i);
-            final Dimension bounds = new Dimension(x + 14, cursorY, w - 28, SECTION_H);
-            final boolean selected = i == this.activeSectionIndex;
-            final Color accent = selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
-            if (selected) {
-                RenderSystem.glowRect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0f, AppTheme.NEON, 0.20f);
-                RenderSystem.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), AppTheme.alpha(AppTheme.NEON_DARK, 42));
-            }
-            RenderSystem.rect(bounds.x(), bounds.y(), bounds.width(), bounds.height(), selected ? AppTheme.NEON : AppTheme.STROKE, 1f);
-            this.renderSelectionCube(bounds.x() + 10, bounds.y() + 15, selected);
-            this.text.renderBold(this.text.truncateToWidth(section.name.toUpperCase(Locale.ROOT), bounds.width() - 46, AppTheme.TEXT_BODY, java.awt.Font.BOLD),
-                    bounds.x() + 28, this.centerBoldTextY(bounds.y(), bounds.height(), AppTheme.TEXT_BODY), accent, AppTheme.TEXT_BODY);
-            this.hits.add(new Hit(bounds, HitType.SECTION, i));
-            cursorY += SECTION_STEP;
-            if (cursorY + SECTION_STEP > y + h - 12) break;
+        if (popupOpen) return true;
+        if (key == this.popupKey) {
+            if (action == GLFW_RELEASE) this.popupKey = -1;
+            return true;
         }
-    }
-
-    private void renderSidebarButton(final Dimension b, final String title, final String subtitle,
-                                     final boolean selected, final Color accent) {
-        if (selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, accent, 0.24f);
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(),
-                selected ? AppTheme.alpha(AppTheme.BG_3, 230) : AppTheme.alpha(AppTheme.BG_2, 180));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? accent : AppTheme.STROKE_BRIGHT, selected ? 1.5f : 1f);
-        this.renderSelectionCube(b.x() + 11, b.y() + 20, selected);
-        this.text.renderBold(title.toUpperCase(Locale.ROOT), b.x() + 30, b.y() + 9, selected ? accent : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON);
-        this.text.render(this.text.truncateToWidth(subtitle.toUpperCase(Locale.ROOT), b.width() - 42, AppTheme.TEXT_SUBTITLE),
-                b.x() + 30, b.y() + 33, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-    }
-
-    private void renderSelectionCube(final int x, final int y, final boolean selected) {
-        RenderSystem.rect(x, y, 8, 8, selected ? AppTheme.AMBER : AppTheme.TEXT_FAINT, 1f);
-        if (selected) {
-            RenderSystem.fill(x + 1, y + 1, 6, 6, AppTheme.AMBER);
-            RenderSystem.glowRect(x, y, 8, 8, 0f, AppTheme.AMBER, 0.35f);
-        }
-    }
-
-    // DRAWS THE SETTINGS PANE FRAME (PANEL + SECTION HEADER + DIVIDER); THE ROWS THEMSELVES ARE THE ListView
-    private void renderPaneFrame(final int x, final int y, final int w, final int h, final SettingSection section) {
-        AppChrome.panel(x, y, w, h, true);
-        if (section == null) return;
-
-        final int headerH = 74;
-        final int titleX = x + 20;
-        this.text.renderBold(section.name.toUpperCase(Locale.ROOT), titleX, y + 16, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION);
-        this.text.render(this.text.truncateToWidth(section.detail, Math.max(80, w - 360)),
-                titleX, y + 44, AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-
-        RenderSystem.lineH(x, y + headerH, w, AppTheme.STROKE_BRIGHT, 1f);
-    }
-
-    private void renderActionButton(final Dimension b, final String label, final Color accent, final boolean hover) {
-        // ALWAYS ENABLED, NO HOTKEY; accent IS THE BORDER, TEXT_SOFT DRIVES THE CHECK ICON + LABEL
-        Button.render(this.text, b.x(), b.y(), b.width(), b.height(),
-                label, "", "check", 12, accent, AppTheme.TEXT_SOFT, false, hover, true);
-    }
-
-    private void renderSettingRow(final Setting setting, final Dimension b, final boolean selected) {
-        final Color accent = setting.accent();
-        if (selected) {
-            RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(AppTheme.NEON_DARK, 36));
-            RenderSystem.lineV(b.x(), b.y() + 6, b.height() - 12, accent, 3f);
-            RenderSystem.glowRect(b.x(), b.y() + 4, b.width(), b.height() - 8, 0f, accent, 0.14f);
-        }
-
-        for (int dx = b.x(); dx < b.right(); dx += 8) {
-            RenderSystem.fill(dx, b.bottom() - 1, 4, 1, AppTheme.alpha(AppTheme.STROKE_BRIGHT, 76));
-        }
-
-        final Dimension control = this.controlBounds(b, setting);
-        final int labelMaxW = Math.max(80, control.x() - b.x() - 30);
-        final boolean detailed = selected && !setting.note.isBlank();
-        final int labelY = detailed ? b.y() + 10 : this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY);
-        this.text.renderBold(this.text.truncateToWidth(setting.label.toUpperCase(Locale.ROOT), labelMaxW, AppTheme.TEXT_BODY, java.awt.Font.BOLD),
-                b.x() + 18, labelY, selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-
-        if (detailed) {
-            this.text.render(this.text.truncateToWidth(setting.note, labelMaxW, AppTheme.TEXT_SUBTITLE),
-                    b.x() + 18, b.y() + 35, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        }
-
-        this.renderSettingControl(setting, control, selected);
-    }
-
-    private Dimension controlBounds(final Dimension row, final Setting setting) {
-        final int maxW = Math.max(120, row.width() - 160);
-        final int w = Math.min(this.controlWidth(setting), maxW);
-        return new Dimension(row.right() - w - 14, row.y() + Math.max(0, (row.height() - CONTROL_H) / 2), w, CONTROL_H);
-    }
-
-    private int controlWidth(final Setting setting) {
-        if (setting.isBooleanControl()) return 72;
-        if (setting.isEnumControl()) {
-            final int valueW = this.text.widthBold(setting.widestValueLabel().toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY);
-            return Math.max(150, valueW + 68);
-        }
-        if (setting.isSpinnerControl()) {
-            final String suffix = setting.suffix();
-            final int suffixW = suffix.isBlank() ? 0 : this.text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16;
-            final int valueW = this.text.width(setting.widestValueLabel(), AppTheme.TEXT_BODY);
-            return Math.max(190, valueW + suffixW + 110);
-        }
-        if (setting.isSeekbarControl()) return CONTROL_W;
-        if (Path.class.isAssignableFrom(setting.valueType())) return CONTROL_W + 120;
-        return CONTROL_W;
-    }
-
-    private void renderSettingControl(final Setting setting, final Dimension b, final boolean selected) {
-        if (!setting.mutable || setting.control() == Control.LABEL) {
-            this.renderReadOnlyControl(setting, b);
-            return;
-        }
-
-        switch (setting.control()) {
-            case SWITCH -> this.renderSwitchControl(b, setting.booleanValue(), selected);
-            case CHECKBOX -> this.renderCheckboxControl(b, setting.booleanValue(), selected);
-            case SEEKBAR, RANGE_SLIDER, KNOB -> {
-                if (setting.isSeekbarControl()) {
-                    this.renderSeekbarControl(setting, b, selected);
-                } else {
-                    this.renderSpinnerControl(setting, b, selected);
+        if (this.editField != null) {
+            // EDIT MODE SWALLOWS THE KEYBOARD; COMMIT/CANCEL ON RELEASE LIKE THE LEGACY SCREEN
+            if (action == GLFW_RELEASE) {
+                if (key == GLFW_KEY_ESCAPE) {
+                    this.closeEdit();
+                } else if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
+                    this.commitEdit();
                 }
             }
-            case NUMBER_SPINNER -> this.renderSpinnerControl(setting, b, selected);
-            case DROPDOWN -> this.renderDropdownControl(setting, b, selected);
-            case RADIO_BUTTON, LIST_SPINNER, SEGMENTED -> this.renderEnumControl(setting, b, selected);
-            case LIST_EDITOR, TAG_INPUT, CHECKBOX_LIST -> this.renderReadOnlyControl(setting, b);
-            default -> this.renderTextFieldControl(setting, b, selected);
+            return true;
         }
-    }
-
-    private void renderReadOnlyControl(final Setting setting, final Dimension b) {
-        final String value = setting.valueLabel();
-        final int w = Math.min(b.width(), Math.max(112, this.text.width(value, AppTheme.TEXT_BODY) + 30));
-        final int x = b.right() - w;
-        final Color color = statusColor(value);
-        AppChrome.statusPip(x + 9, b.y() + 8, 10, color, true);
-        this.text.render(this.text.truncateToWidth(value.toUpperCase(Locale.ROOT), w - 28),
-                x + 27, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY), color, AppTheme.TEXT_BODY);
-    }
-
-    private void renderSwitchControl(final Dimension b, final boolean on, final boolean selected) {
-        final int w = 48;
-        final int h = 22;
-        final int x = b.right() - w;
-        final int y = b.y() + 2;
-        final Color border = selected || on ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
-        if (on || selected) RenderSystem.glowRect(x, y, w, h, 0f, on ? AppTheme.AMBER : AppTheme.NEON, on ? 0.32f : 0.18f);
-        RenderSystem.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, 210));
-        RenderSystem.rect(x, y, w, h, border, 1f);
-        final int knob = h - 4;
-        final int knobX = on ? x + w - knob - 2 : x + 2;
-        RenderSystem.fill(knobX, y + 2, knob, knob, on ? AppTheme.AMBER : AppTheme.NEON_LIGHT);
-    }
-
-    private void renderCheckboxControl(final Dimension b, final boolean on, final boolean selected) {
-        final int size = 22;
-        final int x = b.right() - size;
-        final int y = b.y() + Math.max(0, (b.height() - size) / 2);
-        final Color border = selected || on ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
-        if (on || selected) RenderSystem.glowRect(x, y, size, size, 0f, on ? AppTheme.GREEN : AppTheme.NEON, on ? 0.30f : 0.16f);
-        RenderSystem.fill(x, y, size, size, AppTheme.alpha(AppTheme.BG_1, 210));
-        RenderSystem.rect(x, y, size, size, border, 1f);
-        if (on) PixelIcon.draw("check", x + 4, y + 4, 14, AppTheme.GREEN);
-    }
-
-    private void renderEnumControl(final Setting setting, final Dimension b, final boolean selected) {
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(AppTheme.BG_1, 210));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, 1f);
-        RenderSystem.lineV(b.x() + 26, b.y(), b.height(), AppTheme.STROKE, 1f);
-        RenderSystem.lineV(b.right() - 26, b.y(), b.height(), AppTheme.STROKE, 1f);
-        PixelIcon.draw("arrow-left", b.x() + 8, b.y() + 8, 10, AppTheme.TEXT_FAINT);
-        PixelIcon.draw("arrow-right", b.right() - 18, b.y() + 8, 10, AppTheme.TEXT_FAINT);
-        final String value = setting.valueLabel().toUpperCase(Locale.ROOT);
-        // TRUNCATE WITH THE SAME BOLD/TEXT_BODY METRIC USED TO RENDER (AND TO SIZE THE CONTROL) —
-        // THE 2-ARG truncateToWidth MEASURES AT SCALE 1f REGULAR, WHICH OVER-TRUNCATED WIDER LABELS
-        this.text.renderBold(this.text.truncateToWidth(value, b.width() - 68, AppTheme.TEXT_BODY, java.awt.Font.BOLD),
-                b.x() + 36, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY), selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-    }
-
-    private void renderDropdownControl(final Setting setting, final Dimension b, final boolean selected) {
-        final boolean open = this.dropdownSetting == setting;
-        final Color border = open || selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(open ? AppTheme.BG_3 : AppTheme.BG_1, open ? 230 : 210));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), border, open ? 1.5f : 1f);
-        if (open || selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.NEON, open ? 0.20f : 0.12f);
-        RenderSystem.lineV(b.right() - 26, b.y(), b.height(), AppTheme.STROKE, 1f);
-        final Color textColor = open || selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
-        final String value = setting.valueLabel().toUpperCase(Locale.ROOT);
-        this.text.renderBold(value, b.x() + 10, this.centerBoldTextY(b.y(), b.height(), AppTheme.TEXT_BODY), textColor, AppTheme.TEXT_BODY);
-        final float r = textColor.getRed() / 255f;
-        final float g = textColor.getGreen() / 255f;
-        final float blue = textColor.getBlue() / 255f;
-        RenderSystem.fillTriangle(b.right() - 17, b.y() + 10, b.right() - 7, b.y() + 10, b.right() - 12, b.y() + 16, r, g, blue, 1f);
-        if (open) this.dropdownBounds = b;
-    }
-
-    private void renderDropdownMenu() {
-        if (this.dropdownSetting == null) return;
-        if (this.dropdownBounds == Dimension.ZERO) {
-            this.dropdownSetting = null;
-            return;
-        }
-        final List<String> options = this.dropdownSetting.optionLabels();
-        if (options.isEmpty()) return;
-
-        final int rowH = 26;
-        final int padding = 4;
-        final int panelW = Math.max(this.dropdownBounds.width(), this.text.width(this.dropdownSetting.widestValueLabel().toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 44);
-        final int panelH = options.size() * rowH + padding * 2;
-        final int bottomLimit = AppChrome.contentBottom(this.ctx.windowHeight) - 4;
-        final int belowY = this.dropdownBounds.bottom() + 4;
-        final int panelX = this.dropdownBounds.right() - panelW;
-        final int panelY = belowY + panelH <= bottomLimit
-                ? belowY
-                : Math.max(AppChrome.contentTop() + 4, this.dropdownBounds.y() - panelH - 4);
-
-        RenderSystem.shadowRect(panelX, panelY, panelW, panelH, 0f, 0.42f);
-        RenderSystem.fill(panelX, panelY, panelW, panelH, AppTheme.alpha(AppTheme.BG_1, 238));
-        RenderSystem.rect(panelX, panelY, panelW, panelH, AppTheme.STROKE_BRIGHT, 1.5f);
-        RenderSystem.glowRect(panelX, panelY, panelW, panelH, 0f, AppTheme.NEON, 0.18f);
-
-        this.dropdownOptionBounds.clear();
-        final int active = this.dropdownSetting.selectedOptionIndex();
-        for (int i = 0; i < options.size(); i++) {
-            final Dimension row = new Dimension(panelX + padding, panelY + padding + i * rowH, panelW - padding * 2, rowH - 2);
-            this.dropdownOptionBounds.add(row);
-            final boolean optionSelected = i == active;
-            final boolean hover = row.contains(this.ctx.mouseX, this.ctx.mouseY);
-            final Color color = optionSelected ? AppTheme.GREEN : hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
-            RenderSystem.fill(row.x(), row.y(), row.width(), row.height(),
-                    optionSelected ? AppTheme.alpha(AppTheme.GREEN, 45) : hover ? AppTheme.alpha(AppTheme.NEON_DARK, 88) : AppTheme.alpha(AppTheme.BG_2, 110));
-            if (optionSelected || hover) RenderSystem.rect(row.x(), row.y(), row.width(), row.height(), color, optionSelected ? 1.5f : 1f);
-            if (optionSelected) RenderSystem.fill(row.x() + 7, row.y() + 9, 6, 6, AppTheme.AMBER);
-            this.text.render(options.get(i).toUpperCase(Locale.ROOT), row.x() + 18,
-                    this.centerTextY(row.y(), row.height(), AppTheme.TEXT_BODY), color, AppTheme.TEXT_BODY);
-        }
-    }
-
-    private void renderSpinnerControl(final Setting setting, final Dimension b, final boolean selected) {
-        final int stepW = 28;
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(AppTheme.BG_1, 210));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), selected ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT, 1f);
-        RenderSystem.lineV(b.x() + stepW, b.y(), b.height(), AppTheme.STROKE, 1f);
-        RenderSystem.lineV(b.right() - stepW, b.y(), b.height(), AppTheme.STROKE, 1f);
-        this.text.render("-", b.x() + 11, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-        this.text.render("+", b.right() - 19, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY), AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY);
-        final String suffix = setting.suffix();
-        final String value = setting.valueLabel();
-        final int suffixW = suffix.isBlank() ? 0 : this.text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16;
-        if (!suffix.isBlank()) {
-            RenderSystem.fill(b.right() - stepW - suffixW, b.y(), suffixW, b.height(), AppTheme.alpha(AppTheme.BG_2, 210));
-            RenderSystem.lineV(b.right() - stepW - suffixW, b.y(), b.height(), AppTheme.STROKE, 1f);
-            this.text.render(suffix.toUpperCase(Locale.ROOT), b.right() - stepW - suffixW + 8,
-                    this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        }
-        this.text.render(value, b.x() + stepW + 10, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY),
-                selected ? AppTheme.AMBER : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-    }
-
-    private void renderSeekbarControl(final Setting setting, final Dimension b, final boolean selected) {
-        final String display = this.seekbarDisplay(setting);
-        final int valueW = this.seekbarValueWidth(this.seekbarWidestDisplay(setting));
-        final Dimension track = this.seekbarTrackBounds(setting, b);
-        final float pct = setting.rangePercent();
-
-        RenderSystem.fill(track.x(), track.y(), track.width(), track.height(), AppTheme.BG_3);
-        RenderSystem.fillGradientH(track.x(), track.y(), track.width() * pct, track.height(),
-                AppTheme.NEON_DARK.getRed() / 255f, AppTheme.NEON_DARK.getGreen() / 255f, AppTheme.NEON_DARK.getBlue() / 255f, 1f,
-                AppTheme.NEON_LIGHT.getRed() / 255f, AppTheme.NEON_LIGHT.getGreen() / 255f, AppTheme.NEON_LIGHT.getBlue() / 255f, 1f);
-        RenderSystem.glowRect(track.x(), track.y(), track.width() * pct, track.height(), 0f, AppTheme.NEON, selected ? 0.34f : 0.18f);
-        final int knobX = track.x() + Math.round(track.width() * pct);
-        RenderSystem.fill(knobX - 2, track.y() - 4, 4, 14, AppTheme.AMBER);
-        this.text.render(display, b.right() - this.text.width(display, AppTheme.TEXT_SUBTITLE), this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE),
-                selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE);
-    }
-
-    private Dimension seekbarTrackBounds(final Setting setting, final Dimension b) {
-        final int valueW = this.seekbarValueWidth(this.seekbarWidestDisplay(setting));
-        return new Dimension(b.x(), b.y() + 10, Math.max(80, b.width() - valueW - 14), 6);
-    }
-
-    private int seekbarValueWidth(final String display) {
-        return Math.max(58, this.text.width(display, AppTheme.TEXT_SUBTITLE) + 6);
-    }
-
-    private String seekbarDisplay(final Setting setting) {
-        final String suffix = setting.suffix();
-        return suffix.isBlank() ? setting.valueLabel() : setting.valueLabel() + " " + suffix;
-    }
-
-    private String seekbarWidestDisplay(final Setting setting) {
-        final String suffix = setting.suffix();
-        return suffix.isBlank() ? setting.widestValueLabel() : setting.widestValueLabel() + " " + suffix;
-    }
-
-    private void renderTextFieldControl(final Setting setting, final Dimension b, final boolean selected) {
-        final boolean active = this.editing && this.editingSetting == setting;
-        final String value = active ? this.editBuffer : setting.valueLabel();
-        final String suffix = setting.suffix();
-        final int suffixW = suffix.isBlank() ? 0 : Math.max(36, this.text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16);
-        if (active || selected) RenderSystem.glowRect(b.x(), b.y(), b.width(), b.height(), 0f, AppTheme.NEON, active ? 0.28f : 0.14f);
-        RenderSystem.fill(b.x(), b.y(), b.width(), b.height(), AppTheme.alpha(AppTheme.BG_1, 220));
-        RenderSystem.rect(b.x(), b.y(), b.width(), b.height(), active ? AppTheme.NEON_LIGHT : selected ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
-        if (!suffix.isBlank()) {
-            RenderSystem.fill(b.right() - suffixW, b.y(), suffixW, b.height(), AppTheme.alpha(AppTheme.BG_2, 210));
-            RenderSystem.lineV(b.right() - suffixW, b.y(), b.height(), AppTheme.STROKE, 1f);
-            this.text.render(suffix.toUpperCase(Locale.ROOT), b.right() - suffixW + 8,
-                    this.centerTextY(b.y(), b.height(), AppTheme.TEXT_SUBTITLE), AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE);
-        }
-        final int textMaxW = b.width() - suffixW - 22;
-        final String visible = this.text.truncateToWidth(value, textMaxW, AppTheme.TEXT_BODY);
-        this.text.render(visible, b.x() + 10, this.centerTextY(b.y(), b.height(), AppTheme.TEXT_BODY),
-                value.isBlank() ? AppTheme.TEXT_FAINT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
-        if (active && ((System.currentTimeMillis() / 480L) % 2L) == 0L) {
-            final int cursorX = Math.min(b.right() - suffixW - 8, b.x() + 10 + this.text.width(visible, AppTheme.TEXT_BODY) + 2);
-            RenderSystem.fill(cursorX, b.y() + 6, 2, b.height() - 12, AppTheme.NEON_LIGHT);
-        }
-    }
-
-    private static Color statusColor(final String value) {
-        final String normalized = value == null ? "" : value.toUpperCase(Locale.ROOT);
-        if (normalized.contains("READY") || normalized.contains("LOADED") || normalized.contains("AVAILABLE")) return AppTheme.GREEN;
-        if (normalized.contains("ERROR") || normalized.contains("UNLOADED")) return AppTheme.RED;
-        if (normalized.contains("ONLY") || normalized.contains("OFFLINE")) return AppTheme.AMBER;
-        return AppTheme.TEXT_FAINT;
-    }
-
-    // ONE SELECTABLE SETTING ROW — PORTS renderSettingRow ONTO ITS OWN ListView-LAID-OUT BOX AND READS THE
-    // ListView-DRIVEN selected STATE. EVERY ROW-TYPE DRAW (VALUE/TOGGLE/ENUM/SLIDER/SPINNER/EDIT/DROPDOWN)
-    // FLOWS THROUGH renderSettingRow, SO THE LOOK IS PIXEL-IDENTICAL TO THE LEGACY IMMEDIATE-MODE ROW.
-    private final class RowView extends View<RowView> {
-
-        private final Setting setting;
-        private final int index;
-
-        private RowView(final Setting setting, final int index) {
-            this.setting = setting;
-            this.index = index;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            renderSettingRow(this.setting, new Dimension(this.left, this.top, this.measuredWidth, this.measuredHeight), this.selected);
-        }
-    }
-
-    // THE ROW UNDER THE POINTER, OR null — SCOPED TO THE LIST VIEWPORT SO A SCROLLED-OUT ROW NEVER MATCHES
-    private RowView rowAt(final double mx, final double my) {
-        if (!this.list.contains(mx, my)) return null;
-        for (final View<?> child: this.list.children()) {
-            if (child instanceof RowView row && row.visible() && row.contains(mx, my)) return row;
-        }
-        return null;
-    }
-
-    private Dimension rowBox(final RowView row) {
-        return new Dimension(row.left(), row.top(), row.measuredWidth(), row.measuredHeight());
-    }
-
-    @Override
-    protected void onKeyRelease(final int key) {
-        if (this.editing) {
-            this.handleEditingKey(key);
-            return;
-        }
-        if (this.dropdownSetting != null) {
-            this.handleDropdownKey(key);
-            return;
-        }
-
+        if (action != GLFW_RELEASE) return false;
         switch (key) {
             case GLFW_KEY_UP -> {
                 this.list.moveSelection(-1);
@@ -768,165 +345,121 @@ public final class SettingsScreen extends ViewScreen {
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.activateSelected();
             case GLFW_KEY_R -> this.resetActiveSection();
             case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
-        }
-    }
-
-    private void handleEditingKey(final int key) {
-        switch (key) {
-            case GLFW_KEY_ESCAPE -> this.cancelEdit();
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.commitEdit();
-            case GLFW_KEY_BACKSPACE -> {
-                if (!this.editBuffer.isEmpty()) {
-                    this.editBuffer = this.editBuffer.substring(0, this.editBuffer.length() - 1);
-                    this.ctx.requestRender();
-                }
+            default -> {
+                return false;
             }
         }
+        return true;
     }
 
     @Override
-    public boolean textInputFocused() {
-        return this.editing;
-    }
-
-    @Override
-    public void handleChar(final int codepoint) {
-        if (!this.editing || codepoint < 32 || codepoint == 127) return;
-        this.editBuffer += new String(Character.toChars(codepoint));
-        this.ctx.requestRender();
-    }
-
-    @Override
-    public void handleMouseMove(final double mx, final double my) {
-        if (this.seekbarDragging) {
-            if (this.ctx.mouseDown && this.draggedSeekbar != null) {
-                this.dragSeekbar(mx);
+    public boolean dispatchClick(final double mx, final double my) {
+        final boolean handled = super.dispatchClick(mx, my);
+        // RECONCILE TEXT FOCUS AFTER THE CLICK — AT MOST ONE FIELD STAYS FOCUSED AND BECOMES THE ACTIVE EDIT
+        TextField focused = null;
+        for (final TextField field: this.textFields) {
+            if (!field.focused()) continue;
+            if (focused == null && field.contains(mx, my)) {
+                focused = field;
             } else {
-                this.seekbarDragging = false;
-                this.draggedSeekbar = null;
+                field.focused(false);
             }
-            return;
         }
-        if (this.editing) return;
-        if (this.dropdownSetting != null) return;
-        super.handleMouseMove(mx, my); // TREE HOVER → ListView ROW SELECTION (+ CHIME VIA THE ROW'S onHover)
-    }
-
-    @Override
-    public void handleMousePress(final double mx, final double my) {
-        if (this.editing) return;
-        final RowView row = this.rowAt(mx, my);
-        if (row == null) return;
-        this.list.selection(row.index);
-        final Setting setting = row.setting;
-        if (setting == null || !setting.mutable || !setting.isSeekbarControl()) return;
-        final Dimension control = this.controlBounds(this.rowBox(row), setting);
-        if (!control.contains(mx, my)) return;
-        this.seekbarDragging = true;
-        this.skipDragClick = true;
-        this.draggedSeekbar = setting;
-        this.draggedSeekbarBounds = control;
-        this.dragSeekbar(mx);
-        this.ctx.playSelectionSound();
-    }
-
-    private void handleDropdownKey(final int key) {
-        final Setting setting = this.dropdownSetting;
-        if (setting == null) return;
-        switch (key) {
-            case GLFW_KEY_ESCAPE -> this.dropdownSetting = null;
-            case GLFW_KEY_UP -> this.selectDropdownOption(setting, Math.max(0, setting.selectedOptionIndex() - 1));
-            case GLFW_KEY_DOWN -> this.selectDropdownOption(setting, Math.min(setting.optionLabels().size() - 1, setting.selectedOptionIndex() + 1));
-            case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.dropdownSetting = null;
-        }
-        this.ctx.requestRender();
-    }
-
-    @Override
-    public void handleMouseRelease(final double mx, final double my) {
-        this.seekbarDragging = false;
-        this.draggedSeekbar = null;
-        if (this.saveAfterDrag) {
-            this.saveAfterDrag = false;
-            this.autosave();
-        }
-    }
-
-    @Override
-    public void handleMouseClick(final double mx, final double my) {
-        if (this.skipDragClick) {
-            this.skipDragClick = false;
-            return;
-        }
-        if (this.dropdownSetting != null) {
-            for (int i = 0; i < this.dropdownOptionBounds.size(); i++) {
-                if (this.dropdownOptionBounds.get(i).contains(mx, my)) {
-                    this.selectDropdownOption(this.dropdownSetting, i);
-                    this.dropdownSetting = null;
-                    this.ctx.playSelectionSound();
-                    return;
-                }
-            }
-            this.dropdownSetting = null;
-            this.ctx.requestRender();
-            return;
-        }
-        // SIDEBAR SPEC/SECTION BUTTONS AND THE RESET BUTTON — DRAWN IN renderChrome, OUTSIDE THE ROW TREE
-        for (final Hit hit: this.hits) {
-            if (!hit.bounds.contains(mx, my)) continue;
-            switch (hit.type) {
-                case SPEC -> this.switchSpec(hit.index);
-                case SECTION -> this.switchSection(hit.index);
-                case RESET -> this.resetActiveSection();
-            }
-            this.ctx.playSelectionSound();
-            return;
-        }
-        // ROWS — ACTIVATE THE CONTROL SUB-ZONE UNDER THE POINTER, ELSE THE ROW ITSELF (LEGACY BEHAVIOR)
-        final RowView row = this.rowAt(mx, my);
-        if (row == null) return;
-        this.list.selection(row.index);
-        final Setting setting = row.setting;
-        if (setting != null && setting.mutable) {
-            final Dimension control = this.controlBounds(this.rowBox(row), setting);
-            if (control.contains(mx, my)) {
-                this.activateControl(setting, control, mx);
+        if (focused != this.editField) {
+            if (focused == null) {
+                this.closeEdit(); // CLICKED AWAY — DISCARD THE EDIT, THE VALUE RE-SYNCS FROM THE SETTING
             } else {
-                this.activateSelected();
+                this.editField = focused;
+                this.editSetting = (Setting) focused.tag();
+                focused.value(this.editSetting.editValue());
+                this.invalidate();
             }
         }
-        this.ctx.playSelectionSound();
+        return handled;
     }
 
     @Override
-    public void handleScroll(final double yOffset) {
-        if (this.dropdownSetting != null) {
-            this.dropdownSetting = null;
-            this.ctx.requestRender();
+    public boolean dispatchHover(final double mx, final double my) {
+        // LEGACY PARITY — POINTER HOVER IS FROZEN WHILE A TEXT EDIT IS ACTIVE
+        if (this.editField != null) return false;
+        return super.dispatchHover(mx, my);
+    }
+
+    @Override
+    public Element<?> dispatchPress(final double mx, final double my) {
+        // LEGACY PARITY — NO DRAG CAPTURE (SEEKBARS) WHILE A TEXT EDIT IS ACTIVE
+        return this.editField != null ? null : super.dispatchPress(mx, my);
+    }
+
+    // ==========================================================================
+    // SPEC / SECTION NAVIGATION
+    // ==========================================================================
+
+    private void rebuildSpecs() {
+        this.specs.clear();
+        this.specs.add(this.buildAppSpec());
+        this.specs.add(this.buildInstanceSpec());
+        if (this.activeSpecIndex >= this.specs.size()) this.activeSpecIndex = Math.max(0, this.specs.size() - 1);
+        this.clampSelection();
+    }
+
+    // (RE)FILLS THE SPEC TAB STRIP AND THE ACTIVE SPEC'S SECTION LIST
+    private void syncNav() {
+        this.tabs.clear();
+        for (int i = 0; i < this.specs.size(); i++) {
+            final int index = i;
+            final SettingSpec spec = this.specs.get(i);
+            this.tabs.add(new SpecTab(index, spec.title, spec.subtitle)
+                    .onClick(v -> {
+                        this.switchSpec(index);
+                        this.ctx.playSelectionSound();
+                    }));
         }
-        super.handleScroll(yOffset); // TREE: ListView OWNS SCROLLING/CLAMPING
+        // FLEX SPACER PUSHES THE RESET ACTION TO THE RIGHT EDGE OF THE STRIP
+        this.tabs.add(new Box().size(0, 1).weight(1f));
+        this.tabs.add(this.reset);
+        this.sectionColumn.clear();
+        final SettingSpec active = this.activeSpec();
+        if (active != null) {
+            for (int i = 0; i < active.sections.size(); i++) {
+                final int index = i;
+                this.sectionColumn.add(new SectionItem(index, active.sections.get(i))
+                        .onClick(v -> {
+                            this.switchSection(index);
+                            this.ctx.playSelectionSound();
+                        }));
+            }
+        }
+        this.invalidate();
+    }
+
+    // (RE)LOADS THE ACTIVE SECTION'S SETTINGS INTO THE ROW LIST AND RESETS THE SELECTION TO THE TOP
+    private void populateRows() {
+        // DROP ANY OPEN ENUM DROPDOWN MENU — THE ROWS (AND THEIR DROPDOWNS) ARE ABOUT TO BE REBUILT
+        this.overlay().clear();
+        final SettingSection section = this.activeSection();
+        this.editField = null;
+        this.editSetting = null;
+        this.textFields.clear();
+        this.list.items(section == null ? List.of() : section.settings);
+        this.list.selection(section == null || section.settings.isEmpty() ? -1 : 0);
     }
 
     private void switchSpec(final int index) {
         if (this.specs.isEmpty()) return;
         this.activeSpecIndex = Math.floorMod(index, this.specs.size());
         this.activeSectionIndex = 0;
-        this.editing = false;
-        this.dropdownSetting = null;
+        this.closeEdit();
+        this.syncNav();
         this.populateRows();
-        this.setStatus("READY", AppTheme.TEXT_FAINT);
-        this.updateConfigStatus(this.activeSpec());
     }
 
     private void switchSection(final int index) {
         final SettingSpec spec = this.activeSpec();
         if (spec == null || spec.sections.isEmpty()) return;
         this.activeSectionIndex = Math.max(0, Math.min(spec.sections.size() - 1, index));
-        this.editing = false;
-        this.dropdownSetting = null;
+        this.closeEdit();
         this.populateRows();
-        this.setStatus("READY", AppTheme.TEXT_FAINT);
-        this.updateConfigStatus(this.activeSpec());
     }
 
     private void moveSection(final int delta) {
@@ -934,184 +467,6 @@ public final class SettingsScreen extends ViewScreen {
         if (spec == null || spec.sections.isEmpty()) return;
         this.switchSection(Math.floorMod(this.activeSectionIndex + delta, spec.sections.size()));
         this.ctx.playSelectionSound();
-    }
-
-    private void adjustSelected(final int delta) {
-        final Setting setting = this.selectedSetting();
-        if (setting == null || !setting.mutable) return;
-        try {
-            if (setting.adjust(delta, this.ctx.ctrlDown ? 10 : 1)) {
-                this.setStatus("CHANGED " + setting.key, AppTheme.AMBER);
-                this.autosave();
-                this.ctx.playSelectionSound();
-            } else if (setting.editableText()) {
-                this.beginEdit(setting);
-            }
-        } catch (final RuntimeException e) {
-            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
-        }
-    }
-
-    private void activateSelected() {
-        final Setting setting = this.selectedSetting();
-        if (setting == null || !setting.mutable) return;
-        if (setting.editableText()) {
-            this.beginEdit(setting);
-            return;
-        }
-        if (setting.control() == Control.DROPDOWN && setting.isEnumControl()) {
-            this.dropdownSetting = this.dropdownSetting == setting ? null : setting;
-            this.ctx.requestRender();
-            return;
-        }
-        this.adjustSelected(1);
-    }
-
-    private void activateControl(final Setting setting, final Dimension control, final double mx) {
-        try {
-            if (setting.editableText()) {
-                this.beginEdit(setting);
-            } else if (setting.control() == Control.DROPDOWN && setting.isEnumControl()) {
-                this.dropdownSetting = this.dropdownSetting == setting ? null : setting;
-                this.dropdownBounds = control;
-                this.ctx.requestRender();
-            } else if (setting.click(setting.isSeekbarControl() ? this.seekbarTrackBounds(setting, control) : control, mx)) {
-                this.setStatus("CHANGED " + setting.key, AppTheme.AMBER);
-                this.autosave();
-                this.ctx.playSelectionSound();
-            }
-        } catch (final RuntimeException e) {
-            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
-        }
-    }
-
-    private void selectDropdownOption(final Setting setting, final int index) {
-        try {
-            if (setting.selectOption(index)) {
-                this.setStatus("CHANGED " + setting.key, AppTheme.AMBER);
-                this.autosave();
-            }
-        } catch (final RuntimeException e) {
-            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
-        }
-    }
-
-    private void dragSeekbar(final double mx) {
-        try {
-            if (this.draggedSeekbar != null && this.draggedSeekbar.click(this.seekbarTrackBounds(this.draggedSeekbar, this.draggedSeekbarBounds), mx)) {
-                this.setStatus("CHANGED " + this.draggedSeekbar.key, AppTheme.AMBER);
-                this.saveAfterDrag = true;
-            }
-        } catch (final RuntimeException e) {
-            this.seekbarDragging = false;
-            this.draggedSeekbar = null;
-            this.saveAfterDrag = false;
-            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
-        }
-    }
-
-    private void beginEdit(final Setting setting) {
-        this.editing = true;
-        this.editingSetting = setting;
-        this.editBuffer = setting.editValue();
-        this.setStatus("EDITING " + setting.key, AppTheme.NEON_LIGHT);
-    }
-
-    private void cancelEdit() {
-        this.editing = false;
-        this.editingSetting = null;
-        this.editBuffer = "";
-        this.setStatus("EDIT CANCELLED", AppTheme.TEXT_FAINT);
-    }
-
-    private void commitEdit() {
-        if (this.editingSetting == null) {
-            this.cancelEdit();
-            return;
-        }
-        try {
-            this.editingSetting.commit(this.editBuffer);
-            this.setStatus("CHANGED " + this.editingSetting.key, AppTheme.AMBER);
-            this.editing = false;
-            this.editingSetting = null;
-            this.editBuffer = "";
-            this.autosave();
-        } catch (final RuntimeException e) {
-            this.setStatus("INVALID: " + compactError(e), AppTheme.RED);
-        }
-    }
-
-    private void resetActiveSection() {
-        final SettingSection section = this.activeSection();
-        if (section == null) return;
-        try {
-            for (final Setting setting: section.settings) {
-                if (setting.mutable) setting.reset();
-            }
-            this.setStatus("RESET " + section.name.toUpperCase(Locale.ROOT), AppTheme.AMBER);
-            this.autosave();
-        } catch (final RuntimeException e) {
-            this.setStatus("RESET FAILED: " + compactError(e), AppTheme.RED);
-        }
-    }
-
-    private void autosave() {
-        final SettingSpec spec = this.activeSpec();
-        if (spec == null) return;
-        if (!spec.persistent || spec.configSpec == null) {
-            this.saveFailures = 0;
-            this.saveState = SaveState.READY;
-            this.updateConfigStatus(spec);
-            return;
-        }
-        // A SAVE IS ALREADY IN FLIGHT — COALESCE THIS CHANGE INTO ONE FOLLOW-UP SAVE RATHER THAN
-        // SPAWNING A SECOND WRITER AGAINST THE SAME CONFIG FILE.
-        if (this.saving) {
-            this.resavePending = true;
-            return;
-        }
-        this.startSave(spec);
-    }
-
-    private void startSave(final SettingSpec spec) {
-        this.saving = true;
-        this.saveState = this.saveFailures > 0 ? SaveState.RESAVING : SaveState.SAVING;
-        this.updateConfigStatus(spec);
-        this.ctx.requestRender();
-        final ConfigSpec configSpec = spec.configSpec;
-        // RUN THE REFLECTIVE DISK WRITE OFF THE RENDER THREAD, THEN PUBLISH THE OUTCOME BACK ON IT VIA
-        // ctx.execute SO THE SAVE STATE STAYS RENDER-THREAD-CONFINED AND THE SAVING FRAME ACTUALLY RENDERS.
-        ThreadTool.createStarted("WaterMedia-ConfigSave", () -> {
-            ReflectiveOperationException error = null;
-            try {
-                final Method save = ConfigSpec.class.getDeclaredMethod("save");
-                save.setAccessible(true);
-                save.invoke(configSpec);
-            } catch (final ReflectiveOperationException e) {
-                error = e;
-            }
-            final ReflectiveOperationException outcome = error;
-            this.ctx.execute(() -> this.finishSave(spec, outcome));
-        });
-    }
-
-    private void finishSave(final SettingSpec spec, final ReflectiveOperationException error) {
-        if (error == null) {
-            this.saveFailures = 0;
-            this.saveState = SaveState.SAVED;
-            this.setStatus("SAVED " + spec.configSpec.path().getFileName(), AppTheme.GREEN);
-        } else {
-            this.saveFailures++;
-            this.saveState = this.saveFailures >= 2 ? SaveState.FAILED_TWICE : SaveState.FAILED_ONCE;
-            this.setStatus("SAVE FAILED: " + compactError(error), this.saveFailures >= 2 ? AppTheme.RED : AppTheme.AMBER);
-        }
-        this.saving = false;
-        this.updateConfigStatus(spec);
-        // A CHANGE ARRIVED WHILE SAVING — PERSIST IT NOW WITH ONE COALESCED FOLLOW-UP SAVE.
-        if (this.resavePending) {
-            this.resavePending = false;
-            this.startSave(spec);
-        }
     }
 
     private void clampSelection() {
@@ -1134,133 +489,745 @@ public final class SettingsScreen extends ViewScreen {
                 : spec.sections.get(Math.max(0, Math.min(spec.sections.size() - 1, this.activeSectionIndex)));
     }
 
-    private Setting selectedSetting() {
-        return this.list.selectedItem();
-    }
+    // ==========================================================================
+    // SETTING ACTIVATION — MOUSE BODY CLICKS, KEYBOARD ADJUST/ACTIVATE, WIDGET CHANGES
+    // ==========================================================================
 
-    private void setStatus(final String status, final Color color) {
-        this.statusText = status == null ? "READY" : status;
-        this.statusColor = color == null ? AppTheme.TEXT_FAINT : color;
-        this.ctx.requestRender();
-    }
-
-    private void updateConfigStatus(final SettingSpec spec) {
-        this.ctx.configStatus.text = switch (this.saveState) {
-            case SAVING -> "SAVING";
-            case SAVED -> "SAVED";
-            case FAILED_ONCE, FAILED_TWICE -> "FAILED TO SAVE";
-            case RESAVING -> "RESAVING";
-            case READY -> "READY";
-        };
-        this.ctx.configStatus.pulse = this.saveState == SaveState.SAVING || this.saveState == SaveState.RESAVING;
-        this.ctx.configStatus.warn = this.saveState == SaveState.FAILED_ONCE || this.saveState == SaveState.RESAVING;
-        this.ctx.configStatus.error = this.saveState == SaveState.FAILED_TWICE;
-        this.ctx.configStatus.strike = this.saveState == SaveState.FAILED_TWICE;
-        if (spec == null || !spec.persistent || spec.configSpec == null) {
-            this.ctx.configStatus.text = "READY";
-            this.ctx.configStatus.pulse = false;
-            this.ctx.configStatus.warn = false;
-            this.ctx.configStatus.error = false;
-            this.ctx.configStatus.strike = false;
+    // RUNS A SETTING MUTATION FROM A WIDGET, THEN AUTOSAVES + CHIMES; AN INVALID VALUE IS REVERTED BY THE
+    // SETTING ITSELF (setValue RESTORES THE PREVIOUS VALUE) AND THE WIDGET RE-SYNCS ON THE NEXT UPDATE PASS
+    private void apply(final Setting setting, final BooleanSupplier mutation) {
+        try {
+            if (mutation.getAsBoolean()) {
+                this.autosave();
+                this.ctx.playSelectionSound();
+            }
+        } catch (final RuntimeException e) {
+            this.invalidate();
         }
     }
 
-    @Override
-    public String instructions() {
-        return this.editing
-                ? "ENTER: Commit | BACKSPACE: Delete | ESC: Cancel"
-                : "UP/DOWN: Field | LEFT/RIGHT: Change | TAB: Spec | PGUP/PGDN: Section | R: Reset | ESC: Back";
-    }
-
-    private String cacheSizeLabel() {
-        // ROW SUPPLIER — CALLED DURING render(); RETURN THE CACHED LABEL AND KICK OFF THE FIRST WALK LAZILY
-        if ("-- MB".equals(this.cacheSize)) this.refreshCacheSize();
-        return this.cacheSize;
-    }
-
-    private void refreshCacheSize() {
-        if (this.cacheSizeComputing) return;
-        this.cacheSizeComputing = true;
-        ThreadTool.createStarted("WaterMedia-SettingsCacheSize", () -> {
-            String label;
-            try {
-                final Path cache = WaterMedia.tmp().resolve("cache");
-                if (!java.nio.file.Files.exists(cache)) {
-                    label = "0 MB";
-                } else {
-                    try (final var stream = java.nio.file.Files.walk(cache)) {
-                        final long bytes = stream.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
-                            try {
-                                return java.nio.file.Files.size(path);
-                            } catch (final Exception ignored) {
-                                return 0L;
-                            }
-                        }).sum();
-                        label = Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
-                    }
-                }
-            } catch (final Exception e) {
-                label = "UNKNOWN";
+    // SEEKBAR TICK — APPLY THE PERCENT IMMEDIATELY BUT DEFER THE SAVE TO THE END OF THE GESTURE,
+    // CHIMING ONLY ON THE FIRST TICK (THE LEGACY PRESS CHIME)
+    private void seek(final Setting setting, final float pct) {
+        try {
+            if (setting.percent(pct)) {
+                if (!this.dragSave) this.ctx.playSelectionSound();
+                this.dragSave = true;
             }
-            this.cacheSize = label;
-            this.cacheSizeComputing = false;
-            this.ctx.requestRender();
+        } catch (final RuntimeException e) {
+            this.dragSave = false;
+            this.invalidate();
+        }
+    }
+
+    // MOUSE CLICK ON A ROW BODY (OUTSIDE ITS CONTROL) — ACTIVATES THE ROW LIKE THE LEGACY SCREEN
+    private void activateBody(final Setting setting) {
+        this.ctx.playSelectionSound();
+        if (setting == null || !setting.mutable) return;
+        if (setting.editableText()) {
+            this.beginEdit(setting);
+            return;
+        }
+        try {
+            if (setting.adjust(1, 1)) this.autosave();
+        } catch (final RuntimeException e) {
+            this.invalidate();
+        }
+    }
+
+    private void adjustSelected(final int delta) {
+        final Setting setting = this.list.selectedItem();
+        if (setting == null || !setting.mutable) return;
+        try {
+            if (setting.adjust(delta, this.ctx.ctrlDown ? 10 : 1)) {
+                this.autosave();
+                this.ctx.playSelectionSound();
+            } else if (setting.editableText()) {
+                this.beginEdit(setting);
+            }
+        } catch (final RuntimeException e) {
+            this.invalidate();
+        }
+    }
+
+    private void activateSelected() {
+        final Setting setting = this.list.selectedItem();
+        if (setting == null || !setting.mutable) return;
+        if (setting.editableText()) {
+            this.beginEdit(setting);
+            return;
+        }
+        this.adjustSelected(1);
+    }
+
+    private void resetActiveSection() {
+        final SettingSection section = this.activeSection();
+        if (section == null) return;
+        try {
+            for (final Setting setting: section.settings) {
+                if (setting.mutable) setting.reset();
+            }
+            this.autosave();
+        } catch (final RuntimeException e) {
+            this.invalidate();
+        }
+    }
+
+    // ==========================================================================
+    // TEXT EDITING — THE TextField WIDGET OWNS TYPING; THE SCREEN OWNS COMMIT/CANCEL
+    // ==========================================================================
+
+    private void beginEdit(final Setting setting) {
+        for (final TextField field: this.textFields) {
+            if (field.tag() != setting) continue;
+            if (this.editField != null && this.editField != field) this.editField.focused(false);
+            this.editField = field;
+            this.editSetting = setting;
+            field.value(setting.editValue()).focused(true);
+            this.invalidate();
+            return;
+        }
+    }
+
+    private void commitEdit() {
+        if (this.editField == null || this.editSetting == null) {
+            this.closeEdit();
+            return;
+        }
+        try {
+            this.editSetting.commit(this.editField.value());
+            this.closeEdit();
+            this.autosave();
+        } catch (final RuntimeException e) {
+            // INVALID INPUT — STAY IN EDIT MODE SO THE USER CAN FIX THE VALUE (LEGACY BEHAVIOR)
+            this.invalidate();
+        }
+    }
+
+    private void closeEdit() {
+        if (this.editField != null) this.editField.focused(false);
+        this.editField = null;
+        this.editSetting = null;
+        this.invalidate();
+    }
+
+    // ==========================================================================
+    // ENUM CONTROL PICK — SEGMENTED CONTROL FOR SMALL SETS, DROPDOWN (ATTACH MENU) FOR THE REST
+    // ==========================================================================
+
+    // WHETHER AN ENUM SETTING USES THE DROPDOWN INSTEAD OF A SEGMENTED CONTROL: MORE THAN 4 OPTIONS, OR
+    // SEGMENTS THAT WOULD BE WIDER THAN THE CONTROL BUDGET
+    private boolean needsDropdown(final Setting setting) {
+        if (!setting.isEnumControl()) return false;
+        final List<String> options = setting.optionLabels();
+        if (options.size() > 4) return true;
+        int segW = 0;
+        for (final String option: options) {
+            segW += SegmentedControl.segmentWidth(this.text, option.toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY);
+        }
+        return segW > CONTROL_W;
+    }
+
+    // ==========================================================================
+    // SPEC MODELS — ONE REFLECTIVE TREE BUILDER FOR BOTH WATERCONFIG SPECS (SHELL + INSTANCE)
+    // ==========================================================================
+
+    private SettingSpec buildAppSpec() {
+        // THE SHELL SPEC IS AN ANNOTATED WATERCONFIG CLASS (AppConfig) REFLECTED THROUGH THE EXACT SAME
+        // PATH AS THE INSTANCE SPEC. EVERY ROW IS A REAL OPTION — THE OLD READ-ONLY DIAGNOSTICS ARE GONE.
+        final ConfigSpec configSpec = AppConfig.spec();
+        final String file = configSpec == null ? "runtime shell" : String.valueOf(configSpec.path().getFileName());
+        final SettingSpec spec = new SettingSpec("App", file, configSpec != null, configSpec,
+                () -> AppConfig.apply(this.ctx), this.saves[0]);
+        if (configSpec != null) this.collectSections(configSpec, spec);
+
+        // THE SPEC'S "ENGINES" GROUP ALSO HOSTS THE TWO STRICTLY NON-PORTABLE RUNTIME ROWS: THE RENDER
+        // ENGINE AND THE UI SCALE (THEIR engine.cfg/uiscale.cfg STORES ARE READ BY THE LAUNCHER AND THE
+        // EARLY BOOT BEFORE ANY SPEC EXISTS). WITHOUT A LOADED SPEC THE NODE IS CREATED RUNTIME-ONLY SO
+        // BOTH ROWS STAY REACHABLE.
+        SettingSection engines = null;
+        for (final SettingSection section: spec.sections) {
+            if (section.depth == 0 && "Engines".equalsIgnoreCase(section.name)) {
+                engines = section;
+                break;
+            }
+        }
+        if (engines == null) {
+            engines = new SettingSection("Engines", "Engine backends: render, interface scale and audio", "engines", 0);
+            spec.sections.add(engines);
+        }
+        engines.settings.add(0, new RuntimeEnumSetting<>("Render", "app.engines.render", "ENUM",
+                "Graphics engine the app renders with — OpenGL or Vulkan. Switching applies live: the window and engine rebuild in place without a restart. Vulkan falls back to OpenGL if unsupported. Stored in engine.cfg, read by the launcher.",
+                RenderSystem.Engine.values(),
+                () -> {
+                    final RenderSystem.Engine pref = RenderSystem.enginePreference();
+                    return pref != null ? pref : RenderSystem.engineKind();
+                },
+                target -> {
+                    // PERSIST THE CHOICE, THEN HOT-SWAP IN PLACE. NO-OP WHEN THE TARGET ALREADY RUNS.
+                    RenderSystem.saveEnginePreference(target);
+                    if (target != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(target);
+                },
+                RenderSystem.Engine.OPENGL,
+                Enum::name,
+                // VULKAN IS SELECTABLE ONLY WHEN A VULKAN LOADER IS PRESENT; OPENGL IS ALWAYS AVAILABLE
+                engine -> engine != RenderSystem.Engine.VULKAN || RenderSystem.vulkanAvailable()));
+        engines.settings.add(1, new RuntimeEnumSetting<>("UI scale", "app.engines.uiScale", "ENUM",
+                "Global interface magnification. AUTO derives it from the monitor's DPI and resolution. Applies live. Stored in uiscale.cfg, read at boot before any config spec exists.",
+                UiScale.values(),
+                () -> UiScale.fromPreference(RenderSystem.uiScalePreference()),
+                value -> {
+                    RenderSystem.saveUiScalePreference(value.preference());
+                    // RE-READS THE PREFERENCE AND APPLIES IT (AUTO RECOMPUTES THE MONITOR-DERIVED FACTOR)
+                    WaterMediaApp.reapplyUiScale();
+                },
+                UiScale.AUTO,
+                scale -> scale.label));
+        return spec;
+    }
+
+    private SettingSpec buildInstanceSpec() {
+        final ConfigSpec configSpec = this.waterMediaConfigSpec();
+        final SettingSpec spec = new SettingSpec("Instance config", "watermedia.toml", true, configSpec, null, this.saves[1]);
+        if (configSpec == null) {
+            final SettingSection unavailable = new SettingSection("Unavailable",
+                    "WaterConfig did not expose the active spec", "unavailable", 0);
+            unavailable.settings.add(new ReadOnlySetting("WaterMediaConfig", "watermedia", "STATE",
+                    "The app could not read the registered WaterConfig spec.",
+                    () -> WaterConfig.isRegistered(WaterMedia.ID) ? "REGISTERED" : "NOT REGISTERED"));
+            spec.sections.add(unavailable);
+            return spec;
+        }
+
+        this.collectSections(configSpec, spec);
+        if (spec.sections.isEmpty()) {
+            final SettingSection empty = new SettingSection("Empty", "No fields were discovered", "empty", 0);
+            empty.settings.add(new ReadOnlySetting("WaterMediaConfig", WaterMedia.ID, "STATE",
+                    "No configurable fields were discovered in the active spec.",
+                    () -> "EMPTY"));
+            spec.sections.add(empty);
+        }
+        return spec;
+    }
+
+    @SuppressWarnings("unchecked")
+    private ConfigSpec waterMediaConfigSpec() {
+        if (!WaterConfig.isRegistered(WaterMedia.ID)) return null;
+        try {
+            final Class<?> registry = Class.forName("me.srrapero720.waterconfig.WaterConfigRegistry");
+            final Field specsField = registry.getDeclaredField("SPECS");
+            specsField.setAccessible(true);
+            final Map<String, ConfigSpec> registered = (Map<String, ConfigSpec>) specsField.get(null);
+            return registered.get(WaterMedia.ID);
+        } catch (final ReflectiveOperationException | ClassCastException e) {
+            return null;
+        }
+    }
+
+    // BUILDS THE SECTION TREE OF A WATERCONFIG SPEC: THE SPEC ROOT IS A "HOME" NODE NAMED AFTER THE SPEC
+    // (LISTED FIRST, HIDDEN WHEN THE ROOT HAS NO DIRECT SETTINGS), THEN EVERY GROUP BECOMES A DFS-ORDERED
+    // NODE — ONE INDENT LEVEL PER NESTING LEVEL. EACH NODE LISTS ONLY ITS DIRECT FIELDS; DESCENDANTS ARE
+    // REACHED THROUGH THEIR OWN NODES.
+    private void collectSections(final ConfigSpec configSpec, final SettingSpec spec) {
+        final String specName = titleCase(configSpec.name());
+        final SettingSection home = new SettingSection(specName, groupDetail(configSpec, "root settings"), specName, 0);
+        final Collection<IConfigField<?, ?>> fields = configSpec.getFields();
+        for (final IConfigField<?, ?> field: fields) {
+            if (!(field instanceof ConfigGroup)) home.settings.add(new ConfigSetting(field, field.name()));
+        }
+        if (!home.settings.isEmpty()) spec.sections.add(home);
+        for (final IConfigField<?, ?> field: fields) {
+            if (field instanceof ConfigGroup child) this.collectGroup(child, 0, "", "", spec);
+        }
+    }
+
+    private void collectGroup(final ConfigGroup group, final int depth, final String parentKey,
+                              final String parentPath, final SettingSpec spec) {
+        final String key = parentKey.isEmpty() ? group.name() : parentKey + "." + group.name();
+        final String path = parentPath.isEmpty() ? group.name() : parentPath + " / " + group.name();
+        final SettingSection section = new SettingSection(titleCase(group.name()), groupDetail(group, key), path, depth);
+        final Collection<IConfigField<?, ?>> fields = group.getFields();
+        for (final IConfigField<?, ?> field: fields) {
+            if (!(field instanceof ConfigGroup)) section.settings.add(new ConfigSetting(field, key + "." + field.name()));
+        }
+        // THE NODE STAYS EVEN WITH NO DIRECT FIELDS — IT IS THE TREE PATH TO ITS CHILD GROUPS
+        spec.sections.add(section);
+        for (final IConfigField<?, ?> field: fields) {
+            if (field instanceof ConfigGroup child) this.collectGroup(child, depth + 1, key, path, spec);
+        }
+    }
+
+    private static String groupDetail(final ConfigGroup group, final String fallback) {
+        for (final String comment: group.comments()) {
+            if (comment != null && !comment.isBlank()) return comment.trim();
+        }
+        return fallback;
+    }
+
+    // ==========================================================================
+    // AUTOSAVE — LIVE-APPLIES THE SHELL SPEC, THEN PERSISTS OFF-THREAD; EACH SPEC'S SaveMachine
+    // SURFACES ITS STATE THROUGH THAT SPEC'S TAB PIP (SEE SpecTab)
+    // ==========================================================================
+
+    private void autosave() {
+        final SettingSpec spec = this.activeSpec();
+        if (spec == null) return;
+        // PUSH THE FRESH VALUES INTO THE LIVE APP STATE (SHELL SPEC) BEFORE PERSISTING THEM
+        if (spec.applier != null) spec.applier.run();
+        final SaveMachine save = spec.save;
+        if (!spec.persistent || spec.configSpec == null) {
+            save.failures = 0;
+            save.state = SaveState.READY;
+            return;
+        }
+        // A SAVE OF THIS SPEC IS ALREADY IN FLIGHT — COALESCE THIS CHANGE INTO ONE FOLLOW-UP SAVE
+        // RATHER THAN SPAWNING A SECOND WRITER AGAINST THE SAME CONFIG FILE. THE MACHINES ARE PER-SPEC,
+        // SO A SAVE OF THE OTHER SPEC (ANOTHER FILE) NEVER BLOCKS OR SWALLOWS THIS ONE.
+        if (save.saving) {
+            save.resavePending = true;
+            return;
+        }
+        this.startSave(spec);
+    }
+
+    private void startSave(final SettingSpec spec) {
+        final SaveMachine save = spec.save;
+        save.saving = true;
+        save.state = save.failures > 0 ? SaveState.RESAVING : SaveState.SAVING;
+        this.ctx.requestRender();
+        final ConfigSpec configSpec = spec.configSpec;
+        // RUN THE REFLECTIVE DISK WRITE OFF THE RENDER THREAD, THEN PUBLISH THE OUTCOME BACK ON IT VIA
+        // ctx.execute SO THE SAVE STATE STAYS RENDER-THREAD-CONFINED AND THE SAVING FRAME ACTUALLY RENDERS.
+        ThreadTool.createStarted("WaterMedia-ConfigSave", () -> {
+            ReflectiveOperationException error = null;
+            try {
+                final Method method = ConfigSpec.class.getDeclaredMethod("save");
+                method.setAccessible(true);
+                method.invoke(configSpec);
+            } catch (final ReflectiveOperationException e) {
+                error = e;
+            }
+            final ReflectiveOperationException outcome = error;
+            this.ctx.execute(() -> this.finishSave(spec, outcome));
         });
     }
 
-    private int centerTextY(final int y, final int h, final float scale) {
-        return y + Math.max(0, (h - this.text.glyphHeight(scale)) / 2);
-    }
-
-    private int centerBoldTextY(final int y, final int h, final float scale) {
-        return y + Math.max(0, (h - this.text.glyphHeightBold(scale)) / 2);
-    }
-
-    private static String safePath(final Supplier<Path> supplier) {
-        try {
-            final Path path = supplier.get();
-            return path == null ? "" : path.toAbsolutePath().toString();
-        } catch (final RuntimeException e) {
-            return "UNAVAILABLE";
+    private void finishSave(final SettingSpec spec, final ReflectiveOperationException error) {
+        final SaveMachine save = spec.save;
+        if (error == null) {
+            save.failures = 0;
+            save.state = SaveState.SAVED;
+        } else {
+            save.failures++;
+            save.state = save.failures >= 2 ? SaveState.FAILED_TWICE : SaveState.FAILED_ONCE;
+        }
+        save.saving = false;
+        this.invalidate();
+        // A CHANGE ARRIVED WHILE SAVING — PERSIST IT NOW WITH ONE COALESCED FOLLOW-UP SAVE.
+        if (save.resavePending) {
+            save.resavePending = false;
+            this.startSave(spec);
         }
     }
 
+    // ==========================================================================
+    // SMALL HELPERS
+    // ==========================================================================
+
+    private static String seekDisplay(final Setting setting, final String value) {
+        final String suffix = setting.suffix();
+        return suffix.isBlank() ? value : value + " " + suffix;
+    }
+
+    private static Color statusColor(final String value) {
+        final String normalized = value == null ? "" : value.toUpperCase(Locale.ROOT);
+        if (normalized.contains("READY") || normalized.contains("LOADED") || normalized.contains("AVAILABLE")) return AppTheme.GREEN;
+        if (normalized.contains("ERROR") || normalized.contains("UNLOADED")) return AppTheme.RED;
+        if (normalized.contains("ONLY") || normalized.contains("OFFLINE")) return AppTheme.AMBER;
+        return AppTheme.TEXT_FAINT;
+    }
+
+    // TURNS A FIELD/GROUP IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase BOUNDARIES
+    // SPLIT INTO WORDS ("crtOverlay" -> "Crt Overlay", "pngUseBKGDChunk" -> "Png Use BKGD Chunk") AND
+    // EVERY WORD IS CAPITALIZED — ROW NAMES RENDER VERBATIM NOW, SO THEY MUST READ AS WORDS
     private static String titleCase(final String value) {
         if (value == null || value.isBlank()) return "Settings";
         final String spaced = value.replace('_', ' ').replace('-', ' ');
-        final StringBuilder out = new StringBuilder(spaced.length());
+        final StringBuilder out = new StringBuilder(spaced.length() + 4);
         boolean upper = true;
         for (int i = 0; i < spaced.length(); i++) {
             final char c = spaced.charAt(i);
             if (Character.isWhitespace(c)) {
                 upper = true;
                 out.append(c);
-            } else if (upper) {
-                out.append(Character.toUpperCase(c));
-                upper = false;
-            } else {
-                out.append(c);
+                continue;
             }
+            if (i > 0 && Character.isUpperCase(c)) {
+                final char prev = spaced.charAt(i - 1);
+                final boolean nextLower = i + 1 < spaced.length() && Character.isLowerCase(spaced.charAt(i + 1));
+                // BREAK ON lower->UPPER AND ON THE LAST CAPITAL OF AN ACRONYM RUN ("BKGDChunk" -> "BKGD Chunk")
+                if (Character.isLowerCase(prev) || Character.isDigit(prev) || (Character.isUpperCase(prev) && nextLower)) {
+                    out.append(' ');
+                }
+            }
+            out.append(upper ? Character.toUpperCase(c) : c);
+            upper = false;
         }
         return out.toString();
     }
 
-    private static String compactError(final Throwable throwable) {
-        final Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
-        final String message = cause.getMessage();
-        if (message == null || message.isBlank()) return cause.getClass().getSimpleName();
-        return message.length() > 78 ? message.substring(0, 75) + "..." : message;
+    // ==========================================================================
+    // CUSTOM ELEMENTS — CANVAS-ONLY DRAWING
+    // ==========================================================================
+
+    // SPEC TAB STRIP — LAYS OUT THE FOLDER TABS AND THE RESET ACTION, THEN CLOSES THE ROW WITH A BASELINE
+    // RULE BROKEN UNDER THE ACTIVE TAB SO IT READS AS AN OPEN FOLDER INTO THE CONTENT BELOW
+    private final class TabRow extends Parent {
+
+        private TabRow() {
+            super(Orientation.HORIZONTAL);
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            super.onDraw(canvas);
+            // BASELINE DRAWN AFTER THE CHILDREN SO IT SEALS THE INACTIVE TAB BOTTOMS
+            final int y = this.top + this.measuredHeight - 1;
+            int gapL = -1;
+            int gapR = -1;
+            for (final Element<?> child: this.children) {
+                if (child instanceof SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
+                    gapL = tab.left();
+                    gapR = tab.left() + tab.measuredWidth();
+                    break;
+                }
+            }
+            if (gapL < 0) {
+                canvas.fill(this.left, y, this.measuredWidth, 1, AppTheme.STROKE_BRIGHT);
+            } else {
+                canvas.fill(this.left, y, Math.max(0, gapL - this.left), 1, AppTheme.STROKE_BRIGHT);
+                canvas.fill(gapR, y, Math.max(0, this.left + this.measuredWidth - gapR), 1, AppTheme.STROKE_BRIGHT);
+            }
+        }
     }
 
-    private enum HitType {
-        SPEC, SECTION, RESET
+    // ONE SPEC FOLDER TAB — OPEN-BOTTOM FRAME WITH THE APP ICON, TITLE + SUBTITLE AND THE SPEC'S SAVE
+    // PIP; THE ACTIVE TAB LIGHTS ITS ACCENT AND BREAKS THE STRIP BASELINE (SEE TabRow) SO IT CONNECTS
+    // TO THE SETTINGS BELOW
+    private final class SpecTab extends Element<SpecTab> {
+
+        private static final int ICON = 16; // APP ICON EDGE IN LOGICAL PX, SAME AS THE TITLEBAR
+        private static final int PIP = 8;   // SAVE-STATUS SQUARE EDGE, SAME AS StatusSquare
+
+        private final int index;
+        private final String title;
+        private final String subtitle;
+
+        private SpecTab(final int index, final String title, final String subtitle) {
+            this.index = index;
+            this.title = title.toUpperCase(Locale.ROOT);
+            this.subtitle = subtitle.toUpperCase(Locale.ROOT);
+            this.height = MAX_PARENT;
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            final TextRenderer text = SettingsScreen.this.text;
+            // 16 PAD + ICON + 8 GAP | TEXT BLOCK | 12 GAP + PIP + 16 PAD
+            this.contentWidth = Math.max(text.widthBold(this.title, AppTheme.TEXT_BUTTON),
+                    text.width(this.subtitle, AppTheme.TEXT_SUBTITLE)) + 76;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final boolean active = this.index == SettingsScreen.this.activeSpecIndex;
+            final Color accent = this.index == 0 ? AppTheme.CYAN : AppTheme.AMBER;
+            final int x = this.left;
+            final int y = this.top;
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            if (active) {
+                canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_2, 235));
+                canvas.glow(x, y, w, h, 0f, accent, 0.18f);
+            } else {
+                canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_1, this.hovered ? 205 : 140));
+            }
+            // OPEN-BOTTOM FRAME — TOP AND SIDE EDGES ONLY; THE STRIP BASELINE CLOSES INACTIVE TABS
+            final Color edge = active ? accent : this.hovered ? AppTheme.STROKE_BRIGHT : AppTheme.STROKE;
+            final float edgeW = active ? 1.5f : 1f;
+            canvas.lineH(x, y, w, edge, edgeW);
+            canvas.line(x, y, x, y + h, edge, edgeW);
+            canvas.line(x + w, y, x + w, y + h, edge, edgeW);
+            final int titleH = canvas.textHeight(AppTheme.TEXT_BUTTON, true);
+            final int subH = canvas.textHeight(AppTheme.TEXT_SUBTITLE, false);
+            final int blockH = titleH + 2 + subH;
+            final int textY = y + Math.max(0, (h - blockH) / 2);
+            // APP ICON — TEXTURE ID READ PER DRAW (IT CHANGES ACROSS ENGINE SWAPS/ASSET RELOADS),
+            // CENTERED VERTICALLY ON THE TITLE+SUBTITLE BLOCK; THE TEXT ALWAYS RESERVES ITS SLOT
+            final int iconId = SettingsScreen.this.ctx.assets.iconId;
+            if (iconId > 0) canvas.image(iconId, x + 16, textY + (blockH - ICON) / 2, ICON, ICON, null);
+            final int textX = x + 16 + ICON + 8;
+            canvas.text(this.title, textX, textY,
+                    active ? accent : this.hovered ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON, true);
+            canvas.text(this.subtitle, textX, textY + titleH + 2, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
+            // SAVE PIP — THE SAME 8x8 SQUARE StatusSquare DRAWS, FED BY THIS SPEC'S OWN SaveMachine
+            // WITH THE OLD CONFIG CHIP'S STATE MAP (SAVING PULSES, RESAVE/FIRST FAILURE WARNS,
+            // SECOND FAILURE ERRORS, IDLE/SAVED IS OK)
+            final StatusSquare.Status status = switch (SettingsScreen.this.specs.get(this.index).save.state) {
+                case FAILED_TWICE -> StatusSquare.Status.ERROR;
+                case FAILED_ONCE, RESAVING -> StatusSquare.Status.WARN;
+                case SAVING -> StatusSquare.Status.PENDING;
+                default -> StatusSquare.Status.OK; // READY / SAVED
+            };
+            final Color pip = StatusSquare.tint(status);
+            final int pipX = x + w - 16 - PIP;
+            final int pipY = y + (h - PIP) / 2;
+            canvas.fill(pipX, pipY, PIP, PIP, pip);
+            canvas.glow(pipX, pipY, PIP, PIP, 0f, pip, 0.42f);
+        }
     }
+
+    // SECTION ENTRY — CLEAN MRL-STYLE TREE ROW: NESTED GROUPS INDENT 14px PER LEVEL AND THE ACTIVE NODE
+    // LIGHTS THE AMBER BAR + FILL (COHERENT WITH THE AMBER CONTROL THUMBS); FLAT TEXT OTHERWISE
+    private final class SectionItem extends Element<SectionItem> {
+
+        private static final int INDENT = 14;
+
+        private final int index;
+        private final String name;
+        private final int indent;
+
+        private SectionItem(final int index, final SettingSection section) {
+            this.index = index;
+            this.name = section.name.toUpperCase(Locale.ROOT);
+            this.indent = section.depth * INDENT;
+            this.width = MAX_PARENT;
+            this.height = SECTION_H;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final boolean active = this.index == SettingsScreen.this.activeSectionIndex;
+            final int x = this.left + this.indent;
+            final int y = this.top;
+            final int w = this.measuredWidth - this.indent;
+            final int h = this.measuredHeight;
+            if (active) {
+                canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.AMBER, 30));
+                canvas.fill(x, y + 4, 3, h - 8, AppTheme.AMBER);
+                canvas.glow(x, y, w, h, 0f, AppTheme.AMBER, 0.14f);
+            } else if (this.hovered) {
+                canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.AMBER, 18));
+            }
+            canvas.text(canvas.text().truncateToWidth(this.name, w - 26, AppTheme.TEXT_BODY, Font.BOLD),
+                    x + 14, y + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, true)) / 2),
+                    active ? AppTheme.AMBER : this.hovered ? AppTheme.TEXT : AppTheme.TEXT_SOFT,
+                    AppTheme.TEXT_BODY, true);
+        }
+    }
+
+    // ONE SETTING ROW — LABEL/NOTE/SELECTION SELF-DRAWN (PIXEL PORT OF THE LEGACY ROW), THE CONTROL IS A
+    // REAL WIDGET RIGHT-ALIGNED AND VERTICALLY CENTERED. THE binder PULLS LIVE VALUES EVERY UPDATE PASS.
+    private final class RowElement extends Group<RowElement> {
+
+        private final Setting setting;
+        private final Element<?> control;
+        private final int ctlW; // PREFERRED CONTROL WIDTH IN PIXELS; 0 = WRAP TO THE WIDGET'S OWN SIZE
+        private final Runnable binder;
+        private Text seekValue; // SEEKBAR VALUE LABEL — SELECTION-TINTED AT DRAW TIME
+
+        private RowElement(final Setting setting) {
+            this.setting = setting;
+            this.width = MAX_PARENT;
+            final TextRenderer text = SettingsScreen.this.text;
+            final Control kind = setting.control();
+            final boolean enumKind = kind == Control.DROPDOWN || kind == Control.RADIO_BUTTON
+                    || kind == Control.LIST_SPINNER || kind == Control.SEGMENTED;
+            final Element<?> ctl;
+            final Runnable bind;
+            int prefW = 0;
+
+            if (!setting.mutable || kind == Control.LABEL || kind == Control.LIST_EDITOR
+                    || kind == Control.TAG_INPUT || kind == Control.CHECKBOX_LIST
+                    || (enumKind && !setting.isEnumControl())) {
+                // READ-ONLY VALUE — RIGHT-ALIGNED, STATUS-COLORED TEXT
+                final Text value = new Text().scale(AppTheme.TEXT_BODY).gravity(Gravity.RIGHT).height(CONTROL_H);
+                bind = () -> {
+                    final String raw = setting.valueLabel();
+                    value.text(raw.toUpperCase(Locale.ROOT)).color(statusColor(raw));
+                };
+                prefW = CONTROL_W + 120;
+                ctl = value;
+            } else if (kind == Control.SWITCH) {
+                final Switch control = new Switch().accent(AppTheme.AMBER)
+                        .onChange(v -> SettingsScreen.this.apply(setting, () -> setting.adjust(1, 1)));
+                bind = () -> control.on(setting.booleanValue());
+                ctl = control;
+            } else if (kind == Control.CHECKBOX) {
+                final CheckBox control = new CheckBox().accent(AppTheme.GREEN)
+                        .onChange(v -> SettingsScreen.this.apply(setting, () -> setting.adjust(1, 1)));
+                bind = () -> control.checked(setting.booleanValue());
+                ctl = control;
+            } else if (enumKind && !SettingsScreen.this.needsDropdown(setting)) {
+                // COMPACT ENUM — ONE SEGMENT PER CONSTANT
+                final List<String> options = setting.optionLabels();
+                final String[] segments = new String[options.size()];
+                int segW = 0;
+                for (int i = 0; i < segments.length; i++) {
+                    segments[i] = options.get(i).toUpperCase(Locale.ROOT);
+                    segW += SegmentedControl.segmentWidth(text, segments[i], AppTheme.TEXT_BODY);
+                }
+                // INVERT THE MODEL'S ENABLED MASK INTO THE WIDGET'S DISABLED MASK (null STAYS null = ALL ENABLED)
+                final boolean[] enabledMask = setting.optionEnabled();
+                boolean[] disabledMask = null;
+                if (enabledMask != null) {
+                    disabledMask = new boolean[enabledMask.length];
+                    for (int i = 0; i < enabledMask.length; i++) disabledMask[i] = !enabledMask[i];
+                }
+                final SegmentedControl control = new SegmentedControl().segments(segments)
+                        .accent(AppTheme.CYAN).scale(AppTheme.TEXT_BODY).height(CONTROL_H)
+                        .disabled(disabledMask)
+                        .onSelect(i -> SettingsScreen.this.apply(setting, () -> setting.selectOption(i)));
+                bind = () -> control.selected(setting.selectedOptionIndex());
+                prefW = segW;
+                ctl = control;
+            } else if (enumKind) {
+                // WIDE ENUM — DROPDOWN THAT OPENS A FLOATING MENU ANCHORED TO THE CONTROL (LEGACY UX). ITS
+                // POPUP MOUNTS INTO THE SCREEN OVERLAY SO IT STACKS ON TOP AND IS TORN DOWN ON SECTION SWITCH
+                final List<String> options = setting.optionLabels();
+                final List<String> labels = new ArrayList<>(options.size());
+                for (final String option: options) labels.add(option.toUpperCase(Locale.ROOT));
+                final Dropdown control = new Dropdown().mode(Dropdown.Mode.ATTACH)
+                        .accent(AppTheme.CYAN).scale(AppTheme.TEXT_BODY).height(CONTROL_H)
+                        .items(labels)
+                        .overlayHost(SettingsScreen.this.overlay())
+                        .onSelect(i -> SettingsScreen.this.apply(setting, () -> setting.selectOption(i)));
+                bind = () -> control.selected(setting.selectedOptionIndex());
+                // THE BOX RENDERS THE VALUE BOLD; SIZE FOR THE WIDEST LABEL PLUS THE 10px INSET, ARROW ZONE AND MARGIN
+                prefW = Math.max(160, text.widthBold(setting.widestValueLabel().toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 46);
+                ctl = control;
+            } else if (setting.isSeekbarControl()) {
+                // RANGED NUMBER — SEEK BAR PLUS THE LIVE VALUE LABEL (FIXED WIDTH SO THE TRACK NEVER JITTERS)
+                final SeekBar bar = new SeekBar().trackHeight(6).height(16).gravity(Gravity.CENTER)
+                        .onChange(f -> SettingsScreen.this.seek(setting, f));
+                final Text value = new Text().scale(AppTheme.TEXT_SUBTITLE).gravity(Gravity.RIGHT)
+                        .size(Math.max(58, text.width(seekDisplay(setting, setting.widestValueLabel()), AppTheme.TEXT_SUBTITLE) + 6), CONTROL_H);
+                this.seekValue = value;
+                bind = () -> {
+                    bar.value(setting.rangePercent());
+                    value.text(seekDisplay(setting, setting.valueLabel()));
+                };
+                prefW = CONTROL_W;
+                ctl = Parent.row().spacing(14).height(CONTROL_H).add(bar).add(value);
+            } else if (kind == Control.NUMBER_SPINNER || kind == Control.SEEKBAR
+                    || kind == Control.RANGE_SLIDER || kind == Control.KNOB || setting.isSpinnerControl()) {
+                // UNRANGED OR SPINNER NUMBER — [-] VALUE [+] WITH AN EDITABLE CENTER. THE SPINNER COMMITS THE
+                // STEPPED OR TYPED VALUE THROUGH onChange; SET IT STRAIGHT ONTO THE SETTING (number() CLAMPS
+                // BY THE SAME PATH AS commit/adjust) INSTEAD OF INFERRING A DIRECTION FROM THE PREVIOUS VALUE
+                final String suffix = setting.suffix();
+                final Spinner control = new Spinner().range(-1e18, 1e18).step(1).height(CONTROL_H)
+                        .suffix(suffix.isBlank() ? "" : " " + suffix.toUpperCase(Locale.ROOT))
+                        .onChange(v -> SettingsScreen.this.apply(setting, () -> setting.number(v)));
+                bind = () -> control.value(setting.number());
+                final int suffixW = suffix.isBlank() ? 0 : text.width(suffix, AppTheme.TEXT_SUBTITLE) + 16;
+                prefW = Math.max(190, text.width(setting.widestValueLabel(), AppTheme.TEXT_BODY) + suffixW + 110);
+                ctl = control;
+            } else {
+                // FREE TEXT — LIVE TEXT FIELD; ENTER COMMITS, ESC CANCELS (SEE dispatchKey/dispatchClick). NO
+                // EXPLICIT ACCENT SO FOCUS HIGHLIGHTS IN THE FRAMEWORK'S DEFAULT AMBER
+                final TextField field = new TextField()
+                        .padding(Spacing.hv(8, 4)).height(CONTROL_H).tag(setting);
+                SettingsScreen.this.textFields.add(field);
+                bind = () -> {
+                    if (!field.focused()) field.value(setting.valueLabel());
+                };
+                prefW = Path.class.isAssignableFrom(setting.valueType()) ? CONTROL_W + 120 : CONTROL_W;
+                final String suffix = setting.suffix();
+                if (suffix.isBlank()) {
+                    ctl = field;
+                } else {
+                    ctl = Parent.row().spacing(6).height(CONTROL_H)
+                            .add(field)
+                            .add(new Text(suffix.toUpperCase(Locale.ROOT)).scale(AppTheme.TEXT_SUBTITLE)
+                                    .color(AppTheme.TEXT_FAINT).height(CONTROL_H));
+                }
+            }
+
+            this.control = ctl;
+            this.ctlW = prefW;
+            this.binder = bind;
+            this.add(ctl);
+        }
+
+        @Override
+        protected void onUpdate() {
+            this.binder.run();
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            // CLAMP FIXED-WIDTH CONTROLS TO THE LEGACY BUDGET SO THE LABEL ALWAYS KEEPS ITS MINIMUM SPACE
+            if (this.ctlW > 0) this.control.width(Math.min(this.ctlW, Math.max(120, innerAvailWidth - 160)));
+            this.control.measure(innerAvailWidth, innerAvailHeight);
+            this.contentWidth = innerAvailWidth;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            this.control.layout(this.left + this.measuredWidth - this.control.measuredWidth() - 14,
+                    this.top + Math.max(0, (this.measuredHeight - this.control.measuredHeight()) / 2));
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            final Color accent = this.setting.accent();
+            final int w = this.measuredWidth;
+            final int h = this.measuredHeight;
+            if (this.selected) {
+                canvas.fill(this.left, this.top, w, h, AppTheme.alpha(AppTheme.NEON_DARK, 36));
+                canvas.fill(this.left, this.top + 6, 3, h - 12, accent);
+                canvas.glow(this.left, this.top + 4, w, h - 8, 0f, accent, 0.14f);
+            }
+            // DOTTED BOTTOM DIVIDER — 4px DASHES EVERY 8px, SAME AS THE LEGACY ROW
+            for (int dx = this.left; dx < this.left + w; dx += 8) {
+                canvas.fill(dx, this.top + h - 1, 4, 1, AppTheme.alpha(AppTheme.STROKE_BRIGHT, 76));
+            }
+            // OPTION NAME — VERBATIM (NO UPPERCASING) AT SECTION SCALE FOR CLEAR HIERARCHY, ALWAYS
+            // VERTICALLY CENTERED NOW THAT THE DESCRIPTION LIVES IN THE CURSOR TOOLTIP INSTEAD
+            final int labelMaxW = Math.max(80, this.control.left() - this.left - 30);
+            final int labelY = this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_SECTION, true)) / 2);
+            canvas.text(canvas.text().truncateToWidth(this.setting.label, labelMaxW, AppTheme.TEXT_SECTION, Font.BOLD),
+                    this.left + 18, labelY, this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_SECTION, true);
+            // PUBLISH THE HOVERED ROW'S DESCRIPTION FOR THE SCREEN'S CURSOR TOOLTIP (DRAWN ABOVE THE TREE)
+            if (this.hovered && !this.setting.note.isBlank()) {
+                SettingsScreen.this.hoverNote = this.setting.note;
+            }
+            // SELECTION TINT FOR THE SEEKBAR VALUE — SET AT DRAW TIME, AFTER THE LIST STAMPED selected
+            if (this.seekValue != null) {
+                this.seekValue.color(this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT);
+            }
+            super.onDraw(canvas);
+        }
+    }
+
+    // ==========================================================================
+    // SETTINGS MODEL (UNCHANGED LOGIC — percent()/number() ARE THE ONLY SKIN ADAPTERS)
+    // ==========================================================================
 
     private enum SaveState {
         READY, SAVING, SAVED, FAILED_ONCE, RESAVING, FAILED_TWICE
     }
 
-    private record Hit(Dimension bounds, HitType type, int index) {
+    // ONE SPEC'S AUTOSAVE STATE — saving GATES CONCURRENT WRITERS AGAINST THE SAME FILE; resavePending
+    // COALESCES A CHANGE THAT ARRIVES MID-SAVE INTO ONE FOLLOW-UP SAVE. TOUCHED ON THE RENDER THREAD
+    // (autosave + THE ctx.execute COMPLETION), VOLATILE SINCE A BACKGROUND SAVE IS IN PLAY.
+    private static final class SaveMachine {
+        private SaveState state = SaveState.READY;
+        private int failures;
+        private volatile boolean saving;
+        private volatile boolean resavePending;
     }
 
     private static final class SettingSpec {
@@ -1268,24 +1235,39 @@ public final class SettingsScreen extends ViewScreen {
         private final String subtitle;
         private final boolean persistent;
         private final ConfigSpec configSpec;
+        // RUNS AFTER EVERY MUTATION OF THIS SPEC — THE SHELL SPEC PUSHES ITS VALUES INTO THE LIVE APP
+        // STATE HERE (AppConfig.apply) SO EDITS TAKE EFFECT IMMEDIATELY; null WHEN NOTHING TO APPLY
+        private final Runnable applier;
+        // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT — SHARED ACROSS REBUILDS (SEE saves)
+        private final SaveMachine save;
+        // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
         private final List<SettingSection> sections = new ArrayList<>();
 
-        private SettingSpec(final String title, final String subtitle, final boolean persistent, final ConfigSpec configSpec) {
+        private SettingSpec(final String title, final String subtitle, final boolean persistent,
+                            final ConfigSpec configSpec, final Runnable applier, final SaveMachine save) {
             this.title = title;
             this.subtitle = subtitle;
             this.persistent = persistent;
             this.configSpec = configSpec;
+            this.applier = applier;
+            this.save = save;
         }
     }
 
     private static final class SettingSection {
         private final String name;
         private final String detail;
+        // HEADER SUBTITLE PATH ("audio" OR "group1 / group2"); THE HOME NODE CARRIES THE SPEC NAME
+        private final String path;
+        // TREE NESTING LEVEL (0 = TOP) — THE SECTION COLUMN INDENTS BY THIS
+        private final int depth;
         private final List<Setting> settings = new ArrayList<>();
 
-        private SettingSection(final String name, final String detail) {
+        private SettingSection(final String name, final String detail, final String path, final int depth) {
             this.name = name;
             this.detail = detail;
+            this.path = path;
+            this.depth = depth;
         }
     }
 
@@ -1300,7 +1282,8 @@ public final class SettingsScreen extends ViewScreen {
             this.label = label;
             this.key = key;
             this.type = type;
-            this.note = note == null || note.isBlank() ? "No description provided." : note;
+            // BLANK STAYS BLANK — A SETTING WITHOUT A DESCRIPTION SIMPLY SHOWS NO TOOLTIP
+            this.note = note == null || note.isBlank() ? "" : note.trim();
             this.mutable = mutable;
         }
 
@@ -1346,6 +1329,12 @@ public final class SettingsScreen extends ViewScreen {
             return List.of();
         }
 
+        // PER-OPTION AVAILABILITY FOR ENUM CONTROLS (null = ALL ENABLED). A DISABLED OPTION RENDERS DIMMED
+        // AND CANNOT BE SELECTED — E.G. VULKAN WHEN NO VULKAN LOADER IS PRESENT ON THIS MACHINE.
+        boolean[] optionEnabled() {
+            return null;
+        }
+
         int selectedOptionIndex() {
             return -1;
         }
@@ -1366,8 +1355,20 @@ public final class SettingsScreen extends ViewScreen {
             return 0f;
         }
 
-        boolean click(final Dimension control, final double mx) {
-            return this.adjust(1, 1);
+        // SETS A RANGED NUMBER FROM A 0..1 FRACTION (SEEK BAR SKIN ADAPTER)
+        boolean percent(final double pct) {
+            return false;
+        }
+
+        // CURRENT NUMERIC VALUE FOR THE SPINNER SKIN; 0 WHEN THE SETTING IS NOT A NUMBER
+        double number() {
+            return 0d;
+        }
+
+        // SETS A NUMBER DIRECTLY FROM THE SPINNER (STEPPED OR TYPED), CLAMPED THROUGH THE SAME PATH AS
+        // commit/adjust; RETURNS WHETHER THE STORED VALUE ACTUALLY CHANGED
+        boolean number(final double value) {
+            return false;
         }
 
         boolean adjust(final int direction, final int step) {
@@ -1401,80 +1402,45 @@ public final class SettingsScreen extends ViewScreen {
         }
     }
 
-    private static final class RuntimeSetting extends Setting {
-        private final Supplier<String> valueLabel;
-        private final Supplier<Boolean> getter;
-        private final Consumer<Boolean> setter;
-        private final boolean defaultValue;
-
-        private RuntimeSetting(final String label, final String key, final String type,
-                               final String note, final Supplier<String> valueLabel,
-                               final Supplier<Boolean> getter, final Consumer<Boolean> setter,
-                               final boolean defaultValue) {
-            super(label, key, type, note, true);
-            this.valueLabel = valueLabel;
-            this.getter = getter;
-            this.setter = setter;
-            this.defaultValue = defaultValue;
-        }
-
-        @Override
-        String valueLabel() {
-            return this.valueLabel.get();
-        }
-
-        @Override
-        boolean isBooleanControl() {
-            return true;
-        }
-
-        @Override
-        Control control() {
-            return Control.SWITCH;
-        }
-
-        @Override
-        boolean booleanValue() {
-            return this.getter.get();
-        }
-
-        @Override
-        boolean adjust(final int direction, final int step) {
-            this.setter.accept(!this.getter.get());
-            return true;
-        }
-
-        @Override
-        void reset() {
-            this.setter.accept(this.defaultValue);
-        }
-
-        @Override
-        Color accent() {
-            return this.getter.get() ? AppTheme.CYAN : AppTheme.TEXT_FAINT;
-        }
-    }
-
-    // RUNTIME ENUM SELECTOR (LIST_SPINNER) BACKED BY A getter/setter — THE ENUM ANALOGUE OF
-    // RuntimeSetting. CYCLES THROUGH THE CONSTANTS WITH LEFT/RIGHT OR A CLICK ON EITHER HALF.
+    // RUNTIME ENUM SELECTOR (LIST_SPINNER) BACKED BY A getter/setter — RESERVED FOR THE STRICTLY
+    // NON-PORTABLE SHELL SETTINGS (ENGINE/UI SCALE, WHOSE .cfg STORES PREDATE ANY CONFIG SPEC).
+    // CYCLES THROUGH THE CONSTANTS WITH LEFT/RIGHT OR SELECTS DIRECTLY FROM THE WIDGET.
     private static final class RuntimeEnumSetting<E extends Enum<E>> extends Setting {
         private final E[] options;
         private final Supplier<E> getter;
         private final Consumer<E> setter;
         private final E defaultValue;
+        // MAPS A CONSTANT TO ITS DISPLAY LABEL — DEFAULTS TO name(), OVERRIDDEN FOR ENUMS WHOSE
+        // LABELS ARE NOT VALID IDENTIFIERS (E.G. UI SCALE "1.0x"/"1.25x")
+        private final Function<E, String> labeler;
+        // OPTIONAL PER-CONSTANT AVAILABILITY GATE (null = ALL ENABLED) — DISABLED CONSTANTS ARE DIMMED AND SKIPPED
+        private final Function<E, Boolean> enabled;
 
         private RuntimeEnumSetting(final String label, final String key, final String type, final String note,
-                                   final E[] options, final Supplier<E> getter, final Consumer<E> setter, final E defaultValue) {
+                                   final E[] options, final Supplier<E> getter, final Consumer<E> setter,
+                                   final E defaultValue, final Function<E, String> labeler) {
+            this(label, key, type, note, options, getter, setter, defaultValue, labeler, null);
+        }
+
+        private RuntimeEnumSetting(final String label, final String key, final String type, final String note,
+                                   final E[] options, final Supplier<E> getter, final Consumer<E> setter,
+                                   final E defaultValue, final Function<E, String> labeler, final Function<E, Boolean> enabled) {
             super(label, key, type, note, true);
             this.options = options;
             this.getter = getter;
             this.setter = setter;
             this.defaultValue = defaultValue;
+            this.labeler = labeler;
+            this.enabled = enabled;
+        }
+
+        private boolean enabled(final E option) {
+            return this.enabled == null || Boolean.TRUE.equals(this.enabled.apply(option));
         }
 
         @Override
         String valueLabel() {
-            return this.getter.get().name();
+            return this.labeler.apply(this.getter.get());
         }
 
         @Override
@@ -1490,7 +1456,7 @@ public final class SettingsScreen extends ViewScreen {
         @Override
         List<String> optionLabels() {
             final List<String> labels = new ArrayList<>(this.options.length);
-            for (final E option: this.options) labels.add(option.name());
+            for (final E option: this.options) labels.add(this.labeler.apply(option));
             return labels;
         }
 
@@ -1502,8 +1468,16 @@ public final class SettingsScreen extends ViewScreen {
         }
 
         @Override
+        boolean[] optionEnabled() {
+            if (this.enabled == null) return null;
+            final boolean[] mask = new boolean[this.options.length];
+            for (int i = 0; i < this.options.length; i++) mask[i] = this.enabled(this.options[i]);
+            return mask;
+        }
+
+        @Override
         boolean selectOption(final int index) {
-            if (index < 0 || index >= this.options.length) return false;
+            if (index < 0 || index >= this.options.length || !this.enabled(this.options[index])) return false;
             this.setter.accept(this.options[index]);
             return true;
         }
@@ -1511,25 +1485,31 @@ public final class SettingsScreen extends ViewScreen {
         @Override
         String widestValueLabel() {
             String widest = this.valueLabel();
-            for (final E option: this.options) if (option.name().length() > widest.length()) widest = option.name();
+            for (final E option: this.options) {
+                final String label = this.labeler.apply(option);
+                if (label.length() > widest.length()) widest = label;
+            }
             return widest;
         }
 
         @Override
         boolean adjust(final int direction, final int step) {
-            final int next = Math.floorMod(this.selectedOptionIndex() + direction, this.options.length);
-            this.setter.accept(this.options[next]);
-            return true;
-        }
-
-        @Override
-        boolean click(final Dimension control, final double mx) {
-            return this.adjust(mx < control.x() + control.width() / 2d ? -1 : 1, 1);
+            // CYCLE PAST DISABLED CONSTANTS SO KEYBOARD LEFT/RIGHT NEVER LANDS ON AN UNAVAILABLE OPTION
+            final int n = this.options.length;
+            int next = this.selectedOptionIndex();
+            for (int i = 0; i < n; i++) {
+                next = Math.floorMod(next + direction, n);
+                if (this.enabled(this.options[next])) {
+                    this.setter.accept(this.options[next]);
+                    return true;
+                }
+            }
+            return false;
         }
 
         @Override
         void reset() {
-            this.setter.accept(this.defaultValue);
+            if (this.enabled(this.defaultValue)) this.setter.accept(this.defaultValue);
         }
 
         @Override
@@ -1687,21 +1667,31 @@ public final class SettingsScreen extends ViewScreen {
             final double value = ((Number) this.field.get()).doubleValue();
             final double min = this.minValue;
             final double max = this.maxValue;
-            // HASUSABLERANGE() ALREADY GUARANTEES MAX > MIN, SO THE SPAN IS SAFE TO DIVIDE BY DIRECTLY
+            // hasUsableRange() ALREADY GUARANTEES MAX > MIN, SO THE SPAN IS SAFE TO DIVIDE BY DIRECTLY
             return (float) Math.max(0d, Math.min(1d, (value - min) / (max - min)));
         }
 
         @Override
-        boolean click(final Dimension control, final double mx) {
-            if (this.isSeekbarControl()) {
-                final double pct = Math.max(0d, Math.min(1d, (mx - control.x()) / Math.max(1d, control.width())));
-                this.setValue(this.valueForPercent(pct));
-                return true;
-            }
-            if (this.isSpinnerControl() || this.isEnumControl()) {
-                return this.adjust(mx < control.x() + control.width() / 2d ? -1 : 1, 1);
-            }
-            return this.adjust(1, 1);
+        boolean percent(final double pct) {
+            if (!this.isSeekbarControl()) return false;
+            this.setValue(this.valueForPercent(pct));
+            return true;
+        }
+
+        @Override
+        double number() {
+            return this.isNumber() ? ((Number) this.field.get()).doubleValue() : 0d;
+        }
+
+        @Override
+        boolean number(final double value) {
+            if (!this.isNumber()) return false;
+            // CLAMP THROUGH clampNumber (THE SAME [MIN, MAX] PATH THE H-04/M-05 CLAMPS USE) AND ONLY WRITE
+            // WHEN THE STORED VALUE ACTUALLY MOVES, SO A NO-OP EDIT NEITHER SAVES NOR CHIMES
+            final Object next = this.clampNumber(value);
+            if (((Number) next).doubleValue() == ((Number) this.field.get()).doubleValue()) return false;
+            this.setValue(next);
+            return true;
         }
 
         @Override
@@ -1911,9 +1901,10 @@ public final class SettingsScreen extends ViewScreen {
             return type.getSimpleName().toUpperCase(Locale.ROOT);
         }
 
+        // JOINED FIELD COMMENTS FOR THE ROW TOOLTIP; EMPTY WHEN THE FIELD HAS NONE (NO TOOLTIP THEN)
         private static String firstComment(final IConfigField<?, ?> field) {
             final String[] comments = field.comments();
-            if (comments == null || comments.length == 0) return "WaterMediaConfig option.";
+            if (comments == null || comments.length == 0) return "";
             final StringBuilder out = new StringBuilder();
             for (final String comment: comments) {
                 if (comment == null || comment.isBlank()) continue;
@@ -1921,7 +1912,7 @@ public final class SettingsScreen extends ViewScreen {
                 out.append(comment.trim());
                 if (out.length() > 180) break;
             }
-            return out.isEmpty() ? "WaterMediaConfig option." : out.toString();
+            return out.toString();
         }
     }
 }

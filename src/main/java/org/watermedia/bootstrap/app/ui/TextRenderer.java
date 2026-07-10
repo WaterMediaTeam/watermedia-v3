@@ -32,6 +32,8 @@ public final class TextRenderer {
     private final int defaultStyle;
     private final int baseSize;
     private int margin = LINE_MARGIN;
+    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — PICKS THE ATLAS RESOLUTION; QUADS/METRICS STAY LOGICAL
+    private volatile float uiScale = 1f;
 
     public TextRenderer() {
         this(loadBundledFont(Font.PLAIN), loadBundledFont(Font.BOLD), Font.PLAIN, DEFAULT_FONT_SIZE);
@@ -61,6 +63,26 @@ public final class TextRenderer {
 
     public void margin(final int margin) {
         this.margin = Math.max(0, margin);
+    }
+
+    /**
+     * Drops every cached glyph atlas so they rebuild lazily against a freshly attached render context.
+     * Used by the engine hot-swap: the old atlas (and any lazily-added non-ASCII standalone glyph, which
+     * lives inside its {@code FontAtlas}) belongs to a destroyed context, so clearing the map is enough —
+     * no {@code glDelete} is issued (the context is already gone).
+     */
+    public void reset() {
+        this.atlases.clear();
+    }
+
+    /**
+     * Sets the UI scale (physical pixels per logical pixel) used to pick the glyph atlas resolution.
+     * Glyph quads and every metric (width, heights, baseline) stay in logical pixels; only the
+     * backing atlas is rasterized at physical size. Old atlases from another scale simply stay
+     * cached under their physical-pixel key.
+     */
+    public void setUiScale(final float scale) {
+        this.uiScale = scale > 0f ? scale : 1f;
     }
 
     public int lineHeight() {
@@ -201,10 +223,14 @@ public final class TextRenderer {
     }
 
     private FontRun fontRun(final float scale, final int style) {
-        final int targetSize = Math.max(1, Math.round(this.baseSize * Math.max(0.05f, scale)));
+        // ATLAS IS PICKED IN PHYSICAL PX (SNAPPED TO THE PIXEL GRID, ODD-SIZE SNAP KEPT); QUADS ARE
+        // EMITTED IN LOGICAL PX BY DIVIDING THE SNAPPED PHYSICAL SIZE BACK BY uiScale — AT uiScale=1
+        // THIS IS BIT-IDENTICAL TO THE OLD targetSize/atlasSize MATH.
+        final float ui = this.uiScale;
+        final int targetSize = Math.max(1, Math.round(this.baseSize * Math.max(0.05f, scale) * ui));
         final int atlasSize = targetSize % 2 == 0 ? targetSize + 1 : targetSize;
         final FontAtlas atlas = this.atlas(style == Font.BOLD ? Font.BOLD : Font.PLAIN, atlasSize);
-        return new FontRun(atlas, targetSize / (float) atlasSize);
+        return new FontRun(atlas, targetSize / ui / atlasSize);
     }
 
     private FontAtlas atlas(final int style, final int size) {

@@ -50,18 +50,33 @@ public final class AppContext implements Executor {
     public long windowHandle;
     public boolean windowMaximized;
     private volatile boolean renderRequested = true;
+    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX)
+    public volatile float uiScale = 1f;
+
+    /** Window width in LOGICAL pixels — the coordinate space the whole element tree lives in. */
+    public int logicalWidth() {
+        return Math.round(this.windowWidth / this.uiScale);
+    }
+
+    /** Window height in LOGICAL pixels — the coordinate space the whole element tree lives in. */
+    public int logicalHeight() {
+        return Math.round(this.windowHeight / this.uiScale);
+    }
+
+    // GLOBAL CRT OVERLAY TOGGLE (SCANLINES + NEON BANDS) — DRIVEN BY THE 'C' SHORTCUT AND THE SETTINGS ROW
+    public volatile boolean crt = true;
 
     // MOUSE
     public double mouseX;
     public double mouseY;
+    // RAW PHYSICAL CURSOR COORDS (TITLEBAR DRAG USES THESE); mouseX/mouseY BECOME LOGICAL IN A FUTURE WAVE
+    public volatile double mouseRawX;
+    public volatile double mouseRawY;
     public boolean mouseDown;
     public boolean mousePressed;
     public boolean mouseClicked;
     public boolean ctrlDown;
     public boolean selectionSoundEnabled = true;
-
-    // CONFIG STATUS SHOWN BY SETTINGS IN THE ENGINE STRIP
-    public final ConfigStatus configStatus = new ConfigStatus();
 
     // TEXT RENDERER
     public TextRenderer text;
@@ -112,6 +127,9 @@ public final class AppContext implements Executor {
 
     // GLOBAL ERROR DIALOG
     public final ErrorState error = new ErrorState();
+
+    // GLOBAL EXIT-CONFIRM DIALOG (TITLEBAR CLOSE / EXIT ACTION) — RENDERED BY THE WINDOW SHELL
+    public volatile boolean exitConfirm;
 
     // RECORDS
     public record TestURI(String name, String uri, boolean debug) {
