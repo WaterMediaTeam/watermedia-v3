@@ -190,6 +190,34 @@ publishMods {
 // KEEP `build` ASSEMBLING BOTH CODEPENDENT JARS, AS IT DID WHEN BINARIES WAS A DIRECT DEPENDENCY
 build.dependsOn gradle.includedBuild("binaries").task(":build")
 
+// NORMALIZE ENHANCED-FOR COLONS IN JAVA SOURCES: "for (T x : xs)" -> "for (T x: xs)"
+// (GRADLE PORT OF THE OLD scripts/remove_semicolon_space.ps1)
+tasks.register('removeSemicolonSpace') {
+    group = 'formatting'
+    description = 'Removes the space before the enhanced-for colon across src/**/*.java'
+    doLast {
+        // (?m) ANCHORS ^ PER LINE; [ \t] AND [^:\r\n] KEEP EACH MATCH INSIDE ONE LINE SO LINE ENDINGS SURVIVE
+        def regex = ~/(?m)(^[ \t]*for[ \t]*\([^:\r\n]*\w)[ \t]+:/
+        fileTree(dir: 'src', include: '**/*.java').each { file ->
+            def text = file.getText('UTF-8')
+            def updated = text.replaceAll(regex, '$1:')
+            if (updated == text) return
+
+            def before = text.readLines()
+            def after = updated.readLines()
+            before.eachWithIndex { line, i ->
+                if (after[i] != line) {
+                    println "${file.path}:${i + 1}"
+                    println "  - ${line.stripLeading()}"
+                    println "  + ${after[i].stripLeading()}"
+                }
+            }
+            file.write(updated, 'UTF-8')
+        }
+        println 'Done.'
+    }
+}
+
 def getChangelogText() {
     return file('CHANGELOG.md').readLines('UTF-8').takeWhile { !it.isEmpty() }.join('\n')
 }
