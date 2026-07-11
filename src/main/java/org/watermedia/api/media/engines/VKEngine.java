@@ -248,6 +248,24 @@ public final class VKEngine extends GFXEngine {
     // ==========================================================================
     // PUBLIC API
     // ==========================================================================
+    /**
+     * Returns the {@code VkImageView} handle of the final RGBA image for the newest completed frame.
+     * <p>
+     * Passthrough formats (BGRA, RGBA) are copied directly into the engine-owned managed image.
+     * Every other format is resolved to RGBA by a compute pass; a subset of planar YUV is instead
+     * sampled through a {@code VkSamplerYcbcrConversion} (BT.709 narrow range) that converts in
+     * sampler hardware. Either way the handle returned here is always a ready-to-sample RGBA view,
+     * never a raw luma or chroma plane.
+     * <p>
+     * The view is fence-gated: this returns the most recent slot whose GPU work has signalled its
+     * fence, rotating across the slot ring as frames complete, and 0 until the first frame is ready.
+     * <p>
+     * <b>Pipeline caution.</b> Read this fresh on every draw and sample it within (or right after)
+     * the engine's render cycle. The view rotates per frame and is recreated on a format or
+     * resolution change, so caching it across frames, or using it from an unrelated render stage,
+     * can sample a stale view or one whose backing image has already been destroyed.
+     * @return the RGBA {@code VkImageView} handle, or 0 if no frame has completed yet
+     */
     @Override
     public long texture() {
         if (this.released) return 0L;

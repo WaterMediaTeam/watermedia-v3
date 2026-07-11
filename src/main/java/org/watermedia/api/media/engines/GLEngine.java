@@ -326,6 +326,23 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // PUBLIC API
     // ==========================================================================
+    /**
+     * Returns the OpenGL name of the final RGBA texture for the active frame.
+     * <p>
+     * Direct formats (BGRA, RGBA, RGB) alias plane 0, so their upload lands straight in this
+     * texture. Planar and packed formats (YUV 420P/422P/444P, YUVA, NV12/NV21, YUYV/UYVY, GRAY)
+     * are <em>not</em> RGBA on their own: their planes are uploaded to intermediate textures and
+     * resolved to RGBA through an FBO shader pass ({@link #convertToRGBA()}) during the engine's
+     * render cycle. The handle returned here is always that resolved RGBA texture, never a raw
+     * luma or chroma plane.
+     * <p>
+     * <b>Pipeline caution.</b> The handle only holds the current frame once the engine's
+     * upload/convert cycle has run on the render thread. Read it fresh on every draw and sample it
+     * within (or right after) that cycle: it may be reallocated on a resolution or LOD change, and
+     * grabbing it earlier, from an unrelated render stage, or caching it across frames can sample a
+     * stale, half-converted, or freshly allocated (undefined contents) texture.
+     * @return the RGBA texture name, or 0 if no frame has been produced yet
+     */
     @Override
     public long texture() {
         final int[] textures = this.frameTextures;

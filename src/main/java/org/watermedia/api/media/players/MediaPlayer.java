@@ -188,8 +188,20 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public LodLevel lod() { return this.lod; }
 
     /**
-     * Returns the texture ID used for rendering the video frames.
-     * @return the texture ID, or 0 if not yet initialized.
+     * Returns the GPU handle of the final RGBA frame texture.
+     * <p>
+     * The handle always refers to a resolved RGBA texture. Frames decoded in planar or packed
+     * layouts (YUV, YUVA, NV12/NV21, YUYV/UYVY, GRAY) are converted to RGBA on the GPU by the
+     * backing engine before this handle is valid; direct formats (BGRA, RGBA, RGB) are exposed as
+     * is. The concrete handle type depends on the engine — an OpenGL texture name for the GL engine,
+     * or a {@code VkImageView} handle for the Vulkan engine.
+     * <p>
+     * <b>Pipeline caution.</b> Read this fresh on every draw and sample it within (or right after)
+     * the engine's render cycle on the render thread. The handle may be reallocated on a resolution
+     * or LOD change, and using it earlier, from an unrelated render stage, or caching it across
+     * frames can sample a stale, half-converted, or freshly allocated (undefined contents) texture.
+     * @return the RGBA texture handle, or {@link MediaPlayer#NO_TEXTURE NO_TEXTURE} if no frame has been produced yet
+     * @see org.watermedia.api.media.engines.GFXEngine#texture()
      */
     public long texture() { return this.gfx == null ? NO_TEXTURE : this.gfx.texture(); }
 
