@@ -15,11 +15,13 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public final class VP8LDecoder {
     static final Marker IT = MarkerManager.getMarker(VP8LDecoder.class.getSimpleName());
-    // RECOMMENDED (NOT ENFORCED) HUFFMAN GROUP COUNT. THE ENTROPY IMAGE CAN DECLARE UP TO 65536
-    // GROUPS (16-BIT META CODES) AND EACH ONE COSTS 5 TABLES; ABUSIVE FILES ARE ONLY LOGGED
-    // BECAUSE EVERY GROUP STILL COSTS BITSTREAM BITS AND EOF ABORTS THE DECODE EARLY
+    // RECOMMENDED (LOG-ONLY) HUFFMAN GROUP COUNT. THE ENTROPY IMAGE CAN DECLARE UP TO 65536
+    // GROUPS (16-BIT META CODES) AND EACH ONE COSTS 5 TABLES; COUNTS THE REMAINING BITSTREAM
+    // CANNOT PHYSICALLY ENCODE ARE REJECTED BEFORE TABLE ALLOCATION (SEE FEASIBILITY GATE BELOW)
     private static final int RECOMMENDED_GROUPS = 256;
-    private static final int MAX_GROUPS = 65536;
+    // MINIMUM BITS ONE GROUP CAN OCCUPY: 5 SIMPLE-CODE TABLES x 4 BITS (isSimple + numSymbols +
+    // is8Bits + 1-BIT SYMBOL) EACH
+    private static final int MIN_GROUP_BITS = 20;
 
     private VP8LDecoder() {
     }
@@ -31,9 +33,15 @@ public final class VP8LDecoder {
         // PARSE TRANSFORMS
         final List<Transform> transforms = new ArrayList<>();
         int currentWidth = width;
+        int seenTransforms = 0;
 
         while (reader.readBool()) {
             final Transform.Type type = Transform.typeof(reader.read(2));
+            // RFC 9649: EACH TRANSFORM TYPE MAY APPEAR AT MOST ONCE; UNCHECKED REPEATS WOULD LET
+            // A TINY FILE QUEUE THOUSANDS OF FULL-IMAGE INVERSE PASSES (CPU DOS)
+            final int typeBit = 1 << type.ordinal();
+            if ((seenTransforms & typeBit) != 0) throw new XCodecException("Duplicate VP8L transform: " + type);
+            seenTransforms |= typeBit;
             LOGGER.trace(IT, "Reading transform type: {}", type);
             final Transform transform = readTransform(reader, type, currentWidth, height);
             LOGGER.trace(IT, "Transform read complete, remaining bytes: {}", reader.remaining());
@@ -89,10 +97,16 @@ public final class VP8LDecoder {
             }
 
             final int numGroups = maxCode + 1;
+            // FEASIBILITY GATE: A GROUP COUNT THE REMAINING BITSTREAM CANNOT POSSIBLY ENCODE IS
+            // CORRUPT OR MALICIOUS (A 1x1 ENTROPY IMAGE CAN DECLARE 65536 GROUPS ~ 200 MB OF
+            // TABLES FROM A FEW-KB FILE); FAIL BEFORE ALLOCATING INSTEAD OF AFTER
+            final long feasibleGroups = (reader.remaining() * 8L + reader.bitsAvail()) / MIN_GROUP_BITS;
+            if (numGroups > feasibleGroups)
+                throw new XCodecException("VP8L declares " + numGroups + " huffman groups, bitstream can hold at most " + feasibleGroups);
             if (numGroups > RECOMMENDED_GROUPS) {
                 LOGGER.warn(IT, "VP8L declares {} huffman groups, above the recommended limit of {}", numGroups, RECOMMENDED_GROUPS);
-                LOGGER.trace(IT, "VP8L huffman group maximums: absolute={}, declared={}, meta={}x{} (bits={}), colorCacheSize={}, tables={}",
-                        MAX_GROUPS, numGroups, metaWidth, metaHeight, metaBits, colorCacheSize, numGroups * 5);
+                LOGGER.trace(IT, "VP8L huffman groups: declared={}, meta={}x{} (bits={}), colorCacheSize={}, tables={}",
+                        numGroups, metaWidth, metaHeight, metaBits, colorCacheSize, numGroups * 5);
             }
             huffmanGroups = HuffmanDecoder.readGroups(reader, numGroups, colorCacheSize);
         } else {
@@ -126,11 +140,6 @@ public final class VP8LDecoder {
     public static ByteBuffer decodeToBgra(final BitReader reader, final int width, final int height) throws XCodecException {
         final int[] bgra = decode(reader, width, height);
         return DataTool.bgraToBuffer(bgra);
-    }
-
-    // DECODE WITHOUT HEADER (FOR ALPHA CHANNEL)
-    public static int[] decodeNoHeader(final BitReader reader, final int width, final int height) throws XCodecException {
-        return decode(reader, width, height);
     }
 
     private static Transform readTransform(final BitReader reader, final Transform.Type type, final int width, final int height) throws XCodecException {

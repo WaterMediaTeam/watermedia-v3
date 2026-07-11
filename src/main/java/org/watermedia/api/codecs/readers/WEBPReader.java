@@ -47,6 +47,10 @@ public class WEBPReader extends ImageReader {
     // HARD CAP FOR CANVAS AND FRAME DIMENSIONS (16K). VP8X AND ANMF STORE 24-BIT SIZES; UNCAPPED
     // THEY OVERFLOW width*height*4 INT MATH AND ALLOW MULTI-GB ALLOCATIONS FROM A FEW-BYTE FILE
     private static final int MAX_DIM = 16384;
+    // TOTAL-PIXEL CAP (64 MPX, E.G. 8192x8192). MAX_DIM ALONE STILL ALLOWS 16K x 16K = 1 GiB PER
+    // int[] BUFFER, AND THE ANIMATED PATH HOLDS CANVAS + OUTPUT AT ONCE — A FEW-BYTE HEADER MUST
+    // NOT BE ABLE TO FORCE MULTI-HUNDRED-MB ALLOCATIONS
+    private static final int MAX_PIXELS = 1 << 26;
 
     private final int canvasWidth;
     private final int canvasHeight;
@@ -111,7 +115,7 @@ public class WEBPReader extends ImageReader {
             case RiffChunk.VP8L -> {
                 this.vp8Data = readPaddedChunkBody(this.data, first.size);
                 this.bitstreamFourCC = RiffChunk.VP8L;
-                int[] dim = parseVP8LDims(this.vp8Data);
+                int[] dim = parseVP8LDims(this.vp8Data, 0, this.vp8Data.length);
                 this.canvasWidth = dim[0];
                 this.canvasHeight = dim[1];
                 this.hasAlpha = dim[2] != 0;
@@ -141,7 +145,6 @@ public class WEBPReader extends ImageReader {
                         }
                         if (!this.readMetadataChunk(this.data, c)) skipBytes(this.data, paddedSize(c.size));
                     }
-                    this.canvas = new int[this.canvasWidth * this.canvasHeight];
                 } else {
                     // Static extended: read chunks until we have VP8/VP8L (and optional ALPH).
                     while (true) {
@@ -163,6 +166,12 @@ public class WEBPReader extends ImageReader {
             }
             default -> throw new XCodecException("Unknown WebP first chunk: " + RiffChunk.fourCCString(first.fourCC));
         }
+
+        // CENTRAL SIZE GATE: SIMPLE VP8 CAN DECLARE 0, AND EVEN MAX_DIM-CAPPED AXES CAN MULTIPLY
+        // INTO GB-SCALE BUFFERS; EVERY ALLOCATION BELOW DEPENDS ON THIS CHECK
+        if (this.canvasWidth <= 0 || this.canvasHeight <= 0 || (long) this.canvasWidth * this.canvasHeight > MAX_PIXELS)
+            throw new XCodecException("Invalid WEBP dimensions: " + this.canvasWidth + "x" + this.canvasHeight + " (max " + MAX_PIXELS + " pixels)");
+        if (this.animated) this.canvas = new int[this.canvasWidth * this.canvasHeight];
 
         this.outputFormat = resolveOutputFormat(requestedFormat, this.animated, this.bitstreamFourCC, this.hasAlpha, this.alphData);
 
@@ -352,8 +361,11 @@ public class WEBPReader extends ImageReader {
         final int frameY = (anmf[3] & 0xFF) | ((anmf[4] & 0xFF) << 8) | ((anmf[5] & 0xFF) << 16);
         final int frameW = ((anmf[6] & 0xFF) | ((anmf[7] & 0xFF) << 8) | ((anmf[8] & 0xFF) << 16)) + 1;
         final int frameH = ((anmf[9] & 0xFF) | ((anmf[10] & 0xFF) << 8) | ((anmf[11] & 0xFF) << 16)) + 1;
-        if (frameW > MAX_DIM || frameH > MAX_DIM)
-            throw new XCodecException("ANMF frame too big: " + frameW + "x" + frameH + " (max " + MAX_DIM + ")");
+        // SPEC: THE FRAME RECTANGLE MUST LIE FULLY INSIDE THE CANVAS. THIS ALSO BOUNDS THE
+        // PER-FRAME PIXEL ALLOCATION BY THE ALREADY-VALIDATED CANVAS SIZE
+        if (frameX * 2 + frameW > this.canvasWidth || frameY * 2 + frameH > this.canvasHeight)
+            throw new XCodecException("ANMF frame outside canvas: " + frameW + "x" + frameH + " at ("
+                    + (frameX * 2) + "," + (frameY * 2) + ") on " + this.canvasWidth + "x" + this.canvasHeight);
         final int duration = (anmf[12] & 0xFF) | ((anmf[13] & 0xFF) << 8) | ((anmf[14] & 0xFF) << 16);
         final int flags = anmf[15] & 0xFF;
         final boolean blend = (flags & 0x02) == 0;
@@ -370,7 +382,9 @@ public class WEBPReader extends ImageReader {
             final int fcc = (anmf[off] & 0xFF) | ((anmf[off + 1] & 0xFF) << 8) | ((anmf[off + 2] & 0xFF) << 16) | ((anmf[off + 3] & 0xFF) << 24);
             final int sz = (anmf[off + 4] & 0xFF) | ((anmf[off + 5] & 0xFF) << 8) | ((anmf[off + 6] & 0xFF) << 16) | ((anmf[off + 7] & 0xFF) << 24);
             final int body = off + 8;
-            if (body + sz > anmfLength) break;
+            // sz IS ATTACKER-CONTROLLED: NEGATIVE OR HUGE VALUES WOULD WRAP body+sz AND WALK off
+            // BACKWARDS INTO NEGATIVE INDICES; anmfLength-body IS OVERFLOW-FREE (body <= anmfLength)
+            if (sz < 0 || sz > anmfLength - body) break;
             if (fcc == RiffChunk.VP8 || fcc == RiffChunk.VP8L) {
                 subVp8FourCC = fcc;
                 subVp8Off = body;
@@ -422,15 +436,10 @@ public class WEBPReader extends ImageReader {
     private ByteBuffer decodeBitstreamToBgra(final byte[] vp8Data, final int vp8Off, final int vp8Len, final int vp8FourCC,
                                              final byte[] alphData, final int alphOff, final int alphLen,
                                              final int w, final int h) throws XCodecException {
-        final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
         if (vp8FourCC == RiffChunk.VP8L) {
-            // EXTENDED/ANMF BODIES SKIP parseVP8LDims, SO THE 5-BYTE HEADER IS NOT GUARANTEED HERE
-            if (vp8Len < 5) throw new XCodecException("VP8L bitstream too small: " + vp8Len);
-            final ByteBuffer vp8lData = vp8Body.duplicate().order(LE);
-            vp8lData.position(5); // skip 1-byte signature + 4 bytes header
-            final BitReader reader = new BitReader(vp8lData);
-            return VP8LDecoder.decodeToBgra(reader, w, h);
+            return VP8LDecoder.decodeToBgra(vp8lReader(vp8Data, vp8Off, vp8Len, w, h), w, h);
         }
+        final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
         if (alphData == null || alphLen <= 0) {
             return VP8LossyDecoder.decodeToBgra(vp8Body, w, h);
         }
@@ -443,21 +452,28 @@ public class WEBPReader extends ImageReader {
     private int[] decodeBitstreamToArgb(final byte[] vp8Data, final int vp8Off, final int vp8Len, final int vp8FourCC,
                                          final byte[] alphData, final int alphOff, final int alphLen,
                                          final int w, final int h) throws XCodecException {
-        final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
         if (vp8FourCC == RiffChunk.VP8L) {
-            // EXTENDED/ANMF BODIES SKIP parseVP8LDims, SO THE 5-BYTE HEADER IS NOT GUARANTEED HERE
-            if (vp8Len < 5) throw new XCodecException("VP8L bitstream too small: " + vp8Len);
-            final ByteBuffer vp8lData = vp8Body.duplicate().order(LE);
-            vp8lData.position(5);
-            final BitReader reader = new BitReader(vp8lData);
-            return VP8LDecoder.decode(reader, w, h);
+            return VP8LDecoder.decode(vp8lReader(vp8Data, vp8Off, vp8Len, w, h), w, h);
         }
+        final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
         final int[] argb = VP8LossyDecoder.decode(vp8Body, w, h);
         if (alphData != null && alphLen > 0) {
             final byte[] alpha = AlphaDecoder.decode(wrapSlice(alphData, alphOff, alphLen), w, h);
             AlphaDecoder.applyAlpha(argb, alpha);
         }
         return argb;
+    }
+
+    // VALIDATE THE 5-BYTE VP8L HEADER AND HAND BACK A BIT READER POSITIONED PAST IT. EXTENDED AND
+    // ANMF BODIES CARRY THEIR OWN DIMENSIONS; OUTPUT BUFFERS ARE SIZED FROM THE CONTAINER, SO A
+    // MISMATCH WOULD OVER/UNDERRUN THEM — THE SPEC REQUIRES BOTH TO AGREE, REJECT OTHERWISE
+    private static BitReader vp8lReader(final byte[] data, final int off, final int len, final int w, final int h) throws XCodecException {
+        final int[] dim = parseVP8LDims(data, off, len);
+        if (dim[0] != w || dim[1] != h)
+            throw new XCodecException("VP8L bitstream is " + dim[0] + "x" + dim[1] + ", container declares " + w + "x" + h);
+        final ByteBuffer body = wrapSlice(data, off, len);
+        body.position(5); // SKIP 1-BYTE SIGNATURE + 4-BYTE SIZE/VERSION HEADER
+        return new BitReader(body);
     }
 
     private static ByteBuffer wrapSlice(final byte[] data, final int offset, final int len) {
@@ -517,7 +533,8 @@ public class WEBPReader extends ImageReader {
 
         final int vp8xPos = buffer.position();
         final boolean animated = (buffer.get(vp8xPos) & 0x02) != 0;
-        buffer.position(vp8xPos + paddedSize(firstSize));
+        // AN ODD-SIZED VP8X TRUNCATED EXACTLY AT ITS END MAKES paddedSize LAND ONE PAST limit
+        buffer.position(Math.min(vp8xPos + paddedSize(firstSize), buffer.limit()));
         if (!animated) return ImageData.Scan.EMPTY;
 
         final List<Long> delays = new ArrayList<>();
@@ -564,10 +581,10 @@ public class WEBPReader extends ImageReader {
         return new int[] { widthScale & 0x3FFF, heightScale & 0x3FFF };
     }
 
-    private static int[] parseVP8LDims(final byte[] data) throws XCodecException {
-        if (data.length < 5) throw new XCodecException("VP8L chunk too small");
-        if ((data[0] & 0xFF) != 0x2F) throw new XCodecException("Invalid VP8L signature");
-        final int bits = (data[1] & 0xFF) | ((data[2] & 0xFF) << 8) | ((data[3] & 0xFF) << 16) | ((data[4] & 0xFF) << 24);
+    private static int[] parseVP8LDims(final byte[] data, final int off, final int len) throws XCodecException {
+        if (len < 5) throw new XCodecException("VP8L bitstream too small: " + len);
+        if ((data[off] & 0xFF) != 0x2F) throw new XCodecException("Invalid VP8L signature");
+        final int bits = (data[off + 1] & 0xFF) | ((data[off + 2] & 0xFF) << 8) | ((data[off + 3] & 0xFF) << 16) | ((data[off + 4] & 0xFF) << 24);
         final int w = (bits & 0x3FFF) + 1;
         final int h = ((bits >> 14) & 0x3FFF) + 1;
         final int alphaUsed = (bits >> 28) & 1;

@@ -49,6 +49,12 @@ public final class VP8LossyDecoder {
         // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
         final FrameInfo frm = parseFrameHeader(buf);
         if (!frm.keyFrame) throw new XCodecException("Only VP8 key frames supported");
+        if (frm.w <= 0 || frm.h <= 0)
+            throw new XCodecException("Invalid VP8 frame size: " + frm.w + "x" + frm.h);
+        // THE CONTAINER (SIMPLE HEADER, VP8X CANVAS OR ANMF FRAME) AND THE BITSTREAM MUST AGREE:
+        // CALLERS SIZE THEIR OUTPUT BUFFERS FROM THE CONTAINER, SO A MISMATCH WOULD OVERRUN THEM
+        if (frm.w != expW || frm.h != expH)
+            throw new XCodecException("VP8 frame is " + frm.w + "x" + frm.h + ", container declares " + expW + "x" + expH);
 
         // PARTITION 0 - COMPRESSED HEADER. p0Sz COMES FROM THE FRAME TAG AND CAN OVERRUN THE CHUNK
         if (frm.hdrSz + frm.p0Sz > buf.limit()) {
