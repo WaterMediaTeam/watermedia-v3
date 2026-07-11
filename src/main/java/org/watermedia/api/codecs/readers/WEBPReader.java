@@ -44,6 +44,9 @@ import static org.watermedia.WaterMedia.LOGGER;
 public class WEBPReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(WEBPReader.class.getSimpleName());
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
+    // HARD CAP FOR CANVAS AND FRAME DIMENSIONS (16K). VP8X AND ANMF STORE 24-BIT SIZES; UNCAPPED
+    // THEY OVERFLOW width*height*4 INT MATH AND ALLOW MULTI-GB ALLOCATIONS FROM A FEW-BYTE FILE
+    private static final int MAX_DIM = 16384;
 
     private final int canvasWidth;
     private final int canvasHeight;
@@ -124,6 +127,8 @@ public class WEBPReader extends ImageReader {
                 final int h0 = vp8xBody[7] & 0xFF, h1 = vp8xBody[8] & 0xFF, h2 = vp8xBody[9] & 0xFF;
                 this.canvasWidth = (w0 | (w1 << 8) | (w2 << 16)) + 1;
                 this.canvasHeight = (h0 | (h1 << 8) | (h2 << 16)) + 1;
+                if (this.canvasWidth > MAX_DIM || this.canvasHeight > MAX_DIM)
+                    throw new XCodecException("WEBP canvas too big: " + this.canvasWidth + "x" + this.canvasHeight + " (max " + MAX_DIM + ")");
 
                 if (this.animated) {
                     // Read chunks until ANIM. Then ANMFs are read lazily in next().
@@ -347,6 +352,8 @@ public class WEBPReader extends ImageReader {
         final int frameY = (anmf[3] & 0xFF) | ((anmf[4] & 0xFF) << 8) | ((anmf[5] & 0xFF) << 16);
         final int frameW = ((anmf[6] & 0xFF) | ((anmf[7] & 0xFF) << 8) | ((anmf[8] & 0xFF) << 16)) + 1;
         final int frameH = ((anmf[9] & 0xFF) | ((anmf[10] & 0xFF) << 8) | ((anmf[11] & 0xFF) << 16)) + 1;
+        if (frameW > MAX_DIM || frameH > MAX_DIM)
+            throw new XCodecException("ANMF frame too big: " + frameW + "x" + frameH + " (max " + MAX_DIM + ")");
         final int duration = (anmf[12] & 0xFF) | ((anmf[13] & 0xFF) << 8) | ((anmf[14] & 0xFF) << 16);
         final int flags = anmf[15] & 0xFF;
         final boolean blend = (flags & 0x02) == 0;
@@ -417,6 +424,8 @@ public class WEBPReader extends ImageReader {
                                              final int w, final int h) throws XCodecException {
         final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
         if (vp8FourCC == RiffChunk.VP8L) {
+            // EXTENDED/ANMF BODIES SKIP parseVP8LDims, SO THE 5-BYTE HEADER IS NOT GUARANTEED HERE
+            if (vp8Len < 5) throw new XCodecException("VP8L bitstream too small: " + vp8Len);
             final ByteBuffer vp8lData = vp8Body.duplicate().order(LE);
             vp8lData.position(5); // skip 1-byte signature + 4 bytes header
             final BitReader reader = new BitReader(vp8lData);
@@ -436,6 +445,8 @@ public class WEBPReader extends ImageReader {
                                          final int w, final int h) throws XCodecException {
         final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
         if (vp8FourCC == RiffChunk.VP8L) {
+            // EXTENDED/ANMF BODIES SKIP parseVP8LDims, SO THE 5-BYTE HEADER IS NOT GUARANTEED HERE
+            if (vp8Len < 5) throw new XCodecException("VP8L bitstream too small: " + vp8Len);
             final ByteBuffer vp8lData = vp8Body.duplicate().order(LE);
             vp8lData.position(5);
             final BitReader reader = new BitReader(vp8lData);

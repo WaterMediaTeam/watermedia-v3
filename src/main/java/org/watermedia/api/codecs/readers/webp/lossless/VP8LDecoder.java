@@ -15,6 +15,11 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public final class VP8LDecoder {
     static final Marker IT = MarkerManager.getMarker(VP8LDecoder.class.getSimpleName());
+    // RECOMMENDED (NOT ENFORCED) HUFFMAN GROUP COUNT. THE ENTROPY IMAGE CAN DECLARE UP TO 65536
+    // GROUPS (16-BIT META CODES) AND EACH ONE COSTS 5 TABLES; ABUSIVE FILES ARE ONLY LOGGED
+    // BECAUSE EVERY GROUP STILL COSTS BITSTREAM BITS AND EOF ABORTS THE DECODE EARLY
+    private static final int RECOMMENDED_GROUPS = 256;
+    private static final int MAX_GROUPS = 65536;
 
     private VP8LDecoder() {
     }
@@ -83,7 +88,13 @@ public final class VP8LDecoder {
                 maxCode = Math.max(maxCode, meta);
             }
 
-            huffmanGroups = HuffmanDecoder.readGroups(reader, maxCode + 1, colorCacheSize);
+            final int numGroups = maxCode + 1;
+            if (numGroups > RECOMMENDED_GROUPS) {
+                LOGGER.warn(IT, "VP8L declares {} huffman groups, above the recommended limit of {}", numGroups, RECOMMENDED_GROUPS);
+                LOGGER.trace(IT, "VP8L huffman group maximums: absolute={}, declared={}, meta={}x{} (bits={}), colorCacheSize={}, tables={}",
+                        MAX_GROUPS, numGroups, metaWidth, metaHeight, metaBits, colorCacheSize, numGroups * 5);
+            }
+            huffmanGroups = HuffmanDecoder.readGroups(reader, numGroups, colorCacheSize);
         } else {
             // SINGLE HUFFMAN GROUP
             huffmanGroups = new HuffmanGroup[]{HuffmanDecoder.readGroup(reader, colorCacheSize)};
@@ -141,6 +152,15 @@ public final class VP8LDecoder {
             case SUBTRACT_GREEN -> Transform.subtractGreen();
             case COLOR_INDEXING -> {
                 final int tableSize = reader.read(8) + 1;
+                // PIXEL BUNDLING SUPPORT IS PENDING: PALETTES WITH 16 OR FEWER COLORS PACK SEVERAL
+                // PIXELS INTO EACH GREEN-CHANNEL BYTE, SO THE MAIN IMAGE DECODES AT A REDUCED WIDTH.
+                // THE CURRENT INVERSE PATH (ColorTransform.applyPalette) UNPACKS INTO A FULL-WIDTH
+                // BUFFER AND ARRAYCOPIES IT BACK INTO THE REDUCED-WIDTH PIXEL ARRAY, OVERFLOWING IT
+                // WITH AN UNCONTROLLED IndexOutOfBoundsException. FAIL CLEANLY INSTEAD.
+                // REMOVE THIS EXCEPTION ONCE BUNDLING IS PROPERLY IMPLEMENTED (THE UNPACKED
+                // FULL-WIDTH BUFFER MUST BECOME THE DECODE RESULT INSTEAD OF BEING COPIED BACK).
+                if (ColorTransform.widthBits(tableSize) > 0)
+                    throw new XCodecException("WEBP lossless bundled palette not supported yet (" + tableSize + " colors)");
                 final int[] rawTable = decodeImage(reader, tableSize, 1, 0, null);
                 final int[] colorTable = ColorTransform.decodeColorTable(rawTable);
                 yield Transform.colorTable(colorTable);

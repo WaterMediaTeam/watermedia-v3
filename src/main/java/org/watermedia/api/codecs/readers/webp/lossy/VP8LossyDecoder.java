@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.readers.webp.lossy;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.XCodecException;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.tools.DataTool;
@@ -30,139 +31,14 @@ public final class VP8LossyDecoder {
     public record Yuv420P(byte[] y, byte[] u, byte[] v, int width, int height, int yStride, int uvStride) {}
 
     public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
-        final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
-
-        // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
-        final FrameInfo frm = parseFrameHeader(buf);
-        if (!frm.keyFrame) throw new XCodecException("Only VP8 key frames supported");
-
-        // PARTITION 0 - COMPRESSED HEADER
-        final ByteBuffer p0 = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        p0.position(frm.hdrSz);
-        p0.limit(frm.hdrSz + frm.p0Sz);
-        final VP8BoolDecoder hdrBr = new VP8BoolDecoder(p0.slice().order(ByteOrder.LITTLE_ENDIAN));
-
-        // RFC6386 SECTION 9.2-9.11 - PARSE COMPRESSED HEADER
-        final State st = parseCompressedHeader(hdrBr, frm);
-
-        // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES
-        buf.position(frm.hdrSz + frm.p0Sz);
-        final int[] partSz = new int[st.numParts];
-        if (st.numParts > 1) {
-            for (int i = 0; i < st.numParts - 1; i++)
-                partSz[i] = (buf.get() & 0xFF) | ((buf.get() & 0xFF) << 8) | ((buf.get() & 0xFF) << 16);
-        }
-        int rem = buf.remaining();
-        for (int i = 0; i < st.numParts - 1; i++) rem -= partSz[i];
-        partSz[st.numParts - 1] = rem;
-
-        // CREATE TOKEN PARTITION DECODERS
-        final VP8BoolDecoder[] tokBr = new VP8BoolDecoder[st.numParts];
-        int pos = buf.position();
-        for (int i = 0; i < st.numParts; i++) {
-            final ByteBuffer pb = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-            pb.position(pos);
-            pb.limit(pos + partSz[i]);
-            tokBr[i] = new VP8BoolDecoder(pb.slice().order(ByteOrder.LITTLE_ENDIAN));
-            pos += partSz[i];
-        }
-
-        // ALLOCATE YUV PLANES
-        final int mbW = (frm.w + 15) >> 4;
-        final int mbH = (frm.h + 15) >> 4;
-        final int yStr = mbW * 16;
-        final int uvStr = mbW * 8;
-
-        final byte[] yPln = new byte[yStr * mbH * 16];
-        final byte[] uPln = new byte[uvStr * mbH * 8];
-        final byte[] vPln = new byte[uvStr * mbH * 8];
-        Arrays.fill(yPln, (byte) 128);
-        Arrays.fill(uPln, (byte) 128);
-        Arrays.fill(vPln, (byte) 128);
-
-        // ALLOCATE PER-MB INFO FOR LOOP FILTER
-        st.mbSeg = new int[mbW * mbH];
-        st.mbIsI4x4 = new int[mbW * mbH];
-        st.mbFInner = new int[mbW * mbH];
-
-        // RFC6386 SECTIONS 11-14 - DECODE ALL MACROBLOCKS
-        decodeMBs(hdrBr, tokBr, st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH);
-
-        LOGGER.info(IT, "Frame: {}x{} = {}x{} MBs, {} parts, loopLvl={}, skipProb={}", frm.w, frm.h, mbW, mbH, st.numParts, st.loopLvl, st.skipProb);
-
-        // RFC6386 SECTION 15 - APPLY LOOP FILTER
-        applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
-
-        return DataTool.yuvToBgra(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
+        final Yuv420P yuv = decodeToYuv(data, expW, expH);
+        return DataTool.yuvToBgra(yuv.y(), yuv.u(), yuv.v(), yuv.width(), yuv.height(), yuv.yStride(), yuv.uvStride());
     }
 
     // DECODE VP8 LOSSY DIRECTLY TO BGRA BYTEBUFFER (EFFICIENT PATH FOR PURE LOSSY WITHOUT ALPHA)
     public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
-        final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
-
-        // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
-        final FrameInfo frm = parseFrameHeader(buf);
-        if (!frm.keyFrame) throw new XCodecException("Only VP8 key frames supported");
-
-        // PARTITION 0 - COMPRESSED HEADER
-        final ByteBuffer p0 = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        p0.position(frm.hdrSz);
-        p0.limit(frm.hdrSz + frm.p0Sz);
-        final VP8BoolDecoder hdrBr = new VP8BoolDecoder(p0.slice().order(ByteOrder.LITTLE_ENDIAN));
-
-        // RFC6386 SECTION 9.2-9.11 - PARSE COMPRESSED HEADER
-        final State st = parseCompressedHeader(hdrBr, frm);
-
-        // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES
-        buf.position(frm.hdrSz + frm.p0Sz);
-        final int[] partSz = new int[st.numParts];
-        if (st.numParts > 1) {
-            for (int i = 0; i < st.numParts - 1; i++)
-                partSz[i] = (buf.get() & 0xFF) | ((buf.get() & 0xFF) << 8) | ((buf.get() & 0xFF) << 16);
-        }
-        int rem = buf.remaining();
-        for (int i = 0; i < st.numParts - 1; i++) rem -= partSz[i];
-        partSz[st.numParts - 1] = rem;
-
-        // CREATE TOKEN PARTITION DECODERS
-        final VP8BoolDecoder[] tokBr = new VP8BoolDecoder[st.numParts];
-        int pos = buf.position();
-        for (int i = 0; i < st.numParts; i++) {
-            final ByteBuffer pb = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-            pb.position(pos);
-            pb.limit(pos + partSz[i]);
-            tokBr[i] = new VP8BoolDecoder(pb.slice().order(ByteOrder.LITTLE_ENDIAN));
-            pos += partSz[i];
-        }
-
-        // ALLOCATE YUV PLANES
-        final int mbW = (frm.w + 15) >> 4;
-        final int mbH = (frm.h + 15) >> 4;
-        final int yStr = mbW * 16;
-        final int uvStr = mbW * 8;
-
-        final byte[] yPln = new byte[yStr * mbH * 16];
-        final byte[] uPln = new byte[uvStr * mbH * 8];
-        final byte[] vPln = new byte[uvStr * mbH * 8];
-        Arrays.fill(yPln, (byte) 128);
-        Arrays.fill(uPln, (byte) 128);
-        Arrays.fill(vPln, (byte) 128);
-
-        // ALLOCATE PER-MB INFO FOR LOOP FILTER
-        st.mbSeg = new int[mbW * mbH];
-        st.mbIsI4x4 = new int[mbW * mbH];
-        st.mbFInner = new int[mbW * mbH];
-
-        // RFC6386 SECTIONS 11-14 - DECODE ALL MACROBLOCKS
-        decodeMBs(hdrBr, tokBr, st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH);
-
-        LOGGER.info(IT, "Frame: {}x{} = {}x{} MBs, {} parts, loopLvl={}, skipProb={}", frm.w, frm.h, mbW, mbH, st.numParts, st.loopLvl, st.skipProb);
-
-        // RFC6386 SECTION 15 - APPLY LOOP FILTER
-        applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
-
-        // CONVERT DIRECTLY TO BGRA BYTEBUFFER (SKIPS INTERMEDIATE INT ARRAY)
-        return DataTool.yuvToBgraBuf(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
+        final Yuv420P yuv = decodeToYuv(data, expW, expH);
+        return DataTool.yuvToBgraBuf(yuv.y(), yuv.u(), yuv.v(), yuv.width(), yuv.height(), yuv.yStride(), yuv.uvStride());
     }
 
     // DECODE VP8 LOSSY TO RAW YUV 4:2:0 PLANES (NO COLOR CONVERSION). USED WHEN THE CONSUMER WANTS
@@ -174,7 +50,13 @@ public final class VP8LossyDecoder {
         final FrameInfo frm = parseFrameHeader(buf);
         if (!frm.keyFrame) throw new XCodecException("Only VP8 key frames supported");
 
-        // PARTITION 0 - COMPRESSED HEADER
+        // PARTITION 0 - COMPRESSED HEADER. p0Sz COMES FROM THE FRAME TAG AND CAN OVERRUN THE CHUNK
+        if (frm.hdrSz + frm.p0Sz > buf.limit()) {
+            if (!WaterMediaConfig.decoders.vp8.brokenTokens)
+                throw new XCodecException("Broken VP8 partition 0: declared " + frm.p0Sz + " bytes, chunk has " + (buf.limit() - frm.hdrSz));
+            LOGGER.warn(IT, "Broken VP8 partition 0: declared {} bytes, only {} available; clamping", frm.p0Sz, buf.limit() - frm.hdrSz);
+            frm.p0Sz = buf.limit() - frm.hdrSz;
+        }
         final ByteBuffer p0 = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         p0.position(frm.hdrSz);
         p0.limit(frm.hdrSz + frm.p0Sz);
@@ -183,27 +65,9 @@ public final class VP8LossyDecoder {
         // RFC6386 SECTION 9.2-9.11 - PARSE COMPRESSED HEADER
         final State st = parseCompressedHeader(hdrBr, frm);
 
-        // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES
+        // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES AND DECODERS
         buf.position(frm.hdrSz + frm.p0Sz);
-        final int[] partSz = new int[st.numParts];
-        if (st.numParts > 1) {
-            for (int i = 0; i < st.numParts - 1; i++)
-                partSz[i] = (buf.get() & 0xFF) | ((buf.get() & 0xFF) << 8) | ((buf.get() & 0xFF) << 16);
-        }
-        int rem = buf.remaining();
-        for (int i = 0; i < st.numParts - 1; i++) rem -= partSz[i];
-        partSz[st.numParts - 1] = rem;
-
-        // CREATE TOKEN PARTITION DECODERS
-        final VP8BoolDecoder[] tokBr = new VP8BoolDecoder[st.numParts];
-        int pos = buf.position();
-        for (int i = 0; i < st.numParts; i++) {
-            final ByteBuffer pb = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-            pb.position(pos);
-            pb.limit(pos + partSz[i]);
-            tokBr[i] = new VP8BoolDecoder(pb.slice().order(ByteOrder.LITTLE_ENDIAN));
-            pos += partSz[i];
-        }
+        final VP8BoolDecoder[] tokBr = readTokenParts(buf, st.numParts);
 
         // ALLOCATE YUV PLANES
         final int mbW = (frm.w + 15) >> 4;
@@ -226,10 +90,69 @@ public final class VP8LossyDecoder {
         // RFC6386 SECTIONS 11-14 - DECODE ALL MACROBLOCKS
         decodeMBs(hdrBr, tokBr, st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH);
 
+        LOGGER.info(IT, "Frame: {}x{} = {}x{} MBs, {} parts, loopLvl={}, skipProb={}", frm.w, frm.h, mbW, mbH, st.numParts, st.loopLvl, st.skipProb);
+
         // RFC6386 SECTION 15 - APPLY LOOP FILTER
         applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
 
         return new Yuv420P(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
+    }
+
+    // RFC6386 SECTION 9.5 - READ THE TOKEN PARTITION SIZE TABLE AND BUILD ONE BOOL DECODER PER
+    // PARTITION. SIZES COME STRAIGHT FROM THE FILE AND CAN BE BROKEN (DECLARING MORE BYTES THAN
+    // AVAILABLE, TRUNCATED TABLE, OR EMPTY PARTITIONS). STRICT MODE FAILS THE DECODE; WITH
+    // decoders.vp8.brokenTokens ENABLED THE SIZES ARE CLAMPED TO THE BYTES ACTUALLY AVAILABLE AND
+    // UNUSABLE PARTITIONS ARE REPLACED WITH A DUPLICATE OF THE PREVIOUS ONE OR WITH FAKE ZEROED
+    // DATA SO THE MACROBLOCK LOOP CAN STILL RUN BEST-EFFORT.
+    private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts) throws XCodecException {
+        final boolean repair = WaterMediaConfig.decoders.vp8.brokenTokens;
+
+        // SIZE TABLE: 3 BYTES PER PARTITION EXCEPT THE LAST ONE (IMPLICIT REMAINDER)
+        final int tableLen = (numParts - 1) * 3;
+        if (buf.remaining() < tableLen) {
+            if (!repair)
+                throw new XCodecException("Truncated VP8 partition size table: " + buf.remaining() + " of " + tableLen + " bytes");
+            LOGGER.warn(IT, "Truncated VP8 partition size table ({} of {} bytes); missing sizes assumed 0", buf.remaining(), tableLen);
+        }
+        final int[] partSz = new int[numParts];
+        for (int i = 0; i < numParts - 1; i++)
+            partSz[i] = buf.remaining() >= 3
+                    ? (buf.get() & 0xFF) | ((buf.get() & 0xFF) << 8) | ((buf.get() & 0xFF) << 16)
+                    : 0;
+
+        // VALIDATE DECLARED SIZES AGAINST THE BYTES LEFT; THE LAST PARTITION TAKES THE REMAINDER
+        int avail = buf.remaining();
+        for (int i = 0; i < numParts - 1; i++) {
+            if (partSz[i] > avail) {
+                if (!repair)
+                    throw new XCodecException("Broken VP8 token partition " + i + ": declared " + partSz[i] + " bytes, only " + avail + " available");
+                LOGGER.warn(IT, "Broken VP8 token partition {}: declared {} bytes, only {} available; clamping", i, partSz[i], avail);
+                partSz[i] = avail;
+            }
+            avail -= partSz[i];
+        }
+        partSz[numParts - 1] = avail;
+
+        final VP8BoolDecoder[] tokBr = new VP8BoolDecoder[numParts];
+        int pos = buf.position();
+        ByteBuffer prev = null;
+        for (int i = 0; i < numParts; i++) {
+            ByteBuffer pb = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+            pb.position(pos);
+            pb.limit(pos + partSz[i]);
+            pos += partSz[i];
+            // THE BOOL DECODER NEEDS AT LEAST 2 BYTES; REPAIR BY DUPLICATING THE PREVIOUS
+            // PARTITION BYTES OR, WHEN THERE IS NO PREVIOUS ONE, BY FAKING ZEROED DATA
+            if (partSz[i] < 2) {
+                if (!repair)
+                    throw new XCodecException("Broken VP8 token partition " + i + ": only " + partSz[i] + " bytes");
+                LOGGER.warn(IT, "Empty VP8 token partition {}; {}", i, prev != null ? "duplicating previous partition" : "faking zeroed data");
+                pb = prev != null ? prev.duplicate() : ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN);
+            }
+            prev = pb;
+            tokBr[i] = new VP8BoolDecoder(pb.slice().order(ByteOrder.LITTLE_ENDIAN));
+        }
+        return tokBr;
     }
 
     // RFC6386 SECTION 9 - FRAME HEADER
