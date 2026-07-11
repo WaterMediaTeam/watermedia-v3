@@ -1,16 +1,18 @@
 package org.watermedia.api.platform.web;
 
+import com.google.gson.JsonObject;
 import com.google.gson.annotations.SerializedName;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -29,9 +31,9 @@ public class ImgurPlatform implements IPlatform {
     // URLS FORMAT
     private static final String IMAGE_URL = API_URL + "/image/%s?client_id=" + API_KEY;
     private static final String GALLERY_URL = API_URL + "/gallery/%s?client_id=" + API_KEY;
-    private static final String TAG_GALLERY_URL = API_URL + "/gallery/t/%s/%s?client_id=" + API_KEY;
+    private static final String ALBUM_URL = API_URL + "/album/%s?client_id=" + API_KEY;
     private static final String SEARCH_URL = API_URL + "/gallery/search/top/all/0?client_id=" + API_KEY + "&q=%s";
-    private static final String[] HOSTS = { "imgur.com" };
+    private static final String[] HOSTS = { "imgur.com", "www.imgur.com", "m.imgur.com" };
 
     @Override
     public String name() { return NAME; }
@@ -42,52 +44,74 @@ public class ImgurPlatform implements IPlatform {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final var path = uri.getPath();
-        final var fragment = uri.getFragment();
-
-        // LOGIC PARSING
-        final boolean isGallery = path.startsWith("/gallery/") || path.startsWith("/a/");
-        final boolean isTagGallery = fragment != null && fragment.contains("#/t/");
+        if (path == null || path.length() <= 1) {
+            LOGGER.warn(IT, "Imgur URL {} has no media path, ignoring it", uri);
+            return null;
+        }
 
         // REMOVE FIRST SLASH AND SPLIT
         final var pathSplit = path.substring(1).split("/");
-        // CLEAN ID (REMOVE EXTENSION OR EXTRA PARAMS IF ANY)
-        final var idSplit = pathSplit[pathSplit.length - 1].split("-");
 
-        final var tag = fragment != null && fragment.length() > 4 ? fragment.substring("#/t/".length()) : null;
+        // POST KINDS BY PATH: /a/{id} IS AN ALBUM (MAY BE HIDDEN — MISSING FROM THE GALLERY API),
+        // /gallery/{id} AND /t/{tag}/{id} ARE GALLERY POSTS; ANYTHING ELSE IS A BARE IMAGE ID
+        final boolean isAlbum = path.startsWith("/a/");
+        final boolean isGallery = path.startsWith("/gallery/") || (pathSplit.length >= 3 && pathSplit[0].equals("t"));
+
+        // LAST SEGMENT CARRIES THE ID; MODERN URLS PREFIX A TITLE SLUG (title-slug-id)
+        // AND SOME LINKS CARRY AN EXTENSION (id.png)
+        var last = pathSplit[pathSplit.length - 1];
+        final int dot = last.lastIndexOf('.');
+        if (dot > 0) last = last.substring(0, dot);
+        final var idSplit = last.split("-");
         final var id = idSplit[idSplit.length - 1];
-        LOGGER.debug(IT, "Imgur parsed id='{}', tag='{}', gallery={}, tagGallery={} from {}", id, tag, isGallery, isTagGallery, uri);
+        if (id.isEmpty()) {
+            LOGGER.warn(IT, "Imgur URL {} has no media id, ignoring it", uri);
+            return null;
+        }
+        LOGGER.debug(IT, "Imgur parsed id='{}', album={}, gallery={} from {}", id, isAlbum, isGallery, uri);
 
-        if (isGallery) {
-            final String requestUrl = isTagGallery
-                    ? String.format(TAG_GALLERY_URL, tag, id)
-                    : String.format(GALLERY_URL, id);
+        if (isAlbum || isGallery) {
+            final String requestUrl = String.format(isAlbum ? ALBUM_URL : GALLERY_URL, id);
 
-            final GalleryResponse res = this.fetch(requestUrl, GalleryResponse.class);
-            if (!res.success() || res.data() == null || res.data().images() == null) {
-                throw new PlatformException(ImgurPlatform.class, "Gallery '" + id + "' response was empty or unsuccessful (status "
+            // GALLERY POSTS COME IN TWO SHAPES: ALBUMS CARRY data.images[] WHILE SINGLE-IMAGE
+            // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
+            final JsonObject root = NetRequest.fetchJson(ImgurPlatform.class, requestUrl, JsonObject.class);
+            final GalleryResponse res = JsonTool.parse(root, GalleryResponse.class);
+            if (!res.success() || res.data() == null) {
+                throw new PlatformException(ImgurPlatform.class, "Post '" + id + "' response was empty or unsuccessful (status "
                         + res.status() + ")");
             }
 
             final Gallery data = res.data();
-            if (data.images().length == 0)
-                throw new PlatformException(ImgurPlatform.class, "Gallery '" + id + "' contains no images");
+            if (Boolean.TRUE.equals(data.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
+                throw new MatureContentException(ImgurPlatform.class, "Post '" + id + "' is marked as mature content");
+
+            // SINGLE-IMAGE POST: data IS THE IMAGE ITSELF
+            if (data.images() == null && !data.isAlbum()) {
+                final Image img = JsonTool.parse(root.get("data"), Image.class);
+                LOGGER.info(IT, "Imgur resolved single-image post '{}' ({})", id, img.type());
+                return new PlatformData(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
+            }
+
+            if (data.images() == null || data.images().length == 0)
+                throw new PlatformException(ImgurPlatform.class, "Post '" + id + "' contains no images");
 
             final List<DataSource> entries = new ArrayList<>(data.images().length);
-            // ITERATE OVER GALLERY IMAGES
+            // ITERATE OVER ALBUM IMAGES
             for (final Image img: data.images()) {
                 entries.add(this.buildEntry(img, data.title(), data.accountUrl(), uri));
             }
 
-            LOGGER.info(IT, "Imgur resolved gallery '{}' with {} entry(es)", id, entries.size());
+            LOGGER.info(IT, "Imgur resolved post '{}' with {} entry(es)", id, entries.size());
             return new PlatformData(null, entries.toArray(DataSource[]::new));
 
         } else {
             // SIMPLE IMAGE
             final String requestUrl = String.format(IMAGE_URL, id);
-            final ImageResponse res = this.fetch(requestUrl, ImageResponse.class);
-            if (res == null || !res.success() || res.data() == null) {
+            final ImageResponse res = NetRequest.fetchJson(ImgurPlatform.class, requestUrl, ImageResponse.class);
+            if (!res.success() || res.data() == null) {
                 throw new PlatformException(ImgurPlatform.class, "Image '" + id + "' response was empty or unsuccessful (status "
-                        + (res != null ? res.status() : "n/a") + ")");
+                        + res.status() + ")");
             }
 
             final Image img = res.data();
@@ -98,8 +122,8 @@ public class ImgurPlatform implements IPlatform {
 
     @Override
     public List<PlatformResult> search(final String query, final int limit) throws Exception {
-        final SearchResponse res = this.fetch(String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
-        if (res == null || !res.success() || res.data() == null) return List.of();
+        final SearchResponse res = NetRequest.fetchJson(ImgurPlatform.class, String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
+        if (!res.success() || res.data() == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(res.data().length, limit));
         for (final SearchItem item: res.data()) {
@@ -116,6 +140,9 @@ public class ImgurPlatform implements IPlatform {
     }
 
     private DataSource buildEntry(final Image img, final String fallbackTitle, final String accountUrl, final URI uri) throws PlatformException {
+        if (Boolean.TRUE.equals(img.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
+            throw new MatureContentException(ImgurPlatform.class, "Item '" + img.id() + "' is marked as mature content");
+
         // PARSE MIME TYPE
         final MediaType type = MediaType.of(img.type());
 
@@ -142,23 +169,15 @@ public class ImgurPlatform implements IPlatform {
         try {
             return new DataSource(type, null, metadata,
                     RequestHeaders.defaults(uri),
-                    new DataQuality[] {new DataQuality(new URI(link), img.width, img.height)},
+                    new DataQuality[] {new DataQuality(new URI(link), img.width(), img.height())},
                     null, null);
         } catch (final Exception e) {
             throw new PlatformException(ImgurPlatform.class, "Item '" + img.id() + "' has a malformed link URI: " + link, e);
         }
     }
 
-    private <T> T fetch(final String urlString, final Class<T> type) throws IOException {
-        try (final NetRequest req = NetRequest.create(URI.create(urlString)).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(ImgurPlatform.class, "API for " + urlString + " returned HTTP " + req.statusCode());
-            final T data = req.json(type);
-            if (data == null) throw new PlatformException(ImgurPlatform.class, "API returned an empty or non-JSON body for " + urlString);
-            return data;
-        }
-    }
-
-    // DATA RECORDS
+    // DATA RECORDS — BIND ONLY THE CONSUMED FIELDS: IMGUR SENDS null FOR MANY NUMERIC FIELDS
+    // DEPENDING ON THE ENDPOINT, AND A null INTO A PRIMITIVE RECORD COMPONENT MAKES GSON THROW
     public record ImageResponse(Image data, boolean success, int status) {
     }
 
@@ -173,55 +192,25 @@ public class ImgurPlatform implements IPlatform {
     }
 
     public record Gallery(
-            String id,
             String title,
-            @SerializedName("description") String description, // JSON KEY MATCHES FIELD NAME, EXPLICIT FOR CLARITY
-            long datetime,
-            String cover,
             @SerializedName("account_url") String accountUrl,
-            @SerializedName("account_id") int accountId,
-            String privacy,
-            String layout,
-            int views,
-            String link,
-            int ups,
-            int downs,
-            int points,
-            int score,
             @SerializedName("is_album") boolean isAlbum,
-            String vote,
-            @SerializedName("comment_count") int commentCount,
-            @SerializedName("images_count") int imagesCount,
+            Boolean nsfw,
             Image[] images
     ) {}
 
     public record Image(
             String id,
-            @SerializedName("account_id") String accountId,
             @SerializedName("account_url") String accountUrl,
-            @SerializedName("ad_type") int adType,
-            @SerializedName("ad_url") String adUrl,
             String title,
-            @SerializedName("description") String description,
-            String name,
+            String description,
             String type,
             int width,
             int height,
-            int size,
-            int views,
-            String section,
-            String vote,
-            long bandwidth,
-            @SerializedName("animated") boolean animated,
-            @SerializedName("favorite") boolean favorite,
-            @SerializedName("in_gallery") boolean inGallery,
-            @SerializedName("in_most_viral") boolean inMostViral,
-            @SerializedName("has_sound") boolean hasSound,
-            @SerializedName("is_ad") boolean isAd,
-            String nsfw,
-            String link,
             long datetime,
-            String mp4,
-            String hls
+            Boolean nsfw,
+            @SerializedName("has_sound") boolean hasSound,
+            String link,
+            String mp4
     ) {}
 }
