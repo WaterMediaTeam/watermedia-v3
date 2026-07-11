@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.gif;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -10,20 +12,11 @@ public record ScreenDescriptor(
 
     public static final int SIGNATURE_SIZE = 7;
 
-    public ScreenDescriptor {
-        if (width <= 0 || height <= 0)
-            throw new IllegalArgumentException("Width and height must be positive integers");
-        if (globalColorTableSize < 0 || globalColorTableSize > 7)
-            throw new IllegalArgumentException("Global color table size must be between 0 and 7");
-        if (colorResolution < 1 || colorResolution > 8)
-            throw new IllegalArgumentException("Color resolution must be between 1 and 8");
-        if (pixelAspectRatio < 0 || pixelAspectRatio > 255)
-            throw new IllegalArgumentException("Pixel aspect ratio must be between 0 and 255");
-    }
-
-    public static ScreenDescriptor read(final ByteBuffer buffer) {
+    // VALIDATION LIVES IN read(): A RECORD CANONICAL CONSTRUCTOR CANNOT DECLARE A throws CLAUSE, SO
+    // MALFORMED DATA IS REJECTED WITH XCodecException (THE READER-LAYER FAILURE TYPE) AT THE PARSE BOUNDARY
+    public static ScreenDescriptor read(final ByteBuffer buffer) throws XCodecException {
         if (buffer.remaining() < SIGNATURE_SIZE) {
-            throw new IllegalArgumentException("Buffer does not contain enough data for Screen Descriptor");
+            throw new XCodecException("Buffer does not contain enough data for Screen Descriptor");
         }
 
         final int width = Short.toUnsignedInt(buffer.getShort());
@@ -35,6 +28,9 @@ public record ScreenDescriptor(
         final int globalColorTableSize = packedFields & 0b0000_0111;
         final int backgroundColorIndex = Byte.toUnsignedInt(buffer.get());
         final int pixelAspectRatio = Byte.toUnsignedInt(buffer.get());
+
+        if (width <= 0 || height <= 0)
+            throw new XCodecException("Width and height must be positive integers");
 
         return new ScreenDescriptor(width, height, globalColorTableFlag, colorResolution, sortFlag,
                 globalColorTableSize, backgroundColorIndex, pixelAspectRatio);

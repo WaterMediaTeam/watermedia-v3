@@ -56,6 +56,10 @@ public class WaterMediaConfig {
         @Comment("Related config for VP8 codec (WEBP lossy)")
         public final Vp8 vp8 = new Vp8();
 
+        @Spec.Field
+        @Comment("Related config for GIF codec")
+        public final Gif gif = new Gif();
+
         @Spec(value = "svg", disableStatic = true)
         public static final class Svg {
             @Spec.Field(suffix = "px")

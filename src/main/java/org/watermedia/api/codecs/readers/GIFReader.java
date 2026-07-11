@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.readers;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageMetadata;
@@ -39,6 +40,10 @@ public class GIFReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(GIFReader.class.getSimpleName());
 
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
+
+    // SECURITY CAPS
+    private static final int MAX_DIM = 16384;                       // 16K PER AXIS (1:1); KEEPS width*height*4 WITHIN INT
+    private static final int MAX_SUBBLOCK = Integer.MAX_VALUE - 8;  // JAVA ARRAY-SIZE SAFE UPPER BOUND
 
     // BLOCK INTRODUCERS
     private static final int IMAGE_SEPARATOR = 0x2C;
@@ -112,6 +117,9 @@ public class GIFReader extends ImageReader {
         // LOGICAL SCREEN DESCRIPTOR (7 bytes)
         final byte[] lsdBytes = readExactly(this.data, ScreenDescriptor.SIGNATURE_SIZE);
         this.lsd = ScreenDescriptor.read(ByteBuffer.wrap(lsdBytes).order(LE));
+        // CAP CANVAS: 16-BIT WIDTH*HEIGHT OTHERWISE OVERFLOWS width*height*4 INT MATH AND ALLOWS MULTI-GB ALLOCATIONS
+        if (this.lsd.width() > MAX_DIM || this.lsd.height() > MAX_DIM)
+            throw new XCodecException("GIF canvas too big: " + this.lsd.width() + "x" + this.lsd.height() + " (max " + MAX_DIM + ")");
 
         // GLOBAL COLOR TABLE (optional)
         if (this.lsd.globalColorTableFlag()) {
@@ -216,7 +224,7 @@ public class GIFReader extends ImageReader {
     // ----- FRAME DECODE -----
 
     private void decodeFrame() throws IOException {
-        final ImageDescriptor id = this.readImageDescriptor();
+        final ImageDescriptor id = this.clampOrReject(this.readImageDescriptor());
 
         ColorTable activeColorTable = this.globalColorTable;
         if (id.localColorTableFlag()) {
@@ -274,6 +282,28 @@ public class GIFReader extends ImageReader {
         this.directOut.position(0).limit(this.canvas.length * 4);
     }
 
+    // ENSURE THE FRAME FITS INSIDE THE CANVAS. AN OVERSIZED DESCRIPTOR OTHERWISE OVERFLOWS
+    // width*height INT MATH (expectedIndices) INTO A NEGATIVE/HUGE LZW ALLOCATION. WITH
+    // decoders.gif.clampImageDesc THE FRAME IS SHRUNK TO THE CANVAS (BEST-EFFORT); OTHERWISE IT FAILS.
+    private ImageDescriptor clampOrReject(final ImageDescriptor id) throws XCodecException {
+        final int cw = this.lsd.width();
+        final int ch = this.lsd.height();
+        if ((long) id.left() + id.width() <= cw && (long) id.top() + id.height() <= ch) {
+            return id; // FITS
+        }
+        if (!WaterMediaConfig.decoders.gif.clampImageDesc) {
+            throw new XCodecException("GIF frame exceeds canvas: " + id.width() + "x" + id.height()
+                    + " at " + id.left() + "," + id.top() + " (canvas " + cw + "x" + ch + ")");
+        }
+        final int w = Math.min(id.width(), cw - id.left());
+        final int h = Math.min(id.height(), ch - id.top());
+        if (w <= 0 || h <= 0) throw new XCodecException("GIF frame fully outside canvas");
+        LOGGER.warn(IT, "Clamping GIF frame {}x{} at {},{} to {}x{} (canvas {}x{})",
+                id.width(), id.height(), id.left(), id.top(), w, h, cw, ch);
+        return new ImageDescriptor(id.left(), id.top(), w, h,
+                id.localColorTableFlag(), id.interlacedFlag(), id.sortFlag(), id.localColorTableSize());
+    }
+
     private ImageDescriptor readImageDescriptor() throws IOException {
         readExactly(this.data, this.descriptorScratch, 0, this.descriptorScratch.length);
         final byte[] data = this.descriptorScratch;
@@ -282,7 +312,7 @@ public class GIFReader extends ImageReader {
         final int width = (data[4] & 0xFF) | ((data[5] & 0xFF) << 8);
         final int height = (data[6] & 0xFF) | ((data[7] & 0xFF) << 8);
         final int packed = data[8] & 0xFF;
-        return new ImageDescriptor(
+        final ImageDescriptor id = new ImageDescriptor(
                 left,
                 top,
                 width,
@@ -292,6 +322,8 @@ public class GIFReader extends ImageReader {
                 (packed & 0x20) != 0,
                 packed & 0x07
         );
+        id.validate(); // CANONICAL CONSTRUCTOR CAN'T THROW; REJECT MALFORMED FIELDS HERE AS XCodecException
+        return id;
     }
 
     private void renderImage(final byte[] indexes, final int pixelCount, final int[] canvas, final ImageDescriptor id,
@@ -587,10 +619,17 @@ public class GIFReader extends ImageReader {
         return totalSize;
     }
 
-    private void ensureSubBlockCapacity(final int minCapacity) {
+    private void ensureSubBlockCapacity(final int minCapacity) throws XCodecException {
         if (this.subBlockBuffer.length >= minCapacity) return;
+        if (minCapacity < 0 || minCapacity > MAX_SUBBLOCK) {
+            throw new XCodecException("GIF sub-block data too large: " + minCapacity);
+        }
         int next = this.subBlockBuffer.length;
-        while (next < minCapacity) next <<= 1;
+        // DOUBLING CAN OVERFLOW PAST Integer.MAX_VALUE INTO A NEGATIVE SIZE; FALL BACK TO THE EXACT NEED
+        while (next < minCapacity) {
+            next <<= 1;
+            if (next < 0 || next > MAX_SUBBLOCK) { next = minCapacity; break; }
+        }
         this.subBlockBuffer = Arrays.copyOf(this.subBlockBuffer, next);
     }
 

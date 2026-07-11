@@ -1,23 +1,21 @@
 package org.watermedia.api.codecs.common.gif;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 
 public record ColorTable(int size, int[] colors) {
     public static final int MAX_COLORS = 256;
 
-    public ColorTable {
+    // VALIDATION LIVES IN read(): A RECORD CANONICAL CONSTRUCTOR CANNOT DECLARE A throws CLAUSE, SO
+    // MALFORMED DATA IS REJECTED WITH XCodecException (THE READER-LAYER FAILURE TYPE) AT THE PARSE BOUNDARY
+    public static ColorTable read(int size, ByteBuffer buffer) throws XCodecException {
         if (size < 0 || size > MAX_COLORS) {
-            throw new IllegalArgumentException("Size must be between 0 and " + MAX_COLORS);
+            throw new XCodecException("Color table size must be between 0 and " + MAX_COLORS);
         }
-        if (colors == null) {
-            throw new IllegalArgumentException("Colors array cannot be null");
-        }
-    }
-
-    public static ColorTable read(int size, ByteBuffer buffer) {
         final int byteCount = size * 3;
         if (buffer.remaining() < byteCount) {
-            throw new IllegalArgumentException("Buffer does not contain enough data for Color Table. " +
+            throw new XCodecException("Buffer does not contain enough data for Color Table. " +
                     "Expected " + byteCount + " bytes, but only " + buffer.remaining() + " available");
         }
 
