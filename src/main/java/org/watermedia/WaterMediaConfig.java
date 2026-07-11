@@ -15,6 +15,12 @@ public class WaterMediaConfig {
     private static final int DEFAULT_NETWORK_SERVER_PORT = 25572;
 
     @Spec.Field
+    @Comment("Prints all system information like hardware, os (and version), capabilities, supported codecs and engines version (GL/VK/AL)")
+    @Comment("Turns out, this impacts A LOT in bootstrap performance because it runs BAT and SH scripts to obtain certain driver capabilities (I am looking at you NVIDIA)")
+    @Comment("Enable by developer request. This is usually requested once")
+    public static boolean logSystemInformation = false;
+
+    @Spec.Field
     @Comment("CodecsAPI settings")
     public static final Decoders decoders = new Decoders();
 
@@ -31,11 +37,7 @@ public class WaterMediaConfig {
     public static final Platforms platforms = new Platforms();
 
     @Spec(value = "decoders", disableStatic = true)
-    public final static class Decoders {
-        @Spec.Field
-        @Comment("Decoder fails when PNG chunk data doesn't match with the CRC")
-        public boolean pngFailOnCorruptedData = true;
-
+    public static final class Decoders {
         @Spec.Field(suffix = "MB")
         @Comment("Hard cap (in MB) for image downloads consumed by TxMediaPlayer")
         @Comment("Sources above this limit are aborted before full buffering")
@@ -43,15 +45,33 @@ public class WaterMediaConfig {
         public int maxImageSourceBytesMB = 128;
 
         @Spec.Field
-        @Comment("Use the PNG bKGD chunk as the disposal background colour")
-        @Comment("When false, transparent disposal is used (recommended for compositing).")
-        public boolean pngUseBKGDChunk = false;
+        @Comment("Related config for PNG codec")
+        public final Png png = new Png();
 
-        @Spec.Field(suffix = "px")
-        @Comment("Default maximum dimension (px) when rasterizing vector SVG images")
-        @Comment("SVG is resolution-independent; the larger raster side is capped to this, preserving aspect ratio (never upscaled)")
-        @NumberConditions(minInt = 1, maxInt = 8192, math = true)
-        public int svgMaxSize = 512;
+        @Spec.Field
+        @Comment("Related config for SVG codec")
+        public final Svg svg = new Svg();
+
+        @Spec(value = "svg", disableStatic = true)
+        public static final class Svg {
+            @Spec.Field(suffix = "px")
+            @Comment("Default maximum dimension (px) when rasterizing vector SVG images")
+            @Comment("SVG is resolution-independent; the larger raster side is capped to this, preserving aspect ratio (never upscaled)")
+            @NumberConditions(minInt = 1, maxInt = 8192, math = true)
+            public int maxSize = 512;
+        }
+
+        @Spec(value = "png", disableStatic = true)
+        public static final class Png {
+            @Spec.Field
+            @Comment("Decoder fails when PNG chunk data doesn't match with the CRC")
+            public boolean failOnCorruptedData = true;
+
+            @Spec.Field
+            @Comment("Use the PNG bKGD chunk as the disposal background colour")
+            @Comment("When false, transparent disposal is used (recommended for compositing).")
+            public boolean useBKGDChunk = false;
+        }
     }
 
     @Spec(value = "media", disableStatic = true)
@@ -63,76 +83,84 @@ public class WaterMediaConfig {
         @Spec.Field(suffix = "min")
         @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")
         @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
-        public float mrlCleanupInterval = 60.0f;
+        public float cleanupInterval = 60.0f;
 
         @Spec.Field
-        @Comment("Disables FFMPEG engine (AT ALL)")
-        public boolean disableFFMPEG = false;
-
-        @Spec.Field(control = Control.INPUT_FOLDER)
-        @Comment("Adds this path to the discovery path")
-        @Comment("Path must not be the fat ffmpeg.exe file")
-        public Path customFFMPEGPath = new File("").toPath();
+        @Comment("FFMPEG general settings")
+        public final Ffmpeg ffmpeg = new Ffmpeg();
 
         @Spec.Field
-        @Comment("Enables hardware-accelerated video decoding (NVDEC, QuickSync, D3D11VA, VAAPI...)")
-        @Comment("Disable if you experience stutter, lag or black video — software decoding is often smoother on some GPUs (notably AMD)")
-        public boolean ffmpegHardwareAcceleration = true;
+        @Comment("WaterTexture general settings")
+        public final WaterTx tx = new WaterTx();
 
-        @Spec.Field(suffix = "packets", control = Control.SEEKBAR)
-        @Comment("Configures how many audio packets read when video has an audio slave")
-        @Comment("Increment this value if you find YouTube videos with slow playback")
-        @NumberConditions(minInt = 1, maxInt = 12)
-        public int ffmpegSlavePacketReads = 3;
+        @Spec(value = "ffmpeg", disableStatic = true)
+        public static final class Ffmpeg {
+            @Spec.Field
+            @Comment("Disables FFMPEG bootstrap, run this requires a restart")
+            public boolean disable = false;
 
-        @Spec.Field
-        @Comment("Enables the on-disk HTTP media cache used by FFMediaPlayer for small files")
-        public boolean ffmpegNetworkCache = true;
+            @Spec.Field(control = Control.INPUT_FOLDER)
+            @Comment("Adds this path to the discovery path")
+            @Comment("Path must not be the fat ffmpeg.exe file")
+            public Path customPath = new File("").toPath();
 
-        @Spec.Field(suffix = "MB")
-        @Comment("Maximum FFMediaPlayer network response size to cache, in megabytes")
-        @NumberConditions(minInt = 1, math = true)
-        public int ffmpegNetworkCacheMaxBytesMB = 10;
+            @Spec.Field
+            @Comment("Enables hardware-accelerated video decoding (NVDEC, QuickSync, D3D11VA, VAAPI...)")
+            @Comment("Disable if you experience stutter, lag or black video — software decoding is often smoother on some GPUs (notably AMD)")
+            public boolean hardwareAccel = true;
 
-        @Spec.Field(suffix = "ms")
-        @Comment("FFMediaPlayer stream probing duration (FFmpeg analyzeduration), in milliseconds")
-        @Comment("Higher values help FFmpeg detect audio/video parameters (sample rate, channels) on slow or live HLS streams, at the cost of startup latency")
-        @Comment("Zero leaves FFmpeg's own default in place")
-        @NumberConditions(minInt = 0, maxInt = 60_000)
-        public int ffmpegAnalyzeDurationMs = 7000;
+            @Spec.Field(suffix = "packets", control = Control.SEEKBAR)
+            @Comment("Configures how many audio packets read when video has an audio slave")
+            @Comment("Increment this value if you find YouTube videos with slow playback")
+            @NumberConditions(minInt = 1, maxInt = 12)
+            public int slavePacketReads = 3;
 
-        @Spec.Field(suffix = "MB")
-        @Comment("FFMediaPlayer stream probing size (FFmpeg probesize), in megabytes")
-        @Comment("Higher values let FFmpeg read more data while detecting stream parameters, improving codec detection on streams with sparse headers")
-        @NumberConditions(minInt = 1, math = true)
-        public int ffmpegProbeSizeMB = 10;
+            @Spec.Field
+            @Comment("Enables the on-disk HTTP media cache used by FFMediaPlayer for small files")
+            public boolean cache = true;
 
-        @Spec.Field(suffix = "MB", control = Control.SEEKBAR)
-        @Comment("VRAM budget (in MB) for keeping an animated image as one GL texture per frame")
-        @Comment("Animations whose decoded frames fit under this budget skip per-frame streaming entirely (best performance, like v2)")
-        @Comment("Set to 0 to force TxMediaPlayer to stream animated image frames into a single texture")
-        @NumberConditions(minInt = 0, maxInt = 512)
-        public int txFrameTexturesBudgetMB = 32;
+            @Spec.Field(suffix = "MB")
+            @Comment("Maximum FFMediaPlayer network response size to cache, in megabytes")
+            @NumberConditions(minInt = 1, math = true)
+            public int cacheMaxSize = 10;
 
-        @Spec.Field
-        @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
-        public boolean txNetworkCache = true;
+            @Spec.Field(suffix = "ms")
+            @Comment("FFMediaPlayer stream probing duration (FFmpeg analyzeduration), in milliseconds")
+            @Comment("Higher values help FFmpeg detect audio/video parameters (sample rate, channels) on slow or live HLS streams, at the cost of startup latency")
+            @Comment("Zero leaves FFmpeg's own default in place")
+            @NumberConditions(minLong = 0L, maxLong = 60_000)
+            public long analyzeDuration = 7000;
 
-        @Spec.Field
-        @Comment("Enables the on-disk BC7/DDS codec cache used by TxMediaPlayer")
-        @Comment("Decoded frames are recompressed to GPU block-compressed textures (DDS) so replays skip the decode and use a quarter of the VRAM")
-        @Comment("Requires GPU block-compression support; ignored when the BC codecs are unavailable")
-        public boolean txCodecCache = false;
+            @Spec.Field(suffix = "MB")
+            @Comment("FFMediaPlayer stream probing size (FFmpeg probesize), in megabytes")
+            @Comment("Higher values let FFmpeg read more data while detecting stream parameters, improving codec detection on streams with sparse headers")
+            @NumberConditions(minInt = 1, math = true)
+            public int probeSize = 10;
+        }
+
+        @Spec(value = "watertx", disableStatic = true)
+        public static final class WaterTx { // PUBLICLY KNOWN AS WaterTX (WaterTexture), internally clamped into TX.
+            @Spec.Field
+            @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
+            public boolean cache = true;
+
+            @Spec.Field
+            @Comment("Enables the on-disk BC7/DDS codec cache used by TxMediaPlayer")
+            @Comment("Decoded frames are recompressed to GPU block-compressed textures (DDS) so replays skip the decode and use a quarter of the VRAM")
+            @Comment("Requires GPU block-compression support; ignored when the BC codecs are unavailable")
+            public boolean codecCache = false;
+
+            @Spec.Field(suffix = "MB", control = Control.SEEKBAR)
+            @Comment("VRAM budget (in MB) for keeping an animated image as one GL texture per frame")
+            @Comment("Animations whose decoded frames fit under this budget skip per-frame streaming entirely (best performance, like v2)")
+            @Comment("Set to 0 to force TxMediaPlayer to stream animated image frames into a single texture")
+            @NumberConditions(minInt = 0, maxInt = 512)
+            public int texturesBudget = 32;
+        }
     }
 
     @Spec(value = "platforms", disableStatic = true)
     public final static class Platforms {
-        @Spec.Field(control = Control.PASSWORD)
-        @Comment("BiliBili session cookie for authenticated access")
-        @Comment("Without it only 360p/480p are available, with a free account up to 1080p, VIP up to 8K")
-        @Comment("Value should look like: SESSDATA=abc123; bili_jct=def456; DedeUserID=789")
-        public String biliBiliCookie = "";
-
         @Spec.Field
         @Comment("Allow resolving streams/videos marked as mature content (e.g. Kick).")
         @Comment("When false, mature streams throw and never reach the player.")
@@ -143,6 +171,12 @@ public class WaterMediaConfig {
         @Comment("Identical searches are served from memory until the whole cache is flushed on this interval (general sweep)")
         @Comment("Set to 0 to disable caching and always query the platforms")
         public float searchCacheCleanup = 15.0f;
+
+        @Spec.Field(control = Control.PASSWORD)
+        @Comment("BiliBili session cookie for authenticated access")
+        @Comment("Without it only 360p/480p are available, with a free account up to 1080p, VIP up to 8K")
+        @Comment("Value should look like: SESSDATA=abc123; bili_jct=def456; DedeUserID=789")
+        public String biliBiliCookie = "";
     }
 
     @Spec(value = "network", disableStatic = true)
@@ -185,7 +219,7 @@ public class WaterMediaConfig {
         @Spec.Field(suffix = "ms")
         @Comment("Default connect/read timeout for NetworkRequest, in milliseconds")
         @NumberConditions(minInt = 1000, maxInt = 600_000)
-        public int requestTimeoutMs = 15_000;
+        public int timeout = 15_000;
 
         @Spec.Field(control = Control.SEEKBAR)
         @Comment("Maximum number of redirect hops NetworkRequest will follow before aborting")
@@ -193,8 +227,8 @@ public class WaterMediaConfig {
         public int maxRedirects = 10;
 
         @Spec.Field(suffix = "bytes")
-        @Comment("Hard cap (in bytes) for NetworkRequest text/JSON bodies — anything larger throws")
+        @Comment("Hard cap (in MB) for NetworkRequest text/JSON bodies — anything larger throws")
         @NumberConditions(minInt = 1024, math = true)
-        public int maxTextBytes = (1024 * 1024) * 16;
+        public int maxTextSize = (1024 * 1024) * 16;
     }
 }

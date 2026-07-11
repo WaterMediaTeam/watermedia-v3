@@ -230,7 +230,7 @@ public class PNGReader extends ImageReader {
                 this.done = true;
                 break;
             }
-            if (c.corrupted() && WaterMediaConfig.decoders.pngFailOnCorruptedData) {
+            if (c.corrupted() && WaterMediaConfig.decoders.png.failOnCorruptedData) {
                 throw new XCodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
             }
 
@@ -311,7 +311,7 @@ public class PNGReader extends ImageReader {
                 this.done = true;
                 return;
             }
-            if (c.corrupted() && WaterMediaConfig.decoders.pngFailOnCorruptedData) {
+            if (c.corrupted() && WaterMediaConfig.decoders.png.failOnCorruptedData) {
                 throw new XCodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
             }
 
@@ -325,7 +325,7 @@ public class PNGReader extends ImageReader {
                 if (this.ihdr == null) throw new XCodecException("tRNS before IHDR");
                 this.trns = TRNS.convert(c, this.ihdr.colorType());
             } else if (t == BKGD.SIGNATURE) {
-                if (WaterMediaConfig.decoders.pngUseBKGDChunk) {
+                if (WaterMediaConfig.decoders.png.useBKGDChunk) {
                     if (this.ihdr == null) throw new XCodecException("bKGD before IHDR");
                     this.bkgd = BKGD.convert(c, this.ihdr.colorType(), this.ihdr.depth());
                 }

@@ -152,7 +152,7 @@ public final class NetworkCache {
         Files.createDirectories(cacheDir);
         loadIndex();
         // CODEC MODE IS OPT-IN AND REQUIRES A NATIVE BC CODEC; OTHERWISE THE CACHE IS DISK-ONLY.
-        mode = WaterMediaConfig.media.txCodecCache && CodecsAPI.available(CodecsAPI.CODEC_BC)
+        mode = WaterMediaConfig.media.tx.codecCache && CodecsAPI.available(CodecsAPI.CODEC_BC)
                 ? Mode.CODEC : Mode.DISK;
         LOGGER.info(IT, "Media network cache initialized at {} (mode={})", cacheDir, mode);
     }
@@ -172,7 +172,7 @@ public final class NetworkCache {
     // PUBLIC API — NETWORK TIER
     // ==========================================================================
     public static CachedBytes read(final URI uri, final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
-        return read(uri, headers, accept, maxBytes, WaterMediaConfig.media.txNetworkCache);
+        return read(uri, headers, accept, maxBytes, WaterMediaConfig.media.tx.cache);
     }
 
     public static CachedBytes read(final URI uri, final RequestHeaders headers, final String accept,

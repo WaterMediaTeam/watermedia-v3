@@ -20,7 +20,7 @@ import java.util.Locale;
  * document from its very first byte.
  *
  * <p>SVG is resolution-independent, so the output size is the intrinsic size uniformly downscaled so
- * the larger side never exceeds {@link WaterMediaConfig.Decoders#svgMaxSize} (default 512 px); it is
+ * the larger side never exceeds {@link WaterMediaConfig.Decoders.Svg#maxSize} (default 512 px); it is
  * never upscaled.
  */
 public class SVGReader extends ImageReader {
@@ -44,7 +44,7 @@ public class SVGReader extends ImageReader {
 
         final double iw = this.document.intrinsicWidth(), ih = this.document.intrinsicHeight();
         if (iw <= 0 || ih <= 0) throw new XCodecException("SVG has no resolvable size");
-        final int cap = Math.max(1, WaterMediaConfig.decoders.svgMaxSize);
+        final int cap = Math.max(1, WaterMediaConfig.decoders.svg.maxSize);
         final double s = Math.min(1.0, cap / Math.max(iw, ih));
         this.w = Math.max(1, (int) Math.round(iw * s));
         this.h = Math.max(1, (int) Math.round(ih * s));

@@ -1315,7 +1315,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                 // SLAVE AUDIO
                 if (this.useAudioSlave && !slaveEof && this.slaveFormatContext != null && slavePacket != null) {
-                    final int reads = WaterMediaConfig.media.ffmpegSlavePacketReads;
+                    final int reads = WaterMediaConfig.media.ffmpeg.slavePacketReads;
                     for (int i = 0; i < reads; i++) {
                         final int slaveResult = avformat.av_read_frame(this.slaveFormatContext, slavePacket);
                         if (slaveResult >= 0) {
@@ -2016,8 +2016,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                         uri,
                         this.source.headers(),
                         "video/*,audio/*,application/octet-stream,*/*",
-                        Math.max(1L, WaterMediaConfig.media.ffmpegNetworkCacheMaxBytesMB) * 1024L * 1024L,
-                        WaterMediaConfig.media.ffmpegNetworkCache);
+                        Math.max(1L, WaterMediaConfig.media.ffmpeg.cacheMaxSize) * 1024L * 1024L,
+                        WaterMediaConfig.media.ffmpeg.cache);
                 if (cached != null) {
                     LOGGER.debug(IT, "{} FFMediaPlayer cache entry for {}", cached.cached() ? "Using" : "Stored", uri);
                     return cached.path().toAbsolutePath().toString();
@@ -2039,7 +2039,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private boolean shouldUseFFmpegCache(final URI uri) {
-        if (!WaterMediaConfig.media.ffmpegNetworkCache) return false;
+        if (!WaterMediaConfig.media.ffmpeg.cache) return false;
         if (uri == null) return false;
 
         final String scheme = uri.getScheme();
@@ -2140,11 +2140,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     // RAISING THESE LETS FFMPEG DETECT AUDIO/VIDEO PARAMS (sample_rate, channels) ON LIVE
     // HLS STREAMS WHOSE HEADERS ARE SPARSE — OTHERWISE STREAMS PROBE AS 0Hz/0ch.
     private void applyProbeOptions(final AVDictionary options) {
-        final int analyzeMs = WaterMediaConfig.media.ffmpegAnalyzeDurationMs;
+        final long analyzeMs = WaterMediaConfig.media.ffmpeg.analyzeDuration;
         if (analyzeMs > 0) {
             av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1000L), 0);
         }
-        av_dict_set(options, "probesize", String.valueOf((long) WaterMediaConfig.media.ffmpegProbeSizeMB * 1024L * 1024L), 0);
+        av_dict_set(options, "probesize", String.valueOf((long) WaterMediaConfig.media.ffmpeg.probeSize * 1024L * 1024L), 0);
     }
 
     // INIT
@@ -2410,7 +2410,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 codecName, codecLongName, decoder != null ? getString(decoder.name(), codecName) : "no decoder",
                 bitrate > 0 ? bitrate / 1000 : "N/A", getString(profilePointer, profile), level, getString(fmtNamePointer, pixFmt));
 
-        final boolean hwAllowed = WaterMediaConfig.media.ffmpegHardwareAcceleration;
+        final boolean hwAllowed = WaterMediaConfig.media.ffmpeg.hardwareAccel;
         // THE DEFAULT DECODER IS KEPT FOR THE HARDWARE PATH (THE NATIVE av1 DECODER IS THE
         // HWACCEL HOST). THE SOFTWARE PATH NEEDS A REAL SOFTWARE DECODER INSTEAD — SEE
         // softwareVideoDecoder.
@@ -2868,14 +2868,14 @@ public final class FFMediaPlayer extends MediaPlayer {
         Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
 
         LOGGER.info(IT, "Starting FFMPEG...");
-        if (WaterMediaConfig.media.disableFFMPEG) {
+        if (WaterMediaConfig.media.ffmpeg.disable) {
             LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
             return false;
         }
 
         try {
             final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
-            final String configPath = WaterMediaConfig.media.customFFMPEGPath != null ? WaterMediaConfig.media.customFFMPEGPath.toAbsolutePath().toString() : null;
+            final String configPath = WaterMediaConfig.media.ffmpeg.customPath != null ? WaterMediaConfig.media.ffmpeg.customPath.toAbsolutePath().toString() : null;
             final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
 
             System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);

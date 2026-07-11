@@ -12,7 +12,7 @@ import java.nio.file.Path;
  * extracted and loaded.
  *
  * <p>The boot is best-effort: when the platform binaries cannot be resolved
- * (typical on headless CI without the {@code org.watermedia:binaries} natives),
+ * (typical on headless CI without the WaterMedia Binaries natives),
  * {@link #ffmpegAvailable()} returns {@code false} instead of throwing so the
  * dependent tests can {@code Assumptions.assumeTrue(...)} their way to a skip
  * rather than a failure.

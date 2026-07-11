@@ -59,8 +59,8 @@ public class NetworkAPI extends WaterMediaAPI {
             // DEPRECATED new URL(String) CONSTRUCTOR.
             final URL url = URI.create(base + "/upload").toURL();
             final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(WaterMediaConfig.network.requestTimeoutMs);
-            conn.setReadTimeout(WaterMediaConfig.network.requestTimeoutMs);
+            conn.setConnectTimeout(WaterMediaConfig.network.timeout);
+            conn.setReadTimeout(WaterMediaConfig.network.timeout);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("User-Agent", WaterMedia.USER_AGENT);

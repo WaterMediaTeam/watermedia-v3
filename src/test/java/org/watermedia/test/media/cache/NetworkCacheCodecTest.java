@@ -46,8 +46,8 @@ public class NetworkCacheCodecTest {
     @Test
     @DisplayName("Stays in disk mode when codec cache is enabled but no BC codec exists")
     void testStaysDiskWithoutBc() throws Exception {
-        final boolean previous = WaterMediaConfig.media.txCodecCache;
-        WaterMediaConfig.media.txCodecCache = true;
+        final boolean previous = WaterMediaConfig.media.tx.codecCache;
+        WaterMediaConfig.media.tx.codecCache = true;
         try {
             NetworkCache.start(this.tempDir.resolve("cache-enabled"));
             try {
@@ -58,7 +58,7 @@ public class NetworkCacheCodecTest {
                 NetworkCache.release();
             }
         } finally {
-            WaterMediaConfig.media.txCodecCache = previous;
+            WaterMediaConfig.media.tx.codecCache = previous;
         }
     }
 }

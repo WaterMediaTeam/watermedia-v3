@@ -366,7 +366,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         final int frames = reader.frameCount();
         if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.supportsFrameTextures()) return false;
         // VRAM COST IS RGBA8 PER FRAME (AT THE UPLOAD TARGET) REGARDLESS OF THE SOURCE PIXEL LAYOUT
-        final long budget = Math.max(0L, WaterMediaConfig.media.txFrameTexturesBudgetMB) * 1024L * 1024L;
+        final long budget = Math.max(0L, WaterMediaConfig.media.tx.texturesBudget) * 1024L * 1024L;
         return (long) frames * this.outWidth * this.outHeight * 4L <= budget;
     }
 
