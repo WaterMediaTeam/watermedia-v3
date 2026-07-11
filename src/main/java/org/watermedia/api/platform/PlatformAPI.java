@@ -271,6 +271,7 @@ public class PlatformAPI extends WaterMediaAPI {
             this.pendingPlatforms.add(new ImgurPlatform());
             this.pendingPlatforms.add(new KickPlatform());
             this.pendingPlatforms.add(new StreamablePlatform());
+            this.pendingPlatforms.add(new MedalPlatform());
             this.pendingPlatforms.add(new PornHubPlatform());
             this.pendingPlatforms.add(new LightshotPlatform());
             this.pendingPlatforms.add(new TwitchPlatform());

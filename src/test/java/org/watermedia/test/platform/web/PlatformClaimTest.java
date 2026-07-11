@@ -19,6 +19,7 @@ import org.watermedia.api.platform.web.DropboxPlatform;
 import org.watermedia.api.platform.web.ImgurPlatform;
 import org.watermedia.api.platform.web.KickPlatform;
 import org.watermedia.api.platform.web.LightshotPlatform;
+import org.watermedia.api.platform.web.MedalPlatform;
 import org.watermedia.api.platform.web.MediaFirePlatform;
 import org.watermedia.api.platform.web.OdyseePlatform;
 import org.watermedia.api.platform.web.PornHubPlatform;
@@ -87,6 +88,11 @@ public class PlatformClaimTest {
 
                 // Lightshot — host equalsIgnoreCase prnt.sc
                 arguments(LightshotPlatform.class, "https://light.shot/abc"),
+
+                // Medal — host medal.tv/www.medal.tv AND a clips/clip segment or contentId query
+                arguments(MedalPlatform.class, "https://example.com/games/gta-v/clips/abc"),
+                arguments(MedalPlatform.class, "https://medal.tv/users/xxlynds"),
+                arguments(MedalPlatform.class, "https://medal.tv/games/gta-v"),
 
                 // MediaFire — host == www.mediafire.com AND path starts /file/
                 arguments(MediaFirePlatform.class, "https://mediafire.com/file/abc/x.zip"),
