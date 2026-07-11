@@ -26,8 +26,14 @@ import java.util.regex.Pattern;
 // BOOTSTRAP LAUNCHER FOR WATERMEDIA STANDALONE APPLICATION
 // THE JVM LOCKS THE CLASSPATH AT STARTUP. SPAWNING A FRESH JVM WITH THE FULL CLASSPATH IS THE ONLY RELIABLE SOLUTION.
 public class AppBootstrap {
+    // DOWNLOADED DEPENDENCY JARS ARE A REBUILDABLE CACHE — THEY LIVE IN THE SYSTEM TEMP DIR, NOT NEXT TO THE
+    // USER'S PERSISTENT DATA.
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia/libs");
-    private static final Path ENGINE_FILE = LIBS_DIR.resolve("engine.cfg");
+    // PERSISTENT APP DATA ROOTS AT THE PROCESS WORKING DIRECTORY (THE DEV `run/` FOLDER), ALONGSIDE config/,
+    // logs/ AND THE SERVER STORAGE. THE RELATIVE PATH RESOLVES AGAINST THE CWD, AND THE APP CHILD JVM INHERITS
+    // THAT SAME CWD ON RELAUNCH — SO ITS RenderSystem READS THE VERY SAME engine.cfg.
+    private static final Path DATA_DIR = Path.of("watermedia");
+    private static final Path ENGINE_FILE = DATA_DIR.resolve("engine.cfg");
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
     private static final String APP_FLAG = "watermedia.app";
     private static final String ENGINE_PROP = "watermedia.engine";
@@ -305,7 +311,7 @@ public class AppBootstrap {
 
     private static void writeEngine(final String engine) {
         try {
-            Files.createDirectories(LIBS_DIR);
+            Files.createDirectories(DATA_DIR);
             Files.writeString(ENGINE_FILE, engine);
         } catch (final IOException e) {
             warn("Failed to persist engine choice: " + e.getMessage());

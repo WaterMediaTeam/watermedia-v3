@@ -1,8 +1,8 @@
 plugins {
     id 'java'
     id 'java-library'
-    id 'com.google.osdetector' version '1.7.+'
-    id "me.modmuss50.mod-publish-plugin" version "1.1.+"
+    id 'com.google.osdetector'
+    id 'me.modmuss50.mod-publish-plugin'
 }
 
 def MT_TOKEN = System.getenv("MODRINTH_TOKEN")
@@ -10,7 +10,6 @@ def CF_TOKEN = System.getenv("CURSEFORGE_TOKEN")
 
 base {
     archivesName = id
-    libsDirectory = new File("builtJars/")
 }
 
 test {
@@ -76,7 +75,7 @@ dependencies {
     library "org.tukaani:xz:$xz_version"
 
     // DEPENDENCIES
-    include "org.bytedeco:ffmpeg:8.0.1-1.5.13"
+    include "org.bytedeco:ffmpeg:$ffmpeg_version"
     include ("com.github.SrRapero720:waterconfig:$waterconfig_version") { // TODO: do not shade
         transitive = false
     }
@@ -97,7 +96,7 @@ dependencies {
     library "org.joml:joml:$joml_version"
 
     // TEST DEPENDENCIES
-    testImplementation(platform('org.junit:junit-bom:6.0.2'))
+    testImplementation(platform("org.junit:junit-bom:$junit_version"))
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
@@ -136,14 +135,10 @@ jar {
         attributes "Implementation-Version"     : version
         attributes "Implementation-Vendor"      : authors
         attributes "Implementation-Timestamp"   : new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
-        attributes "Main-Class": "org.watermedia.bootstrap.AppBootstrap"
+        attributes "Main-Class": mainclass
     }
     from {
-        configurations.include.collect {
-            it.isDirectory() ? it.matching {
-            } : zipTree(it).matching {
-            }
-        }
+        configurations.include.collect { it.isDirectory() ? it : zipTree(it) }
     }
     exclude('META-INF/versions/', 'META-INF/maven/')
     exclude('org/watermedia/binaries/**') // COMPILED HERE FOR THE CODEPENDENCY; SHIPPED BY THE BINARIES JAR
@@ -153,17 +148,17 @@ jar {
     }
 }
 
+// PUBLISH METADATA PARSED FROM gradle.properties
+def mcVers = minecraftversions.split(',').collect { it.trim() }
+def javaVers = javaversions.split(',').collect { JavaVersion.toVersion(it.trim()) }
+def loaders = modloaders.split(',').collect { it.trim() }
+
 publishMods {
     file = jar.archiveFile
     changelog = getChangelogText()
-    type = "alpha".equalsIgnoreCase(project.properties.versiontype?.toString())
-            ? ALPHA : "beta".equalsIgnoreCase(project.properties.versiontype?.toString())
-            ? BETA : "release".equalsIgnoreCase(project.properties.versiontype?.toString())
-            ? STABLE : ALPHA
-    displayName = "WM/${project.properties.version}"
-    modLoaders.add("forge")
-    modLoaders.add("neoforge")
-    modLoaders.add("fabric")
+    type = ["alpha": ALPHA, "beta": BETA, "release": STABLE].getOrDefault(project.versiontype.toString().toLowerCase(), ALPHA)
+    displayName = "$publishname/$version"
+    modLoaders.addAll(loaders)
 
     additionalFiles.from(sourcesJar.archiveFile)
     maxRetries = 2
@@ -173,13 +168,13 @@ publishMods {
     curseforge {
         accessToken = CF_TOKEN
         projectId = curseforgeid
-        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.11")
-        javaVersions.addAll(JavaVersion.VERSION_25, JavaVersion.VERSION_21, JavaVersion.VERSION_17)
+        minecraftVersions.addAll(mcVers)
+        javaVersions.addAll(javaVers)
         clientRequired = true
         serverRequired = true
         projectSlug = id
         additionalFile(sourcesJar) {
-            name = "WM-sources/${project.properties.version}"
+            name = "$publishname-sources/$version"
         }
         requires("watermedia-binaries")
     }
@@ -187,7 +182,7 @@ publishMods {
     modrinth {
         accessToken = MT_TOKEN
         projectId = modrinthid
-        minecraftVersions.addAll("1.18.2", "1.19.2", "1.20.1", "1.21.1", "1.21.11")
+        minecraftVersions.addAll(mcVers)
         requires("watermedia-binaries")
     }
 }
@@ -196,10 +191,5 @@ publishMods {
 build.dependsOn gradle.includedBuild("binaries").task(":build")
 
 def getChangelogText() {
-    def result = ""
-    for (String line: file('CHANGELOG.md').readLines('UTF-8')) {
-        if (line.isEmpty()) return result
-        result += line + '\n'
-    }
-    return result
+    return file('CHANGELOG.md').readLines('UTF-8').takeWhile { !it.isEmpty() }.join('\n')
 }

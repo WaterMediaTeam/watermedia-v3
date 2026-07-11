@@ -8,9 +8,14 @@ hs_err_pid*
 /build/classes/java/main/
 /build/classes/java/test/
 /out/
-/builtJars/
 /config/
-/.idea/
+/.idea/*
 !/.idea/icon.svg
+!/.idea/runConfigurations/
 *.mp4
 !/src/test/resources/mp4/*.mp4
+
+# STANDALONE APP RUNTIME DATA (DEV WORKING DIR = run/)
+/run/config/
+/run/logs/
+/run/watermedia/*.cfg

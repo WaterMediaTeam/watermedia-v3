@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="WaterMedia App" type="Application" factoryName="Application">
+    <!-- STANDALONE WATERMEDIA APP. WORKING DIRECTORY IS THE PROJECT run/ FOLDER SO ALL PERSISTENT DATA
+         (config/, logs/, watermedia/ engine+uiscale prefs and the file server storage) LANDS UNDER run/.
+         AppBootstrap RELAUNCHES A CHILD JVM THAT INHERITS THIS WORKING DIRECTORY. -->
+    <option name="MAIN_CLASS_NAME" value="org.watermedia.bootstrap.AppBootstrap" />
+    <module name="watermedia.main" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/run" />
+    <shortenClasspath name="ARGS_FILE" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

@@ -29,14 +29,13 @@ public final class RenderSystem {
     private static final String ENGINE_PROP = "watermedia.engine";
     // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD — OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
     public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
-    // THE ENGINE CHOICE IS PERSISTED IN THE SAME FILE THE AppBootstrap LAUNCHER READS ON THE NEXT LAUNCH
-    // (IT RELAUNCHES THE CHILD JVM WITH -Dwatermedia.engine FROM THIS FILE). KEEP IN SYNC WITH
-    // AppBootstrap.ENGINE_FILE = <java.io.tmpdir>/watermedia/libs/engine.cfg.
-    private static final Path ENGINE_PREF_FILE =
-            Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs", "engine.cfg");
+    // PERSISTED UNDER THE PROCESS WORKING DIRECTORY (THE DEV `run/` FOLDER), ALONGSIDE config/ AND logs/ —
+    // NOT IN THE TEMP DIR WITH THE REBUILDABLE DEPENDENCY CACHE. THE AppBootstrap LAUNCHER READS THIS SAME
+    // engine.cfg BEFORE RELAUNCHING THE APP JVM WITH -Dwatermedia.engine, AND THAT CHILD INHERITS THE SAME
+    // CWD, SO THE RELATIVE PATH RESOLVES TO ONE SHARED FILE. KEEP IN SYNC WITH AppBootstrap.ENGINE_FILE.
+    private static final Path ENGINE_PREF_FILE = Path.of("watermedia", "engine.cfg");
     // GLOBAL UI SCALE PREFERENCE — PERSISTED NEXT TO engine.cfg AS EITHER "auto" OR A FLOAT FACTOR
-    private static final Path UI_SCALE_PREF_FILE =
-            Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs", "uiscale.cfg");
+    private static final Path UI_SCALE_PREF_FILE = Path.of("watermedia", "uiscale.cfg");
 
     private static Engine kind = Engine.OPENGL;
     private static RenderEngine engine;

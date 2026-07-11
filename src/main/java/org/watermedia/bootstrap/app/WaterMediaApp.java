@@ -182,7 +182,11 @@ public class WaterMediaApp {
         final Throwable[] failure = new Throwable[1];
         final Thread loader = ThreadTool.createStarted("WaterMediaApp-Init", () -> {
             try {
-                WaterMedia.start("WaterMediaApp", null, null, true);
+                // ROOT ALL PERSISTENT DATA AT THE PROCESS WORKING DIRECTORY (THE DEV `run/` FOLDER). PASSING
+                // THE CWD EXPLICITLY MAKES WaterMedia.cwd() — AND THUS THE FILE SERVER STORAGE — LAND NEXT TO
+                // config/ AND logs/ (WHICH ALREADY RESOLVE AGAINST THE CWD) INSTEAD OF IN A `run/` SUBFOLDER
+                // OF IT. TEMP STAYS null SO THE REBUILDABLE MEDIA CACHE KEEPS LIVING IN THE SYSTEM TEMP DIR.
+                WaterMedia.start("WaterMediaApp", null, Path.of("").toAbsolutePath(), true);
             } catch (final Throwable t) {
                 failure[0] = t;
             }
