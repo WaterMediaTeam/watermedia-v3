@@ -52,6 +52,10 @@ public class WaterMediaConfig {
         @Comment("Related config for SVG codec")
         public final Svg svg = new Svg();
 
+        @Spec.Field
+        @Comment("Related config for VP8 codec (WEBP lossy)")
+        public final Vp8 vp8 = new Vp8();
+
         @Spec(value = "svg", disableStatic = true)
         public static final class Svg {
             @Spec.Field(suffix = "px")
@@ -71,6 +75,23 @@ public class WaterMediaConfig {
             @Comment("Use the PNG bKGD chunk as the disposal background colour")
             @Comment("When false, transparent disposal is used (recommended for compositing).")
             public boolean useBKGDChunk = false;
+        }
+
+        @Spec(value = "vp8", disableStatic = true)
+        public static final class Vp8 {
+            @Spec.Field
+            @Comment("Attempt to repair VP8 frames declaring broken token partition sizes instead of failing the decode")
+            @Comment("Broken sizes are clamped to the bytes actually available; empty partitions are replaced with a duplicate of the previous one or with fake zeroed data")
+            @Comment("Repaired frames decode best-effort and may show visual artifacts")
+            public boolean brokenTokens = false;
+        }
+
+        @Spec(value = "gif", disableStatic = true)
+        public static final class Gif {
+            @Spec.Field
+            @Comment("Clamp animation frames whose image descriptor extends beyond the logical screen instead of failing the decode")
+            @Comment("When false an out-of-bounds frame throws; when true it is clamped to the canvas (best-effort, may show artifacts)")
+            public boolean clampImageDesc = false;
         }
     }
 
