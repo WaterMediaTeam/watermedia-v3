@@ -33,12 +33,8 @@ public class StreamablePlatform implements IPlatform {
 
         final String videoId = uri.getPath().substring(1);
 
-        try (final NetRequest req = NetRequest.create(URI.create(API_URL + videoId)).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(StreamablePlatform.class, "API for video '" + videoId + "' returned HTTP " + req.statusCode());
-
-            final VideoData video = req.json(VideoData.class);
-            if (video == null) throw new PlatformException(StreamablePlatform.class, "API returned an empty or non-JSON body for video '" + videoId + "'");
-
+        try {
+            final VideoData video = NetRequest.fetchJson(StreamablePlatform.class, API_URL + videoId, VideoData.class);
             LOGGER.debug(IT, "Streamable video '{}' raw status={} percent={}", videoId, video.status, video.percent);
 
             // GATE ON READINESS BEFORE TOUCHING files — A PROCESSING VIDEO HAS NO RENDITIONS YET

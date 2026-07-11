@@ -1,6 +1,5 @@
 package org.watermedia.api.platform.web;
 
-import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
@@ -11,6 +10,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -24,7 +24,6 @@ public class PornHubPlatform implements IPlatform {
     public static final String NAME = "PornHub";
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");
-    private static final Gson GSON = new Gson();
     private static final String[] HOSTS = { "pornhub.com" };
 
     @Override
@@ -53,7 +52,7 @@ public class PornHubPlatform implements IPlatform {
             if (!matcher.find())
                 throw new PlatformException(PornHubPlatform.class, "flashvars block not found for viewkey '" + viewkey + "' (geo-blocked, removed, or markup changed)");
 
-            final FlashVars flashVars = GSON.fromJson(matcher.group(1), FlashVars.class);
+            final FlashVars flashVars = JsonTool.parse(matcher.group(1), FlashVars.class);
 
             if (flashVars == null || flashVars.mediaDefinitions == null || flashVars.mediaDefinitions.length == 0)
                 throw new PlatformException(PornHubPlatform.class, "flashvars carry no media definitions for viewkey '" + viewkey + "'");

@@ -1,20 +1,24 @@
 package org.watermedia.api.util;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonSyntaxException;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.platform.IPlatform;
+import org.watermedia.api.platform.PlatformException;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.JsonTool;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Function;
 
@@ -34,7 +38,6 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public class NetRequest implements AutoCloseable {
     private static final Marker IT = MarkerManager.getMarker(NetRequest.class.getSimpleName());
-    private static final Gson GSON = new Gson();
 
     public static final String MIMETYPE_JSON = "application/json";
     public static final String MIMETYPE_TEXT = "text/plain";
@@ -183,6 +186,51 @@ public class NetRequest implements AutoCloseable {
     }
 
     /**
+     * Fetches {@code uri} with a JSON GET request and binds the response body to {@code type}
+     * through the shared Gson tooling ({@link JsonTool}). This is the common REST resolver for
+     * platform handlers: one identical implementation instead of a private copy per handler.
+     * Every failure — non-200 status, empty/non-JSON body, transport or parse error — surfaces
+     * as a {@link PlatformException} tagged with {@code platform}, keeping the root cause.
+     * Handlers needing extra headers, another method or a custom user agent should build their
+     * own request via {@link #create(URI)} instead.
+     *
+     * @param platform the handler the request belongs to, used to tag failures
+     * @param uri the API endpoint to request
+     * @param type the class the JSON body binds to
+     * @param <T> the bound type
+     * @return the bound response, never {@code null}
+     * @throws PlatformException when the request fails for any reason
+     */
+    public static <T> T fetchJson(final Class<? extends IPlatform> platform, final URI uri, final Class<T> type) throws PlatformException {
+        try (final NetRequest req = create(uri).method("GET").accept(ACCEPT_JSON).send()) {
+            if (req.statusCode() != 200)
+                throw new PlatformException(platform, "API " + uri + " returned HTTP " + req.statusCode());
+            final T data = req.json(type);
+            if (data == null)
+                throw new PlatformException(platform, "API " + uri + " returned an empty or non-JSON body");
+            return data;
+        } catch (final PlatformException e) {
+            throw e; // ALREADY CARRIES THE PLATFORM CONTEXT
+        } catch (final Exception e) {
+            throw new PlatformException(platform, "Failed to fetch " + uri, e);
+        }
+    }
+
+    /**
+     * Convenience overload of {@link #fetchJson(Class, URI, Class)} taking the endpoint as a string.
+     *
+     * @param platform the handler the request belongs to, used to tag failures
+     * @param url the API endpoint to request
+     * @param type the class the JSON body binds to
+     * @param <T> the bound type
+     * @return the bound response, never {@code null}
+     * @throws PlatformException when the request fails for any reason
+     */
+    public static <T> T fetchJson(final Class<? extends IPlatform> platform, final String url, final Class<T> type) throws PlatformException {
+        return fetchJson(platform, URI.create(url), type);
+    }
+
+    /**
      * The URI that produced this response, after any followed redirects.
      */
     public URI uri() { return this.uri; }
@@ -235,40 +283,76 @@ public class NetRequest implements AutoCloseable {
     }
 
     /**
-     * Reads the entire response as a UTF-8 string. Throws if the body exceeds
-     * {@link WaterMediaConfig.Network#maxTextBytes}.
+     * Streams the response body into {@code dest}, replacing any existing file. Intended for
+     * binary payloads (release archives, executables) that must land on disk instead of in memory,
+     * so it is not bounded by {@link WaterMediaConfig.Network#maxTextSize}. Fails on a non-200
+     * status. When the server advertises a {@code Content-Length} the written size is verified
+     * against it; on any failure or size mismatch the partial file is deleted so a retry
+     * re-downloads instead of trusting a truncated file.
+     *
+     * @param dest the file to write the body into; its parent directory must exist
+     * @throws IOException on a non-200 status, a transport or write failure, or a truncated body
      */
-    public String readAllAsString() throws IOException {
-        try (final InputStream is = this.inputStream()) {
-            return readBounded(is, WaterMediaConfig.network.maxTextBytes);
+    public void download(final Path dest) throws IOException {
+        if (this.statusCode != HttpURLConnection.HTTP_OK) {
+            throw new IOException("Download failed (HTTP " + this.statusCode + "): " + this.uri);
+        }
+        try {
+            try (final InputStream in = this.inputStream(); final OutputStream out = Files.newOutputStream(dest)) {
+                in.transferTo(out);
+            }
+            final long expected = this.contentLength(); // -1 WHEN CHUNKED / UNKNOWN — NOTHING TO CHECK AGAINST
+            if (expected >= 0) {
+                final long actual = Files.size(dest);
+                if (actual != expected) {
+                    throw new IOException("Truncated download (" + actual + "/" + expected + " bytes): " + this.uri);
+                }
+            }
+        } catch (final IOException e) {
+            try {
+                Files.deleteIfExists(dest);
+            } catch (final IOException cleanup) {
+                e.addSuppressed(cleanup);
+            }
+            throw e;
         }
     }
 
     /**
-     * Parses the response body as a generic {@link JsonElement}. Returns {@code null} when
-     * the {@code content-type} does not contain {@code application/json}. Honors
-     * {@link WaterMediaConfig.Network#maxTextBytes}.
+     * Reads the entire response as a UTF-8 string. Throws if the body exceeds
+     * {@link WaterMediaConfig.Network#maxTextSize}.
+     */
+    public String readAllAsString() throws IOException {
+        try (final InputStream is = this.inputStream()) {
+            return new String(IOTool.readLimited(is, WaterMediaConfig.network.maxTextSize, -1L), StandardCharsets.UTF_8);
+        }
+    }
+
+    /**
+     * Parses the response body as a generic {@link JsonElement} through {@link JsonTool}.
+     * Returns {@code null} when the {@code content-type} does not contain
+     * {@code application/json}. Honors {@link WaterMediaConfig.Network#maxTextSize}.
      */
     public JsonElement json() throws IOException {
         final String body = this.readJsonBody();
         if (body == null) return null;
         try {
-            return GSON.fromJson(body, JsonElement.class);
+            return JsonTool.parse(body, JsonElement.class);
         } catch (final JsonSyntaxException e) {
             throw new IOException("Malformed JSON in response from " + this.uri, e);
         }
     }
 
     /**
-     * Parses the response body as JSON and binds it to {@code type} via Gson. Returns
-     * {@code null} when the {@code content-type} does not contain {@code application/json}.
-     * Honors {@link WaterMediaConfig.Network#maxTextBytes}.
+     * Parses the response body as JSON and binds it to {@code type} through {@link JsonTool}.
+     * Returns {@code null} when the {@code content-type} does not contain
+     * {@code application/json}. Honors {@link WaterMediaConfig.Network#maxTextSize}.
      */
     public <T> T json(final Class<T> type) throws IOException {
         final String body = this.readJsonBody();
         if (body == null) return null;
         try {
-            return GSON.fromJson(body, type);
+            return JsonTool.parse(body, type);
         } catch (final JsonSyntaxException e) {
             throw new IOException("Malformed JSON in response from " + this.uri, e);
         }
@@ -278,7 +362,7 @@ public class NetRequest implements AutoCloseable {
         final String ct = this.contentType();
         if (ct == null || !ct.toLowerCase().contains(MIMETYPE_JSON)) return null;
         try (final InputStream is = this.inputStream()) {
-            return readBounded(is, WaterMediaConfig.network.maxTextBytes);
+            return new String(IOTool.readLimited(is, WaterMediaConfig.network.maxTextSize, -1L), StandardCharsets.UTF_8);
         }
     }
 
@@ -287,18 +371,14 @@ public class NetRequest implements AutoCloseable {
         if (this.connection instanceof final HttpURLConnection http) http.disconnect();
     }
 
-    private static String readBounded(final InputStream is, final int max) throws IOException {
-        return new String(IOTool.readLimited(is, max, -1L), StandardCharsets.UTF_8);
-    }
-
     public static final class Builder {
         private final URI uri;
         private String method = "GET";
         private UserAgent userAgent = UserAgent.WATERMEDIA;
         private final RequestHeaders headers = new RequestHeaders();
         private byte[] body;
-        private int connectTimeout = WaterMediaConfig.network.requestTimeoutMs;
-        private int readTimeout = WaterMediaConfig.network.requestTimeoutMs;
+        private int connectTimeout = WaterMediaConfig.network.timeout;
+        private int readTimeout = WaterMediaConfig.network.timeout;
         private int maxRedirects = WaterMediaConfig.network.maxRedirects;
         private boolean accept$set;
         private boolean referer$set;
@@ -315,6 +395,24 @@ public class NetRequest implements AutoCloseable {
         public Builder userAgent(final UserAgent userAgent) { this.userAgent = Objects.requireNonNull(userAgent); return this; }
         public Builder header(final String name, final String value) { this.headers.set(name, value); return this; }
         public Builder addHeader(final String name, final String value) { this.headers.add(name, value); return this; }
+
+        /**
+         * Bulk-applies {@code headers}: the first occurrence of each name replaces any builder
+         * default (like {@link #header}), later occurrences append (like {@link #addHeader}),
+         * preserving multi-valued headers. A {@code null} or empty bag is a no-op.
+         */
+        public Builder headers(final RequestHeaders headers) {
+            if (headers == null || headers.isEmpty()) return this;
+            final Set<String> seen = new HashSet<>();
+            for (final RequestHeaders.Entry entry: headers.entries()) {
+                if (seen.add(entry.name().toLowerCase(Locale.ROOT))) {
+                    this.header(entry.name(), entry.value());
+                } else {
+                    this.addHeader(entry.name(), entry.value());
+                }
+            }
+            return this;
+        }
         public Builder body(final byte[] body) { this.body = body; return this; }
         public Builder body(final String body) { this.body = body == null ? null : body.getBytes(StandardCharsets.UTF_8); return this; }
         public Builder connectTimeout(final int ms) { this.connectTimeout = ms; return this; }

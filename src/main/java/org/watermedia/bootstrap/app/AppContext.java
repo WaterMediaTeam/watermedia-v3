@@ -1,6 +1,5 @@
 package org.watermedia.bootstrap.app;
 
-import com.google.gson.Gson;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.util.MediaQuality;
@@ -24,7 +23,6 @@ import static org.lwjgl.openal.AL10.alSourceStop;
 public final class AppContext implements Executor {
 
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
-    public static final Gson GSON = new Gson();
     public static final DateFormat TIME_FORMAT = new SimpleDateFormat("HH:mm:ss");
     public static final boolean IN_MODS = new File("").getAbsoluteFile().getName().equalsIgnoreCase("mods");
 

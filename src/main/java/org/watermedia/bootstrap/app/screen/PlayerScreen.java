@@ -1411,7 +1411,9 @@ public class PlayerScreen extends Screen {
             final String maxSize = PlayerScreen.this.maxSizeLabel();
             this.qual.label(p.quality().name()).chip(maxSize);
             this.lod.label(PlayerScreen.this.lodLabel()).chip(maxSize);
-            // KEEP THE DROPDOWN SELECTION MIRRORING THE LIVE PLAYER SPEED (SNAPPED TO THE NEAREST PRESET)
+            // KEEP THE DROPDOWN SELECTION MIRRORING THE LIVE PLAYER SPEED (SNAPPED TO THE NEAREST PRESET);
+            // LOCK IT WHEN THE PLAYER CANNOT CHANGE SPEED (LIVE STREAM, OR AN ENGINE STUCK AT 1.0×)
+            this.speedDrop.enabled(p.canSpeed());
             this.speedDrop.selected(PlayerScreen.this.nearestSpeedIndex((float) p.speed()));
         }
 

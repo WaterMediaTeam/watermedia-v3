@@ -1,6 +1,5 @@
 package org.watermedia.api.platform.web;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -43,7 +42,6 @@ public class TwitchPlatform implements IPlatform {
     private static final String LIVE_URL = "https://usher.ttvnw.net/api/channel/hls/%s.m3u8";
     private static final String VOD_URL = "https://usher.ttvnw.net/vod/%s.m3u8";
     private static final String CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
-    private static final Gson GSON = new Gson();
 
     // INLINE GQL QUERY FOR ACCESS TOKENS
     private static final String ACCESS_TOKEN_QUERY =
@@ -598,7 +596,7 @@ public class TwitchPlatform implements IPlatform {
                 .accept("application/json")
                 .contentType("application/json; charset=utf-8")
                 .header("Client-ID", CLIENT_ID)
-                .body(GSON.toJson(body))
+                .body(JsonTool.write(body))
                 .send()) {
             if (req.statusCode() != 200) throw new PlatformException(TwitchPlatform.class, "HTTP " + req.statusCode() + " from GQL endpoint");
             return req.readAllAsString();

@@ -38,6 +38,7 @@ import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.JsonTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.awt.*;
@@ -148,7 +149,7 @@ public class WaterMediaApp {
 
         // PHASE 3 — final init that depends on WaterMedia (or that we delayed
         // to keep phase 1 fast).
-        ctx.uriGroups = AppContext.GSON.fromJson(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
+        ctx.uriGroups = JsonTool.parse(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
         loadIptvCatalog();
         if (!WaterMedia.LOGGER.isDebugEnabled()) {
             for (int i = 0; i < ctx.uriGroups.length; i++) {
@@ -167,7 +168,7 @@ public class WaterMediaApp {
 
     private static void loadIptvCatalog() {
         try {
-            final AppContext.IptvCatalog catalog = AppContext.GSON.fromJson(IOTool.jarRead("iptv.json"), AppContext.IptvCatalog.class);
+            final AppContext.IptvCatalog catalog = JsonTool.parse(IOTool.jarRead("iptv.json"), AppContext.IptvCatalog.class);
             ctx.iptvChannels = catalog == null || catalog.channels() == null ? new AppContext.IptvChannel[0] : catalog.channels();
         } catch (final RuntimeException e) {
             ctx.iptvChannels = new AppContext.IptvChannel[0];
@@ -1319,7 +1320,7 @@ public class WaterMediaApp {
             final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                final JsonObject json = AppContext.GSON.fromJson(response.body(), JsonObject.class);
+                final JsonObject json = JsonTool.parse(response.body(), JsonObject.class);
                 if (json.get("success").getAsBoolean()) {
                     final String url = json.get("url").getAsString();
                     entry.url = url;

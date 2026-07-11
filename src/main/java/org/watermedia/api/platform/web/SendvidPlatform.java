@@ -43,7 +43,7 @@ public class SendvidPlatform implements IPlatform {
         final URI statusUri = new URI(String.format(STATUS_API, videoId));
         LOGGER.debug(IT, "Sendvid resolving video '{}'", videoId);
 
-        final StatusResponse status = this.fetchStatus(statusUri);
+        final StatusResponse status = NetRequest.fetchJson(SendvidPlatform.class, statusUri, StatusResponse.class);
         if (!"done".equals(status.state)) {
             LOGGER.debug(IT, "Sendvid video '{}' not ready yet (state={}, queue={})", videoId, status.state, status.placeInQueue);
             if (status.placeInQueue > MAX_QUEUE) {
@@ -97,19 +97,10 @@ public class SendvidPlatform implements IPlatform {
         }
     }
 
-    private StatusResponse fetchStatus(final URI statusUri) throws Exception {
-        try (final NetRequest req = NetRequest.create(statusUri).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(SendvidPlatform.class, "Status API returned HTTP " + req.statusCode() + " for " + statusUri);
-            final StatusResponse status = req.json(StatusResponse.class);
-            if (status == null) throw new PlatformException(SendvidPlatform.class, "Status API returned an empty or non-JSON body for " + statusUri);
-            return status;
-        }
-    }
-
     private void waitForReady(final URI statusUri, final String videoId) throws Exception {
         for (int i = 0; i < 30; i++) {
             Thread.sleep(2000);
-            final StatusResponse status = this.fetchStatus(statusUri);
+            final StatusResponse status = NetRequest.fetchJson(SendvidPlatform.class, statusUri, StatusResponse.class);
             LOGGER.debug(IT, "Sendvid {} status: {} ({}%)", videoId, status.state, status.progress);
             if ("done".equals(status.state)) return;
             if (status.placeInQueue > MAX_QUEUE) {

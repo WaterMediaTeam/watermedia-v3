@@ -54,15 +54,8 @@ public class MedalPlatform implements IPlatform {
         if (clipId == null) return null;
 
         LOGGER.debug(IT, "Medal resolving clip '{}' from {}", clipId, uri);
-        final Content content;
-        try (final NetRequest req = NetRequest.create(URI.create(String.format(API_URL, clipId))).method("GET").accept("application/json").send()) {
-            // A REMOVED, PRIVATE OR MALFORMED ID ANSWERS 4xx (BAD IDS COME BACK AS 400, NOT 404)
-            if (req.statusCode() != 200)
-                throw new PlatformException(MedalPlatform.class, "Content API for clip '" + clipId + "' returned HTTP " + req.statusCode() + " (removed, private, or bad id)");
-            content = req.json(Content.class);
-            if (content == null)
-                throw new PlatformException(MedalPlatform.class, "Content API returned an empty or non-JSON body for clip '" + clipId + "'");
-        }
+        // A REMOVED, PRIVATE OR MALFORMED ID ANSWERS 4xx (BAD IDS COME BACK AS 400, NOT 404)
+        final Content content = NetRequest.fetchJson(MedalPlatform.class, String.format(API_URL, clipId), Content.class);
 
         // GATE ON AVAILABILITY BEFORE TOUCHING URLS — A TAKEN-DOWN OR LOGIN-WALLED CLIP ONLY EXPOSES PLACEHOLDERS
         if (content.dmcaTakedown)

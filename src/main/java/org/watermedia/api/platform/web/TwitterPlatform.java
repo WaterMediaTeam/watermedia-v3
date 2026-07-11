@@ -10,7 +10,6 @@ import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
-import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -46,7 +45,7 @@ public class TwitterPlatform implements IPlatform {
         final String tweetId = m.group(1);
         LOGGER.debug(IT, "Twitter fetching tweet '{}'", tweetId);
 
-        final Tweet tweet = this.fetchTweet(tweetId);
+        final Tweet tweet = NetRequest.fetchJson(TwitterPlatform.class, String.format(API_URL, tweetId, API_TOKEN), Tweet.class);
 
         if ("TweetTombstone".equals(tweet.typename))
             throw new PlatformException(TwitterPlatform.class, "Tweet '" + tweetId + "' is unavailable (tombstoned / age-restricted / deleted)");
@@ -116,16 +115,6 @@ public class TwitterPlatform implements IPlatform {
 
         LOGGER.warn(IT, "Twitter unsupported media type '{}', skipping", media.type);
         return null;
-    }
-
-    private Tweet fetchTweet(final String tweetId) throws IOException {
-        final URI apiUri = URI.create(String.format(API_URL, tweetId, API_TOKEN));
-        try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(TwitterPlatform.class, "Syndication API for tweet '" + tweetId + "' returned HTTP " + req.statusCode());
-            final Tweet tweet = req.json(Tweet.class);
-            if (tweet == null) throw new PlatformException(TwitterPlatform.class, "Syndication API returned an empty or non-JSON body for tweet '" + tweetId + "'");
-            return tweet;
-        }
     }
 
     private static Instant parseInstant(final String iso) {

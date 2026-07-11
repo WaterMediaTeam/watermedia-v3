@@ -57,7 +57,7 @@ public class KickPlatform implements IPlatform {
         if (path.length == 1) { // ASSUME IT WAS A CHANNEL NAME
             final String slug = path[0];
             LOGGER.debug(IT, "Kick resolving channel '{}' from {}", slug, uri);
-            final Channel channel = this.getChannelInfo(slug);
+            final Channel channel = NetRequest.fetchJson(KickPlatform.class, String.format(CHANNELS_API, slug), Channel.class);
 
             if (channel.livestream == null || !channel.livestream.is_live)
                 throw new PlatformException(KickPlatform.class, "Streamer '" + slug + "' is offline");
@@ -96,7 +96,7 @@ public class KickPlatform implements IPlatform {
 
             final String id = path[path.length - 1];
             LOGGER.debug(IT, "Kick resolving VOD '{}' from {}", id, uri);
-            final Video video = this.getVideoInfo(id);
+            final Video video = NetRequest.fetchJson(KickPlatform.class, String.format(VIDEO_API, id), Video.class);
 
             if (video.livestream == null || video.url == null)
                 throw new PlatformException(KickPlatform.class, "VOD '" + id + "' is unavailable (no playback URL)");
@@ -135,13 +135,8 @@ public class KickPlatform implements IPlatform {
     public List<PlatformResult> search(final String query, final int limit) throws Exception {
         // KICK SEARCH IS CHANNEL-CENTRIC: channels[] IS THE ONLY SECTION CARRYING A SLUG + AVATAR. NOTE THE
         // NESTED user OBJECT IS camelCase (profilePic/username), UNLIKE THE snake_case /api/v2/channels PAYLOAD.
-        final SearchResponse res;
-        try (final NetRequest req = NetRequest.create(URI.create(SEARCH_API + URLEncoder.encode(query, StandardCharsets.UTF_8)))
-                .method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Search API for '" + query + "' returned HTTP " + req.statusCode());
-            res = req.json(SearchResponse.class);
-        }
-        if (res == null || res.channels == null) return List.of();
+        final SearchResponse res = NetRequest.fetchJson(KickPlatform.class, SEARCH_API + URLEncoder.encode(query, StandardCharsets.UTF_8), SearchResponse.class);
+        if (res.channels == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(res.channels.length, limit));
         for (final SearchChannel channel: res.channels) {
@@ -159,26 +154,11 @@ public class KickPlatform implements IPlatform {
         return out;
     }
 
-    private Channel getChannelInfo(final String channel) throws Exception {
-        try (final NetRequest req = NetRequest.create(URI.create(String.format(CHANNELS_API, channel))).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Channels API for '" + channel + "' returned HTTP " + req.statusCode());
-            final Channel data = req.json(Channel.class);
-            if (data == null) throw new PlatformException(KickPlatform.class, "Channels API returned an empty or non-JSON body for '" + channel + "'");
-            return data;
-        }
-    }
-
-    private Video getVideoInfo(final String videoId) throws Exception {
-        try (final NetRequest req = NetRequest.create(URI.create(String.format(VIDEO_API, videoId))).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Video API for '" + videoId + "' returned HTTP " + req.statusCode());
-            final Video data = req.json(Video.class);
-            if (data == null) throw new PlatformException(KickPlatform.class, "Video API returned an empty or non-JSON body for '" + videoId + "'");
-            return data;
-        }
-    }
-
     private PlatformData resolveClip(final URI uri, final String clipId) throws Exception {
-        final Clip clip = this.getClipInfo(clipId);
+        final ClipResponse response = NetRequest.fetchJson(KickPlatform.class, String.format(CLIPS_API, clipId), ClipResponse.class);
+        final Clip clip = response.clip;
+        if (clip == null)
+            throw new PlatformException(KickPlatform.class, "Clip '" + clipId + "' is unavailable");
 
         if (clip.clipUrl == null)
             throw new PlatformException(KickPlatform.class, "Clip '" + clipId + "' has no playback URL (removed or still processing)");
@@ -208,15 +188,6 @@ public class KickPlatform implements IPlatform {
                 variants,
                 null, null);
         return new PlatformData(null, entry);
-    }
-
-    private Clip getClipInfo(final String clipId) throws Exception {
-        try (final NetRequest req = NetRequest.create(URI.create(String.format(CLIPS_API, clipId))).method("GET").accept("application/json").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(KickPlatform.class, "Clips API for '" + clipId + "' returned HTTP " + req.statusCode());
-            final ClipResponse response = req.json(ClipResponse.class);
-            if (response == null || response.clip == null) throw new PlatformException(KickPlatform.class, "Clip '" + clipId + "' is unavailable");
-            return response.clip;
-        }
     }
 
     // RESOLVES THE clip_... ID FROM BOTH URL SHAPES: /<channel>/clips/clip_... AND /<channel>?clip=clip_...
