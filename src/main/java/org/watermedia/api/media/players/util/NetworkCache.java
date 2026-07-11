@@ -10,6 +10,7 @@ import org.watermedia.api.codecs.writers.BCWriter;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
 
 import java.io.BufferedInputStream;
@@ -26,16 +27,12 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -53,7 +50,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  *       <i>and</i> a block-compression codec is {@linkplain CodecsAPI#supports(String) available};
  *       {@code TxMediaPlayer} then feeds decoded frames (plus their delays) to a
  *       {@link CodecWriter}, which recompresses them off the render thread and persists one DDS
- *       per source. Subsequent playbacks read the DDS through a {@link CodecReader} and upload the
+ *       per source. Subsequent playbacks read the DDS through a {@link BCReader} and upload the
  *       blocks straight to GPU memory without any software decode — saving both decode CPU and
  *       (since BCn is a quarter or eighth of RGBA8) VRAM.</li>
  * </ul>
@@ -164,10 +161,6 @@ public final class NetworkCache {
         mode = Mode.DISK;
     }
 
-    public static synchronized Path directory() {
-        return cacheDir;
-    }
-
     // ==========================================================================
     // PUBLIC API — NETWORK TIER
     // ==========================================================================
@@ -182,10 +175,21 @@ public final class NetworkCache {
         }
 
         final byte[] hash = keyHash(uri, headers, accept);
-        final String hex = hex(hash);
+        final String hex = DataTool.hex(hash);
         synchronized (lock(Tier.NETWORK, hex)) {
-            final CachedBytes cached = readStoredBytes(Tier.NETWORK, hex, maxBytes);
-            if (cached != null) return cached;
+            final Entry entry = storeRead(Tier.NETWORK, hex);
+            if (entry != null) {
+                final Path file = storeFile(Tier.NETWORK, hex);
+                // OVERSIZED ENTRIES ARE NOT EVICTED — FALL THROUGH TO A FRESH FETCH INSTEAD.
+                if (Files.size(file) <= maxBytes) {
+                    try {
+                        return new CachedBytes(Files.readAllBytes(file), entry.contentType, true, entry.expiresAt);
+                    } catch (final IOException e) {
+                        storeDelete(Tier.NETWORK, hex);
+                        throw e;
+                    }
+                }
+            }
 
             final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes);
             if (downloaded.expiresAt > System.currentTimeMillis()) {
@@ -200,16 +204,24 @@ public final class NetworkCache {
         if (!enabled || !isHttp(uri) || cacheDir == null) return null;
 
         final byte[] hash = keyHash(uri, headers, accept);
-        final String hex = hex(hash);
+        final String hex = DataTool.hex(hash);
         synchronized (lock(Tier.NETWORK, hex)) {
-            final CachedFile cached = readStoredFile(Tier.NETWORK, hex, maxBytes);
-            if (cached != null) return cached;
+            final Entry entry = storeRead(Tier.NETWORK, hex);
+            if (entry != null) {
+                // A STORED PLAYLIST BODY MUST NOT BE SERVED AS A FILE — EVICT AND RE-FETCH.
+                if (isPlaylist(entry.contentType)) {
+                    storeDelete(Tier.NETWORK, hex);
+                } else {
+                    final Path file = storeFile(Tier.NETWORK, hex);
+                    if (Files.size(file) <= maxBytes) return new CachedFile(file, true, entry.contentType);
+                }
+            }
 
             final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes);
             if (isPlaylist(downloaded.contentType)) return null;
             if (downloaded.expiresAt <= System.currentTimeMillis()) return null;
             final Path file = storeWrite(Tier.NETWORK, hash, downloaded.bytes, downloaded.expiresAt, downloaded.contentType);
-            return new CachedFile(file, false, downloaded.expiresAt, downloaded.contentType);
+            return new CachedFile(file, false, downloaded.contentType);
         }
     }
 
@@ -240,7 +252,7 @@ public final class NetworkCache {
                                               final int width, final int height, final PixelFormat format) throws IOException {
         if (mode != Mode.CODEC || cacheDir == null) return null;
         final byte[] hash = keyHash(uri, headers, accept);
-        final String hex = hex(hash);
+        final String hex = DataTool.hex(hash);
         Files.createDirectories(cacheDir);
         final Path file = storeFile(Tier.CODEC, hex);
         // UNIQUE TEMP: A CODEC SESSION SPANS MANY FRAMES OVER TIME, SO IT CANNOT HOLD A STORE LOCK;
@@ -248,7 +260,7 @@ public final class NetworkCache {
         final Path tmp = file.resolveSibling(file.getFileName().toString() + '.' + System.nanoTime() + ".part");
         final OutputStream out = new BufferedOutputStream(Files.newOutputStream(tmp));
         try {
-            return new CodecWriter(hash, hex, tmp, file, new BCWriter(out, width, height, format));
+            return new CodecWriter(hash, tmp, file, new BCWriter(out, width, height, format));
         } catch (final IOException e) {
             IOTool.closeQuietly(out);
             Files.deleteIfExists(tmp);
@@ -259,8 +271,7 @@ public final class NetworkCache {
     /** Whether a committed, non-expired codec texture exists for {@code uri}. */
     public static boolean codecReadable(final URI uri, final RequestHeaders headers, final String accept) throws IOException {
         if (cacheDir == null) return false;
-        final String hex = hex(keyHash(uri, headers, accept));
-        return validCodecEntry(hex) != null;
+        return storeRead(Tier.CODEC, DataTool.hex(keyHash(uri, headers, accept))) != null;
     }
 
     /**
@@ -270,9 +281,9 @@ public final class NetworkCache {
      */
     public static BCReader openCodecReader(final URI uri, final RequestHeaders headers, final String accept) throws IOException {
         if (cacheDir == null) return null;
-        final String hex = hex(keyHash(uri, headers, accept));
-        final Path file = validCodecEntry(hex);
-        if (file == null) return null;
+        final String hex = DataTool.hex(keyHash(uri, headers, accept));
+        if (storeRead(Tier.CODEC, hex) == null) return null;
+        final Path file = storeFile(Tier.CODEC, hex);
         try {
             return new BCReader(ByteBuffer.wrap(Files.readAllBytes(file)));
         } catch (final IOException e) {
@@ -281,27 +292,11 @@ public final class NetworkCache {
         }
     }
 
-    // RESOLVES A LIVE CODEC STORE FILE FOR hex, EVICTING THE ENTRY WHEN IT IS EXPIRED OR MISSING.
-    private static Path validCodecEntry(final String hex) {
-        final Entry entry;
-        synchronized (NetworkCache.class) {
-            entry = INDEX.get(indexKey(Tier.CODEC, hex));
-        }
-        if (entry == null) return null;
-        final Path file = storeFile(Tier.CODEC, hex);
-        if (entry.expired(System.currentTimeMillis()) || !Files.isRegularFile(file)) {
-            storeDelete(Tier.CODEC, hex);
-            return null;
-        }
-        return file;
-    }
-
     // ==========================================================================
     // NETWORK FETCH
     // ==========================================================================
     private static CachedBytes fetch(final URI uri, final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
-        final NetRequest.Builder builder = NetRequest.create(uri).method("GET");
-        applyHeaders(builder, headers);
+        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
         if (accept != null && (headers == null || !headers.has("Accept"))) {
             builder.accept(accept);
         }
@@ -332,92 +327,44 @@ public final class NetworkCache {
         }
     }
 
-    private static void applyHeaders(final NetRequest.Builder builder, final RequestHeaders headers) {
-        if (headers == null || headers.isEmpty()) return;
-
-        final Set<String> seen = new HashSet<>();
-        for (final RequestHeaders.Entry entry: headers.entries()) {
-            final String key = entry.name().toLowerCase(Locale.ROOT);
-            if (seen.add(key)) {
-                builder.header(entry.name(), entry.value());
-            } else {
-                builder.addHeader(entry.name(), entry.value());
-            }
-        }
-    }
-
     // ==========================================================================
     // SHARED STORE — TIER-AWARE STORAGE PRIMITIVES
     // ==========================================================================
     // EVERY ENTRY IS KEYED BY (tier, hex(hash)) AND BACKED BY A FILE NAMED
     // wm_<tier.prefix>_<hash>.tmp INSIDE cacheDir. THESE PRIMITIVES ARE SHARED
-    // BETWEEN THE NETWORK TIER AND THE FUTURE CODEC TIER.
+    // BETWEEN THE NETWORK TIER AND THE CODEC TIER.
 
-    private static CachedBytes readStoredBytes(final Tier tier, final String hex, final long maxBytes) throws IOException {
+    // RESOLVES THE LIVE INDEX ENTRY FOR (tier, hex), EVICTING IT WHEN EXPIRED OR ITS FILE IS GONE.
+    private static Entry storeRead(final Tier tier, final String hex) {
         final Entry entry;
         synchronized (NetworkCache.class) {
             entry = INDEX.get(indexKey(tier, hex));
         }
         if (entry == null) return null;
-
-        final long now = System.currentTimeMillis();
-        final Path file = storeFile(tier, hex);
-        if (entry.expired(now) || !Files.isRegularFile(file)) {
+        if (entry.expired(System.currentTimeMillis()) || !Files.isRegularFile(storeFile(tier, hex))) {
             storeDelete(tier, hex);
             return null;
         }
-
-        if (Files.size(file) > maxBytes) {
-            return null;
-        }
-
-        try {
-            return new CachedBytes(Files.readAllBytes(file), entry.contentType, true, entry.expiresAt);
-        } catch (final IOException e) {
-            storeDelete(tier, hex);
-            throw e;
-        }
-    }
-
-    private static CachedFile readStoredFile(final Tier tier, final String hex, final long maxBytes) throws IOException {
-        final Entry entry;
-        synchronized (NetworkCache.class) {
-            entry = INDEX.get(indexKey(tier, hex));
-        }
-        if (entry == null) return null;
-
-        final long now = System.currentTimeMillis();
-        final Path file = storeFile(tier, hex);
-        if (entry.expired(now) || !Files.isRegularFile(file)) {
-            storeDelete(tier, hex);
-            return null;
-        }
-        if (isPlaylist(entry.contentType)) {
-            storeDelete(tier, hex);
-            return null;
-        }
-
-        if (Files.size(file) > maxBytes) {
-            return null;
-        }
-
-        return new CachedFile(file, true, entry.expiresAt, entry.contentType);
+        return entry;
     }
 
     private static Path storeWrite(final Tier tier, final byte[] hash, final byte[] bytes,
                                    final long expiresAt, final String contentType) throws IOException {
         Files.createDirectories(cacheDir);
-        final String hex = hex(hash);
-        final Path file = storeFile(tier, hex);
+        final Path file = storeFile(tier, DataTool.hex(hash));
         final Path tmp = file.resolveSibling(file.getFileName() + ".part");
         Files.write(tmp, bytes);
         IOTool.move(tmp, file);
+        storeIndex(tier, hash, expiresAt, contentType);
+        return file;
+    }
 
+    // REGISTERS (tier, hash) IN THE INDEX AND PERSISTS IT.
+    private static void storeIndex(final Tier tier, final byte[] hash, final long expiresAt, final String contentType) throws IOException {
         synchronized (NetworkCache.class) {
-            INDEX.put(indexKey(tier, hex), new Entry(hash, tier, expiresAt, contentType));
+            INDEX.put(indexKey(tier, DataTool.hex(hash)), new Entry(hash, tier, expiresAt, contentType));
             writeIndex();
         }
-        return file;
     }
 
     private static synchronized void storeDelete(final Tier tier, final String hex) {
@@ -472,7 +419,7 @@ public final class NetworkCache {
                 in.readFully(hash);
                 final long expiresAt = in.readLong();
                 final String contentType = in.readUTF();
-                final String hex = hex(hash);
+                final String hex = DataTool.hex(hash);
                 final Entry entry = new Entry(hash, tier, expiresAt, contentType.isEmpty() ? null : contentType);
                 if (!entry.expired(now) && Files.isRegularFile(storeFile(tier, hex))) {
                     INDEX.put(indexKey(tier, hex), entry);
@@ -555,36 +502,19 @@ public final class NetworkCache {
         return lower.contains("mpegurl") || lower.contains("dash+xml");
     }
 
-    private static byte[] keyHash(final URI uri, final RequestHeaders headers, final String accept) throws IOException {
-        try {
-            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(uri.toASCIIString().getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) '\n');
-            if (headers != null && !headers.isEmpty()) {
-                for (final RequestHeaders.Entry entry: headers.entries()) {
-                    digest.update(entry.name().toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8));
-                    digest.update((byte) ':');
-                    digest.update(entry.value().getBytes(StandardCharsets.UTF_8));
-                    digest.update((byte) '\n');
-                }
+    // CANONICAL CACHE KEY: uri + '\n' + LOWERCASED "name:value" LINES + OPTIONAL "accept:" TAIL.
+    // THE BYTE STREAM MUST STAY STABLE — ANY DRIFT ORPHANS EVERY EXISTING ON-DISK CACHE.
+    private static byte[] keyHash(final URI uri, final RequestHeaders headers, final String accept) {
+        final StringBuilder key = new StringBuilder(uri.toASCIIString()).append('\n');
+        if (headers != null && !headers.isEmpty()) {
+            for (final RequestHeaders.Entry entry: headers.entries()) {
+                key.append(entry.name().toLowerCase(Locale.ROOT)).append(':').append(entry.value()).append('\n');
             }
-            if (accept != null && (headers == null || !headers.has("Accept"))) {
-                digest.update("accept:".getBytes(StandardCharsets.UTF_8));
-                digest.update(accept.getBytes(StandardCharsets.UTF_8));
-            }
-            return digest.digest();
-        } catch (final NoSuchAlgorithmException e) {
-            throw new IOException("SHA-256 is not available", e);
         }
-    }
-
-    private static String hex(final byte[] bytes) {
-        final StringBuilder out = new StringBuilder(bytes.length * 2);
-        for (final byte b: bytes) {
-            out.append(Character.forDigit((b >>> 4) & 0xF, 16));
-            out.append(Character.forDigit(b & 0xF, 16));
+        if (accept != null && (headers == null || !headers.has("Accept"))) {
+            key.append("accept:").append(accept);
         }
-        return out.toString();
+        return DataTool.sha256(key.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     // ==========================================================================
@@ -598,15 +528,13 @@ public final class NetworkCache {
      */
     public static final class CodecWriter implements Closeable {
         private final byte[] hash;
-        private final String hex;
         private final Path tmp;
         private final Path file;
         private final BCWriter writer;
         private boolean closed;
 
-        CodecWriter(final byte[] hash, final String hex, final Path tmp, final Path file, final BCWriter writer) {
+        CodecWriter(final byte[] hash, final Path tmp, final Path file, final BCWriter writer) {
             this.hash = hash;
-            this.hex = hex;
             this.tmp = tmp;
             this.file = file;
             this.writer = writer;
@@ -645,10 +573,7 @@ public final class NetworkCache {
                 } catch (final IOException ignored) {}
                 throw e;
             }
-            synchronized (NetworkCache.class) {
-                INDEX.put(indexKey(Tier.CODEC, this.hex), new Entry(this.hash, Tier.CODEC, CODEC_NEVER_EXPIRES, CODEC_CONTENT_TYPE));
-                writeIndex();
-            }
+            storeIndex(Tier.CODEC, this.hash, CODEC_NEVER_EXPIRES, CODEC_CONTENT_TYPE);
         }
 
         /** Discards the in-progress texture without publishing it. */
@@ -678,7 +603,7 @@ public final class NetworkCache {
     // ==========================================================================
     public record CachedBytes(byte[] bytes, String contentType, boolean cached, long expiresAt) {}
 
-    public record CachedFile(Path path, boolean cached, long expiresAt, String contentType) {}
+    public record CachedFile(Path path, boolean cached, String contentType) {}
 
     private record Entry(byte[] hash, Tier tier, long expiresAt, String contentType) {
         boolean expired(final long now) {

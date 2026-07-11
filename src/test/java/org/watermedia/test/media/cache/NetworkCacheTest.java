@@ -8,8 +8,10 @@ import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.test.support.LocalHttp;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -102,6 +104,35 @@ public class NetworkCacheTest {
                 assertEquals("video/mp4", second.contentType());
                 assertArrayEquals(body, Files.readAllBytes(second.path()));
                 assertEquals(1, this.hits);
+            } finally {
+                NetworkCache.release();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Derives stable on-disk cache keys")
+    void testDerivesStableOnDiskCacheKeys() throws Exception {
+        final byte[] body = new byte[] { 7, 7, 7 };
+        try (final LocalHttp server = LocalHttp.start("/pinned.png", exchange ->
+                LocalHttp.respond(exchange, "image/png", body, 3600))) {
+            final Path cache = this.tempDir.resolve("cache-key");
+            NetworkCache.start(cache);
+            try {
+                final URI uri = server.uri("/pinned.png");
+                final RequestHeaders headers = new RequestHeaders().set("X-Variant", "first");
+                NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT);
+
+                // RE-DERIVE THE KEY FROM ITS CONTRACT: sha256(uri + '\n' + LOWERCASED "name:value"
+                // LINES + "accept:" TAIL) HEX-ENCODED INTO THE PAYLOAD FILENAME. IF THE DERIVATION
+                // EVER DRIFTS, EVERY EXISTING ON-DISK CACHE IS ORPHANED — THIS TEST PINS IT.
+                final String key = uri.toASCIIString() + '\n' + "x-variant:first\n" + "accept:" + ACCEPT_IMAGE;
+                final byte[] hash = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+                final StringBuilder hex = new StringBuilder(hash.length * 2);
+                for (final byte b: hash) {
+                    hex.append(Character.forDigit((b >>> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+                }
+                assertTrue(Files.isRegularFile(cache.resolve("wm_n_" + hex + ".tmp")));
             } finally {
                 NetworkCache.release();
             }
