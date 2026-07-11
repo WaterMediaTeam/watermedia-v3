@@ -64,6 +64,10 @@ import static org.watermedia.WaterMedia.LOGGER;
 public class PNGReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(PNGReader.class.getSimpleName());
 
+    // SECURITY CAPS
+    private static final int MAX_DIM = 16384;                          // 16K PER AXIS (1:1); KEEPS width*height*4 WITHIN INT
+    private static final int MAX_INFLATED_IMAGE_BYTES = Integer.MAX_VALUE - 8; // JAVA ARRAY-SIZE SAFE UPPER BOUND
+
     // FILTER TYPES (FILTER METHOD 0)
     private static final int FILTER_NONE = 0;
     private static final int FILTER_SUB = 1;
@@ -158,6 +162,13 @@ public class PNGReader extends ImageReader {
         this.outputBuffer = new int[pixelCount];
         this.directOut = ByteBuffer.allocateDirect(pixelCount * 4).order(ByteOrder.LITTLE_ENDIAN);
         this.directOutInts = this.directOut.asIntBuffer();
+
+        // VALIDATE INDEXED bKGD AGAINST THE PALETTE BEFORE ANY bkgdToARGB LOOKUP (PLTE.getColor IS UNCHECKED)
+        if (this.bkgd != null && this.bkgd.isIndexed()) {
+            if (this.plte == null) throw new XCodecException("Indexed bKGD without PLTE");
+            if (this.bkgd.paletteIndex() >= this.plte.size())
+                throw new XCodecException("bKGD palette index out of range: " + this.bkgd.paletteIndex() + " (palette size " + this.plte.size() + ")");
+        }
 
         // INIT CANVAS WITH BKGD OR TRANSPARENT
         if (this.bkgd != null) {
@@ -258,6 +269,17 @@ public class PNGReader extends ImageReader {
             // No data for this "frame" (rare). Skip and try next.
             this.done = true;
             throw new XCodecException("PNG frame without compressed data");
+        }
+
+        // VALIDATE APNG FRAME GEOMETRY AGAINST THE CANVAS: UNCHECKED fcTL FIELDS OTHERWISE DRIVE
+        // OUT-OF-BOUNDS WRITES IN decodeData / applyBlendOp / applyDispose
+        if (fctl != null) {
+            try {
+                fctl.validate(this.canvasWidth, this.canvasHeight);
+            } catch (final XCodecException e) {
+                this.done = true;
+                throw e;
+            }
         }
 
         final IHDR frameIhdr = (fctl != null)
@@ -513,6 +535,11 @@ public class PNGReader extends ImageReader {
         if (ihdr.width() <= 0 || ihdr.height() <= 0) {
             throw new XCodecException("Invalid image dimensions: " + ihdr.width() + "x" + ihdr.height());
         }
+        // CAP DIMENSIONS: 24-BIT-ISH RAW IHDR FIELDS OTHERWISE OVERFLOW width*height*4 INT MATH AND
+        // ALLOW MULTI-GB ALLOCATIONS FROM A TINY HEADER
+        if (ihdr.width() > MAX_DIM || ihdr.height() > MAX_DIM) {
+            throw new XCodecException("PNG dimensions too big: " + ihdr.width() + "x" + ihdr.height() + " (max " + MAX_DIM + ")");
+        }
         final ColorType colorType = ColorType.of(ihdr.colorType());
         final int depth = ihdr.depth();
         switch (colorType) {
@@ -539,7 +566,13 @@ public class PNGReader extends ImageReader {
     private int inflate(final List<ChunkSlice> compressed, final IHDR ihdr) throws IOException {
         final Inflater inflater = this.inflater;
         inflater.reset();
-        final int expected = this.expectedInflatedBytes(ihdr);
+        // A WELL-FORMED PNG DECOMPRESSES TO EXACTLY THIS MANY FILTERED BYTES; ANYTHING PAST IT IS A
+        // DECOMPRESSION BOMB. COMPUTED AS long SO 16K depth-16 FRAMES DON'T OVERFLOW THE int MULTIPLY.
+        final long expectedLong = this.expectedInflatedBytes(ihdr);
+        if (expectedLong > MAX_INFLATED_IMAGE_BYTES) {
+            throw new XCodecException("PNG image data too large: " + expectedLong + " bytes");
+        }
+        final int expected = (int) expectedLong;
         byte[] output = this.decompressed;
         if (output.length < Math.max(32, expected)) {
             output = new byte[Math.max(32, expected)];
@@ -558,6 +591,7 @@ public class PNGReader extends ImageReader {
                     final int len = inflater.inflate(output, outputSize, output.length - outputSize);
                     if (len > 0) {
                         outputSize += len;
+                        if (outputSize > expected) throw new XCodecException("Compressed image data exceeds expected size (" + expected + " bytes)");
                         continue;
                     }
                     if (inflater.finished()) return outputSize;
@@ -574,6 +608,7 @@ public class PNGReader extends ImageReader {
                 final int len = inflater.inflate(output, outputSize, output.length - outputSize);
                 if (len > 0) {
                     outputSize += len;
+                    if (outputSize > expected) throw new XCodecException("Compressed image data exceeds expected size (" + expected + " bytes)");
                     continue;
                 }
                 if (inflater.finished()) return outputSize;
@@ -586,15 +621,15 @@ public class PNGReader extends ImageReader {
         }
     }
 
-    private int expectedInflatedBytes(final IHDR ihdr) {
+    private long expectedInflatedBytes(final IHDR ihdr) {
         if (ihdr.interlace() == 0) {
-            return (this.scanlineBytes(ihdr.width()) + 1) * ihdr.height();
+            return (long) (this.scanlineBytes(ihdr.width()) + 1) * ihdr.height();
         }
-        int total = 0;
+        long total = 0;
         for (int pass = 0; pass < 7; pass++) {
             final int pw = this.passDimension(ihdr.width(), ADAM7_X_START[pass], ADAM7_X_STEP[pass]);
             final int ph = this.passDimension(ihdr.height(), ADAM7_Y_START[pass], ADAM7_Y_STEP[pass]);
-            if (pw > 0 && ph > 0) total += (this.scanlineBytes(pw) + 1) * ph;
+            if (pw > 0 && ph > 0) total += (long) (this.scanlineBytes(pw) + 1) * ph;
         }
         return total;
     }

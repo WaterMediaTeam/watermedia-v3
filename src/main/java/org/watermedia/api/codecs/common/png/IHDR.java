@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -60,14 +62,14 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
         );
     }
 
-    public int bytesPerPixel() {
+    public int bytesPerPixel() throws XCodecException {
         final int samplesPerPixel = switch (ColorType.of(this.colorType)) {
             case GREYSCALE -> 1;
             case TRUECOLOR -> 3;
             case INDEXED -> 1;
             case GREYSCALE_ALPHA -> 2;
             case TRUECOLOR_ALPHA -> 4;
-            case FORBIDDEN_1, FORBIDDEN_5 -> throw new IllegalStateException("Forbidden color type: " + this.colorType);
+            case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + this.colorType);
         };
         return Math.max(1, (samplesPerPixel * this.depth) / 8);
     }

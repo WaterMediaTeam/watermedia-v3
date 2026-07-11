@@ -16,6 +16,8 @@ import java.util.zip.Inflater;
 public record ITXT(String keyword, boolean compressed, int compressionMethod,
                    String languageTag, String translatedKeyword, byte[] textData) {
     public static final int SIGNATURE = 0x69_54_58_74; // "iTXt"
+    // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
+    private static final int MAX_DECOMPRESSED = 2 * 1024 * 1024; // 2 MB
 
     /**
      * Reads iTXt chunk from buffer (reads length/type header first)
@@ -138,6 +140,9 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
                 final int length = inflater.inflate(buffer);
                 if (length == 0 && inflater.needsInput()) {
                     break;
+                }
+                if (output.size() + length > MAX_DECOMPRESSED) {
+                    throw new IOException("iTXt exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
                 }
                 output.write(buffer, 0, length);
             }

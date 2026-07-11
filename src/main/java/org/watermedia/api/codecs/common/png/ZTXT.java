@@ -15,6 +15,8 @@ import java.util.zip.Inflater;
  */
 public record ZTXT(String keyword, int compressionMethod, byte[] compressedText) {
     public static final int SIGNATURE = 0x7A_54_58_74; // "zTXt"
+    // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
+    private static final int MAX_DECOMPRESSED = 2 * 1024 * 1024; // 2 MB
 
     /**
      * Reads zTXt chunk from buffer (reads length/type header first)
@@ -101,6 +103,9 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
                 final int length = inflater.inflate(buffer);
                 if (length == 0 && inflater.needsInput()) {
                     break;
+                }
+                if (output.size() + length > MAX_DECOMPRESSED) {
+                    throw new IOException("zTXt exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
                 }
                 output.write(buffer, 0, length);
             }

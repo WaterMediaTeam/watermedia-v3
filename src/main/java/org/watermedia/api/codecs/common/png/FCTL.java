@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -90,15 +92,16 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
     /**
      * Validates frame bounds against canvas dimensions
      */
-    public void validate(final int canvasWidth, final int canvasHeight) {
+    public void validate(final int canvasWidth, final int canvasHeight) throws XCodecException {
         if (this.width <= 0 || this.height <= 0) {
-            throw new IllegalStateException("Invalid frame dimensions: " + this.width + "x" + this.height);
+            throw new XCodecException("Invalid frame dimensions: " + this.width + "x" + this.height);
         }
         if (this.xOffset < 0 || this.yOffset < 0) {
-            throw new IllegalStateException("Invalid frame offset: " + this.xOffset + "," + this.yOffset);
+            throw new XCodecException("Invalid frame offset: " + this.xOffset + "," + this.yOffset);
         }
-        if (this.xOffset + this.width > canvasWidth || this.yOffset + this.height > canvasHeight) {
-            throw new IllegalStateException("Frame extends beyond canvas bounds");
+        // LONG MATH: RAW int FIELDS CAN SUM PAST Integer.MAX_VALUE AND WRAP NEGATIVE, FALSELY PASSING
+        if ((long) this.xOffset + this.width > canvasWidth || (long) this.yOffset + this.height > canvasHeight) {
+            throw new XCodecException("Frame extends beyond canvas bounds");
         }
     }
 
