@@ -751,9 +751,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void destroySwapchainObjects() {
-        for (final long fb : this.framebuffers) if (fb != 0L) vkDestroyFramebuffer(this.device, fb, null);
-        for (final long v : this.swapViews) if (v != 0L) vkDestroyImageView(this.device, v, null);
-        for (final long s : this.renderFinished) if (s != 0L) vkDestroySemaphore(this.device, s, null);
+        for (final long fb: this.framebuffers) if (fb != 0L) vkDestroyFramebuffer(this.device, fb, null);
+        for (final long v: this.swapViews) if (v != 0L) vkDestroyImageView(this.device, v, null);
+        for (final long s: this.renderFinished) if (s != 0L) vkDestroySemaphore(this.device, s, null);
         if (this.swapchain != 0L) vkDestroySwapchainKHR(this.device, this.swapchain, null);
         this.swapchain = 0L;
         this.framebuffers = new long[0];
@@ -1202,7 +1202,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void freeRetired(final Frame f) {
-        for (final long[] r : f.retired) {
+        for (final long[] r: f.retired) {
             vkDestroyBuffer(this.device, r[0], null);
             vkFreeMemory(this.device, r[1], null); // IMPLICITLY UNMAPS
         }
@@ -1440,17 +1440,17 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         if (this.coreReady) {
             this.destroySwapchainObjects();
 
-            for (final Frame f : this.frames) {
+            for (final Frame f: this.frames) {
                 if (f == null) continue;
                 this.freeRetired(f);
                 if (f.vbo != 0L) vkDestroyBuffer(this.device, f.vbo, null);
                 if (f.vboMem != 0L) vkFreeMemory(this.device, f.vboMem, null);
                 if (f.imageAvailable != 0L) vkDestroySemaphore(this.device, f.imageAvailable, null);
                 if (f.inFlightFence != 0L) vkDestroyFence(this.device, f.inFlightFence, null);
-                for (final long pool : f.descPools) vkDestroyDescriptorPool(this.device, pool, null);
+                for (final long pool: f.descPools) vkDestroyDescriptorPool(this.device, pool, null);
             }
 
-            for (final TextureRecord rec : this.textures.values()) {
+            for (final TextureRecord rec: this.textures.values()) {
                 vkDestroyImageView(this.device, rec.view, null);
                 vkDestroyImage(this.device, rec.image, null);
                 vkFreeMemory(this.device, rec.memory, null);

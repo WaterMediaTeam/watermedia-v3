@@ -37,7 +37,7 @@ public final class PlatformSmokeTest {
                 new YouTubePlatform());
 
         final String[] urls = args.length > 0 ? args : DEFAULTS;
-        for (final String url : urls) {
+        for (final String url: urls) {
             resolve(platforms, url);
         }
         if (args.length == 0) {
@@ -51,12 +51,12 @@ public final class PlatformSmokeTest {
         final URI uri = URI.create(url);
         final long started = System.currentTimeMillis();
         try {
-            for (final IPlatform platform : platforms) {
+            for (final IPlatform platform: platforms) {
                 final PlatformData data = platform.getData(uri);
                 if (data == null) continue; // NOT THIS PLATFORM'S HOST — KEEP PROBING
                 System.out.println("platform=" + platform.name() + " entries=" + data.size()
                         + " expires=" + data.expires() + " (" + (System.currentTimeMillis() - started) + "ms)");
-                for (final DataSource src : data.entries()) {
+                for (final DataSource src: data.entries()) {
                     print(src);
                 }
                 return;
@@ -72,12 +72,12 @@ public final class PlatformSmokeTest {
         System.out.println("  type=" + src.type() + " variants=" + src.variants().length
                 + " | title=" + src.metadata().title() + " | author=" + src.metadata().author());
         System.out.println("  UA=" + (h == null ? "(none)" : h.get("User-Agent")));
-        for (final DataQuality q : src.variants()) {
+        for (final DataQuality q: src.variants()) {
             final String u = q.uri().toString();
             System.out.println("  " + q.width() + "x" + q.height() + " -> " + u.substring(0, Math.min(90, u.length())));
         }
         if (src.audioSlaves() != null) {
-            for (final DataSlave a : src.audioSlaves()) {
+            for (final DataSlave a: src.audioSlaves()) {
                 final String u = a.uri().toString();
                 System.out.println("  audio -> " + u.substring(0, Math.min(90, u.length())));
             }

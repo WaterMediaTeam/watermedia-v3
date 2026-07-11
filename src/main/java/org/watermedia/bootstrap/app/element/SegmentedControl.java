@@ -122,7 +122,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         this.contentHeight = Theme.BUTTON;
         int total = 0;
         if (this.ctx != null && this.ctx.text != null) {
-            for (final String seg : this.segments) {
+            for (final String seg: this.segments) {
                 total += segmentWidth(this.ctx.text, seg, this.scale);
             }
         }

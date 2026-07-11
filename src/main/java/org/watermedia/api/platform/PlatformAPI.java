@@ -165,9 +165,9 @@ public class PlatformAPI extends WaterMediaAPI {
         }
 
         try {
-            for (final Future<?> probe : probes) probe.get();
+            for (final Future<?> probe: probes) probe.get();
         } catch (final InterruptedException e) { // SUPERSEDED — CANCEL THE OUTSTANDING PROBES AND LEAVE THE HANDLE FROZEN
-            for (final Future<?> probe : probes) probe.cancel(true);
+            for (final Future<?> probe: probes) probe.cancel(true);
             Thread.currentThread().interrupt();
             LOGGER.debug(IT, "Search '{}' superseded before completing", caption);
             return;

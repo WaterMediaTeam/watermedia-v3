@@ -155,7 +155,7 @@ public final class MRL {
                             if (channels.isEmpty())
                                 throw new IOException("IPTV playlist contained no entries: " + this.uri);
                             final List<DataSource> sources = new ArrayList<>(channels.size());
-                            for (final MPEGTool.Channel e : channels) {
+                            for (final MPEGTool.Channel e: channels) {
                                 // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY MPEGTool (MALFORMED ONES WERE DROPPED DURING PARSE)
                                 final URI childUri = e.url();
                                 URI logoUri = null;
@@ -205,7 +205,7 @@ public final class MRL {
                     final DataSource entry = entries[i];
                     if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
                     final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
-                    for (final DataQuality v : entry.variants()) {
+                    for (final DataQuality v: entry.variants()) {
                         qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
                     }
 

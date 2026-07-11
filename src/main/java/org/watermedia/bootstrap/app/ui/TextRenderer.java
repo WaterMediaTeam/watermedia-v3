@@ -344,13 +344,13 @@ public final class TextRenderer {
             // memCalloc ZEROES THE BUFFER (TRANSPARENT GUTTERS); ABSOLUTE PUTS LEAVE POSITION AT 0 SO THE
             // WHOLE BUFFER IS UPLOADED
             final ByteBuffer buffer = MemoryUtil.memCalloc(atlasWidth * atlasHeight * 4);
-            for (final PackedGlyph pg : packed) {
+            for (final PackedGlyph pg: packed) {
                 blitGlyph(buffer, atlasWidth, pg);
             }
             final int textureId = RenderSystem.createTexture(atlasWidth, atlasHeight, buffer);
             MemoryUtil.memFree(buffer);
 
-            for (final PackedGlyph pg : packed) {
+            for (final PackedGlyph pg: packed) {
                 final GlyphBitmap bmp = pg.bmp();
                 this.glyphs.put(pg.c(), new CharGlyph(textureId,
                         pg.x() / (float) atlasWidth, pg.y() / (float) atlasHeight,
@@ -370,7 +370,7 @@ public final class TextRenderer {
                 cached = new CharGlyph(0, 0f, 0f, 0f, 0f, 0, 0, 0, 0, bmp.advance());
             } else {
                 final ByteBuffer buffer = MemoryUtil.memAlloc(bmp.width() * bmp.height() * 4);
-                for (final int pixel : bmp.pixels()) {
+                for (final int pixel: bmp.pixels()) {
                     buffer.put((byte) ((pixel >> 16) & 0xFF));
                     buffer.put((byte) ((pixel >> 8) & 0xFF));
                     buffer.put((byte) (pixel & 0xFF));

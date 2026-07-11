@@ -251,7 +251,7 @@ public final class Dropdown extends Element<Dropdown> {
     private int widestItemWidth() {
         if (this.ctx == null || this.ctx.text == null) return 0;
         int max = 0;
-        for (final String item : this.items) max = Math.max(max, this.ctx.text.width(item, this.scale));
+        for (final String item: this.items) max = Math.max(max, this.ctx.text.width(item, this.scale));
         return max;
     }
 

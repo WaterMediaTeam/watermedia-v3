@@ -217,7 +217,7 @@ public class YtDlpPlatform implements IPlatform {
 
         final List<DataSource> sources = new ArrayList<>();
         Instant earliest = null;
-        for (final JsonElement e : entries) {
+        for (final JsonElement e: entries) {
             if (e == null || e.isJsonNull()) continue; // yt-dlp NULLS OUT UNAVAILABLE PLAYLIST ITEMS
             try {
                 final Result r = this.single(e.getAsJsonObject());
@@ -261,7 +261,7 @@ public class YtDlpPlatform implements IPlatform {
 
         // VIDEO-ONLY FIRST (BEST QUALITY, AUDIO CARRIED BY A SLAVE), THEN MUXED FILLS REMAINING TIERS
         for (int pass = 0; pass < 2; pass++) {
-            for (final JsonElement fe : formats) {
+            for (final JsonElement fe: formats) {
                 final JsonObject f = fe.getAsJsonObject();
                 if (!playable(f)) continue;
                 final boolean hasVideo = !"none".equals(str(f, "vcodec"));
@@ -357,7 +357,7 @@ public class YtDlpPlatform implements IPlatform {
             return sourceUri == null ? new RequestHeaders() : RequestHeaders.defaults(sourceUri);
         }
         final RequestHeaders headers = new RequestHeaders();
-        for (final Map.Entry<String, JsonElement> e : hh.entrySet()) {
+        for (final Map.Entry<String, JsonElement> e: hh.entrySet()) {
             if (!e.getValue().isJsonNull()) {
                 headers.set(e.getKey(), e.getValue().getAsString());
             }
@@ -403,7 +403,7 @@ public class YtDlpPlatform implements IPlatform {
     private static void collectSubs(final JsonObject subs, final boolean auto,
                                     final Set<String> langs, final List<DataSlave> out) {
         if (subs == null) return;
-        for (final Map.Entry<String, JsonElement> e : subs.entrySet()) {
+        for (final Map.Entry<String, JsonElement> e: subs.entrySet()) {
             final String lang = e.getKey();
             if (!langs.add(lang) || !e.getValue().isJsonArray()) continue;
             final JsonArray tracks = e.getValue().getAsJsonArray();
@@ -424,7 +424,7 @@ public class YtDlpPlatform implements IPlatform {
         if (uri != null) {
             final String query = uri.getRawQuery();
             if (query != null) {
-                for (final String param : query.split("&")) {
+                for (final String param: query.split("&")) {
                     if (param.startsWith("expire=")) {
                         try {
                             return Instant.ofEpochSecond(Long.parseLong(param.substring(7)));

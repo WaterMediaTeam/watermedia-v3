@@ -170,7 +170,7 @@ public class YouTubePlatform extends YtDlpPlatform {
             stdout = runProcess(command, BOTGUARD_TIMEOUT_SECONDS, "rustypipe-botguard");
         }
 
-        for (final String line : stdout.split("\\R")) {
+        for (final String line: stdout.split("\\R")) {
             if (!line.isBlank()) {
                 final String token = line.trim().split("\\s+")[0];
                 if (!token.isEmpty()) return token;
