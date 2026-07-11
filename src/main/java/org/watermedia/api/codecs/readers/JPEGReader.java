@@ -30,6 +30,10 @@ public class JPEGReader extends ImageReader {
     private static final int DRI = 0xDD;
     private static final int COM = 0xFE;
 
+    // SECURITY CAP: 16-BIT SOF WIDTH/HEIGHT OTHERWISE OVERFLOW THE coefficient/sample/BGRA INT MATH AND
+    // ALLOW MULTI-GB ALLOCATIONS FROM A FEW-BYTE HEADER. 16K PER AXIS (1:1) KEEPS EVERY PRODUCT WITHIN INT.
+    private static final int MAX_DIM = 16384;
+
     private static final int[] ZIGZAG = {
             0, 1, 8, 16, 9, 2, 3, 10,
             17, 24, 32, 25, 18, 11, 4, 5,
@@ -185,6 +189,8 @@ public class JPEGReader extends ImageReader {
         this.height = readU16(this.data);
         this.width = readU16(this.data);
         if (this.width <= 0 || this.height <= 0) throw new XCodecException("Invalid JPEG dimensions");
+        if (this.width > MAX_DIM || this.height > MAX_DIM)
+            throw new XCodecException("JPEG dimensions too big: " + this.width + "x" + this.height + " (max " + MAX_DIM + ")");
 
         final int count = readU8(this.data);
         if (count != 1 && count != 3) throw new XCodecException("Unsupported JPEG component count: " + count);
@@ -290,6 +296,10 @@ public class JPEGReader extends ImageReader {
             final int tables = readU8(this.data);
             component.dcTable = tables >>> 4;
             component.acTable = tables & 0x0F;
+            // TABLE DESTINATION SELECTORS ARE 4-BIT FIELDS BUT ONLY 0..3 ARE VALID; huffmanTables IS [2][4],
+            // SO AN UNCHECKED 4..15 SELECTOR INDEXES OUT OF BOUNDS (AIOOBE ESCAPING THE IOException CONTRACT)
+            if (component.dcTable > 3 || component.acTable > 3)
+                throw new XCodecException("Invalid JPEG scan table selector " + component.dcTable + "/" + component.acTable);
             scanComponents[i] = component;
         }
         final int ss = readU8(this.data);
@@ -367,6 +377,9 @@ public class JPEGReader extends ImageReader {
     private void decodeDcFirstBlock(final Component component, final EntropyReader entropy, final int block, final int shift) throws IOException {
         final HuffmanTable table = this.huffmanTables[0][component.dcTable];
         final int bits = table.decode(entropy);
+        // DC MAGNITUDE CATEGORY (SSSS) IS 0..15; A CORRUPT TABLE CAN YIELD ANY BYTE, SO REJECT OUT-OF-RANGE
+        // INSTEAD OF FEEDING A BOGUS BIT COUNT INTO receiveExtend
+        if (bits > 15) throw new XCodecException("Invalid JPEG DC magnitude category " + bits);
         component.dc += entropy.receiveExtend(bits);
         component.coefficients[block] = component.dc << shift;
     }
@@ -968,7 +981,7 @@ public class JPEGReader extends ImageReader {
         // OTHERWISE (LENGTH << 8) | SYMBOL.  LENGTH IN 1..LUT_BITS, SYMBOL IN 0..255.
         private final int[] lut = new int[LUT_SIZE];
 
-        HuffmanTable(final int[] counts, final int[] values) {
+        HuffmanTable(final int[] counts, final int[] values) throws XCodecException {
             this.values = values;
             Arrays.fill(this.maxCode, -1);
             int code = 0;
@@ -976,6 +989,10 @@ public class JPEGReader extends ImageReader {
             for (int length = 1; length <= 16; length++) {
                 final int count = counts[length];
                 if (count > 0) {
+                    // REJECT AN OVERSUBSCRIBED (NON-CANONICAL) CODE: MORE CODES AT THIS LENGTH THAN THE
+                    // CODE SPACE ALLOWS OVERFLOWS THE LUT PREFIX ((code+n) << (LUT_BITS-length)) PAST 255
+                    // AND THE values[] INDEXING — AN AIOOBE THAT WOULD ESCAPE THE IOException CONTRACT
+                    if (code + count > (1 << length)) throw new XCodecException("Oversubscribed JPEG Huffman table");
                     this.maxCode[length] = code + count - 1;
                     this.valueOffset[length] = index - code;
                     // FILL LOOKUP TABLE FOR CODES THAT FIT IN LUT_BITS
