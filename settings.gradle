@@ -7,9 +7,7 @@ pluginManagement {
 
 rootProject.name = 'watermedia'
 
-includeBuild("libs/tools")
-includeBuild("libs/binaries") {
-    dependencySubstitution {
-        substitute module("org.watermedia:binaries") using project(":")
-    }
-}
+// WATERMEDIA AND BINARIES ARE CODEPENDENT: WATERMEDIA COMPILES THE BINARIES SOURCES DIRECTLY
+// (SEE build.gradle sourceSets; THEY SHIP ONLY IN THE BINARIES JAR) AND BINARIES COMPILES AGAINST
+// WATERMEDIA. THIS INCLUDE ONLY KEEPS THE BINARIES BUILD REACHABLE FROM THE ROOT (IDE + `build`).
+includeBuild("submodule-binaries")

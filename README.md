@@ -12,8 +12,9 @@ WATERMeDIA is a multimedia engine, provides a richful API to store, load, decode
 in 3D environments like VULKAN and OPENGL. Compatible and focused mainly to support Minecraft version that 
 uses Java 17 and upper. Superseding the old rusty FancyVideo-API mod, using FFMPEG and house-made decoders.
 
-FFMPEG binaries comes in a external library jar called [WATERMeDIA: Binaries](), with that JAR you won't need
-to compile or install FFMPEG or any other native application, plug and play as you deserve.
+FFMPEG binaries comes in a companion library jar called **WATERMeDIA: Binaries**, with that JAR you won't need
+to compile or install FFMPEG or any other native application, plug and play as you deserve. Its sources now live
+in this repository under [`submodule-binaries/`](submodule-binaries) — see [📦 Binaries](#-binaries).
 
 # 🧩 Projects using WATERMeDIA
 - 🖼️ [WATERFrAMES](https://www.curseforge.com/minecraft/mc-mods/waterframes) - By SrRapero720
@@ -179,6 +180,31 @@ Two caveats verified against the 26.2 sources:
 - NetworkAPI: Host and Remote storage access for private media
 - PlatformAPI: Web platform support for media loading ~~and media searching~~
 
+# 📦 Binaries
+FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
+With that jar you won't need to compile or install FFMPEG or any other native application — plug and
+play. Its sources live in this repository under [`submodule-binaries/`](submodule-binaries) and it is
+published as its own dependency (WaterMedia requires it on CurseForge/Modrinth).
+
+## Supported platforms
+| Platform | Architecture | Status |
+|----------|--------------|:------:|
+| Windows  | x86_64       |   ✅    |
+| Windows  | aarch64      |   ⛔    |
+| Linux    | x86_64       |   ✅    |
+| Linux    | aarch64      |   ✅    |
+| macOS    | x86_64       |   ✅    |
+| macOS    | aarch64      |   ✅    |
+| Android  | aarch64      |   ⛔    |
+| Android  | x86_64       |   ⛔    |
+
+## Binaries build
+FFmpeg binaries are pre-built by the JavaCPP project and mirrored here for easier access; migrating the
+build to GitHub Actions is on the board.
+
+## Other shared libraries
+- ISPCTextureCompressor (Samsung fork)
+
 # ⚖️ License
 WATERMeDIA is under Polyform Strict License v1.0.0<br>
 Commercial usage is forbidden, you need to contact us in order to use WATERMeDIA for commercial purposes
@@ -189,4 +215,23 @@ This is temporally until the dependency gets moved into a external (non-shadeabl
 JavaCPP bindigs for FFMPEG are shaded under Apache 2.0
 
 Full, verbatim license texts for shaded third-party dependencies are bundled under
-`src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`). 
+`src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`).
+
+The **binaries** jar ships third-party native binaries and libraries. Their full, verbatim license
+texts are bundled under `submodule-binaries/src/main/resources/META-INF/licenses/` (shipped in that jar
+as `META-INF/licenses/`), grouped by license:
+
+- **GPL-3.0** — FFmpeg (native, 8.0.1 "-gpl"; statically links additional GPL/LGPL codec libraries such as x264, x265 and xvid) and libatomic (macOS native, with the GCC Runtime Library Exception 3.1)
+- **Apache-2.0** — JavaCPP JNI glue (native)
+- **MIT / X11** — libva, libva-drm and libdrm (Linux native); rustypipe-botguard (downloaded binary)
+- **0BSD** — XZ for Java (shaded)
+- **Unlicense** — yt-dlp (downloaded binary)
+
+**Why is this PolyForm Strict if it ships FFMPEG (GPL)?** Because the GPL itself explicitly allows
+*mere aggregation*: bundling separate, independent works on the same distribution medium does not
+extend the GPL to them. FFMPEG ships as such an aggregate, so its copyleft governs only the bundled
+GPL binaries and never relicenses WaterMedia's or the binaries module's own code.
+
+- **Indirect dependency (scope change)** — the chain is `WaterMedia → JavaCPP (Java API) ──scope change──▶ JNI glue → FFMPEG`. WaterMedia only talks to JavaCPP's Apache-2.0 Java API and never depends on or links FFMPEG directly; the GPL natives and their JNI glue live in a separate, **optional**, runtime-scoped jar.
+- **Distribution, not dependency** — the GPL is triggered by *distributing* the GPL work, not by depending on it.
+- **Replaceable binaries** — anyone may compile and supply their own FFMPEG build instead of using this jar, so nothing is bound to a particular GPL binary.

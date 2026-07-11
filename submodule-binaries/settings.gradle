@@ -1,0 +1,20 @@
+pluginManagement {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'binaries'
+
+// WATERMEDIA AND BINARIES ARE CODEPENDENT: BINARIES COMPILES AGAINST WATERMEDIA (NetRequest) AND THE
+// PROVIDED LIBS WATERMEDIA EXPOSES (tools, log4j, gson, modloaders), WHILE WATERMEDIA COMPILES THE
+// BINARIES SOURCES DIRECTLY (WITHOUT SHIPPING THEM), SO ONLY THIS DIRECTION NEEDS A JAR DEPENDENCY
+def watermediaPath = file('watermedia').exists() ? 'watermedia' :
+        file('../settings.gradle').exists() ? '..' :
+                null
+includeBuild(watermediaPath) {
+    dependencySubstitution {
+        substitute module("org.watermedia:watermedia") using project(":")
+    }
+}

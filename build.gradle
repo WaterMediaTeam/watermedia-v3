@@ -28,6 +28,7 @@ java {
 sourcesJar {
     exclude("videolan/**.zip")
     exclude("videolan/**.7z")
+    exclude("org/watermedia/binaries/**") // COMPILED HERE FOR THE CODEPENDENCY; SHIPPED BY THE BINARIES JAR
 }
 
 println("Gradle Java: ${JavaVersion.current()}")
@@ -45,9 +46,18 @@ configurations {
     include
     include.extendsFrom(implementation)
     library
+
+    // WATERMEDIA IS THE PROVIDER FOR THE CODEPENDENT BINARIES BUILD: EXPOSE THE PROVIDED LIBS
+    // (log4j, gson, modloaders, ...) AS COMPILE-ONLY API SO BINARIES COMPILES AGAINST THEM
+    // TRANSITIVELY WITHOUT REDECLARING THEM, AND WITHOUT LEAKING THEM INTO THE PUBLISHED POM.
+    compileOnlyApi.extendsFrom(library)
 }
 
 sourceSets {
+    // CODEPENDENT MODULES: BINARIES USES WATERMEDIA (NetRequest) AND WATERMEDIA USES BINARIES
+    // (WaterMediaBinaries), SO BOTH COMPILE TOGETHER HERE; THE CLASSES SHIP ONLY IN THE BINARIES JAR
+    main.java.srcDirs += "submodule-binaries/src/main/java"
+
     // SHADOW
     main.compileClasspath += configurations.include
     main.runtimeClasspath += configurations.include
@@ -62,11 +72,10 @@ sourceSets {
 }
 
 dependencies {
-    // EXT DEP
-    library "org.watermedia:binaries"
+    // BINARIES SOURCES DEPENDENCY (SHADED INTO THE BINARIES JAR, NOT THIS ONE)
+    library "org.tukaani:xz:$xz_version"
 
     // DEPENDENCIES
-    include "org.watermedia:tools"
     include "org.bytedeco:ffmpeg:8.0.1-1.5.13"
     include ("com.github.SrRapero720:waterconfig:$waterconfig_version") { // TODO: do not shade
         transitive = false
@@ -137,6 +146,7 @@ jar {
         }
     }
     exclude('META-INF/versions/', 'META-INF/maven/')
+    exclude('org/watermedia/binaries/**') // COMPILED HERE FOR THE CODEPENDENCY; SHIPPED BY THE BINARIES JAR
 
     filesMatching('META-INF/*') {
         duplicatesStrategy = DuplicatesStrategy.INCLUDE // COMBINE FILES
@@ -181,6 +191,10 @@ publishMods {
         requires("watermedia-binaries")
     }
 }
+
+// KEEP `build` ASSEMBLING BOTH CODEPENDENT JARS, AS IT DID WHEN BINARIES WAS A DIRECT DEPENDENCY.
+// THE INCLUDED-BUILD NAME IS THE DIRECTORY NAME (submodule-binaries), NOT ITS rootProject.name
+build.dependsOn gradle.includedBuild("submodule-binaries").task(":build")
 
 def getChangelogText() {
     def result = ""

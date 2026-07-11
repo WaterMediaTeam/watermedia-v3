@@ -1,0 +1,211 @@
+name: FFmpeg Windows ARM64
+
+# ============================================================================
+# PARKED: this build ships FFmpeg ONLY — it does NOT contain the JavaCPP JNI
+# glue, so it is NOT usable by FFMediaPlayer yet. It is kept out of the
+# orchestrator on purpose and only runs on demand.
+#
+# Why the glue is parked: there is no prebuilt bytedeco windows-arm64 native,
+# so the glue must be compiled from javacpp-presets. JavaCPP's windows-arm64
+# config is MSVC-oriented (platform.compiler=cl, /LIBPATH:) and expects MSVC
+# `.lib` import libs, while our from-source FFmpeg is MinGW/clang (`.dll.a`).
+# Forcing clang makes JavaCPP's Builder emit a GNU `-R<path>` rpath linkflag
+# (hardcoded, not -D overridable, delivered inside a linker response file) that
+# clang/lld reject. Bridging it needs an MSVC-built FFmpeg, generated `.lib`
+# import libs + `cl`, or a response-file-rewriting compiler wrapper — all
+# undocumented for windows-arm64 (an arch only just introduced to Windows 11)
+# and unverifiable in CI: validating that the glue actually LOADS needs real
+# ARM hardware. Resume locally on an ARM PC; the 8 CI attempts are in git
+# history and the technical state is captured in the project memory.
+# ============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      ffmpeg_version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ffmpeg_version:
+        description: 'FFmpeg version to build'
+        required: true
+        default: '8.0.1'
+        type: string
+
+env:
+  FFMPEG_VERSION: ${{ inputs.ffmpeg_version }}
+
+jobs:
+  build:
+    runs-on: windows-11-arm
+    name: Build Windows ARM64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-clang-aarch64-toolchain
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-pkgconf
+            wget
+            git
+            mingw-w64-clang-aarch64-aom
+            mingw-w64-clang-aarch64-dav1d
+            mingw-w64-clang-aarch64-libx264
+            mingw-w64-clang-aarch64-x265
+            mingw-w64-clang-aarch64-libvpx
+            mingw-w64-clang-aarch64-libtheora
+            mingw-w64-clang-aarch64-libvorbis
+            mingw-w64-clang-aarch64-opus
+            mingw-w64-clang-aarch64-lame
+            mingw-w64-clang-aarch64-speex
+            mingw-w64-clang-aarch64-libwebp
+            mingw-w64-clang-aarch64-openjpeg2
+            mingw-w64-clang-aarch64-libass
+            mingw-w64-clang-aarch64-freetype
+            mingw-w64-clang-aarch64-fontconfig
+            mingw-w64-clang-aarch64-fribidi
+            mingw-w64-clang-aarch64-harfbuzz
+            mingw-w64-clang-aarch64-gnutls
+            mingw-w64-clang-aarch64-gmp
+            mingw-w64-clang-aarch64-SDL2
+            mingw-w64-clang-aarch64-zimg
+            mingw-w64-clang-aarch64-libbluray
+            mingw-w64-clang-aarch64-libsoxr
+            mingw-w64-clang-aarch64-libssh
+            mingw-w64-clang-aarch64-srt
+            mingw-w64-clang-aarch64-libxml2
+            mingw-w64-clang-aarch64-snappy
+            mingw-w64-clang-aarch64-xz
+            mingw-w64-clang-aarch64-bzip2
+            mingw-w64-clang-aarch64-zlib
+            mingw-w64-clang-aarch64-openssl
+
+      - name: Download FFmpeg source
+        shell: msys2 {0}
+        run: |
+          curl -L "https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz" -o ffmpeg.tar.xz
+          tar -xf ffmpeg.tar.xz
+          mv ffmpeg-${{ env.FFMPEG_VERSION }} ffmpeg-src
+
+      - name: Save configure help
+        shell: msys2 {0}
+        run: |
+          cd ffmpeg-src
+          ./configure --help > ../configure-help-windows-arm64.txt
+
+      - name: Configure FFmpeg
+        shell: msys2 {0}
+        run: |
+          cd ffmpeg-src
+
+          ./configure \
+            --cc=clang \
+            --cxx=clang++ \
+            --prefix="${{ github.workspace }}/ffmpeg-build" \
+            --enable-gpl \
+            --enable-version3 \
+            --enable-shared \
+            --disable-static \
+            --enable-pic \
+            --enable-w32threads \
+            --disable-doc \
+            --disable-htmlpages \
+            --disable-manpages \
+            --disable-podpages \
+            --disable-txtpages \
+            --disable-debug \
+            --disable-x86asm \
+            --enable-libaom \
+            --enable-libass \
+            --enable-libbluray \
+            --enable-libdav1d \
+            --enable-libfontconfig \
+            --enable-libfreetype \
+            --enable-libfribidi \
+            --enable-libharfbuzz \
+            --enable-libmp3lame \
+            --enable-libopenjpeg \
+            --enable-libopus \
+            --enable-libsnappy \
+            --enable-libsoxr \
+            --enable-libspeex \
+            --enable-libsrt \
+            --enable-libssh \
+            --enable-libtheora \
+            --enable-libvorbis \
+            --enable-libvpx \
+            --enable-libwebp \
+            --enable-libx264 \
+            --enable-libx265 \
+            --enable-libxml2 \
+            --enable-libzimg \
+            --enable-openssl \
+            --enable-gmp \
+            --enable-d3d11va \
+            --enable-dxva2
+
+      - name: Build FFmpeg
+        shell: msys2 {0}
+        run: |
+          cd ffmpeg-src
+          make -j$(nproc)
+          make install
+
+      - name: Test binaries
+        shell: msys2 {0}
+        run: |
+          export PATH="${{ github.workspace }}/ffmpeg-build/bin:$PATH"
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Package binaries
+        shell: pwsh
+        run: |
+          $buildDir = "${{ github.workspace }}\ffmpeg-build"
+          $packageDir = "$buildDir\package"
+
+          New-Item -ItemType Directory -Force -Path $packageDir
+
+          # FFmpeg DLLs (NO JNI GLUE — SEE THE PARKED NOTE AT THE TOP OF THIS FILE)
+          Copy-Item "$buildDir\bin\*.dll" -Destination $packageDir -ErrorAction SilentlyContinue
+          Copy-Item "$buildDir\bin\*.exe" -Destination $packageDir -ErrorAction SilentlyContinue
+
+          # CLANGARM64 runtime DLLs the FFmpeg libs depend on
+          $msysDir = "$env:RUNNER_TEMP\msys64\clangarm64\bin"
+          if (Test-Path $msysDir) {
+            foreach ($dll in @("libc++.dll", "libunwind.dll", "libwinpthread-1.dll")) {
+              $src = Join-Path $msysDir $dll
+              if (Test-Path $src) { Copy-Item $src -Destination $packageDir }
+            }
+          }
+
+          Set-Content -Path "$packageDir\version.cfg" -Value "${{ env.FFMPEG_VERSION }}"
+
+          Write-Host "Package contents:"
+          Get-ChildItem $packageDir
+
+          Compress-Archive -Path "$packageDir\*" -DestinationPath "$buildDir\ffmpeg-windows-arm64.zip"
+          Get-ChildItem "$buildDir\ffmpeg-windows-arm64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-windows-arm64
+          path: ${{ github.workspace }}/ffmpeg-build/ffmpeg-windows-arm64.zip
+          retention-days: 7
+
+      - name: Upload configure help
+        uses: actions/upload-artifact@v4
+        with:
+          name: configure-help-windows-arm64
+          path: ${{ github.workspace }}/configure-help-windows-arm64.txt
+          retention-days: 7

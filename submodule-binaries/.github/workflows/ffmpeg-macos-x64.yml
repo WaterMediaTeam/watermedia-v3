@@ -1,0 +1,52 @@
+name: FFmpeg macOS x64
+
+# INTEL macOS IS MIRRORED, NOT BUILT FROM SOURCE: GitHub's only Intel macOS runner
+# (macos-13) is being retired and no longer reliably allocates, and we won't drop an
+# architecture just because of that. Bytedeco's prebuilt macosx-x86_64 natives are
+# self-contained (ffmpeg dylibs with codecs static-linked + the JNI glue), so we
+# repackage them as-is. This needs no macOS runner — it is pure download + zip.
+
+on:
+  workflow_call:
+    inputs:
+      ffmpeg_version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ffmpeg_version:
+        description: 'FFmpeg version to build'
+        required: true
+        default: '8.0.1'
+        type: string
+
+env:
+  FFMPEG_VERSION: ${{ inputs.ffmpeg_version }}
+  # BYTEDECO COORDINATE TO MIRROR. ffmpeg PART MUST MATCH FFMPEG_VERSION AND THE
+  # org.bytedeco:ffmpeg COORDINATE IN THE MAIN PROJECT build.gradle.
+  BYTEDECO_VERSION: 8.0.1-1.5.13
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build macOS x64 (mirror)
+
+    steps:
+      - name: Mirror bytedeco macosx-x86_64 natives
+        run: |
+          curl -L -o javacpp-ffmpeg.jar \
+            "https://repo1.maven.org/maven2/org/bytedeco/ffmpeg/${{ env.BYTEDECO_VERSION }}/ffmpeg-${{ env.BYTEDECO_VERSION }}-macosx-x86_64.jar"
+          mkdir -p package
+          # FULL NATIVE SET, FLAT: ffmpeg dylibs (codecs static-linked) + jni* glue.
+          unzip -j -o javacpp-ffmpeg.jar "org/bytedeco/ffmpeg/macosx-x86_64/*.dylib" -d package
+          echo "${{ env.FFMPEG_VERSION }}" > package/version.cfg
+          echo "Packaged $(ls package/*.dylib | wc -l) dylibs"
+          cd package
+          zip -r ../ffmpeg-macos-x64.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos-x64
+          path: ffmpeg-macos-x64.zip
+          retention-days: 7
