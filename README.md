@@ -14,7 +14,7 @@ uses Java 17 and upper. Superseding the old rusty FancyVideo-API mod, using FFMP
 
 FFMPEG binaries comes in a companion library jar called **WATERMeDIA: Binaries**, with that JAR you won't need
 to compile or install FFMPEG or any other native application, plug and play as you deserve. Its sources now live
-in this repository under [`submodule-binaries/`](submodule-binaries) — see [📦 Binaries](#-binaries).
+in this repository under [`binaries/`](binaries) — see [📦 Binaries](#-binaries).
 
 # 🧩 Projects using WATERMeDIA
 - 🖼️ [WATERFrAMES](https://www.curseforge.com/minecraft/mc-mods/waterframes) - By SrRapero720
@@ -183,7 +183,7 @@ Two caveats verified against the 26.2 sources:
 # 📦 Binaries
 FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
 With that jar you won't need to compile or install FFMPEG or any other native application — plug and
-play. Its sources live in this repository under [`submodule-binaries/`](submodule-binaries) and it is
+play. Its sources live in this repository under [`binaries/`](binaries) and it is
 published as its own dependency (WaterMedia requires it on CurseForge/Modrinth).
 
 ## Supported platforms
@@ -218,7 +218,7 @@ Full, verbatim license texts for shaded third-party dependencies are bundled und
 `src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`).
 
 The **binaries** jar ships third-party native binaries and libraries. Their full, verbatim license
-texts are bundled under `submodule-binaries/src/main/resources/META-INF/licenses/` (shipped in that jar
+texts are bundled under `binaries/src/main/resources/META-INF/licenses/` (shipped in that jar
 as `META-INF/licenses/`), grouped by license:
 
 - **GPL-3.0** — FFmpeg (native, 8.0.1 "-gpl"; statically links additional GPL/LGPL codec libraries such as x264, x265 and xvid) and libatomic (macOS native, with the GCC Runtime Library Exception 3.1)

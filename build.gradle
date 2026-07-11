@@ -56,7 +56,7 @@ configurations {
 sourceSets {
     // CODEPENDENT MODULES: BINARIES USES WATERMEDIA (NetRequest) AND WATERMEDIA USES BINARIES
     // (WaterMediaBinaries), SO BOTH COMPILE TOGETHER HERE; THE CLASSES SHIP ONLY IN THE BINARIES JAR
-    main.java.srcDirs += "submodule-binaries/src/main/java"
+    main.java.srcDirs += "binaries/src/main/java"
 
     // SHADOW
     main.compileClasspath += configurations.include
@@ -192,9 +192,8 @@ publishMods {
     }
 }
 
-// KEEP `build` ASSEMBLING BOTH CODEPENDENT JARS, AS IT DID WHEN BINARIES WAS A DIRECT DEPENDENCY.
-// THE INCLUDED-BUILD NAME IS THE DIRECTORY NAME (submodule-binaries), NOT ITS rootProject.name
-build.dependsOn gradle.includedBuild("submodule-binaries").task(":build")
+// KEEP `build` ASSEMBLING BOTH CODEPENDENT JARS, AS IT DID WHEN BINARIES WAS A DIRECT DEPENDENCY
+build.dependsOn gradle.includedBuild("binaries").task(":build")
 
 def getChangelogText() {
     def result = ""
