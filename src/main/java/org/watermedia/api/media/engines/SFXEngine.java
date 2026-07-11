@@ -108,7 +108,16 @@ public abstract class SFXEngine {
     public abstract void play();
 
     /**
+     * Indicates if this backend can change the playback speed (pitch).
+     * When {@code false}, {@link #speed(float)} is a no-op and playback stays at 1.0×;
+     * callers driving an A/V clock must not scale their timeline against this engine.
+     * @return {@code true} if {@link #speed(float)} takes effect, {@code false} otherwise
+     */
+    public abstract boolean speed();
+
+    /**
      * Sets the playback speed (pitch).
+     * No-op on backends where {@link #speed()} reports {@code false}.
      * @param speed playback speed multiplier (1.0 = normal)
      */
     public abstract void speed(final float speed);

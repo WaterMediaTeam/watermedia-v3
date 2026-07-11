@@ -107,6 +107,13 @@ public final class Dropdown extends Element<Dropdown> {
         return this;
     }
 
+    @Override
+    public Dropdown enabled(final boolean e) {
+        // DISABLING WHILE OPEN TEARS DOWN THE FLOATING MENU/DIALOG SO A DEAD CONTROL LEAVES NO LIVE POPUP
+        if (!e && this.isOpen()) this.close();
+        return super.enabled(e);
+    }
+
     public int selectedIndex() {
         return this.selectedIndex;
     }
@@ -128,13 +135,14 @@ public final class Dropdown extends Element<Dropdown> {
         final int w = this.measuredWidth;
         final int h = this.measuredHeight;
         final boolean open = this.isOpen();
-        final boolean hot = this.hovered || open;
-        // BOX — BRIGHTER FILL + GLOW WHILE OPEN, A VERTICAL DIVIDER BEFORE THE ARROW ZONE
+        final boolean hot = this.enabled && (this.hovered || open);
+        // BOX — BRIGHTER FILL + GLOW WHILE OPEN, A VERTICAL DIVIDER BEFORE THE ARROW ZONE;
+        // DISABLED DRAWS FLAT: NO GLOW, FAINT TEXT AND A DIM BORDER (MIRRORS THE BUTTON TREATMENT)
         if (hot) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, open ? 0.20f : 0.12f);
         canvas.fill(x, y, w, h, AppTheme.alpha(open ? AppTheme.BG_3 : AppTheme.BG_1, open ? 230 : 210));
         canvas.fill(x + w - ARROW_ZONE, y, 1, h, AppTheme.STROKE);
 
-        final Color tc = hot ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
+        final Color tc = !this.enabled ? AppTheme.TEXT_FAINT : hot ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
         final int th = canvas.textHeight(this.scale, true);
         final int ty = y + (h - th) / 2;
         final int avail = w - 10 - ARROW_ZONE - 6;
@@ -150,7 +158,7 @@ public final class Dropdown extends Element<Dropdown> {
         canvas.line(cx - 4, cy - 2, cx, cy + 2, tc, 1.5f);
         canvas.line(cx, cy + 2, cx + 4, cy - 2, tc, 1.5f);
 
-        canvas.stroke(x, y, w, h, hot ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, open ? 1.5f : 1f);
+        canvas.stroke(x, y, w, h, !this.enabled ? AppTheme.STROKE : hot ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, open ? 1.5f : 1f);
     }
 
     @Override

@@ -80,6 +80,11 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
+    public boolean speed() {
+        return true; // AL_PITCH RESAMPLES THE SOURCE NATIVELY
+    }
+
+    @Override
     public void speed(final float speed) {
         AL10.alSourcef(this.source, AL10.AL_PITCH, speed);
     }

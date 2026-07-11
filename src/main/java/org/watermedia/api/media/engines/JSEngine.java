@@ -24,9 +24,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * internal buffer is the backpressure, mirroring {@code ALEngine}'s buffer pool, so the media
  * clock keeps tracking the audible position via {@link #pendingMs()}.
  * <p>
- * Java Sound backend limitations: playback speed ({@link #speed}) has no portable equivalent and
- * is a no-op (audio stays at 1.0×); there is no per-source spatialization, so {@link #source()}
- * reports no handle.
+ * Java Sound backend limitations: playback speed has no portable equivalent — {@link #speed()}
+ * reports {@code false} and {@link #speed(float)} is a no-op (audio stays at 1.0×); there is no
+ * per-source spatialization, so {@link #source()} reports no handle.
  */
 public final class JSEngine extends SFXEngine {
     private static final Marker IT = MarkerManager.getMarker(JSEngine.class.getSimpleName());
@@ -89,6 +89,11 @@ public final class JSEngine extends SFXEngine {
         // START ONCE PER PAUSE CYCLE. isActive() IS true FROM start() UNTIL stop().
         if (!l.isActive()) l.start();
         this.started = true;
+    }
+
+    @Override
+    public boolean speed() {
+        return false; // NO PORTABLE PITCH/RATE CONTROL — speed(float) IS A NO-OP
     }
 
     @Override
