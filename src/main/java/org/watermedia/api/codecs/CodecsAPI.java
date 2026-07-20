@@ -31,7 +31,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * format headers, identifies the format, advances the buffer position past the matched header,
  * and returns the matching {@link ImageReader}. Readers parse only the format body.
  */
-public class CodecsAPI extends WaterMediaAPI {
+public final class CodecsAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());
 
     // ==========================================================================

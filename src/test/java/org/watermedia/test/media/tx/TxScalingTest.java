@@ -8,7 +8,7 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.MediaPlayer.LodLevel;
 import org.watermedia.api.media.players.MediaPlayer.Status;
 import org.watermedia.api.media.players.TxMediaPlayer;
-import org.watermedia.test.support.FakeGFXEngine;
+import org.watermedia.api.media.engines.HeadlessGFXEngine;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PlayerWait;
 
@@ -39,7 +39,7 @@ public class TxScalingTest {
 
     // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE GIVEN SCALING CONFIG, STARTS IT AND
     // WAITS UNTIL THE FIRST FRAME IS LIVE SO width()/height() REFLECT THE UPLOAD SIZE.
-    private static TxMediaPlayer startStatic(final FakeGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
+    private static TxMediaPlayer startStatic(final HeadlessGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
@@ -54,7 +54,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("No scaling uploads the native size")
     void testNoScalingUploadsNativeSize() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> {});
         try {
             assertEquals(NATIVE, player.sourceWidth());
@@ -71,7 +71,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("maxSize caps the upload below the native size")
     void testMaxSizeCapsBelowNative() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> p.maxSize(100, 100));
         try {
             // min(150, 100) = 100 ON EACH AXIS; SOURCE SIZE IS LEFT UNTOUCHED
@@ -88,7 +88,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("maxSize above the native size never upscales")
     void testMaxSizeNeverUpscales() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> p.maxSize(4000, 4000));
         try {
             assertEquals(NATIVE, player.width());
@@ -102,7 +102,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("maxSize 0 means unlimited")
     void testZeroMaxSizeIsUnlimited() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> p.maxSize(0, 0));
         try {
             assertEquals(NATIVE, player.width());
@@ -116,7 +116,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("LOD halves the dimensions")
     void testLodHalvesDimensions() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> p.lod(LodLevel.NEAR));
         try {
             // 150 * 50% = 75, EVEN-CLAMPED DOWN TO 74 FOR CHROMA ALIGNMENT
@@ -131,7 +131,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("maxSize and LOD compose")
     void testMaxSizeAndLodCompose() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> {
             p.maxSize(100, 100);
             p.lod(LodLevel.NEAR);
@@ -152,9 +152,9 @@ public class TxScalingTest {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
-        // FakeGFXEngine(false) DISABLES THE FRAME-TEXTURE FAST PATH SO THE GIF RUNS THE
+        // HeadlessGFXEngine(false) DISABLES THE FRAME-TEXTURE FAST PATH SO THE GIF RUNS THE
         // STREAMING LIFECYCLE (MODE 3), WHERE applyTarget() RE-RUNS EVERY LOOP ITERATION.
-        final FakeGFXEngine gfx = new FakeGFXEngine(false);
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
         try {
             player.start();
@@ -182,7 +182,7 @@ public class TxScalingTest {
         private TxMediaPlayer newPlayer() {
             final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
-            return new TxMediaPlayer(mrl, 0, new FakeGFXEngine());
+            return new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine());
         }
 
         @Test

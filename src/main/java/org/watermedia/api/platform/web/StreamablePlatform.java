@@ -16,7 +16,7 @@ import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class StreamablePlatform implements IPlatform {
+public final class StreamablePlatform implements IPlatform {
     public static final String NAME = "Streamable";
     private static final Marker IT = MarkerManager.getMarker(StreamablePlatform.class.getSimpleName());
     private static final String API_URL = "https://api.streamable.com/videos/";

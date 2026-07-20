@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
  * <p>
  * Implementations are backend-specific (OpenAL, etc.).
  */
-public abstract class SFXEngine {
+public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Minimum reasonable sample rate (sub-telephony threshold, below is garbage). */
     public static final int MIN_SAMPLE_RATE = 4000;
     /** Maximum reasonable sample rate (covers DXD and any hi-res consumer content). */

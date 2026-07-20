@@ -56,7 +56,7 @@ import static org.watermedia.tools.JsonTool.uri;
  * are copied into the source's {@link RequestHeaders} so the player sends them. The yt-dlp binary itself
  * is provisioned lazily by the {@code binaries} module ({@link YtDlpBinary}).
  */
-public class YtDlpPlatform implements IPlatform {
+public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     public static final String NAME = "yt-dlp";
     // HOST SUFFIXES, MATCHED CASE-INSENSITIVELY WITH endsWith SO SUBDOMAINS (www./m./web.) ARE COVERED
     private static final String[] HOSTS = {

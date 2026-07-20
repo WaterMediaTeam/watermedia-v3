@@ -23,7 +23,7 @@ import java.util.Locale;
  * the larger side never exceeds {@link WaterMediaConfig.Decoders.Svg#maxSize} (default 512 px); it is
  * never upscaled.
  */
-public class SVGReader extends ImageReader {
+public final class SVGReader extends ImageReader {
     private final int w, h;
     private final SVGDocument document;
     private boolean consumed;

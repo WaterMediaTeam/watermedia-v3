@@ -29,7 +29,7 @@ import java.util.Locale;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class KickPlatform implements IPlatform {
+public final class KickPlatform implements IPlatform {
     public static final String NAME = "Kick";
     private static final Marker IT = MarkerManager.getMarker(KickPlatform.class.getSimpleName());
     private static final String VIDEO_API = "https://kick.com/api/v2/video/%s";

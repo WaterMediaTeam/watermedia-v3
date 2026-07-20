@@ -6,7 +6,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.MediaPlayer.Status;
 import org.watermedia.api.media.players.TxMediaPlayer;
-import org.watermedia.test.support.FakeGFXEngine;
+import org.watermedia.api.media.engines.HeadlessGFXEngine;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PlayerWait;
 
@@ -30,7 +30,7 @@ public class TxStaticImageTest {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
-        final FakeGFXEngine gfx = new FakeGFXEngine(false);
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
         assertNotNull(player);
 
@@ -61,7 +61,7 @@ public class TxStaticImageTest {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.SVG_DIR.resolve("car-filled-color.svg")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
-        final FakeGFXEngine gfx = new FakeGFXEngine(false);
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
         assertNotNull(player);
 

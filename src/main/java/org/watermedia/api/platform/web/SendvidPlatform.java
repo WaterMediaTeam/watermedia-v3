@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class SendvidPlatform implements IPlatform {
+public final class SendvidPlatform implements IPlatform {
     public static final String NAME = "Sendvid";
     private static final Marker IT = MarkerManager.getMarker(SendvidPlatform.class.getSimpleName());
     private static final String STATUS_API = "https://sendvid.com/api/v1/videos/%s/status.json";

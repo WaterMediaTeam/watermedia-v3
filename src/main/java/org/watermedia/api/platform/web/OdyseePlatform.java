@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JsonTool.*;
 
-public class OdyseePlatform implements IPlatform {
+public final class OdyseePlatform implements IPlatform {
     public static final String NAME = "Odysee";
     private static final Marker IT = MarkerManager.getMarker(OdyseePlatform.class.getSimpleName());
     private static final Pattern JSON_LD_PATTERN = Pattern.compile(

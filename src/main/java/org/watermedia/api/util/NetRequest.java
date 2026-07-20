@@ -36,7 +36,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * is enabled), so this implementation walks them by hand to keep that switch transparent
  * to callers.
  */
-public class NetRequest implements AutoCloseable {
+public final class NetRequest implements AutoCloseable {
     private static final Marker IT = MarkerManager.getMarker(NetRequest.class.getSimpleName());
 
     public static final String MIMETYPE_JSON = "application/json";

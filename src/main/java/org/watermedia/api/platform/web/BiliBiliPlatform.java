@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JsonTool.*;
 
-public class BiliBiliPlatform implements IPlatform {
+public final class BiliBiliPlatform implements IPlatform {
     public static final String NAME = "BiliBili";
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     private static final String REFERER = "https://www.bilibili.com/";

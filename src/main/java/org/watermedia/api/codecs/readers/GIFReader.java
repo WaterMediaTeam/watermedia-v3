@@ -36,7 +36,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Each {@link #next()} parses one Image Descriptor + LZW data block and composes it onto
  * the canvas.
  */
-public class GIFReader extends ImageReader {
+public final class GIFReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(GIFReader.class.getSimpleName());
 
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;

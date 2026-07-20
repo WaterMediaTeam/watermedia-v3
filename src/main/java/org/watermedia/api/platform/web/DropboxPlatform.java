@@ -12,7 +12,7 @@ import java.net.URI;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class DropboxPlatform implements IPlatform {
+public final class DropboxPlatform implements IPlatform {
     public static final String NAME = "Dropbox";
     private static final Marker IT = MarkerManager.getMarker(DropboxPlatform.class.getSimpleName());
     private static final String[] HOSTS = { "dropbox.com", "www.dropbox.com" };

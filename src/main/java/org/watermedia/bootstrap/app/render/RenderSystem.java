@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.render;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.bootstrap.app.PlayerTarget;
 import org.watermedia.bootstrap.app.render.opengl.OpenGLRenderBackend;
 import org.watermedia.bootstrap.app.render.vulkan.VulkanRenderBackend;
 
@@ -36,6 +37,8 @@ public final class RenderSystem {
     private static final Path ENGINE_PREF_FILE = Path.of("watermedia", "engine.cfg");
     // GLOBAL UI SCALE PREFERENCE — PERSISTED NEXT TO engine.cfg AS EITHER "auto" OR A FLOAT FACTOR
     private static final Path UI_SCALE_PREF_FILE = Path.of("watermedia", "uiscale.cfg");
+    // POPUP PLAYER TARGET — PERSISTED NEXT TO engine.cfg; READ AT BOOT (NOT BY THE LAUNCHER) TO ROUTE MRLs
+    private static final Path PLAYER_MODE_FILE = Path.of("watermedia", "playermode.cfg");
 
     private static Engine kind = Engine.OPENGL;
     private static RenderEngine engine;
@@ -66,6 +69,31 @@ public final class RenderSystem {
             Files.writeString(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl");
         } catch (final Exception e) {
             WaterMedia.LOGGER.warn("Failed to save the render engine preference", e);
+        }
+    }
+
+    /** The persisted popup player target, or {@link PlayerTarget#IN_APP} when unset/unreadable. */
+    public static PlayerTarget playerTargetPreference() {
+        try {
+            if (Files.exists(PLAYER_MODE_FILE)) {
+                final String value = Files.readString(PLAYER_MODE_FILE).trim();
+                for (final PlayerTarget t: PlayerTarget.values()) {
+                    if (t.name().equalsIgnoreCase(value)) return t;
+                }
+            }
+        } catch (final Exception ignored) {
+        }
+        return PlayerTarget.IN_APP;
+    }
+
+    /** Persists the popup player target chosen in Settings (the AWT/JFX half of the render-mode selector). */
+    public static void savePlayerTarget(final PlayerTarget target) {
+        try {
+            final Path parent = PLAYER_MODE_FILE.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Files.writeString(PLAYER_MODE_FILE, (target == null ? PlayerTarget.IN_APP : target).name());
+        } catch (final Exception e) {
+            WaterMedia.LOGGER.warn("Failed to save the player target preference", e);
         }
     }
 

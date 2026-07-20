@@ -8,7 +8,7 @@ import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-public class PBMDecoder implements NetpbmDecoder {
+public final class PBMDecoder implements NetpbmDecoder {
 
     @Override
     public ImageData decode(final ByteBuffer data, final NetpbmHeader header) throws XCodecException {

@@ -61,7 +61,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  *
  * @see <a href="https://www.w3.org/TR/png-3/">PNG Specification Third Edition</a>
  */
-public class PNGReader extends ImageReader {
+public final class PNGReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(PNGReader.class.getSimpleName());
 
     // SECURITY CAPS

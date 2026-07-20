@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JsonTool.*;
 
-public class TwitchPlatform implements IPlatform {
+public final class TwitchPlatform implements IPlatform {
     public static final String NAME = "Twitch";
     private static final Marker IT = MarkerManager.getMarker(TwitchPlatform.class.getSimpleName());
     // TWITCH GQL ENDPOINT AND USHER CDN URLS

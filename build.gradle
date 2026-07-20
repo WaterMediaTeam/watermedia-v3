@@ -70,6 +70,13 @@ sourceSets {
     test.runtimeClasspath += configurations.library
 }
 
+// HOST JAVAFX CLASSIFIER FOR THE COMPILE-ONLY JFXEngine (win/linux/mac + aarch64 variants)
+def javafxPlatform = { ->
+    if (osdetector.os == 'windows') return osdetector.arch == 'x86_32' ? 'win-x86' : 'win'
+    if (osdetector.os == 'osx') return osdetector.arch == 'aarch_64' ? 'mac-aarch64' : 'mac'
+    return osdetector.arch == 'aarch_64' ? 'linux-aarch64' : 'linux'
+}()
+
 dependencies {
     // BINARIES SOURCES DEPENDENCY (SHADED INTO THE BINARIES JAR, NOT THIS ONE)
     library "org.tukaani:xz:$xz_version"
@@ -94,6 +101,14 @@ dependencies {
     library "org.lwjgl:lwjgl-vulkan:$vulkan_version"
     library "org.lwjgl:lwjgl-shaderc:$vulkan_version"
     library "org.joml:joml:$joml_version"
+
+    // JAVAFX — COMPILE-ONLY FOR JFXEngine; NOT BUNDLED, THE CONSUMING JAVAFX APP SUPPLIES ITS RUNTIME.
+    // THE JAVA CLASSES ARE IDENTICAL ACROSS PLATFORM-CLASSIFIED JARS, SO THE HOST CLASSIFIER IS FINE.
+    library "org.openjfx:javafx-base:$javafx_version:$javafxPlatform"
+    library "org.openjfx:javafx-graphics:$javafx_version:$javafxPlatform"
+    // javafx-swing PROVIDES JFXPanel — THE JAVAFX POPUP EMBEDS ITS SCENE IN A SWING FRAME (EDT-DRIVEN),
+    // WHICH RENDERS RELIABLY IN THE GLFW-HOSTED APP UNLIKE A STANDALONE Stage. CONTROLS ARE SWING, SO NO javafx-controls.
+    library "org.openjfx:javafx-swing:$javafx_version:$javafxPlatform"
 
     // TEST DEPENDENCIES
     testImplementation(platform("org.junit:junit-bom:$junit_version"))

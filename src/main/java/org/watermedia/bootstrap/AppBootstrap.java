@@ -34,9 +34,16 @@ public class AppBootstrap {
     // THAT SAME CWD ON RELAUNCH — SO ITS RenderSystem READS THE VERY SAME engine.cfg.
     private static final Path DATA_DIR = Path.of("watermedia");
     private static final Path ENGINE_FILE = DATA_DIR.resolve("engine.cfg");
+    // POPUP PLAYER TARGET (IN_APP/AWT/JFX) — KEEP IN SYNC WITH RenderSystem.PLAYER_MODE_FILE. ONLY "JFX"
+    // NEEDS EXTRA DEPS (JAVAFX); AWT IS IN THE JDK.
+    private static final Path PLAYER_MODE_FILE = DATA_DIR.resolve("playermode.cfg");
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
     private static final String APP_FLAG = "watermedia.app";
     private static final String ENGINE_PROP = "watermedia.engine";
+    // THE APP EXITS WITH THIS CODE TO ASK THIS SUPERVISING LAUNCHER TO RE-PROVISION (E.G. PULL JAVAFX) AND SPAWN AGAIN
+    public static final int RELAUNCH_EXIT = 42;
+    // JAVAFX MUST MATCH THE JAVA 21 RUNTIME — A NEWER JAVAFX WOULD FAIL WITH UnsupportedClassVersionError
+    private static final String JAVAFX_VERSION = "21";
     private static final String OS = IOTool.platformClassifier();
 
     private static final String[][] DEPS = {
@@ -137,42 +144,54 @@ public class AppBootstrap {
         try {
             // ENGINE IS PERSISTED IN engine.cfg; --engine FORCES THE CHOOSER EVEN WHEN DEPS ARE READY. AN
             // EXPLICIT -Dwatermedia.engine ON THIS LAUNCHER JVM WINS OVER THE PERSISTED FILE (RUN CONFIGS).
-            final boolean forceChooser = contains(args, "--engine") || contains(args, "--select-engine");
-            final String forced = normalizeEngine(System.getProperty(ENGINE_PROP));
-            final String persisted = forced != null ? forced : readEngine();
-            if (!forceChooser && persisted != null) {
-                final BootstrapScan quickScan = scanBootstrap(false);
-                // FAST PATH REQUIRES VULKAN TO BE FULLY CACHED TOO, SO A FIRST LAUNCH FALLS THROUGH TO THE
-                // CONSOLE ONCE TO PULL IT (BEST-EFFORT); AFTERWARDS EVERY LAUNCH FAST-PATHS AS BEFORE.
-                if (quickScan.complete()) {
-                    relaunch(quickScan.jars, args, persisted);
-                    return;
+            // SUPERVISE THE APP JVM: A NORMAL EXIT ENDS THE LAUNCHER; A RELAUNCH_EXIT RE-PROVISIONS (E.G. PULLS
+            // JAVAFX AFTER A FRESH VK+JavaFX CHOICE) AND SPAWNS AGAIN, WITHOUT RE-PROMPTING THE ENGINE CHOOSER.
+            boolean firstRun = true;
+            while (true) {
+                final boolean forceChooser = firstRun && (contains(args, "--engine") || contains(args, "--select-engine"));
+                final String forced = normalizeEngine(System.getProperty(ENGINE_PROP));
+                final String persisted = forced != null ? forced : readEngine();
+                final int code;
+                if (!forceChooser && persisted != null) {
+                    final BootstrapScan quickScan = scanBootstrap(false);
+                    // FAST PATH REQUIRES VULKAN (AND JAVAFX WHEN VK+JavaFX) FULLY CACHED, SO A FIRST LAUNCH
+                    // FALLS THROUGH TO THE CONSOLE ONCE TO PULL THEM; AFTERWARDS EVERY LAUNCH FAST-PATHS.
+                    code = quickScan.complete()
+                            ? relaunch(quickScan.jars, args, persisted)
+                            : launchWithConsole(args, persisted, firstRun);
+                } else {
+                    code = launchWithConsole(args, persisted, firstRun);
                 }
+                if (code != RELAUNCH_EXIT) System.exit(code);
+                firstRun = false;
             }
-
-            launchWithConsole(args, persisted);
         } catch (final Exception e) {
             showError(e);
         }
     }
 
-    private static void launchWithConsole(final String[] args, final String persisted) throws Exception {
+    private static int launchWithConsole(final String[] args, final String persisted, final boolean showChooser) throws Exception {
         window = new BootstrapWindow();
         info("WATERMeDIA: App Bootstrap - On: " + OS);
         info("Dependencies directory: " + LIBS_DIR);
         info("=============================================");
         Files.createDirectories(LIBS_DIR);
 
-        // LET THE USER PICK THE RENDER ENGINE (DEFAULT = PERSISTED OR OPENGL). BLOCKS ON THE WINDOW
-        // BUTTONS / COUNTDOWN, THEN PERSISTS THE CHOICE SO LATER LAUNCHES CAN SKIP THIS SCREEN.
-        final String engine = window.chooseEngine(persisted != null ? persisted : "opengl");
-        writeEngine(engine);
+        // LET THE USER PICK THE RENDER ENGINE ON A FIRST LAUNCH (DEFAULT = PERSISTED OR OPENGL); AN
+        // APP-REQUESTED RELAUNCH SKIPS THE CHOOSER AND REUSES THE PERSISTED ENGINE.
+        final String engine;
+        if (showChooser) {
+            engine = window.chooseEngine(persisted != null ? persisted : "opengl");
+            writeEngine(engine);
+        } else {
+            engine = persisted != null ? persisted : "opengl";
+        }
         info("Render engine: " + engine.toUpperCase());
 
         final BootstrapScan scan = scanBootstrap(true);
         if (!scan.binariesFound) {
             showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
-            return;
+            return 1;
         }
 
         // DOWNLOAD MANDATORY DEPS (BASE LWJGL + NATIVES) — A FAILURE HERE IS FATAL.
@@ -197,12 +216,12 @@ public class AppBootstrap {
         final BootstrapScan launchScan = scanBootstrap(false);
         if (!launchScan.ready()) {
             showError("Some dependencies are still missing after bootstrap scan.");
-            return;
+            return 1;
         }
 
         info("Launching...");
         window.dispose();
-        relaunch(launchScan.jars, args, engine);
+        return relaunch(launchScan.jars, args, engine);
     }
 
     private static BootstrapScan scanBootstrap(final boolean log) throws Exception {
@@ -256,6 +275,20 @@ public class AppBootstrap {
                 scan.jars.add(p);
                 if (log) info("[FOUND] " + dep[0]);
             } else {
+                scan.optionalDownload.add(dep);
+                if (log) warn("[MISSING] " + dep[0]);
+            }
+        }
+
+        // JAVAFX — ALWAYS INCLUDE CACHED JARS SO A CACHED INSTALL NEEDS NO RESTART TO SWITCH TO VK+JavaFX;
+        // DOWNLOAD (BEST-EFFORT, LIKE VULKAN) ONLY WHEN THE PLAYER MODE IS VK+JavaFX AND A JAR IS MISSING.
+        final boolean needJfx = javafxMode();
+        for (final String[] dep: javafxDeps()) {
+            final Path p = LIBS_DIR.resolve(dep[0]);
+            if (Files.isRegularFile(p)) {
+                scan.jars.add(p);
+                if (log) info("[FOUND] " + dep[0]);
+            } else if (needJfx) {
                 scan.optionalDownload.add(dep);
                 if (log) warn("[MISSING] " + dep[0]);
             }
@@ -318,6 +351,39 @@ public class AppBootstrap {
         }
     }
 
+    // TRUE WHEN THE PERSISTED PLAYER TARGET IS VK+JavaFX, THE ONLY MODE THAT NEEDS THE JAVAFX JARS PULLED.
+    private static boolean javafxMode() {
+        try {
+            if (Files.isRegularFile(PLAYER_MODE_FILE)) {
+                return Files.readString(PLAYER_MODE_FILE).trim().equalsIgnoreCase("JFX");
+            }
+        } catch (final IOException ignored) {}
+        return false;
+    }
+
+    // MAPS THE LWJGL-STYLE PLATFORM TOKEN TO JAVAFX'S CLASSIFIER (win / mac[-aarch64] / linux[-aarch64]).
+    private static String javafxClassifier() {
+        return switch (OS) {
+            case "macos" -> "mac";
+            case "macos-arm64" -> "mac-aarch64";
+            case "linux-arm64" -> "linux-aarch64";
+            case "windows", "windows-arm64" -> "win";
+            default -> "linux";
+        };
+    }
+
+    // JAVAFX JARS (base + graphics + controls). EACH PLATFORM-CLASSIFIED JAR HOLDS BOTH THE CLASSES AND THE
+    // NATIVES, WHICH JAVAFX SELF-EXTRACTS AT RUNTIME — SO NO SEPARATE NATIVES JARS LIKE LWJGL.
+    private static List<String[]> javafxDeps() {
+        final String clf = javafxClassifier();
+        final List<String[]> deps = new ArrayList<>();
+        for (final String mod: new String[]{"javafx-base", "javafx-graphics", "javafx-swing"}) {
+            final String fn = mod + "-" + JAVAFX_VERSION + "-" + clf + ".jar";
+            deps.add(new String[]{fn, "org/openjfx/" + mod + "/" + JAVAFX_VERSION + "/" + fn});
+        }
+        return deps;
+    }
+
     // VULKAN JARS PROVISIONED ON TOP OF THE BASE DEPS/NATIVES SO A RUNTIME HOT-SWAP TO VULKAN IS ALWAYS
     // POSSIBLE: THE LWJGL VULKAN BINDINGS (PLUS MOLTENVK NATIVES ONLY ON MACOS) AND LWJGL SHADERC (BINDINGS +
     // NATIVES, EVERY PLATFORM). RETURNED UNCONDITIONALLY — THE INITIAL ENGINE CHOICE NO LONGER DECIDES THESE.
@@ -334,7 +400,7 @@ public class AppBootstrap {
         return deps;
     }
 
-    private static void relaunch(final List<Path> jars, final String[] args, final String engine) throws Exception {
+    private static int relaunch(final List<Path> jars, final String[] args, final String engine) throws Exception {
         final StringJoiner cp = new StringJoiner(File.pathSeparator);
         jars.forEach(j -> cp.add(j.toAbsolutePath().toString()));
 
@@ -356,7 +422,8 @@ public class AppBootstrap {
                 "-D" + APP_FLAG + "=true", "-D" + ENGINE_PROP + "=" + engine, "-Dlog4j2.StatusLogger.level=WARN",
                 "-cp", cp.toString(), AppBootstrap.class.getName()));
         cmd.addAll(Arrays.asList(args));
-        System.exit(new ProcessBuilder(cmd).inheritIO().start().waitFor());
+        // SUPERVISE THE CHILD: RETURN ITS EXIT CODE SO THE LAUNCHER CAN RE-PROVISION ON A RELAUNCH REQUEST
+        return new ProcessBuilder(cmd).inheritIO().start().waitFor();
     }
 
     private static Path findLocalJar(final String prefix) {

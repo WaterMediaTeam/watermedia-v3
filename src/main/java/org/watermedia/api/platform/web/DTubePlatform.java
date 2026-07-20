@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class DTubePlatform implements IPlatform {
+public final class DTubePlatform implements IPlatform {
     public static final String NAME = "D.tube";
     private static final Marker IT = MarkerManager.getMarker(DTubePlatform.class.getSimpleName());
 

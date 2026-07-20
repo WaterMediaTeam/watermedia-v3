@@ -29,7 +29,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JsonTool.*;
 
-public class TikTokPlatform implements IPlatform {
+public final class TikTokPlatform implements IPlatform {
     public static final String NAME = "TikTok";
     private static final Marker IT = MarkerManager.getMarker(TikTokPlatform.class.getSimpleName());
     private static final String TIKTOK_REFERER = "https://www.tiktok.com/";

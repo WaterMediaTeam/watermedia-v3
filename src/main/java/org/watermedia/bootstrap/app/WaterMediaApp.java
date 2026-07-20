@@ -33,6 +33,9 @@ import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.AppBootstrap;
+import org.watermedia.bootstrap.app.popup.AWTPlayerWindow;
+import org.watermedia.bootstrap.app.popup.JFXPlayerWindow;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Parent;
@@ -87,6 +90,8 @@ public class WaterMediaApp {
     private static final ScreenManager screens = new ScreenManager();
 
     private static boolean running = true;
+    // SET WHEN THE APP NEEDS THE BOOTSTRAP TO RE-PROVISION AND RELAUNCH (E.G. TO PULL JAVAFX FOR VK+JavaFX)
+    private static boolean relaunchRequested;
     private static boolean maximized;
     // PENDING RENDER-ENGINE HOT-SWAP TARGET (null = NONE). SET FROM THE SETTINGS SCREEN, CONSUMED AT THE TOP
     // OF THE MAIN LOOP — NEVER MID-FRAME OR INSIDE A CALLBACK. THE MAIN LOOP OWNS THE FrameLimiter, WHICH THE
@@ -132,6 +137,8 @@ public class WaterMediaApp {
         // DUMP THE PERSISTED SHELL SETTINGS (CRT/SOUND/AUDIO ENGINE) INTO THE LIVE STATE BEFORE THE
         // FIRST FRAME SO THE LOADING SCREEN ALREADY RESPECTS THEM.
         AppConfig.applyBoot(ctx);
+        // POPUP PLAYER TARGET IS PART OF THE UNIFIED RENDER-MODE SELECTOR (STORED SEPARATELY FROM THE SPEC)
+        ctx.playerTarget = RenderSystem.playerTargetPreference();
         ctx.assets.load(ctx);
         initShell();
         glfwShowWindow(ctx.windowHandle);
@@ -346,6 +353,32 @@ public class WaterMediaApp {
     // GLOBAL UI SCALE — RESOLUTION, PERSISTENCE AND LIVE APPLICATION
     // ==========================================================================
 
+    /** The popup player target for the next opened MRL (in-app / AWT / JavaFX). */
+    public static PlayerTarget playerTarget() {
+        return ctx.playerTarget;
+    }
+
+    /** Applies the popup player target chosen in the unified render-mode selector to the live app state. */
+    public static void applyPlayerTarget(final PlayerTarget target) {
+        ctx.playerTarget = target == null ? PlayerTarget.IN_APP : target;
+    }
+
+    /** Whether the JavaFX runtime is on this JVM's classpath (provisioned by the bootstrap). */
+    public static boolean javafxAvailable() {
+        try {
+            Class.forName("javafx.application.Platform", false, WaterMediaApp.class.getClassLoader());
+            return true;
+        } catch (final Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Cleanly shuts the app down and exits so the supervising bootstrap re-provisions and relaunches. */
+    public static void requestRelaunch() {
+        relaunchRequested = true;
+        running = false; // BREAK THE MAIN LOOP; cleanup() THEN EXITS WITH RELAUNCH_EXIT
+    }
+
     /**
      * Re-reads the persisted UI scale preference and applies it. A non-AUTO preference wins; AUTO (or an
      * unreadable value) recomputes the monitor-derived factor. Called at boot and whenever the setting
@@ -545,6 +578,16 @@ public class WaterMediaApp {
                             null);
                     return;
                 }
+                // POPPED-OUT WINDOW INSTEAD OF THE IN-APP PLAYER SCREEN
+                if (ctx.playerTarget == PlayerTarget.AWT) {
+                    AWTPlayerWindow.open(ctx);
+                    return;
+                }
+                if (ctx.playerTarget == PlayerTarget.JFX && javafxAvailable()) {
+                    JFXPlayerWindow.open(ctx);
+                    return;
+                }
+                // IN_APP, OR VK+JavaFX WITHOUT A PROVISIONED JAVAFX (DOWNLOAD FAILED) — PLAY IN-APP
                 screens.navigate("player");
             }
 
@@ -1644,7 +1687,8 @@ public class WaterMediaApp {
         glfwDestroyWindow(ctx.windowHandle);
         glfwTerminate();
         glfwSetErrorCallback(null).close();
-        System.exit(0);
+        // A RELAUNCH REQUEST EXITS WITH RELAUNCH_EXIT SO THE SUPERVISING BOOTSTRAP RE-PROVISIONS AND SPAWNS AGAIN
+        System.exit(relaunchRequested ? AppBootstrap.RELAUNCH_EXIT : 0);
     }
 
     // LOGGING

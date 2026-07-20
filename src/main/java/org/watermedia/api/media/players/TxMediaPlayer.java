@@ -888,7 +888,12 @@ public final class TxMediaPlayer extends MediaPlayer {
             // AMBIGUOUS MIMES, BY BYTE-SNIFFING) AND decodeImage VALIDATES THE ACTUAL BYTES — SO WE DO
             // NOT SECOND-GUESS WITH THE SERVER'S CONTENT-TYPE HEADER, WHICH WOULD WRONGLY REJECT IMAGES
             // SERVED AS application/octet-stream OR text/xml (e.g. SVG)
-            final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(sourceBytes.bytes()));
+            // GPU ENGINES (GL/VK) SAMPLE PLANAR YUV DIRECTLY; A SOFTWARE ENGINE (AWT/JavaFX) NEEDS BGRA, SO ASK
+            // THE DECODER FOR IT WHEN THE ENGINE WOULD DECLINE THE NATIVE LAYOUT (MIRRORS FFMediaPlayer'S sws FALLBACK).
+            final ByteBuffer bytes = ByteBuffer.wrap(sourceBytes.bytes());
+            final ImageReader reader = this.gfx != null && !this.gfx.supportsFormat(PixelFormat.YUV420P)
+                    ? CodecsAPI.decodeImage(bytes, PixelFormat.BGRA)
+                    : CodecsAPI.decodeImage(bytes);
             this.activeReader = reader;
             return reader;
         } catch (final Throwable t) {

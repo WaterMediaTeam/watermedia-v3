@@ -16,7 +16,7 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class NetworkAPI extends WaterMediaAPI {
+public final class NetworkAPI extends WaterMediaAPI {
     static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
     private static final Executor EXECUTOR = ThreadTool.createRecommendedThreadPool("NetworkAPI-Upload", 5);
     private static final String STEP_MIME = "MIME registry";

@@ -13,7 +13,7 @@ import java.util.Map;
  * metadata is exposed through {@link #values()} using keys defined in {@link CodecsAPI}.
  * Accessors return {@code null} when the value does not exist or is blank.
  */
-public class ImageMetadata {
+public final class ImageMetadata {
     public static final ImageMetadata EMPTY = new ImageMetadata(true);
 
     private final boolean readOnly;

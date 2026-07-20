@@ -8,7 +8,7 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer.LodLevel;
 import org.watermedia.api.media.players.MediaPlayer.Status;
-import org.watermedia.test.support.FakeGFXEngine;
+import org.watermedia.api.media.engines.HeadlessGFXEngine;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Decode-pipeline smoke + upload-scaling test for {@link FFMediaPlayer}, driving a
- * local H.264 MP4 through a {@link FakeGFXEngine} (video only, no OpenAL).
+ * local H.264 MP4 through a {@link HeadlessGFXEngine} (video only, no OpenAL).
  *
  * <p>The whole class is gated on FFmpeg actually loading: {@link MediaBootstrap}
  * boots WaterMedia once and, when the native binaries are missing (typical on
@@ -46,7 +46,7 @@ public class FFMediaPlayerTest {
 
     // OPENS A VIDEO-ONLY FF PLAYER, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL
     // THE DECODE PIPELINE IS LIVE (gfx DIMENSIONS ARE CONFIGURED BY THEN).
-    private static FFMediaPlayer open(final FakeGFXEngine gfx, final Path file, final Consumer<FFMediaPlayer> config) {
+    private static FFMediaPlayer open(final HeadlessGFXEngine gfx, final Path file, final Consumer<FFMediaPlayer> config) {
         final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(file));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
@@ -61,7 +61,7 @@ public class FFMediaPlayerTest {
     @Test
     @DisplayName("Plays and uploads frames at the native size")
     void testPlaysAndUploadsNativeSize() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> {});
         try {
             assertTrue(player.canPlay());
@@ -84,7 +84,7 @@ public class FFMediaPlayerTest {
     @Test
     @DisplayName("maxSize caps the upload below the native size")
     void testMaxSizeCapsUploadDimensions() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> p.maxSize(160, 90));
         try {
             assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
@@ -105,7 +105,7 @@ public class FFMediaPlayerTest {
     @Test
     @DisplayName("LOD reduces the upload dimensions")
     void testLodReducesUploadDimensions() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> p.lod(LodLevel.NEAR));
         try {
             assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
@@ -124,7 +124,7 @@ public class FFMediaPlayerTest {
     @Test
     @DisplayName("Hot LOD change shrinks the live upload")
     void testHotLodChangeShrinksUpload() {
-        final FakeGFXEngine gfx = new FakeGFXEngine();
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> {});
         try {
             assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));

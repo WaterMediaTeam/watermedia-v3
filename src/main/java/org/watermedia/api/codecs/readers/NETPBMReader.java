@@ -24,7 +24,7 @@ import java.nio.ByteOrder;
  *
  * <p>Only the four binary variants are supported (matching the legacy decoder).
  */
-public class NETPBMReader extends ImageReader {
+public final class NETPBMReader extends ImageReader {
 
     private final NetpbmType type;
     private final NetpbmHeader header;

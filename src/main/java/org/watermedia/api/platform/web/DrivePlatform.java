@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class DrivePlatform implements IPlatform {
+public final class DrivePlatform implements IPlatform {
     public static final String NAME = "Google Drive";
     private static final Marker IT = MarkerManager.getMarker(DrivePlatform.class.getSimpleName());
     private static final String DOWNLOAD_URL = "https://drive.usercontent.google.com/download?id=%s&export=download&authuser=0&acknowledgeAbuse=true";

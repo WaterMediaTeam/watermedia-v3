@@ -28,7 +28,9 @@ import org.watermedia.bootstrap.app.element.TextField;
 import org.watermedia.bootstrap.app.element.Theme;
 import org.watermedia.bootstrap.app.UiScale;
 import org.watermedia.bootstrap.app.WaterMediaApp;
+import org.watermedia.bootstrap.app.PlayerTarget;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.render.RenderMode;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.Spacing;
@@ -37,11 +39,12 @@ import org.watermedia.tools.ThreadTool;
 
 import java.awt.Color;
 import java.awt.Font;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -54,20 +57,23 @@ import static org.lwjgl.glfw.GLFW.*;
 
 /**
  * Settings screen reflecting WaterConfig specs as a fully retained view tree: a {@link Header} band, a
- * horizontal strip of spec folder tabs with the reset action on its right edge, a clean left column of
- * section entries and a {@link ListView} of setting rows whose controls are real widgets (switch,
- * checkbox, segmented control, spinner, seek bar, text field). Enum settings that do not fit a segmented
- * control use a {@link Dropdown} that opens a floating menu anchored to the control.
+ * horizontally scrollable strip of spec folder tabs with the reset action pinned on its right edge, a
+ * clean left column of section entries and a {@link ListView} of setting rows whose controls are real
+ * widgets (switch, checkbox, segmented control, spinner, seek bar, text field). Enum settings that do
+ * not fit a segmented control use a {@link Dropdown} that opens a floating menu anchored to the control.
  *
- * <p>Both specs — the shell's own {@link AppConfig} and the instance {@code watermedia.toml} — are built
- * through one reflective path over their registered {@link ConfigSpec}: the spec root acts as a "home"
- * group named after the spec (listed first, hidden when the root has no settings) and nested groups
- * render as an indented tree in the SECTIONS column, one indent level per nesting level. Selecting a
- * node lists only its DIRECT settings — descendants are reached through their own tree nodes. The shell
- * spec additionally carries two strictly non-portable runtime rows inside its {@code engines} section:
- * the render engine and the UI scale (their {@code engine.cfg}/{@code uiscale.cfg} stores are read by
- * the launcher and the early boot before any spec exists). Every row is a real option — no diagnostics.
- * A row's description shows as an amber tooltip glued to the cursor while the row is hovered, and each
+ * <p>The strip holds one tab per spec: the shell's own {@link AppConfig}, the instance
+ * {@code watermedia.toml}, then every other spec WaterConfig currently exposes through
+ * {@link WaterConfig#specs()}, and finally external mod config files reverse-engineered on the fly with
+ * {@link WaterConfig#reverseSpec} (attempted, skipped when the file is absent or unparseable). All of
+ * them are built through one reflective path over their {@link ConfigSpec}: the spec root acts as a
+ * "home" group named after the spec (listed first, hidden when the root has no settings) and nested
+ * groups render as an indented tree in the SECTIONS column, one indent level per nesting level.
+ * Selecting a node lists only its DIRECT settings — descendants are reached through their own tree
+ * nodes. The shell spec additionally carries two strictly non-portable runtime rows inside its
+ * {@code engines} section: the render engine and the UI scale (their {@code engine.cfg}/
+ * {@code uiscale.cfg} stores are read by the launcher and the early boot before any spec exists). A
+ * row's description shows as an amber tooltip glued to the cursor while the row is hovered, and each
  * spec tab carries a status pip fed by that spec's own autosave machine.</p>
  */
 public final class SettingsScreen extends Screen {
@@ -81,6 +87,13 @@ public final class SettingsScreen extends Screen {
     private static final int TAB_H = 64;
     private static final int SECTION_H = 36;
 
+    // EXTERNAL MOD CONFIG FILES THE SCREEN TRIES TO REVERSE-ENGINEER FROM THE CONFIG DIR INTO EDITABLE
+    // TABS — SKIPPED SILENTLY WHEN THE FILE IS ABSENT OR CANNOT BE PARSED (SEE buildReverseSpec)
+    private static final String[] REVERSE_FILES = {"chloride-client.json", "waterframes-client.toml"};
+
+    // PER-TAB ACCENTS, CYCLED BY TAB INDEX — TAB 0 (SHELL) CYAN, TAB 1 (INSTANCE) AMBER, THEN THE REST
+    private static final Color[] TAB_ACCENTS = {AppTheme.CYAN, AppTheme.AMBER, AppTheme.GREEN, AppTheme.NEON_LIGHT, AppTheme.NEON};
+
     private final Consumer<HomeScreen.Action> navigator;
     private final List<SettingSpec> specs = new ArrayList<>();
     // EVERY TEXT FIELD OF THE CURRENT ROWS — FOCUS IS RECONCILED AFTER EACH CLICK (ONE EDIT AT MOST)
@@ -88,7 +101,7 @@ public final class SettingsScreen extends Screen {
 
     // TREE SLOTS — BUILT ONCE IN build(), REFILLED ON SPEC/SECTION SWITCHES
     private Header header;
-    private TabRow tabs;
+    private TabScroll tabs;
     private Button reset;
     private Parent sectionColumn;
     private Text paneTitle;
@@ -109,9 +122,10 @@ public final class SettingsScreen extends Screen {
     // SEEKBAR GESTURES COALESCE INTO ONE SAVE, FLUSHED WHEN THE POINTER RELEASES (SEE onUpdate)
     private boolean dragSave;
 
-    // ONE AUTOSAVE MACHINE PER SPEC (0 = APP, 1 = INSTANCE) FEEDING THAT SPEC'S TAB PIP. THE MACHINES
-    // OUTLIVE rebuildSpecs SO AN IN-FLIGHT SAVE KEEPS ITS COALESCING GATE ACROSS SCREEN RE-ENTRIES.
-    private final SaveMachine[] saves = {new SaveMachine(), new SaveMachine()};
+    // ONE AUTOSAVE MACHINE PER SPEC (KEYED BY THE SPEC'S STABLE IDENTITY) FEEDING THAT SPEC'S TAB PIP.
+    // THE MACHINES OUTLIVE rebuildSpecs SO AN IN-FLIGHT SAVE KEEPS ITS COALESCING GATE ACROSS SCREEN
+    // RE-ENTRIES AND ACROSS THE VARIABLE SPEC SET (WATERCONFIG-EXPOSED + REVERSE-SPEC'D FILES).
+    private final Map<String, SaveMachine> saves = new HashMap<>();
 
     // HOVERED ROW DESCRIPTION, REPUBLISHED EVERY DRAW PASS — FEEDS THE CURSOR TOOLTIP (SEE onDraw)
     private String hoverNote;
@@ -127,8 +141,8 @@ public final class SettingsScreen extends Screen {
         // HEADER — VERSION TAG ONLY; THE RESET ACTION LIVES IN THE SPEC TAB STRIP BELOW
         this.header = new Header().name("Settings").right("v" + WaterMedia.VERSION);
 
-        // SPEC TAB STRIP — HORIZONTAL FOLDER TABS UNDER THE HEADER WITH RESET PUSHED TO THE RIGHT EDGE:
-        // [ APP ] [ INSTANCE CONFIG ] .............................. [ RESET TO DEFAULT ]
+        // SPEC TAB STRIP — HORIZONTALLY SCROLLABLE FOLDER TABS UNDER THE HEADER WITH RESET PINNED RIGHT:
+        // [ APP ][ INSTANCE ][ … more specs, scroll → ] ................. [ RESET TO DEFAULT ]
         this.reset = new Button("RESET TO DEFAULT").icon("reset")
                 .accent(AppTheme.AMBER).textColor(AppTheme.TEXT_SOFT)
                 .size(Math.max(190, Button.width(this.text, "RESET TO DEFAULT", "", "reset", 12) + 24), Theme.BUTTON)
@@ -137,8 +151,12 @@ public final class SettingsScreen extends Screen {
                     this.resetActiveSection();
                     this.ctx.playSelectionSound();
                 });
-        this.tabs = new TabRow();
-        this.tabs.spacing(6).width(MAX_PARENT).height(TAB_H).padding(new Spacing(12, 22, 0, 22));
+        // THE TABS SCROLL HORIZONTALLY (WEIGHT 1 VIEWPORT); THE RESET ACTION IS A PINNED, NON-SCROLLING
+        // SIBLING. TabStrip HOSTS BOTH AND DRAWS THE OPEN-FOLDER BASELINE ACROSS THE WHOLE STRIP.
+        this.tabs = new TabScroll().spacing(6).height(MAX_PARENT).weight(1f);
+        final TabStrip strip = new TabStrip();
+        strip.spacing(12).width(MAX_PARENT).height(TAB_H).padding(new Spacing(12, 22, 0, 22));
+        strip.add(this.tabs).add(this.reset);
 
         // SECTIONS — CLEAN LEFT COLUMN, MRL-STYLE: HEAD ROW (NEON BAR + LABEL) OVER A FLAT PLATE
         this.sectionColumn = Parent.column().spacing(2).width(MAX_PARENT);
@@ -184,7 +202,7 @@ public final class SettingsScreen extends Screen {
         // CONTENT — SECTIONS PLATE | HAIRLINE RULE | OPEN ROWS, ALL DIRECTLY OVER THE SHELL BACKGROUND
         return Parent.column().size(MAX_PARENT, MAX_PARENT)
                 .add(this.header)
-                .add(this.tabs)
+                .add(strip)
                 .add(Parent.row().size(MAX_PARENT, MAX_PARENT)
                         .padding(new Spacing(14, 22, 10, 22))
                         .add(sections)
@@ -218,7 +236,7 @@ public final class SettingsScreen extends Screen {
     public boolean continuous() {
         // KEEP PAINTING WHILE ANY SPEC'S SAVE PULSES ITS TAB PIP, WHILE A CARET BLINKS, OR UNTIL A
         // DRAG-SAVE FLUSHES
-        for (final SaveMachine save: this.saves) {
+        for (final SaveMachine save: this.saves.values()) {
             if (save.state == SaveState.SAVING || save.state == SaveState.RESAVING) return true;
         }
         return this.textInputActive() || this.dragSave;
@@ -397,10 +415,42 @@ public final class SettingsScreen extends Screen {
 
     private void rebuildSpecs() {
         this.specs.clear();
+        // TABS 0/1 — THE SHELL SPEC (WITH ITS INJECTED ENGINE/UI-SCALE ROWS) AND THE INSTANCE CONFIG
         this.specs.add(this.buildAppSpec());
         this.specs.add(this.buildInstanceSpec());
+
+        // EVERY OTHER SPEC WATERCONFIG NOW EXPOSES — TABS 0/1 ALREADY COVER THE SHELL AND INSTANCE, SO
+        // SKIP THOSE TWO. SORTED BY NAME FOR A STABLE TAB ORDER ACROSS RE-ENTRIES (specs() IS BACKED BY
+        // A HASH MAP AND HAS NO INHERENT ORDER).
+        final List<ConfigSpec> registered = new ArrayList<>(WaterConfig.specs());
+        registered.sort(Comparator.comparing(ConfigSpec::name));
+        for (final ConfigSpec cs: registered) {
+            final String name = cs.name();
+            if (AppConfig.ID.equals(name) || WaterMedia.ID.equals(name)) continue;
+            this.specs.add(this.buildGenericSpec(titleCase(name), fileName(cs), cs, "settings", name));
+        }
+
+        // REVERSE-ENGINEER EXTERNAL MOD CONFIG FILES INTO EDITABLE TABS — ATTEMPTED, SKIPPED WHEN ABSENT
+        // OR UNPARSEABLE (WaterConfig.reverseSpec RETURNS null)
+        for (final String file: REVERSE_FILES) {
+            final SettingSpec reverse = this.buildReverseSpec(file);
+            if (reverse != null) this.specs.add(reverse);
+        }
+
         if (this.activeSpecIndex >= this.specs.size()) this.activeSpecIndex = Math.max(0, this.specs.size() - 1);
         this.clampSelection();
+    }
+
+    // ONE SAVE MACHINE PER SPEC IDENTITY, REUSED ACROSS REBUILDS SO AN IN-FLIGHT SAVE KEEPS ITS
+    // COALESCING GATE. KEYS ARE STABLE PER LOGICAL SPEC: THE SHELL/INSTANCE IDS, EACH REGISTERED SPEC'S
+    // NAME, AND EACH REVERSE-SPEC'D FILE NAME.
+    private SaveMachine saveFor(final String key) {
+        return this.saves.computeIfAbsent(key, k -> new SaveMachine());
+    }
+
+    // THE FILE NAME BACKING A SPEC (SHOWN AS THE TAB SUBTITLE)
+    private static String fileName(final ConfigSpec spec) {
+        return String.valueOf(spec.path().getFileName());
     }
 
     // (RE)FILLS THE SPEC TAB STRIP AND THE ACTIVE SPEC'S SECTION LIST
@@ -409,15 +459,14 @@ public final class SettingsScreen extends Screen {
         for (int i = 0; i < this.specs.size(); i++) {
             final int index = i;
             final SettingSpec spec = this.specs.get(i);
-            this.tabs.add(new SpecTab(index, spec.title, spec.subtitle)
+            this.tabs.add(new SpecTab(index, spec.title, spec.subtitle, spec.iconName)
                     .onClick(v -> {
                         this.switchSpec(index);
                         this.ctx.playSelectionSound();
                     }));
         }
-        // FLEX SPACER PUSHES THE RESET ACTION TO THE RIGHT EDGE OF THE STRIP
-        this.tabs.add(new Box().size(0, 1).weight(1f));
-        this.tabs.add(this.reset);
+        // KEEP THE ACTIVE TAB IN VIEW AFTER A REBUILD/SWITCH (THE STRIP MAY BE SCROLLED PAST IT)
+        this.tabs.followActive();
         this.sectionColumn.clear();
         final SettingSpec active = this.activeSpec();
         if (active != null) {
@@ -619,6 +668,8 @@ public final class SettingsScreen extends Screen {
     // SEGMENTS THAT WOULD BE WIDER THAN THE CONTROL BUDGET
     private boolean needsDropdown(final Setting setting) {
         if (!setting.isEnumControl()) return false;
+        // THE RENDER-MODE SELECTOR STAYS A SLIDE-SWITCH (SEGMENTED) EVEN WITH ITS 4 OPTIONS — NEVER A DROPDOWN
+        if ("app.engines.render".equals(setting.key)) return false;
         final List<String> options = setting.optionLabels();
         if (options.size() > 4) return true;
         int segW = 0;
@@ -638,7 +689,7 @@ public final class SettingsScreen extends Screen {
         final ConfigSpec configSpec = AppConfig.spec();
         final String file = configSpec == null ? "runtime shell" : String.valueOf(configSpec.path().getFileName());
         final SettingSpec spec = new SettingSpec("App", file, configSpec != null, configSpec,
-                () -> AppConfig.apply(this.ctx), this.saves[0]);
+                () -> AppConfig.apply(this.ctx), this.saveFor(AppConfig.ID), null);
         if (configSpec != null) this.collectSections(configSpec, spec);
 
         // THE SPEC'S "ENGINES" GROUP ALSO HOSTS THE TWO STRICTLY NON-PORTABLE RUNTIME ROWS: THE RENDER
@@ -657,21 +708,26 @@ public final class SettingsScreen extends Screen {
             spec.sections.add(engines);
         }
         engines.settings.add(0, new RuntimeEnumSetting<>("Render", "app.engines.render", "ENUM",
-                "Graphics engine the app renders with — OpenGL or Vulkan. Switching applies live: the window and engine rebuild in place without a restart. Vulkan falls back to OpenGL if unsupported. Stored in engine.cfg, read by the launcher.",
-                RenderSystem.Engine.values(),
-                () -> {
-                    final RenderSystem.Engine pref = RenderSystem.enginePreference();
-                    return pref != null ? pref : RenderSystem.engineKind();
+                "Render mode. OpenGL/Vulkan play in-app; VK+AWT and VK+JavaFX run the UI on Vulkan and pop the player out into a native window. Engine changes apply live; the popup target applies to the next media opened. Stored in engine.cfg + playermode.cfg.",
+                RenderMode.values(),
+                () -> RenderMode.of(RenderSystem.engineKind(), WaterMediaApp.playerTarget()),
+                mode -> {
+                    // PERSIST BOTH HALVES, HOT-SWAP THE ENGINE IN PLACE, AND ROUTE FUTURE MRLs TO THE POPUP
+                    RenderSystem.saveEnginePreference(mode.engine());
+                    RenderSystem.savePlayerTarget(mode.target());
+                    WaterMediaApp.applyPlayerTarget(mode.target());
+                    // VK+JavaFX WITHOUT JAVAFX ON THE CLASSPATH: THE CONFIG IS SAVED, SO EXIT AND LET THE
+                    // BOOTSTRAP PULL JAVAFX AND RELAUNCH (ONCE CACHED, LATER SWITCHES NEED NO RESTART)
+                    if (mode.target() == PlayerTarget.JFX && !WaterMediaApp.javafxAvailable()) {
+                        WaterMediaApp.requestRelaunch();
+                        return;
+                    }
+                    if (mode.engine() != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(mode.engine());
                 },
-                target -> {
-                    // PERSIST THE CHOICE, THEN HOT-SWAP IN PLACE. NO-OP WHEN THE TARGET ALREADY RUNS.
-                    RenderSystem.saveEnginePreference(target);
-                    if (target != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(target);
-                },
-                RenderSystem.Engine.OPENGL,
-                Enum::name,
-                // VULKAN IS SELECTABLE ONLY WHEN A VULKAN LOADER IS PRESENT; OPENGL IS ALWAYS AVAILABLE
-                engine -> engine != RenderSystem.Engine.VULKAN || RenderSystem.vulkanAvailable()));
+                RenderMode.OPENGL,
+                RenderMode::label,
+                // VULKAN-BACKED MODES NEED A VULKAN LOADER; OPENGL IS ALWAYS AVAILABLE
+                mode -> mode.engine() != RenderSystem.Engine.VULKAN || RenderSystem.vulkanAvailable()));
         engines.settings.add(1, new RuntimeEnumSetting<>("UI scale", "app.engines.uiScale", "ENUM",
                 "Global interface magnification. AUTO derives it from the monitor's DPI and resolution. Applies live. Stored in uiscale.cfg, read at boot before any config spec exists.",
                 UiScale.values(),
@@ -687,9 +743,11 @@ public final class SettingsScreen extends Screen {
     }
 
     private SettingSpec buildInstanceSpec() {
-        final ConfigSpec configSpec = this.waterMediaConfigSpec();
-        final SettingSpec spec = new SettingSpec("Instance config", "watermedia.toml", true, configSpec, null, this.saves[1]);
+        // WATERCONFIG NOW EXPOSES THE REGISTERED SPEC DIRECTLY — NO MORE REFLECTION INTO ITS REGISTRY
+        final ConfigSpec configSpec = WaterConfig.spec(WaterMedia.ID);
         if (configSpec == null) {
+            final SettingSpec spec = new SettingSpec("Instance config", "watermedia.toml", true, null, null,
+                    this.saveFor(WaterMedia.ID), null);
             final SettingSection unavailable = new SettingSection("Unavailable",
                     "WaterConfig did not expose the active spec", "unavailable", 0);
             unavailable.settings.add(new ReadOnlySetting("WaterMediaConfig", "watermedia", "STATE",
@@ -698,30 +756,34 @@ public final class SettingsScreen extends Screen {
             spec.sections.add(unavailable);
             return spec;
         }
+        return this.buildGenericSpec("Instance config", fileName(configSpec), configSpec, null, WaterMedia.ID);
+    }
 
+    // BUILDS A PLAIN WATERCONFIG SPEC TAB (INSTANCE, WATERCONFIG-EXPOSED OR REVERSE-SPEC'D): ITS SECTION
+    // TREE COMES FROM collectSections, WITH A READ-ONLY PLACEHOLDER WHEN THE SPEC EXPOSES NO FIELDS
+    private SettingSpec buildGenericSpec(final String title, final String subtitle, final ConfigSpec configSpec,
+                                         final String icon, final String saveKey) {
+        final SettingSpec spec = new SettingSpec(title, subtitle, true, configSpec, null, this.saveFor(saveKey), icon);
         this.collectSections(configSpec, spec);
         if (spec.sections.isEmpty()) {
             final SettingSection empty = new SettingSection("Empty", "No fields were discovered", "empty", 0);
-            empty.settings.add(new ReadOnlySetting("WaterMediaConfig", WaterMedia.ID, "STATE",
-                    "No configurable fields were discovered in the active spec.",
-                    () -> "EMPTY"));
+            empty.settings.add(new ReadOnlySetting(titleCase(configSpec.name()), configSpec.name(), "STATE",
+                    "No configurable fields were discovered in this spec.", () -> "EMPTY"));
             spec.sections.add(empty);
         }
         return spec;
     }
 
-    @SuppressWarnings("unchecked")
-    private ConfigSpec waterMediaConfigSpec() {
-        if (!WaterConfig.isRegistered(WaterMedia.ID)) return null;
-        try {
-            final Class<?> registry = Class.forName("me.srrapero720.waterconfig.WaterConfigRegistry");
-            final Field specsField = registry.getDeclaredField("SPECS");
-            specsField.setAccessible(true);
-            final Map<String, ConfigSpec> registered = (Map<String, ConfigSpec>) specsField.get(null);
-            return registered.get(WaterMedia.ID);
-        } catch (final ReflectiveOperationException | ClassCastException e) {
-            return null;
-        }
+    // ATTEMPTS TO REVERSE-ENGINEER AN EXTERNAL MOD CONFIG FILE FROM THE CONFIG DIR INTO AN EDITABLE SPEC.
+    // RETURNS null WHEN THE FILE IS ABSENT/UNPARSEABLE (reverseSpec) OR EXPOSES NO EDITABLE SECTIONS, SO
+    // THE TAB SIMPLY DOES NOT APPEAR. THE FILE NAME KEYS BOTH THE TAB SUBTITLE AND ITS SAVE MACHINE.
+    private SettingSpec buildReverseSpec(final String file) {
+        final ConfigSpec configSpec = WaterConfig.reverseSpec(WaterConfig.getPath().resolve(file));
+        if (configSpec == null) return null;
+        final SettingSpec spec = new SettingSpec(titleCase(configSpec.name()), file, true, configSpec, null,
+                this.saveFor(file), "folder");
+        this.collectSections(configSpec, spec);
+        return spec.sections.isEmpty() ? null : spec;
     }
 
     // BUILDS THE SECTION TREE OF A WATERCONFIG SPEC: THE SPEC ROOT IS A "HOME" NODE NAMED AFTER THE SPEC
@@ -880,25 +942,147 @@ public final class SettingsScreen extends Screen {
     // CUSTOM ELEMENTS — CANVAS-ONLY DRAWING
     // ==========================================================================
 
-    // SPEC TAB STRIP — LAYS OUT THE FOLDER TABS AND THE RESET ACTION, THEN CLOSES THE ROW WITH A BASELINE
-    // RULE BROKEN UNDER THE ACTIVE TAB SO IT READS AS AN OPEN FOLDER INTO THE CONTENT BELOW
-    private final class TabRow extends Parent {
+    // SPEC TAB SCROLLER — A HORIZONTAL, CLIPPING VIEWPORT OVER THE FOLDER TABS. THE WHEEL SCROLLS IT AND
+    // A SPEC SWITCH FOLLOWS THE ACTIVE TAB INTO VIEW; SCROLLED-OUT TABS ARE CLIPPED AND NON-INTERACTIVE.
+    private final class TabScroll extends Group<TabScroll> {
 
-        private TabRow() {
+        private static final int STEP = 48; // PX PER WHEEL NOTCH
+
+        private int spacing;
+        private int scrollX;
+        private int maxScrollX;
+        private int naturalWidth; // SUM OF TAB WIDTHS + GAPS — THE SCROLLABLE CONTENT WIDTH
+        private boolean followActive; // ON A SPEC SWITCH, BRING THE ACTIVE TAB INTO VIEW ON THE NEXT LAYOUT
+
+        private TabScroll spacing(final int gap) {
+            this.spacing = Math.max(0, gap);
+            return this;
+        }
+
+        private void followActive() {
+            this.followActive = true;
+        }
+
+        @Override
+        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+            int total = 0;
+            boolean first = true;
+            for (final Element<?> child: this.children) {
+                if (!child.visible()) continue;
+                child.measure(innerAvailWidth, innerAvailHeight); // TABS WRAP THEIR WIDTH, FILL THE HEIGHT
+                if (!first) total += this.spacing;
+                first = false;
+                total += child.measuredWidth();
+            }
+            this.naturalWidth = total;
+            this.contentWidth = total;
+            this.contentHeight = innerAvailHeight;
+        }
+
+        @Override
+        protected void onLayout() {
+            final int viewport = this.innerWidth();
+            this.maxScrollX = Math.max(0, this.naturalWidth - viewport);
+            // FOLLOW THE ACTIVE TAB BEFORE CLAMPING SO A JUST-SWITCHED, OFF-SCREEN TAB SNAPS INTO VIEW
+            if (this.followActive) {
+                this.followActive = false;
+                this.scrollX = this.offsetForActive(viewport);
+            }
+            this.scrollX = Math.max(0, Math.min(this.scrollX, this.maxScrollX));
+            int x = this.innerLeft() - this.scrollX;
+            final int y = this.innerTop();
+            boolean first = true;
+            for (final Element<?> child: this.children) {
+                if (!child.visible()) continue;
+                if (!first) x += this.spacing;
+                first = false;
+                child.layout(x, y);
+                x += child.measuredWidth();
+            }
+        }
+
+        // MINIMAL OFFSET THAT BRINGS THE ACTIVE TAB FULLY INTO THE VIEWPORT (KEEPS THE CURRENT OFFSET WHEN
+        // THE TAB IS ALREADY VISIBLE)
+        private int offsetForActive(final int viewport) {
+            int x = 0;
+            boolean first = true;
+            for (final Element<?> child: this.children) {
+                if (!child.visible()) continue;
+                if (!first) x += this.spacing;
+                first = false;
+                if (child instanceof SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
+                    final int right = x + child.measuredWidth();
+                    if (x < this.scrollX) return x;
+                    if (right > this.scrollX + viewport) return right - viewport;
+                    return this.scrollX;
+                }
+                x += child.measuredWidth();
+            }
+            return this.scrollX;
+        }
+
+        @Override
+        protected void onDraw(final Canvas canvas) {
+            // CLIP TO THE VIEWPORT SO SCROLLED-OUT TABS ARE NOT PAINTED (A PARTIAL EDGE TAB HINTS AT MORE)
+            canvas.pushClip(this.left, this.top, this.measuredWidth, this.measuredHeight);
+            super.onDraw(canvas);
+            canvas.popClip();
+        }
+
+        @Override
+        public boolean dispatchScroll(final double mx, final double my, final double amount) {
+            if (!this.contains(mx, my) || this.maxScrollX <= 0) return false;
+            // VERTICAL WHEEL DRIVES THE HORIZONTAL OFFSET — THE USUAL STRIP-SCROLL GESTURE
+            final int next = Math.max(0, Math.min(this.maxScrollX, this.scrollX - (int) (amount * STEP)));
+            if (next != this.scrollX) {
+                this.scrollX = next;
+                this.invalidate();
+            }
+            return true;
+        }
+
+        @Override
+        public boolean dispatchClick(final double mx, final double my) {
+            // TABS STAY CHILDREN WHEN SCROLLED OUT, SO GATE HITS ON THE VIEWPORT RECT
+            return this.contains(mx, my) && super.dispatchClick(mx, my);
+        }
+
+        @Override
+        public boolean dispatchHover(final double mx, final double my) {
+            if (!this.contains(mx, my)) {
+                for (final Element<?> child: this.children) child.clearHover();
+                this.hovered = false;
+                return false;
+            }
+            return super.dispatchHover(mx, my);
+        }
+    }
+
+    // SPEC TAB STRIP — HOSTS THE SCROLLABLE TABS AND THE PINNED RESET ACTION, THEN CLOSES THE ROW WITH A
+    // BASELINE RULE BROKEN UNDER THE ACTIVE TAB SO IT READS AS AN OPEN FOLDER INTO THE CONTENT BELOW
+    private final class TabStrip extends Parent {
+
+        private TabStrip() {
             super(Orientation.HORIZONTAL);
         }
 
         @Override
         protected void onDraw(final Canvas canvas) {
             super.onDraw(canvas);
-            // BASELINE DRAWN AFTER THE CHILDREN SO IT SEALS THE INACTIVE TAB BOTTOMS
+            // BASELINE DRAWN AFTER THE CHILDREN SO IT SEALS THE INACTIVE TAB BOTTOMS. THE ACTIVE TAB LIVES
+            // INSIDE THE SCROLLER, SO ITS GAP IS CLAMPED TO THE SCROLLER VIEWPORT — A SCROLLED-OUT TAB
+            // NEVER BREAKS THE RULE OUTSIDE THE VISIBLE AREA.
             final int y = this.top + this.measuredHeight - 1;
+            final TabScroll scroll = SettingsScreen.this.tabs;
+            final int viewL = scroll.left();
+            final int viewR = scroll.left() + scroll.measuredWidth();
             int gapL = -1;
             int gapR = -1;
-            for (final Element<?> child: this.children) {
+            for (final Element<?> child: scroll.children()) {
                 if (child instanceof SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
-                    gapL = tab.left();
-                    gapR = tab.left() + tab.measuredWidth();
+                    gapL = Math.max(viewL, tab.left());
+                    gapR = Math.min(viewR, tab.left() + tab.measuredWidth());
+                    if (gapR <= gapL) { gapL = -1; gapR = -1; } // ACTIVE TAB FULLY SCROLLED OUT OF VIEW
                     break;
                 }
             }
@@ -911,22 +1095,25 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    // ONE SPEC FOLDER TAB — OPEN-BOTTOM FRAME WITH THE APP ICON, TITLE + SUBTITLE AND THE SPEC'S SAVE
-    // PIP; THE ACTIVE TAB LIGHTS ITS ACCENT AND BREAKS THE STRIP BASELINE (SEE TabRow) SO IT CONNECTS
+    // ONE SPEC FOLDER TAB — OPEN-BOTTOM FRAME WITH THE SPEC ICON, TITLE + SUBTITLE AND THE SPEC'S SAVE
+    // PIP; THE ACTIVE TAB LIGHTS ITS ACCENT AND BREAKS THE STRIP BASELINE (SEE TabStrip) SO IT CONNECTS
     // TO THE SETTINGS BELOW
     private final class SpecTab extends Element<SpecTab> {
 
-        private static final int ICON = 16; // APP ICON EDGE IN LOGICAL PX, SAME AS THE TITLEBAR
+        private static final int ICON = 16; // ICON EDGE IN LOGICAL PX, SAME AS THE TITLEBAR
         private static final int PIP = 8;   // SAVE-STATUS SQUARE EDGE, SAME AS StatusSquare
 
         private final int index;
         private final String title;
         private final String subtitle;
+        // PIXEL-ICON GLYPH NAME, OR null TO DRAW THE APP TEXTURE ICON (WATERMEDIA'S OWN SPECS)
+        private final String iconName;
 
-        private SpecTab(final int index, final String title, final String subtitle) {
+        private SpecTab(final int index, final String title, final String subtitle, final String iconName) {
             this.index = index;
             this.title = title.toUpperCase(Locale.ROOT);
             this.subtitle = subtitle.toUpperCase(Locale.ROOT);
+            this.iconName = iconName;
             this.height = MAX_PARENT;
         }
 
@@ -942,7 +1129,7 @@ public final class SettingsScreen extends Screen {
         @Override
         protected void onDraw(final Canvas canvas) {
             final boolean active = this.index == SettingsScreen.this.activeSpecIndex;
-            final Color accent = this.index == 0 ? AppTheme.CYAN : AppTheme.AMBER;
+            final Color accent = TAB_ACCENTS[this.index % TAB_ACCENTS.length];
             final int x = this.left;
             final int y = this.top;
             final int w = this.measuredWidth;
@@ -963,10 +1150,17 @@ public final class SettingsScreen extends Screen {
             final int subH = canvas.textHeight(AppTheme.TEXT_SUBTITLE, false);
             final int blockH = titleH + 2 + subH;
             final int textY = y + Math.max(0, (h - blockH) / 2);
-            // APP ICON — TEXTURE ID READ PER DRAW (IT CHANGES ACROSS ENGINE SWAPS/ASSET RELOADS),
-            // CENTERED VERTICALLY ON THE TITLE+SUBTITLE BLOCK; THE TEXT ALWAYS RESERVES ITS SLOT
-            final int iconId = SettingsScreen.this.ctx.assets.iconId;
-            if (iconId > 0) canvas.image(iconId, x + 16, textY + (blockH - ICON) / 2, ICON, ICON, null);
+            // TAB ICON — WATERMEDIA'S OWN SPECS (SHELL + INSTANCE) SHOW THE APP TEXTURE (READ PER DRAW AS
+            // IT CHANGES ACROSS ENGINE SWAPS/ASSET RELOADS); OTHER SPECS SHOW A GLYPH TINTED LIKE THE
+            // TITLE. THE ICON IS CENTERED VERTICALLY ON THE TITLE+SUBTITLE BLOCK; THE TEXT KEEPS ITS SLOT
+            final int iconY = textY + (blockH - ICON) / 2;
+            if (this.iconName == null) {
+                final int iconId = SettingsScreen.this.ctx.assets.iconId;
+                if (iconId > 0) canvas.image(iconId, x + 16, iconY, ICON, ICON, null);
+            } else {
+                canvas.icon(this.iconName, x + 16, iconY, ICON,
+                        active ? accent : this.hovered ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
+            }
             final int textX = x + 16 + ICON + 8;
             canvas.text(this.title, textX, textY,
                     active ? accent : this.hovered ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON, true);
@@ -1240,17 +1434,22 @@ public final class SettingsScreen extends Screen {
         private final Runnable applier;
         // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT — SHARED ACROSS REBUILDS (SEE saves)
         private final SaveMachine save;
+        // PIXEL-ICON NAME FOR THE TAB, OR null TO DRAW THE APP TEXTURE ICON (SHELL + INSTANCE ARE
+        // WATERMEDIA'S OWN, SO THEY KEEP THE APP LOGO; OTHER SPECS CARRY A GLYPH)
+        private final String iconName;
         // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
         private final List<SettingSection> sections = new ArrayList<>();
 
         private SettingSpec(final String title, final String subtitle, final boolean persistent,
-                            final ConfigSpec configSpec, final Runnable applier, final SaveMachine save) {
+                            final ConfigSpec configSpec, final Runnable applier, final SaveMachine save,
+                            final String iconName) {
             this.title = title;
             this.subtitle = subtitle;
             this.persistent = persistent;
             this.configSpec = configSpec;
             this.applier = applier;
             this.save = save;
+            this.iconName = iconName;
         }
     }
 

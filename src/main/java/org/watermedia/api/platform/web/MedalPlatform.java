@@ -34,7 +34,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * marker), so they are duplicates rather than genuine qualities — the HLS master is Medal's only
  * trustworthy quality ladder.
  */
-public class MedalPlatform implements IPlatform {
+public final class MedalPlatform implements IPlatform {
     public static final String NAME = "Medal";
     private static final Marker IT = MarkerManager.getMarker(MedalPlatform.class.getSimpleName());
     private static final String API_URL = "https://medal.tv/api/content/%s";

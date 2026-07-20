@@ -22,7 +22,7 @@ import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class ImgurPlatform implements IPlatform {
+public final class ImgurPlatform implements IPlatform {
     public static final String NAME = "Imgur";
     private static final Marker IT = MarkerManager.getMarker(ImgurPlatform.class.getSimpleName());
     private static final String API_URL = "https://api.imgur.com/3";

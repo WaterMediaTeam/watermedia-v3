@@ -34,7 +34,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Platforms return {@link PlatformData} (their own structure); {@link MRL} and other
  * consumers build their domain types (e.g. {@code MRL.Source}) from that data.
  */
-public class PlatformAPI extends WaterMediaAPI {
+public final class PlatformAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
     // CopyOnWriteArrayList: registration is rare, iteration (from MRL loader threads)
     // is hot and must not throw ConcurrentModificationException.

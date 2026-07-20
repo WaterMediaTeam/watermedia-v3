@@ -18,7 +18,7 @@ import java.util.function.Supplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class MediaAPI extends WaterMediaAPI {
+public final class MediaAPI extends WaterMediaAPI {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
 
     /**

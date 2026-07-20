@@ -41,7 +41,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>For animated WebPs, each {@link #next()} reads one {@code ANMF} chunk, decodes its
  * sub-chunks (optional {@code ALPH} + {@code VP8 } / {@code VP8L}), and composites onto the canvas.
  */
-public class WEBPReader extends ImageReader {
+public final class WEBPReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(WEBPReader.class.getSimpleName());
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
     // HARD CAP FOR CANVAS AND FRAME DIMENSIONS (16K). VP8X AND ANMF STORE 24-BIT SIZES; UNCAPPED

@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class TwitterPlatform implements IPlatform {
+public final class TwitterPlatform implements IPlatform {
     public static final String NAME = "Twitter";
     private static final Marker IT = MarkerManager.getMarker(TwitterPlatform.class.getSimpleName());
     private static final String API_URL = "https://cdn.syndication.twimg.com/tweet-result?id=%s&token=%s&lang=en";

@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class LightshotPlatform implements IPlatform {
+public final class LightshotPlatform implements IPlatform {
     public static final String NAME = "Lightshot";
     private static final Marker IT = MarkerManager.getMarker(LightshotPlatform.class.getSimpleName());
     private static final Pattern IMG_PATTERN = Pattern.compile("<img[^>]*class=\"no-click screenshot-image\"[^>]*src=\"(https://[^\"]+)\"");

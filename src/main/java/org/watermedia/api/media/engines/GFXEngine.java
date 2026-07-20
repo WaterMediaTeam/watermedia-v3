@@ -13,7 +13,7 @@ import java.nio.ByteBuffer;
  * Implementations are backend-specific (OpenGL, Vulkan, etc.).
  * Thread-safety contracts depend on the backend — see implementation javadoc.
  */
-public abstract class GFXEngine {
+public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEngine, SWEngine {
     protected PixelFormat pixelFormat;
     protected int width;
     protected int height;

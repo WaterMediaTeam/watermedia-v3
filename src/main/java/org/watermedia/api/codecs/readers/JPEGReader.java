@@ -18,7 +18,7 @@ import java.util.Arrays;
  * It parses JPEG interchange streams directly and decodes 8-bit Huffman-coded baseline and
  * progressive images into the native JPEG sample layout unless BGRA output is requested.
  */
-public class JPEGReader extends ImageReader {
+public final class JPEGReader extends ImageReader {
 
     private static final int SOF0 = 0xC0;
     private static final int SOF2 = 0xC2;

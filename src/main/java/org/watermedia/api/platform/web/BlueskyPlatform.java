@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class BlueskyPlatform implements IPlatform {
+public final class BlueskyPlatform implements IPlatform {
     public static final String NAME = "Bluesky";
     private static final Marker IT = MarkerManager.getMarker(BlueskyPlatform.class.getSimpleName());
     private static final String API_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread";

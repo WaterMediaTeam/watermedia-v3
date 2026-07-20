@@ -37,7 +37,7 @@ import static org.watermedia.tools.JsonTool.uri;
  * provisioned lazily by the {@code binaries} module ({@link BotGuardBinary}); running it out-of-process
  * keeps a crash in its bundled JS engine from taking down the host JVM.
  */
-public class YouTubePlatform extends YtDlpPlatform {
+public final class YouTubePlatform extends YtDlpPlatform {
     public static final String NAME = "YouTube";
     private static final Marker IT = MarkerManager.getMarker(YouTubePlatform.class.getSimpleName());
     private static final String[] HOSTS = { "youtube.com", "youtu.be" };

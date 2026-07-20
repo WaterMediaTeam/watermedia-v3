@@ -1,20 +1,26 @@
-package org.watermedia.test.support;
+package org.watermedia.api.media.engines;
 
-import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
 
 /**
- * In-memory {@link GFXEngine} stand-in for tests that need to drive a
- * {@code TxMediaPlayer} without a real OpenGL context. Captures the most
- * recently uploaded frame, the active texture index, and the number of
- * uploads so test bodies can assert on the playback pipeline directly.
- *
- * <p>Thread-safe: every mutable field is volatile because the player's
- * lifecycle thread writes them while the test thread reads them.
+ * Headless {@link GFXEngine} that records frames into memory instead of a GPU.
+ * <p>
+ * There is no OpenGL or Vulkan context: uploads are captured, not rendered. It lets a
+ * {@link org.watermedia.api.media.players.MediaPlayer} run its full decode/upload pipeline where no
+ * display is available — server-side probing, CI, or headless validation — and lets callers
+ * introspect what the pipeline pushed ({@link #uploadCount()}, {@link #lastUpload()},
+ * {@link #lastFormat()}, {@link #activeFrameTexture()}).
+ * <p>
+ * {@link #texture()} returns a fixed non-zero sentinel; there is no real texture to bind. Every
+ * mutable field is {@code volatile} because the player's lifecycle thread writes them while another
+ * thread may read them.
  */
-public final class FakeGFXEngine extends GFXEngine {
+public final class HeadlessGFXEngine extends GFXEngine {
+    // FIXED NON-ZERO HANDLE — NO REAL GPU TEXTURE EXISTS, BUT texture() MUST READ AS "A FRAME IS PRESENT"
+    private static final long SENTINEL_TEXTURE = 1L;
+
     private volatile long uploadCount;
     private volatile int activeFrameTexture;
     private volatile ByteBuffer[] preloaded;
@@ -22,16 +28,16 @@ public final class FakeGFXEngine extends GFXEngine {
     private volatile boolean supportFrameTextures;
     private volatile boolean released;
 
-    public FakeGFXEngine() {
+    public HeadlessGFXEngine() {
         this(false);
     }
 
-    public FakeGFXEngine(final boolean supportFrameTextures) {
+    public HeadlessGFXEngine(final boolean supportFrameTextures) {
         this.supportFrameTextures = supportFrameTextures;
     }
 
     @Override
-    public long texture() { return 1L; }
+    public long texture() { return SENTINEL_TEXTURE; }
 
     @Override
     public boolean supportsFrameTextures() { return this.supportFrameTextures; }
@@ -76,10 +82,21 @@ public final class FakeGFXEngine extends GFXEngine {
         this.released = true;
     }
 
+    /** Number of {@code upload} calls received so far. */
     public long uploadCount() { return this.uploadCount; }
+
+    /** Index last selected through {@link #useFrameTexture(int)}. */
     public int activeFrameTexture() { return this.activeFrameTexture; }
+
+    /** Frame set last handed to {@link #uploadFrameTextures(ByteBuffer[], int)}, or null. */
     public ByteBuffer[] preloadedFrames() { return this.preloaded; }
+
+    /** Y (or sole) plane of the most recent {@code upload}, or null. */
     public ByteBuffer lastUpload() { return this.lastUpload; }
+
+    /** Pixel format set by the last {@link #setVideoFormat}, or null. */
     public PixelFormat lastFormat() { return this.pixelFormat; }
+
+    /** Whether {@link #release()} has been called. */
     public boolean released() { return this.released; }
 }

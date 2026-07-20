@@ -10,7 +10,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 
-public class WaterPlatform implements IPlatform {
+public final class WaterPlatform implements IPlatform {
     public static final String NAME = "WaterMedia Internal";
     public static final String HOST_LOCAL = "local";
     public static final String HOST_REMOTE = "remote";

@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class VidLiiPlatform implements IPlatform {
+public final class VidLiiPlatform implements IPlatform {
     public static final String NAME = "VidLii";
     private static final Marker IT = MarkerManager.getMarker(VidLiiPlatform.class.getSimpleName());
     private static final String ORIGIN = "https://www.vidlii.com";

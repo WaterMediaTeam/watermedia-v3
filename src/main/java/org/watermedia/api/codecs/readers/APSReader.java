@@ -1,5 +1,5 @@
 package org.watermedia.api.codecs.readers;
 
-public class APSReader {
+public final class APSReader {
 
 }

@@ -20,7 +20,7 @@ import java.util.concurrent.Executors;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.network.NetworkAPI.*;
 
-public class NetworkServer {
+public final class NetworkServer {
     private static final String ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private static final int ID_LENGTH = 8;
     private static final SecureRandom RANDOM = new SecureRandom();

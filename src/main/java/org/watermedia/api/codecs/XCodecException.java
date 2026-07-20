@@ -2,7 +2,7 @@ package org.watermedia.api.codecs;
 
 import java.io.IOException;
 
-public class XCodecException extends IOException {
+public sealed class XCodecException extends IOException permits UnsupportedFormatException {
     public XCodecException() {
         super();
     }

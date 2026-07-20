@@ -599,7 +599,7 @@ public final class GLEngine extends GFXEngine {
             default -> {} // BGRA, RGBA, RGB — NO SHADER NEEDED
         }
 
-        LOGGER.info(IT, "Format set: {} {}x{} ({} planes, {}bpc)", pixelFormat, width, height, this.planes.length, bitsPerComponent);
+        LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc)", pixelFormat, width, height, this.planes.length, bitsPerComponent);
     }
 
     // ==========================================================================

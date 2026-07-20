@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class MediaFirePlatform implements IPlatform {
+public final class MediaFirePlatform implements IPlatform {
     public static final String NAME = "MediaFire";
     private static final Marker IT = MarkerManager.getMarker(MediaFirePlatform.class.getSimpleName());
     private static final Pattern PATTERN_POPSOK = Pattern.compile("<a\\s+class=\"input\\s+popsok\"\\s+aria-label=\"Download\\s+file\"\\s+href=\"([^\"]+)\"[^>]*>");

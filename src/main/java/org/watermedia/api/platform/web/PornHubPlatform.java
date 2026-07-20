@@ -20,7 +20,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public class PornHubPlatform implements IPlatform {
+public final class PornHubPlatform implements IPlatform {
     public static final String NAME = "PornHub";
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");

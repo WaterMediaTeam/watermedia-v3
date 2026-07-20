@@ -242,7 +242,7 @@ public final class VKEngine extends GFXEngine {
         this.memProps = ctx.memoryProperties();
         this.minAlign = ctx.hostImportSupported() ? (int) ctx.minImportedHostPointerAlignment() : 0;
         this.init();
-        LOGGER.info(IT, "VKEngine initialized (hostImport={}, minAlign={})", ctx.hostImportSupported(), this.minAlign);
+        LOGGER.debug(IT, "VKEngine initialized (hostImport={}, minAlign={})", ctx.hostImportSupported(), this.minAlign);
     }
 
     // ==========================================================================
@@ -356,12 +356,12 @@ public final class VKEngine extends GFXEngine {
         this.formatGen++;
         this.head = 0L;
         if (this.ycbcrFmt != 0) {
-            LOGGER.info(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> YCbCr sampler path (vkFormat={}, chromaLoc={}, filter={})",
+            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> YCbCr sampler path (vkFormat={}, chromaLoc={}, filter={})",
                     pixelFormat, width, height, this.planeCount, bitsPerComponent,
                     this.ycbcrFmt, this.ycbcrLoc == VK_CHROMA_LOCATION_MIDPOINT ? "midpoint" : "cosited-even",
                     this.ycbcrFilter == VK_FILTER_LINEAR ? "linear" : "nearest");
         } else {
-            LOGGER.info(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> {} path",
+            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> {} path",
                     pixelFormat, width, height, this.planeCount, bitsPerComponent,
                     this.convert ? "compute" : "passthrough");
         }
@@ -434,7 +434,7 @@ public final class VKEngine extends GFXEngine {
         if (this.sampler != 0L) { vkDestroySampler(this.device, this.sampler, null); this.sampler = 0L; }
         if (this.descPool != 0L) { vkDestroyDescriptorPool(this.device, this.descPool, null); this.descPool = 0L; } // FREES SETS
         if (this.cmdPool != 0L) { vkDestroyCommandPool(this.device, this.cmdPool, null); this.cmdPool = 0L; }       // FREES CMD BUFFERS
-        LOGGER.info(IT, "VKEngine released");
+        LOGGER.debug(IT, "VKEngine released");
     }
 
     // ==========================================================================
