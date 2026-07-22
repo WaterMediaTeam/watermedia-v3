@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -71,35 +73,42 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
     /**
      * Converts a generic CHUNK to ITXT
      */
-    public static ITXT convert(final CHUNK chunk) {
+    public static ITXT convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(chunk.type()));
+            throw new XCodecException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         int offset = 0;
 
-        // KEYWORD (1-79 BYTES + NULL)
+        // KEYWORD (1-79 BYTES + NULL). findNull RETURNS data.length WHEN NO TERMINATOR EXISTS
         int nullIndex = findNull(data, offset, 80);
-        if (nullIndex < 1) {
-            throw new IllegalArgumentException("Invalid iTXt: missing or empty keyword");
+        if (nullIndex < 1 || nullIndex >= data.length) {
+            throw new XCodecException("Invalid iTXt: missing or empty keyword");
         }
         final String keyword = new String(data, offset, nullIndex - offset, StandardCharsets.ISO_8859_1);
         offset = nullIndex + 1;
 
-        // COMPRESSION FLAG (1 BYTE)
+        // COMPRESSION FLAG + METHOD (2 BYTES): A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
+        if (data.length < offset + 2) {
+            throw new XCodecException("Truncated iTXt: missing compression flag/method");
+        }
         final boolean compressed = data[offset++] != 0;
-
-        // COMPRESSION METHOD (1 BYTE)
         final int compressionMethod = data[offset++] & 0xFF;
 
         // LANGUAGE TAG (0+ BYTES + NULL)
         nullIndex = findNull(data, offset, data.length);
+        if (nullIndex >= data.length) {
+            throw new XCodecException("Truncated iTXt: missing language tag terminator");
+        }
         final String languageTag = new String(data, offset, nullIndex - offset, StandardCharsets.US_ASCII);
         offset = nullIndex + 1;
 
         // TRANSLATED KEYWORD (0+ BYTES + NULL)
         nullIndex = findNull(data, offset, data.length);
+        if (nullIndex >= data.length) {
+            throw new XCodecException("Truncated iTXt: missing translated keyword terminator");
+        }
         final String translatedKeyword = new String(data, offset, nullIndex - offset, StandardCharsets.UTF_8);
         offset = nullIndex + 1;
 

@@ -444,7 +444,7 @@ public class WaterMediaApp {
             ctx.audioReady = true;
         } catch (final RuntimeException e) {
             ctx.audioError = true;
-            throw e;
+            WaterMedia.LOGGER.warn("App-side OpenAL audio unavailable; continuing without the click sound", e);
         }
     }
 

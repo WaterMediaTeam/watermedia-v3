@@ -337,9 +337,9 @@ public class OpenMultimediaScreen extends Screen {
         if (action == GLFW_RELEASE) {
             final String url = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
             switch (key) {
-                // IN SEARCH MODE SPACE IS A QUERY CHARACTER (TYPED VIA dispatchChar), NOT THE SAVE SHORTCUT
+                // FIRE ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE (PATH OR SEARCH QUERY) IS INPUT, NOT THE SAVE SHORTCUT
                 case GLFW_KEY_SPACE -> {
-                    if (!this.searchMode() && !url.isEmpty()) this.saveCustomUrl();
+                    if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.saveCustomUrl();
                 }
                 case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
                     if (!url.isEmpty()) {
@@ -351,8 +351,9 @@ public class OpenMultimediaScreen extends Screen {
                 case GLFW_KEY_V -> {
                     if (this.ctx.ctrlDown) this.pasteFromClipboard();
                 }
+                // FIRE ONLY WHILE THE FIELD IS BLURRED: AN 'r' TYPED INTO A URL MUST NOT TRIGGER A NETWORK RELOAD
                 case GLFW_KEY_R -> {
-                    if (!this.searchMode() && !url.isEmpty()) this.reloadPreviewMRL();
+                    if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.reloadPreviewMRL();
                 }
             }
         }

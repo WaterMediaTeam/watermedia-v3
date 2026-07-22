@@ -1,19 +1,18 @@
 package org.watermedia.tools;
 
-import java.util.HashMap;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
 public class ThreadTool {
-    public static final HashMap<String, Integer> THREADS = new HashMap<>();
+    private static final ConcurrentHashMap<String, Integer> THREADS = new ConcurrentHashMap<>();
 
     public static Thread createStarted(final String name, final Runnable runnable) {
-        // AUTO-APPEND A PER-NAME COUNTER (name-0, name-1, ...) CONSISTENTLY WITH createStartedLoop
-        final int c = THREADS.computeIfAbsent(name, k -> 0);
+        // AUTO-APPEND A PER-NAME COUNTER (name-0, name-1, ...) CONSISTENTLY WITH createStartedLoop.
+        // merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO SUBTRACT 1 FOR THE SUFFIX
+        final int c = THREADS.merge(name, 1, Integer::sum) - 1;
         final Thread t = new Thread(runnable, name + "-" + c);
-        THREADS.put(name, c + 1);
         t.setDaemon(true);
         t.setPriority(Thread.NORM_PRIORITY);
         t.start();
@@ -118,13 +117,13 @@ public class ThreadTool {
      * @return the started thread
      */
     public static Thread createStartedLoop(final String name, final Runnable runnable) {
-        final int c = THREADS.computeIfAbsent(name, k -> 0);
+        // merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO SUBTRACT 1 FOR THE SUFFIX
+        final int c = THREADS.merge(name, 1, Integer::sum) - 1;
         final Thread t = new Thread(() -> {
             while (!Thread.currentThread().isInterrupted()) {
                 runnable.run();
             }
         }, name + "-" + c);
-        THREADS.put(name, c + 1);
         t.setDaemon(true); // DIE ALONGSIDE THE MAIN THREAD
         t.setPriority(Thread.NORM_PRIORITY);
         t.start();

@@ -18,9 +18,10 @@ public enum ColorType {
 
     /**
      * Returns the ColorType for the given ordinal value.
-     * @throws ArrayIndexOutOfBoundsException if value is out of range (not 0-6)
+     * @throws IllegalArgumentException if value is out of range (not 0-6)
      */
     public static ColorType of(final int value) {
+        if (value < 0 || value >= VALUES.length) throw new IllegalArgumentException("Invalid PNG color type: " + value);
         return VALUES[value];
     }
 }

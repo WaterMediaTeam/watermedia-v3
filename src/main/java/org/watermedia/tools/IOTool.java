@@ -210,8 +210,13 @@ public class IOTool {
         try (final var in = new BufferedInputStream(is, BUFFER_SIZE); final var zip = new ZipInputStream(in)) {
             ZipEntry entry;
             final byte[] buffer = new byte[BUFFER_SIZE]; // THIS IS OUTSIDE THE LOOP TO AVOID MULTIPLE ALLOCATIONS PER ENTRY
+            final String outputPrefix = output.getCanonicalPath() + File.separator; // ZIP SLIP GUARD BASELINE
             while ((entry = zip.getNextEntry()) != null) {
                 final File outFile = new File(output, entry.getName());
+                // ZIP SLIP: REJECT ENTRIES WHOSE RESOLVED PATH ESCAPES output
+                if (!outFile.getCanonicalPath().startsWith(outputPrefix)) {
+                    throw new IOException("Zip entry escapes target directory: " + entry.getName());
+                }
                 if (entry.isDirectory()) {
                     if (!outFile.exists() && !outFile.mkdirs()) {
                         return false;

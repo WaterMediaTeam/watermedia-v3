@@ -540,7 +540,12 @@ public final class PNGReader extends ImageReader {
         if (ihdr.width() > MAX_DIM || ihdr.height() > MAX_DIM) {
             throw new XCodecException("PNG dimensions too big: " + ihdr.width() + "x" + ihdr.height() + " (max " + MAX_DIM + ")");
         }
-        final ColorType colorType = ColorType.of(ihdr.colorType());
+        // CHECK AND THROW INSTEAD OF LET "OF" METHOD THROW IAE
+        final int colorTypeByte = ihdr.colorType();
+        if (colorTypeByte < 0 || colorTypeByte > 6) {
+            throw new XCodecException("Unknown color type: " + colorTypeByte);
+        }
+        final ColorType colorType = ColorType.of(colorTypeByte);
         final int depth = ihdr.depth();
         switch (colorType) {
             case GREYSCALE -> {
@@ -1113,7 +1118,8 @@ public final class PNGReader extends ImageReader {
         while (buffer.remaining() >= 12) {
             final int length = buffer.getInt();
             final int type = buffer.getInt();
-            if (length < 0 || buffer.remaining() < length + 4) break;
+            // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE BOUNDS CHECK
+            if (length < 0 || buffer.remaining() < (long) length + 4) break;
 
             final int dataPos = buffer.position();
             if (type == ACTL.SIGNATURE && length >= ACTL.LENGTH) {
@@ -1129,7 +1135,7 @@ public final class PNGReader extends ImageReader {
                 total += delay;
             }
 
-            buffer.position(dataPos + length + 4);
+            buffer.position(Math.min(buffer.limit(), dataPos + length + 4));
             if (type == IEND.SIGNATURE) break;
         }
 

@@ -107,6 +107,8 @@ public final class TextField extends Element<TextField> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
+        // A HIDDEN OR DISABLED FIELD NEITHER CONSUMES CLICKS NOR GRABS FOCUS; THE FOCUS/BLUR BRANCHES STAY BELOW
+        if (!this.visible || !this.enabled) return false;
         if (this.contains(mx, my)) {
             this.focused = true;
             this.invalidate();

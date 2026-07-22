@@ -1,5 +1,6 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import javax.xml.XMLConstants;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
@@ -16,19 +17,23 @@ import java.util.Map;
  * Builds an {@link SvgNode} tree from SVG bytes using the JDK StAX reader, and hosts the small value
  * parsers shared by the renderer (transform lists, lengths, inline styles, point lists).
  *
- * <p>The reader is hardened against XXE: external entities and external DTD loading are disabled.
- * Internal DTDs are tolerated (many real SVGs carry a {@code <!DOCTYPE>}); the JDK's entity-expansion
- * limit guards against expansion-bomb inputs.
+ * <p>The reader is hardened against XXE/SSRF: external entities are disabled and external DTD/schema
+ * access is denied ({@code ACCESS_EXTERNAL_DTD}/{@code ACCESS_EXTERNAL_SCHEMA} set to ""), so a
+ * {@code SYSTEM} DTD is never fetched over the network. Internal DTD subsets are tolerated (many real
+ * SVGs carry a {@code <!DOCTYPE>}); the JDK's entity-expansion limit guards against expansion-bomb inputs.
  */
 final class SVGParser {
     private SVGParser() {}
 
     static SvgNode parse(final InputStream in) throws IOException {
         final XMLInputFactory factory = XMLInputFactory.newFactory();
-        // BLOCK EXTERNAL ENTITY / EXTERNAL DTD RESOLUTION (XXE) WHILE STILL TOLERATING AN INTERNAL DOCTYPE
+        // BLOCK EXTERNAL ENTITY / EXTERNAL DTD RESOLUTION (XXE / SSRF) WHILE STILL TOLERATING AN INTERNAL DOCTYPE.
+        // ACCESS_EXTERNAL_DTD="" IS THE ONE THAT ACTUALLY STOPS THE JDK StAX PARSER FROM FETCHING A SYSTEM DTD
+        // OVER THE NETWORK; IS_SUPPORTING_EXTERNAL_ENTITIES ALONE DOES NOT
         setProperty(factory, XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
-        setProperty(factory, "javax.xml.stream.isSupportingExternalEntities", Boolean.FALSE);
         setProperty(factory, XMLInputFactory.SUPPORT_DTD, Boolean.TRUE);
+        setProperty(factory, XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        setProperty(factory, XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
         // NAMESPACE-UNAWARE: STAY LENIENT LIKE THE REST OF THE DECODER. NAMESPACE-AWARE MODE MAKES AN
         // UNDECLARED PREFIX (e.g. xlink:href WITH NO xmlns:xlink) A FATAL ERROR; ATTRIBUTES ARE READ
         // BY LOCAL NAME (href / xlink:href BOTH HANDLED), SO PREFIX RESOLUTION IS NOT NEEDED

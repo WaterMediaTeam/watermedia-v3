@@ -130,6 +130,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile boolean triggerStop;
     private volatile boolean triggerPause;
     private volatile boolean triggerResume;
+    private volatile boolean startPausedRequest;
     private volatile boolean triggerNextFrame;
     private volatile boolean triggerPrevFrame;
     private volatile long seekTarget = -1L;
@@ -178,7 +179,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     @Override
     public void start() {
-        final boolean initialPause = this.triggerPause;
+        // ONLY startPaused() SEEDS THE INITIAL PAUSE — NEVER A LEFTOVER triggerPause FROM A PRIOR SESSION
+        final boolean initialPause = this.startPausedRequest;
+        this.startPausedRequest = false;
         final Future<?> oldTask = this.lifecycleTask;
         if ((this.lifecycleThread != null && this.lifecycleThread.isAlive()) || (oldTask != null && !oldTask.isDone())) {
             this.stop();
@@ -207,7 +210,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public void startPaused() {
-        this.triggerPause = true;
+        this.startPausedRequest = true;
         this.start();
     }
 
@@ -365,9 +368,14 @@ public final class TxMediaPlayer extends MediaPlayer {
     private boolean shouldUseFrameTextures(final ImageReader reader) {
         final int frames = reader.frameCount();
         if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.supportsFrameTextures()) return false;
-        // VRAM COST IS RGBA8 PER FRAME (AT THE UPLOAD TARGET) REGARDLESS OF THE SOURCE PIXEL LAYOUT
         final long budget = Math.max(0L, WaterMediaConfig.media.tx.texturesBudget) * 1024L * 1024L;
-        return (long) frames * this.outWidth * this.outHeight * 4L <= budget;
+        // VRAM COST IS RGBA8 PER FRAME AT THE UPLOAD TARGET REGARDLESS OF THE SOURCE PIXEL LAYOUT.
+        final long vramCost = (long) frames * this.outWidth * this.outHeight * 4L;
+        // prepareTextures' readAll() TRANSIENTLY DECODES THE WHOLE SET AT SOURCE RESOLUTION INTO HEAP
+        // BEFORE THE DOWNSCALE, SO GATE ON THAT PEAK TOO — OTHERWISE maxSize/LOD LETS A TINY VRAM COST
+        // HIDE A MULTI-GB HEAP ALLOC (OOM). WHEN IT DOESN'T FIT WE FALL THROUGH TO MODE 3 STREAMING.
+        final long heapPeak = (long) frames * this.sourceWidth * this.sourceHeight * 4L;
+        return vramCost <= budget && heapPeak <= budget;
     }
 
     private void prepareTextures(final ImageReader reader) throws IOException {
@@ -377,6 +385,11 @@ public final class TxMediaPlayer extends MediaPlayer {
         // DECODE EVERY FRAME. IF readAll() YIELDS ONLY ONE FRAME (E.G. APNG WITH A SINGLE FCTL)
         // FALL BACK TO STATIC SEMANTICS RATHER THAN BUILDING A CLOCK FOR NOTHING.
         final ImageData data = reader.readAll();
+        // A TRUNCATED/CORRUPT ANIMATION CAN DECODE TO ZERO FRAMES EVEN THOUGH frameCount() REPORTED >1;
+        // FAIL CLEANLY INSTEAD OF INDEXING frames()[0] (AIOOBE SWALLOWED AS A VAGUE "Lifecycle error").
+        if (data.frames().length == 0) {
+            throw new IOException("No frames decoded from: " + this.source);
+        }
         if (data.frames().length <= 1) {
             this.uploadFrame(data.frames()[0]);
             this.currentFrameIndex = 0;
@@ -1411,6 +1424,9 @@ public final class TxMediaPlayer extends MediaPlayer {
             }
             return true;
         }
+        // NO STATIC IMAGE, NO PASSIVE-CLOCK TIMELINE, NO LIVE STREAM LIFECYCLE: NOTHING IS PLAYING, SO
+        // pause()/resume() IS A NO-OP. RETURNING true HERE WOULD LATCH triggerPause ON AN IDLE PLAYER.
+        if (!this.loaded && (this.lifecycleThread == null || !this.lifecycleThread.isAlive())) return false;
         if (paused) { this.triggerPause = true; this.triggerResume = false; }
         else { this.triggerResume = true; this.triggerPause = false; }
         this.wake();

@@ -29,9 +29,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected MediaQuality quality = WaterMediaConfig.media.defaultQuality;
 
     // AUDIO PROPERTIES
-    private boolean repeat;
+    private volatile boolean repeat;
     private float volume = 1f;
-    private float speed = 1.0f;
+    private volatile float speed = 1.0f;
     private boolean muted = false;
 
     // VIDEO UPLOAD SCALING — WRITTEN BY THE CALLER (OR A SUBCLASS), READ BY THE PLAYBACK

@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -53,9 +55,9 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
     /**
      * Converts a generic CHUNK to ZTXT
      */
-    public static ZTXT convert(final CHUNK chunk) {
+    public static ZTXT convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(chunk.type()));
+            throw new XCodecException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
@@ -70,14 +72,19 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
         }
 
         if (nullIndex < 1) {
-            throw new IllegalArgumentException("Invalid zTXt: missing or empty keyword");
+            throw new XCodecException("Invalid zTXt: missing or empty keyword");
+        }
+
+        // NEED THE COMPRESSION-METHOD BYTE AFTER THE KEYWORD NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
+        if (data.length < nullIndex + 2) {
+            throw new XCodecException("Truncated zTXt: missing compression method");
         }
 
         final String keyword = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int compressionMethod = data[nullIndex + 1] & 0xFF;
 
         if (compressionMethod != 0) {
-            throw new IllegalArgumentException("Unknown zTXt compression method: " + compressionMethod);
+            throw new XCodecException("Unknown zTXt compression method: " + compressionMethod);
         }
 
         // REMAINING DATA IS COMPRESSED TEXT

@@ -180,6 +180,8 @@ public final class SegmentedControl extends Element<SegmentedControl> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
+        // A HIDDEN OR DISABLED CONTROL SWALLOWS NOTHING AND NEVER CHANGES THE SELECTION
+        if (!this.visible || !this.enabled) return false;
         final int n = this.segments.length;
         if (n == 0 || !this.contains(mx, my)) return false;
         final int segW = this.innerWidth() / n;

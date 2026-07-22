@@ -14,6 +14,9 @@ import java.nio.ByteBuffer;
  */
 public record CHUNK(int length, int type, byte[] data, int crc) {
 
+    // HARD SANITY CAP FOR A SINGLE CHUNK READ FROM A STREAM (WHERE REMAINING LENGTH IS UNKNOWN)
+    private static final int MAX_CHUNK_LENGTH = 256 * 1024 * 1024;
+
     // PRECALCULATED CRC TABLE (POLYNOMIAL: 0xEDB88320)
     private static final int[] CRC_TABLE = new int[256];
 
@@ -40,7 +43,8 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
             if (buffer.remaining() < 8) throw new EOFException("Unexpected EOF while reading chunk header");
             final int length = buffer.getInt();
             if (length < 0) throw new IOException("Invalid chunk length: " + length);
-            if (buffer.remaining() < length + 4) {
+            // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE EOF CHECK INTO A ~2GB ALLOC
+            if (buffer.remaining() < (long) length + 4) {
                 throw new EOFException("Unexpected EOF while reading chunk data");
             }
             final int type = buffer.getInt();
@@ -61,6 +65,10 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
         final int length = readIntBE(in);
         if (length < 0) {
             throw new IOException("Invalid chunk length: " + length);
+        }
+        // NO STREAM-LENGTH IS KNOWN HERE, SO A HARD SANITY CAP STOPS A ~2GB ALLOC FROM 4 ATTACKER BYTES
+        if (length > MAX_CHUNK_LENGTH) {
+            throw new IOException("PNG chunk too large: " + length + " bytes (max " + MAX_CHUNK_LENGTH + ")");
         }
         final int type = readIntBE(in);
         final byte[] data = new byte[length];

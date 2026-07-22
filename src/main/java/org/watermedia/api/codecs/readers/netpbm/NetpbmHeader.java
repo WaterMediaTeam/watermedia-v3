@@ -83,9 +83,14 @@ public final class NetpbmHeader {
         if (this.width <= 0) throw new XCodecException("Invalid WIDTH: " + this.width + ". Must be greater than 0.");
         if (this.height <= 0) throw new XCodecException("Invalid HEIGHT: " + this.height + ". Must be greater than 0.");
         if (this.version == 7) {
-            if (this.depth == null || this.depth <= 0)
+            // ENFORCE THE UPPER BOUND THE MESSAGE ALREADY CLAIMS; AN UNBOUNDED DEPTH OVERFLOWS THE RASTER MATH
+            if (this.depth == null || this.depth <= 0 || this.depth > 65535)
                 throw new XCodecException("Invalid DEPTH: " + this.depth + ". Must be between 1 and 65535.");
         }
+
+        // PGM/PPM/PAM ALL REQUIRE MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
+        if ((this.version == 5 || this.version == 6 || this.version == 7) && this.maxVal == null)
+            throw new XCodecException("Missing MAXVAL for P" + this.version);
 
         if (this.maxVal != null && (this.maxVal <= 0 || this.maxVal > 65535))
             throw new XCodecException("Invalid MAXVAL: " + this.maxVal + ". Must be between 1 and 65535.");

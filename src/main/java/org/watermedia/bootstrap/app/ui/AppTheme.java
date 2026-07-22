@@ -1,8 +1,8 @@
 package org.watermedia.bootstrap.app.ui;
 
 import java.awt.Color;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Hi-fi handoff theme tokens.
@@ -11,8 +11,9 @@ public final class AppTheme {
 
     private static final float FONT_BASE_PX = 20f;
     // CACHE OF alpha() RESULTS — alpha() IS CALLED MANY TIMES PER FRAME FROM DRAW CODE, SO REUSING THE
-    // IMMUTABLE Color AVOIDS ALLOCATING GARBAGE EVERY FRAME. RENDER-THREAD-ONLY (UI DRAW), SO NO SYNC.
-    private static final Map<Integer, Color> ALPHA_CACHE = new HashMap<>();
+    // IMMUTABLE Color AVOIDS ALLOCATING GARBAGE EVERY FRAME. ACCESSED FROM BOTH THE RENDER THREAD (UI
+    // DRAW) AND THE SWING EDT (SKIN STATIC INIT), SO ConcurrentHashMap PROVIDES THE NEEDED SAFETY.
+    private static final Map<Integer, Color> ALPHA_CACHE = new ConcurrentHashMap<>();
 
     private AppTheme() {
     }

@@ -234,6 +234,55 @@ public class MathUtilTest {
         }
     }
 
+    @Nested
+    @DisplayName("scaleTempo / scaleDesTempo contract")
+    class ScaleTempoTests {
+
+        @Test
+        @DisplayName("scaleTempo(long) in-range returns the plain ratio")
+        void scaleTempoLongInRange() {
+            assertEquals(0.5d, MathUtil.scaleTempo(0L, 10L, 5L), EPSILON);
+        }
+
+        @Test
+        @DisplayName("scaleTempo(long) out-of-range wraps to zero via modulo")
+        void scaleTempoLongWraps() {
+            assertEquals(0.5d, MathUtil.scaleTempo(0L, 10L, 15L), EPSILON);
+        }
+
+        @Test
+        @DisplayName("scaleTempo(double) in-range returns the plain ratio")
+        void scaleTempoDoubleInRange() {
+            assertEquals(0.5d, MathUtil.scaleTempo(0.0, 10.0, 5.0), EPSILON);
+        }
+
+        @Test
+        @DisplayName("scaleTempo(double) out-of-range wraps to zero via modulo")
+        void scaleTempoDoubleWraps() {
+            assertEquals(0.5d, MathUtil.scaleTempo(0.0, 10.0, 15.0), EPSILON);
+        }
+
+        @Test
+        @DisplayName("scaleDesTempo in-range matches scaleTempo")
+        void scaleDesTempoInRange() {
+            assertEquals(0.5d, MathUtil.scaleDesTempo(0L, 10L, 5L), EPSILON);
+        }
+
+        @Test
+        @DisplayName("scaleDesTempo out-of-range over-scales without wrapping")
+        void scaleDesTempoOverScales() {
+            assertEquals(1.5d, MathUtil.scaleDesTempo(0L, 10L, 15L), EPSILON);
+        }
+
+        @Test
+        @DisplayName("scaleDesTempoTick over-scales while scaleTempoTick wraps for the same out-of-range tick")
+        void tickVariantsDiffer() {
+            // 20t = 1s SO end:10t=500ms, time:15t=750ms; WRAP GIVES 0.5, OVER-SCALE GIVES 1.5
+            assertEquals(0.5d, MathUtil.scaleTempoTick(0, 10, 15), EPSILON);
+            assertEquals(1.5d, MathUtil.scaleDesTempoTick(0, 10, 15), EPSILON);
+        }
+    }
+
     @Test
     @DisplayName("MathUtil.EASE_IN.apply matches MathUtil.easeIn")
     void enumDelegation() {

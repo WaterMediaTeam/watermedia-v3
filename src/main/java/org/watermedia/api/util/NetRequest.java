@@ -481,6 +481,14 @@ public final class NetRequest implements AutoCloseable {
                 }
 
                 http.disconnect();
+
+                // RFC 9110: A 303 SEE OTHER MUST BE RE-REQUESTED AS GET WITHOUT THE ORIGINAL BODY
+                // THIS IS STUPID
+                if (code == HttpURLConnection.HTTP_SEE_OTHER) {
+                    this.method = "GET";
+                    this.body = null;
+                }
+
                 current = next;
                 trace.add(current);
             }
@@ -493,6 +501,11 @@ public final class NetRequest implements AutoCloseable {
             if (!this.referer$set && !out.has("Referer")) {
                 final String host = target.getHost();
                 if (host != null) out.set("Referer", target.getScheme() + "://" + host);
+            }
+            // DO NOT LEAK THE CREDENTIALS ACROSS ORIGIN, I AM SEEING SCRIPTKIDS ABUSING THIS
+            if (!Objects.equals(this.uri.getHost(), target.getHost())) {
+                out.removeAll("Authorization");
+                out.removeAll("X-WaterMedia-Token");
             }
             return out;
         }

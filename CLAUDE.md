@@ -1,22 +1,37 @@
-# Lineamientos de Trabajo
-- No apresures las tareas. Toma todo el tiempo necesario para completar el trabajo de la mejor forma posible, no la mas rapida. No importa que tanto pueda tomar una tarea.
-- Siempre toma la mejor ruta, no la mas rapida.
-- Para tareas pesadas, preferentemente divide el trabajo en multiples agentes y revisa su trabajo al final.
-- Siempre sigue las buenas practicas para todo, en especial al implementar o editar codigo.
-- Una vez finalizes una tarea relacionada con programar, regresa a la instruccion original y asegurate que no hayas olvidado nada, que hayas implementado algo de forma suboptima o apresurada, o si algo no esta optimizado o es lo suficientemente estable o consolidado. Si encuentras algo, arreglalo y/o mejoralo, repite el mismo ciclo de regresar a la instruccion original hasta que todo se encuentre en buen estado.
-- El proposito de cualquier tarea requiere ser la mas optimizada, estable y con un resultado limpio, siguiendo las mejores practicas.
-- Manten el codigo simple y limpio, sin introducir metodos redundantes con logica que perfectamente puede encajar en el metodo o los metodos principales.
-- Prefiere una estrucctura monolitica (aprovechando optimizaciones del JIT en variables), extrae métodos solo cuando la extracción paga su costo, Y paga cuando: (1) la sublógica se reutiliza de verdad en varios sitios, (2) se puede nombrar con una abstracción que el lector entiende sin ir a leer el cuerpo, o (3) necesitas probarla aislada. Si nada de eso aplica, el helper es ruido.
-- Nunca utilices AtomicBoolean, AtomicInteger, o cualquier otra variable Atomic* en codigo, siempre utiliza volatile.
-- Usa nomenclaturas cortas y claras en los metodos y variables cuando escribas codigo
-- Siempre que encuentres un error, analiza el motivo y el contexto en el que surge y solucionalo de la manera correcta, no de la manera rapida y tampoco tapes el error como si fuera correcto.
-- Los comentarios deben ser escritos en mayusculas y en idioma ingles (// THIS DOES THIS)
-- Siempre que se proporcionen ejemplos, no te quedes solo con esos casos de uso, explora más posibilidades que no hayan contempladas
-- Los Javadocs deben ser escritos con las buenas practicas de escritura en idioma ingles
-- Escribe comentarios para tareas complejas o con mucha carga algoritmica.
-- Nunca agregues javadocs a metodos private o package-private
-- Gradle: las versiones y las constantes van en gradle.properties, nunca en build.gradle.
-- Gradle: no uses {} en variables simples (usa $var no ${var}); solo usa {} para object.field
+# Language
+- Always reason and think in English, but always reply to the user in Spanish.
+- Comments must be written in UPPERCASE and in English (// THIS DOES THIS)
+
+# Work Guidelines
+- Do not rush tasks. Take all the time necessary to complete the work in the best way possible, not the fastest. It does not matter how long a task may take.
+- Always take the best route, not the fastest one.
+- For heavy tasks, ask for split the work across multiple agents and review their work at the end, on deny work standalone, on accept run with agents.
+- Always follow best practices for everything in terms of modern clean code (no micro-methods), optimization and logic simplification, especially when implementing or editing code.
+- Once you finish a programming-related task, go back to the original instruction, read it again, make sure you haven't forgotten anything, validate that nothing was implemented in a suboptimal or rushed way, and that everything is optimized, stable, and consolidated enough. If you find anything, fix and/or improve it, then repeat the same cycle of going back to the original instruction until everything is in good shape.
+- The purpose of any task is to be the most optimized, stable, clean and simple result possible, following best practices.
+- Keep the code simple and clean, without introducing redundant methods or micro methods with logic that could perfectly fit into the main method(s).
+- Prefer a monolithic and centralized structure (taking advantage of JIT optimizations on variables); extract methods only when the extraction pays its cost, AND it pays when: (1) the sub-logic is genuinely reused in several places (2) Code block is bigger and complex, (3) it can be named with an abstraction the reader understands without reading its body, or (4) you need to test it in isolation. If none of that applies, the helper is noise.
+- Never use AtomicBoolean, AtomicInteger, or any other Atomic* variable in code; always use volatile instead.
+- Use short and clear naming for methods and variables when writing code, the best is record-like names (no get/set prefix).
+- Whenever you find an error, analyze the reason and the context in which it arises and fix it the right way, not the fast way, and never paper over the error as if it were correct.
+- Whenever examples are provided, do not limit yourself to those use cases; explore more possibilities that were not contemplated, think outside the box.
+- Javadocs must be written following good writing practices, be short and in English.
+- Write comments for complex tasks or ones with heavy algorithmic load, preferable 1 or 2 lines explaining the basics to understand how code works and/or why is there..
+- Never add Javadocs to private or package-private methods, add simple comments.
+- Gradle: versions and constants go in gradle.properties, never in build.gradle.
+- Gradle: do not use {} for simple variables (use $var, not ${var}); only use {} for object.field
+- Gradle: use local gradle installation preferable over gradlew, gradle command is v9
+
+# Terminology
+- Legal and contextual terminology for legal and documentations consult TERMINOLOGY.md
+
+# Utilities
+- libs\tools\src\main\java\org\watermedia\tools: General utility classes
+  - DataTool: Data handling tools, byte manipulation and data conversion
+  - IOTool: System information and system file handling
+  - JsonTool: JSON handling and parsing using GSON
+  - ThreadTool: Creation, synchronization and handling of Threads, factories and executors
+  - VersionTool: Utility for version control
 
 # Git
-- NUNCA hagas nuevas branches o cambies a una diferente salvo que el usuario te lo diga explicitamente
+- NEVER create new branches or switch to a different one unless the user explicitly tells you to.

@@ -25,6 +25,7 @@ import java.nio.ByteOrder;
  * <p>Only the four binary variants are supported (matching the legacy decoder).
  */
 public final class NETPBMReader extends ImageReader {
+    private static final int MAX_DIM = 16384; // 16K PER AXIS; KEEPS width*height*4 WITHIN INT
 
     private final NetpbmType type;
     private final NetpbmHeader header;
@@ -44,6 +45,11 @@ public final class NETPBMReader extends ImageReader {
         this.type = NetpbmType.fromVersion(this.header.versionString);
         if (this.type == null) {
             throw new UnsupportedFormatException("Unsupported Netpbm version: " + this.header.versionString);
+        }
+
+        // SECURITY CAP: SIBLING READERS ALL ENFORCE 16384; WITHOUT IT A TINY HEADER FORCES A MULTI-GB DIRECT ALLOC (OR AN INT OVERFLOW)
+        if (this.header.width > MAX_DIM || this.header.height > MAX_DIM) {
+            throw new XCodecException("Netpbm dimensions too big: " + this.header.width + "x" + this.header.height + " (max " + MAX_DIM + ")");
         }
 
         this.directOut = ByteBuffer.allocateDirect(this.header.width * this.header.height * 4).order(ByteOrder.LITTLE_ENDIAN);

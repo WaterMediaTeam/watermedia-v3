@@ -113,9 +113,17 @@ public final class NetworkServer {
             }
 
             final String id = nextId();
-            final Path idDir = storageDir.resolve(id);
+            final Path idDir = storageDir.resolve(id).normalize().toAbsolutePath();
+            final Path targetFile = idDir.resolve(filename).normalize();
+
+            // I CALL THIS, PATH INJECTION, IS STUPID, TRICKY BUT IT REALLY NEEDS A HANDLER
+            if (filename.indexOf('/') >= 0 || filename.indexOf('\\') >= 0 || !targetFile.startsWith(idDir)) {
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
+                LOGGER.warn(IT, "Rejected upload with traversal filename: {}", filename);
+                return;
+            }
+
             Files.createDirectory(idDir);
-            final Path targetFile = idDir.resolve(filename);
 
             try {
                 try (final var in = new BufferedInputStream(exchange.getRequestBody());
@@ -216,12 +224,19 @@ public final class NetworkServer {
                 final String[] parts = rangeSpec.split("-", 2);
 
                 final long start, end;
-                if (parts[0].isEmpty()) {
-                    end = fileSize - 1;
-                    start = fileSize - Long.parseLong(parts[1]);
-                } else {
-                    start = Long.parseLong(parts[0]);
-                    end = parts.length > 1 && !parts[1].isEmpty() ? Long.parseLong(parts[1]) : fileSize - 1;
+                try {
+                    if (parts[0].isEmpty()) {
+                        end = fileSize - 1;
+                        start = fileSize - Long.parseLong(parts[1]);
+                    } else {
+                        start = Long.parseLong(parts[0]);
+                        end = parts.length > 1 && !parts[1].isEmpty() ? Long.parseLong(parts[1]) : fileSize - 1;
+                    }
+                } catch (final NumberFormatException | ArrayIndexOutOfBoundsException e) {
+                    // MALFORMED RANGE SPEC (E.G. "bytes=abc-", "bytes=-", "bytes=") — ANSWER 416 INSTEAD OF THROWING
+                    exchange.getResponseHeaders().set("Content-Range", "bytes */" + fileSize);
+                    exchange.sendResponseHeaders(416, -1);
+                    return;
                 }
 
                 if (start < 0 || end >= fileSize || start > end) {

@@ -103,14 +103,16 @@ public final class MRL {
         try {
             if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
                 synchronized (LOADED) {
-                    if (NEXT_CLEAN_TIME > System.currentTimeMillis()) return; // FIRST TO LOCK HAS DONE IT
-                    LOADED.forEach((uri, mrl) -> {
-                        if (mrl.status().disposable()) {
-                            LOADED.remove(uri);
-                            mrl.status = Status.FORGOTTEN;
-                        }
-                    });
-                    NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
+                    // RE-CHECK UNDER LOCK: ONLY THE FIRST RACER RUNS CLEANUP, LOSERS STILL FALL THROUGH TO THE FETCH BELOW
+                    if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
+                        LOADED.forEach((uri, mrl) -> {
+                            if (mrl.status().disposable()) {
+                                LOADED.remove(uri);
+                                mrl.status = Status.FORGOTTEN;
+                            }
+                        });
+                        NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
+                    }
                 }
             }
         } catch (final Throwable ex) {
@@ -273,10 +275,11 @@ public final class MRL {
     }
 
     /**
-     * Registers a new listener, gets triggered when {@link MRL#status()} is true.
-     * If the MRL is already ready when this is called, the listener fires immediately
-     * on the calling thread; otherwise it fires on the loader thread once loading
-     * finishes. After firing, all listeners are dropped — re-subscribe across reloads.
+     * Registers a new listener, triggered once loading completes OR fails.
+     * If the MRL has already reached a terminal state when this is called, the
+     * listener fires immediately on the calling thread; otherwise it fires on the
+     * loader thread once loading finishes. After firing, all listeners are dropped
+     * — re-subscribe across reloads.
      * <p>
      * This method call is highly disliked on Game environments where
      * are tick-based, is strongly recommended to check {@link MRL#status()} every tick
@@ -285,7 +288,8 @@ public final class MRL {
      */
     public void subscribe(final Consumer<MRL> listener) {
         synchronized (this.listeners) {
-            if (this.status == Status.LOADED) {
+            // ANY NON-FETCHING STATE IS TERMINAL: fireListeners() ALREADY RAN AND CLEARED THE LIST, SO FIRE NOW
+            if (this.status != Status.FETCHING) {
                 try { listener.accept(this); }
                 catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
                 return;
@@ -441,13 +445,16 @@ public final class MRL {
      * A URI Source container with multiple quality support and optional slave sources.
      */
     public record Source(MediaType type, URI thumbnail, Metadata metadata, RequestHeaders headers,
-                         EnumMap<MediaQuality, URI> qualities, List<SlaveEntry> audioSlaves,
+                         Map<MediaQuality, URI> qualities, List<SlaveEntry> audioSlaves,
                          List<SlaveEntry> subSlaves) {
 
         public Source {
             if (qualities.isEmpty())
                 throw new IllegalArgumentException("Source constructed with no qualities");
 
+            // DEFENSIVE UNMODIFIABLE COPY: Source IS CACHED AND SHARED ACROSS DECODE THREADS, THE MAP MUST NOT LEAK MUTABLE
+            // ENUMMAP KEPT INTERNALLY FOR ORDERING/PERF; keySet() OF AN UNMODIFIABLE MAP IS ALSO SAFE TO EXPOSE
+            qualities = Collections.unmodifiableMap(new EnumMap<>(qualities));
             audioSlaves = audioSlaves == null ? List.of() : List.copyOf(audioSlaves);
             subSlaves = subSlaves == null ? List.of() : List.copyOf(subSlaves);
             if (headers == null) headers = new RequestHeaders();

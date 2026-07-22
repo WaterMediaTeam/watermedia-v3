@@ -176,6 +176,8 @@ public final class Spinner extends Element<Spinner> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
+        // A HIDDEN OR DISABLED SPINNER NEITHER CONSUMES CLICKS NOR EDITS; THE COMMIT-ON-MISS BRANCH STAYS BELOW
+        if (!this.visible || !this.enabled) return false;
         if (!this.contains(mx, my)) {
             if (this.editing) this.commit(); // A CLICK ANYWHERE ELSE BLURS AND COMMITS
             return false;

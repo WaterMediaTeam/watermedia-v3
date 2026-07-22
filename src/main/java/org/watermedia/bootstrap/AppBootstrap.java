@@ -14,8 +14,10 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.net.URLConnection;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.List;
 import java.util.function.BiConsumer;
@@ -444,22 +446,41 @@ public class AppBootstrap {
         c.setReadTimeout(READ_TIMEOUT);
 
         final long total = c.getContentLengthLong();
-        try (final InputStream in = new BufferedInputStream(c.getInputStream());
-             final OutputStream out = new BufferedOutputStream(Files.newOutputStream(dest))) {
-            final byte[] buf = new byte[DOWNLOAD_BUF];
-            long dl = 0;
-            int r;
-            while ((r = in.read(buf)) != -1) {
-                out.write(buf, 0, r);
-                ThreadTool.sleep(5); // SLEEP TO SLOWDOWN DOWNLOAD SPEED, FOR FANCYNESS
-                dl += r;
-                if (total > 0) {
-                    live(String.format("[DOWNLOADING] %s %d%% %.1f/%.1fMB", name,
-                            (int) (dl * 100 / total), dl / 1_048_576.0, total / 1_048_576.0));
-                } else {
-                    live(String.format("[DOWNLOADING] %s %.1fMB", name, dl / 1_048_576.0));
+        // STREAM INTO A SIBLING .part FILE AND PROMOTE IT ATOMICALLY ONLY ON A VERIFIED-COMPLETE TRANSFER,
+        // SO A MID-STREAM FAILURE NEVER LEAVES A TRUNCATED JAR THAT scanBootstrap WOULD TRUST AS CACHED.
+        final Path part = dest.resolveSibling(name + ".part");
+        long dl = 0;
+        try {
+            try (final InputStream in = new BufferedInputStream(c.getInputStream());
+                 final OutputStream out = new BufferedOutputStream(Files.newOutputStream(part))) {
+                final byte[] buf = new byte[DOWNLOAD_BUF];
+                int r;
+                while ((r = in.read(buf)) != -1) {
+                    out.write(buf, 0, r);
+                    ThreadTool.sleep(5); // SLEEP TO SLOWDOWN DOWNLOAD SPEED, FOR FANCYNESS
+                    dl += r;
+                    if (total > 0) {
+                        live(String.format("[DOWNLOADING] %s %d%% %.1f/%.1fMB", name,
+                                (int) (dl * 100 / total), dl / 1_048_576.0, total / 1_048_576.0));
+                    } else {
+                        live(String.format("[DOWNLOADING] %s %.1fMB", name, dl / 1_048_576.0));
+                    }
                 }
             }
+            // VALIDATE THE TRANSFERRED SIZE AGAINST Content-Length WHEN THE SERVER DECLARED ONE (>= 0).
+            if (total >= 0 && dl != total)
+                throw new IOException("Truncated download of " + name + ": got " + dl + " of " + total + " bytes");
+            // ATOMIC_MOVE GUARANTEES THE FINAL PATH ONLY EVER SEES A COMPLETE JAR; FALL BACK TO A PLAIN
+            // REPLACE WHEN THE FILESYSTEM CAN'T DO IT ATOMICALLY.
+            try {
+                Files.move(part, dest, StandardCopyOption.ATOMIC_MOVE);
+            } catch (final AtomicMoveNotSupportedException unsupported) {
+                Files.move(part, dest, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (final Exception e) {
+            // DROP THE PARTIAL ON ANY FAILURE (MANDATORY DEPS INCLUDED) SO THE NEXT SCAN RE-DOWNLOADS IT.
+            try { Files.deleteIfExists(part); } catch (final IOException ignored) {}
+            throw e;
         }
         info("[DONE] " + name);
     }
@@ -524,7 +545,9 @@ public class AppBootstrap {
         relaunch.addActionListener(e -> {
             dlg.dispose();
             if (window != null) window.dispose();
-            main(launchArgs);
+            // RE-ENTER main() OFF THE EDT: THE LAUNCHER PARKS ITS THREAD (chooseEngine's lock.wait,
+            // ProcessBuilder.waitFor) AND WOULD DEADLOCK THE UI IF DRIVEN ON THE EVENT DISPATCH THREAD.
+            ThreadTool.createStarted("WaterMedia-Relaunch", () -> main(launchArgs));
         });
         relaunch.setBackground(C_GRAY);
         relaunch.setForeground(C_WHITE);

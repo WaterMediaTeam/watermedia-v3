@@ -285,9 +285,7 @@ public enum MathUtil {
 
         if (realTime == 0 || duration == 0) return 0; // AVOID ArithmeticException
 
-        long result = realTime / duration;
-        if (realTime > duration) result %= duration;
-        return result;
+        return (double) (realTime % duration) / duration; // WRAP OUT-OF-RANGE TIME TO ZERO VIA MODULO
     }
 
     /**
@@ -306,9 +304,7 @@ public enum MathUtil {
 
         if (realTime == 0 || duration == 0) return 0; // AVOID ArithmeticException
 
-        double result = realTime / duration;
-        if (realTime > duration) result %= duration;
-        return result;
+        return (realTime % duration) / duration; // WRAP OUT-OF-RANGE TIME BEFORE DIVIDING
     }
 
     /**
@@ -375,7 +371,7 @@ public enum MathUtil {
      * @return scaled time
      */
     public static double scaleDesTempoTick(final int startTick, final int endTick, final int timeTick) {
-        return scaleTempo(MathUtil.tickToMs(startTick), MathUtil.tickToMs(endTick), MathUtil.tickToMs(timeTick));
+        return scaleDesTempo(MathUtil.tickToMs(startTick), MathUtil.tickToMs(endTick), MathUtil.tickToMs(timeTick));
     }
 
     /**

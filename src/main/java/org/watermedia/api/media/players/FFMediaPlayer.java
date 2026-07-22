@@ -2413,8 +2413,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         final boolean hwAllowed = WaterMediaConfig.media.ffmpeg.hardwareAccel;
         // THE DEFAULT DECODER IS KEPT FOR THE HARDWARE PATH (THE NATIVE av1 DECODER IS THE
         // HWACCEL HOST). THE SOFTWARE PATH NEEDS A REAL SOFTWARE DECODER INSTEAD — SEE
-        // softwareVideoDecoder.
-        if (!hwAllowed || !this.initHwDecoder(decoder, videoStream)) {
+        // softwareVideoDecoder. GUARD decoder == null: initHwDecoder WOULD DEREFERENCE IT
+        // NATIVELY (avcodec_get_hw_config) AND SEGFAULT THE JVM — LET THE SOFTWARE PATH FAIL CLEANLY.
+        if (!hwAllowed || decoder == null || !this.initHwDecoder(decoder, videoStream)) {
             if (!hwAllowed) LOGGER.info(IT, "Hardware acceleration disabled by config — using software decoding");
 
             final AVCodec swDecoder = softwareVideoDecoder(codecId, decoder);

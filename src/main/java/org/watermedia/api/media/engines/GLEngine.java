@@ -357,6 +357,13 @@ public final class GLEngine extends GFXEngine {
     }
 
     @Override
+    public boolean supportsFormat(final PixelFormat format) {
+        // GBRA IS DECLINED: THE DEFAULT PLANE PATH UPLOADS IT AS GL_RGBA, WHICH WOULD SAMPLE ITS
+        // [G,B,R,A] BYTES AS R,G,B,A (CHANNELS SHUFFLED), SO THE PRODUCER PRE-CONVERTS IT TO BGRA.
+        return format != PixelFormat.GBRA;
+    }
+
+    @Override
     public boolean uploadFrameTextures(final ByteBuffer[] frames, final int stride) {
         if (frames == null || frames.length == 0 || this.released) return false;
         for (final ByteBuffer frame: frames) {

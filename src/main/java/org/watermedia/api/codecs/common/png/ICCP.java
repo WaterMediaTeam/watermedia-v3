@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -15,6 +17,8 @@ import java.util.zip.Inflater;
  */
 public record ICCP(String profileName, int compressionMethod, byte[] compressedProfile) {
     public static final int SIGNATURE = 0x69_43_43_50; // "iCCP"
+    // CAP DECOMPRESSED PROFILE: A TINY iCCP CHUNK CAN INFLATE TO GIGABYTES (ZLIB BOMB); LEGIT ICC PROFILES ARE WELL UNDER THIS
+    private static final int MAX_DECOMPRESSED = 16 * 1024 * 1024; // 16 MB
 
     /**
      * Reads iCCP chunk from buffer (reads length/type header first)
@@ -51,9 +55,9 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
     /**
      * Converts a generic CHUNK to ICCP
      */
-    public static ICCP convert(final CHUNK chunk) {
+    public static ICCP convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new IllegalArgumentException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
+            throw new XCodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
@@ -68,14 +72,19 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         }
 
         if (nullIndex < 1) {
-            throw new IllegalArgumentException("Invalid iCCP: missing or empty profile name");
+            throw new XCodecException("Invalid iCCP: missing or empty profile name");
+        }
+
+        // NEED THE COMPRESSION-METHOD BYTE AFTER THE NAME NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
+        if (data.length < nullIndex + 2) {
+            throw new XCodecException("Truncated iCCP: missing compression method");
         }
 
         final String profileName = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int compressionMethod = data[nullIndex + 1] & 0xFF;
 
         if (compressionMethod != 0) {
-            throw new IllegalArgumentException("Unknown iCCP compression method: " + compressionMethod);
+            throw new XCodecException("Unknown iCCP compression method: " + compressionMethod);
         }
 
         // REMAINING DATA IS COMPRESSED PROFILE
@@ -101,6 +110,9 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
                 final int length = inflater.inflate(buffer);
                 if (length == 0 && inflater.needsInput()) {
                     throw new IOException("Incomplete compressed ICC profile");
+                }
+                if (output.size() + length > MAX_DECOMPRESSED) {
+                    throw new IOException("iCCP exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
                 }
                 output.write(buffer, 0, length);
             }
