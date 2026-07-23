@@ -6,17 +6,17 @@ package org.watermedia.api.codecs.readers.svg;
  * transform and the shape's user-space bounds (needed for {@code objectBoundingBox} gradients).
  *
  * <p>Sealed over two record carriers — a solid colour and a linear gradient. "No paint"
- * ({@code fill="none"}) is represented by a {@code null} {@code SvgPaint} at the call site.
+ * ({@code fill="none"}) is represented by a {@code null} {@code SVGPaint} at the call site.
  */
-sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
+sealed interface SVGPaint permits SVGPaint.Solid, SVGPaint.Linear {
 
     Paint sampler(Affine ctm, double minX, double minY, double maxX, double maxY);
 
-    static SvgPaint solid(final int argb) {
+    static SVGPaint solid(final int argb) {
         return new Solid(argb);
     }
 
-    record Solid(int argb) implements SvgPaint {
+    record Solid(int argb) implements SVGPaint {
         @Override
         public Paint sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
             final int c = this.argb;
@@ -24,9 +24,10 @@ sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
         }
     }
 
-    /** Linear gradient. {@code offsets} are ascending in [0,1]; {@code colors} are straight ARGB. */
+    // LINEAR GRADIENT. offsets ARE ASCENDING IN [0,1]; colors ARE STRAIGHT ARGB.
+    // gradientTransform IS ALWAYS NON-NULL (SVGParser.parseTransform DEFAULTS TO IDENTITY).
     record Linear(double x1, double y1, double x2, double y2, boolean userSpace,
-                  Affine gradientTransform, float[] offsets, int[] colors) implements SvgPaint {
+                  Affine gradientTransform, float[] offsets, int[] colors) implements SVGPaint {
 
         @Override
         public Paint sampler(final Affine ctm, final double minX, final double minY, final double maxX, final double maxY) {
@@ -36,12 +37,12 @@ sealed interface SvgPaint permits SvgPaint.Solid, SvgPaint.Linear {
             // BUILD gradient-space → user-space, THEN COMPOSE WITH THE DEVICE TRANSFORM AND INVERT
             Affine gradToUser;
             if (this.userSpace) {
-                gradToUser = this.gradientTransform == null ? Affine.IDENTITY : this.gradientTransform;
+                gradToUser = this.gradientTransform;
             } else {
                 final double w = maxX - minX, h = maxY - minY;
                 if (w == 0 || h == 0) { final int c = this.colors[0]; return (px, py) -> c; }
                 final Affine bbox = Affine.translate(minX, minY).concat(Affine.scale(w, h));
-                gradToUser = this.gradientTransform == null ? bbox : bbox.concat(this.gradientTransform);
+                gradToUser = bbox.concat(this.gradientTransform);
             }
 
             final Affine inv = ctm.concat(gradToUser).invert();

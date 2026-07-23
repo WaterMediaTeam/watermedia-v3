@@ -48,4 +48,9 @@ public final class Theme {
     public static final int CONTROL = 26;
     public static final int BUTTON = 34;
     public static final int BUTTON_LG = 48;
+
+    // TRAILING SUBTEXT/KEYBIND CHIP GEOMETRY — SHARED BY Button AND Text SO A LABEL CHIP AND A BUTTON CHIP
+    // KEEP THE SAME LOOK (CHANGING ONE USED TO SILENTLY DESYNC THE OTHER)
+    public static final int CHIP_PAD = 6;
+    public static final int CHIP_H = 20;
 }

@@ -13,6 +13,7 @@ import org.watermedia.tools.ThreadTool;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,6 +45,12 @@ public final class MRL {
     private final List<Consumer<MRL>> listeners = new CopyOnWriteArrayList<>();
     private volatile Status status = Status.FETCHING;
     private volatile Throwable exception;
+    // LOAD SERIALIZATION: ONLY ONE load() RUNS PER MRL AT A TIME. reloadPending DEFERS A reload()
+    // REQUESTED WHILE A LOAD IS IN FLIGHT SO IT DOESN'T WIPE STATE UNDER THE RUNNING FETCH'S FEET.
+    // BOTH FIELDS ARE ACCESSED ONLY UNDER loadLock.
+    private final Object loadLock = new Object();
+    private boolean loading;
+    private boolean reloadPending;
 
     private MRL(final URI uri) { this.uri = Objects.requireNonNull(uri, "URI cannot be null"); }
 
@@ -86,31 +93,78 @@ public final class MRL {
         return result;
     }
 
+    // CREATES AN MRL BORN IN ERROR FOR INPUT THAT NEVER REACHED THE LOADER (e.g. A MALFORMED URI STRING).
+    // NOT CACHED: THE INPUT HAS NO PARSEABLE URI KEY, AND EACH BAD INPUT IS INDEPENDENT. THE RAW STRING IS
+    // PRESERVED AS A PERCENT-ENCODED OPAQUE URI FOR DIAGNOSTICS; THE PARSE FAILURE IS THE exception().
+    static MRL error(final String rawUri, final Throwable cause) {
+        URI key;
+        try { key = new URI("mrl-error", rawUri, null); }
+        catch (final URISyntaxException e) { key = URI.create("mrl-error:unparseable"); }
+        final MRL mrl = new MRL(key);
+        mrl.exception = cause;
+        mrl.status = Status.ERROR;
+        return mrl;
+    }
+
     /**
-     * Restarts the async platform lookup for this MRL. Clears the previous
-     * sources/error state immediately;
+     * Restarts the async platform lookup for this MRL, clearing the previous sources and error
+     * state. If a load is already in flight, the refresh is deferred until it finishes rather than
+     * wiping state mid-fetch, so concurrent reloads never race or duplicate the lookup.
      */
     public void reload() {
-        this.sources = null;
-        this.expiresAt = null;
-        this.status = Status.FETCHING;
-        this.exception = null;
+        synchronized (this.loadLock) {
+            if (this.loading) {
+                // A LOAD IS RUNNING — MARK FOR RE-FETCH; load()'S EXIT WILL RE-QUEUE ONCE
+                this.reloadPending = true;
+                return;
+            }
+            this.sources = null;
+            this.expiresAt = null;
+            this.status = Status.FETCHING;
+            this.exception = null;
+        }
         LOADER.execute(this::load);
     }
 
     private void load() {
-        if (this.status != Status.FETCHING) return;
+        // CLAIM THE SINGLE IN-FLIGHT SLOT; LOSERS (STALE OR DUPLICATE QUEUED LOADS) BAIL OUT
+        synchronized (this.loadLock) {
+            if (this.status != Status.FETCHING || this.loading) return;
+            this.loading = true;
+        }
+        try {
+            this.doLoad();
+        } finally {
+            boolean requeue = false;
+            synchronized (this.loadLock) {
+                this.loading = false;
+                // A reload() ARRIVED MID-FETCH — RESET STATE NOW AND RE-QUEUE EXACTLY ONE FRESH LOAD
+                if (this.reloadPending) {
+                    this.reloadPending = false;
+                    this.sources = null;
+                    this.expiresAt = null;
+                    this.status = Status.FETCHING;
+                    this.exception = null;
+                    requeue = true;
+                }
+            }
+            if (requeue) LOADER.execute(this::load);
+        }
+    }
+
+    private void doLoad() {
         try {
             if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
                 synchronized (LOADED) {
                     // RE-CHECK UNDER LOCK: ONLY THE FIRST RACER RUNS CLEANUP, LOSERS STILL FALL THROUGH TO THE FETCH BELOW
                     if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
-                        LOADED.forEach((uri, mrl) -> {
-                            if (mrl.status().disposable()) {
-                                LOADED.remove(uri);
-                                mrl.status = Status.FORGOTTEN;
-                            }
-                        });
+                        // ATOMIC PER-KEY CHECK-AND-REMOVE: computeIfPresent RUNS UNDER THE BIN LOCK, SO A
+                        // CONCURRENT get()/reload() CAN'T RESURRECT AN ENTRY WE THEN CLOBBER TO FORGOTTEN.
+                        LOADED.forEach((uri, mrl) -> LOADED.computeIfPresent(uri, (key, cur) -> {
+                            if (!cur.status().disposable()) return cur;
+                            cur.status = Status.FORGOTTEN;
+                            return null; // REMOVES THE ENTRY
+                        }));
                         NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
                     }
                 }
@@ -170,14 +224,14 @@ public final class MRL {
                                 final Metadata md = new Metadata(e.title(), null, null, 0, e.tvgGroup());
                                 sources.add(new DataSource(MediaType.UNKNOWN, logoUri, md,
                                         RequestHeaders.defaults(childUri),
-                                        new DataQuality[]{new DataQuality(childUri, 0, 0)},
+                                        List.of(new DataQuality(childUri, 0, 0)),
                                         null, null));
                             }
-                            data = new PlatformData(null, sources.toArray(DataSource[]::new));
+                            data = new PlatformData(null, sources);
                         } else {
-                            data = new PlatformData(null, new DataSource(MediaType.VIDEO, null, null, RequestHeaders.defaults(this.uri),
-                                    new DataQuality[]{new DataQuality(this.uri, 0, 0)},
-                                    null, null));
+                            data = new PlatformData(null, List.of(new DataSource(MediaType.VIDEO, null, null, RequestHeaders.defaults(this.uri),
+                                    List.of(new DataQuality(this.uri, 0, 0)),
+                                    null, null)));
                         }
                     } else {
                         MediaType type = MediaType.of(contentType);
@@ -192,19 +246,19 @@ public final class MRL {
                             if (type == MediaType.UNKNOWN) type = MediaType.ofExtension(this.uri.getPath());
                         }
 
-                        data = new PlatformData(null, new DataSource(type, null, null,
+                        data = new PlatformData(null, List.of(new DataSource(type, null, null,
                                 RequestHeaders.defaults(this.uri),
-                                new DataQuality[]{new DataQuality(this.uri, 0, 0)},
-                                null, null));
+                                List.of(new DataQuality(this.uri, 0, 0)),
+                                null, null)));
                     }
                 }
             }
 
             if (data.size() > 0) {
-                final DataSource[] entries = data.entries();
-                final Source[] sources = new Source[entries.length];
-                for (int i = 0; i < entries.length; i++) {
-                    final DataSource entry = entries[i];
+                final List<DataSource> entries = data.entries();
+                final Source[] sources = new Source[entries.size()];
+                for (int i = 0; i < entries.size(); i++) {
+                    final DataSource entry = entries.get(i);
                     if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
                     final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
                     for (final DataQuality v: entry.variants()) {
@@ -258,12 +312,12 @@ public final class MRL {
     }
 
     /**
-     * Blocks until loading completes or times out.
-     * This method call is highly disliked on Game environments where
-     * are tick-based, is strongly recommended to check {@link MRL#status()} every tick
+     * Blocks until loading reaches a terminal state or the timeout elapses. Discouraged in
+     * tick-based game environments: prefer polling {@link #status()} every tick instead.
      *
      * @param timeoutMs maximum wait time in milliseconds
-     * @return true if ready, false if timeout or error
+     * @return {@code true} once loading finished in any terminal state (inspect {@link #status()}
+     *         for the outcome — it may be a failure), {@code false} if it timed out while still fetching
      */
     public boolean await(final long timeoutMs) {
         final long deadline = System.currentTimeMillis() + timeoutMs;
@@ -281,10 +335,9 @@ public final class MRL {
      * loader thread once loading finishes. After firing, all listeners are dropped
      * — re-subscribe across reloads.
      * <p>
-     * This method call is highly disliked on Game environments where
-     * are tick-based, is strongly recommended to check {@link MRL#status()} every tick
+     * Discouraged in tick-based game environments: prefer polling {@link #status()} every tick instead.
      * </p>
-     * @param listener Consumer instance that accepts the ready MRL.
+     * @param listener consumer invoked with this MRL once it reaches a terminal state (success or failure)
      */
     public void subscribe(final Consumer<MRL> listener) {
         synchronized (this.listeners) {
@@ -514,26 +567,11 @@ public final class MRL {
         }
 
         /**
-         * Returns true if this uri has slave tracks.
+         * Returns true if this uri has any slave tracks (audio or subtitle).
          */
         public boolean hasSlaves() {
-            return this.audioSlaves != null && !this.audioSlaves.isEmpty();
-        }
-
-        /**
-         * Gets all audio slave tracks.
-         */
-        public List<SlaveEntry> audioSlaves() {
-            if (this.audioSlaves == null) return List.of();
-            return this.audioSlaves;
-        }
-
-        /**
-         * Gets all subtitle slave tracks.
-         */
-        public List<SlaveEntry> subSlaves() {
-            if (this.subSlaves == null) return List.of();
-            return this.subSlaves;
+            // BOTH LISTS ARE NORMALIZED NON-NULL BY THE COMPACT CONSTRUCTOR
+            return !this.audioSlaves.isEmpty() || !this.subSlaves.isEmpty();
         }
 
         /**
@@ -590,8 +628,13 @@ public final class MRL {
             return this == ERROR || this == BLOCKED || this == EXPIRED || this == FORGOTTEN;
         }
 
+        /**
+         * A terminal state the cleanup pass may evict from the cache. Covers every failure
+         * (ERROR/BLOCKED) plus stale successes (EXPIRED); without BLOCKED, blocked entries would
+         * accumulate in the cache for the JVM lifetime.
+         */
         public boolean disposable() {
-            return this == ERROR || this == EXPIRED;
+            return this == ERROR || this == BLOCKED || this == EXPIRED;
         }
     }
 }

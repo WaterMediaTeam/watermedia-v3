@@ -135,18 +135,18 @@ public final class WEBPReader extends ImageReader {
                     throw new XCodecException("WEBP canvas too big: " + this.canvasWidth + "x" + this.canvasHeight + " (max " + MAX_DIM + ")");
 
                 if (this.animated) {
-                    // Read chunks until ANIM. Then ANMFs are read lazily in next().
+                    // READ CHUNKS UNTIL ANIM; ANMFs ARE THEN READ LAZILY IN next()
                     while (true) {
                         final ChunkHdr c = readChunkHdrOrEnd(this.data);
                         if (c == null) { this.done = true; break; }
                         if (c.fourCC == RiffChunk.ANIM) {
-                            readPaddedChunkBody(this.data, c.size); // consume; loop count already captured by scan()
+                            readPaddedChunkBody(this.data, c.size); // CONSUME; LOOP COUNT ALREADY CAPTURED BY scan()
                             break;
                         }
                         if (!this.readMetadataChunk(this.data, c)) skipBytes(this.data, paddedSize(c.size));
                     }
                 } else {
-                    // Static extended: read chunks until we have VP8/VP8L (and optional ALPH).
+                    // STATIC EXTENDED: READ CHUNKS UNTIL WE HAVE VP8/VP8L (AND OPTIONAL ALPH)
                     while (true) {
                         final ChunkHdr c = readChunkHdrOrEnd(this.data);
                         if (c == null) break;
@@ -186,8 +186,12 @@ public final class WEBPReader extends ImageReader {
             this.chromaHeight = 0;
             this.yPlaneSize = 0;
             this.uvPlaneSize = 0;
-            this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
-            this.directOutInts = this.directOut.asIntBuffer();
+            // directOut IS THE ANIMATED COMPOSITING TARGET ONLY; STATIC BGRA DECODERS RETURN THEIR OWN BUFFER,
+            // SO ALLOCATING IT FOR A STATIC IMAGE WOULD WASTE A FULL-FRAME DIRECT BUFFER (UP TO 256 MB)
+            if (this.animated) {
+                this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
+                this.directOutInts = this.directOut.asIntBuffer();
+            }
         }
 
         // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
@@ -263,7 +267,7 @@ public final class WEBPReader extends ImageReader {
             return !this.staticDelivered;
         }
 
-        // Animated: locate next ANMF, skipping unrelated chunks (EXIF/XMP/etc.).
+        // ANIMATED: LOCATE THE NEXT ANMF, SKIPPING UNRELATED CHUNKS (EXIF/XMP/ETC.)
         if (this.pendingChunk != null) return true;
         while (true) {
             final ChunkHdr c = readChunkHdrOrEnd(this.data);
@@ -284,7 +288,7 @@ public final class WEBPReader extends ImageReader {
             this.staticDelivered = true;
             this.decodeStaticFrame();
             this.currentDelay = 0L;
-            this.currentFrame = this.currentFrame != null ? this.currentFrame : this.directOut;
+            // decodeStaticFrame ALWAYS SETS currentFrame (BGRA DECODER RESULT OR yuvOut)
             return this.currentFrame;
         }
 
@@ -328,12 +332,12 @@ public final class WEBPReader extends ImageReader {
         final VP8LossyDecoder.Yuv420P yuv = VP8LossyDecoder.decodeToYuv(vp8Body, this.canvasWidth, this.canvasHeight);
 
         this.yuvOut.clear();
-        // Y plane: copy [width] bytes per row, repacking from mb-aligned stride to tight stride.
+        // Y PLANE: COPY [width] BYTES PER ROW, REPACKING FROM MB-ALIGNED STRIDE TO TIGHT STRIDE
         copyPlaneRows(yuv.y(), yuv.yStride(), this.yuvOut, 0, this.canvasWidth, this.canvasWidth, this.canvasHeight);
-        // U plane.
+        // U PLANE
         final int uOffset = this.yPlaneSize;
         copyPlaneRows(yuv.u(), yuv.uvStride(), this.yuvOut, uOffset, this.chromaWidth, this.chromaWidth, this.chromaHeight);
-        // V plane.
+        // V PLANE
         final int vOffset = this.yPlaneSize + this.uvPlaneSize;
         copyPlaneRows(yuv.v(), yuv.uvStride(), this.yuvOut, vOffset, this.chromaWidth, this.chromaWidth, this.chromaHeight);
 
@@ -356,7 +360,7 @@ public final class WEBPReader extends ImageReader {
     private void decodeAnimFrame(final byte[] anmf, final int anmfLength) throws IOException {
         if (anmfLength < 16) throw new XCodecException("Truncated ANMF chunk");
 
-        // 16-byte ANMF header
+        // 16-BYTE ANMF HEADER
         final int frameX = (anmf[0] & 0xFF) | ((anmf[1] & 0xFF) << 8) | ((anmf[2] & 0xFF) << 16);
         final int frameY = (anmf[3] & 0xFF) | ((anmf[4] & 0xFF) << 8) | ((anmf[5] & 0xFF) << 16);
         final int frameW = ((anmf[6] & 0xFF) | ((anmf[7] & 0xFF) << 8) | ((anmf[8] & 0xFF) << 16)) + 1;
@@ -371,7 +375,7 @@ public final class WEBPReader extends ImageReader {
         final boolean blend = (flags & 0x02) == 0;
         final boolean dispose = (flags & 0x01) == 1;
 
-        // Parse sub-chunks inside ANMF body
+        // PARSE SUB-CHUNKS INSIDE THE ANMF BODY
         int subVp8Off = -1;
         int subVp8Len = 0;
         int subVp8FourCC = 0;
@@ -407,10 +411,10 @@ public final class WEBPReader extends ImageReader {
                 frameW, frameH
         );
 
-        // Composite onto canvas (frameX/Y are stored as halved per WEBP spec; original code multiplies by 2).
+        // COMPOSITE ONTO CANVAS (frameX/Y ARE STORED HALVED PER WEBP SPEC, HENCE THE x2)
         this.composite(this.canvas, this.canvasWidth, this.canvasHeight, framePixels, frameX * 2, frameY * 2, frameW, frameH, blend);
 
-        // Convert canvas to BGRA in directOut
+        // CONVERT CANVAS TO BGRA IN directOut
         this.directOut.clear();
         this.directOutInts.clear();
         this.directOutInts.put(this.canvas);
@@ -418,7 +422,7 @@ public final class WEBPReader extends ImageReader {
 
         this.currentDelay = duration;
 
-        // Dispose for next frame
+        // DISPOSE FOR THE NEXT FRAME
         if (dispose) {
             this.clearRegion(this.canvas, this.canvasWidth, frameX * 2, frameY * 2, frameW, frameH);
         }

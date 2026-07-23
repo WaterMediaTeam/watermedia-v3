@@ -73,7 +73,7 @@ public final class TwitterPlatform implements IPlatform {
             throw new PlatformException(TwitterPlatform.class, "All " + tweet.mediaDetails.length + " media source(s) failed to resolve for tweet '" + tweetId + "'");
 
         LOGGER.info(IT, "Twitter resolved {} of {} media entry(es) for tweet '{}'", entries.size(), tweet.mediaDetails.length, tweetId);
-        return new PlatformData(null, entries.toArray(DataSource[]::new));
+        return new PlatformData(null, entries);
     }
 
     private DataSource buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final RequestHeaders headers) {
@@ -82,7 +82,7 @@ public final class TwitterPlatform implements IPlatform {
             final int h = media.originalInfo != null ? media.originalInfo.height : 0;
             final Metadata metadata = new Metadata(title, tweet.text, postedAt, 0, author);
             return new DataSource(MediaType.IMAGE, null, metadata, headers,
-                    new DataQuality[] {new DataQuality(URI.create(media.mediaUrlHttps), w, h)},
+                    List.of(new DataQuality(URI.create(media.mediaUrlHttps), w, h)),
                     null, null);
         }
 
@@ -109,7 +109,7 @@ public final class TwitterPlatform implements IPlatform {
             }
 
             return new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
-                    variants.toArray(DataQuality[]::new),
+                    variants,
                     null, null);
         }
 

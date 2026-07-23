@@ -6,7 +6,7 @@ import org.watermedia.api.codecs.common.webp.BitReader;
 public final class LZ77 {
 
     // DISTANCE CODE TO (xi, yi) OFFSET MAPPING FOR CODES 1-120
-    // From the WebP spec: (xi, yi) pairs in order
+    // FROM THE WEBP SPEC: (xi, yi) PAIRS IN ORDER
     private static final int[][] DISTANCE_MAP = {
             {0, 1}, {1, 0}, {1, 1}, {-1, 1}, {0, 2}, {2, 0}, {1, 2}, {-1, 2},
             {2, 1}, {-2, 1}, {2, 2}, {-2, 2}, {0, 3}, {3, 0}, {1, 3}, {-1, 3},
@@ -52,13 +52,5 @@ public final class LZ77 {
 
         final int dist = xi + yi * width;
         return Math.max(1, dist);
-    }
-
-    // COPY PIXELS FROM BACKWARD REFERENCE
-    public static void copyPixels(final int[] pixels, final int pos, final int dist, final int length) {
-        final int src = pos - dist;
-        for (int i = 0; i < length; i++) {
-            pixels[pos + i] = pixels[src + i];
-        }
     }
 }

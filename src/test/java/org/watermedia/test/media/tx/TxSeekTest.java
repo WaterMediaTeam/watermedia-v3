@@ -28,7 +28,7 @@ public class TxSeekTest {
     @Test
     @DisplayName("Seek jumps to mid-duration and resumes playback")
     void testSeekJumpsToMidDurationAndResumesPlayback() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);

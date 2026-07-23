@@ -20,10 +20,6 @@ public record Transform(
         return new Transform(Type.COLOR_INDEXING, 0, table);
     }
 
-    public int blockSize() {
-        return 1 << this.bits;
-    }
-
     public static Type typeof(int i) {
         return Type.VALUES[i];
     }

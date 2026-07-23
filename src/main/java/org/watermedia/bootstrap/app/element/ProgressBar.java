@@ -31,8 +31,9 @@ public final class ProgressBar extends Element<ProgressBar> {
     }
 
     public ProgressBar trackHeight(final int value) {
-        this.trackHeight = value;
-        this.height = value;
+        // CLAMP LIKE SeekBar.trackHeight — A 0/NEGATIVE TRACK WOULD PAINT NOTHING (SILENT MISUSE)
+        this.trackHeight = Math.max(1, value);
+        this.height = this.trackHeight;
         return this;
     }
 

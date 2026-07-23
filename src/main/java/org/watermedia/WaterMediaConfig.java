@@ -164,7 +164,7 @@ public class WaterMediaConfig {
         }
 
         @Spec(value = "watertx", disableStatic = true)
-        public static final class WaterTx { // PUBLICLY KNOWN AS WaterTX (WaterTexture), internally clamped into TX.
+        public static final class WaterTx { // PUBLICLY KNOWN AS WaterTX (WaterTexture), INTERNALLY CLAMPED INTO TX.
             @Spec.Field
             @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
             public boolean cache = true;
@@ -231,8 +231,11 @@ public class WaterMediaConfig {
         public int serverPort = DEFAULT_NETWORK_SERVER_PORT;
 
         @Spec.Field
-        @StringConditions(value = "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)+([A-Za-z]|[A-Za-z][A-Za-z0-9\\-]*[A-Za-z0-9])$", regexFlags = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE, mode = StringField.Mode.REGEX)
+        // FULL URL (scheme://host[:port][/path]); host MAY BE AN IPv4 OR A DOMAIN. MATCHES THE DEFAULT AND
+        // THE FORM NetworkAPI.upload BUILDS ("<remoteHost>/upload"), UNLIKE THE OLD BARE-HOST-ONLY REGEX.
+        @StringConditions(value = "^https?://([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?)(\\.([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?))*(:\\d{1,5})?(/.*)?$", regexFlags = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE, mode = StringField.Mode.REGEX)
         @Comment("Sets the remote file server to upload and download files, it must match your game server IP or domain with the given port")
+        @Comment("Include the scheme and port, e.g. http://your-host:25572/")
         @Comment("Used only on client-side")
         public String remoteHost = "http://localhost:" + DEFAULT_NETWORK_SERVER_PORT + "/";
 
@@ -252,7 +255,7 @@ public class WaterMediaConfig {
         public int maxRedirects = 10;
 
         @Spec.Field(suffix = "bytes")
-        @Comment("Hard cap (in MB) for NetworkRequest text/JSON bodies — anything larger throws")
+        @Comment("Hard cap (in bytes) for NetworkRequest text/JSON bodies — anything larger throws")
         @NumberConditions(minInt = 1024, math = true)
         public int maxTextSize = (1024 * 1024) * 16;
     }

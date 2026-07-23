@@ -217,13 +217,22 @@ public abstract class Element<T extends Element<T>> {
         return false;
     }
 
-    // WHETHER THIS VIEW OR A DESCENDANT IS A FOCUSED TEXT INPUT — DRIVES CARET BLINK AND GLOBAL-SHORTCUT
-    // SUPPRESSION. TextField OVERRIDES IT; Group AGGREGATES OVER ITS CHILDREN.
+    /**
+     * Whether this view or a descendant is a focused text input — drives caret blink and global-shortcut
+     * suppression. {@link TextField} overrides it; {@link Group} aggregates over its children.
+     */
     public boolean textInputActive() {
         return false;
     }
 
-    // HALF-OPEN HIT TEST — SHARED BORDERS BELONG TO EXACTLY ONE VIEW AND A ZERO-SIZE VIEW NEVER MATCHES
+    /**
+     * Force-clears any text-input focus/edit in this subtree — called on the layers a consumed click did
+     * not land in, so a focused field blurs even when a sibling swallowed the click. Text editors override.
+     */
+    public void clearFocus() {
+    }
+
+    /** Half-open hit test — shared borders belong to exactly one view and a zero-size view never matches. */
     public boolean contains(final double mx, final double my) {
         return mx >= this.left && mx < this.left + this.measuredWidth
                 && my >= this.top && my < this.top + this.measuredHeight;
@@ -239,8 +248,10 @@ public abstract class Element<T extends Element<T>> {
         return this.self();
     }
 
-    // ATTACHES THE SHARED CONTEXT TO THIS VIEW (AND, IN Group, ITS SUBTREE). PUBLIC SO THE WINDOW HOST
-    // (RootScreen) CAN BIND THE ROOT TREE FROM OUTSIDE THIS PACKAGE.
+    /**
+     * Attaches the shared context to this view (and, in {@link Group}, its subtree). Public so the window
+     * host ({@code RootScreen}) can bind the root tree from outside this package.
+     */
     public void attach(final AppContext context) {
         this.ctx = context;
     }

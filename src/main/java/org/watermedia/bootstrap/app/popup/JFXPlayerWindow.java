@@ -7,17 +7,12 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.StackPane;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.engines.JFXEngine;
-import org.watermedia.api.media.engines.SFXEngine;
-import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.AppContext;
 
 import javax.swing.JComponent;
-import javax.swing.SwingUtilities;
 import java.awt.Color;
-import java.util.function.Supplier;
 
 /**
  * JavaFX showcase popup: supplies a {@link JfxVideo} (a {@link JFXEngine} whose {@code PixelBuffer} image
@@ -39,15 +34,7 @@ public final class JFXPlayerWindow {
 
     /** Opens a popup player for the app's currently selected MRL, replacing any open popup. */
     public static void open(final AppContext ctx) {
-        final MRL mrl = ctx.selectedMRL;
-        if (mrl == null) return;
-        final String title = ctx.selectedMRLName;
-        final int sourceIndex = ctx.sourceSelectorIndex;
-        final int sourceCount = ctx.availableSources != null ? ctx.availableSources.length : 1;
-        final MediaQuality quality = ctx.selectedQuality;
-        final Supplier<SFXEngine> audio = ctx.audioEngine.supplier();
-        SwingUtilities.invokeLater(() ->
-                new SwingPlayerWindow(new JfxVideo(), mrl, title, sourceIndex, sourceCount, quality, audio));
+        PopupPlayers.open(ctx, JfxVideo::new);
     }
 
     // A JFXPanel SURFACE WITH A FRESH JFXEngine PER SOURCE; render() BINDS THE CURRENT ENGINE'S IMAGE ON THE
@@ -55,9 +42,10 @@ public final class JFXPlayerWindow {
     private static final class JfxVideo implements PopupVideo {
         private volatile JFXEngine engine;
         private final JFXPanel panel = new JFXPanel();
-        private final ImageView[] view = {null};
+        // WRITTEN ON THE FX THREAD IN THE CTOR, READ ON THE FX THREAD IN render() — volatile FOR SAFE PUBLICATION
+        private volatile ImageView view;
         private int throttle;
-        private boolean loggedBind;
+        private volatile boolean loggedBind;
 
         JfxVideo() {
             this.panel.setBackground(Color.BLACK);
@@ -69,7 +57,7 @@ public final class JFXPlayerWindow {
                 root.setStyle("-fx-background-color:black;");
                 iv.fitWidthProperty().bind(root.widthProperty());
                 iv.fitHeightProperty().bind(root.heightProperty());
-                this.view[0] = iv;
+                this.view = iv;
                 this.panel.setScene(new Scene(root));
             });
         }
@@ -90,7 +78,7 @@ public final class JFXPlayerWindow {
             final JFXEngine eng = this.engine;
             if (eng == null) return;
             Platform.runLater(() -> {
-                final ImageView iv = this.view[0];
+                final ImageView iv = this.view;
                 final Image img = eng.image();
                 if (iv != null && img != null && iv.getImage() != img) {
                     iv.setImage(img);

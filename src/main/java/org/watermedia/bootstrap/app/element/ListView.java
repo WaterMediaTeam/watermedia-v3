@@ -20,22 +20,13 @@ import java.util.function.BiFunction;
  */
 public final class ListView<D> extends Group<ListView<D>> {
 
-    private static final int UNBOUNDED = 1 << 20;
-    private static final int SCROLL_STEP = 48;
-    private static final float TAU = 70f; // MS — MOMENTUM DECAY TIME CONSTANT (~250MS SETTLE AFTER THE LAST NOTCH)
-
     private final List<D> items = new ArrayList<>();
     private BiFunction<D, Integer, Element<?>> rowFactory;
     private BiConsumer<D, Integer> onSelect;
     private int rowHeight;      // 0 = EACH ROW'S NATURAL HEIGHT
     private int spacing;
     private int selectedIndex = -1;
-    private int scrollOffset;
-    private int maxScroll;
-    // WHEEL MOMENTUM — THE OFFSET EASES TOWARD target; IDLE INVARIANT: animPos == target == scrollOffset
-    private float animPos;
-    private int target;
-    private long tick;
+    private final ScrollState scroll = new ScrollState();
     private int totalHeight;
     private int scrollbarWidth = 6;
     private boolean selectOnHover;
@@ -109,9 +100,9 @@ public final class ListView<D> extends Group<ListView<D>> {
         final int base = this.selectedIndex < 0 ? 0 : this.selectedIndex;
         final int next = Math.max(0, Math.min(base + delta, this.items.size() - 1));
         if (next != this.selectedIndex) {
-            this.selectedIndex = next;
+            // ROUTE THROUGH select() SO KEYBOARD NAV FIRES onSelect JUST LIKE A CLICK DOES
+            this.select(next);
             this.ensureVisible(next);
-            this.invalidate();
         }
         return this;
     }
@@ -145,30 +136,17 @@ public final class ListView<D> extends Group<ListView<D>> {
         }
         final int rowH = index < this.children.size() ? this.children.get(index).measuredHeight : this.rowHeight;
         final int viewport = this.innerHeight();
-        if (y < this.scrollOffset) {
-            this.scrollOffset = y;
-        } else if (y + rowH > this.scrollOffset + viewport) {
-            this.scrollOffset = y + rowH - viewport;
-        }
+        int offset = this.scroll.offset;
+        if (y < offset) offset = y;
+        else if (y + rowH > offset + viewport) offset = y + rowH - viewport;
         // KEYBOARD NAV IS INSTANT AND KILLS ANY WHEEL MOMENTUM — THE SELECTION MUST LAND EXACTLY IN VIEW,
         // WHICH A COASTING OFFSET WOULD DRIFT BACK OUT
-        this.target = this.scrollOffset;
-        this.animPos = this.scrollOffset;
+        this.scroll.jump(offset);
     }
 
     @Override
     protected void onUpdate() {
-        // MOMENTUM: EXPONENTIAL APPROACH TOWARD THE ACCUMULATED WHEEL TARGET — SELF-SUSTAINED FRAMES;
-        // THE APPROACH NEVER OVERSHOOTS, SO AT A CLAMPED TARGET THE MOTION DIES WITHOUT ANY BOUNCE
-        if (this.animPos == this.target) return;
-        final long now = System.currentTimeMillis();
-        // dt CLAMPED TO [0,64]MS — A STALLED FRAME NEVER TELEPORTS AND A CLOCK JUMP NEVER DIVERGES
-        final float dt = Math.max(0L, Math.min(64L, now - this.tick));
-        this.tick = now;
-        this.animPos += (this.target - this.animPos) * (1f - (float) Math.exp(-dt / TAU));
-        if (Math.abs(this.target - this.animPos) < 0.5f) this.animPos = this.target;
-        this.scrollOffset = Math.round(this.animPos);
-        this.invalidate();
+        if (this.scroll.animate()) this.invalidate();
     }
 
     @Override
@@ -179,7 +157,7 @@ public final class ListView<D> extends Group<ListView<D>> {
         for (final Element<?> row: this.children) {
             if (!row.visible) continue;
             visibleCount++;
-            row.measure(innerAvailWidth, this.rowHeight > 0 ? this.rowHeight : UNBOUNDED);
+            row.measure(innerAvailWidth, this.rowHeight > 0 ? this.rowHeight : ScrollState.UNBOUNDED);
             if (this.rowHeight > 0) row.measuredHeight = this.rowHeight;
             used += row.measuredHeight;
             maxW = Math.max(maxW, row.measuredWidth);
@@ -191,12 +169,9 @@ public final class ListView<D> extends Group<ListView<D>> {
 
     @Override
     protected void onLayout() {
-        this.maxScroll = Math.max(0, this.totalHeight - this.innerHeight());
-        this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, this.maxScroll));
-        // KEEP THE MOMENTUM STATE INSIDE THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
-        this.target = Math.max(0, Math.min(this.target, this.maxScroll));
-        this.animPos = Math.max(0f, Math.min(this.animPos, this.maxScroll));
-        int y = this.innerTop() - this.scrollOffset;
+        // CLAMP THE OFFSET + MOMENTUM STATE INTO THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
+        this.scroll.clamp(this.totalHeight - this.innerHeight());
+        int y = this.innerTop() - this.scroll.offset;
         boolean first = true;
         for (final Element<?> row: this.children) {
             if (!row.visible) continue;
@@ -229,10 +204,10 @@ public final class ListView<D> extends Group<ListView<D>> {
         }
         canvas.popClip();
 
-        if (this.maxScroll > 0) {
+        if (this.scroll.max > 0) {
             final int trackH = this.measuredHeight;
-            final int thumbH = Math.max(24, (int) ((long) trackH * trackH / (trackH + this.maxScroll)));
-            final int thumbY = this.top + (int) ((long) (trackH - thumbH) * this.scrollOffset / this.maxScroll);
+            final int thumbH = this.scroll.thumbHeight(trackH);
+            final int thumbY = this.scroll.thumbY(this.top, trackH, thumbH);
             final int barX = this.left + this.measuredWidth - this.scrollbarWidth;
             canvas.fill(barX, thumbY, this.scrollbarWidth, thumbH, AppTheme.alpha(AppTheme.NEON, 130));
         }
@@ -255,8 +230,8 @@ public final class ListView<D> extends Group<ListView<D>> {
         if (this.selectOnHover) {
             for (int i = 0; i < this.children.size(); i++) {
                 if (this.children.get(i).hovered && i != this.selectedIndex) {
-                    this.selectedIndex = i;
-                    this.invalidate();
+                    // ROUTE THROUGH select() SO HOVER-SELECTION FIRES onSelect JUST LIKE A CLICK DOES
+                    this.select(i);
                     break;
                 }
             }
@@ -266,19 +241,9 @@ public final class ListView<D> extends Group<ListView<D>> {
 
     @Override
     public boolean dispatchScroll(final double mx, final double my, final double amount) {
-        if (!this.contains(mx, my) || this.maxScroll <= 0) return false;
+        if (!this.contains(mx, my) || this.scroll.max <= 0) return false;
         // MOMENTUM WHEEL: EACH NOTCH SHIFTS THE TARGET AND onUpdate EASES THE OFFSET TOWARD IT
-        if (this.animPos == this.target) {
-            // COAST START — RESYNC THE FLOAT MIRROR AND THE CLOCK FROM THE IDLE OFFSET
-            this.animPos = this.scrollOffset;
-            this.target = this.scrollOffset;
-            this.tick = System.currentTimeMillis();
-        }
-        final int next = Math.max(0, Math.min(this.maxScroll, this.target - (int) (amount * SCROLL_STEP)));
-        if (next != this.target) {
-            this.target = next;
-            this.invalidate();
-        }
+        if (this.scroll.scroll(amount)) this.invalidate();
         return true;
     }
 }

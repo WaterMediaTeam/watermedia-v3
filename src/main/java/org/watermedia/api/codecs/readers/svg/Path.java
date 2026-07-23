@@ -105,10 +105,12 @@ final class Path {
 
     // ----- FLATTENING TO DEVICE-SPACE POLYLINES -----
 
-    /** Flattened device-space output: one {@code [x0,y0,x1,y1,...]} array per subpath. */
+    // ONE FLATTENED DEVICE-SPACE SUBPATH: THE [x0,y0,x1,y1,...] POINTS AND WHETHER IT WAS CLOSED
+    record Subpath(double[] pts, boolean closed) {}
+
+    // FLATTENED DEVICE-SPACE OUTPUT: THE SUBPATHS OF A SINGLE PATH
     static final class Polys {
-        final List<double[]> lines = new ArrayList<>();
-        final List<Boolean> closed = new ArrayList<>();
+        final List<Subpath> subpaths = new ArrayList<>();
     }
 
     Polys flatten(final Affine m, final double tol) {
@@ -232,8 +234,7 @@ final class Path {
             if (this.n >= 4) {
                 final double[] line = new double[this.n];
                 System.arraycopy(this.buf, 0, line, 0, this.n);
-                this.out.lines.add(line);
-                this.out.closed.add(this.pendingClose);
+                this.out.subpaths.add(new Subpath(line, this.pendingClose));
             }
             this.n = 0;
             this.pendingClose = false;

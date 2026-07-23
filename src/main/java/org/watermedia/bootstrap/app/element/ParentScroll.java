@@ -11,17 +11,8 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
  */
 public final class ParentScroll extends Group<ParentScroll> {
 
-    private static final int UNBOUNDED = 1 << 20; // MEASURE CONTENT AT ITS NATURAL HEIGHT, NOT THE VIEWPORT'S
-    private static final int SCROLL_STEP = 48;
-    private static final float TAU = 70f; // MS — MOMENTUM DECAY TIME CONSTANT (~250MS SETTLE AFTER THE LAST NOTCH)
-
     private int scrollbarWidth = 6;
-    private int scrollOffset;
-    private int maxScroll;
-    // WHEEL MOMENTUM — THE OFFSET EASES TOWARD target; IDLE INVARIANT: animPos == target == scrollOffset
-    private float animPos;
-    private int target;
-    private long tick;
+    private final ScrollState scroll = new ScrollState();
 
     public ParentScroll scrollbarWidth(final int width) {
         this.scrollbarWidth = Math.max(2, width);
@@ -43,7 +34,7 @@ public final class ParentScroll extends Group<ParentScroll> {
             this.contentHeight = 0;
             return;
         }
-        content.measure(innerAvailWidth, UNBOUNDED);
+        content.measure(innerAvailWidth, ScrollState.UNBOUNDED);
         this.contentWidth = content.measuredWidth;
         // THE VIEWPORT HEIGHT COMES FROM THIS VIEW'S OWN SIZE PARAM, NOT THE CONTENT — REPORT THE OFFERED
         // HEIGHT SO A WRAP_CONTENT PARENTSCROLL STILL BOUNDS ITSELF RATHER THAN GROWING TO THE FULL CONTENT
@@ -52,32 +43,19 @@ public final class ParentScroll extends Group<ParentScroll> {
 
     @Override
     protected void onUpdate() {
-        // MOMENTUM: EXPONENTIAL APPROACH TOWARD THE ACCUMULATED WHEEL TARGET — SELF-SUSTAINED FRAMES;
-        // THE APPROACH NEVER OVERSHOOTS, SO AT A CLAMPED TARGET THE MOTION DIES WITHOUT ANY BOUNCE
-        if (this.animPos == this.target) return;
-        final long now = System.currentTimeMillis();
-        // dt CLAMPED TO [0,64]MS — A STALLED FRAME NEVER TELEPORTS AND A CLOCK JUMP NEVER DIVERGES
-        final float dt = Math.max(0L, Math.min(64L, now - this.tick));
-        this.tick = now;
-        this.animPos += (this.target - this.animPos) * (1f - (float) Math.exp(-dt / TAU));
-        if (Math.abs(this.target - this.animPos) < 0.5f) this.animPos = this.target;
-        this.scrollOffset = Math.round(this.animPos);
-        this.invalidate();
+        if (this.scroll.animate()) this.invalidate();
     }
 
     @Override
     protected void onLayout() {
         final Element<?> content = this.content();
         if (content == null) {
-            this.maxScroll = 0;
+            this.scroll.clamp(0);
             return;
         }
-        this.maxScroll = Math.max(0, content.measuredHeight - this.innerHeight());
-        this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, this.maxScroll));
-        // KEEP THE MOMENTUM STATE INSIDE THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
-        this.target = Math.max(0, Math.min(this.target, this.maxScroll));
-        this.animPos = Math.max(0f, Math.min(this.animPos, this.maxScroll));
-        content.layout(this.innerLeft(), this.innerTop() - this.scrollOffset);
+        // CLAMP THE OFFSET + MOMENTUM STATE INTO THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
+        this.scroll.clamp(content.measuredHeight - this.innerHeight());
+        content.layout(this.innerLeft(), this.innerTop() - this.scroll.offset);
     }
 
     @Override
@@ -87,10 +65,10 @@ public final class ParentScroll extends Group<ParentScroll> {
         super.onDraw(canvas);
         canvas.popClip();
 
-        if (this.maxScroll > 0) {
+        if (this.scroll.max > 0) {
             final int trackH = this.measuredHeight;
-            final int thumbH = Math.max(24, (int) ((long) trackH * trackH / (trackH + this.maxScroll)));
-            final int thumbY = this.top + (int) ((long) (trackH - thumbH) * this.scrollOffset / this.maxScroll);
+            final int thumbH = this.scroll.thumbHeight(trackH);
+            final int thumbY = this.scroll.thumbY(this.top, trackH, thumbH);
             final int barX = this.left + this.measuredWidth - this.scrollbarWidth - 2;
             canvas.fill(barX, thumbY, this.scrollbarWidth, thumbH, AppTheme.alpha(AppTheme.NEON, 130));
         }
@@ -98,19 +76,9 @@ public final class ParentScroll extends Group<ParentScroll> {
 
     @Override
     public boolean dispatchScroll(final double mx, final double my, final double amount) {
-        if (!this.contains(mx, my) || this.maxScroll <= 0) return false;
+        if (!this.contains(mx, my) || this.scroll.max <= 0) return false;
         // MOMENTUM WHEEL: EACH NOTCH SHIFTS THE TARGET AND onUpdate EASES THE OFFSET TOWARD IT
-        if (this.animPos == this.target) {
-            // COAST START — RESYNC THE FLOAT MIRROR AND THE CLOCK FROM THE IDLE OFFSET
-            this.animPos = this.scrollOffset;
-            this.target = this.scrollOffset;
-            this.tick = System.currentTimeMillis();
-        }
-        final int next = Math.max(0, Math.min(this.maxScroll, this.target - (int) (amount * SCROLL_STEP)));
-        if (next != this.target) {
-            this.target = next;
-            this.invalidate();
-        }
+        if (this.scroll.scroll(amount)) this.invalidate();
         return true;
     }
 
@@ -133,9 +101,7 @@ public final class ParentScroll extends Group<ParentScroll> {
 
     public ParentScroll scrollTo(final int offset) {
         // PROGRAMMATIC JUMPS ARE INSTANT AND KILL ANY WHEEL MOMENTUM — CALLERS EXPECT EXACT GEOMETRY
-        this.scrollOffset = Math.max(0, offset);
-        this.target = this.scrollOffset;
-        this.animPos = this.scrollOffset;
+        this.scroll.jump(offset);
         return this;
     }
 
@@ -147,24 +113,21 @@ public final class ParentScroll extends Group<ParentScroll> {
     public ParentScroll ensureVisible(final Element<?> child) {
         if (child == null) return this;
         // CHILD TOP IN CONTENT SPACE — layout PLACED IT AT ABSOLUTE COORDS SHIFTED BY THE CURRENT OFFSET
-        final int rel = child.top - this.innerTop() + this.scrollOffset;
+        final int rel = child.top - this.innerTop() + this.scroll.offset;
         final int viewport = this.innerHeight();
-        int next = this.scrollOffset;
+        int next = this.scroll.offset;
         if (rel + child.measuredHeight > next + viewport) next = rel + child.measuredHeight - viewport;
         if (rel < next) next = rel;
-        next = Math.max(0, Math.min(next, this.maxScroll));
+        next = Math.max(0, Math.min(next, this.scroll.max));
+        final boolean moved = next != this.scroll.offset;
         // INSTANT (NO ANIMATION) AND KILLS ANY WHEEL MOMENTUM — KEYBOARD NAV AND CALLERS RELY ON THE
         // CHILD BEING IN VIEW RIGHT AFTER THE CALL, WHICH A COASTING OFFSET WOULD DRIFT BACK OUT
-        this.target = next;
-        this.animPos = next;
-        if (next != this.scrollOffset) {
-            this.scrollOffset = next;
-            this.invalidate();
-        }
+        this.scroll.jump(next);
+        if (moved) this.invalidate();
         return this;
     }
 
     public int scrollOffset() {
-        return this.scrollOffset;
+        return this.scroll.offset;
     }
 }

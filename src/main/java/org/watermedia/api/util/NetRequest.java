@@ -380,8 +380,6 @@ public final class NetRequest implements AutoCloseable {
         private int connectTimeout = WaterMediaConfig.network.timeout;
         private int readTimeout = WaterMediaConfig.network.timeout;
         private int maxRedirects = WaterMediaConfig.network.maxRedirects;
-        private boolean accept$set;
-        private boolean referer$set;
 
         Builder(final URI uri) {
             this.uri = Objects.requireNonNull(uri, "uri cannot be null");
@@ -390,8 +388,8 @@ public final class NetRequest implements AutoCloseable {
 
         public Builder method(final String method) { this.method = method.toUpperCase(); return this; }
         public Builder contentType(final String contentType) { this.headers.set("Content-Type", contentType); return this; }
-        public Builder accept(final String accept) { this.headers.set("Accept", accept); this.accept$set = true; return this; }
-        public Builder referer(final String referer) { this.headers.set("Referer", referer); this.referer$set = true; return this; }
+        public Builder accept(final String accept) { this.headers.set("Accept", accept); return this; }
+        public Builder referer(final String referer) { this.headers.set("Referer", referer); return this; }
         public Builder userAgent(final UserAgent userAgent) { this.userAgent = Objects.requireNonNull(userAgent); return this; }
         public Builder header(final String name, final String value) { this.headers.set(name, value); return this; }
         public Builder addHeader(final String name, final String value) { this.headers.add(name, value); return this; }
@@ -497,8 +495,8 @@ public final class NetRequest implements AutoCloseable {
         private RequestHeaders materializeHeaders(final URI target) {
             final RequestHeaders out = new RequestHeaders(this.headers);
             out.set("User-Agent", this.userAgent.value);
-            if (!this.accept$set && !out.has("Accept")) out.set("Accept", "*/*");
-            if (!this.referer$set && !out.has("Referer")) {
+            // ACCEPT IS ALWAYS SEEDED IN THE CTOR; ONLY DERIVE A REFERER WHEN THE CALLER DID NOT SET ONE
+            if (!out.has("Referer")) {
                 final String host = target.getHost();
                 if (host != null) out.set("Referer", target.getScheme() + "://" + host);
             }

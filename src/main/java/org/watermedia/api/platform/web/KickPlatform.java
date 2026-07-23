@@ -59,32 +59,32 @@ public final class KickPlatform implements IPlatform {
             LOGGER.debug(IT, "Kick resolving channel '{}' from {}", slug, uri);
             final Channel channel = NetRequest.fetchJson(KickPlatform.class, String.format(CHANNELS_API, slug), Channel.class);
 
-            if (channel.livestream == null || !channel.livestream.is_live)
+            if (channel.livestream == null || !channel.livestream.live)
                 throw new PlatformException(KickPlatform.class, "Streamer '" + slug + "' is offline");
 
-            if (channel.is_banned)
+            if (channel.banned)
                 throw new PlatformException(KickPlatform.class, "Streamer '" + slug + "' is banned");
 
-            if (channel.livestream.is_mature && !WaterMediaConfig.platforms.allowMatureContent)
+            if (channel.livestream.mature && !WaterMediaConfig.platforms.allowMatureContent)
                 throw new MatureContentException(KickPlatform.class, "Streamer '" + slug + "' is marked as mature content");
 
             final String username = channel.user != null ? channel.user.username : slug;
-            if (channel.livestream.session_title == null)
+            if (channel.livestream.sessionTitle == null)
                 LOGGER.warn(IT, "Kick channel '{}' is live but reports no session_title", slug);
 
             // FETCH THE HLS MASTER PLAYLIST AND EXPAND ITS RENDITIONS INTO QUALITY VARIANTS
-            final DataQuality[] variants = variantsFrom(channel.url, "channel " + slug);
+            final List<DataQuality> variants = variantsFrom(channel.url, "channel " + slug);
 
             final Metadata metadata = new Metadata(
                     username,
-                    channel.livestream.session_title,
-                    parseDate(channel.livestream.start_time, slug),
+                    channel.livestream.sessionTitle,
+                    parseDate(channel.livestream.startTime, slug),
                     0,
                     username);
 
-            LOGGER.info(IT, "Kick resolved live channel '{}' with {} variant(s)", slug, variants.length);
+            LOGGER.info(IT, "Kick resolved live channel '{}' with {} variant(s)", slug, variants.size());
             // KICK LIVE CDN LINKS ROTATE; RE-RESOLVE PERIODICALLY (30 MIN) TO AVOID SERVING STALE PLAYLISTS
-            final var entry = new DataSource(MediaType.VIDEO, channel.user != null ? channel.user.profile_pic : null, metadata,
+            final var entry = new DataSource(MediaType.VIDEO, channel.user != null ? channel.user.profilePic : null, metadata,
                     RequestHeaders.defaults(uri),
                     variants,
                     null, null);
@@ -104,25 +104,25 @@ public final class KickPlatform implements IPlatform {
             final String username = video.livestream.channel != null && video.livestream.channel.user != null
                     ? video.livestream.channel.user.username : null;
 
-            if (video.livestream.channel != null && video.livestream.channel.is_banned)
+            if (video.livestream.channel != null && video.livestream.channel.banned)
                 throw new PlatformException(KickPlatform.class, "Streamer '" + username + "' is banned");
 
-            if (video.livestream.is_mature && !WaterMediaConfig.platforms.allowMatureContent)
+            if (video.livestream.mature && !WaterMediaConfig.platforms.allowMatureContent)
                 throw new MatureContentException(KickPlatform.class, "VOD '" + id + "' is marked as mature content");
 
             // FETCH THE HLS PLAYLIST FROM THE VOD'S PLAYBACK URL (NOT THE PAGE URI)
-            final DataQuality[] vodVariants = variantsFrom(video.url, "VOD " + id);
+            final List<DataQuality> vodVariants = variantsFrom(video.url, "VOD " + id);
 
             final Metadata vodMetadata = new Metadata(
                     username,
-                    video.livestream.session_title,
-                    parseDate(video.livestream.start_time, id),
+                    video.livestream.sessionTitle,
+                    parseDate(video.livestream.startTime, id),
                     video.livestream.duration,
                     username);
 
-            LOGGER.info(IT, "Kick resolved VOD '{}' with {} variant(s)", id, vodVariants.length);
+            LOGGER.info(IT, "Kick resolved VOD '{}' with {} variant(s)", id, vodVariants.size());
             final var entry = new DataSource(MediaType.VIDEO,
-                    video.livestream.channel != null && video.livestream.channel.user != null ? video.livestream.channel.user.profile_pic : null,
+                    video.livestream.channel != null && video.livestream.channel.user != null ? video.livestream.channel.user.profilePic : null,
                     vodMetadata,
                     RequestHeaders.defaults(uri),
                     vodVariants,
@@ -167,12 +167,12 @@ public final class KickPlatform implements IPlatform {
             throw new MatureContentException(KickPlatform.class, "Clip '" + clipId + "' is marked as mature content");
 
         // CLIP URL MAY BE A DIRECT FILE (mp4/webm) OR AN M3U8 PLAYLIST
-        final DataQuality[] variants;
+        final List<DataQuality> variants;
         if (clip.clipUrl.getPath().toLowerCase(Locale.ROOT).endsWith(".m3u8")) {
             variants = variantsFrom(clip.clipUrl, "clip " + clipId);
         } else {
             LOGGER.debug(IT, "Kick clip '{}' is a direct file: {}", clipId, clip.clipUrl);
-            variants = new DataQuality[] { new DataQuality(clip.clipUrl, 0, 0) };
+            variants = List.of(new DataQuality(clip.clipUrl, 0, 0));
         }
 
         final Metadata metadata = new Metadata(
@@ -182,7 +182,7 @@ public final class KickPlatform implements IPlatform {
                 (long) (clip.duration * 1000L),
                 clip.creator != null ? clip.creator.username : null);
 
-        LOGGER.info(IT, "Kick resolved clip '{}' with {} variant(s)", clipId, variants.length);
+        LOGGER.info(IT, "Kick resolved clip '{}' with {} variant(s)", clipId, variants.size());
         final var entry = new DataSource(MediaType.VIDEO, clip.thumbnail, metadata,
                 RequestHeaders.defaults(uri),
                 variants,
@@ -213,14 +213,13 @@ public final class KickPlatform implements IPlatform {
     // RESOLVES AN HLS STREAM URL INTO QUALITY VARIANTS. RESILIENT BY DESIGN (NEVER THROWS): A FETCH/PARSE
     // HICCUP, A MEDIA PLAYLIST, OR A NON-HLS RESOURCE FALLS BACK TO THE RAW URL SO FFMediaPlayer CAN PROBE.
     // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST source BY MPEGTool).
-    private static DataQuality[] variantsFrom(final URI source, final String ctx) {
+    private static List<DataQuality> variantsFrom(final URI source, final String ctx) {
         final List<MPEGTool.Variant> variants = MPEGTool.qualities(source);
-        final DataQuality[] out = new DataQuality[variants.size()];
-        for (int i = 0; i < variants.size(); i++) {
-            final MPEGTool.Variant v = variants.get(i);
-            out[i] = new DataQuality(v.uri(), v.width(), v.height());
+        final List<DataQuality> out = new ArrayList<>(variants.size());
+        for (final MPEGTool.Variant v: variants) {
+            out.add(new DataQuality(v.uri(), v.width(), v.height()));
         }
-        LOGGER.debug(IT, "Kick resolved {} HLS rendition(s) for {}", out.length, ctx);
+        LOGGER.debug(IT, "Kick resolved {} HLS rendition(s) for {}", out.size(), ctx);
         return out;
     }
 
@@ -247,51 +246,30 @@ public final class KickPlatform implements IPlatform {
         }
     }
 
-    private record Channel(int id, boolean is_banned, Livestream livestream, User user, @SerializedName("playback_url") URI url) {
-
-
-    }
+    private record Channel(int id, @SerializedName("is_banned") boolean banned, Livestream livestream, User user, @SerializedName("playback_url") URI url) {}
 
     // SEARCH PAYLOAD: A SEPARATE SHAPE FROM Channel/User — channels[].slug + camelCase user{username, profilePic}
-    private record SearchResponse(SearchChannel[] channels) {
+    private record SearchResponse(SearchChannel[] channels) {}
 
-    }
+    private record SearchChannel(String slug, SearchUser user) {}
 
-    private record SearchChannel(String slug, SearchUser user) {
+    private record SearchUser(String username, String profilePic) {}
 
-    }
+    private record Livestream(int id, @SerializedName("is_live") boolean live, @SerializedName("is_mature") boolean mature,
+                              long duration, @SerializedName("session_title") String sessionTitle,
+                              @SerializedName("start_time") String startTime, Channel channel) {}
 
-    private record SearchUser(String username, String profilePic) {
+    private record User(int id, String username, @SerializedName("profile_pic") URI profilePic) {}
 
-    }
+    private record Video(int id, Livestream livestream, @SerializedName("uri") URI url) {}
 
-    public record Livestream(int id, boolean is_live, boolean is_mature, long duration, String session_title, String start_time, Channel channel) {
-
-    }
-
-    public record User(int id, String username, URI profile_pic) {
-
-    }
-
-    private record Video(int id, Livestream livestream, @SerializedName("uri") URI url) {
-
-    }
-
-    private record ClipResponse(Clip clip) {
-
-    }
+    private record ClipResponse(Clip clip) {}
 
     private record Clip(@SerializedName("clip_url") URI clipUrl, String title, Creator creator,
                         @SerializedName("thumbnail_url") URI thumbnail, float duration, Category category,
-                        @SerializedName("created_at") String createdAt, @SerializedName("is_mature") boolean isMature) {
+                        @SerializedName("created_at") String createdAt, @SerializedName("is_mature") boolean isMature) {}
 
-    }
+    private record Creator(int id, String username) {}
 
-    private record Creator(int id, String username) {
-
-    }
-
-    private record Category(int id, String name) {
-
-    }
+    private record Category(int id, String name) {}
 }

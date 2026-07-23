@@ -13,6 +13,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -47,7 +48,7 @@ public final class DrivePlatform implements IPlatform {
                 LOGGER.debug(IT, "Google Drive resolved fileId '{}' via API (content-type {})", fileId, req.contentType());
                 final var entry = new DataSource(type, null, null,
                         RequestHeaders.defaults(uri),
-                        new DataQuality[] {new DataQuality(apiUri, 0, 0)},
+                        List.of(new DataQuality(apiUri, 0, 0)),
                         null, null);
                 return new PlatformData(null, entry);
             }
@@ -88,13 +89,27 @@ public final class DrivePlatform implements IPlatform {
                 if (at != null) sb.append("&at=").append(at);
                 url = sb.toString();
                 LOGGER.debug(IT, "Google Drive bypassed confirmation form for fileId '{}' (uuid present, at {})", fileId, at != null ? "present" : "absent");
+
+                // THE ORIGINAL RESPONSE WAS THE HTML FORM, NOT THE FILE — RE-REQUEST THE REBUILT URL SO THE
+                // DataSource CARRIES THE REAL FILE CONTENT-TYPE INSTEAD OF "text/html" (WHICH TYPES AS UNKNOWN)
+                try (final NetRequest confirm = NetRequest.create(new URI(url)).method("GET").accept("*/*").send()) {
+                    if (confirm.statusCode() != 200)
+                        throw new PlatformException(DrivePlatform.class, "Confirmed download for fileId '" + fileId + "' returned HTTP " + confirm.statusCode() + " (" + original + ")");
+                    final MediaType type = MediaType.of(confirm.contentType());
+                    LOGGER.debug(IT, "Google Drive resolved fileId '{}' via confirmed download (content-type {})", fileId, confirm.contentType());
+                    final var entry = new DataSource(type, null, null,
+                            RequestHeaders.defaults(original),
+                            List.of(new DataQuality(new URI(url), 0, 0)),
+                            null, null);
+                    return new PlatformData(null, entry);
+                }
             }
 
             final MediaType type = MediaType.of(req.contentType());
             LOGGER.debug(IT, "Google Drive resolved fileId '{}' via download (content-type {})", fileId, req.contentType());
             final var entry = new DataSource(type, null, null,
                     RequestHeaders.defaults(original),
-                    new DataQuality[] {new DataQuality(new URI(url), 0, 0)},
+                    List.of(new DataQuality(new URI(url), 0, 0)),
                     null, null);
             return new PlatformData(null, entry);
         }

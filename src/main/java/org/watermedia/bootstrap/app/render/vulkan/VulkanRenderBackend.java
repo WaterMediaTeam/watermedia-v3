@@ -184,7 +184,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     // FRAME STATE
     private final float[] proj = {1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f};
-    private int viewW, viewH;
     private boolean clipEnabled;
     private int clipX, clipY, clipW, clipH;
     private float lineW = 1f;
@@ -201,6 +200,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // DYNAMIC-STATE BOOKKEEPING: SET ONCE PER CHANGE; A FRESH COMMAND BUFFER MARKS ALL DIRTY
     private boolean vpDirty, scDirty, lwDirty;
     private long boundPipeline, boundVbo, boundSet;
+    // LAST TEXTURED-DRAW VIEW AND ITS DESCRIPTOR SET, CACHED PER FRAME SO CONSECUTIVE DRAWS SAMPLING THE
+    // SAME VIEW (ATLAS FLUSHES, REPEATED BLITS) REUSE THE SET INSTEAD OF ALLOCATING/WRITING A NEW ONE.
+    private long boundView, boundTexSet;
 
     /**
      * Creates the Vulkan device for the given GLFW window. The window must have been created with the
@@ -233,11 +235,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     private void createInstanceAndSurface() {
         try (MemoryStack stack = stackPush()) {
-            // OPPORTUNISTIC API BUMP: REQUEST min(LOADER VERSION, 1.4), NEVER BELOW 1.1. A HIGHER
-            // INSTANCE apiVersion ONLY WIDENS WHAT MAY LEGALLY BE USED — EVERYTHING THIS BACKEND AND
-            // THE ENGINE ACTUALLY USE STAYS 1.1-CORE (NEGATIVE-HEIGHT VIEWPORT, samplerYcbcrConversion)
-            // PLUS THE ALREADY-ENABLED EXTENSIONS, SO NOTHING NEW BECOMES REQUIRED. VK.getInstanceVersionSupported
-            // WRAPS vkEnumerateInstanceVersion NULL-SAFELY (RETURNS 1.0 ON ANCIENT LOADERS).
+            // OPPORTUNISTIC API BUMP TO min(LOADER, 1.4) BUT NEVER BELOW 1.1: A HIGHER apiVersion ONLY WIDENS
+            // WHAT MAY BE USED (WE STAY 1.1-CORE), AND getInstanceVersionSupported IS NULL-SAFE ON OLD LOADERS.
             final int loaderVer = VK.getInstanceVersionSupported();
             final int apiVersion = Math.max(VK_API_VERSION_1_1, Math.min(loaderVer, VK14.VK_API_VERSION_1_4));
             final VkApplicationInfo app = VkApplicationInfo.calloc(stack).sType$Default()
@@ -400,7 +399,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final IntBuffer present = stack.mallocInt(1);
         for (int i = 0; i < props.capacity(); i++) {
             if ((props.get(i).queueFlags() & VK_QUEUE_GRAPHICS_BIT) == 0) continue;
-            vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, this.surface, present);
+            // CHECK THE RESULT: present IS UNINITIALIZED STACK MEMORY, SO A SILENT FAILURE COULD READ GARBAGE.
+            check(vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, this.surface, present), "query surface support");
             if (present.get(0) == VK_TRUE) return i;
         }
         return -1;
@@ -683,10 +683,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             if (w == 0 || h == 0) return false;
             this.extentW = w;
             this.extentH = h;
-            if (this.viewW == 0 || this.viewH == 0) {
-                this.viewW = w;
-                this.viewH = h;
-            }
 
             int imageCount = caps.minImageCount() + 1;
             if (caps.maxImageCount() > 0 && imageCount > caps.maxImageCount()) imageCount = caps.maxImageCount();
@@ -705,10 +701,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             this.swapchain = pSwap.get(0);
 
             final IntBuffer imgCount = stack.mallocInt(1);
-            vkGetSwapchainImagesKHR(this.device, this.swapchain, imgCount, null);
+            check(vkGetSwapchainImagesKHR(this.device, this.swapchain, imgCount, null), "count swapchain images");
             final int n = imgCount.get(0);
             final LongBuffer pImages = stack.mallocLong(n);
-            vkGetSwapchainImagesKHR(this.device, this.swapchain, imgCount, pImages);
+            check(vkGetSwapchainImagesKHR(this.device, this.swapchain, imgCount, pImages), "get swapchain images");
 
             this.swapImages = new long[n];
             this.swapViews = new long[n];
@@ -739,10 +735,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // RESIZE / OUT-OF-DATE: DRAIN, TEAR DOWN THE SWAPCHAIN-DERIVED OBJECTS, AND REBUILD. THE RENDER PASS
     // AND PIPELINES SURVIVE BECAUSE THE FORMAT NEVER CHANGES.
     private void recreateSwapchain() {
-        // SERIALIZE WITH THE VKEngine PRODUCER: vkDeviceWaitIdle IS EQUIVALENT TO WAITING EVERY QUEUE
-        // AND REQUIRES EXCLUSIVE QUEUE ACCESS, BUT THE DECODE THREAD SUBMITS FRAME UPLOADS TO THE SAME
-        // QUEUE UNDER THIS LOCK. WITHOUT IT THE CONCURRENT QUEUE ACCESS CORRUPTS DEVICE/SWAPCHAIN STATE
-        // (RENDERING BREAKS UNTIL THE PROCESS RESTARTS) AND STALLS UPLOADS ERRATICALLY.
+        // UNDER THE QUEUE LOCK: vkDeviceWaitIdle NEEDS EXCLUSIVE QUEUE ACCESS, BUT THE DECODE THREAD SUBMITS
+        // UPLOADS TO THE SAME QUEUE — CONCURRENT ACCESS WOULD CORRUPT DEVICE/SWAPCHAIN STATE.
         synchronized (this.queueLock) {
             vkDeviceWaitIdle(this.device);
             this.destroySwapchainObjects();
@@ -815,6 +809,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.boundPipeline = 0L;
         this.boundVbo = 0L;
         this.boundSet = 0L;
+        // THE PER-FRAME DESCRIPTOR POOLS WERE JUST RESET, SO ANY CACHED SET FROM A PRIOR FRAME IS STALE.
+        this.boundView = 0L;
+        this.boundTexSet = 0L;
         this.vpDirty = true;
         this.scDirty = true;
         this.lwDirty = true;
@@ -847,8 +844,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     @Override
     public void viewport(final int width, final int height) {
-        this.viewW = width;
-        this.viewH = height;
+        // THE DRAW-TIME VIEWPORT USES THE SWAPCHAIN EXTENT (NOT THIS WINDOW SIZE); JUST FLAG IT DIRTY.
         this.vpDirty = true;
     }
 
@@ -876,7 +872,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     @Override
-    public void enableClip(final int x, final int y, final int width, final int height, final int canvasHeight) {
+    public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
         // WITH THE NEGATIVE-HEIGHT VIEWPORT, APP-TOP MAPS TO FRAMEBUFFER-TOP, AND THE VULKAN SCISSOR ORIGIN
         // IS ALSO TOP-LEFT — SO THE CLIP Y IS USED DIRECTLY (NO GL BOTTOM-LEFT FLIP). SEE Y-FLIP NOTE.
         this.clipEnabled = true;
@@ -888,7 +884,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     @Override
-    public void disableClip() {
+    public void clearClip() {
         this.clipEnabled = false;
         this.scDirty = true;
     }
@@ -945,10 +941,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
             // DYNAMIC STATE: SET ON CHANGE; PERSISTS FOR SUBSEQUENT DRAWS IN THIS COMMAND BUFFER.
             if (this.vpDirty) {
-                // NEGATIVE-HEIGHT VIEWPORT EMULATES OPENGL CLIP SPACE (y DOWN -> y UP). VERIFY-ON-HARDWARE.
-                // USE THE SWAPCHAIN EXTENT (NOT THE APP'S WINDOW-SIZE viewport()) SO THE VIEWPORT ALWAYS
-                // MATCHES THE FRAMEBUFFER AND THE SCISSOR — OTHERWISE A MODE/SIZE CHANGE RENDERS AT THE
-                // WRONG SCALE FOR A FRAME. NEGATIVE HEIGHT KEEPS OPENGL-EQUIVALENT (Y-DOWN) CLIP SPACE.
+                // NEGATIVE-HEIGHT VIEWPORT FROM THE SWAPCHAIN EXTENT (NOT viewport()): EMULATES OPENGL Y-DOWN
+                // CLIP SPACE AND ALWAYS MATCHES THE FRAMEBUFFER/SCISSOR. VERIFY-ON-HARDWARE.
                 final VkViewport.Buffer v = VkViewport.calloc(1, stack);
                 v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
                 vkCmdSetViewport(cmd, 0, v);
@@ -964,8 +958,18 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
 
             final boolean useTex = textured && this.currentView != 0L;
-            // TEXTURED DRAWS GET A FRESH PER-FRAME SET POINTING AT THE CURRENT VIEW; OTHERS BIND THE DUMMY.
-            final long set = useTex ? this.allocTextureSet(stack, f, this.currentView) : this.dummySet;
+            // TEXTURED DRAWS SAMPLE currentView: REUSE THE CACHED SET WHILE THE VIEW IS UNCHANGED, ELSE ALLOCATE
+            // A FRESH PER-FRAME SET. NON-TEXTURED DRAWS BIND THE DUMMY.
+            final long set;
+            if (useTex) {
+                if (this.currentView != this.boundView || this.boundTexSet == 0L) {
+                    this.boundTexSet = this.allocTextureSet(stack, f, this.currentView);
+                    this.boundView = this.currentView;
+                }
+                set = this.boundTexSet;
+            } else {
+                set = this.dummySet;
+            }
             if (set != this.boundSet) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.pipeLayout, 0, stack.longs(set), null);
                 this.boundSet = set;
@@ -1159,7 +1163,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         return switch (mode) {
             case TRIANGLES, TRIANGLE_FAN -> this.pipeTriList; // FANS ARE EXPANDED TO A LIST IN draw()
             case LINES -> this.pipeLineList;
-            case LINE_STRIP, LINE_LOOP -> this.pipeLineStrip; // LINE_LOOP IS A CLOSED STRIP (NO LINE_LOOP TOPOLOGY)
+            case LINE_LOOP -> this.pipeLineStrip; // LINE_LOOP IS RENDERED AS A CLOSED LINE STRIP (NO LINE_LOOP TOPOLOGY)
         };
     }
 

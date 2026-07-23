@@ -25,12 +25,13 @@ public final class Stepper extends Element<Stepper> {
     }
 
     public Stepper active(final int value) {
-        this.active = value;
+        // REJECT NEGATIVES LIKE THE SIBLING CONTROLS — A NEGATIVE INDEX NEVER MATCHES A STEP (SILENT MISUSE)
+        this.active = Math.max(0, value);
         return this;
     }
 
     public Stepper complete(final int value) {
-        this.complete = value;
+        this.complete = Math.max(0, value);
         return this;
     }
 

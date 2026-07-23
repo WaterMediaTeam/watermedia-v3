@@ -26,7 +26,7 @@ public class MrlSubscribeTest {
     @DisplayName("Listener fires once when loading completes")
     void testListenerFiresOnceWhenLoadingCompletes() {
         // EACH TEST USES A DISTINCT FIXTURE FILE BECAUSE THE MRL CACHE KEYS BY URI.
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
 
         // ONE-SHOT COUNTER: SINGLE-ELEMENT ARRAY LETS THE LISTENER MUTATE FROM EITHER THREAD.
         final int[] count = new int[1];
@@ -40,7 +40,7 @@ public class MrlSubscribeTest {
     @Test
     @DisplayName("Listener fires immediately when already ready")
     void testListenerFiresImmediatelyWhenAlreadyReady() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final int[] count = new int[1];
@@ -58,7 +58,7 @@ public class MrlSubscribeTest {
     @Test
     @DisplayName("Throwing listener does not break the dispatch chain")
     void testThrowingListenerDoesNotBreakDispatchChain() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
 
         final boolean[] secondFired = new boolean[1];
         mrl.subscribe(m -> { throw new RuntimeException("BOOM"); });

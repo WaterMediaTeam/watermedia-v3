@@ -9,6 +9,7 @@ import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
 import java.net.URI;
+import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -37,7 +38,7 @@ public final class DropboxPlatform implements IPlatform {
 
             final var entry = new DataSource(type, null, null,
                     RequestHeaders.defaults(uri),
-                    new DataQuality[] {new DataQuality(directUri, 0, 0)},
+                    List.of(new DataQuality(directUri, 0, 0)),
                     null, null);
             return new PlatformData(null, entry);
         }

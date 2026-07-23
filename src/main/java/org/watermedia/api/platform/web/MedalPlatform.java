@@ -105,7 +105,7 @@ public final class MedalPlatform implements IPlatform {
         LOGGER.info(IT, "Medal resolved clip '{}' with {} variant(s)", clipId, variants.size());
         final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
                 RequestHeaders.defaults(uri),
-                variants.toArray(DataQuality[]::new),
+                variants,
                 null, null);
         return new PlatformData(expires, entry);
     }

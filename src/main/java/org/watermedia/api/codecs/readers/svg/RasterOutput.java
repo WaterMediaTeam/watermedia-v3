@@ -24,7 +24,7 @@ record RasterOutput(SVGRasterizer ras) {
     int height() { return this.ras.height; }
     int[] canvas() { return this.ras.canvas; }
 
-    void fill(final Path geo, final Affine ctm, final boolean evenOdd, final SvgPaint paint, final float opacity) {
+    void fill(final Path geo, final Affine ctm, final boolean evenOdd, final SVGPaint paint, final float opacity) {
         if (paint == null || opacity <= 0 || geo.isEmpty()) return;
         final double[] bb = geo.userBounds();
         if (bb == null) return;
@@ -32,7 +32,7 @@ record RasterOutput(SVGRasterizer ras) {
         this.ras.fill(geo.flatten(ctm, TOL), evenOdd, sampler, opacity);
     }
 
-    void stroke(final Path geo, final Affine ctm, final double strokeWidthUser, final SvgPaint paint, final float opacity) {
+    void stroke(final Path geo, final Affine ctm, final double strokeWidthUser, final SVGPaint paint, final float opacity) {
         if (paint == null || opacity <= 0 || strokeWidthUser <= 0 || geo.isEmpty()) return;
         final double[] bb = geo.userBounds();
         if (bb == null) return;

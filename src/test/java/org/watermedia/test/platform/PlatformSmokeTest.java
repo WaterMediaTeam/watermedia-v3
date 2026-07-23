@@ -69,7 +69,7 @@ public final class PlatformSmokeTest {
 
     private static void print(final DataSource src) {
         final RequestHeaders h = src.headers();
-        System.out.println("  type=" + src.type() + " variants=" + src.variants().length
+        System.out.println("  type=" + src.type() + " variants=" + src.variants().size()
                 + " | title=" + src.metadata().title() + " | author=" + src.metadata().author());
         System.out.println("  UA=" + (h == null ? "(none)" : h.get("User-Agent")));
         for (final DataQuality q: src.variants()) {

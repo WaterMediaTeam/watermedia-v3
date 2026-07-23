@@ -1,7 +1,6 @@
 package org.watermedia.bootstrap.app.render;
 
 import org.joml.Matrix4f;
-import org.joml.Vector2f;
 import org.joml.Vector4f;
 import org.watermedia.api.media.engines.GFXEngine;
 
@@ -16,6 +15,7 @@ import java.util.function.Supplier;
 public final class RenderEngine {
 
     private static final int FLOATS_PER_VERTEX = 8;
+    // SHARED UI VERTEX CAPACITY — THE GL BACKEND SIZES ITS STREAM VBO TO THE SAME VALUE; KEEP THEM IN SYNC.
     private static final int MAX_VERTICES = 8192;
     // SDF SOFT-RECT FALLOFF DISTANCES (PIXELS) — GLOW MATCHES THE OLD 10-FILL SPREAD (10 * 2.2); SHADOW IS
     // A SMALLER OFFSET HALO. TUNE THESE IF THE GLOW/SHADOW READS TOO TIGHT OR TOO SOFT.
@@ -83,20 +83,17 @@ public final class RenderEngine {
         this.backend.disableDepthTest();
     }
 
-    public TextureHandle createTextureHandle(final int width, final int height, final ByteBuffer rgba) {
-        this.flush();
-        final TextureHandle texture = this.backend.createTexture(width, height, rgba);
-        this.boundTextureId = -1;
-        return texture;
-    }
-
     public int createTexture(final int width, final int height, final ByteBuffer rgba) {
-        return this.createTextureHandle(width, height, rgba).id();
+        this.flush();
+        final int id = this.backend.createTexture(width, height, rgba).id();
+        this.boundTextureId = -1;
+        return id;
     }
 
-    public void deleteTexture(final TextureHandle texture) {
+    public void deleteTexture(final int textureId) {
         this.flush();
-        this.backend.deleteTexture(texture);
+        // ONLY THE ID IS KNOWN AT THE APP SEAM; BOTH BACKENDS DELETE BY ID (w/h UNUSED), SO ZERO EXTENTS ARE FINE.
+        this.backend.deleteTexture(new TextureHandle(textureId, 0, 0));
         this.boundTextureId = -1;
     }
 
@@ -109,7 +106,7 @@ public final class RenderEngine {
         this.backend.useProjection(this.projection);
     }
 
-    public void restoreProjection() {
+    private void restoreProjection() {
         if (this.orthoW == -1 && this.orthoH == -1) return; // IDENTITY ALREADY ACTIVE
         this.flush();
         this.orthoW = -1;
@@ -189,12 +186,12 @@ public final class RenderEngine {
         final int py = Math.round(y * s);
         final int pw = Math.round((x + width) * s) - px;
         final int ph = Math.round((y + height) * s) - py;
-        this.backend.enableClip(px, py, pw, ph, Math.round(canvasHeight * s));
+        this.backend.clip(px, py, pw, ph, Math.round(canvasHeight * s));
     }
 
     public void clearClip() {
         this.flush();
-        this.backend.disableClip();
+        this.backend.clearClip();
     }
 
     public void lineWidth(final float width) {
@@ -268,49 +265,6 @@ public final class RenderEngine {
         this.draw(DrawMode.TRIANGLES, 3, false);
     }
 
-    public void fillRoundedTriangle(final float x1, final float y1,
-                                    final float x2, final float y2,
-                                    final float x3, final float y3,
-                                    final float radius,
-                                    final float r, final float g, final float b, final float a) {
-        this.color(r, g, b, a);
-
-        final Vector2f p1 = new Vector2f(x1, y1);
-        final Vector2f p2 = new Vector2f(x2, y2);
-        final Vector2f p3 = new Vector2f(x3, y3);
-        final Vector2f center = new Vector2f(p1).add(p2).add(p3).div(3f);
-
-        put(0, center.x, center.y, 0f, 0f, this.color);
-        int idx = 1;
-        idx = roundedTriangleCorner(idx, p1, p2, p3, radius);
-        idx = roundedTriangleCorner(idx, p2, p3, p1, radius);
-        idx = roundedTriangleCorner(idx, p3, p1, p2, radius);
-        put(idx++, this.vertices[FLOATS_PER_VERTEX], this.vertices[FLOATS_PER_VERTEX + 1], 0f, 0f, this.color);
-
-        this.draw(DrawMode.TRIANGLE_FAN, idx, false);
-    }
-
-    private int roundedTriangleCorner(final int startIdx, final Vector2f point, final Vector2f next,
-                                      final Vector2f prev, final float radius) {
-        final Vector2f toNext = new Vector2f(next).sub(point).normalize();
-        final Vector2f toPrev = new Vector2f(prev).sub(point).normalize();
-        final Vector2f cornerCenter = new Vector2f(point).add(new Vector2f(toNext).add(toPrev).mul(radius));
-
-        float start = (float) Math.atan2(toPrev.y, toPrev.x);
-        float end = (float) Math.atan2(toNext.y, toNext.x);
-        while (end < start) end += (float) (Math.PI * 2);
-
-        int idx = startIdx;
-        final int segments = 5;
-        for (int i = 0; i <= segments; i++) {
-            final float angle = start + (end - start) * i / segments;
-            put(idx++, cornerCenter.x + (float) Math.cos(angle) * radius,
-                    cornerCenter.y + (float) Math.sin(angle) * radius,
-                    0f, 0f, this.color);
-        }
-        return idx;
-    }
-
     public void fillCircle(final float cx, final float cy, final float radius,
                            final float r, final float g, final float b, final float a) {
         this.color(r, g, b, a);
@@ -350,14 +304,6 @@ public final class RenderEngine {
                             final float radius, final Color c) {
         this.color(c);
         this.fillRounded(x, y, w, h, radius);
-    }
-
-    public void rect(final float x, final float y, final float w, final float h) {
-        put(0, x, y, 0f, 0f, this.color);
-        put(1, x + w, y, 0f, 0f, this.color);
-        put(2, x + w, y + h, 0f, 0f, this.color);
-        put(3, x, y + h, 0f, 0f, this.color);
-        this.draw(DrawMode.LINE_LOOP, 4, false);
     }
 
     public void rect(final float x, final float y, final float w, final float h,
@@ -448,22 +394,6 @@ public final class RenderEngine {
         this.draw(DrawMode.LINES, 2, false);
     }
 
-    public void lineStrip(final float[] points) {
-        final int count = points.length / 2;
-        for (int i = 0; i < count; i++) {
-            put(i, points[i * 2], points[i * 2 + 1], 0f, 0f, this.color);
-        }
-        this.draw(DrawMode.LINE_STRIP, count, false);
-    }
-
-    public void lineLoop(final float[] points) {
-        final int count = points.length / 2;
-        for (int i = 0; i < count; i++) {
-            put(i, points[i * 2], points[i * 2 + 1], 0f, 0f, this.color);
-        }
-        this.draw(DrawMode.LINE_LOOP, count, false);
-    }
-
     public void blit(final float x, final float y, final float w, final float h) {
         put(0, x, y, 0f, 0f, this.color);
         put(1, x + w, y, 1f, 0f, this.color);
@@ -483,44 +413,6 @@ public final class RenderEngine {
         put(4, x + w, y + h, u1, v1, this.color);
         put(5, x, y + h, u0, v1, this.color);
         this.draw(DrawMode.TRIANGLES, 6, this.boundTextureId > 0);
-    }
-
-    public void blitNDC(final float x1, final float y1, final float x2, final float y2) {
-        this.blitNDC(x1, y1, x2, y2, 0f, 0f, 1f, 1f);
-    }
-
-    public void blitNDC(final float x1, final float y1, final float x2, final float y2,
-                        final float u0, final float v0, final float u1, final float v1) {
-        put(0, x1, y1, u0, v1, this.color);
-        put(1, x1, y2, u0, v0, this.color);
-        put(2, x2, y2, u1, v0, this.color);
-        put(3, x1, y1, u0, v1, this.color);
-        put(4, x2, y2, u1, v0, this.color);
-        put(5, x2, y1, u1, v1, this.color);
-        this.draw(DrawMode.TRIANGLES, 6, this.boundTextureId > 0);
-    }
-
-    public void dialogBox(final float x, final float y, final float w, final float h,
-                          final Color borderColor, final float borderWidth) {
-        this.fill(x, y, w, h, 4f / 255f, 6f / 255f, 26f / 255f, 0.96f);
-        this.rect(x, y, w, h, borderColor, borderWidth);
-    }
-
-    public void dialogBox(final float x, final float y, final float w, final float h,
-                          final float r, final float g, final float b, final float a,
-                          final float borderWidth) {
-        this.fill(x, y, w, h, 4f / 255f, 6f / 255f, 26f / 255f, 0.96f);
-        this.rect(x, y, w, h, r, g, b, a, borderWidth);
-    }
-
-    public void fadeLeft(final float width, final float height, final float fadeWidth, final float alpha) {
-        put(0, 0, 0, 0f, 0f, 0f, 0f, 0f, alpha);
-        put(1, 0, height, 0f, 0f, 0f, 0f, 0f, alpha);
-        put(2, fadeWidth, height, 0f, 0f, 0f, 0f, 0f, 0f);
-        put(3, 0, 0, 0f, 0f, 0f, 0f, 0f, alpha);
-        put(4, fadeWidth, height, 0f, 0f, 0f, 0f, 0f, 0f);
-        put(5, fadeWidth, 0, 0f, 0f, 0f, 0f, 0f, 0f);
-        this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
     public void fadeBottom(final float width, final float height, final float fadeHeight, final float alpha) {
@@ -632,6 +524,8 @@ public final class RenderEngine {
 
     private void draw(final DrawMode mode, final int count, final boolean textured) {
         if (count <= 0) return;
+        // GUARD THE SCRATCH/BATCH ARRAYS (AND THE GL VBO) AT THE SINGLE EMIT SEAM SO NO PRIMITIVE OVERFLOWS.
+        if (count > MAX_VERTICES) throw new IllegalArgumentException("UI draw exceeds vertex capacity: " + count + " > " + MAX_VERTICES);
         if (mode != DrawMode.TRIANGLES && mode != DrawMode.LINES) {
             this.flush();
             this.backend.draw(mode, this.vertices, count, textured);

@@ -18,10 +18,9 @@ import org.lwjgl.vulkan.VkQueue;
  * <p>
  * Method names are chosen so a Minecraft mod can implement this interface directly on Mojang's
  * {@code com.mojang.blaze3d.vulkan.VulkanDevice} through a mixin and hand the cast device to
- * {@code VKEngine.Builder}: no name overloads an existing member by return type alone — the JVM
- * resolves methods by full descriptor so the merged class would be legal, but duplicate names
- * muddy stack traces and crash reports — and its own {@code vkDevice()} accessor already
- * satisfies {@link #vkDevice()} verbatim.
+ * {@code VKEngine.Builder}. No accessor name clashes with an existing {@code VulkanDevice} member,
+ * which keeps stack traces and crash reports unambiguous, and {@link #vkDevice()} matches that
+ * class's own {@code vkDevice()} accessor verbatim.
  */
 public interface VKContext {
 

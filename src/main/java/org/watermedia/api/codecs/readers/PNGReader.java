@@ -43,6 +43,7 @@ import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -103,9 +104,8 @@ public final class PNGReader extends ImageReader {
     private float[] gammaLUT;
 
     // STREAMING STATE
-    private CHUNK pendingChunk;     // next chunk to consume at start of next()
-    private boolean done;            // true once IEND seen or EOF reached
-    private int framesDelivered;
+    private CHUNK pendingChunk;     // NEXT CHUNK TO CONSUME AT START OF next()
+    private boolean done;            // TRUE ONCE IEND SEEN OR EOF REACHED
     private final ImageData.Scan scan;
 
     // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
@@ -116,9 +116,9 @@ public final class PNGReader extends ImageReader {
     // CANVAS / OUTPUT (1-D ARGB INT BUFFERS, STRIDE = canvasWidth)
     private int canvasWidth;
     private int canvasHeight;
-    private int[] outputBuffer;      // composited canvas (ARGB)
-    private int[] previousBuffer;    // lazily saved canvas for DISPOSE_OP_PREVIOUS
-    private int[] frameBuffer;       // reusable APNG frame decode target
+    private int[] outputBuffer;      // COMPOSITED CANVAS (ARGB)
+    private int[] previousBuffer;    // LAZILY SAVED CANVAS FOR DISPOSE_OP_PREVIOUS
+    private int[] frameBuffer;       // REUSABLE APNG FRAME DECODE TARGET
     private ByteBuffer directOut;    // BGRA result, reused
     private IntBuffer directOutInts;
 
@@ -129,7 +129,7 @@ public final class PNGReader extends ImageReader {
     // INFLATE
     private final Inflater inflater = new Inflater();
     private boolean inflaterClosed;
-    private byte[] decompressed = new byte[0]; // reused across frames
+    private byte[] decompressed = new byte[0]; // REUSED ACROSS FRAMES
 
     // PRECOMPUTED HOT-PATH INVARIANTS (computed in constructor)
     private ColorType colorType;
@@ -174,7 +174,7 @@ public final class PNGReader extends ImageReader {
         if (this.bkgd != null) {
             Arrays.fill(this.outputBuffer, this.bkgdToARGB(this.bkgd, this.depth, this.plte));
         }
-        // else: zero-init from `new int[...]`
+        // ELSE: ZERO-INIT FROM `new int[...]`
 
         this.computeTrnsScaled();
         this.precomputeIndexedLUT();
@@ -199,7 +199,6 @@ public final class PNGReader extends ImageReader {
         this.data.position(this.resetPos);
         this.pendingChunk = this.resetChunk;
         this.done = this.resetDone;
-        this.framesDelivered = 0;
         this.currentDelay = 0L;
         // RE-INIT THE CANVAS EXACTLY AS THE CONSTRUCTOR LEAVES IT (BKGD COLOR OR TRANSPARENT);
         // frameBuffer AND previousBuffer NEED NO CLEARING BECAUSE EACH next() FULLY WRITES THE
@@ -228,7 +227,7 @@ public final class PNGReader extends ImageReader {
         } else if (c.type() == IDAT.SIGNATURE) {
             compressed.add(new ChunkSlice(c.data(), 0, c.data().length));
         } else {
-            // shouldn't reach here (parseUntilFirstFrame only stops on IDAT/fcTL)
+            // UNREACHABLE IN A WELL-FORMED STREAM: parseUntilFirstFrame ONLY STOPS ON IDAT/fcTL — FAIL FAST
             this.done = true;
             throw new XCodecException("Unexpected PNG frame boundary: " + c.typeName());
         }
@@ -253,20 +252,20 @@ public final class PNGReader extends ImageReader {
                 if (data.length < 4) throw new XCodecException("Truncated fdAT chunk");
                 compressed.add(new ChunkSlice(data, 4, data.length - 4));
             } else if (t == FCTL.SIGNATURE) {
-                // Start of next frame.
+                // START OF NEXT FRAME
                 this.pendingChunk = c;
                 break;
             } else if (t == IEND.SIGNATURE) {
                 this.done = true;
                 break;
             } else {
-                // mid-stream metadata or unknown ancillary - dispatch through ancillary handler
+                // MID-STREAM METADATA OR UNKNOWN ANCILLARY — DISPATCH THROUGH THE ANCILLARY HANDLER
                 this.handleAncillary(c);
             }
         }
 
         if (compressed.isEmpty()) {
-            // No data for this "frame" (rare). Skip and try next.
+            // A FRAME WITHOUT IDAT/fdAT IS MALFORMED — TERMINATE AND FAIL FAST (NOT SKIPPED)
             this.done = true;
             throw new XCodecException("PNG frame without compressed data");
         }
@@ -303,7 +302,7 @@ public final class PNGReader extends ImageReader {
         }
 
         if (fctl != null) {
-            // APNG: composite onto canvas with blend/dispose
+            // APNG: COMPOSITE ONTO CANVAS WITH BLEND/DISPOSE
             if ((fctl.dispose() & 0xFF) == FCTL.DISPOSE_OP_PREVIOUS) {
                 final int[] prev = this.previousBuffer();
                 System.arraycopy(this.outputBuffer, 0, prev, 0, this.outputBuffer.length);
@@ -318,7 +317,6 @@ public final class PNGReader extends ImageReader {
             this.writeBGRA(this.outputBuffer);
         }
 
-        this.framesDelivered++;
         this.currentFrame = this.directOut;
         return this.directOut;
     }
@@ -414,7 +412,8 @@ public final class PNGReader extends ImageReader {
                 throw new XCodecException("Unknown critical chunk: " + c.typeName());
             }
             this.ancillaryChunks.computeIfAbsent(c.typeName(), ignored -> new ArrayList<>()).add(c.data().clone());
-            this.metadata.put(CodecsAPI.PNG_METAKEY_ANCILLARY_CHUNK, this.ancillaryChunks);
+            // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL MAP
+            this.metadata.put(CodecsAPI.PNG_METAKEY_ANCILLARY_CHUNK, Collections.unmodifiableMap(this.ancillaryChunks));
         }
     }
 
@@ -423,7 +422,8 @@ public final class PNGReader extends ImageReader {
     private void storePngText(final Map<String, List<String>> target, final String key, final String keyword, final String value) {
         if (keyword == null || keyword.isBlank() || value == null || value.isBlank()) return;
         target.computeIfAbsent(keyword, ignored -> new ArrayList<>()).add(value);
-        this.metadata.put(key, target);
+        // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL TEXT MAP
+        this.metadata.put(key, Collections.unmodifiableMap(target));
         switch (keyword) {
             case TEXT.KEYWORD_TITLE -> this.metadata.title(value);
             case TEXT.KEYWORD_AUTHOR -> this.metadata.author(value);
@@ -516,7 +516,7 @@ public final class PNGReader extends ImageReader {
                 this.trnsG8 = scaleTo8Bit(this.trns.green(), this.depth);
                 this.trnsB8 = scaleTo8Bit(this.trns.blue(), this.depth);
             }
-            default -> { /* indexed handled via LUT, alpha-types ignore tRNS */ }
+            default -> { /* INDEXED HANDLED VIA LUT; ALPHA TYPES IGNORE tRNS */ }
         }
     }
 
@@ -748,7 +748,7 @@ public final class PNGReader extends ImageReader {
                 }
             }
             case FILTER_PAETH -> {
-                // Initial bpp bytes have no 'a' or 'c' neighbour (treated as 0); reduces to Up.
+                // INITIAL bpp BYTES HAVE NO 'a' OR 'c' NEIGHBOUR (TREATED AS 0); REDUCES TO UP
                 for (int i = 0; i < bpp; i++) {
                     final int b = previousRow[i] & 0xFF;
                     currentRow[i] = (byte) ((currentRow[i] & 0xFF) + b);
@@ -784,7 +784,7 @@ public final class PNGReader extends ImageReader {
             }
             return;
         }
-        // Generic slow path for depth 1, 2, 4, 16
+        // GENERIC SLOW PATH FOR DEPTH 1, 2, 4, 16
         this.writeRowGeneric(row, pixels, rowBase, xStart, xStep, passWidth, imageWidth);
     }
 
@@ -1010,7 +1010,7 @@ public final class PNGReader extends ImageReader {
         if (fw <= 0 || fh <= 0) return;
 
         switch (disposeOp) {
-            case FCTL.DISPOSE_OP_NONE -> { /* leave canvas as-is */ }
+            case FCTL.DISPOSE_OP_NONE -> { /* LEAVE CANVAS AS-IS */ }
             case FCTL.DISPOSE_OP_BACKGROUND -> {
                 final int bg = (bkgd != null) ? this.bkgdToARGB(bkgd, depth, plte) : 0x00000000;
                 for (int y = 0; y < fh; y++) {
@@ -1071,7 +1071,7 @@ public final class PNGReader extends ImageReader {
                         } else if (alpha != 0) {
                             outputBuffer[dstBase + x] = alphaComposite(src, outputBuffer[dstBase + x]);
                         }
-                        // alpha == 0 → leave destination untouched
+                        // ALPHA == 0 -> LEAVE DESTINATION UNTOUCHED
                     }
                 }
             }

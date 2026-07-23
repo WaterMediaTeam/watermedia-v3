@@ -12,6 +12,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JsonTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
@@ -60,23 +61,23 @@ public final class BlueskyPlatform implements IPlatform {
         final RequestHeaders headers = RequestHeaders.defaults(uri);
 
         final List<DataSource> entries = new ArrayList<>(2);
-        final JsonObject embed = getObj(post, "embed");
-        final JsonObject record = getObj(post, "record");
+        final JsonObject embed = obj(post, "embed");
+        final JsonObject record = obj(post, "record");
 
         // Direct embed (app.bsky.embed.video#view or app.bsky.embed.images#view)
-        this.extractVideo(entries, post, embed, getObj(record, "embed"), postId, headers);
+        this.extractVideo(entries, post, embed, obj(record, "embed"), postId, headers);
         this.extractImages(entries, post, embed, postId, headers);
 
         // RecordWithMedia (app.bsky.embed.recordWithMedia#view) — media in embed.media
         if (embed != null && embed.has("media")) {
-            final JsonObject mediaEmbed = getObj(embed, "media");
-            this.extractVideo(entries, post, mediaEmbed, getObj(record, "embed", "media"), postId, headers);
+            final JsonObject mediaEmbed = obj(embed, "media");
+            this.extractVideo(entries, post, mediaEmbed, obj(record, "embed", "media"), postId, headers);
             this.extractImages(entries, post, mediaEmbed, postId, headers);
         }
 
         // Quoted post (app.bsky.embed.record#view) — media in nested post's embeds
         if (embed != null && embed.has("record")) {
-            final JsonObject nestedPost = resolveNestedPost(getObj(embed, "record"));
+            final JsonObject nestedPost = resolveNestedPost(obj(embed, "record"));
             if (nestedPost != null) {
                 final JsonElement embedsEl = nestedPost.get("embeds");
                 if (embedsEl != null && embedsEl.isJsonArray()) {
@@ -84,7 +85,7 @@ public final class BlueskyPlatform implements IPlatform {
                     if (!embeds.isEmpty() && embeds.get(0).isJsonObject()) {
                         final JsonObject nestedEmbed = embeds.get(0).getAsJsonObject();
                         this.extractVideo(entries, nestedPost, nestedEmbed,
-                                getObj(nestedPost, "value", "embed"), postId, headers);
+                                obj(nestedPost, "value", "embed"), postId, headers);
                         this.extractImages(entries, nestedPost, nestedEmbed, postId, headers);
                     }
                 }
@@ -96,7 +97,7 @@ public final class BlueskyPlatform implements IPlatform {
         }
 
         LOGGER.info(IT, "Bluesky resolved {} media entry(es) for post '{}'", entries.size(), postId);
-        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entries.toArray(DataSource[]::new));
+        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entries);
     }
 
     private void extractVideo(final List<DataSource> entries, final JsonObject postCtx,
@@ -104,7 +105,7 @@ public final class BlueskyPlatform implements IPlatform {
                               final RequestHeaders headers) {
         if (embedView == null || !embedView.has("playlist")) return;
 
-        final String playlist = getStr(embedView, "playlist");
+        final String playlist = str(embedView, "playlist");
         if (playlist == null) return;
 
         final URI playlistUri = URI.create(playlist);
@@ -130,7 +131,7 @@ public final class BlueskyPlatform implements IPlatform {
 
         // Subtitle tracks via blob endpoint
         final List<DataSlave> subSlaves = new ArrayList<>();
-        final String did = getStr(postCtx, "author", "did");
+        final String did = str(postCtx, "author", "did");
         if (did != null && recordEmbed != null && recordEmbed.has("captions")) {
             try {
                 final String endpoint = this.resolveServiceEndpoint(did);
@@ -141,7 +142,7 @@ public final class BlueskyPlatform implements IPlatform {
                         final JsonObject cap = capEl.getAsJsonObject();
                         final String lang = cap.has("lang") && !cap.get("lang").isJsonNull()
                                 ? cap.get("lang").getAsString() : "und";
-                        final String fileCid = getStr(cap, "file", "ref", "$link");
+                        final String fileCid = str(cap, "file", "ref", "$link");
                         if (fileCid == null) continue;
                         subSlaves.add(new DataSlave(lang, lang, URI.create(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)))));
                     }
@@ -152,13 +153,13 @@ public final class BlueskyPlatform implements IPlatform {
         }
 
         // Metadata
-        final String displayName = getStr(postCtx, "author", "displayName");
-        final String authorHandle = getStr(postCtx, "author", "handle");
-        final String thumbnailUrl = getStr(embedView, "thumbnail");
-        final String indexedAt = getStr(postCtx, "indexedAt");
+        final String displayName = str(postCtx, "author", "displayName");
+        final String authorHandle = str(postCtx, "author", "handle");
+        final String thumbnailUrl = str(embedView, "thumbnail");
+        final String indexedAt = str(postCtx, "indexedAt");
 
-        String text = getStr(postCtx, "record", "text");
-        if (text == null) text = getStr(postCtx, "value", "text");
+        String text = str(postCtx, "record", "text");
+        if (text == null) text = str(postCtx, "value", "text");
 
         final String title = text != null && !text.isBlank()
                 ? truncateTitle(text, 72)
@@ -173,7 +174,7 @@ public final class BlueskyPlatform implements IPlatform {
         );
 
         entries.add(new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
-                variants.toArray(DataQuality[]::new),
+                variants,
                 null, subSlaves.isEmpty() ? null : subSlaves));
     }
 
@@ -185,11 +186,11 @@ public final class BlueskyPlatform implements IPlatform {
         final JsonElement imagesEl = embedView.get("images");
         if (!imagesEl.isJsonArray()) return;
 
-        final String displayName = getStr(postCtx, "author", "displayName");
-        final String authorHandle = getStr(postCtx, "author", "handle");
-        final String indexedAt = getStr(postCtx, "indexedAt");
-        String text = getStr(postCtx, "record", "text");
-        if (text == null) text = getStr(postCtx, "value", "text");
+        final String displayName = str(postCtx, "author", "displayName");
+        final String authorHandle = str(postCtx, "author", "handle");
+        final String indexedAt = str(postCtx, "indexedAt");
+        String text = str(postCtx, "record", "text");
+        if (text == null) text = str(postCtx, "value", "text");
 
         final String title = text != null && !text.isBlank()
                 ? truncateTitle(text, 72)
@@ -199,14 +200,14 @@ public final class BlueskyPlatform implements IPlatform {
             if (!imgEl.isJsonObject()) continue;
             final JsonObject img = imgEl.getAsJsonObject();
 
-            final String fullsize = getStr(img, "fullsize");
+            final String fullsize = str(img, "fullsize");
             if (fullsize == null) continue;
 
-            final JsonObject aspectRatio = getObj(img, "aspectRatio");
-            final int width = aspectRatio != null ? getInt(aspectRatio, "width") : 0;
-            final int height = aspectRatio != null ? getInt(aspectRatio, "height") : 0;
+            final JsonObject aspectRatio = obj(img, "aspectRatio");
+            final int width = aspectRatio != null ? JsonTool.intOr(aspectRatio, "width", 0) : 0;
+            final int height = aspectRatio != null ? JsonTool.intOr(aspectRatio, "height", 0) : 0;
 
-            final String thumb = getStr(img, "thumb");
+            final String thumb = str(img, "thumb");
 
             final URI imgThumb = thumb != null ? URI.create(thumb) : null;
             final Metadata imgMetadata = new Metadata(
@@ -216,7 +217,7 @@ public final class BlueskyPlatform implements IPlatform {
                     displayName != null ? displayName : authorHandle
             );
             entries.add(new DataSource(MediaType.IMAGE, imgThumb, imgMetadata, headers,
-                    new DataQuality[] {new DataQuality(URI.create(fullsize), width, height)},
+                    List.of(new DataQuality(URI.create(fullsize), width, height)),
                     null, null));
         }
     }
@@ -229,8 +230,8 @@ public final class BlueskyPlatform implements IPlatform {
             if (req.statusCode() != 200) throw new PlatformException(BlueskyPlatform.class, "getPostThread for '" + atUri + "' returned HTTP " + req.statusCode());
 
             // RESPONSE SHAPE: { thread: { post: {...} } } — A BLOCKED/NOT-FOUND THREAD OMITS "post"
-            final JsonObject thread = getObj(JsonParser.parseString(req.readAllAsString()).getAsJsonObject(), "thread");
-            final JsonObject post = getObj(thread, "post");
+            final JsonObject thread = obj(JsonParser.parseString(req.readAllAsString()).getAsJsonObject(), "thread");
+            final JsonObject post = obj(thread, "post");
             if (post == null)
                 throw new PlatformException(BlueskyPlatform.class, "Post '" + postId + "' by '" + handle + "' was not found, blocked, or deleted");
             return post;
@@ -252,8 +253,8 @@ public final class BlueskyPlatform implements IPlatform {
                     for (final JsonElement el: doc.getAsJsonArray("service")) {
                         if (!el.isJsonObject()) continue;
                         final JsonObject svc = el.getAsJsonObject();
-                        if ("AtprotoPersonalDataServer".equals(getStr(svc, "type"))) {
-                            final String ep = getStr(svc, "serviceEndpoint");
+                        if ("AtprotoPersonalDataServer".equals(str(svc, "type"))) {
+                            final String ep = str(svc, "serviceEndpoint");
                             if (ep != null) return ep;
                         }
                     }
@@ -300,8 +301,9 @@ public final class BlueskyPlatform implements IPlatform {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private static JsonObject getObj(final JsonObject obj, final String... keys) {
-        JsonObject current = obj;
+    // WALKS A NESTED-KEY PATH TO THE OBJECT AT ITS END, OR null IF ANY SEGMENT IS ABSENT/NON-OBJECT
+    private static JsonObject obj(final JsonObject root, final String... keys) {
+        JsonObject current = root;
         for (final String key: keys) {
             if (current == null || !current.has(key) || !current.get(key).isJsonObject()) return null;
             current = current.getAsJsonObject(key);
@@ -309,15 +311,10 @@ public final class BlueskyPlatform implements IPlatform {
         return current;
     }
 
-    private static int getInt(final JsonObject obj, final String key) {
-        if (obj == null || !obj.has(key) || obj.get(key).isJsonNull()) return 0;
-        try { return obj.get(key).getAsInt(); }
-        catch (final Exception e) { return 0; }
-    }
-
-    private static String getStr(final JsonObject obj, final String... keys) {
-        if (keys.length == 0 || obj == null) return null;
-        JsonObject current = obj;
+    // WALKS A NESTED-KEY PATH TO THE STRING AT ITS END, OR null IF ANY SEGMENT IS ABSENT/NULL
+    private static String str(final JsonObject root, final String... keys) {
+        if (keys.length == 0 || root == null) return null;
+        JsonObject current = root;
         for (int i = 0; i < keys.length - 1; i++) {
             if (current == null || !current.has(keys[i]) || !current.get(keys[i]).isJsonObject()) return null;
             current = current.getAsJsonObject(keys[i]);

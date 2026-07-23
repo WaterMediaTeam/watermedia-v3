@@ -33,7 +33,6 @@ import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.popup.AWTPlayerWindow;
 import org.watermedia.bootstrap.app.popup.JFXPlayerWindow;
 import org.watermedia.bootstrap.app.element.Button;
@@ -89,9 +88,11 @@ public class WaterMediaApp {
     private static final AppContext ctx = new AppContext();
     private static final ScreenManager screens = new ScreenManager();
 
-    private static boolean running = true;
+    // READ BY THE GLOW-PULSE BACKGROUND THREAD, WRITTEN BY THE RENDER THREAD (EXIT/SWAP-FAILURE) — VOLATILE
+    // SO THE FALSE IS ALWAYS OBSERVED. relaunchRequested IS SET IN A CALLBACK AND READ IN cleanup() LIKEWISE.
+    private static volatile boolean running = true;
     // SET WHEN THE APP NEEDS THE BOOTSTRAP TO RE-PROVISION AND RELAUNCH (E.G. TO PULL JAVAFX FOR VK+JavaFX)
-    private static boolean relaunchRequested;
+    private static volatile boolean relaunchRequested;
     private static boolean maximized;
     // PENDING RENDER-ENGINE HOT-SWAP TARGET (null = NONE). SET FROM THE SETTINGS SCREEN, CONSUMED AT THE TOP
     // OF THE MAIN LOOP — NEVER MID-FRAME OR INSIDE A CALLBACK. THE MAIN LOOP OWNS THE FrameLimiter, WHICH THE
@@ -350,7 +351,7 @@ public class WaterMediaApp {
         }
     }
 
-    // GLOBAL UI SCALE — RESOLUTION, PERSISTENCE AND LIVE APPLICATION
+    // PLAYER TARGET & RELAUNCH
     // ==========================================================================
 
     /** The popup player target for the next opened MRL (in-app / AWT / JavaFX). */
@@ -378,6 +379,9 @@ public class WaterMediaApp {
         relaunchRequested = true;
         running = false; // BREAK THE MAIN LOOP; cleanup() THEN EXITS WITH RELAUNCH_EXIT
     }
+
+    // GLOBAL UI SCALE — RESOLUTION, PERSISTENCE AND LIVE APPLICATION
+    // ==========================================================================
 
     /**
      * Re-reads the persisted UI scale preference and applies it. A non-AUTO preference wins; AUTO (or an
@@ -597,8 +601,11 @@ public class WaterMediaApp {
                     return;
                 }
                 if (!ctx.upload.visible) {
+                    // SCAN RUNS ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES, WHICH WOULD
+                    // FREEZE THE RENDER THREAD FOR THE WHOLE SCAN IF DONE INLINE.
                     openUploadLogsDialog();
-                    scanUploadLogFiles();
+                    ctx.upload.working = true;
+                    ThreadTool.createStarted("WaterMediaApp-UploadScan", WaterMediaApp::scanUploadLogFiles);
                     return;
                 }
                 if (ctx.upload.working) {
@@ -620,8 +627,11 @@ public class WaterMediaApp {
 
             case CLEANUP -> {
                 if (!ctx.cleanup.visible) {
+                    // SCAN RUNS ON A WORKER: cleanupCacheStats() WALKS THE ENTIRE MEDIA CACHE (POTENTIALLY
+                    // THOUSANDS OF FILES), WHICH WOULD FREEZE THE RENDER THREAD IF DONE INLINE.
                     openCleanupDialog();
-                    scanCleanupCache();
+                    ctx.cleanup.working = true;
+                    ThreadTool.createStarted("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
                     return;
                 }
                 if (ctx.cleanup.working) {
@@ -633,8 +643,9 @@ public class WaterMediaApp {
                     ctx.cleanup.working = true;
                     ThreadTool.createStarted("WaterMediaApp-CacheCleanup", WaterMediaApp::cleanupCache);
                 } else {
+                    // DIALOG ALREADY HIDDEN — REFRESH THE COUNTS FOR THE NEXT OPEN OFF THE RENDER THREAD
                     ctx.cleanup.visible = false;
-                    scanCleanupCache();
+                    ThreadTool.createStarted("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
                 }
             }
         }
@@ -959,26 +970,31 @@ public class WaterMediaApp {
     }
 
     // BACKGROUND OPERATIONS
+    // RUNS ON A WORKER THREAD (SEE navigateAction) — HEAVY FILE READS MUST NOT BLOCK THE RENDER LOOP
     private static void scanUploadLogFiles() {
-        ctx.upload.stage = 1;
-        ctx.upload.status = "SCAN";
-        ctx.upload.error = false;
-        ctx.upload.done = false;
-        ctx.upload.files.clear();
+        try {
+            ctx.upload.stage = 1;
+            ctx.upload.status = "SCAN";
+            ctx.upload.error = false;
+            ctx.upload.done = false;
+            ctx.upload.files.clear();
 
-        final Path baseDir = uploadBaseDir();
-        final Path logsDir = baseDir.resolve("logs");
-        final Path crashDir = baseDir.resolve("crash-reports");
-        final Path crashReport = findLatestCrashReport(crashDir);
-        // JVM FATAL ERROR LOGS (hs_err_pid<pid>.log) LAND IN THE PROCESS WORKING DIR BY DEFAULT
-        final Path hsErr = findLatestHsErr(baseDir);
+            final Path baseDir = uploadBaseDir();
+            final Path logsDir = baseDir.resolve("logs");
+            final Path crashDir = baseDir.resolve("crash-reports");
+            final Path crashReport = findLatestCrashReport(crashDir);
+            // JVM FATAL ERROR LOGS (hs_err_pid<pid>.log) LAND IN THE PROCESS WORKING DIR BY DEFAULT
+            final Path hsErr = findLatestHsErr(baseDir);
 
-        addScannedUploadFile("latest.log", logsDir.resolve("latest.log"));
-        addScannedUploadFile(crashReport != null ? crashReport.getFileName().toString() : "crash-reports", crashReport != null ? crashReport : crashDir);
-        addScannedUploadFile("watermedia-app.log", logsDir.resolve("watermedia-app.log"));
-        addScannedUploadFile(hsErr != null ? hsErr.getFileName().toString() : "hs_err_pid.log", hsErr != null ? hsErr : baseDir.resolve("hs_err_pid.log"));
-        scanSuspectMods();
-        ctx.requestRender();
+            addScannedUploadFile("latest.log", logsDir.resolve("latest.log"));
+            addScannedUploadFile(crashReport != null ? crashReport.getFileName().toString() : "crash-reports", crashReport != null ? crashReport : crashDir);
+            addScannedUploadFile("watermedia-app.log", logsDir.resolve("watermedia-app.log"));
+            addScannedUploadFile(hsErr != null ? hsErr.getFileName().toString() : "hs_err_pid.log", hsErr != null ? hsErr : baseDir.resolve("hs_err_pid.log"));
+            scanSuspectMods();
+        } finally {
+            ctx.upload.working = false;
+            ctx.requestRender();
+        }
     }
 
     private static void scanSuspectMods() {
@@ -1256,19 +1272,24 @@ public class WaterMediaApp {
         return String.format(java.util.Locale.ROOT, "%.1f MB", kb / 1024.0);
     }
 
+    // RUNS ON A WORKER THREAD (SEE navigateAction) — THE FULL-CACHE WALK MUST NOT BLOCK THE RENDER LOOP
     private static void scanCleanupCache() {
-        ctx.cleanup.stage = 1;
-        ctx.cleanup.done = false;
-        ctx.cleanup.error = false;
-        ctx.cleanup.progress = 0;
+        try {
+            ctx.cleanup.stage = 1;
+            ctx.cleanup.done = false;
+            ctx.cleanup.error = false;
+            ctx.cleanup.progress = 0;
 
-        final long[] stats = cleanupCacheStats();
-        ctx.cleanup.fileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
-        ctx.cleanup.sizeLabel = formatBytes(stats[1]);
-        if (!ctx.cleanup.error) {
-            ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
+            final long[] stats = cleanupCacheStats();
+            ctx.cleanup.fileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
+            ctx.cleanup.sizeLabel = formatBytes(stats[1]);
+            if (!ctx.cleanup.error) {
+                ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
+            }
+        } finally {
+            ctx.cleanup.working = false;
+            ctx.requestRender();
         }
-        ctx.requestRender();
     }
 
     private static long[] cleanupCacheStats() {

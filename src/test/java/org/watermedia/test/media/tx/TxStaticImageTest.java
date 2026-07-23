@@ -27,7 +27,7 @@ public class TxStaticImageTest {
     @Test
     @DisplayName("Static PNG loads and uploads one frame")
     void testStaticPngLoadsAndUploadsOneFrame() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
@@ -58,7 +58,7 @@ public class TxStaticImageTest {
     void testStaticSvgLoadsAndUploadsOneFrame() {
         // EXERCISES MRL → TxMediaPlayer → openSource → SVGReader: openSource MUST NOT REJECT THE
         // SOURCE ON ITS CONTENT-TYPE HEADER (MRL ALREADY ROUTED IT AND decodeImage VALIDATES THE BYTES)
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.SVG_DIR.resolve("car-filled-color.svg")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.SVG_DIR.resolve("car-filled-color.svg")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);

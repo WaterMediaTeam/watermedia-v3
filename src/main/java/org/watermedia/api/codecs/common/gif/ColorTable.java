@@ -24,7 +24,7 @@ public record ColorTable(int size, int[] colors) {
 
         final int[] colorTable = new int[size];
         for (int i = 0, p = 0; i < size; i++, p += 3) {
-            // BGRA layout when consumed via IntBuffer over little-endian direct buffer
+            // BGRA LAYOUT WHEN CONSUMED VIA IntBuffer OVER A LITTLE-ENDIAN DIRECT BUFFER
             colorTable[i] = 0xFF000000
                     | ((raw[p]     & 0xFF) << 16)
                     | ((raw[p + 1] & 0xFF) << 8)

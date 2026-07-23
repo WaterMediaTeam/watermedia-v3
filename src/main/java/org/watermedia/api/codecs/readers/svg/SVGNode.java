@@ -13,9 +13,9 @@ import java.util.Map;
  * @param attrs    merged attribute map (inline style overlaid on presentation attributes)
  * @param children child elements, populated during parsing
  */
-record SvgNode(String tag, Map<String, String> attrs, List<SvgNode> children) {
+record SVGNode(String tag, Map<String, String> attrs, List<SVGNode> children) {
 
-    SvgNode(final String tag, final Map<String, String> attrs) {
+    SVGNode(final String tag, final Map<String, String> attrs) {
         this(tag, attrs, new ArrayList<>());
     }
 

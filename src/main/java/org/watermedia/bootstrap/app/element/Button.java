@@ -23,8 +23,6 @@ public final class Button extends Element<Button> {
     private static final int RIGHT_PAD = 8;
     private static final int ICON_SIZE = 14;
     private static final int ICON_GAP = 8;
-    private static final int CHIP_PAD = 6;
-    private static final int CHIP_H = 20;
 
     private String label = "";
     private String subText = "";
@@ -86,7 +84,7 @@ public final class Button extends Element<Button> {
             return;
         }
         this.contentWidth = width(this.ctx.text, this.label, this.subText, this.icon, this.subtextSpacing);
-        this.contentHeight = Math.max(this.ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON), CHIP_H);
+        this.contentHeight = Math.max(this.ctx.text.glyphHeightBold(AppTheme.TEXT_BUTTON), Theme.CHIP_H);
     }
 
     @Override
@@ -102,7 +100,7 @@ public final class Button extends Element<Button> {
                             final String icon, final int subtextSpacing) {
         final int iconW = icon == null || icon.isEmpty() ? 0 : ICON_SIZE + ICON_GAP;
         final int labelW = label == null || label.isEmpty() ? 0 : text.widthBold(label, AppTheme.TEXT_BUTTON);
-        final int chipW = subText == null || subText.isEmpty() ? 0 : text.width(subText, AppTheme.TEXT_SUBTITLE) + CHIP_PAD * 2;
+        final int chipW = subText == null || subText.isEmpty() ? 0 : text.width(subText, AppTheme.TEXT_SUBTITLE) + Theme.CHIP_PAD * 2;
         return LEFT_PAD + iconW + labelW + (chipW == 0 ? 0 : subtextSpacing + chipW) + RIGHT_PAD;
     }
 
@@ -147,14 +145,14 @@ public final class Button extends Element<Button> {
             cx += ICON_SIZE + ICON_GAP;
         }
 
-        final int chipW = subText == null || subText.isEmpty() ? 0 : text.width(subText, AppTheme.TEXT_SUBTITLE) + CHIP_PAD * 2;
+        final int chipW = subText == null || subText.isEmpty() ? 0 : text.width(subText, AppTheme.TEXT_SUBTITLE) + Theme.CHIP_PAD * 2;
         final int chipX = x + w - RIGHT_PAD - chipW;
         if (chipW > 0) {
-            canvas.stroke(chipX, cy - CHIP_H / 2, chipW, CHIP_H, AppTheme.STROKE, 1f);
+            canvas.stroke(chipX, cy - Theme.CHIP_H / 2, chipW, Theme.CHIP_H, AppTheme.STROKE, 1f);
             // SIT THE CHIP TEXT ON THE SAME BASELINE AS THE LABEL SO texto + subtexto ALIGN (NOT CELL-CENTERED,
             // WHICH DRIFTS BECAUSE THE TWO FONT SIZES HAVE DIFFERENT DESCENDER SPACE IN THEIR CELLS)
             final float baseline = cy - text.glyphHeightBold(AppTheme.TEXT_BUTTON) / 2f + text.baselineOffsetBold(AppTheme.TEXT_BUTTON);
-            canvas.text(subText, chipX + CHIP_PAD, baseline - text.baselineOffset(AppTheme.TEXT_SUBTITLE),
+            canvas.text(subText, chipX + Theme.CHIP_PAD, baseline - text.baselineOffset(AppTheme.TEXT_SUBTITLE),
                     subTextColor, AppTheme.TEXT_SUBTITLE, false);
         }
 

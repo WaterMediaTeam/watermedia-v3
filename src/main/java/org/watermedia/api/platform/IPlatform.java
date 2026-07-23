@@ -45,10 +45,10 @@ public interface IPlatform {
      * {@link PlatformResult}). Resolution happens later, when the user picks a result.
      * <p>
      * Most platforms expose no public search and keep this default, which returns an empty list;
-     * only the handful that do (YouTube, Twitch, Kick, Imgur) override it. The method runs on
-     * {@link PlatformAPI}'s single search thread, so an implementation may block on network I/O,
-     * but it should bail out promptly once that thread is {@link Thread#isInterrupted()
-     * interrupted} — a newer search has superseded this one.
+     * only the handful that do (YouTube, Twitch, Kick, Imgur) override it. {@link PlatformAPI} probes
+     * every platform concurrently on a shared daemon pool, so an implementation must be internally
+     * thread-safe and may block on network I/O, but it should bail out promptly once its thread is
+     * {@link Thread#isInterrupted() interrupted} — a newer search has superseded this one.
      *
      * @param query the user's search text (never {@code null} or blank)
      * @param limit the maximum number of results to return

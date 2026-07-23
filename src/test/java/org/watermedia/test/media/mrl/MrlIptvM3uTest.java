@@ -43,7 +43,7 @@ public class MrlIptvM3uTest {
     @Test
     @DisplayName("IPTV playlist expands into one source per channel")
     void testIptvPlaylistExpandsIntoOneSourcePerChannel() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(IPTV_FIXTURE));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(IPTV_FIXTURE));
         assertTrue(mrl.await(TIMEOUT_MS));
         assertTrue(mrl.status().loaded());
         assertFalse(mrl.status().failed(), () -> "Unexpected error: " + mrl.exception());
@@ -55,7 +55,7 @@ public class MrlIptvM3uTest {
     @Test
     @DisplayName("IPTV channel metadata reaches the sources")
     void testIptvChannelMetadataReachesSources() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(IPTV_FIXTURE));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(IPTV_FIXTURE));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source first = mrl.source(0);

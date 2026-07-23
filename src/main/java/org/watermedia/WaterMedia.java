@@ -28,11 +28,12 @@ public class WaterMedia {
 
     // DEFAULT PATHS
     private static final Path DEFAULT_TEMP = new File(System.getProperty("java.io.tmpdir")).toPath().toAbsolutePath().resolve("watermedia");
-    private static final Path DEFAULT_CWD = new File("run").toPath().toAbsolutePath();
+    // PROCESS WORKING DIRECTORY: new File("") RESOLVES TO user.dir WHEN MADE ABSOLUTE
+    private static final Path DEFAULT_CWD = new File("").toPath().toAbsolutePath();
 
-    // API REGISTRY — each entry counts as one outer step. Order matters: codecs
-    // first (so consumers can decode images), then platforms (so MRL lookups
-    // work), then the media engine (FFmpeg), then the network layer.
+    // API REGISTRY — EACH ENTRY COUNTS AS ONE OUTER STEP. ORDER MATTERS: CODECS
+    // FIRST (SO CONSUMERS CAN DECODE IMAGES), THEN PLATFORMS (SO MRL LOOKUPS
+    // WORK), THEN THE MEDIA ENGINE (FFMPEG), THEN THE NETWORK LAYER.
     private static final List<WaterMediaAPI> APIS = List.of(
             new CodecsAPI(),
             new PlatformAPI(),
@@ -40,7 +41,7 @@ public class WaterMedia {
             new NetworkAPI()
     );
 
-    private static WaterMedia instance;
+    private static volatile WaterMedia instance;
     private static volatile WaterMediaAPI currentAPI;
     private static volatile int currentStep;
     public final String name;
@@ -62,8 +63,8 @@ public class WaterMedia {
      * @param tmp the TMP folder path, in case the environment has a custom path,
      *            when null it takes the path defined in the system properties
      * @param cwd the CWD folder path, the path where the process is running.
-     *            when null it takes the result of make a new instance of {@link File}
-     * @param clientSide Determines if the current environment it's a client-side environment, when it its false, turns
+     *            when null it defaults to the process working directory ({@code user.dir})
+     * @param clientSide Determines if the current environment is a client-side environment, when it is false, turns
      *                   off all the client side features and locks the class loading of them
      */
     public static synchronized void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
@@ -94,15 +95,15 @@ public class WaterMedia {
             WaterConfig.registerBlocking(WaterMediaConfig.class);
         }
 
-        // PRE-LOAD: each API computes its own step count up-front so progress UIs
-        // can read steps() before any work begins.
+        // PRE-LOAD: EACH API COMPUTES ITS OWN STEP COUNT UP-FRONT SO PROGRESS UIS
+        // CAN READ steps() BEFORE ANY WORK BEGINS.
         for (final WaterMediaAPI api: APIS) {
             api.load(instance);
         }
 
-        // LOAD: walk the registered APIs in order. Each API publishes its progress
-        // through step()/steps()/stepName(), and WaterMedia tracks which API is
-        // currently running via currentAPI()/step()/steps().
+        // LOAD: WALK THE REGISTERED APIS IN ORDER. EACH API PUBLISHES ITS PROGRESS
+        // THROUGH step()/steps()/stepName(), AND WaterMedia TRACKS WHICH API IS
+        // CURRENTLY RUNNING VIA currentAPI()/step()/steps().
         for (int i = 0; i < APIS.size(); i++) {
             final WaterMediaAPI api = APIS.get(i);
             currentAPI = api;
@@ -118,6 +119,36 @@ public class WaterMedia {
         }
 
         LOGGER.info(IT, "{} initialized successfully", NAME);
+    }
+
+    /**
+     * Tears down every registered API in reverse boot order and clears the singleton so
+     * {@link #start(String, Path, Path, boolean)} can run again in the same process. A never-started
+     * (or already-stopped) instance is a no-op.
+     */
+    public static synchronized void stop() {
+        if (instance == null) return;
+        // REVERSE ORDER SO DEPENDENTS TEAR DOWN BEFORE THE APIS THEY DEPEND ON
+        for (int i = APIS.size() - 1; i >= 0; i--) {
+            final WaterMediaAPI api = APIS.get(i);
+            try {
+                api.release(instance);
+            } catch (final Throwable t) {
+                LOGGER.error(IT, "Failed to stop {} API", api.name(), t);
+            }
+        }
+        currentAPI = null;
+        currentStep = 0;
+        instance = null;
+        LOGGER.info(IT, "{} stopped", NAME);
+    }
+
+    /**
+     * Whether WaterMedia has been booted and not yet {@link #stop() stopped}. Lets a second mod probe
+     * for an existing boot instead of triggering the single-instance guard in {@link #start}.
+     */
+    public static boolean started() {
+        return instance != null;
     }
 
     public static String toId(final String path) { return WaterMedia.ID + ":" + path; }

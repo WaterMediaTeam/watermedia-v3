@@ -13,9 +13,7 @@ import java.awt.Font;
  */
 public final class Text extends Element<Text> {
 
-    // SUBTEXT CHIP METRICS — SAME GEOMETRY AS Button.render'S TRAILING CHIP
-    private static final int CHIP_PAD = 6;
-    private static final int CHIP_H = 20;
+    // TRAILING CHIP GAP; THE CHIP PAD/HEIGHT ARE THE Theme CONSTANTS SHARED WITH Button (SAME GEOMETRY)
     private static final int CHIP_GAP = 12;
 
     private String text = "";
@@ -83,14 +81,15 @@ public final class Text extends Element<Text> {
             this.contentHeight = this.ctx != null && this.ctx.text != null
                     ? this.textHeight() : 0;
         } else {
-            this.contentWidth = this.letterSpacing > 0 ? this.spacedWidth(this.text)
+            this.contentWidth = this.letterSpacing > 0
+                    ? this.ctx.text.spacedWidth(this.text, this.scale, this.bold, this.letterSpacing)
                     : this.bold ? this.ctx.text.widthBold(this.text, this.scale) : this.ctx.text.width(this.text, this.scale);
             this.contentHeight = this.textHeight();
         }
         // TRAILING SUBTEXT CHIP — ONLY WHEN NON-BLANK, SAME GEOMETRY AS THE BUTTON CHIP
         if (this.ctx != null && this.ctx.text != null && !this.subText.isBlank()) {
-            this.contentWidth += CHIP_GAP + this.ctx.text.width(this.subText, AppTheme.TEXT_SUBTITLE) + CHIP_PAD * 2;
-            this.contentHeight = Math.max(this.contentHeight, CHIP_H);
+            this.contentWidth += CHIP_GAP + this.ctx.text.width(this.subText, AppTheme.TEXT_SUBTITLE) + Theme.CHIP_PAD * 2;
+            this.contentHeight = Math.max(this.contentHeight, Theme.CHIP_H);
         }
     }
 
@@ -98,30 +97,19 @@ public final class Text extends Element<Text> {
         return this.bold ? this.ctx.text.glyphHeightBold(this.scale) : this.ctx.text.glyphHeight(this.scale);
     }
 
-    // SPACED-RUN METRIC — EACH CHAR IS MEASURED AS ITS OWN RUN (PER-CHAR CEIL, NO RUN TRACKING) AND THE
-    // EXTRA SPACING IS ADDED BETWEEN NEIGHBORS ONLY, EXACTLY LIKE THE LEGACY SPLASH TITLE
-    private int spacedWidth(final String value) {
-        int width = 0;
-        for (int i = 0; i < value.length(); i++) {
-            final String c = String.valueOf(value.charAt(i));
-            width += this.bold ? this.ctx.text.widthBold(c, this.scale) : this.ctx.text.width(c, this.scale);
-            if (i + 1 < value.length()) width += this.letterSpacing;
-        }
-        return width;
-    }
-
     @Override
     protected void onDraw(final Canvas canvas) {
         final boolean chip = !this.subText.isBlank();
         if (this.text.isEmpty() && !chip) return;
         final int avail = this.innerWidth();
-        final int chipW = chip ? canvas.textWidth(this.subText, AppTheme.TEXT_SUBTITLE, false) + CHIP_PAD * 2 : 0;
+        final int chipW = chip ? canvas.textWidth(this.subText, AppTheme.TEXT_SUBTITLE, false) + Theme.CHIP_PAD * 2 : 0;
         final int textAvail = chip ? Math.max(0, avail - CHIP_GAP - chipW) : avail;
         String draw = this.text;
         if (this.letterSpacing <= 0 && canvas.textWidth(this.text, this.scale, this.bold) > textAvail) {
             draw = canvas.text().truncateToWidth(this.text, textAvail, this.scale, this.bold ? Font.BOLD : Font.PLAIN);
         }
-        final int tw = this.letterSpacing > 0 ? this.spacedWidth(draw) : canvas.textWidth(draw, this.scale, this.bold);
+        final int tw = this.letterSpacing > 0 ? canvas.textSpacedWidth(draw, this.scale, this.bold, this.letterSpacing)
+                : canvas.textWidth(draw, this.scale, this.bold);
         final int th = canvas.textHeight(this.scale, this.bold);
         final int blockW = tw + (chip ? CHIP_GAP + chipW : 0);
         final int tx = switch (this.gravity) {
@@ -131,13 +119,7 @@ public final class Text extends Element<Text> {
         };
         final int ty = this.innerTop() + Math.max(0, (this.innerHeight() - th) / 2);
         if (this.letterSpacing > 0) {
-            // SPACED RUN — DRAWN GLYPH BY GLYPH WITH EACH CHAR ADVANCED BY ITS OWN RUN WIDTH PLUS THE SPACING
-            float cursor = tx;
-            for (int i = 0; i < draw.length(); i++) {
-                final String c = String.valueOf(draw.charAt(i));
-                canvas.text(c, cursor, ty, this.color, this.scale, this.bold);
-                cursor += canvas.textWidth(c, this.scale, this.bold) + this.letterSpacing;
-            }
+            canvas.textSpaced(draw, tx, ty, this.color, this.scale, this.bold, this.letterSpacing);
         } else {
             canvas.text(draw, tx, ty, this.color, this.scale, this.bold);
         }
@@ -146,11 +128,11 @@ public final class Text extends Element<Text> {
             // Button.render — CELL-CENTERING DRIFTS BECAUSE THE TWO SIZES HAVE DIFFERENT DESCENDER SPACE)
             final int chipX = tx + tw + CHIP_GAP;
             final float cy = ty + th / 2f;
-            canvas.stroke(chipX, cy - CHIP_H / 2f, chipW, CHIP_H, AppTheme.STROKE, 1f);
+            canvas.stroke(chipX, cy - Theme.CHIP_H / 2f, chipW, Theme.CHIP_H, AppTheme.STROKE, 1f);
             final float baseline = ty + (this.bold
                     ? canvas.text().baselineOffsetBold(this.scale)
                     : canvas.text().baselineOffset(this.scale));
-            canvas.text(this.subText, chipX + CHIP_PAD,
+            canvas.text(this.subText, chipX + Theme.CHIP_PAD,
                     baseline - canvas.text().baselineOffset(AppTheme.TEXT_SUBTITLE),
                     AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
         }

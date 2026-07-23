@@ -34,6 +34,9 @@ public final class RegionSelectorScreen extends Screen {
 
     private static final int ROW_H = 54;
     private static final int ROW_GAP = 8;
+    // CACHED, REFERENCE-STABLE KEYBIND LIST — LETS KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    private static final List<Keybind> KEYS = List.of(
+            new Keybind("UP/DOWN", "Region"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
 
     private final Consumer<HomeScreen.Action> navigator;
     private final List<String> regions = new ArrayList<>();
@@ -79,7 +82,7 @@ public final class RegionSelectorScreen extends Screen {
 
     @Override
     public List<Keybind> keybinds() {
-        return List.of(new Keybind("UP/DOWN", "Region"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
+        return KEYS;
     }
 
     @Override
@@ -168,7 +171,9 @@ public final class RegionSelectorScreen extends Screen {
         if (index == 0) return null;
         final int firstRegion = this.detectedRegion != null ? 2 : 1;
         if (this.detectedRegion != null && index == 1) return this.detectedRegion;
-        return this.regions.get(Math.max(0, Math.min(this.regions.size() - 1, index - firstRegion)));
+        // OUT-OF-RANGE (INCLUDING AN EMPTY regions LIST) MAPS TO GLOBAL RATHER THAN CLAMPING INTO THE LIST OR THROWING
+        final int i = index - firstRegion;
+        return i >= 0 && i < this.regions.size() ? this.regions.get(i) : null;
     }
 
     private String detectRegion(final Set<String> available) {

@@ -34,10 +34,10 @@ import java.awt.datatransfer.DataFlavor;
 import java.io.File;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -74,6 +74,15 @@ public class OpenMultimediaScreen extends Screen {
 
     private record Row(int kind, PlatformResult result, String text) {
     }
+
+    // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
+    private static final List<Keybind> KEYS_SEARCH = List.of(
+            new Keybind("TYPE", "Search"), new Keybind("CLICK", "Pick result"),
+            new Keybind("CTRL+V", "Paste"), new Keybind("ESC", "Cancel"));
+    private static final List<Keybind> KEYS_DEFAULT = List.of(
+            new Keybind("ENTER", "Play"), new Keybind("SPACE", "Save"),
+            new Keybind("CTRL+V", "Paste"), new Keybind("R", "Reload"), new Keybind("ESC", "Cancel"));
 
     private final Consumer<HomeScreen.Action> navigator;
     private volatile boolean loading;
@@ -243,13 +252,8 @@ public class OpenMultimediaScreen extends Screen {
 
     @Override
     public List<Keybind> keybinds() {
-        if (this.loading) return List.of(new Keybind("ESC", "Cancel"));
-        if (this.searchMode()) {
-            return List.of(new Keybind("TYPE", "Search"), new Keybind("CLICK", "Pick result"),
-                    new Keybind("CTRL+V", "Paste"), new Keybind("ESC", "Cancel"));
-        }
-        return List.of(new Keybind("ENTER", "Play"), new Keybind("SPACE", "Save"),
-                new Keybind("CTRL+V", "Paste"), new Keybind("R", "Reload"), new Keybind("ESC", "Cancel"));
+        if (this.loading) return KEYS_LOADING;
+        return this.searchMode() ? KEYS_SEARCH : KEYS_DEFAULT;
     }
 
     @Override
@@ -378,9 +382,8 @@ public class OpenMultimediaScreen extends Screen {
                 this.lastEditMs = System.currentTimeMillis();
                 this.ensurePreviewMRL();
             }
-        } catch (final Exception e) {
-            this.ctx.customUrlText = "";
-            this.clearPreview();
+        } catch (final Exception ignored) {
+            // A TRANSIENT CLIPBOARD FAILURE (BUSY ON WINDOWS / FLAVOR ERROR) MUST NOT WIPE THE URL THE USER ALREADY TYPED
         }
     }
 
@@ -468,7 +471,7 @@ public class OpenMultimediaScreen extends Screen {
                 this.previewMRL = null;
                 return;
             }
-            this.previewMRL = MediaAPI.getMRL(url);
+            this.previewMRL = MediaAPI.mrl(url);
             this.loadStartTime = System.currentTimeMillis();
             this.subscribePreviewMRL(this.previewMRL, generation);
         } catch (final Exception ignored) {
@@ -661,7 +664,7 @@ public class OpenMultimediaScreen extends Screen {
         if (existing != null) return existing;
         if (this.thumbAttempted.contains(thumbnail)) return null;
 
-        final MRL mrl = MediaAPI.getMRL(thumbnail.toString());
+        final MRL mrl = MediaAPI.mrl(thumbnail.toString());
         final MRL.Status status = mrl.status();
         if (status == MRL.Status.FETCHING) {
             if (this.thumbSubscribed.add(thumbnail)) mrl.subscribe(done -> this.ctx.requestRender());
@@ -824,13 +827,15 @@ public class OpenMultimediaScreen extends Screen {
         return "Custom URL";
     }
 
+    // PLAIN LOOP (NO STREAM/Optional) — THIS RUNS PER FRAME IN THE PREVIEW DRAW PATH
     private String bestQuality() {
         final MRL.Source src = this.firstSource();
-        if (src == null || src.availableQualities().isEmpty()) return null;
-        final MediaQuality q = src.availableQualities().stream()
-                .max(Comparator.comparingInt(value -> value.threshold))
-                .orElse(MediaQuality.UNKNOWN);
-        return q == MediaQuality.UNKNOWN ? null : q.name();
+        if (src == null) return null;
+        MediaQuality best = MediaQuality.UNKNOWN;
+        for (final MediaQuality q: src.availableQualities()) {
+            if (q.threshold > best.threshold) best = q;
+        }
+        return best == MediaQuality.UNKNOWN ? null : best.name();
     }
 
     private String deleteLastWord(final String value) {
@@ -1136,7 +1141,7 @@ public class OpenMultimediaScreen extends Screen {
                     final String desc = meta != null && meta.desc() != null ? meta.desc() : previewUrl;
                     final String duration = meta != null && meta.duration() > 0 ? ctx.formatTime(meta.duration()) : "--:--";
                     canvas.gradientV(ix, iy + ih / 2f, iw, ih / 2f, GRADIENT_TOP, AppTheme.alpha(AppTheme.BG_1, 224));
-                    canvas.text(canvas.text().truncateToWidth(title.toUpperCase(), iw - 44, AppTheme.TEXT_BUTTON, Font.BOLD),
+                    canvas.text(canvas.text().truncateToWidth(title.toUpperCase(Locale.ROOT), iw - 44, AppTheme.TEXT_BUTTON, Font.BOLD),
                             ix + 22, iy + ih - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
                     canvas.text(canvas.text().truncateToWidth(desc, iw - 44, AppTheme.TEXT_SUBTITLE),
                             ix + 22, iy + ih - 48, AppTheme.TEXT_SOFT, AppTheme.TEXT_SUBTITLE, false);
@@ -1161,11 +1166,8 @@ public class OpenMultimediaScreen extends Screen {
     // TREE — URL/SEARCH FIELD (CUSTOM: SHARED ctx.customUrlText STATE, CTRL-AWARE EDITING)
     // ==========================================================================
 
-    // A DELIBERATE PORT OF THE LEGACY INPUT BOX (FOCUS GLOW, BG_2 FILL, NEON/STROKE BORDER, LINK/SEARCH
-    // GLYPH, TRUNCATED VALUE OR PLACEHOLDER, 2px NEON_LIGHT CARET AT 480ms). THE FRAMEWORK TextField IS NOT
-    // USED BECAUSE THIS FIELD BINDS TO THE SHARED ctx.customUrlText (WRITTEN BY PASTE/RESULT/HISTORY),
-    // FEEDS THE AUTO-SEARCH DEBOUNCE + LIVE PREVIEW ON EVERY EDIT, SUPPORTS DELETE AND CTRL+BACKSPACE
-    // WORD-DELETE, IGNORES CHARS WHILE CTRL IS HELD, AND ACCEPTS FULL UNICODE INPUT.
+    // CUSTOM INPUT BOX (NOT THE FRAMEWORK TextField): BINDS THE SHARED ctx.customUrlText, FEEDS THE AUTO-SEARCH
+    // DEBOUNCE + LIVE PREVIEW ON EVERY EDIT, AND SUPPORTS DELETE / CTRL+BACKSPACE WORD-DELETE OVER FULL UNICODE.
     private final class InputField extends Element<InputField> {
 
         @Override

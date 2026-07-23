@@ -72,21 +72,26 @@ public final class TikTokPlatform implements IPlatform {
             throw new PlatformException(TikTokPlatform.class, "No video ID found in URL: " + uri);
         }
 
-        String html = fetchWebpage(uri, null);
-        JsonObject videoData = this.extractVideoData(html, videoId);
+        // THREAD THE CAPTURED WAF COOKIES THROUGH INSTEAD OF A STATIC FIELD — CONCURRENT RESOLUTIONS
+        // ON THE SEARCH POOL WOULD OTHERWISE STAMP EACH OTHER'S COOKIES ONTO THEIR SOURCES.
+        String cookies = null;
+        Webpage page = fetchWebpage(uri, null);
+        if (page.cookies() != null) cookies = page.cookies();
+        JsonObject videoData = this.extractVideoData(page.html(), videoId);
 
-        if (videoData == null && html.contains("Please wait...")) {
+        if (videoData == null && page.html().contains("Please wait...")) {
             LOGGER.debug(IT, "TikTok WAF challenge detected for video {}, solving...", videoId);
-            final String challengeCookies = solveChallenge(html);
-            html = fetchWebpage(uri, challengeCookies);
-            videoData = this.extractVideoData(html, videoId);
+            final String challengeCookies = solveChallenge(page.html());
+            page = fetchWebpage(uri, challengeCookies);
+            if (page.cookies() != null) cookies = page.cookies();
+            videoData = this.extractVideoData(page.html(), videoId);
         }
 
         if (videoData == null) {
             throw new PlatformException(TikTokPlatform.class, "No video data found in page for video " + videoId);
         }
 
-        return this.buildResult(videoData, videoId);
+        return this.buildResult(videoData, videoId, cookies);
     }
 
     // WAF CHALLENGE SOLVER (ported from yt-dlp _solve_challenge_and_set_cookies)
@@ -159,7 +164,7 @@ public final class TikTokPlatform implements IPlatform {
     }
 
     // RESULT BUILDING
-    private PlatformData buildResult(final JsonObject awemeDetail, final String videoId) throws PlatformException {
+    private PlatformData buildResult(final JsonObject awemeDetail, final String videoId, final String cookies) throws PlatformException {
         final JsonObject video = awemeDetail.getAsJsonObject("video");
         if (video == null) {
             throw new PlatformException(TikTokPlatform.class, "No video object found for video " + videoId);
@@ -172,15 +177,16 @@ public final class TikTokPlatform implements IPlatform {
                 ? Instant.ofEpochSecond(awemeDetail.get("createTime").getAsLong())
                 : null;
 
-        long duration = 0;
+        // TIKTOK REPORTS video duration IN SECONDS; Metadata IS MILLISECONDS
+        long durationMs = 0;
         if (video.has("duration") && !video.get("duration").isJsonNull() && video.get("duration").getAsInt() > 0) {
-            duration = video.get("duration").getAsLong();
+            durationMs = video.get("duration").getAsLong() * 1000L;
         }
 
         final URI thumbnail = findThumbnail(awemeDetail, video);
         final String author = extractAuthor(awemeDetail);
 
-        final Metadata metadata = new Metadata(title, desc, publishedAt, duration, author);
+        final Metadata metadata = new Metadata(title, desc, publishedAt, durationMs, author);
         final List<DataQuality> variants = new ArrayList<>();
 
         if (video.has("bitrateInfo") && video.get("bitrateInfo").isJsonArray()) {
@@ -202,21 +208,17 @@ public final class TikTokPlatform implements IPlatform {
         LOGGER.info(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
         return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
                 new DataSource(MediaType.VIDEO, thumbnail, metadata,
-                        cdnHeaders(), variants.toArray(DataQuality[]::new), null, null));
+                        cdnHeaders(cookies), variants, null, null));
     }
 
-    /**
-     * TikTok CDN URLs are signed but reject requests without a browser UA, the original
-     * page Referer, and the WAF cookies captured during the HTML scrape. FFmpeg replays
-     * these on every segment fetch, so we stamp them onto the {@link DataSource}.
-     */
-    private static RequestHeaders cdnHeaders() {
+    // TIKTOK CDN URLS ARE SIGNED BUT REJECT REQUESTS WITHOUT A BROWSER UA, THE ORIGINAL PAGE REFERER,
+    // AND THE WAF COOKIES CAPTURED DURING THE HTML SCRAPE. FFMPEG REPLAYS THESE ON EVERY SEGMENT FETCH.
+    private static RequestHeaders cdnHeaders(final String cookies) {
         final RequestHeaders h = new RequestHeaders()
                 .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
                 .set("Accept", "*/*")
                 .set("Referer", TIKTOK_REFERER);
-        final String c = cdnCookies;
-        if (c != null && !c.isEmpty()) h.set("Cookie", c);
+        if (cookies != null && !cookies.isEmpty()) h.set("Cookie", cookies);
         return h;
     }
 
@@ -373,11 +375,11 @@ public final class TikTokPlatform implements IPlatform {
         return itemInfo.getAsJsonObject("itemStruct");
     }
 
-    /** Captured WAF cookies — needed alongside the browser UA when streaming the CDN URL. */
-    private static volatile String cdnCookies;
+    // FETCHED PAGE HTML PAIRED WITH THE WAF COOKIES CAPTURED FROM ITS Set-Cookie RESPONSE (null WHEN NONE)
+    private record Webpage(String html, String cookies) {}
 
     // HTTP
-    private static String fetchWebpage(final URI uri, final String cookies) throws IOException {
+    private static Webpage fetchWebpage(final URI uri, final String cookies) throws IOException {
         final NetRequest.Builder builder = NetRequest.create(uri)
                 .method("GET")
                 .accept("text/html,application/xhtml+xml,*/*")
@@ -388,14 +390,14 @@ public final class TikTokPlatform implements IPlatform {
 
         try (final NetRequest req = builder.send()) {
             if (req.statusCode() != 200) throw new PlatformException(TikTokPlatform.class, "HTTP " + req.statusCode() + " for " + uri);
-            captureCookies(req);
-            return req.readAllAsString();
+            return new Webpage(req.readAllAsString(), captureCookies(req));
         }
     }
 
-    private static void captureCookies(final NetRequest req) {
+    // JOINS THE name=value PAIRS FROM EVERY Set-Cookie HEADER; RETURNS null WHEN THE RESPONSE SET NONE
+    private static String captureCookies(final NetRequest req) {
         final List<String> setCookies = req.responseHeaders().getAll("Set-Cookie");
-        if (setCookies == null || setCookies.isEmpty()) return;
+        if (setCookies == null || setCookies.isEmpty()) return null;
 
         final StringBuilder sb = new StringBuilder();
         for (final String header: setCookies) {
@@ -404,10 +406,9 @@ public final class TikTokPlatform implements IPlatform {
             if (!sb.isEmpty()) sb.append("; ");
             sb.append(nameValue);
         }
-        if (!sb.isEmpty()) {
-            cdnCookies = sb.toString();
-            LOGGER.debug(IT, "Captured TikTok cookies: {}", cdnCookies);
-        }
+        if (sb.isEmpty()) return null;
+        LOGGER.debug(IT, "Captured TikTok cookies: {}", sb);
+        return sb.toString();
     }
 
     private static URI resolveRedirect(final URI shortUri) throws IOException {
@@ -418,7 +419,8 @@ public final class TikTokPlatform implements IPlatform {
                 .maxRedirects(0)
                 .send()) {
             final String location = req.header("Location");
-            return location != null ? URI.create(location) : shortUri;
+            // RFC 7231 ALLOWS A RELATIVE Location; RESOLVE IT AGAINST THE ORIGINAL SO THE HOST SURVIVES
+            return location != null ? shortUri.resolve(location) : shortUri;
         }
     }
 }

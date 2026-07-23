@@ -28,7 +28,8 @@ public final class Background extends Element<Background> {
         canvas.gradientV(x, y, w, Math.min(150, h / 4),
                 31f / 255f, 46f / 255f, 92f / 255f, 0.42f,
                 4f / 255f, 6f / 255f, 22f / 255f, 0f);
-        for (int sy = 0; sy < h; sy += 3) {
+        // sy + 2 < h KEEPS THE LAST 1px LINE INSIDE THE BOX WHEN h IS NOT A MULTIPLE OF 3 (NO STRAY LINE BELOW)
+        for (int sy = 0; sy + 2 < h; sy += 3) {
             canvas.fill(x, y + sy + 2, w, 1, 0f, 0f, 0f, 0.15f);
         }
     }

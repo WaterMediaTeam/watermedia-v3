@@ -113,7 +113,10 @@ public abstract class ImageReader implements Closeable {
      */
     public long duration() { return this.scan().duration(); }
 
-    /** Per-frame delays in milliseconds. Static images return a single {@code 0}. */
+    /**
+     * Per-frame delays in milliseconds. Static images return a single {@code 0}. The array is owned
+     * by the reader and must be treated as read-only; callers that need to mutate it must copy first.
+     */
     public long[] delays() { return this.scan().delays(); }
 
     /**
@@ -200,6 +203,6 @@ public abstract class ImageReader implements Closeable {
 
     @Override
     public void close() throws IOException {
-        // ByteBuffer-backed readers do not own external resources.
+        // BYTEBUFFER-BACKED READERS DO NOT OWN EXTERNAL RESOURCES.
     }
 }

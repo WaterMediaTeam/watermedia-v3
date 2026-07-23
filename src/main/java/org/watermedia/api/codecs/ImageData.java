@@ -7,13 +7,16 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 /**
- * Decoded image container. it can be animated or not
- * @param frames decoded frames in BGRA
- * @param width with of the frames, if frames varies in size always picks the widest size
- * @param height height of the frames, if frames varies in size always picks the highest size
- * @param delay the i delay of the i frame, when its 0 means that it automatically has to jump into the next frame, otherwise has to wait x time in milliseconds
- * @param duration total duration of the animation, its the sum of all the delays
- * @param repeat number of repeat times, {@link #NO_REPEAT} when the animation must be shown once, and {@link #REPEAT_FOREVER} when should be in loop
+ * Decoded image container, animated or static.
+ *
+ * @param frames   decoded frames in BGRA
+ * @param width    frame width; the widest frame when frames differ in size
+ * @param height   frame height; the tallest frame when frames differ in size
+ * @param delay    per-frame delay in milliseconds; {@code 0} advances to the next frame immediately
+ * @param duration single-cycle playback time, the sum of every entry in {@code delay}; use
+ *                 {@link #duration()} for the repeat-aware value
+ * @param repeat   repeat count: {@link #NO_REPEAT} to play once, {@link #REPEAT_FOREVER} to loop
+ *                 forever, or a positive number of extra loops
  */
 public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
@@ -53,10 +56,12 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
 
     @Override
     public long duration() {
-        if (this.repeat() > 0) {
-            return this.duration * this.repeat();
-        }
-        return this.duration;
+        return this.duration(false);
+    }
+
+    /** Repeat-aware total playback time: one cycle multiplied by the loop count (minimum one cycle). */
+    public long duration(final boolean loopAware) {
+        return this.duration * (loopAware ? Math.max(1, this.repeat) : 1);
     }
 
     @NotNull

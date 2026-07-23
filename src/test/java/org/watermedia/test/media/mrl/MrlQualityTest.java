@@ -28,7 +28,7 @@ public class MrlQualityTest {
     @Test
     @DisplayName("Source resolves a URI through the closest fallback")
     void testSourceResolvesUriThroughClosestFallback() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source source = mrl.source(0);
@@ -42,7 +42,7 @@ public class MrlQualityTest {
     @Test
     @DisplayName("moveQuality rewrites the quality key in place")
     void testMoveQualityRewritesQualityKey() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source before = mrl.source(0);
@@ -60,7 +60,7 @@ public class MrlQualityTest {
     @Test
     @DisplayName("qualityOf round-trips a known URI")
     void testQualityOfRoundTripsKnownUri() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("3.gif")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("3.gif")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source source = mrl.source(0);

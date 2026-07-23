@@ -29,6 +29,10 @@ public final class KeybindsBar extends Group<KeybindsBar> {
     /** Fixed footer height in pixels. */
     public static final int H = 44;
 
+    // THE GLOBAL CRT CHIP HAS ONLY TWO STATES — CACHE BOTH SO onUpdate NEVER ALLOCATES A Keybind PER FRAME
+    private static final Keybind CRT_ON = new Keybind("C", "CRT ON");
+    private static final Keybind CRT_OFF = new Keybind("C", "CRT OFF");
+
     private Supplier<List<Keybind>> source;
     private final Parent row;
     private final Parent binds;
@@ -76,20 +80,24 @@ public final class KeybindsBar extends Group<KeybindsBar> {
     public KeybindsBar keybinds(final List<Keybind> list) {
         final List<Keybind> copy = list == null ? List.of() : List.copyOf(list);
         this.source = () -> copy;
-        this.rebuild(copy);
+        this.applied = null; // FORCE THE NEXT UPDATE PASS TO REBUILD FROM THE PINNED LIST
         return this;
     }
 
     @Override
     protected void onUpdate() {
-        this.rebuild(this.source == null ? null : this.source.get());
-    }
+        final List<Keybind> base = this.source == null ? List.of() : this.source.get();
+        // THE BAR OWNS THE GLOBAL CRT CHIP (SCREENS NEVER DECLARE IT); THE APPLIED LIST IS ALWAYS base + THIS CHIP
+        final Keybind crtChip = this.ctx != null && this.ctx.crt ? CRT_ON : CRT_OFF;
+        // ALLOCATION-FREE CHANGE GATE: BAIL WHEN base AND THE CRT CHIP STILL MATCH THE APPLIED LIST
+        final int n = base.size();
+        boolean same = this.applied != null && this.applied.size() == n + 1 && this.applied.get(n) == crtChip;
+        for (int i = 0; same && i < n; i++) same = this.applied.get(i).equals(base.get(i));
+        if (same) return;
 
-    private void rebuild(final List<Keybind> base) {
-        final List<Keybind> list = new ArrayList<>(base == null ? List.of() : base);
-        // THE BAR OWNS THE GLOBAL CRT CHIP — SCREENS NEVER DECLARE IT
-        list.add(new Keybind("C", "CRT " + (this.ctx != null && this.ctx.crt ? "ON" : "OFF")));
-        if (list.equals(this.applied)) return;
+        final List<Keybind> list = new ArrayList<>(n + 1);
+        list.addAll(base);
+        list.add(crtChip);
         this.applied = list;
         this.binds.clear();
         for (final Keybind bind: list) {

@@ -25,7 +25,7 @@ import java.util.List;
  * thin aggregate progress bar and the stacked boot log tail. Live boot state (progress ramp, duck
  * frame, log lines) is pulled in the elements' {@code onUpdate} hooks every frame.
  */
-public class LoadingScreen extends Screen {
+public final class LoadingScreen extends Screen {
 
     private static final int BANNER_MAX_W = 1000;
     private static final int BANNER_MAX_H = 170;
@@ -73,16 +73,14 @@ public class LoadingScreen extends Screen {
         return true;
     }
 
-    @Override
-    public List<Keybind> keybinds() {
-        return List.of(new Keybind("ESC", "Cancel"));
-    }
+    // NO keybinds() OVERRIDE: THE BOOT SPLASH HAS NO CANCEL PATH (BOOT IS ALREADY IN FLIGHT AND THE
+    // SCREEN HOLDS NO NAVIGATOR), SO IT ADVERTISES NONE — THE BASE RETURNS AN EMPTY LIST
 
     // ASPECT-FIT INTO A BOX — ZERO WHEN THE SOURCE OR THE BOX IS INVALID (MISSING/LATE-LOADED TEXTURE)
-    private static Box fit(final int srcW, final int srcH, final int maxW, final int maxH) {
-        if (srcW <= 0 || srcH <= 0 || maxW <= 0 || maxH <= 0) return new Box(0, 0);
+    private static Fit fit(final int srcW, final int srcH, final int maxW, final int maxH) {
+        if (srcW <= 0 || srcH <= 0 || maxW <= 0 || maxH <= 0) return new Fit(0, 0);
         final float scale = Math.min((float) maxW / srcW, (float) maxH / srcH);
-        return new Box(Math.max(1, Math.round(srcW * scale)), Math.max(1, Math.round(srcH * scale)));
+        return new Fit(Math.max(1, Math.round(srcW * scale)), Math.max(1, Math.round(srcH * scale)));
     }
 
     // GLOW SPRITE BEHIND AN IMAGE — THE GLOW TEXTURE IS THE SOURCE PLUS BLUR PADDING, SO IT IS SCALED BY
@@ -128,7 +126,8 @@ public class LoadingScreen extends Screen {
     private record StatusLine(String tag, String message, Color tagColor, Color messageColor) {
     }
 
-    private record Box(int w, int h) {
+    // FITTED PIXEL SIZE — NAMED Fit (NOT Box) SO IT NEVER SHADOWS THE element.Box DRAWABLE THE SIBLING SCREENS USE
+    private record Fit(int w, int h) {
     }
 
     // FULL-SLOT FRAME CENTERING THE CONTENT COLUMN — HORIZONTALLY EXACT, VERTICALLY CENTERED BUT NEVER
@@ -170,7 +169,7 @@ public class LoadingScreen extends Screen {
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             final Assets a = this.ctx.assets;
-            final Box box = fit(a.bannerWidth, a.bannerHeight,
+            final Fit box = fit(a.bannerWidth, a.bannerHeight,
                     Math.min(BANNER_MAX_W, Math.max(180, innerAvailWidth - 96)), BANNER_MAX_H);
             this.imgW = box.w();
             this.imgH = box.h();
@@ -207,7 +206,7 @@ public class LoadingScreen extends Screen {
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             final Assets a = this.ctx.assets;
             this.duck = a.duckFrameIds.length > 0 && a.duckFrameWidth > 0 && a.duckFrameHeight > 0;
-            final Box box = this.duck
+            final Fit box = this.duck
                     ? fit(a.duckFrameWidth, a.duckFrameHeight, DUCK_SIZE, DUCK_SIZE)
                     : fit(a.iconWidth, a.iconHeight, ICON_SIZE, ICON_SIZE);
             this.imgW = box.w();
@@ -285,6 +284,7 @@ public class LoadingScreen extends Screen {
         private WaterMediaAPI trackedApi;
         private String trackedName = "";
         private String trackedStep = "";
+        private String signature; // LAST INPUT SIGNATURE — THE LINE LIST IS ONLY REBUILT WHEN IT MOVES
 
         @Override
         protected void onUpdate() {
@@ -299,6 +299,15 @@ public class LoadingScreen extends Screen {
                 final String step = clean(api.stepName());
                 if (!step.isEmpty()) this.trackedStep = step;
             }
+
+            // THE SPLASH REPAINTS EVERY FRAME; REBUILD THE LINE LIST (AND ITS STRINGS) ONLY WHEN A TRACKED
+            // INPUT ACTUALLY CHANGED, KEEPING THE PREVIOUS LIST OTHERWISE
+            final int audio = this.ctx.audioError ? 2 : this.ctx.audioReady ? 1 : 0;
+            final String signature = api == null
+                    ? audio + "|-|" + this.completed.size()
+                    : audio + "|" + api.name() + "|" + this.trackedStep + "|" + api.step() + "/" + api.steps() + "|" + this.completed.size();
+            if (signature.equals(this.signature)) return;
+            this.signature = signature;
 
             final List<StatusLine> out = new ArrayList<>();
             out.add(ok("init " + LoadingScreen.this.engine + " context"));

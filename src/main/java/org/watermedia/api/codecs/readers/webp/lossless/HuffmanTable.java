@@ -11,7 +11,7 @@ public final class HuffmanTable {
     private final int[] lookup;
     // PRE-COMPUTED REVERSED LONG CODES (len > LOOKUP_BITS) FOR FAST SLOW-PATH LINEAR SCAN
     private final int[] longLens;
-    private final int[] longCodes;   // already reversed for LSB-first compare
+    private final int[] longCodes;   // ALREADY REVERSED FOR LSB-FIRST COMPARE
     private final int[] longSymbols;
     private final int longMaxLen;
     // SINGLE SYMBOL FLAG - IF TRUE, singleSymbolValue IS RETURNED WITHOUT READING BITS
@@ -108,6 +108,16 @@ public final class HuffmanTable {
         // NO SYMBOLS WITH CODES - TREAT AS SINGLE SYMBOL 0
         if (symbolCount == 0) return singleSymbolTable(0);
 
+        // REJECT OVER-SUBSCRIBED CODES: MORE CODES OF A LENGTH THAN THE TREE HAS ROOM FOR WOULD
+        // COLLIDE IN THE LOOKUP TABLE AND DECODE TO GARBAGE. INCOMPLETE (UNDER-FULL) CODES ARE
+        // LEFT VALID BECAUSE REAL VP8L FILES EMIT THEM (E.G. TWO LENGTH-2 CODES).
+        int left = 1;
+        for (int len = 1; len <= maxLen; len++) {
+            left <<= 1;
+            left -= lengthCount[len];
+            if (left < 0) throw new XCodecException("Over-subscribed huffman code at length " + len);
+        }
+
         // COMPUTE FIRST CODE FOR EACH LENGTH
         final int[] nextCode = new int[16];
         int code = 0;
@@ -128,7 +138,7 @@ public final class HuffmanTable {
         }
 
         // BUILD LOOKUP TABLE FOR SHORT CODES
-        // Codes are stored reversed because we read bits LSB-first
+        // CODES ARE STORED REVERSED BECAUSE BITS ARE READ LSB-FIRST
         final int[] lookup = new int[LOOKUP_SIZE];
 
         // BUILD COMPACT LONG-CODE TABLES FOR len > LOOKUP_BITS
@@ -200,7 +210,7 @@ public final class HuffmanTable {
             symbolsWithCode = 1;
             maxCodeLen = 0;
         } else {
-            // Distinct symbols across both lookup entries and long-code list.
+            // DISTINCT SYMBOLS ACROSS BOTH LOOKUP ENTRIES AND THE LONG-CODE LIST
             int distinct = this.longLens.length;
             final boolean[] seen = new boolean[65536];
             for (int i = 0; i < LOOKUP_SIZE; i++) {

@@ -103,7 +103,7 @@ public class WaterPlatformTest {
             assertNotNull(data, "getData must resolve a valid water:// URI to a PlatformData instance");
             assertEquals(1, data.size(), "Resolved water:// URI must produce exactly one entry");
             assertEquals(WaterPlatform.GLOBAL_SERVER + "x",
-                    data.entries()[0].variants()[0].uri().toString(),
+                    data.entries().get(0).variants().get(0).uri().toString(),
                     "Resolved variant must point at the mapped global URL");
         }
 

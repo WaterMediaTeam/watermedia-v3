@@ -103,7 +103,7 @@ public final class ImgurPlatform implements IPlatform {
             }
 
             LOGGER.info(IT, "Imgur resolved post '{}' with {} entry(es)", id, entries.size());
-            return new PlatformData(null, entries.toArray(DataSource[]::new));
+            return new PlatformData(null, entries);
 
         } else {
             // SIMPLE IMAGE
@@ -169,7 +169,7 @@ public final class ImgurPlatform implements IPlatform {
         try {
             return new DataSource(type, null, metadata,
                     RequestHeaders.defaults(uri),
-                    new DataQuality[] {new DataQuality(new URI(link), img.width(), img.height())},
+                    List.of(new DataQuality(new URI(link), img.width(), img.height())),
                     null, null);
         } catch (final Exception e) {
             throw new PlatformException(ImgurPlatform.class, "Item '" + img.id() + "' has a malformed link URI: " + link, e);

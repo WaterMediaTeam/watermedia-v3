@@ -11,7 +11,8 @@ import java.util.Map;
  *
  * <p>Common fields get explicit accessors. Format-specific, uncommon, private, or non-standard
  * metadata is exposed through {@link #values()} using keys defined in {@link CodecsAPI}.
- * Accessors return {@code null} when the value does not exist or is blank.
+ * String accessors return {@code null} when the value does not exist or is blank; collection
+ * accessors return an empty immutable collection so callers can iterate without null checks.
  */
 public final class ImageMetadata {
     public static final ImageMetadata EMPTY = new ImageMetadata(true);
@@ -44,7 +45,7 @@ public final class ImageMetadata {
     }
 
     public List<String> authors() {
-        return this.authors.isEmpty() ? null : Collections.unmodifiableList(this.authors);
+        return this.authors.isEmpty() ? List.of() : Collections.unmodifiableList(this.authors);
     }
 
     public String copyright() {
@@ -52,7 +53,7 @@ public final class ImageMetadata {
     }
 
     public List<String> comments() {
-        return this.comments.isEmpty() ? null : Collections.unmodifiableList(this.comments);
+        return this.comments.isEmpty() ? List.of() : Collections.unmodifiableList(this.comments);
     }
 
     public String creationTime() {
@@ -68,7 +69,7 @@ public final class ImageMetadata {
     }
 
     public Map<String, Object> values() {
-        return this.values.isEmpty() ? null : Collections.unmodifiableMap(this.values);
+        return this.values.isEmpty() ? Map.of() : Collections.unmodifiableMap(this.values);
     }
 
     public Object value(final String key) {

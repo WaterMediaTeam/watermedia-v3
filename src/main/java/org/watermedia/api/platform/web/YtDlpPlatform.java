@@ -12,7 +12,6 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.binaries.YtDlpBinary;
-import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -79,11 +78,21 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         return NAME;
     }
 
+    // CASE-INSENSITIVE HOST-SUFFIX MATCH WITH A DOT BOUNDARY: host EQUALS OR ENDS WITH ".<suffix>",
+    // SO SUBDOMAINS (www./m.) MATCH BUT LOOKALIKES LIKE "notyoutube.com"/"xinstagr.am" DO NOT.
+    protected static boolean hostMatches(final String host, final String[] suffixes) {
+        if (host == null) return false;
+        final String h = host.toLowerCase(Locale.ROOT);
+        for (final String suffix: suffixes) {
+            if (h.equals(suffix) || h.endsWith("." + suffix)) return true;
+        }
+        return false;
+    }
+
     @Override
     public PlatformData getData(final URI uri) throws Exception {
         // NONE OF OUR HOSTS → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
-        final String host = uri.getHost();
-        if (host == null || !DataTool.endsWith(host.toLowerCase(Locale.ROOT), HOSTS)) {
+        if (!hostMatches(uri.getHost(), HOSTS)) {
             return null;
         }
         final JsonObject info;
@@ -232,7 +241,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         if (sources.isEmpty()) {
             throw new PlatformException(this.getClass(), "No playable entries in playlist");
         }
-        return new PlatformData(earliest, sources.toArray(DataSource[]::new));
+        return new PlatformData(earliest, sources);
     }
 
     private Result single(final JsonObject media) throws Exception {
@@ -279,7 +288,8 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
                 if (height > 0 && !seenHeights.add(height)) continue;
                 final URI url = uri(str(f, "url"));
                 if (url == null) continue; // MALFORMED FORMAT URL — SKIP THIS VARIANT
-                final int width = intOr(f, "width", height > 0 ? height * 16 / 9 : 0);
+                // PER DataQuality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
+                final int width = intOr(f, "width", 0);
                 variants.add(new DataQuality(url, width, height));
                 if (headerSource == null) headerSource = f;
             }
@@ -292,7 +302,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
             final List<DataSlave> audioSlaves = bestAudioUri == null ? null
                     : List.of(new DataSlave(null, null, bestAudioUri));
             final DataSource source = new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
-                    variants.toArray(DataQuality[]::new), audioSlaves, subtitles);
+                    variants, audioSlaves, subtitles);
             return new Result(expiry(variants.get(0).uri(), live), source);
         }
 
@@ -301,7 +311,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
             final URI audio = uri(str(bestAudio, "url"));
             if (audio != null) {
                 final DataSource source = new DataSource(MediaType.AUDIO, thumbnail, metadata, headers,
-                        new DataQuality[] { new DataQuality(audio, 0, 0) }, null, subtitles);
+                        List.of(new DataQuality(audio, 0, 0)), null, subtitles);
                 return new Result(expiry(audio, live), source);
             }
         }

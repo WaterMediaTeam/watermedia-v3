@@ -30,7 +30,7 @@ public final class Predictor {
             final int yOff = y * width;
             final int prevRow = yOff - width;
 
-            // x = 0: top
+            // X = 0: TOP PREDICTOR
             pixels[yOff] = addPixels(pixels[yOff], pixels[prevRow]);
 
             for (int blockX = 0; blockX < blocksPerRow; blockX++) {

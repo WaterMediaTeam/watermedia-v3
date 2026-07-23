@@ -27,6 +27,7 @@ public final class BCWriter extends ImageWriter {
     private final int frameBytes;
     private long[] delays = new long[16];
     private int frames;
+    private boolean closed;
 
     /** Opens a writer that uses the highest-quality BC version available. */
     public BCWriter(final OutputStream out, final int width, final int height, final PixelFormat pixelFormat) throws IOException {
@@ -83,6 +84,9 @@ public final class BCWriter extends ImageWriter {
 
     @Override
     public void close() throws IOException {
+        // GUARD SO A SECOND close() DOES NOT APPEND A DUPLICATE FOOTER AND CORRUPT THE CONTAINER
+        if (this.closed) return;
+        this.closed = true;
         try {
             this.out.write(DDSHeader.writeFooter(this.delays, this.frames));
         } finally {

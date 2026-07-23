@@ -28,17 +28,11 @@ import static org.lwjgl.glfw.GLFW.glfwSetWindowPos;
 import static org.lwjgl.system.MemoryStack.stackPush;
 
 /**
- * The window titlebar as a retained view — the pixel-exact port of the imperative chrome titlebar:
- * a vertical gradient band with a bottom hairline, the 16x16 app icon, the window title, and the
- * three borderless window buttons (minimize / maximize-restore / close, close in red). On Windows the
- * empty band is native caption space ({@link WinFrame} maps it to {@code HTCAPTION}), so the OS owns
- * the drag with real Aero Snap, double-click maximize/restore and the system menu — only the three
- * buttons stay interactive here. On other platforms pressing the empty band captures the pointer and
- * moves the OS window via GLFW, including the restore-then-drag behavior when the window is maximized,
- * and releasing a real drag on the top edge of the monitor work area maximizes the window (custom snap
- * assist — the window is borderless, so the OS never sees this drag). The button actions are
- * configurable {@link Runnable}s; minimize and maximize fall back to the standard GLFW behavior when
- * unset.
+ * The window titlebar as a retained view: a gradient band with the app icon, the window title and the
+ * three borderless window buttons (minimize / maximize-restore / close). On Windows the empty band is
+ * native caption space ({@link WinFrame} maps it to {@code HTCAPTION}); elsewhere it drives an OS window
+ * move through GLFW with restore-on-drag and top-edge snap-assist (see the input handlers below). Button
+ * actions are configurable {@link Runnable}s; minimize and maximize fall back to GLFW when unset.
  */
 public final class TitleBar extends Element<TitleBar> {
 

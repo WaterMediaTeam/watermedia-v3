@@ -62,7 +62,7 @@ public final class StreamablePlatform implements IPlatform {
             LOGGER.info(IT, "Streamable resolved video '{}' with {} variant(s)", videoId, variants.size());
             final var entry = new DataSource(MediaType.VIDEO, thumbnailUri, metadata,
                     RequestHeaders.defaults(uri),
-                    variants.toArray(DataQuality[]::new),
+                    variants,
                     null, null);
             return new PlatformData(null, entry);
         } catch (final PlatformException e) {

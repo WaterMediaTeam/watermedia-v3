@@ -98,10 +98,10 @@ public class MathUtilTest {
         }
 
         @Test
-        @DisplayName("secondsToMs casts seconds to long before multiplying")
-        void secondsToMsCastsFirst() {
-            // (long)2.5 == 2; 2 * 1000 == 2000
-            assertEquals(2000L, MathUtil.secondsToMs(2.5));
+        @DisplayName("secondsToMs multiplies before truncating, preserving fractional seconds")
+        void secondsToMsKeepsFraction() {
+            // 2.5 * 1000.0 == 2500.0; (long) 2500.0 == 2500
+            assertEquals(2500L, MathUtil.secondsToMs(2.5));
         }
 
         @Test

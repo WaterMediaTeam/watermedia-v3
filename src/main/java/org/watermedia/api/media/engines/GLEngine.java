@@ -2,7 +2,6 @@ package org.watermedia.api.media.engines;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.lwjgl.glfw.GLFW;
 import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
@@ -188,11 +187,9 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // ONE DRAIN HUB PER RENDER THREAD (= PER GL CONTEXT) BATCHES EVERY ENGINE'S PENDING WORK
-    // INTO A SINGLE TASK PER FRAME INSIDE ONE STATE CAPTURE/RESTORE ENVELOPE. ORPHANS HOLDS
-    // EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION (SEE orphanTexture/sweepOrphans),
-    // KEYED BY THE CONTEXT'S GLCapabilities IDENTITY (NOT THE GLFW HANDLE, WHICH THE OS MAY
-    // REUSE FOR A NEW CONTEXT) SO A DESTROYED CONTEXT'S NAMES CAN NEVER LEAK INTO A NEW ONE.
+    // ONE DRAIN HUB PER RENDER THREAD BATCHES EVERY ENGINE INTO ONE TASK/FRAME IN A SINGLE STATE
+    // ENVELOPE. ORPHANS (KEYED BY GLCapabilities IDENTITY, NOT THE OS-REUSABLE GLFW HANDLE) HOLDS
+    // EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION SO A DEAD CONTEXT'S NAMES NEVER LEAK.
     private static final Map<Thread, Hub> HUBS = new ConcurrentHashMap<>();
     private static final Map<GLCapabilities, ArrayDeque<Integer>> ORPHANS =
             Collections.synchronizedMap(new WeakHashMap<>());
@@ -206,6 +203,7 @@ public final class GLEngine extends GFXEngine {
     private final Executor renderThreadEx;
     private final Hub hub;
     private boolean hubQueued;            // GUARDED BY hub MONITOR
+    private boolean hubReleased;          // GUARDS THE HUB REFCOUNT DECREMENT (release() MAY RUN TWICE)
     private volatile boolean released;    // TERMINAL FLAG — STOPS PRODUCERS AND STALE RENDER TASKS
 
     // MANAGED TEXTURE (WHAT THE DEV BINDS)
@@ -302,6 +300,10 @@ public final class GLEngine extends GFXEngine {
     private int uniformYUYVWidth = -1;
     private int uniformYUYVSwap = -1;
 
+    // FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE — DECLINED IN supportsFormat SO THE PRODUCER
+    // PRE-CONVERTS IT TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM
+    private volatile PixelFormat shaderFailFormat;
+
     private GLEngine(final Thread renderThread, final Executor renderThreadEx) {
         WaterMedia.checkIsClientSideOrThrow(GLEngine.class);
         if (renderThread != null && renderThreadEx == null) {
@@ -309,17 +311,38 @@ public final class GLEngine extends GFXEngine {
         }
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
-        // ENGINES SHARING A RENDER THREAD SHARE ITS HUB; THE FIRST ENGINE'S EXECUTOR WINS
-        // (A SINGLE THREAD IMPLIES A SINGLE TASK LOOP FEEDING IT)
-        this.hub = renderThread != null ? HUBS.computeIfAbsent(renderThread, t -> new Hub(renderThreadEx)) : null;
+        // ENGINES SHARING A RENDER THREAD SHARE ITS HUB (FIRST EXECUTOR WINS); THE HUB IS EVICTED WHEN
+        // ITS LAST ENGINE RELEASES, SO A HOT-SWAPPED CONTEXT NEITHER LEAKS NOR PINS A STALE EXECUTOR.
+        this.hub = renderThread != null ? acquireHub(renderThread, renderThreadEx) : null;
 
-        // VALIDATE THREAD PAIR
-        if (renderThreadEx != null) {
+        // VALIDATE THE THREAD PAIR ASYNCHRONOUSLY. A MISMATCH IS LOGGED, NOT THROWN — THROWING RUNS ON
+        // THE EXECUTOR AND WOULD CRASH THE HOST RENDER LOOP INSTEAD OF THE MISCONFIGURED CALLER.
+        if (renderThreadEx != null && renderThread != null) {
             renderThreadEx.execute(() -> {
-                if (renderThread != null && Thread.currentThread() != renderThread) {
-                    throw new IllegalStateException("GLEngine: renderThreadEx must dispatch to renderThread");
+                if (Thread.currentThread() != renderThread) {
+                    LOGGER.error(IT, "renderThreadEx does not dispatch to renderThread — uploads will corrupt the GL context");
                 }
             });
+        }
+    }
+
+    // REGISTERS THIS ENGINE ON ITS RENDER THREAD'S SHARED HUB, CREATING ONE ON FIRST USE. GUARDED BY
+    // THE HUBS MONITOR SO ACQUIRE AND EVICT NEVER RACE.
+    private static Hub acquireHub(final Thread thread, final Executor ex) {
+        synchronized (HUBS) {
+            final Hub hub = HUBS.computeIfAbsent(thread, t -> new Hub(ex));
+            hub.engines++;
+            return hub;
+        }
+    }
+
+    // DEREGISTERS THIS ENGINE; THE HUB IS DROPPED ONCE ITS LAST ENGINE LEAVES SO A TORN-DOWN RENDER
+    // THREAD LEAKS NEITHER ITS HUB NOR ITS EXECUTOR. IDEMPOTENT — release() MAY RUN TWICE.
+    private void releaseHub() {
+        if (this.hub == null || this.hubReleased) return;
+        this.hubReleased = true;
+        synchronized (HUBS) {
+            if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
         }
     }
 
@@ -358,6 +381,9 @@ public final class GLEngine extends GFXEngine {
 
     @Override
     public boolean supportsFormat(final PixelFormat format) {
+        // A FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE IS DECLINED SO THE PRODUCER RE-ROUTES IT
+        // THROUGH THE SCALER TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM.
+        if (format == this.shaderFailFormat) return false;
         // GBRA IS DECLINED: THE DEFAULT PLANE PATH UPLOADS IT AS GL_RGBA, WHICH WOULD SAMPLE ITS
         // [G,B,R,A] BYTES AS R,G,B,A (CHANNELS SHUFFLED), SO THE PRODUCER PRE-CONVERTS IT TO BGRA.
         return format != PixelFormat.GBRA;
@@ -465,10 +491,6 @@ public final class GLEngine extends GFXEngine {
         this.activeFrameTexture = Math.min(Math.max(frameIndex, 0), ready - 1);
     }
 
-    public boolean hasGLContext() {
-        return GLFW.glfwGetCurrentContext() != 0L;
-    }
-
     /**
      * Resets the entire pipeline and prepares for a new format.
      * Releases plane textures, PBOs, the persistent ring, and recompiles shaders if the pixel
@@ -552,6 +574,8 @@ public final class GLEngine extends GFXEngine {
                         this.uniformGrayTex = GL20.glGetUniformLocation(this.shaderGray, "yTex");
                         this.uniformGrayBitScale = GL20.glGetUniformLocation(this.shaderGray, "bitScale");
                         LOGGER.info(IT, "Successfully compiled Gray shader (program={})", this.shaderGray);
+                    } else {
+                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
                     }
                 }
             }
@@ -564,6 +588,8 @@ public final class GLEngine extends GFXEngine {
                         this.uniformNVSwap = GL20.glGetUniformLocation(this.shaderNV, "uvSwap");
                         this.uniformNVBitScale = GL20.glGetUniformLocation(this.shaderNV, "bitScale");
                         LOGGER.info(IT, "Successfully compiled NV shader (program={})", this.shaderNV);
+                    } else {
+                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
                     }
                 }
             }
@@ -576,6 +602,8 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUV3VTex = GL20.glGetUniformLocation(this.shaderYUV3, "vTex");
                         this.uniformYUV3BitScale = GL20.glGetUniformLocation(this.shaderYUV3, "bitScale");
                         LOGGER.info(IT, "Successfully compiled YUV3 shader (program={})", this.shaderYUV3);
+                    } else {
+                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
                     }
                 }
             }
@@ -589,6 +617,8 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUVAATex = GL20.glGetUniformLocation(this.shaderYUVA, "aTex");
                         this.uniformYUVABitScale = GL20.glGetUniformLocation(this.shaderYUVA, "bitScale");
                         LOGGER.info(IT, "Successfully compiled YUVA shader (program={})", this.shaderYUVA);
+                    } else {
+                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
                     }
                 }
             }
@@ -600,6 +630,8 @@ public final class GLEngine extends GFXEngine {
                         this.uniformYUYVWidth = GL20.glGetUniformLocation(this.shaderYUYV, "outputWidth");
                         this.uniformYUYVSwap = GL20.glGetUniformLocation(this.shaderYUYV, "uvSwap");
                         LOGGER.info(IT, "Successfully compiled YUYV shader (program={})", this.shaderYUYV);
+                    } else {
+                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
                     }
                 }
             }
@@ -906,6 +938,7 @@ public final class GLEngine extends GFXEngine {
     @Override
     public void release() {
         this.released = true; // STOP PRODUCERS IMMEDIATELY; STALE RENDER TASKS BECOME NO-OPS
+        this.releaseHub();    // DROP OUR HUB REFERENCE NOW (THREAD-SAFE, IDEMPOTENT)
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
             this.renderThreadEx.execute(this::release);
             return;
@@ -935,6 +968,16 @@ public final class GLEngine extends GFXEngine {
     // THE HUB/SUBMIT ENVELOPE ALREADY SAVED THE HOST'S PROGRAM/VIEWPORT/FBO/VAO/DRAW TOGGLES
     // AND FORCED A CLEAN DRAW STATE, SO THIS PASS ONLY SETS WHAT IT USES.
     private void convertToRGBA() {
+        final int program = switch (this.pixelFormat) {
+            case GRAY -> this.shaderGray;
+            case NV12, NV21 -> this.shaderNV;
+            case YUV420P, YUV422P, YUV444P -> this.shaderYUV3;
+            case YUVA420P, YUVA422P, YUVA444P -> this.shaderYUVA;
+            case YUYV, YUYV2 -> this.shaderYUYV;
+            default -> 0;
+        };
+        // SHADER COMPILE FAILED — SKIP RATHER THAN BIND PROGRAM 0 (BLACK OUTPUT); supportsFormat NOW DECLINES IT
+        if (program == 0) return;
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
         this.initQuad();
@@ -1041,7 +1084,8 @@ public final class GLEngine extends GFXEngine {
             case GRAY -> new Plane[]{
                     new Plane(w, h, this.glInternalR, GL11.GL_RED, this.glType, bps)};
             case YUYV, YUYV2 -> new Plane[]{
-                    new Plane(w / 2, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 4)};
+                    // CEIL: ODD WIDTHS NEED THE LAST PACKED TEXEL (w/2) — MATCHES VKEngine
+                    new Plane((w + 1) / 2, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 4)};
             case NV12, NV21 -> new Plane[]{
                     new Plane(w, h, this.glInternalR, GL11.GL_RED, this.glType, bps),
                     new Plane(w / 2, h / 2, this.glInternalRG, GL30.GL_RG, this.glType, 2 * bps)};
@@ -1152,14 +1196,9 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // EXPOSED TEXTURE DELETION — DEFERRED UNTIL PROVABLY UNREFERENCED
     // ==========================================================================
-    // NAMES HANDED OUT THROUGH texture() END UP INSIDE HOST BINDING CACHES (E.G. MINECRAFT'S
-    // GlStateManager, SODIUM'S TRACKER). DELETING ONE WHILE A CACHE STILL POINTS AT IT LETS
-    // THE DRIVER REUSE THE NAME AND A FUTURE HOST REBIND GETS SILENTLY SKIPPED — THE EXACT
-    // HAZARD MINECRAFT'S _deleteTexture CLEARS ITS OWN CACHE FOR. BECAUSE THE ENVELOPE KEEPS
-    // EVERY HOST CACHE EQUAL TO ACTUAL GL STATE, "UNBOUND ON EVERY UNIT" PROVES NO CACHE
-    // STILL REFERENCES THE NAME. SO: STORAGE IS FREED IMMEDIATELY (ZERO-SIZE RESPEC) AND THE
-    // NAME IS ORPHANED; THE SWEEP AT THE END OF EVERY ENVELOPE DELETES EACH ORPHAN THE MOMENT
-    // NO TEXTURE UNIT STILL BINDS IT — IN PRACTICE THE NEXT FRAME, ONCE THE HOST REBOUND.
+    // FREE STORAGE NOW (ZERO-SIZE RESPEC) BUT DEFER DELETING THE NAME: A HOST BINDING CACHE MAY STILL
+    // POINT AT IT, AND A REUSED NAME WOULD SILENTLY SKIP A FUTURE REBIND. THE ENVELOPE KEEPS HOST STATE
+    // EXACT, SO "UNBOUND ON EVERY UNIT" (SEE sweepOrphans) PROVES THE NAME IS FREE TO DELETE.
     private void orphanTexture(final int texture) {
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
         GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, 0, 0, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
@@ -1399,6 +1438,7 @@ public final class GLEngine extends GFXEngine {
         private final Executor ex;
         private final ArrayList<GLEngine> waiting = new ArrayList<>(); // GUARDED BY this
         private boolean queued;                                        // GUARDED BY this
+        int engines;                                                   // LIVE ENGINE REFCOUNT, GUARDED BY THE HUBS MONITOR
 
         Hub(final Executor ex) {
             this.ex = ex;
@@ -1567,10 +1607,26 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // BUILDER
     // ==========================================================================
+    /**
+     * Builds a {@link GLEngine} bound to a render thread and the executor that dispatches onto it.
+     * <p>
+     * {@code renderThreadEx} <b>must</b> execute its tasks on {@code renderThread} — the thread that
+     * owns the current OpenGL context — and the host must pump it every render frame; that is where
+     * every GL call the engine defers is issued. Passing both {@code null} builds a
+     * <em>no-thread-contract</em> engine: it makes GL calls synchronously on whatever thread invokes
+     * {@code upload}/{@code setVideoFormat}/{@code release}, so the caller must invoke those methods
+     * itself on a thread with the context current — never the decode thread. A non-null
+     * {@code renderThread} requires a non-null {@code renderThreadEx}.
+     */
     public static class Builder {
         private final Thread renderThread;
         private final Executor renderThreadEx;
 
+        /**
+         * @param renderThread   thread owning the GL context, or null for the no-thread-contract mode
+         * @param renderThreadEx executor that dispatches onto {@code renderThread}, pumped every frame;
+         *                       required when {@code renderThread} is non-null
+         */
         public Builder(final Thread renderThread, final Executor renderThreadEx) {
             this.renderThread = renderThread;
             this.renderThreadEx = renderThreadEx;

@@ -12,13 +12,11 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * Hosts the whole window as one self-contained retained tree: a frame stacking the {@link Background},
- * a column of {@link TitleBar} / center slot / {@link KeybindsBar}, and an overlay frame for global
- * dialogs. Screens are mounted into the center slot (optionally stacked over an underlay); every frame
- * runs {@code update → measure → layout → draw} under the logical-pixel ortho, and all input enters
- * through the entry points below with the same pointer-capture and click-after-drag reconciliation the
- * framework needs. The CRT scanline effect is NOT global here — it is scoped to media previews and the
- * player's video area, drawn by their own local {@link CrtOverlay}s (still gated by {@code ctx.crt}).
+ * Hosts the whole window as one retained tree: a frame stacking the {@link Background}, a column of
+ * {@link TitleBar} / center slot / {@link KeybindsBar}, and an overlay for global dialogs. Screens mount
+ * into the center slot; every frame runs {@code update → measure → layout → draw} under the logical-pixel
+ * ortho, and all input enters through the entry points below with pointer-capture and click-after-drag
+ * reconciliation. The CRT effect is scoped to media previews, not global here.
  */
 public final class RootScreen {
 

@@ -4,109 +4,108 @@ import org.watermedia.api.codecs.XCodecException;
 
 import java.nio.ByteBuffer;
 
-public final class NetpbmHeader {
+/**
+ * Parsed Netpbm header. Produced by {@link #parse(ByteBuffer)}; {@code depth} and {@code maxVal}
+ * are {@code null} when the variant does not declare them ({@code tuplType} follows the PAM
+ * spec spelling).
+ */
+public record NetpbmHeader(String versionString, int version, int width, int height,
+                           Integer depth, Integer maxVal, String tuplType) {
 
-    public String versionString;
-    public int version;
-    public int width;
-    public int height;
-    public Integer depth;
-    public Integer maxVal;
-    public String tuplType; //NOT a typo, matches PAM spec
-
-    private int tokenIndex;
-
-    public NetpbmHeader parse(final ByteBuffer data) throws XCodecException {
-        this.tokenIndex = 0;
-        StringBuilder tuplTypeBuilder = new StringBuilder();
+    /**
+     * Parses an ASCII Netpbm header starting at the {@code Pn} version token and validates it.
+     *
+     * @throws XCodecException when the header is malformed or declares out-of-range values
+     */
+    public static NetpbmHeader parse(final ByteBuffer data) throws XCodecException {
+        String versionString = null;
+        int version = 0;
+        int width = 0;
+        int height = 0;
+        Integer depth = null;
+        Integer maxVal = null;
+        final StringBuilder tuplType = new StringBuilder();
+        int tokenIndex = 0;
 
         label:
         while (data.hasRemaining()) {
-            final String token = this.nextToken(data);
+            final String token = nextToken(data);
             if (token.isEmpty()) break;
+            tokenIndex++;
 
-            if (this.tokenIndex == 1 && token.startsWith("P")) {
-                this.versionString = token;
-                this.version = this.parseInt(token.substring(1));
+            if (tokenIndex == 1 && token.startsWith("P")) {
+                versionString = token;
+                version = parseInt(token.substring(1));
                 continue;
             }
 
-            switch (this.version) {
+            switch (version) {
                 case 4 -> {
-                    //expect width and height in order
-                    switch (this.tokenIndex) {
-                        case 2 -> this.width = this.parseInt(token);
+                    // EXPECT WIDTH AND HEIGHT IN ORDER
+                    switch (tokenIndex) {
+                        case 2 -> width = parseInt(token);
                         case 3 -> {
-                            this.height = this.parseInt(token);
+                            height = parseInt(token);
                             break label;
                         }
                     }
                 }
                 case 5, 6 -> {
-                    //expect width, height, maxval in order
-                    switch (this.tokenIndex) {
-                        case 2 -> this.width = this.parseInt(token);
-                        case 3 -> this.height = this.parseInt(token);
+                    // EXPECT WIDTH, HEIGHT, MAXVAL IN ORDER
+                    switch (tokenIndex) {
+                        case 2 -> width = parseInt(token);
+                        case 3 -> height = parseInt(token);
                         case 4 -> {
-                            this.maxVal = this.parseInt(token);
+                            maxVal = parseInt(token);
                             break label;
                         }
                     }
                 }
                 case 7 -> {
-                    //expect key-value pairs until ENDHDR
+                    // EXPECT KEY-VALUE PAIRS UNTIL ENDHDR
                     switch (token) {
-                        case "WIDTH":
-                            this.width = this.nextTokenInt(data);
-                            break;
-                        case "HEIGHT":
-                            this.height = this.nextTokenInt(data);
-                            break;
-                        case "DEPTH":
-                            this.depth = this.nextTokenInt(data);
-                            break;
-                        case "MAXVAL":
-                            this.maxVal = this.nextTokenInt(data);
-                            break;
-                        case "TUPLTYPE":
-                            if (!tuplTypeBuilder.isEmpty()) tuplTypeBuilder.append(' ');
-                            tuplTypeBuilder.append(this.readRestOfLine(data).trim());
-                            break;
-                        case "ENDHDR":
+                        case "WIDTH" -> width = nextTokenInt(data);
+                        case "HEIGHT" -> height = nextTokenInt(data);
+                        case "DEPTH" -> depth = nextTokenInt(data);
+                        case "MAXVAL" -> maxVal = nextTokenInt(data);
+                        case "TUPLTYPE" -> {
+                            if (!tuplType.isEmpty()) tuplType.append(' ');
+                            tuplType.append(readRestOfLine(data).trim());
+                        }
+                        case "ENDHDR" -> {
                             break label;
+                        }
                     }
                 }
-                default -> throw new XCodecException("Unsupported Netpbm version: " + this.version);
+                default -> throw new XCodecException("Unsupported Netpbm version: " + version);
             }
         }
 
-        if (this.width <= 0) throw new XCodecException("Invalid WIDTH: " + this.width + ". Must be greater than 0.");
-        if (this.height <= 0) throw new XCodecException("Invalid HEIGHT: " + this.height + ". Must be greater than 0.");
-        if (this.version == 7) {
+        if (width <= 0) throw new XCodecException("Invalid WIDTH: " + width + ". Must be greater than 0.");
+        if (height <= 0) throw new XCodecException("Invalid HEIGHT: " + height + ". Must be greater than 0.");
+        if (version == 7) {
             // ENFORCE THE UPPER BOUND THE MESSAGE ALREADY CLAIMS; AN UNBOUNDED DEPTH OVERFLOWS THE RASTER MATH
-            if (this.depth == null || this.depth <= 0 || this.depth > 65535)
-                throw new XCodecException("Invalid DEPTH: " + this.depth + ". Must be between 1 and 65535.");
+            if (depth == null || depth <= 0 || depth > 65535)
+                throw new XCodecException("Invalid DEPTH: " + depth + ". Must be between 1 and 65535.");
         }
 
         // PGM/PPM/PAM ALL REQUIRE MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
-        if ((this.version == 5 || this.version == 6 || this.version == 7) && this.maxVal == null)
-            throw new XCodecException("Missing MAXVAL for P" + this.version);
+        if ((version == 5 || version == 6 || version == 7) && maxVal == null)
+            throw new XCodecException("Missing MAXVAL for P" + version);
 
-        if (this.maxVal != null && (this.maxVal <= 0 || this.maxVal > 65535))
-            throw new XCodecException("Invalid MAXVAL: " + this.maxVal + ". Must be between 1 and 65535.");
+        if (maxVal != null && (maxVal <= 0 || maxVal > 65535))
+            throw new XCodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
 
-        this.tuplType = tuplTypeBuilder.toString();
-
-        return this;
+        return new NetpbmHeader(versionString, version, width, height, depth, maxVal, tuplType.toString());
     }
 
-    private int nextTokenInt(final ByteBuffer buf) throws XCodecException {
-        final String valueToken = this.nextToken(buf);
+    private static int nextTokenInt(final ByteBuffer buf) throws XCodecException {
+        final String valueToken = nextToken(buf);
         if (valueToken.isBlank()) throw new XCodecException("Expected integer token but found blank");
-        return this.parseInt(valueToken);
+        return parseInt(valueToken);
     }
 
-    private int parseInt(final String string) throws XCodecException {
+    private static int parseInt(final String string) throws XCodecException {
         try {
             return Integer.parseInt(string);
         } catch (final NumberFormatException e) {
@@ -114,7 +113,7 @@ public final class NetpbmHeader {
         }
     }
 
-    private String nextToken(final ByteBuffer buf) {
+    private static String nextToken(final ByteBuffer buf) {
         final StringBuilder sb = new StringBuilder();
         boolean inComment = false;
 
@@ -131,13 +130,10 @@ public final class NetpbmHeader {
             }
             sb.append(c);
         }
-
-        final String result = sb.toString();
-        if (!result.isEmpty()) this.tokenIndex++;
-        return result;
+        return sb.toString();
     }
 
-    private String readRestOfLine(final ByteBuffer buf) {
+    private static String readRestOfLine(final ByteBuffer buf) {
         final StringBuilder sb = new StringBuilder();
         while (buf.hasRemaining()) {
             final char c = (char) buf.get();
@@ -145,17 +141,5 @@ public final class NetpbmHeader {
             sb.append(c);
         }
         return sb.toString();
-    }
-
-    @Override
-    public String toString() {
-        return "NetpbmHeader{" +
-                "version='" + this.version + '\'' +
-                ", width=" + this.width +
-                ", height=" + this.height +
-                ", depth=" + this.depth +
-                ", maxVal=" + this.maxVal +
-                ", tuplType='" + this.tuplType + '\'' +
-                '}';
     }
 }

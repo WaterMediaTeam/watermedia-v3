@@ -10,15 +10,20 @@ import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.util.MediaQuality;
 
 import java.util.Objects;
+import java.util.function.BiConsumer;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
-    protected static final int NO_SIZE = 0;
-    protected static final int NO_TEXTURE = 0;
-    protected static final int NO_SOURCE = 0;
-    protected static final int NO_DURATION = 0;
+    /** Sentinel for unknown or unset video dimensions. */
+    public static final int NO_SIZE = 0;
+    /** Sentinel for a missing GPU texture handle. */
+    public static final int NO_TEXTURE = 0;
+    /** Sentinel for a missing audio source handle. */
+    public static final int NO_SOURCE = 0;
+    /** Sentinel for an unknown media duration. */
+    public static final int NO_DURATION = 0;
 
     // BASIC PROPERTIES
     protected final MRL mrl;
@@ -33,6 +38,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private float volume = 1f;
     private volatile float speed = 1.0f;
     private boolean muted = false;
+
+    // OPTIONAL STATUS-TRANSITION LISTENER — LETS CONSUMERS REACT TO TERMINAL STATES
+    // (ENDED/ERROR) WITHOUT POLLING status() EVERY TICK. INVOKED FROM INTERNAL THREADS.
+    private volatile BiConsumer<Status, Status> statusListener;
 
     // VIDEO UPLOAD SCALING — WRITTEN BY THE CALLER (OR A SUBCLASS), READ BY THE PLAYBACK
     // THREADS. EACH SUBCLASS RESOLVES ITS UPLOAD SIZE FROM THESE VIA MathUtil.scaled(native,
@@ -92,6 +101,15 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     public MediaQuality quality() { return this.quality; }
+
+    /** The media reference this player renders. */
+    public MRL mrl() { return this.mrl; }
+
+    /** Index of the {@link MRL.Source} within {@link #mrl()} this player renders. */
+    public int sourceIndex() { return this.sourceIndex; }
+
+    /** The resolved source within {@link #mrl()} this player renders. */
+    public MRL.Source source() { return this.source; }
 
     /**
      * Indicates if the media player has video support enabled.
@@ -206,8 +224,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public long texture() { return this.gfx == null ? NO_TEXTURE : this.gfx.texture(); }
 
     /**
-     * Returns the OpenAL source ID used for audio playback.
-     * @return the OpenAL source ID, or {@link MediaPlayer#NO_SOURCE NO_SOURCE} if audio is not supported.
+     * Returns the audio source handle exposed by the backing {@link SFXEngine}.
+     * The concrete handle type depends on the engine (an OpenAL source ID for OpenAL,
+     * an internal id for JavaSound).
+     * @return the audio source handle, or {@link MediaPlayer#NO_SOURCE NO_SOURCE} if audio is not supported.
      */
     public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_SOURCE; }
 
@@ -224,14 +244,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public abstract boolean nextFrame();
 
     /**
-     * Sets the volume of the audio playback.
-     * The volume is clamped between 0 (mute) and 100 (maximum volume).
-     * Setting the volume to 0 implicitly mutes the audio; any value &gt;= 1 unmutes it.
+     * Sets the volume of the audio playback, clamped between 0 and 100.
+     * Volume and {@link #mute(boolean)} are independent controls: changing the volume
+     * never alters the mute state, and audio stays silent while muted.
      * @param volume the desired volume level (0-100)
      */
     public void volume(final int volume) {
         this.volume = MathUtil.clamp(volume, 0, 100) / 100f;
-        this.muted = volume < 1;
+        // MUTE IS AN INDEPENDENT CONTROL — APPLY THE GAIN THROUGH THE MUTE GATE, DON'T FLIP IT HERE
         if (this.sfx != null) this.sfx.volume(this.muted ? 0.0f : this.volume);
     }
 
@@ -239,7 +259,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Returns the current volume level as a percentage (0-100).
      * @return the current volume level (0-100), mute state doesn't affect the volume level
      */
-    public int volume() { return (int) (this.volume * 100); }
+    public int volume() { return Math.round(this.volume * 100); }
 
     /**
      * Mutes or unmutes the audio playback.
@@ -284,7 +304,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * If the media is ended, it will restart playback from the beginning and remain paused.
      * <p>If the media uri is invalid, it will log an error and not start playback.</p>
      * This method is non-blocking and returns immediately.
-     * @implNote This method is equivalent to calling {@link #start()} followed by {@link #pause()}.
+     * @implNote Semantically like {@link #start()} that lands in a paused state, but not a plain
+     *           {@code start()} then {@link #pause()}: the two calls race the pipeline setup, so
+     *           implementations latch the pause intent before playback begins.
      * @see MediaPlayer#start()
      */
     public abstract void startPaused();
@@ -310,14 +332,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param paused true to pause the media playback, false to resume
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean pause(final boolean paused) {
-        if (this.sfx == null) return false; // NOT SUCCESS, NO AUDIO
-
-        if (paused) this.sfx.pause();
-        else this.sfx.play();
-
-        return true;
-    }
+    public abstract boolean pause(final boolean paused);
 
     /**
      * Stops media playback and resets the position to the beginning.
@@ -344,8 +359,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Returns the current playback time in milliseconds.
-     * If the current time is unknown or not applicable, it returns -1.
-     * @return the current playback time in milliseconds, or -1 if unknown.
+     * @return the current playback time in milliseconds, or {@link MediaPlayer#NO_DURATION NO_DURATION} if unknown.
      */
     public abstract long time();
 
@@ -401,7 +415,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * A speed of 1.0f indicates normal playback speed.
      * A speed greater than 1.0f indicates faster playback,
      * while a speed less than 1.0f indicates slower playback.
-     * The speed must be a positive value greater than 0.0f.
+     * The speed must be within the range (0.0f, 4.0f].
      * @param speed the desired playback speed.
      * @return true if the operation was successful, false when the value is out of
      *         range or the player cannot change speed ({@link #canSpeed()}).
@@ -417,8 +431,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Returns the total duration of the media in milliseconds.
-     * If the duration is unknown or not applicable, it returns -1.
-     * @return the total duration of the media in milliseconds, or -1 if unknown.
+     * @return the total duration in milliseconds, or {@link MediaPlayer#NO_DURATION NO_DURATION}
+     *         when unknown or not applicable (e.g. a live stream).
      */
     public abstract long duration();
 
@@ -439,6 +453,36 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return the current status of the media player.
      */
     public abstract Status status();
+
+    /**
+     * Registers a status-transition listener, replacing any previous one. The listener is
+     * invoked with the previous and new status on terminal transitions (at least {@link Status#ENDED}
+     * and {@link Status#ERROR}), letting playlist consumers advance without polling {@link #status()}.
+     * It is called from internal player threads, so keep the callback short and non-blocking.
+     * @param listener the listener to notify, or {@code null} to clear it
+     */
+    public void onStatus(final BiConsumer<Status, Status> listener) { this.statusListener = listener; }
+
+    // NOTIFIES THE STATUS LISTENER OF A REAL TRANSITION. SWALLOWS LISTENER FAILURES SO A BROKEN
+    // CONSUMER NEVER TEARS DOWN THE PLAYBACK THREAD.
+    protected void publishStatus(final Status prev, final Status next) {
+        final BiConsumer<Status, Status> l = this.statusListener;
+        if (l != null && prev != next) {
+            try {
+                l.accept(prev, next);
+            } catch (final Throwable t) {
+                LOGGER.error(IT, "Status listener failed", t);
+            }
+        }
+    }
+
+    /**
+     * Sets how long non-animated media (a static image) should remain displayed before it
+     * transitions to {@link Status#ENDED}. The base player has no timed display and ignores this;
+     * image-backed players override it. A value {@code <= 0} means no time limit.
+     * @param ms display duration in milliseconds
+     */
+    public void displayTime(final long ms) {}
 
     /**
      * Check if the media player equals to {@link Status#WAITING WAITING}
@@ -521,9 +565,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
 
     /**
-     * Releases all resources associated with the media player.
-     * This includes OpenGL textures and OpenAL sources and buffers.
-     * After calling this method, the media player should not be used again.
+     * Releases all resources associated with the media player, including the GPU and audio
+     * resources held by the backing engines.
+     * <p>Implementations may block the calling thread while their internal decode/IO threads
+     * finish. After calling this method, the media player should not be used again.
      */
     public void release() {
         // SUBCLASSES STOP/JOIN THEIR DECODE THREADS BEFORE CALLING super.release(), SO NEITHER ENGINE
@@ -578,10 +623,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         private static final MediaPlayer.Status[] VALUES = values();
 
         /**
-         * Returns the Status corresponding to the given integer value.
-         * The value should be between 0 and 6, inclusive.
-         * If the value is out of range, it may throw an ArrayIndexOutOfBoundsException.
-         * @param value the integer value representing the status (0-6)
+         * Returns the Status corresponding to the given ordinal value (0 to {@code values().length - 1}).
+         * @param value the ordinal of the status (0-7)
          * @return the corresponding Status enum value
          * @throws ArrayIndexOutOfBoundsException if the value is out of range
          */

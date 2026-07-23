@@ -1,5 +1,6 @@
 package org.watermedia.api.platform;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -8,16 +9,18 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>
  * The {@link #results() results} list fills in off-thread as each registered {@link IPlatform}
  * answers — a caller (typically a client UI) can poll it every frame and draw hits as they land,
- * without ever blocking. Searches are single-threaded and a newer search supersedes this one:
- * when that happens this handle is simply abandoned and its list stops growing (it is never
- * marked {@link #done() done}). The handle also carries the {@link #history() recent-query
- * history} captured at the moment it was issued.
+ * without ever blocking. Platforms are probed concurrently on a shared daemon pool, and a newer
+ * search supersedes this one: when that happens this handle is simply abandoned and its list stops
+ * growing (it is never marked {@link #done() done}). The handle also carries the {@link #history()
+ * recent-query history} captured at the moment it was issued.
  */
 public final class PlatformSearch {
     private final String query;
     private final List<String> history;
-    // WRITTEN BY THE SEARCH THREAD, READ BY THE CALLER (UI) THREAD — COPY-ON-WRITE KEEPS BOTH SAFE WITHOUT LOCKS
+    // WRITTEN BY THE SEARCH THREADS, READ BY THE CALLER (UI) THREAD — COPY-ON-WRITE KEEPS BOTH SAFE WITHOUT LOCKS
     private final List<PlatformResult> results = new CopyOnWriteArrayList<>();
+    // GROW-ONLY UNMODIFIABLE VIEW: LETS results() BE POLLED PER FRAME WITHOUT COPYING THE WHOLE LIST EACH CALL
+    private final List<PlatformResult> resultsView = Collections.unmodifiableList(this.results);
     private volatile boolean done;
 
     PlatformSearch(final String query, final List<String> history) {
@@ -33,13 +36,13 @@ public final class PlatformSearch {
     }
 
     /**
-     * Returns an immutable snapshot of the results gathered so far. Safe to read from the render
-     * thread while the search thread keeps appending: the snapshot is stable for the caller's frame
-     * (its size and contents always agree), and a later call returns a larger snapshot as more hits
-     * land — until the search is {@link #done() done} or superseded.
+     * Returns an unmodifiable, live view of the results gathered so far. Safe to read from the render
+     * thread while the search threads keep appending: the backing list is copy-on-write and grow-only,
+     * so iteration is stable and {@code size()}/{@code get()} stay consistent, and the view simply
+     * reflects more hits as they land — until the search is {@link #done() done} or superseded.
      */
     public List<PlatformResult> results() {
-        return List.copyOf(this.results);
+        return this.resultsView;
     }
 
     /**

@@ -71,6 +71,15 @@ public final class TextField extends Element<TextField> {
     }
 
     @Override
+    public void clearFocus() {
+        // A CONSUMED CLICK LANDED ELSEWHERE — DROP THE CARET AND STOP SUPPRESSING GLOBAL SHORTCUTS
+        if (this.focused) {
+            this.focused = false;
+            this.invalidate();
+        }
+    }
+
+    @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         this.contentWidth = 0;
         this.contentHeight = this.ctx != null && this.ctx.text != null ? this.ctx.text.glyphHeight(this.scale) : 0;

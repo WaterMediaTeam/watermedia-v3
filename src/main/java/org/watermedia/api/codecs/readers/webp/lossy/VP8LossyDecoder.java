@@ -96,7 +96,7 @@ public final class VP8LossyDecoder {
         // RFC6386 SECTIONS 11-14 - DECODE ALL MACROBLOCKS
         decodeMBs(hdrBr, tokBr, st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH);
 
-        LOGGER.info(IT, "Frame: {}x{} = {}x{} MBs, {} parts, loopLvl={}, skipProb={}", frm.w, frm.h, mbW, mbH, st.numParts, st.loopLvl, st.skipProb);
+        LOGGER.debug(IT, "Frame: {}x{} = {}x{} MBs, {} parts, loopLvl={}, skipProb={}", frm.w, frm.h, mbW, mbH, st.numParts, st.loopLvl, st.skipProb);
 
         // RFC6386 SECTION 15 - APPLY LOOP FILTER
         applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
@@ -299,6 +299,8 @@ public final class VP8LossyDecoder {
         final SubMode[] topSubModes = new SubMode[mbW * 4];
         final SubMode[] leftSubModes = new SubMode[4];
         Arrays.fill(topSubModes, SubMode.B_DC);
+        // SCRATCH FOR THE CURRENT I4X4 MB'S 16 SUBMODES; FULLY REWRITTEN PER I4X4 MB, UNUSED OTHERWISE
+        final SubMode[] subModes = new SubMode[16];
 
         for (int mbY = 0; mbY < mbH; mbY++) {
             final VP8BoolDecoder tbr = tokBr[mbY % st.numParts];
@@ -325,11 +327,9 @@ public final class VP8LossyDecoder {
                 final boolean isI4x4 = !hdrBr.readBool(145);
 
                 final MBMode yMode;
-                SubMode[] subModes = null;
                 if (isI4x4) {
                     // RFC6386 SECTION 11.2-11.3 - I4X4 SUBBLOCK MODES
                     yMode = null;
-                    subModes = new SubMode[16];
                     for (int j = 0; j < 4; j++)
                         for (int i = 0; i < 4; i++) {
                             final SubMode above = (j > 0) ? subModes[(j - 1) * 4 + i] : topSubModes[mbX * 4 + i];
@@ -361,13 +361,10 @@ public final class VP8LossyDecoder {
                 else uvModeIdx = hdrBr.readBool(183) ? 3 : 2;
                 uvMode = MBMode.VALUES[uvModeIdx];
 
-                // STORE PER-MB INFO FOR LOOP FILTER
+                // STORE PER-MB INFO FOR LOOP FILTER (mbFInner IS SET AFTER RESIDUAL DECODING)
                 final int mbIdx = mbY * mbW + mbX;
                 st.mbSeg[mbIdx] = seg;
                 st.mbIsI4x4[mbIdx] = isI4x4 ? 1 : 0;
-                st.mbFInner[mbIdx] = (isI4x4 || !skip) ? 1 : 0;
-
-                LOGGER.trace(IT, "MB({},{}) seg={} skip={} i4x4={} yMode={} uvMode={}", mbX, mbY, seg, skip, isI4x4, yMode, uvMode);
 
                 final int yOff = mbY * 16 * yStr + mbX * 16;
                 final int uvOff = mbY * 8 * uvStr + mbX * 8;
@@ -414,6 +411,9 @@ public final class VP8LossyDecoder {
                 predict8(uvMode, vPln, uvOff, uvStr, aboveV, leftV, tlV, hasAbove, hasLeft);
 
                 // RFC6386 SECTION 13 - DCT COEFFICIENT DECODING
+                // TRACK WHETHER ANY COEFFICIENT DECODED NON-ZERO; LIBWEBP DERIVES THE LOOP-FILTER
+                // INNER-EDGE FLAG FROM ACTUAL NZ, NOT THE SKIP FLAG (f_inner |= !effectiveSkip)
+                boolean nzAny = false;
                 if (!skip) {
                     boolean hasY2dc = false;
 
@@ -423,6 +423,7 @@ public final class VP8LossyDecoder {
                         final int nz = decodeCoeffs(tbr, coeffs, st.coeffProbs, 1, 0, y2Dc, y2Ac, ctx);
                         leftNzDc = nz > 0 ? 1 : 0;
                         topNzDc[mbX] = leftNzDc;
+                        nzAny |= nz > 0;
                         if (nz > 0) {
                             inverseWHT(coeffs, y2dcScratch, whtTmp);
                             hasY2dc = true;
@@ -454,6 +455,7 @@ public final class VP8LossyDecoder {
                                 inverseDCT(coeffs, yPln, sOff, yStr, dctTmp);
                             leftNzY = (leftNzY & ~(1 << j)) | ((nz > 0 ? 1 : 0) << j);
                             topNzY[mbX * 4 + i] = nz > 0 ? 1 : 0;
+                            nzAny |= nz > 0;
                         }
 
                     for (int j = 0; j < 2; j++)
@@ -464,6 +466,7 @@ public final class VP8LossyDecoder {
                             if (nz > 0) inverseDCT(coeffs, uPln, uvOff + j * 4 * uvStr + i * 4, uvStr, dctTmp);
                             leftNzU = (leftNzU & ~(1 << j)) | ((nz > 0 ? 1 : 0) << j);
                             topNzU[mbX * 2 + i] = nz > 0 ? 1 : 0;
+                            nzAny |= nz > 0;
                         }
 
                     for (int j = 0; j < 2; j++)
@@ -474,6 +477,7 @@ public final class VP8LossyDecoder {
                             if (nz > 0) inverseDCT(coeffs, vPln, uvOff + j * 4 * uvStr + i * 4, uvStr, dctTmp);
                             leftNzV = (leftNzV & ~(1 << j)) | ((nz > 0 ? 1 : 0) << j);
                             topNzV[mbX * 2 + i] = nz > 0 ? 1 : 0;
+                            nzAny |= nz > 0;
                         }
                 } else {
                     leftNzY = 0;
@@ -487,6 +491,9 @@ public final class VP8LossyDecoder {
                         topNzDc[mbX] = 0;
                     }
                 }
+
+                // INNER-EDGE FILTERING APPLIES TO I4X4 MBS OR MBS THAT ACTUALLY CARRY COEFFICIENTS
+                st.mbFInner[mbIdx] = (isI4x4 || nzAny) ? 1 : 0;
             }
         }
     }
@@ -1218,7 +1225,6 @@ public final class VP8LossyDecoder {
         }
     }
 
-    // YUV TO BGRA CONVERSION
     // RFC6386 SECTION 12 - PREDICTION MODES
     // RFC6386 SECTION 12.1 - 16X16 LUMA AND 8X8 CHROMA MODES
     enum MBMode {

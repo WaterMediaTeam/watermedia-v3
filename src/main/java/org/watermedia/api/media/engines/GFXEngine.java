@@ -52,6 +52,12 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     /** Frame height in pixels, or 0 if no format has been set. */
     public int height() { return this.height; }
 
+    /** Pixel layout the engine is configured for, or null before the first {@link #setVideoFormat}. */
+    public PixelFormat format() { return this.pixelFormat; }
+
+    /** Sample precision in bits per component (8, 10, 12, 16, or 32). */
+    public int bitsPerComponent() { return this.bitsPerComponent; }
+
     /**
      * Returns the GPU-side handle for the final RGBA texture.
      * <p>
@@ -86,7 +92,9 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
      * This is an optional fast path for animated images that fit a VRAM budget. The default
      * implementation reports unsupported so custom engines remain source-compatible.
      * Engines may upload the set progressively across render frames; in that case
-     * {@link #useFrameTexture(int)} must clamp to the already-uploaded prefix.
+     * {@link #useFrameTexture(int)} must clamp to the already-uploaded prefix. The submitted buffers
+     * must stay valid until the next {@code uploadFrameTextures}, {@link #setVideoFormat} or
+     * {@link #release()} — a progressive engine reads them from native memory across later frames.
      * @param frames decoded direct frame buffers in the current {@link #pixelFormat}
      * @param stride row stride in bytes, or 0 for tightly-packed rows
      * @return true when the engine accepted the frame set

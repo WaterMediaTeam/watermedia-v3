@@ -85,9 +85,7 @@ public final class VP8LDecoder {
             LOGGER.trace(IT, "Meta prefix: bits={}, size={}x{}, remaining bytes: {}", metaBits, metaWidth, metaHeight, reader.remaining());
 
             // DECODE ENTROPY IMAGE
-            LOGGER.trace(IT, "Decoding meta prefix image...");
-            metaPrefixImage = decodeImage(reader, metaWidth, metaHeight, 0, null);
-            LOGGER.trace(IT, "Meta prefix image decoded, remaining bytes: {}", reader.remaining());
+            metaPrefixImage = decodeImage(reader, metaWidth, metaHeight);
 
             // FIND MAX META PREFIX CODE
             int maxCode = 0;
@@ -125,7 +123,6 @@ public final class VP8LDecoder {
                 case COLOR_INDEXING -> {
                     final int widthBits = ColorTransform.widthBits(t.data().length);
                     ColorTransform.applyPalette(pixels, width, height, t.data(), widthBits);
-                    currentWidth = width;
                 }
                 case SUBTRACT_GREEN -> ColorTransform.addGreen(pixels);
                 case COLOR -> ColorTransform.inverse(pixels, width, height, t.data(), t.bits());
@@ -148,14 +145,14 @@ public final class VP8LDecoder {
                 final int bits = reader.read(3) + 2;
                 final int blockWidth = (width + (1 << bits) - 1) >> bits;
                 final int blockHeight = (height + (1 << bits) - 1) >> bits;
-                final int[] data = decodeImage(reader, blockWidth, blockHeight, 0, null);
+                final int[] data = decodeImage(reader, blockWidth, blockHeight);
                 yield Transform.block(Transform.Type.PREDICTOR, bits, data);
             }
             case COLOR -> {
                 final int bits = reader.read(3) + 2;
                 final int blockWidth = (width + (1 << bits) - 1) >> bits;
                 final int blockHeight = (height + (1 << bits) - 1) >> bits;
-                final int[] data = decodeImage(reader, blockWidth, blockHeight, 0, null);
+                final int[] data = decodeImage(reader, blockWidth, blockHeight);
                 yield Transform.block(Transform.Type.COLOR, bits, data);
             }
             case SUBTRACT_GREEN -> Transform.subtractGreen();
@@ -170,7 +167,7 @@ public final class VP8LDecoder {
                 // FULL-WIDTH BUFFER MUST BECOME THE DECODE RESULT INSTEAD OF BEING COPIED BACK).
                 if (ColorTransform.widthBits(tableSize) > 0)
                     throw new XCodecException("WEBP lossless bundled palette not supported yet (" + tableSize + " colors)");
-                final int[] rawTable = decodeImage(reader, tableSize, 1, 0, null);
+                final int[] rawTable = decodeImage(reader, tableSize, 1);
                 final int[] colorTable = ColorTransform.decodeColorTable(rawTable);
                 yield Transform.colorTable(colorTable);
             }
@@ -178,57 +175,35 @@ public final class VP8LDecoder {
     }
 
     // DECODE SUB-IMAGE (FOR TRANSFORMS AND ENTROPY IMAGE)
-    private static int[] decodeImage(final BitReader reader, final int width, final int height,
-                                     final int colorCacheBits, final ColorCache cache) throws XCodecException {
-        LOGGER.trace(IT, "decodeImage: {}x{}, position: {}", width, height, reader.bitPosition());
-
-        // NO META PREFIX FOR SUB-IMAGES
-        int colorCacheSize = (colorCacheBits > 0) ? (1 << colorCacheBits) : 0;
-
-        // READ COLOR CACHE FOR THIS SUB-IMAGE
+    private static int[] decodeImage(final BitReader reader, final int width, final int height) throws XCodecException {
+        // READ OPTIONAL COLOR CACHE FOR THIS SUB-IMAGE; THE ColorCache CTOR REJECTS OUT-OF-RANGE
+        // BITS (A BITSTREAM ERROR PER SPEC) INSTEAD OF SILENTLY DROPPING THE DECLARED CACHE
+        int colorCacheSize = 0;
         ColorCache subCache = null;
         if (reader.readBool()) {
-            final int bits = reader.read(4);
-            LOGGER.trace(IT, "Sub-image color cache bits: {}", bits);
-
-            if (bits >= 1 && bits <= 11) {
-                subCache = new ColorCache(bits);
-                colorCacheSize = subCache.size();
-            }
-        } else {
-            LOGGER.trace(IT, "Sub-image has no color cache");
+            subCache = new ColorCache(reader.read(4));
+            colorCacheSize = subCache.size();
         }
 
-        LOGGER.trace(IT, "Reading huffman group, colorCacheSize={}", colorCacheSize);
         final HuffmanGroup group = HuffmanDecoder.readGroup(reader, colorCacheSize);
-        LOGGER.trace(IT, "Huffman group read, remaining bytes: {}", reader.remaining());
-
-        LOGGER.trace(IT, "Decoding {} pixels...", width * height);
-        LOGGER.trace(IT, "Before pixel decode: {}", reader.bitPosition());
-        LOGGER.trace(IT, "First pixel GREEN table info: {}", group.green().debugInfo());
-        final int[] result = decodeImageData(reader, width, height, new HuffmanGroup[]{group},
-                null, 0, 0, subCache);
-        LOGGER.trace(IT, "Pixels decoded, position: {}", reader.bitPosition());
-        return result;
+        return decodeImageData(reader, width, height, new HuffmanGroup[]{group}, null, 0, 0, subCache);
     }
 
     private static int[] decodeImageData(final BitReader reader, final int width, final int height,
                                          final HuffmanGroup[] groups, final int[] metaImage,
                                          final int metaBits, final int metaWidth,
                                          final ColorCache colorCache) throws XCodecException {
-        final int[] pixels = new int[width * height];
-        int pos = 0;
         final int total = width * height;
+        final int[] pixels = new int[total];
+        int pos = 0;
+        // INCREMENTAL PIXEL COORDS FOR THE META-GROUP LOOKUP, AVOIDING PER-PIXEL DIV/MOD
+        int x = 0, y = 0;
 
         while (pos < total) {
             // GET HUFFMAN GROUP FOR CURRENT POSITION
             final HuffmanGroup group;
             if (metaImage != null) {
-                final int x = pos % width;
-                final int y = pos / width;
-                final int mx = x >> metaBits;
-                final int my = y >> metaBits;
-                final int metaCode = metaImage[my * metaWidth + mx];
+                final int metaCode = metaImage[(y >> metaBits) * metaWidth + (x >> metaBits)];
                 final int groupIndex = ((metaCode >> 8) & 0xFF) | (((metaCode >> 16) & 0xFF) << 8);
                 group = groups[Math.min(groupIndex, groups.length - 1)];
             } else {
@@ -247,43 +222,36 @@ public final class VP8LDecoder {
 
                 final int argb = (alpha << 24) | (red << 16) | (green << 8) | blue;
                 pixels[pos++] = argb;
-
-                if (colorCache != null) {
-                    colorCache.insert(argb);
-                }
+                if (colorCache != null) colorCache.insert(argb);
+                if (++x == width) { x = 0; y++; }
             } else if (code < 256 + 24) {
                 // LZ77 BACKWARD REFERENCE
-                final int lengthCode = code - 256;
-                final int length = LZ77.prefixToValue(lengthCode, reader);
-
+                final int length = LZ77.prefixToValue(code - 256, reader);
                 final int distCode = group.dist().read(reader);
                 final int distValue = LZ77.prefixToValue(distCode, reader);
                 final int dist = LZ77.distanceToOffset(distValue, width);
 
-                // COPY PIXELS
-                final int copyLength = Math.min(length, total - pos);
-                for (int i = 0; i < copyLength; i++) {
-                    final int argb;
-                    if (pos - dist < 0) {
-                        // REFERENCE BEFORE IMAGE START: USE BLACK
-                        argb = 0xFF000000;
-                    } else {
-                        argb = pixels[pos - dist];
-                    }
+                // RFC 9649: BACKWARD REFERENCES MUST STAY INSIDE THE ALREADY-DECODED PIXELS;
+                // OUT-OF-RANGE DISTANCE OR OVERLONG LENGTH IS A BITSTREAM ERROR, NOT BEST-EFFORT
+                if (dist > pos) throw new XCodecException("VP8L backward reference before image start");
+                if (pos + length > total) throw new XCodecException("VP8L backward reference overruns image");
+
+                for (int i = 0; i < length; i++) {
+                    final int argb = pixels[pos - dist];
                     pixels[pos++] = argb;
-                    if (colorCache != null) {
-                        colorCache.insert(argb);
-                    }
+                    if (colorCache != null) colorCache.insert(argb);
                 }
+                // ADVANCE COORDS BY THE COPIED RUN (ONE DIV PER TOKEN, NOT PER PIXEL)
+                x += length;
+                if (x >= width) { y += x / width; x %= width; }
             } else {
                 // COLOR CACHE
                 final int cacheIndex = code - 256 - 24;
-                if (colorCache == null) {
-                    throw new XCodecException("Color cache code without color cache");
-                }
+                if (colorCache == null) throw new XCodecException("Color cache code without color cache");
                 final int argb = colorCache.lookup(cacheIndex);
                 pixels[pos++] = argb;
                 colorCache.insert(argb);
+                if (++x == width) { x = 0; y++; }
             }
         }
 

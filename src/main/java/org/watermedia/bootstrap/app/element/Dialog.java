@@ -11,6 +11,7 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER;
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE;
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER;
+import static org.lwjgl.glfw.GLFW.GLFW_PRESS;
 import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 
 /**
@@ -58,6 +59,8 @@ public final class Dialog extends Group<Dialog> {
     // FADE-IN — fadeStart 0 MEANS IDLE; wasVisible TRACKS THE HIDDEN→VISIBLE TRANSITION ACROSS FRAMES
     private long fadeStart;
     private boolean wasVisible;
+    // KEY WHOSE PRESS A CHILD SWALLOWED (E.G. A SPINNER EDIT) — ITS RELEASE MUST NOT DOUBLE-FIRE THE DIALOG ACTION
+    private int childConsumedKey = -1;
 
     public Dialog() {
         this.width = MAX_PARENT;
@@ -261,11 +264,20 @@ public final class Dialog extends Group<Dialog> {
     @Override
     public boolean dispatchKey(final int key, final int action) {
         if (!this.visible) return false;
-        if (!super.dispatchKey(key, action) && action == GLFW_RELEASE) {
-            if (key == GLFW_KEY_ESCAPE) {
-                if (this.onDismiss != null) this.onDismiss.run();
-            } else if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
-                if (this.onPrimary != null) this.onPrimary.run();
+        final boolean childHandled = super.dispatchKey(key, action);
+        if (action == GLFW_PRESS) {
+            // REMEMBER A CHILD-CONSUMED PRESS (E.G. A SPINNER ESC/ENTER, WHICH ACTS ON PRESS) SO ITS RELEASE
+            // BELOW IS IGNORED — OTHERWISE ONE KEYSTROKE BOTH COMMITS THE EDITOR AND DISMISSES THE DIALOG
+            if (childHandled) this.childConsumedKey = key;
+        } else if (action == GLFW_RELEASE) {
+            final boolean paired = this.childConsumedKey == key;
+            this.childConsumedKey = -1;
+            if (!childHandled && !paired) {
+                if (key == GLFW_KEY_ESCAPE) {
+                    if (this.onDismiss != null) this.onDismiss.run();
+                } else if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
+                    if (this.onPrimary != null) this.onPrimary.run();
+                }
             }
         }
         return true;

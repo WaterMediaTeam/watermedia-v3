@@ -23,6 +23,7 @@ import javax.swing.JSlider;
 import javax.swing.JToggleButton;
 import javax.swing.KeyStroke;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.WindowConstants;
 import java.awt.BorderLayout;
@@ -94,8 +95,8 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         this.volLabel.setForeground(SOFT);
         this.volLabel.setPreferredSize(new Dimension(38, 22));
 
-        this.playPause.addActionListener(e -> togglePlay());
-        this.loop.addActionListener(e -> setLoop(this.loop.isSelected()));
+        this.playPause.addActionListener(e -> this.togglePlay());
+        this.loop.addActionListener(e -> this.setLoop(this.loop.isSelected()));
         this.seek.addChangeListener(e -> {
             final MediaPlayer p = this.player;
             if (this.programmaticSeek || p == null || p.duration() <= 0) return;
@@ -111,7 +112,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
             if (p == null) return;
             if (this.muted && this.volume.getValue() > 0) { this.muted = false; p.mute(false); }
             p.volume(this.volume.getValue());
-            updateVolLabel();
+            this.updateVolLabel();
         });
 
         final JPanel left = flow(this.playPause, this.loop);
@@ -136,10 +137,10 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         this.frame.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(final WindowEvent e) {
-                close();
+                SwingPlayerWindow.this.close();
             }
         });
-        installShortcuts();
+        this.installShortcuts();
 
         // EXCLUSIVE: CLOSE ANY OTHER OPEN POPUP, THEN SHOW ABOVE THE APP WINDOW AND TAKE FOCUS
         PopupPlayers.adopt(this);
@@ -151,10 +152,10 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         raise.setRepeats(false);
         raise.start();
 
-        this.ticker = new Timer(33, e -> tick());
+        this.ticker = new Timer(33, e -> this.tick());
         this.ticker.start();
 
-        startPlayer();
+        this.startPlayer();
     }
 
     // CREATES AND STARTS THE PLAYER FOR THE CURRENT SOURCE OFF THE EDT (MRL RESOLUTION CAN BLOCK). A FRESH
@@ -188,7 +189,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
             old.stop();
             ThreadTool.createStarted("Popup-Release", old::release);
         }
-        startPlayer();
+        this.startPlayer();
     }
 
     private void tick() {
@@ -197,7 +198,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         if (p == null) return;
         // VIDEO FINISHED AND NOT LOOPING — CLOSE; A STILL IMAGE (duration 0) STAYS OPEN
         if (p.ended() && !this.loopOn && p.duration() > 0) {
-            close();
+            this.close();
             return;
         }
         final long duration = p.duration();
@@ -243,7 +244,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         if (p == null) return;
         this.muted = !this.muted;
         p.mute(this.muted);
-        updateVolLabel();
+        this.updateVolLabel();
     }
 
     private void updateVolLabel() {
@@ -253,15 +254,15 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
 
     // SPACE=play/pause, ←/→=seek ±5s, ↑/↓=volume, M=mute, L=loop — ACTIVE ANYWHERE IN THE WINDOW
     private void installShortcuts() {
-        bind("SPACE", this::togglePlay);
-        bind("LEFT", () -> nudgeSeek(-SEEK_STEP_MS));
-        bind("RIGHT", () -> nudgeSeek(SEEK_STEP_MS));
-        bind("UP", () -> bumpVolume(5));
-        bind("DOWN", () -> bumpVolume(-5));
-        bind("M", this::toggleMute);
-        bind("L", () -> setLoop(!this.loopOn));
-        bind("N", () -> switchSource(1));
-        bind("B", () -> switchSource(-1));
+        this.bind("SPACE", this::togglePlay);
+        this.bind("LEFT", () -> this.nudgeSeek(-SEEK_STEP_MS));
+        this.bind("RIGHT", () -> this.nudgeSeek(SEEK_STEP_MS));
+        this.bind("UP", () -> this.bumpVolume(5));
+        this.bind("DOWN", () -> this.bumpVolume(-5));
+        this.bind("M", this::toggleMute);
+        this.bind("L", () -> this.setLoop(!this.loopOn));
+        this.bind("N", () -> this.switchSource(1));
+        this.bind("B", () -> this.switchSource(-1));
     }
 
     private void bind(final String key, final Runnable action) {
@@ -277,7 +278,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
 
     @Override
     public void close() {
-        javax.swing.SwingUtilities.invokeLater(this::disposeNow);
+        SwingUtilities.invokeLater(this::disposeNow);
     }
 
     private void disposeNow() {

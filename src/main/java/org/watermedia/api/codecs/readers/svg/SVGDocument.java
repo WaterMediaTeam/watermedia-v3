@@ -4,10 +4,13 @@ import org.watermedia.api.codecs.XCodecException;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * A parsed SVG document ready to rasterize: it resolves the intrinsic size and {@code viewBox},
@@ -25,8 +28,8 @@ final class SVGDocument {
     // GUARD AGAINST ADVERSARIAL DEEP NESTING — REAL DOCUMENTS NEST A FEW LEVELS, NEVER HUNDREDS
     private static final int MAX_DEPTH = 512;
 
-    private final SvgNode root;
-    private final Map<String, SvgPaint> gradients;
+    private final SVGNode root;
+    private final Map<String, SVGPaint> gradients;
 
     private final boolean hasViewBox;
     private final double vbX, vbY, vbW, vbH;
@@ -34,7 +37,7 @@ final class SVGDocument {
     private final double refW, refH, refD; // PERCENTAGE REFERENCE LENGTHS: VIEWPORT WIDTH/HEIGHT/DIAGONAL
     private final boolean aspectNone; // preserveAspectRatio="none"
 
-    private SVGDocument(final SvgNode root) throws IOException {
+    SVGDocument(final SVGNode root) throws IOException {
         this.root = root;
 
         final double[] vb = SVGParser.numbers(root.attr("viewBox"));
@@ -73,18 +76,16 @@ final class SVGDocument {
         this.collectGradients(root);
     }
 
-    static SVGDocument build(final SvgNode root) throws IOException {
-        return new SVGDocument(root);
-    }
-
     double intrinsicWidth() { return this.intrinsicW; }
     double intrinsicHeight() { return this.intrinsicH; }
 
     void render(final RasterOutput out) throws IOException {
+        // display:none ON THE ROOT HIDES THE WHOLE DOCUMENT
+        if (hidden(this.root)) return;
         final Affine view = this.viewTransform(out.width(), out.height());
         // THE ROOT <svg> ITSELF CAN CARRY PRESENTATION ATTRS (e.g. fill="#000000") THAT CASCADE DOWN
         final RenderState base = RenderState.root(view).derive(this.root, this.gradients, this.refD);
-        for (final SvgNode child: this.root.children()) {
+        for (final SVGNode child: this.root.children()) {
             this.renderNode(child, base, out, 1);
         }
     }
@@ -103,19 +104,23 @@ final class SVGDocument {
         return Affine.scale(outW / this.intrinsicW, outH / this.intrinsicH);
     }
 
-    private void renderNode(final SvgNode node, final RenderState state, final RasterOutput out, final int depth) throws IOException {
+    private void renderNode(final SVGNode node, final RenderState state, final RasterOutput out, final int depth) throws IOException {
         if (depth > MAX_DEPTH) throw new XCodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
-        switch (node.tag().toLowerCase(Locale.ROOT)) {
+        // display:none REMOVES THE ELEMENT AND ITS ENTIRE SUBTREE FROM RENDERING (NOT INHERITED — CHECK PER NODE)
+        if (hidden(node)) return;
+        switch (node.tag()) {
             case "defs", "lineargradient", "radialgradient", "stop", "filter", "clippath",
                  "mask", "pattern", "symbol", "marker", "title", "desc", "metadata", "style", "script", "use" -> {
                 // NON-RENDERED OR UNSUPPORTED — SKIP THE SUBTREE
             }
             case "g", "a", "svg" -> {
                 final RenderState child = state.derive(node, this.gradients, this.refD);
-                for (final SvgNode c: node.children()) this.renderNode(c, child, out, depth + 1);
+                for (final SVGNode c: node.children()) this.renderNode(c, child, out, depth + 1);
             }
             default -> {
                 final RenderState s = state.derive(node, this.gradients, this.refD);
+                // visibility:hidden LAYS OUT THE SHAPE BUT PAINTS NOTHING (LEAVES HAVE NO CHILDREN TO RE-SHOW)
+                if (!s.visible()) return;
                 final Path geo = this.geometry(node);
                 if (geo == null || geo.isEmpty()) return;
                 if (s.fill() != null) out.fill(geo, s.ctm(), s.evenOdd(), s.fill(), s.fillEff());
@@ -124,9 +129,14 @@ final class SVGDocument {
         }
     }
 
-    private Path geometry(final SvgNode node) {
+    private static boolean hidden(final SVGNode node) {
+        final String display = node.attr("display");
+        return display != null && display.trim().equalsIgnoreCase("none");
+    }
+
+    private Path geometry(final SVGNode node) {
         final Path p = new Path();
-        switch (node.tag().toLowerCase(Locale.ROOT)) {
+        switch (node.tag()) {
             case "rect" -> {
                 final double x = SVGParser.length(node.attr("x"), 0, this.refW), y = SVGParser.length(node.attr("y"), 0, this.refH);
                 final double w = SVGParser.length(node.attr("width"), 0, this.refW), h = SVGParser.length(node.attr("height"), 0, this.refH);
@@ -172,67 +182,65 @@ final class SVGDocument {
 
     // ----- GRADIENTS -----
 
-    private void collectGradients(final SvgNode node) throws IOException {
+    private void collectGradients(final SVGNode node) throws IOException {
         // FIRST INDEX ALL GRADIENT NODES BY id (FOR href TEMPLATE RESOLUTION), THEN BUILD PAINTS
-        final Map<String, SvgNode> nodes = new HashMap<>();
+        final Map<String, SVGNode> nodes = new HashMap<>();
         indexGradients(node, nodes, 1);
-        for (final Map.Entry<String, SvgNode> e: nodes.entrySet()) {
-            final String tag = e.getValue().tag().toLowerCase(Locale.ROOT);
+        for (final Map.Entry<String, SVGNode> e: nodes.entrySet()) {
+            final String tag = e.getValue().tag();
             if (tag.equals("lineargradient")) {
                 this.gradients.put(e.getKey(), this.buildLinear(e.getValue(), nodes));
             } else if (tag.equals("radialgradient")) {
                 // RADIAL RENDERING IS OUT OF SCOPE — APPROXIMATE WITH A SOLID (AVERAGE OF STOPS) SO A
                 // SHAPE PAINTED WITH url(#radial) STILL SHOWS A PLAUSIBLE COLOUR INSTEAD OF VANISHING
-                final SvgPaint fallback = buildRadialFallback(e.getValue(), nodes);
+                final SVGPaint fallback = buildRadialFallback(e.getValue(), nodes);
                 if (fallback != null) this.gradients.put(e.getKey(), fallback);
             }
         }
     }
 
-    private static void indexGradients(final SvgNode node, final Map<String, SvgNode> out, final int depth) throws IOException {
+    private static void indexGradients(final SVGNode node, final Map<String, SVGNode> out, final int depth) throws IOException {
         if (depth > MAX_DEPTH) throw new XCodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
-        final String tag = node.tag().toLowerCase(Locale.ROOT);
+        final String tag = node.tag();
         if (tag.equals("lineargradient") || tag.equals("radialgradient")) {
             final String id = node.attr("id");
             if (id != null) out.put(id, node);
         }
-        for (final SvgNode c: node.children()) indexGradients(c, out, depth + 1);
+        for (final SVGNode c: node.children()) indexGradients(c, out, depth + 1);
     }
 
-    private SvgPaint buildLinear(final SvgNode node, final Map<String, SvgNode> nodes) {
-        final SvgNode tmpl = templateOf(node, nodes);
-        final boolean userSpace = "userSpaceOnUse".equalsIgnoreCase(attr(node, tmpl, "gradientUnits"));
-        final Affine gt = SVGParser.parseTransform(attr(node, tmpl, "gradientTransform"));
+    private SVGPaint buildLinear(final SVGNode node, final Map<String, SVGNode> nodes) {
+        final List<SVGNode> chain = resolveChain(node, nodes);
+        final boolean userSpace = "userSpaceOnUse".equalsIgnoreCase(attr(chain, "gradientUnits"));
+        final Affine gt = SVGParser.parseTransform(attr(chain, "gradientTransform"));
 
-        final double x1 = coord(attr(node, tmpl, "x1"), 0.0, userSpace, this.refW);
-        final double y1 = coord(attr(node, tmpl, "y1"), 0.0, userSpace, this.refH);
-        final double x2 = coord(attr(node, tmpl, "x2"), 1.0, userSpace, this.refW);
-        final double y2 = coord(attr(node, tmpl, "y2"), 0.0, userSpace, this.refH);
+        final double x1 = coord(attr(chain, "x1"), 0.0, userSpace, this.refW);
+        final double y1 = coord(attr(chain, "y1"), 0.0, userSpace, this.refH);
+        final double x2 = coord(attr(chain, "x2"), 1.0, userSpace, this.refW);
+        final double y2 = coord(attr(chain, "y2"), 0.0, userSpace, this.refH);
 
-        final List<SvgNode> stopNodes = stopsOf(node, tmpl);
-        final List<float[]> offs = new ArrayList<>();
-        final List<int[]> cols = new ArrayList<>();
+        // STOP COUNT IS KNOWN UP FRONT, SO FILL PRIMITIVE ARRAYS DIRECTLY (NO PER-STOP WRAPPER ARRAYS)
+        final List<SVGNode> stopNodes = stopsOf(chain);
+        final float[] offs = new float[stopNodes.size()];
+        final int[] cols = new int[stopNodes.size()];
         double prev = -1;
-        for (final SvgNode stop: stopNodes) {
+        for (int i = 0; i < stopNodes.size(); i++) {
+            final SVGNode stop = stopNodes.get(i);
             double off = SVGParser.ratioOrNumber(stop.attr("offset"), 0);
             if (off < 0) off = 0; else if (off > 1) off = 1;
             if (off <= prev) off = prev + 1e-6; // KEEP STRICTLY INCREASING (HARD-EDGE STOPS)
             prev = off;
-            offs.add(new float[] { (float) off });
-            cols.add(new int[] { stopColor(stop) });
+            offs[i] = (float) off;
+            cols[i] = stopColor(stop);
         }
-
-        final float[] offArr = new float[offs.size()];
-        final int[] colArr = new int[cols.size()];
-        for (int i = 0; i < offArr.length; i++) { offArr[i] = offs.get(i)[0]; colArr[i] = cols.get(i)[0]; }
-        return new SvgPaint.Linear(x1, y1, x2, y2, userSpace, gt, offArr, colArr);
+        return new SVGPaint.Linear(x1, y1, x2, y2, userSpace, gt, offs, cols);
     }
 
     // PARSES A <stop>: stop-color (default black) WITH stop-opacity FOLDED INTO THE ALPHA
-    private static int stopColor(final SvgNode stop) {
+    private static int stopColor(final SVGNode stop) {
         final String sc = stop.attr("stop-color");
-        final long parsed = sc == null ? SvgColor.INVALID : SvgColor.parse(sc, 0xFF000000);
-        int c = parsed == SvgColor.INVALID ? 0xFF000000 : (int) parsed;
+        final long parsed = sc == null ? SVGColor.INVALID : SVGColor.parse(sc, 0xFF000000);
+        int c = parsed == SVGColor.INVALID ? 0xFF000000 : (int) parsed;
         final String so = stop.attr("stop-opacity");
         if (so != null) {
             final double a = Math.max(0, Math.min(1, SVGParser.ratioOrNumber(so, 1)));
@@ -243,42 +251,52 @@ final class SVGDocument {
     }
 
     // SOLID APPROXIMATION FOR AN UNSUPPORTED (RADIAL) GRADIENT: THE AVERAGE OF ITS STOP COLOURS
-    private static SvgPaint buildRadialFallback(final SvgNode node, final Map<String, SvgNode> nodes) {
-        final List<SvgNode> stops = stopsOf(node, templateOf(node, nodes));
+    private static SVGPaint buildRadialFallback(final SVGNode node, final Map<String, SVGNode> nodes) {
+        final List<SVGNode> stops = stopsOf(resolveChain(node, nodes));
         if (stops.isEmpty()) return null;
         long a = 0, r = 0, g = 0, b = 0;
-        for (final SvgNode stop: stops) {
+        for (final SVGNode stop: stops) {
             final int c = stopColor(stop);
             a += (c >>> 24) & 0xFF; r += (c >>> 16) & 0xFF; g += (c >>> 8) & 0xFF; b += c & 0xFF;
         }
         final int n = stops.size();
-        return SvgPaint.solid((int) ((a / n) << 24 | (r / n) << 16 | (g / n) << 8 | (b / n)));
+        return SVGPaint.solid((int) ((a / n) << 24 | (r / n) << 16 | (g / n) << 8 | (b / n)));
     }
 
-    private static SvgNode templateOf(final SvgNode node, final Map<String, SvgNode> nodes) {
-        String href = node.attr("href");
-        if (href == null) href = node.attr("xlink:href");
-        if (href == null || !href.startsWith("#")) return null;
-        return nodes.get(href.substring(1));
-    }
-
-    private static List<SvgNode> stopsOf(final SvgNode node, final SvgNode tmpl) {
-        final List<SvgNode> stops = new ArrayList<>();
-        for (final SvgNode c: node.children()) {
-            if (c.tag().toLowerCase(Locale.ROOT).equals("stop")) stops.add(c);
+    // FOLLOWS THE href/xlink:href TEMPLATE CHAIN (SELF FIRST) WITH AN IDENTITY-BASED CYCLE GUARD.
+    // SVG ALLOWS ARBITRARY-DEPTH CHAINS, SO ATTRIBUTES/STOPS MAY LIVE ON ANY ANCESTOR, NOT JUST ONE HOP.
+    private static List<SVGNode> resolveChain(final SVGNode node, final Map<String, SVGNode> nodes) {
+        final List<SVGNode> chain = new ArrayList<>();
+        final Set<SVGNode> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        SVGNode cur = node;
+        while (cur != null && seen.add(cur)) {
+            chain.add(cur);
+            String href = cur.attr("href");
+            if (href == null) href = cur.attr("xlink:href");
+            cur = (href != null && href.startsWith("#")) ? nodes.get(href.substring(1)) : null;
         }
-        if (stops.isEmpty() && tmpl != null) {
-            for (final SvgNode c: tmpl.children()) {
-                if (c.tag().toLowerCase(Locale.ROOT).equals("stop")) stops.add(c);
+        return chain;
+    }
+
+    // FIRST NON-NULL ATTRIBUTE ALONG THE TEMPLATE CHAIN
+    private static String attr(final List<SVGNode> chain, final String name) {
+        for (final SVGNode n: chain) {
+            final String v = n.attr(name);
+            if (v != null) return v;
+        }
+        return null;
+    }
+
+    // STOPS FROM THE FIRST CHAIN ELEMENT THAT DECLARES ANY
+    private static List<SVGNode> stopsOf(final List<SVGNode> chain) {
+        for (final SVGNode n: chain) {
+            final List<SVGNode> stops = new ArrayList<>();
+            for (final SVGNode c: n.children()) {
+                if (c.tag().equals("stop")) stops.add(c);
             }
+            if (!stops.isEmpty()) return stops;
         }
-        return stops;
-    }
-
-    private static String attr(final SvgNode node, final SvgNode tmpl, final String name) {
-        final String v = node.attr(name);
-        if (v != null) return v;
-        return tmpl != null ? tmpl.attr(name) : null;
+        return List.of();
     }
 
     // GRADIENT COORDINATE: OBB → FRACTION; userSpaceOnUse → USER UNITS (PERCENT SCALES BY VIEWPORT)

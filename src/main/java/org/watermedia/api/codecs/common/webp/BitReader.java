@@ -9,7 +9,7 @@ import java.nio.ByteOrder;
  * WebP Lossless/Common Bit Reader - LSB-first bit extraction
  * Used by VP8L decoder and alpha channel processing
  * <p>
- * Bits are read LSB-first (least significant bit first) within each byte.
+ * Bits are read LSB-first (the least significant bit first) within each byte.
  * Multi-bit reads accumulate bits in LSB-first order:
  * read(2) with bits [b0, b1] returns b0 | (b1 << 1)
  */
@@ -146,43 +146,11 @@ public final class BitReader {
         return this.ensureBits(bits);
     }
 
-    public void readBytes(final byte[] dest, final int off, final int len) {
-        this.flushBits();
-        this.buf.get(dest, off, len);
-    }
-
-    public void flushBits() {
-        this.bitBuf = 0L;
-        this.bitsAvail = 0;
-    }
-
-    public void skipBytes(final int bytes) {
-        this.flushBits();
-        this.buf.position(this.buf.position() + bytes);
-    }
-
     public int remaining() {
         return this.buf.remaining();
     }
 
     public String bitPosition() {
         return "bytes=" + this.buf.remaining() + ",bitsAvail=" + this.bitsAvail + ",bitBuf=0x" + Long.toHexString(this.bitBuf);
-    }
-
-    public int position() {
-        return this.buf.position();
-    }
-
-    public void position(final int pos) {
-        this.flushBits();
-        this.buf.position(pos);
-    }
-
-    public boolean hasRemaining() {
-        return this.buf.hasRemaining() || this.bitsAvail > 0;
-    }
-
-    public ByteBuffer buffer() {
-        return this.buf;
     }
 }

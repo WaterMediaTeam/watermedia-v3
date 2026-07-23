@@ -30,94 +30,85 @@ public final class RenderSystem {
     private static final String ENGINE_PROP = "watermedia.engine";
     // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD — OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
     public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
-    // PERSISTED UNDER THE PROCESS WORKING DIRECTORY (THE DEV `run/` FOLDER), ALONGSIDE config/ AND logs/ —
-    // NOT IN THE TEMP DIR WITH THE REBUILDABLE DEPENDENCY CACHE. THE AppBootstrap LAUNCHER READS THIS SAME
-    // engine.cfg BEFORE RELAUNCHING THE APP JVM WITH -Dwatermedia.engine, AND THAT CHILD INHERITS THE SAME
-    // CWD, SO THE RELATIVE PATH RESOLVES TO ONE SHARED FILE. KEEP IN SYNC WITH AppBootstrap.ENGINE_FILE.
+    // PERSISTED IN THE PROCESS CWD (DEV `run/`), SHARED WITH THE AppBootstrap LAUNCHER THAT READS IT BEFORE
+    // RELAUNCHING WITH -Dwatermedia.engine — KEEP THE PATH IN SYNC WITH AppBootstrap.ENGINE_FILE.
     private static final Path ENGINE_PREF_FILE = Path.of("watermedia", "engine.cfg");
     // GLOBAL UI SCALE PREFERENCE — PERSISTED NEXT TO engine.cfg AS EITHER "auto" OR A FLOAT FACTOR
     private static final Path UI_SCALE_PREF_FILE = Path.of("watermedia", "uiscale.cfg");
     // POPUP PLAYER TARGET — PERSISTED NEXT TO engine.cfg; READ AT BOOT (NOT BY THE LAUNCHER) TO ROUTE MRLs
     private static final Path PLAYER_MODE_FILE = Path.of("watermedia", "playermode.cfg");
 
-    private static Engine kind = Engine.OPENGL;
-    private static RenderEngine engine;
+    // VOLATILE: deviceName()/engineKind() AND FRIENDS ARE READ OFF THE RENDER THREAD, AND THE ENGINE IS
+    // SWAPPED ON A GL<->VK HOTSWAP — READERS MUST SEE THE PUBLISHED VALUE, NOT A STALE/NULL CACHE.
+    private static volatile Engine kind = Engine.OPENGL;
+    private static volatile RenderEngine engine;
     // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — REMEMBERED HERE SO ENGINES ATTACHED LATER INHERIT IT
     private static volatile float uiScale = 1f;
 
     private RenderSystem() {
     }
 
-    /** The engine the user picked in Settings for the next launch, or {@code null} if unset/unreadable. */
-    public static Engine enginePreference() {
+    // READS A TRIMMED PREFERENCE FILE, OR null WHEN ABSENT/EMPTY/UNREADABLE.
+    private static String pref(final Path file) {
         try {
-            if (Files.exists(ENGINE_PREF_FILE)) {
-                final String value = Files.readString(ENGINE_PREF_FILE).trim();
-                if ("vulkan".equalsIgnoreCase(value)) return Engine.VULKAN;
-                if ("opengl".equalsIgnoreCase(value)) return Engine.OPENGL;
+            if (Files.exists(file)) {
+                final String value = Files.readString(file).trim();
+                if (!value.isEmpty()) return value;
             }
         } catch (final Exception ignored) {
         }
         return null;
     }
 
+    // WRITES A PREFERENCE FILE, CREATING ITS PARENT; A FAILURE IS NON-FATAL AND JUST WARNED.
+    private static void savePref(final Path file, final String value, final String warn) {
+        try {
+            final Path parent = file.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Files.writeString(file, value);
+        } catch (final Exception e) {
+            WaterMedia.LOGGER.warn(warn, e);
+        }
+    }
+
+    /** The engine the user picked in Settings for the next launch, or {@code null} if unset/unreadable. */
+    public static Engine enginePreference() {
+        final String value = pref(ENGINE_PREF_FILE);
+        if ("vulkan".equalsIgnoreCase(value)) return Engine.VULKAN;
+        if ("opengl".equalsIgnoreCase(value)) return Engine.OPENGL;
+        return null;
+    }
+
     /** Persists the engine to use on the next launch (written from the Settings screen). */
     public static void saveEnginePreference(final Engine choice) {
-        try {
-            final Path parent = ENGINE_PREF_FILE.getParent();
-            if (parent != null) Files.createDirectories(parent);
-            Files.writeString(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl");
-        } catch (final Exception e) {
-            WaterMedia.LOGGER.warn("Failed to save the render engine preference", e);
-        }
+        savePref(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl", "Failed to save the render engine preference");
     }
 
     /** The persisted popup player target, or {@link PlayerTarget#IN_APP} when unset/unreadable. */
     public static PlayerTarget playerTargetPreference() {
-        try {
-            if (Files.exists(PLAYER_MODE_FILE)) {
-                final String value = Files.readString(PLAYER_MODE_FILE).trim();
-                for (final PlayerTarget t: PlayerTarget.values()) {
-                    if (t.name().equalsIgnoreCase(value)) return t;
-                }
+        final String value = pref(PLAYER_MODE_FILE);
+        if (value != null) {
+            for (final PlayerTarget t: PlayerTarget.values()) {
+                if (t.name().equalsIgnoreCase(value)) return t;
             }
-        } catch (final Exception ignored) {
         }
         return PlayerTarget.IN_APP;
     }
 
     /** Persists the popup player target chosen in Settings (the AWT/JFX half of the render-mode selector). */
     public static void savePlayerTarget(final PlayerTarget target) {
-        try {
-            final Path parent = PLAYER_MODE_FILE.getParent();
-            if (parent != null) Files.createDirectories(parent);
-            Files.writeString(PLAYER_MODE_FILE, (target == null ? PlayerTarget.IN_APP : target).name());
-        } catch (final Exception e) {
-            WaterMedia.LOGGER.warn("Failed to save the player target preference", e);
-        }
+        savePref(PLAYER_MODE_FILE, (target == null ? PlayerTarget.IN_APP : target).name(), "Failed to save the player target preference");
     }
 
     /** The persisted UI scale preference: {@code "auto"} or a float factor; {@code "auto"} when unset/unreadable. */
     public static String uiScalePreference() {
-        try {
-            if (Files.exists(UI_SCALE_PREF_FILE)) {
-                final String value = Files.readString(UI_SCALE_PREF_FILE).trim();
-                if (!value.isEmpty()) return value;
-            }
-        } catch (final Exception ignored) {
-        }
-        return "auto";
+        final String value = pref(UI_SCALE_PREF_FILE);
+        return value != null ? value : "auto";
     }
 
     /** Persists the UI scale preference ({@code "auto"} or a float factor), written from the Settings screen. */
     public static void saveUiScalePreference(final String value) {
-        try {
-            final Path parent = UI_SCALE_PREF_FILE.getParent();
-            if (parent != null) Files.createDirectories(parent);
-            Files.writeString(UI_SCALE_PREF_FILE, value == null || value.isBlank() ? "auto" : value.trim());
-        } catch (final Exception e) {
-            WaterMedia.LOGGER.warn("Failed to save the UI scale preference", e);
-        }
+        savePref(UI_SCALE_PREF_FILE, value == null || value.isBlank() ? "auto" : value.trim(), "Failed to save the UI scale preference");
     }
 
     /** Resolves the engine from {@code -Dwatermedia.engine}, downgrading to OpenGL when Vulkan is unsupported. */
@@ -172,10 +163,9 @@ public final class RenderSystem {
                 return false;
             }
         }
-        final OpenGLRenderBackend gl = new OpenGLRenderBackend(window);
-        engine = new RenderEngine(gl);
+        engine = new RenderEngine(new OpenGLRenderBackend(window));
         engine.uiScale(uiScale);
-        gl.attachContext(); // GL CONTEXT MUST BE CURRENT BEFORE init() COMPILES SHADERS
+        // init() MAKES THE GL CONTEXT CURRENT ITSELF, SO RenderBackend.init() SUFFICES FOR BOTH BACKENDS.
         engine.init();
         engine.configureFrameState();
         WaterMedia.LOGGER.info("Render engine: OpenGL");
@@ -209,16 +199,6 @@ public final class RenderSystem {
         return engine.mediaEngineSupplier(renderThread, renderExecutor);
     }
 
-    public static RenderEngine engine() {
-        return engine;
-    }
-
-    public static void setEngine(final RenderEngine nextEngine) {
-        if (nextEngine == null) throw new IllegalArgumentException("Render engine cannot be null");
-        engine = nextEngine;
-        nextEngine.uiScale(uiScale);
-    }
-
     /**
      * Sets the global UI scale (physical pixels per logical pixel) on the active render engine and
      * remembers it for engines attached later. The engine applies it to scissor rectangles and
@@ -236,8 +216,6 @@ public final class RenderSystem {
         return uiScale;
     }
 
-    public static void init() { engine.init(); }
-
     // NULLS THE ENGINE SO WINDOW-CREATION MESSAGES BETWEEN A TEARDOWN AND THE NEXT attach() (ENGINE
     // HOT-SWAP) CANNOT REACH A DEAD BACKEND WHOSE CONTEXT DIED WITH THE OLD WINDOW
     public static void cleanup() {
@@ -246,7 +224,6 @@ public final class RenderSystem {
         if (current != null) current.cleanup();
     }
 
-    public static void flush() { engine.flush(); }
     public static void configureFrameState() { engine.configureFrameState(); }
     public static void clear(final float r, final float g, final float b, final float a) { engine.clear(r, g, b, a); }
 
@@ -259,10 +236,8 @@ public final class RenderSystem {
     }
     public static void disableDepthTest() { engine.disableDepthTest(); }
     public static int createTexture(final int width, final int height, final ByteBuffer rgba) { return engine.createTexture(width, height, rgba); }
-    public static TextureHandle createTextureHandle(final int width, final int height, final ByteBuffer rgba) { return engine.createTextureHandle(width, height, rgba); }
-    public static void deleteTexture(final TextureHandle texture) { engine.deleteTexture(texture); }
+    public static void deleteTexture(final int textureId) { engine.deleteTexture(textureId); }
     public static void setupOrtho(final int width, final int height) { engine.setupOrtho(width, height); }
-    public static void restoreProjection() { engine.restoreProjection(); }
     public static void color(final Color c) { engine.color(c); }
     public static void color(final float r, final float g, final float b, final float a) { engine.color(r, g, b, a); }
     public static void color(final float r, final float g, final float b) { engine.color(r, g, b); }
@@ -279,12 +254,10 @@ public final class RenderSystem {
     public static void fillGradientH(final float x, final float y, final float w, final float h, final float r1, final float g1, final float b1, final float a1, final float r2, final float g2, final float b2, final float a2) { engine.fillGradientH(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2); }
     public static void fillGradientV(final float x, final float y, final float w, final float h, final float r1, final float g1, final float b1, final float a1, final float r2, final float g2, final float b2, final float a2) { engine.fillGradientV(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2); }
     public static void fillTriangle(final float x1, final float y1, final float x2, final float y2, final float x3, final float y3, final float r, final float g, final float b, final float a) { engine.fillTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a); }
-    public static void fillRoundedTriangle(final float x1, final float y1, final float x2, final float y2, final float x3, final float y3, final float radius, final float r, final float g, final float b, final float a) { engine.fillRoundedTriangle(x1, y1, x2, y2, x3, y3, radius, r, g, b, a); }
     public static void fillCircle(final float cx, final float cy, final float radius, final float r, final float g, final float b, final float a) { engine.fillCircle(cx, cy, radius, r, g, b, a); }
     public static void fillRounded(final float x, final float y, final float w, final float h, final float radius) { engine.fillRounded(x, y, w, h, radius); }
     public static void fillRounded(final float x, final float y, final float w, final float h, final float radius, final float r, final float g, final float b, final float a) { engine.fillRounded(x, y, w, h, radius, r, g, b, a); }
     public static void fillRounded(final float x, final float y, final float w, final float h, final float radius, final Color c) { engine.fillRounded(x, y, w, h, radius, c); }
-    public static void rect(final float x, final float y, final float w, final float h) { engine.rect(x, y, w, h); }
     public static void rect(final float x, final float y, final float w, final float h, final Color c, final float lineWidth) { engine.rect(x, y, w, h, c, lineWidth); }
     public static void rect(final float x, final float y, final float w, final float h, final float r, final float g, final float b, final float a, final float lineWidth) { engine.rect(x, y, w, h, r, g, b, a, lineWidth); }
     public static void rectRounded(final float x, final float y, final float w, final float h, final float radius, final float lineWidth) { engine.rectRounded(x, y, w, h, radius, lineWidth); }
@@ -296,15 +269,8 @@ public final class RenderSystem {
     public static void lineV(final float x, final float y, final float length, final Color c, final float lineWidth) { engine.lineV(x, y, length, c, lineWidth); }
     public static void lineV(final float x, final float y, final float length) { engine.lineV(x, y, length); }
     public static void line(final float x1, final float y1, final float x2, final float y2) { engine.line(x1, y1, x2, y2); }
-    public static void lineStrip(final float[] points) { engine.lineStrip(points); }
-    public static void lineLoop(final float[] points) { engine.lineLoop(points); }
     public static void blit(final float x, final float y, final float w, final float h) { engine.blit(x, y, w, h); }
     public static void blit(final float x, final float y, final float w, final float h, final float u0, final float v0, final float u1, final float v1) { engine.blit(x, y, w, h, u0, v0, u1, v1); }
-    public static void blitNDC(final float x1, final float y1, final float x2, final float y2) { engine.blitNDC(x1, y1, x2, y2); }
-    public static void blitNDC(final float x1, final float y1, final float x2, final float y2, final float u0, final float v0, final float u1, final float v1) { engine.blitNDC(x1, y1, x2, y2, u0, v0, u1, v1); }
-    public static void dialogBox(final float x, final float y, final float w, final float h, final Color borderColor, final float borderWidth) { engine.dialogBox(x, y, w, h, borderColor, borderWidth); }
-    public static void dialogBox(final float x, final float y, final float w, final float h, final float r, final float g, final float b, final float a, final float borderWidth) { engine.dialogBox(x, y, w, h, r, g, b, a, borderWidth); }
-    public static void fadeLeft(final float width, final float height, final float fadeWidth, final float alpha) { engine.fadeLeft(width, height, fadeWidth, alpha); }
     public static void fadeBottom(final float width, final float height, final float fadeHeight, final float alpha) { engine.fadeBottom(width, height, fadeHeight, alpha); }
     public static void glowRect(final float x, final float y, final float w, final float h, final float radius, final Color glow, final float alpha) { engine.glowRect(x, y, w, h, radius, glow, alpha); }
     public static void shadowRect(final float x, final float y, final float w, final float h, final float radius, final float alpha) { engine.shadowRect(x, y, w, h, radius, alpha); }

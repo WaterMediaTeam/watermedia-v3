@@ -29,6 +29,8 @@ import org.watermedia.api.platform.web.TikTokPlatform;
 import org.watermedia.api.platform.web.TwitchPlatform;
 import org.watermedia.api.platform.web.TwitterPlatform;
 import org.watermedia.api.platform.web.VidLiiPlatform;
+import org.watermedia.api.platform.web.YouTubePlatform;
+import org.watermedia.api.platform.web.YtDlpPlatform;
 
 import java.net.URI;
 import java.util.stream.Stream;
@@ -101,9 +103,11 @@ public class PlatformClaimTest {
                 // Odysee — host odysee.com / www.odysee.com
                 arguments(OdyseePlatform.class, "https://example.com/"),
 
-                // PornHub — host ends with pornhub.com AND path starts /view_video.php
+                // PornHub — host is pornhub.com or *.pornhub.com AND a viewkey query param
                 arguments(PornHubPlatform.class, "https://www.pornhub.com/embed/abc"),
                 arguments(PornHubPlatform.class, "https://example.com/view_video.php?viewkey=abc"),
+                // LOOKALIKE HOST: A DOT-UNAWARE SUFFIX MATCH WOULD WRONGLY CLAIM THIS AND THROW MatureContentException
+                arguments(PornHubPlatform.class, "https://notpornhub.com/view_video.php?viewkey=abc"),
 
                 // Sendvid — host sendvid.com / www.sendvid.com
                 arguments(SendvidPlatform.class, "https://example.com/"),
@@ -123,7 +127,13 @@ public class PlatformClaimTest {
                 arguments(TwitterPlatform.class, "https://example.com/user/status/1"),
 
                 // VidLii — host vidlii.com / www.vidlii.com
-                arguments(VidLiiPlatform.class, "https://example.com/")
+                arguments(VidLiiPlatform.class, "https://example.com/"),
+
+                // yt-dlp / YouTube — host-suffix match must use a dot boundary so lookalikes are foreign
+                arguments(YtDlpPlatform.class, "https://example.com/"),
+                arguments(YtDlpPlatform.class, "https://xinstagr.am/p/abc"),
+                arguments(YouTubePlatform.class, "https://example.com/"),
+                arguments(YouTubePlatform.class, "https://notyoutube.com/watch?v=abc")
         );
     }
 

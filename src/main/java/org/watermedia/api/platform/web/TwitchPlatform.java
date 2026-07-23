@@ -215,10 +215,10 @@ public final class TwitchPlatform implements IPlatform {
         if (apiAnswered && !online)
             throw new PlatformException(TwitchPlatform.class, "Streamer '" + channel + "' is offline");
 
-        final DataQuality[] variants = this.fetchHlsVariants(channel, false);
+        final List<DataQuality> variants = this.fetchHlsVariants(channel, false);
 
         if (metadata == null) LOGGER.warn(IT, "Twitch stream '{}' resolved without metadata", channel);
-        LOGGER.info(IT, "Twitch resolved stream '{}' with {} variant(s)", channel, variants.length);
+        LOGGER.info(IT, "Twitch resolved stream '{}' with {} variant(s)", channel, variants.size());
         return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
                 new DataSource(MediaType.VIDEO, thumbnail, metadata,
                         RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
@@ -227,7 +227,7 @@ public final class TwitchPlatform implements IPlatform {
 
     private PlatformData resolveVod(final String vodId) throws Exception {
         this.ensureNotMature(ContentKind.VOD, vodId);
-        final DataQuality[] variants = this.fetchHlsVariants(vodId, true);
+        final List<DataQuality> variants = this.fetchHlsVariants(vodId, true);
 
         Metadata metadata = null;
         URI thumbnail = null;
@@ -239,7 +239,7 @@ public final class TwitchPlatform implements IPlatform {
         }
 
         if (metadata == null) LOGGER.warn(IT, "Twitch VOD '{}' resolved without metadata", vodId);
-        LOGGER.info(IT, "Twitch resolved VOD '{}' with {} variant(s)", vodId, variants.length);
+        LOGGER.info(IT, "Twitch resolved VOD '{}' with {} variant(s)", vodId, variants.size());
         return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
                 new DataSource(MediaType.VIDEO, thumbnail, metadata,
                         RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
@@ -283,7 +283,8 @@ public final class TwitchPlatform implements IPlatform {
         if (clipVariants.isEmpty()) throw new PlatformException(TwitchPlatform.class, "No video qualities found for clip: " + slug);
 
         final String title = str(clip, "title");
-        final int duration = intOr(clip, "durationSeconds", 0);
+        // TWITCH REPORTS clip durationSeconds IN SECONDS; Metadata IS MILLISECONDS
+        final long durationMs = intOr(clip, "durationSeconds", 0) * 1000L;
         String author = null;
         final JsonElement broadcasterEl = clip.get("broadcaster");
         if (broadcasterEl != null && !broadcasterEl.isJsonNull()) {
@@ -303,27 +304,22 @@ public final class TwitchPlatform implements IPlatform {
             catch (final Exception ignored) {}
         }
 
-        final Metadata clipMetadata = new Metadata(title, null, publishedAt, duration, author);
+        final Metadata clipMetadata = new Metadata(title, null, publishedAt, durationMs, author);
         LOGGER.info(IT, "Twitch resolved clip '{}' with {} variant(s)", slug, clipVariants.size());
         return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
                 new DataSource(MediaType.VIDEO, thumbnailUri, clipMetadata,
                         RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
-                        clipVariants.toArray(DataQuality[]::new), null, null));
+                        clipVariants, null, null));
     }
 
     // --- HLS FETCHING ---
 
-    /**
-     * Resolves the channel/VOD master playlist to a list of {@link DataQuality} carrying the real
-     * {@code width}/{@code height} reported by each HLS rendition tag. A non-master playlist (or, for
-     * a live stream, a fetch hiccup) falls back to a single {@code (0, 0)} variant pointing at the
-     * master URL — MRL marks it UNKNOWN and FFMediaPlayer upgrades it after probing the stream.
-     *
-     * <p>Streams resolve resiliently (a usher hiccup must not break a live watch — offline streams are
-     * already rejected upstream from the API); VODs resolve strictly so a usher 404 throws as the
-     * deleted/unavailable signal.
-     */
-    private DataQuality[] fetchHlsVariants(final String id, final boolean isVod) throws IOException {
+    // RESOLVES THE CHANNEL/VOD MASTER PLAYLIST TO DataQuality VARIANTS CARRYING THE REAL width/height OF
+    // EACH HLS RENDITION TAG. A NON-MASTER PLAYLIST (OR, FOR A LIVE STREAM, A FETCH HICCUP) FALLS BACK TO
+    // A SINGLE (0,0) VARIANT POINTING AT THE MASTER — MRL MARKS IT UNKNOWN, FFMediaPlayer UPGRADES IT.
+    // STREAMS RESOLVE RESILIENTLY (A USHER HICCUP MUST NOT BREAK A LIVE WATCH; OFFLINE IS REJECTED UPSTREAM);
+    // VODS RESOLVE STRICTLY SO A USHER 404 THROWS AS THE DELETED/UNAVAILABLE SIGNAL.
+    private List<DataQuality> fetchHlsVariants(final String id, final boolean isVod) throws IOException {
         final URI master = URI.create(this.buildPlaylistUrl(id, isVod));
 
         // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST THE MASTER BY MPEGTool)
@@ -337,12 +333,11 @@ public final class TwitchPlatform implements IPlatform {
                     : List.of(MPEGTool.Variant.self(master));
         }
 
-        final DataQuality[] out = new DataQuality[variants.size()];
-        for (int i = 0; i < variants.size(); i++) {
-            final MPEGTool.Variant v = variants.get(i);
-            out[i] = new DataQuality(v.uri(), v.width(), v.height());
+        final List<DataQuality> out = new ArrayList<>(variants.size());
+        for (final MPEGTool.Variant v: variants) {
+            out.add(new DataQuality(v.uri(), v.width(), v.height()));
         }
-        LOGGER.debug(IT, "Twitch resolved {} HLS rendition(s) for {} '{}'", out.length, isVod ? "VOD" : "stream", id);
+        LOGGER.debug(IT, "Twitch resolved {} HLS rendition(s) for {} '{}'", out.size(), isVod ? "VOD" : "stream", id);
         return out;
     }
 
@@ -498,7 +493,8 @@ public final class TwitchPlatform implements IPlatform {
 
             final String title = str(video, "title");
             final String description = str(video, "description");
-            final int duration = intOr(video, "lengthSeconds", 0);
+            // TWITCH REPORTS VOD lengthSeconds IN SECONDS; Metadata IS MILLISECONDS
+            final long durationMs = intOr(video, "lengthSeconds", 0) * 1000L;
 
             String author = null;
             final JsonElement ownerEl = video.get("owner");
@@ -521,7 +517,7 @@ public final class TwitchPlatform implements IPlatform {
             }
 
             return new MetadataWithThumbnail(
-                    new Metadata(title != null ? title : "Untitled Broadcast", description, publishedAt, duration, author),
+                    new Metadata(title != null ? title : "Untitled Broadcast", description, publishedAt, durationMs, author),
                     thumbnailUri,
                     true // VOD METADATA RESOLVED ⇒ AVAILABLE; online IS UNUSED FOR VODs
             );

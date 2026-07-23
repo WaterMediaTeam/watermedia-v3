@@ -50,6 +50,7 @@ public final class NetworkAPI extends WaterMediaAPI {
     }
 
     private static void upload(final File file, final NetworkServer.UploadStatus status) {
+        HttpURLConnection conn = null;
         try {
             String base = WaterMediaConfig.network.remoteHost;
             if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
@@ -58,7 +59,7 @@ public final class NetworkAPI extends WaterMediaAPI {
             // SO WE DRIVE HttpURLConnection DIRECTLY — BUT USE URI.toURL() TO AVOID THE
             // DEPRECATED new URL(String) CONSTRUCTOR.
             final URL url = URI.create(base + "/upload").toURL();
-            final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(WaterMediaConfig.network.timeout);
             conn.setReadTimeout(WaterMediaConfig.network.timeout);
             conn.setRequestMethod("POST");
@@ -83,13 +84,13 @@ public final class NetworkAPI extends WaterMediaAPI {
                 while ((read = fis.read(buffer)) != -1) {
                     os.write(buffer, 0, read);
                     uploaded += read;
-                    status.setUploadedBytes(uploaded);
+                    status.uploadedBytes(uploaded);
 
                     final long now = System.nanoTime();
                     final long elapsed = now - lastTime;
                     if (elapsed >= 500_000_000L) {
                         final long bytesInPeriod = uploaded - lastUploaded;
-                        status.setSpeed((long) (bytesInPeriod * 1_000_000_000.0 / elapsed));
+                        status.speed((long) (bytesInPeriod * 1_000_000_000.0 / elapsed));
                         lastTime = now;
                         lastUploaded = uploaded;
                     }
@@ -106,10 +107,12 @@ public final class NetworkAPI extends WaterMediaAPI {
             } else {
                 status.fail("Server returned HTTP " + code);
             }
-
-            conn.disconnect();
         } catch (final Exception e) {
-            status.fail(e.getMessage());
+            // e.getMessage() IS OFTEN null (E.G. NPE); e.toString() KEEPS THE EXCEPTION TYPE FOR DIAGNOSIS
+            LOGGER.error(IT, "Failed to upload '{}' to remote server", file.getName(), e);
+            status.fail(e.toString());
+        } finally {
+            if (conn != null) conn.disconnect(); // ALWAYS RELEASE THE CONNECTION, EVEN ON A MID-TRANSFER FAILURE
         }
     }
 
@@ -166,6 +169,7 @@ public final class NetworkAPI extends WaterMediaAPI {
 
     @Override
     public void release(final WaterMedia instance) {
+        NetworkServer.stop(); // STOP THE FILE SERVER AND ITS THREAD POOL SO A LATER start() CAN REBIND THE PORT
         this.step = 0;
         this.steps = 0;
         this.stepName = "";

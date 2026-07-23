@@ -40,7 +40,7 @@ public class TxAnimatedImageTest {
                 Fixtures.GIF_DIR.resolve("3.gif"));
 
         return fixtures.stream().map(path -> dynamicTest(path.getFileName().toString(), () -> {
-            final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(path));
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(path));
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
             // DISABLE FRAME-TEXTURE FAST PATH SO upload() IS CALLED PER FRAME — KEEPS uploadCount() OBSERVABLE.

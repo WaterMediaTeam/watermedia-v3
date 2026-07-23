@@ -6,7 +6,7 @@ import java.util.Map;
 /**
  * Immutable inherited render state: the current device transform plus the cascaded presentation
  * values (fill/stroke paint, opacities, fill-rule, stroke width, {@code currentColor}). A child
- * state is produced with {@link #derive(SvgNode, Map, double)}, which reads an element's attributes
+ * state is produced with {@link #derive(SVGNode, Map, double)}, which reads an element's attributes
  * and falls back to this state for anything the element does not override — the SVG inheritance model.
  *
  * <p>Element {@code opacity} is folded multiplicatively into the subtree opacity (parent × child),
@@ -23,18 +23,18 @@ import java.util.Map;
  * @param opacity       folded subtree opacity
  * @param color         {@code currentColor} as packed ARGB
  */
-record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd, SvgPaint stroke,
-                   double strokeWidth, float strokeOpacity, float opacity, int color) {
+record RenderState(Affine ctm, SVGPaint fill, float fillOpacity, boolean evenOdd, SVGPaint stroke,
+                   double strokeWidth, float strokeOpacity, float opacity, int color, boolean visible) {
 
-    // SVG INITIAL VALUES: BLACK FILL, NO STROKE, FULL OPACITY, NON-ZERO FILL RULE
+    // SVG INITIAL VALUES: BLACK FILL, NO STROKE, FULL OPACITY, NON-ZERO FILL RULE, VISIBLE
     static RenderState root(final Affine ctm) {
-        return new RenderState(ctm, SvgPaint.solid(0xFF000000), 1f, false, null, 1.0, 1f, 1f, 0xFF000000);
+        return new RenderState(ctm, SVGPaint.solid(0xFF000000), 1f, false, null, 1.0, 1f, 1f, 0xFF000000, true);
     }
 
     float fillEff() { return this.fillOpacity * this.opacity; }
     float strokeEff() { return this.strokeOpacity * this.opacity; }
 
-    RenderState derive(final SvgNode node, final Map<String, SvgPaint> gradients, final double diag) {
+    RenderState derive(final SVGNode node, final Map<String, SVGPaint> gradients, final double diag) {
         final Map<String, String> a = node.attrs();
 
         Affine ctm = this.ctm;
@@ -44,12 +44,12 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
         int color = this.color;
         final String colorV = a.get("color");
         if (colorV != null && !colorV.equalsIgnoreCase("inherit")) {
-            final long c = SvgColor.parse(colorV, this.color);
-            if (c != SvgColor.INVALID) color = (int) c;
+            final long c = SVGColor.parse(colorV, this.color);
+            if (c != SVGColor.INVALID) color = (int) c;
         }
 
-        final SvgPaint fill = resolvePaint(a.get("fill"), this.fill, gradients, color);
-        final SvgPaint stroke = resolvePaint(a.get("stroke"), this.stroke, gradients, color);
+        final SVGPaint fill = resolvePaint(a.get("fill"), this.fill, gradients, color);
+        final SVGPaint stroke = resolvePaint(a.get("stroke"), this.stroke, gradients, color);
 
         final float fillOpacity = opacityValue(a.get("fill-opacity"), this.fillOpacity);
         final float strokeOpacity = opacityValue(a.get("stroke-opacity"), this.strokeOpacity);
@@ -65,17 +65,26 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
             else if (fr.equalsIgnoreCase("nonzero")) evenOdd = false;
         }
 
+        // visibility IS INHERITED BUT A CHILD CAN RE-SHOW ITSELF WITH visibility:visible
+        boolean visible = this.visible;
+        final String vis = a.get("visibility");
+        if (vis != null) {
+            final String vv = vis.trim().toLowerCase(Locale.ROOT);
+            if (vv.equals("hidden") || vv.equals("collapse")) visible = false;
+            else if (vv.equals("visible")) visible = true;
+        }
+
         double strokeWidth = this.strokeWidth;
         final String sw = a.get("stroke-width");
         // PERCENTAGE STROKE WIDTH RESOLVES AGAINST THE NORMALIZED VIEWPORT DIAGONAL PER SVG SPEC
         if (sw != null) strokeWidth = SVGParser.length(sw, this.strokeWidth, diag);
 
-        return new RenderState(ctm, fill, fillOpacity, evenOdd, stroke, strokeWidth, strokeOpacity, opacity, color);
+        return new RenderState(ctm, fill, fillOpacity, evenOdd, stroke, strokeWidth, strokeOpacity, opacity, color, visible);
     }
 
     // RESOLVES A fill/stroke VALUE: none → null, url(#id) → gradient, colour → solid, else inherit
-    private static SvgPaint resolvePaint(final String value, final SvgPaint inherited,
-                                         final Map<String, SvgPaint> gradients, final int color) {
+    private static SVGPaint resolvePaint(final String value, final SVGPaint inherited,
+                                         final Map<String, SVGPaint> gradients, final int color) {
         if (value == null) return inherited;
         final String v = value.trim();
         if (v.isEmpty() || v.equalsIgnoreCase("inherit")) return inherited;
@@ -87,21 +96,21 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
             if (hash >= 0 && close > hash) {
                 String id = v.substring(hash + 1, close).trim();
                 id = stripQuotes(id);
-                final SvgPaint g = gradients.get(id);
+                final SVGPaint g = gradients.get(id);
                 if (g != null) return g;
             }
             // OPTIONAL FALLBACK PAINT AFTER url(...) e.g. "url(#x) red"
             if (close >= 0 && close + 1 < v.length()) {
                 final String fb = v.substring(close + 1).trim();
                 if (fb.equalsIgnoreCase("none")) return null;
-                final long c = SvgColor.parse(fb, color);
-                if (c != SvgColor.INVALID) return SvgPaint.solid((int) c);
+                final long c = SVGColor.parse(fb, color);
+                if (c != SVGColor.INVALID) return SVGPaint.solid((int) c);
             }
             return null;
         }
 
-        final long c = SvgColor.parse(v, color);
-        return c == SvgColor.INVALID ? inherited : SvgPaint.solid((int) c);
+        final long c = SVGColor.parse(v, color);
+        return c == SVGColor.INVALID ? inherited : SVGPaint.solid((int) c);
     }
 
     private static String stripQuotes(final String s) {

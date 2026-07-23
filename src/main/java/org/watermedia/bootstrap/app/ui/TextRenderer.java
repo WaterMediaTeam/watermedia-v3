@@ -39,10 +39,6 @@ public final class TextRenderer {
         this(loadBundledFont(Font.PLAIN), loadBundledFont(Font.BOLD), Font.PLAIN, DEFAULT_FONT_SIZE);
     }
 
-    public TextRenderer(final String fontName, final int style, final int size) {
-        this(new Font(fontName, Font.PLAIN, 1), new Font(fontName, Font.BOLD, 1), style, Math.max(1, size));
-    }
-
     private TextRenderer(final Font plainFont, final Font boldFont, final int defaultStyle, final int baseSize) {
         this.plainFont = plainFont;
         this.boldFont = boldFont;
@@ -85,16 +81,8 @@ public final class TextRenderer {
         this.uiScale = scale > 0f ? scale : 1f;
     }
 
-    public int lineHeight() {
-        return this.lineHeight(1f);
-    }
-
     public int lineHeight(final float scale) {
         return this.glyphHeight(scale) + this.margin;
-    }
-
-    public int glyphHeight() {
-        return this.glyphHeight(1f);
     }
 
     public int glyphHeight(final float scale) {
@@ -141,9 +129,10 @@ public final class TextRenderer {
 
         final FontRun run = this.fontRun(scale, style);
         float currentX = x;
-        final char[] chars = text.toCharArray();
-        for (int i = 0; i < chars.length; i++) {
-            final CharGlyph g = run.atlas.glyph(chars[i]);
+        // INDEX WITH charAt (NO toCharArray COPY PER FRAME) — THIS IS THE HOTTEST UI PATH, LABELS REDRAW EVERY FRAME
+        final int n = text.length();
+        for (int i = 0; i < n; i++) {
+            final CharGlyph g = run.atlas.glyph(text.charAt(i));
             if (g.textureId() > 0 && g.width() > 0 && g.height() > 0) {
                 // ASCII GLYPHS ALL SHARE THE ATLAS TEXTURE, SO bindTexture IS A NO-OP AFTER THE FIRST AND
                 // THE WHOLE RUN BATCHES INTO ONE DRAW; THE UV RECT SELECTS THIS GLYPH WITHIN THE ATLAS.
@@ -156,7 +145,30 @@ public final class TextRenderer {
                         g.u0(), g.v0(), g.u1(), g.v1()
                 );
             }
-            currentX += (g.advance() + (i < chars.length - 1 ? DEFAULT_TRACKING : 0f)) * run.drawScale;
+            currentX += (g.advance() + (i < n - 1 ? DEFAULT_TRACKING : 0f)) * run.drawScale;
+        }
+    }
+
+    /**
+     * Renders {@code text} with extra logical-px spacing inserted between glyphs (letter-spacing). One
+     * resolved run, no per-character string allocation — for the spaced splash/title runs.
+     */
+    public void renderSpaced(final String text, final float x, final float y, final Color color,
+                             final float scale, final boolean bold, final int letterSpacing) {
+        if (text == null || text.isEmpty()) return;
+        RenderSystem.color(color);
+        final FontRun run = this.fontRun(scale, bold ? Font.BOLD : Font.PLAIN);
+        float cursor = x;
+        final int n = text.length();
+        for (int i = 0; i < n; i++) {
+            final CharGlyph g = run.atlas.glyph(text.charAt(i));
+            if (g.textureId() > 0 && g.width() > 0 && g.height() > 0) {
+                RenderSystem.bindTexture(g.textureId());
+                RenderSystem.blit(cursor + g.offsetX() * run.drawScale, y + g.offsetY() * run.drawScale,
+                        g.width() * run.drawScale, g.height() * run.drawScale, g.u0(), g.v0(), g.u1(), g.v1());
+            }
+            // EACH CHAR ADVANCES BY ITS OWN CEILED RUN WIDTH PLUS THE SPACING — MATCHES spacedWidth EXACTLY
+            cursor += (float) Math.ceil(g.advance() * run.drawScale) + letterSpacing;
         }
     }
 
@@ -176,17 +188,29 @@ public final class TextRenderer {
         if (text == null || text.isEmpty()) return 0;
         final FontRun run = this.fontRun(scale, style);
         float width = 0f;
-        final char[] chars = text.toCharArray();
-        for (int i = 0; i < chars.length; i++) {
-            final CharGlyph g = run.atlas.glyph(chars[i]);
-            width += (g.advance() + (i < chars.length - 1 ? DEFAULT_TRACKING : 0f)) * run.drawScale;
+        final int n = text.length();
+        for (int i = 0; i < n; i++) {
+            final CharGlyph g = run.atlas.glyph(text.charAt(i));
+            width += (g.advance() + (i < n - 1 ? DEFAULT_TRACKING : 0f)) * run.drawScale;
         }
         return (int) Math.ceil(width);
     }
 
-    public String truncate(final String text, final int maxLen) {
-        if (text == null || text.isEmpty()) return "Unknown";
-        return text.length() > maxLen ? text.substring(0, maxLen - 3) + "..." : text;
+    /**
+     * Width of {@code text} with extra logical-px spacing between glyphs — the measuring companion of
+     * {@link #renderSpaced}. Each glyph's advance is ceiled independently, then the spacing is added
+     * between neighbors, so measure and draw agree to the pixel.
+     */
+    public int spacedWidth(final String text, final float scale, final boolean bold, final int letterSpacing) {
+        if (text == null || text.isEmpty()) return 0;
+        final FontRun run = this.fontRun(scale, bold ? Font.BOLD : Font.PLAIN);
+        int width = 0;
+        final int n = text.length();
+        for (int i = 0; i < n; i++) {
+            width += (int) Math.ceil(run.atlas.glyph(text.charAt(i)).advance() * run.drawScale);
+            if (i + 1 < n) width += letterSpacing;
+        }
+        return width;
     }
 
     public String truncateToWidth(final String text, final int maxWidth) {
@@ -205,21 +229,19 @@ public final class TextRenderer {
         final int ellipsisW = this.width(ellipsis, scale, style);
         if (maxWidth <= ellipsisW) return "";
 
+        // RESOLVE THE RUN ONCE AND METER PER CHAR OFF IT — NO per-char String.valueOf + FontRun ALLOCATION
+        final FontRun run = this.fontRun(scale, style);
         final StringBuilder sb = new StringBuilder();
-        int currentW = 0;
-        final char[] chars = text.toCharArray();
-        for (int i = 0; i < chars.length; i++) {
-            final int advance = this.width(String.valueOf(chars[i]), scale, style);
+        float currentW = 0f;
+        final int n = text.length();
+        for (int i = 0; i < n; i++) {
+            final char c = text.charAt(i);
+            final float advance = run.atlas.glyph(c).advance() * run.drawScale;
             if (currentW + advance + ellipsisW > maxWidth) break;
-            sb.append(chars[i]);
+            sb.append(c);
             currentW += advance;
         }
         return sb + ellipsis;
-    }
-
-    public String padOrTruncate(final String s, final int len) {
-        if (s == null) return String.format("%-" + len + "s", "");
-        return s.length() > len ? s.substring(0, len - 3) + "..." : String.format("%-" + len + "s", s);
     }
 
     private FontRun fontRun(final float scale, final int style) {

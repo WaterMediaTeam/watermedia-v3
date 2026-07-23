@@ -62,15 +62,9 @@ public class ScreenManager {
     }
 
     public void backToHome() {
-        final String previous = this.currentName;
-        if (this.current != null) this.current.onExit();
-        this.currentName = "home";
-        this.current = this.screens.get("home");
-        if (this.current != null) this.current.onEnter();
-        this.mountCurrent();
-        if (this.onNavigate != null && this.current != null) {
-            this.onNavigate.accept(previous, this.currentName);
-        }
+        // DELEGATE SO THE SAME-SCREEN GUARD IN navigate() APPLIES: A BACK/null WHILE ALREADY ON HOME MUST
+        // NOT RE-RUN onExit/onEnter AND RESET THE HOME SCREEN'S STATE.
+        this.navigate("home");
     }
 
     private void mountCurrent() {

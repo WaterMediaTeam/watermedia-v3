@@ -31,10 +31,8 @@ public final class BiliBiliPlatform implements IPlatform {
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     private static final String REFERER = "https://www.bilibili.com/";
 
-    /**
-     * BiliBili rejects non-browser UAs and requires a bilibili.com Referer; CDN URLs
-     * additionally need the user's session cookie when fetching premium qualities.
-     */
+    // BILIBILI REJECTS NON-BROWSER UAS AND REQUIRES A bilibili.com REFERER; CDN URLS
+    // ADDITIONALLY NEED THE USER'S SESSION COOKIE WHEN FETCHING PREMIUM QUALITIES
     private static RequestHeaders headers() {
         final RequestHeaders h = new RequestHeaders()
                 .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
@@ -107,7 +105,8 @@ public final class BiliBiliPlatform implements IPlatform {
         final String author = owner != null ? str(owner, "name") : null;
         final String desc = str(viewData, "desc");
         final URI thumbnail = JsonTool.uri(viewData, "pic");
-        final long duration = viewData.has("duration") ? viewData.get("duration").getAsLong() : 0;
+        // BILIBILI REPORTS VIDEO duration IN SECONDS; Metadata IS MILLISECONDS
+        final long durationMs = (viewData.has("duration") ? viewData.get("duration").getAsLong() : 0) * 1000L;
         final Instant publishedAt = viewData.has("pubdate") ? Instant.ofEpochSecond(viewData.get("pubdate").getAsLong()) : null;
 
         final long cid;
@@ -127,7 +126,7 @@ public final class BiliBiliPlatform implements IPlatform {
         final JsonObject playData = fetchJson(URI.create(String.format(VIDEO_PLAYURL_API, bvid, cid)), "data");
 
         final String fullTitle = partName != null ? title + " - " + partName : title;
-        final Metadata metadata = new Metadata(fullTitle, desc, publishedAt, duration, author);
+        final Metadata metadata = new Metadata(fullTitle, desc, publishedAt, durationMs, author);
         return this.buildResult(playData, metadata, thumbnail);
     }
 
@@ -194,7 +193,8 @@ public final class BiliBiliPlatform implements IPlatform {
         final String fullTitle = epTitle != null ? seasonTitle + " - " + epTitle : seasonTitle;
         final String desc = str(result, "evaluate");
         final URI thumbnail = epCover != null ? epCover : JsonTool.uri(result, "cover");
-        final Metadata metadata = new Metadata(fullTitle, desc, null, epDurationMs / 1000, null);
+        // BANGUMI episode duration IS ALREADY MILLISECONDS (SEE epDurationMs); PASS IT THROUGH UNCHANGED
+        final Metadata metadata = new Metadata(fullTitle, desc, null, epDurationMs, null);
         return this.buildResult(playResult, metadata, thumbnail);
     }
 
@@ -250,7 +250,7 @@ public final class BiliBiliPlatform implements IPlatform {
         final String streamUrl = durl.get(0).getAsJsonObject().get("url").getAsString();
         final Metadata metadata = new Metadata(title, null, null, 0, author);
         final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
-                new DataQuality[] {new DataQuality(URI.create(streamUrl), 0, 0)},
+                List.of(new DataQuality(URI.create(streamUrl), 0, 0)),
                 null, null);
 
         LOGGER.info(IT, "BiliBili resolved live room {} (qn={}, author='{}')", realRoomId, bestQn, author);
@@ -280,7 +280,7 @@ public final class BiliBiliPlatform implements IPlatform {
                 LOGGER.info(IT, "BiliBili resolved '{}' with {} variant(s) (DASH)", metadata.title(), variants.size());
                 return new PlatformData(Instant.now().plus(90, ChronoUnit.MINUTES),
                         new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
-                                variants.toArray(DataQuality[]::new), audioSlaves, null));
+                                variants, audioSlaves, null));
             }
         }
 
@@ -293,23 +293,16 @@ public final class BiliBiliPlatform implements IPlatform {
                 LOGGER.info(IT, "BiliBili resolved '{}' with a single muxed stream (DURL fallback)", metadata.title());
                 return new PlatformData(Instant.now().plus(90, ChronoUnit.MINUTES),
                         new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
-                                new DataQuality[] { flat }, null, null));
+                                List.of(flat), null, null));
             }
         }
 
         throw new PlatformException(BiliBiliPlatform.class, "API response carries no playable streams (neither DASH nor DURL) for '" + metadata.title() + "'");
     }
 
-    /**
-     * Builds the variant list directly from the DASH response. When BiliBili
-     * reports {@code support_formats} (the bucket index) we walk it once and
-     * pick the best codec stream per bucket — no duplicates by construction.
-     * Without it, every stream is emitted as-is and MRL collapses overlaps
-     * when bucketing dimensions into qualities.
-     * <p>
-     * Width/height from the stream itself win when present; we fall back to
-     * the nominal BiliBili height (see {@link #biliHeight(int)}).
-     */
+    // BUILDS THE VARIANT LIST FROM THE DASH RESPONSE. WITH support_formats (THE BUCKET INDEX) WE WALK IT
+    // ONCE AND PICK THE BEST CODEC STREAM PER BUCKET — NO DUPLICATES BY CONSTRUCTION. WITHOUT IT, EVERY
+    // STREAM IS EMITTED AS-IS AND MRL COLLAPSES OVERLAPS. STREAM WIDTH/HEIGHT WIN, ELSE biliHeight FALLBACK.
     private static List<DataQuality> parseDashVideo(final JsonArray videoStreams, final JsonArray supportFormats) {
         final List<DataQuality> out = new ArrayList<>();
 
@@ -360,11 +353,8 @@ public final class BiliBiliPlatform implements IPlatform {
         return best;
     }
 
-    /**
-     * Nominal vertical resolution for a BiliBili {@code quality} id, used only
-     * as a fallback when the DASH stream omits its own {@code height}. These
-     * are BiliBili's documented buckets, not MRL's enum.
-     */
+    // NOMINAL VERTICAL RESOLUTION FOR A BILIBILI quality ID, USED ONLY AS A FALLBACK WHEN THE DASH
+    // STREAM OMITS ITS OWN height. THESE ARE BILIBILI'S DOCUMENTED BUCKETS, NOT MRL'S ENUM.
     private static int biliHeight(final int biliQuality) {
         return switch (biliQuality) {
             case 127 -> 4320;            // 8K
@@ -406,7 +396,8 @@ public final class BiliBiliPlatform implements IPlatform {
     private static URI resolveRedirect(final URI shortUri) throws IOException {
         try (final NetRequest req = NetRequest.create(shortUri).method("GET").accept("*/*").maxRedirects(0).send()) {
             final String location = req.header("Location");
-            return location != null ? URI.create(location) : shortUri;
+            // RFC 7231 ALLOWS A RELATIVE Location; RESOLVE IT AGAINST THE ORIGINAL SO THE HOST SURVIVES
+            return location != null ? shortUri.resolve(location) : shortUri;
         }
     }
 }

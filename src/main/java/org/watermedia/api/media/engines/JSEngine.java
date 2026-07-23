@@ -48,8 +48,8 @@ public final class JSEngine extends SFXEngine {
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16 };
     private static final long[] SUPPORTED_CHANNELS = {
             //ch U8  S16 --  --  --  --  --
-            0x01_FF_FF_00_00_00_00_00L, // mono:   U8 + S16
-            0x02_FF_FF_00_00_00_00_00L, // stereo: U8 + S16
+            0x01_FF_FF_00_00_00_00_00L, // MONO:   U8 + S16
+            0x02_FF_FF_00_00_00_00_00L, // STEREO: U8 + S16
     };
 
     private final int bufferMs;
@@ -65,7 +65,8 @@ public final class JSEngine extends SFXEngine {
     private int bytesPerFrame;
     private byte[] scratch = new byte[0]; // REUSABLE COPY TARGET FOR ByteBuffer → line.write
 
-    public JSEngine(final int bufferMs) {
+    private JSEngine(final int bufferMs) {
+        // CONSTRUCTION IS FORCED THROUGH Builder/buildDefault, WHICH ALREADY VALIDATE bufferMs > 0
         this.bufferMs = bufferMs;
         // NO NATIVE SOURCE HANDLE — JAVA SOUND HAS NO OPENAL-STYLE SOURCE ID (source() STAYS 0)
     }
@@ -118,6 +119,9 @@ public final class JSEngine extends SFXEngine {
             l.close();
             this.line = null;
         }
+        // DROP THE CONTROL AND PLAYBACK FLAG SO A LATE volume()/playbackMs() CAN'T DRIVE A CLOSED LINE
+        this.gainControl = null;
+        this.started = false;
     }
 
     @Override

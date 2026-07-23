@@ -6,6 +6,7 @@ import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Font;
+import java.util.Locale;
 
 /**
  * The screen header as a retained view — the pixel-exact port of the imperative chrome header: a
@@ -108,7 +109,7 @@ public final class Header extends Group<Header> {
         final float titleScale = AppTheme.TEXT_SECTION;
         final float subScale = AppTheme.TEXT_BODY;
         final int titleMaxW = Math.max(120, x + w - titleX - rightReserve);
-        final String title = this.ctx.text.truncateToWidth(this.name.toUpperCase(), titleMaxW, titleScale, Font.BOLD);
+        final String title = this.ctx.text.truncateToWidth(this.name.toUpperCase(Locale.ROOT), titleMaxW, titleScale, Font.BOLD);
         final int titleBoxY = y + 42;
         final int titleBoxH = 36;
         this.ctx.text.renderBold(title, titleX,
@@ -117,7 +118,7 @@ public final class Header extends Group<Header> {
         if (this.sub != null && !this.sub.isEmpty()) {
             final int subX = titleX + this.ctx.text.widthBold(title, titleScale) + 18;
             final int subMaxW = Math.max(80, x + w - subX - rightReserve);
-            final String subtitle = this.ctx.text.truncateToWidth(this.sub.toUpperCase(), subMaxW, subScale);
+            final String subtitle = this.ctx.text.truncateToWidth(this.sub.toUpperCase(Locale.ROOT), subMaxW, subScale);
             this.ctx.text.render(subtitle, subX,
                     titleBoxY + Math.max(0, (titleBoxH - this.ctx.text.glyphHeight(subScale)) / 2),
                     AppTheme.TEXT_FAINT, subScale);
@@ -129,7 +130,7 @@ public final class Header extends Group<Header> {
             final int tagY = y + 25;
             canvas.fill(tagX, tagY, tagW, 24, AppTheme.alpha(AppTheme.BG_1, 170));
             canvas.stroke(tagX, tagY, tagW, 24, AppTheme.TEXT_SOFT, 1f);
-            this.ctx.text.render(this.right.toUpperCase(), tagX + 14,
+            this.ctx.text.render(this.right.toUpperCase(Locale.ROOT), tagX + 14,
                     tagY + Math.max(0, (24 - this.ctx.text.glyphHeight(AppTheme.TEXT_BODY)) / 2) + 1,
                     AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY);
         }
@@ -137,7 +138,7 @@ public final class Header extends Group<Header> {
     }
 
     private int tagWidth(final String label) {
-        return this.ctx.text.width(label.toUpperCase(), AppTheme.TEXT_BODY) + 28;
+        return this.ctx.text.width(label.toUpperCase(Locale.ROOT), AppTheme.TEXT_BODY) + 28;
     }
 
     private void drawBanner(final Canvas canvas, final int x, final int y, final int maxW, final int maxH) {

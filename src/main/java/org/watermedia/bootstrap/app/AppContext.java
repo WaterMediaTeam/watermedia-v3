@@ -7,8 +7,8 @@ import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
@@ -23,7 +23,9 @@ import static org.lwjgl.openal.AL10.alSourceStop;
 public final class AppContext implements Executor {
 
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
-    public static final DateFormat TIME_FORMAT = new SimpleDateFormat("HH:mm:ss");
+    // IMMUTABLE, THREAD-SAFE FORMATTER FOR ELAPSED MEDIA TIME (HH:MM:SS). REPLACES A PUBLIC, MUTABLE
+    // SimpleDateFormat THAT ALLOCATED A Date PLUS INTERNAL BUFFERS ON EVERY PER-FRAME formatTime() CALL.
+    private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
     public static final boolean IN_MODS = new File("").getAbsoluteFile().getName().equalsIgnoreCase("mods");
 
     // KNOWN MODS THAT BUILD ON WATERMEDIA — CANDIDATES FOR THE STAGE-3 "SUSPECTED MODS" LIST. THE SIMPLE
@@ -37,10 +39,6 @@ public final class AppContext implements Executor {
 
     public static final int PADDING = 20;
     public static final int MENU_WIDTH = 500;
-
-    static {
-        TIME_FORMAT.setTimeZone(TimeZone.getTimeZone("GMT-00:00"));
-    }
 
     // WINDOW STATE
     public int windowWidth = 1280;
@@ -79,8 +77,9 @@ public final class AppContext implements Executor {
     // TEXT RENDERER
     public TextRenderer text;
 
-    // EXECUTOR FOR GL THREAD TASKS
-    public final Queue<Runnable> executor = new ConcurrentLinkedQueue<>();
+    // GL-THREAD TASK QUEUE — DRAINED BY processExecutor(); ENQUEUE VIA execute() SO THE LOOP IS WOKEN.
+    // PRIVATE ON PURPOSE: A DIRECT add() WOULD SKIP THE requestRender() WAKE-UP execute() PERFORMS.
+    private final Queue<Runnable> tasks = new ConcurrentLinkedQueue<>();
 
     // MRL DATA
     public final LinkedHashMap<String, MRL> groupMRLs = new LinkedHashMap<>();
@@ -169,7 +168,7 @@ public final class AppContext implements Executor {
     @Override
     public void execute(final Runnable task) {
         if (task != null) {
-            this.executor.add(task);
+            this.tasks.add(task);
             this.requestRender();
         }
     }
@@ -195,8 +194,8 @@ public final class AppContext implements Executor {
 
     public boolean processExecutor() {
         boolean processed = false;
-        while (!this.executor.isEmpty()) {
-            final Runnable task = this.executor.poll();
+        while (!this.tasks.isEmpty()) {
+            final Runnable task = this.tasks.poll();
             if (task != null) {
                 task.run();
                 processed = true;
@@ -207,7 +206,8 @@ public final class AppContext implements Executor {
     }
 
     public String formatTime(final long ms) {
-        return TIME_FORMAT.format(new Date(ms));
+        // ms IS ELAPSED MEDIA TIME, NOT WALL CLOCK — RENDER AS HH:MM:SS, WRAPPING AT 24H LIKE THE OLD FORMATTER
+        return LocalTime.ofSecondOfDay(Math.max(0L, ms) / 1000L % 86_400L).format(TIME_FORMAT);
     }
 
     public void clearGroupState() {

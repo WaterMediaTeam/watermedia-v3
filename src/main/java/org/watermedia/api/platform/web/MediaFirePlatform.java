@@ -11,6 +11,7 @@ import org.watermedia.tools.DataTool;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -55,7 +56,7 @@ public final class MediaFirePlatform implements IPlatform {
 
             final var entry = new DataSource(MediaType.UNKNOWN, null, null,
                     RequestHeaders.defaults(uri),
-                    new DataQuality[] {new DataQuality(downloadUri, 0, 0)},
+                    List.of(new DataQuality(downloadUri, 0, 0)),
                     null, null);
             return new PlatformData(null, entry);
         }

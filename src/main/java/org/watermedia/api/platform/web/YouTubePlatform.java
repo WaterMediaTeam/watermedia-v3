@@ -11,7 +11,6 @@ import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.binaries.BotGuardBinary;
-import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -64,8 +63,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
     @Override
     public PlatformData getData(final URI uri) throws Exception {
         // NOT A YOUTUBE URL → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
-        final String host = uri.getHost();
-        if (host == null || !DataTool.endsWith(host.toLowerCase(Locale.ROOT), HOSTS)) {
+        if (!hostMatches(uri.getHost(), HOSTS)) {
             return null;
         }
 

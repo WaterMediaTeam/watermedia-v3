@@ -93,11 +93,6 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     public int sampleRate() { return this.sampleRate; }
 
     /**
-     * Generates audio buffers and initializes the internal source handle.
-     */
-    protected abstract int genSource();
-
-    /**
      * Pauses audio playback.
      */
     public abstract void pause();
@@ -175,4 +170,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * @return playback position in ms within the queued buffers, or {@code -1} if playback hasn't started
      */
     public abstract long playbackMs();
+
+    // GENERATES BACKEND BUFFERS AND INITIALIZES THE INTERNAL SOURCE HANDLE
+    protected abstract int genSource();
 }

@@ -67,6 +67,9 @@ public final class PlatformAPI extends WaterMediaAPI {
     };
     private static long nextCacheClean;
 
+    // PLATFORMS STAGED IN load() AND REGISTERED IN start() — INSTANCE STATE OF THE API LIFECYCLE
+    private List<IPlatform> pendingPlatforms;
+
     /**
      * Searches every registered {@link IPlatform} for {@code caption}, with up to
      * {@value #DEFAULT_LIMIT} results per platform. Shorthand for {@link #search(String, int)}.
@@ -256,7 +259,21 @@ public final class PlatformAPI extends WaterMediaAPI {
         PLATFORMS.add(platform);
     }
 
-    private List<IPlatform> pendingPlatforms;
+    /**
+     * Removes a previously {@link #register(IPlatform) registered} platform handler. No-op when the
+     * handler was never registered. Lets an app drop an override it installed.
+     */
+    public static void unregister(final IPlatform platform) {
+        if (PLATFORMS.remove(platform)) LOGGER.info(IT, "• Unregistered {} platform", platform.name());
+    }
+
+    /**
+     * Returns an immutable snapshot of the currently registered platform handlers, in registration
+     * order. Lets a consumer enumerate the active registry without triggering a {@link #fetch(URI)}.
+     */
+    public static List<IPlatform> platforms() {
+        return List.copyOf(PLATFORMS);
+    }
 
     @Override
     public String name() {
@@ -302,11 +319,12 @@ public final class PlatformAPI extends WaterMediaAPI {
         }
 
         LOGGER.info(IT, "Registering supported platforms");
+        // NO ARTIFICIAL PACING: REGISTRATION IS A CopyOnWriteArrayList ADD (EFFECTIVELY FREE); A PER-PLATFORM
+        // SLEEP ONLY EXISTED TO ANIMATE THE BOOTSTRAP BAR AND ADDED ~1s OF STARTUP LATENCY FOR EVERY EMBEDDER.
         for (final IPlatform platform: this.pendingPlatforms) {
             this.step++;
             this.stepName = platform.getClass().getSimpleName();
             register(platform);
-            ThreadTool.sleep(50);
         }
         this.pendingPlatforms = null;
         return true;

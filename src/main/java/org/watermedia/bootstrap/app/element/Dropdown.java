@@ -71,7 +71,9 @@ public final class Dropdown extends Element<Dropdown> {
     }
 
     public Dropdown selected(final int index) {
-        this.selectedIndex = index;
+        // CLAMP INTO RANGE LIKE items() DOES — AN OUT-OF-RANGE INDEX WOULD DRAW/PICK A BLANK VALUE
+        this.selectedIndex = this.items.isEmpty() ? Math.max(0, index)
+                : Math.max(0, Math.min(index, this.items.size() - 1));
         return this;
     }
 
@@ -269,10 +271,14 @@ public final class Dropdown extends Element<Dropdown> {
             this.height = MAX_PARENT;
         }
 
+        // ANCHORED PANEL GEOMETRY; flip TRUE MEANS THE PANEL SITS ABOVE THE CONTROL, SO THE UNFOLD ANIMATION
+        // KNOWS WHICH EDGE IS ANCHORED
+        private record PanelBox(int x, int y, int w, int h, boolean flip) {
+        }
+
         // PANEL BOX RESOLVED FROM THE ANCHOR EACH TIME: RIGHT-ALIGNED UNDER THE CONTROL, FLIPPED ABOVE WHEN
-        // THERE IS MORE ROOM THERE, HEIGHT CLAMPED TO THE LAYER SO A LONG LIST SCROLLS. THE 5TH SLOT FLAGS
-        // THE FLIP SO THE UNFOLD ANIMATION KNOWS WHICH EDGE IS ANCHORED.
-        private int[] box() {
+        // THERE IS MORE ROOM THERE, HEIGHT CLAMPED TO THE LAYER SO A LONG LIST SCROLLS
+        private PanelBox box() {
             final int anchorT = Dropdown.this.top;
             final int anchorB = anchorT + Dropdown.this.measuredHeight;
             final int anchorR = Dropdown.this.left + Dropdown.this.measuredWidth;
@@ -285,19 +291,19 @@ public final class Dropdown extends Element<Dropdown> {
             final int minH = ROW_H + PAD * 2;
             int panelY;
             int panelH;
-            int flip = 0;
+            boolean flip = false;
             if (fullH <= availBelow || availBelow >= availAbove) {
                 panelY = anchorB + 4;
                 panelH = Math.min(fullH, Math.max(minH, availBelow));
             } else {
                 panelH = Math.min(fullH, Math.max(minH, availAbove));
                 panelY = anchorT - 4 - panelH;
-                flip = 1;
+                flip = true;
             }
             int panelX = anchorR - panelW;
             final int frameR = this.left + this.measuredWidth;
             panelX = Math.max(this.left + 4, Math.min(panelX, frameR - panelW - 4));
-            return new int[]{panelX, panelY, panelW, panelH, flip};
+            return new PanelBox(panelX, panelY, panelW, panelH, flip);
         }
 
         @Override
@@ -316,11 +322,11 @@ public final class Dropdown extends Element<Dropdown> {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final int[] b = this.box();
-            final int x = b[0];
-            final int y = b[1];
-            final int w = b[2];
-            final int h = b[3];
+            final PanelBox b = this.box();
+            final int x = b.x();
+            final int y = b.y();
+            final int w = b.w();
+            final int h = b.h();
             final int rows = this.visibleRows(h);
             this.scroll = Math.max(0, Math.min(this.scroll, this.maxScroll(h)));
 
@@ -330,7 +336,7 @@ public final class Dropdown extends Element<Dropdown> {
             final float t = Math.min(1f, (System.currentTimeMillis() - this.openedAt) / (float) OPEN_MS);
             final float inv = 1f - t;
             final int drawH = t >= 1f ? h : Math.max(1, Math.round(h * (1f - inv * inv * inv)));
-            final int drawY = b[4] == 1 ? y + h - drawH : y;
+            final int drawY = b.flip() ? y + h - drawH : y;
 
             canvas.shadow(x, drawY, w, drawH, 0f, Theme.SHADOW_PANEL);
             canvas.fill(x, drawY, w, drawH, AppTheme.alpha(AppTheme.BG_1, 238));
@@ -378,11 +384,11 @@ public final class Dropdown extends Element<Dropdown> {
 
         @Override
         public boolean dispatchClick(final double mx, final double my) {
-            final int[] b = this.box();
-            final int x = b[0];
-            final int y = b[1];
-            final int w = b[2];
-            final int h = b[3];
+            final PanelBox b = this.box();
+            final int x = b.x();
+            final int y = b.y();
+            final int w = b.w();
+            final int h = b.h();
             if (mx >= x && mx < x + w && my >= y && my < y + h) {
                 final int row = (int) ((my - (y + PAD)) / ROW_H) + this.scroll;
                 if (my >= y + PAD && row >= 0 && row < Dropdown.this.items.size()) {
@@ -398,10 +404,12 @@ public final class Dropdown extends Element<Dropdown> {
 
         @Override
         public boolean dispatchScroll(final double mx, final double my, final double amount) {
-            final int[] b = this.box();
-            final int max = this.maxScroll(b[3]);
-            if (max > 0) {
-                final int next = Math.max(0, Math.min(max, this.scroll - (int) amount));
+            final int max = this.maxScroll(this.box().h());
+            if (max > 0 && amount != 0) {
+                // ONE ROW PER NOTCH MINIMUM SO PRECISION-TOUCHPAD DELTAS < 1 STILL SCROLL (LIKE THE OTHER SURFACES);
+                // A BARE (int) CAST TRUNCATED THEM TO ZERO SO THE MENU NEVER MOVED
+                final int rows = amount > 0 ? Math.max(1, (int) amount) : Math.min(-1, (int) amount);
+                final int next = Math.max(0, Math.min(max, this.scroll - rows));
                 if (next != this.scroll) {
                     this.scroll = next;
                     this.invalidate();

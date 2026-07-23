@@ -138,6 +138,8 @@ public final class Assets {
 
     private void loadBanner() {
         try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
+            // GUARD THE MISSING-RESOURCE CASE LIKE loadIcon: ImageIO.read(null) THROWS "input == null!"
+            if (in == null) return;
             final BufferedImage img = ImageIO.read(in);
             if (img == null) return;
 
@@ -173,7 +175,7 @@ public final class Assets {
         final int h = source.getHeight() + pad * 2;
         int[] alpha = new int[w * h];
 
-        // EXTRAE SOLO LA SILUETA ALFA PARA QUE EL GLOW RESPETE PNGS TRANSPARENTES.
+        // EXTRACT ONLY THE ALPHA SILHOUETTE SO THE GLOW RESPECTS TRANSPARENT PNGS.
         for (int y = 0; y < source.getHeight(); y++) {
             for (int x = 0; x < source.getWidth(); x++) {
                 alpha[(y + pad) * w + x + pad] = (source.getRGB(x, y) >>> 24) & 0xFF;
@@ -201,7 +203,7 @@ public final class Assets {
         final int[] output = new int[w * h];
         final int window = radius * 2 + 1;
 
-        // DOS PASADAS CON VENTANA DESLIZANTE: O(W*H) EN VEZ DE O(W*H*R).
+        // TWO PASSES WITH A SLIDING WINDOW: O(W*H) INSTEAD OF O(W*H*R).
         for (int y = 0; y < h; y++) {
             int sum = 0;
             for (int x = -radius; x <= radius; x++) {

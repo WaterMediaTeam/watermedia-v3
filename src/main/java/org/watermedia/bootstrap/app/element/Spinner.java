@@ -83,6 +83,12 @@ public final class Spinner extends Element<Spinner> {
     }
 
     @Override
+    public void clearFocus() {
+        // A CONSUMED CLICK LANDED ELSEWHERE — COMMIT THE BUFFER, EXACTLY LIKE A CLICK OUTSIDE THE CONTROL
+        if (this.editing) this.commit();
+    }
+
+    @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         this.contentHeight = Theme.CONTROL;
         final int valueW = this.ctx != null && this.ctx.text != null ? this.ctx.text.width(this.label(), this.scale) : 0;

@@ -46,7 +46,7 @@ import static org.watermedia.bootstrap.app.render.RenderSystem.mediaEngineSuppli
  * (top info row, metrics panel, transport bar), with the source/quality and video-settings dialogs
  * hosted as modal {@link Dialog}s on the screen overlay.
  */
-public class PlayerScreen extends Screen {
+public final class PlayerScreen extends Screen {
 
     private static final float META_SCALE = AppTheme.TEXT_SECTION;
     private static final float META_HEAD_SCALE = AppTheme.TEXT_DISPLAY;
@@ -76,9 +76,10 @@ public class PlayerScreen extends Screen {
     private boolean endedSoundPlayed;
     private boolean loopEnabled = true;
     private float speed = 1f;
-    // SWALLOWS THE ESC/ENTER RELEASE WHOSE PRESS JUST CLOSED THE SPEED DROPDOWN MENU, SO ONE TAP DOES NOT
-    // ALSO LEAVE THE SCREEN (THE MENU CLOSES ITSELF ON PRESS; THE SCREEN SHORTCUTS ACT ON RELEASE)
-    private boolean swallowKeyUp;
+    // REMEMBERS THE KEY WHOSE PRESS JUST CLOSED THE SPEED DROPDOWN MENU SO ONLY ITS MATCHING RELEASE IS
+    // SWALLOWED (ONE TAP MUST NOT ALSO LEAVE THE SCREEN); -1 = NOTHING PENDING. SAME MECHANISM AS
+    // SettingsScreen.popupKey — A FRESH PRESS CANCELS A STALE PENDING SWALLOW
+    private int swallowKey = -1;
     private String resWidthText = "";
     private String resHeightText = "";
     private int lodSelectedIndex;
@@ -127,7 +128,7 @@ public class PlayerScreen extends Screen {
         this.endedSoundPlayed = false;
         this.loopEnabled = true;
         this.speed = 1f;
-        this.swallowKeyUp = false;
+        this.swallowKey = -1;
         this.resWidthText = "";
         this.resHeightText = "";
         this.lodSelectedIndex = 0;
@@ -331,7 +332,8 @@ public class PlayerScreen extends Screen {
     private void drawTypeTag(final Canvas canvas, final int x, final int y, final MediaType type) {
         final String label = type == null ? "MEDIA" : type.name();
         final Color color = mediaTypeColor(type);
-        final int w = this.text.width(label, AppTheme.TEXT_BODY) + 22;
+        // ONE WIDTH FORMULA — REUSE typeTagWidth SO LAYOUT HIT BOXES AND PAINTED PIXELS NEVER DESYNC
+        final int w = this.typeTagWidth(type);
         canvas.fill(x, y, w, 22, AppTheme.alpha(AppTheme.BG_1, 188));
         canvas.stroke(x, y, w, 22, color, 1f);
         canvas.glow(x, y, w, 22, 0f, color, 0.16f);
@@ -355,12 +357,18 @@ public class PlayerScreen extends Screen {
         // CLOSED IT, EAT THE MATCHING RELEASE SO ONE TAP IS NOT ALSO A SCREEN SHORTCUT (E.G. LEAVE THE SCREEN)
         final boolean menuOpen = this.speedMenuOpen();
         if (super.dispatchKey(key, action)) {
-            if (menuOpen && action != GLFW_RELEASE && !this.speedMenuOpen()) this.swallowKeyUp = true;
+            if (menuOpen && action != GLFW_RELEASE && !this.speedMenuOpen()) this.swallowKey = key;
             return true;
         }
-        if (action != GLFW_RELEASE) return false;
-        if (this.swallowKeyUp) {
-            this.swallowKeyUp = false;
+        if (action != GLFW_RELEASE) {
+            // A FRESH PRESS CANCELS A PENDING SWALLOW (ITS PAIRED RELEASE NEVER CAME — E.G. MOUSE-CLOSED
+            // MENU); PRESSES NEVER TRIGGER SCREEN SHORTCUTS, THOSE ACT ON RELEASE
+            this.swallowKey = -1;
+            return false;
+        }
+        // EAT ONLY THE RELEASE PAIRED WITH THE PRESS THAT CLOSED THE MENU, NOT A LATER UNRELATED KEYSTROKE
+        if (key == this.swallowKey) {
+            this.swallowKey = -1;
             return true;
         }
         // A KEY THAT DID NOT CLOSE A STILL-OPEN MENU: KEEP THE SCREEN SHORTCUTS SUPPRESSED WHILE IT SHOWS
@@ -1034,6 +1042,31 @@ public class PlayerScreen extends Screen {
         private int scroll;
         private int maxScroll;
         private int labelColW;
+        // CACHED DECIMAL METRICS — REFORMATTED ONLY WHEN THEIR 2-DP DISPLAY VALUE MOVES (SEE onUpdate)
+        private String fpsStr = "0.00";
+        private String speedStr = "1.00";
+        private long fpsKey = Long.MIN_VALUE;
+        private long speedKey = Long.MIN_VALUE;
+
+        @Override
+        protected void onUpdate() {
+            final MediaPlayer player = PlayerScreen.this.ctx.player;
+            if (player == null) return;
+            // String.format PER FRAME WAS THIS PANEL'S HEAVIEST STEADY ALLOCATION (DEBUG PANEL IS OPEN AND
+            // CONTINUOUS DURING PLAYBACK); REFORMAT ONLY WHEN THE ROUNDED 2-DECIMAL VALUE ACTUALLY CHANGES
+            final double fps = player.fps();
+            final long fpsKey = Math.round(fps * 100.0);
+            if (fpsKey != this.fpsKey) {
+                this.fpsKey = fpsKey;
+                this.fpsStr = String.format("%.2f", fps);
+            }
+            final double speed = player.speed();
+            final long speedKey = Math.round(speed * 100.0);
+            if (speedKey != this.speedKey) {
+                this.speedKey = speedKey;
+                this.speedStr = String.format("%.2f", speed);
+            }
+        }
 
         @Override
         public boolean dispatchScroll(final double mx, final double my, final double amount) {
@@ -1077,7 +1110,7 @@ public class PlayerScreen extends Screen {
             }
             y = this.metric(canvas, "Source", (ctx.sourceSelectorIndex + 1) + "/" +
                     (ctx.availableSources != null ? ctx.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
-            y = this.metric(canvas, "FPS", String.format("%.2f", player.fps()), x, y, AppTheme.GREEN);
+            y = this.metric(canvas, "FPS", this.fpsStr, x, y, AppTheme.GREEN);
             y = this.metric(canvas, "Status", player.status().name(), x, y, AppTheme.TEXT_SOFT);
 
             final long duration = player.duration();
@@ -1088,7 +1121,7 @@ public class PlayerScreen extends Screen {
             y = this.metric(canvas, "Volume", player.volume() + "%", x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Quality", player.quality().name() + " - " + PlayerScreen.this.maxSizeLabel(), x, y, AppTheme.CYAN);
             y = this.metric(canvas, "Dimensions", PlayerScreen.this.playerResolution(player), x, y, AppTheme.CYAN);
-            y = this.metric(canvas, "Speed", String.format("%.2f", player.speed()) + "x", x, y, AppTheme.TEXT_SOFT);
+            y = this.metric(canvas, "Speed", this.speedStr + "x", x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Live", player.liveSource() ? "Yes" : "No", x, y, AppTheme.TEXT_SOFT);
 
             y += 12;
@@ -1528,25 +1561,27 @@ public class PlayerScreen extends Screen {
         @Override
         protected void onDraw(final Canvas canvas) {
             if (!this.errorMode) {
-                final int winW = canvas.windowWidth();
-                // FADES CONSTRAINED TO THE HUD'S OWN LAID-OUT BOX (THE CENTER SLOT) — NEVER WINDOW
-                // COORDINATES, OR THEY WOULD PAINT OVER THE SHELL'S TITLEBAR/KEYBINDS BAR
+                // ALL CHROME IS SLOT-RELATIVE: X FROM this.left, WIDTH FROM this.measuredWidth. NEVER
+                // canvas.windowWidth() — THAT ONLY ALIGNS WHILE THE CENTER SLOT STARTS AT x=0; ANY
+                // HORIZONTAL INSET WOULD DESYNC THE CHROME FROM THE SLOT-RELATIVE onLayout CHILDREN
+                final int x0 = this.left;
+                final int w = this.measuredWidth;
                 final int hudY = this.top;
                 final int hudH = this.measuredHeight;
-                canvas.gradientH(this.left, hudY, 380, hudH, FADE_DARK, FADE_CLEAR);
-                canvas.gradientV(this.left, hudY + hudH - 120, winW, 120, FADE_CLEAR, FADE_DARK);
-                canvas.gradientV(this.left, hudY, winW, 96, BAND_DARK, BAND_CLEAR);
+                canvas.gradientH(x0, hudY, 380, hudH, FADE_DARK, FADE_CLEAR);
+                canvas.gradientV(x0, hudY + hudH - 120, w, 120, FADE_CLEAR, FADE_DARK);
+                canvas.gradientV(x0, hudY, w, 96, BAND_DARK, BAND_CLEAR);
 
                 // TRANSPORT BAR CHROME
-                canvas.fill(14, this.transportYA, winW - 28, 76, AppTheme.alpha(AppTheme.BG_1, 224));
-                canvas.stroke(14, this.transportYA, winW - 28, 76, AppTheme.NEON, 2f);
-                canvas.glow(14, this.transportYA, winW - 28, 76, 0f, AppTheme.NEON, 0.16f);
-                canvas.fill(28, this.transportYA + 74, 10, 3, AppTheme.AMBER);
-                canvas.fill(winW - 38, this.transportYA + 74, 10, 3, AppTheme.AMBER);
-                canvas.stroke(this.left, hudY, winW, hudH, AppTheme.STROKE_BRIGHT, 1f);
+                canvas.fill(x0 + 14, this.transportYA, w - 28, 76, AppTheme.alpha(AppTheme.BG_1, 224));
+                canvas.stroke(x0 + 14, this.transportYA, w - 28, 76, AppTheme.NEON, 2f);
+                canvas.glow(x0 + 14, this.transportYA, w - 28, 76, 0f, AppTheme.NEON, 0.16f);
+                canvas.fill(x0 + 28, this.transportYA + 74, 10, 3, AppTheme.AMBER);
+                canvas.fill(x0 + w - 38, this.transportYA + 74, 10, 3, AppTheme.AMBER);
+                canvas.stroke(x0, hudY, w, hudH, AppTheme.STROKE_BRIGHT, 1f);
 
                 // TOP INFO ROW
-                canvas.text(this.titleStr, 108, this.topYA - 3, AppTheme.TEXT, AppTheme.TEXT_SECTION, true);
+                canvas.text(this.titleStr, x0 + 108, this.topYA - 3, AppTheme.TEXT, AppTheme.TEXT_SECTION, true);
                 if (this.showTypeTag) {
                     PlayerScreen.this.drawTypeTag(canvas, this.typeTagXA, this.topYA - 5, this.tagType);
                 }
@@ -1557,12 +1592,12 @@ public class PlayerScreen extends Screen {
                             this.topYA - 6 + Math.max(0, (24 - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2) + 1,
                             AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, false);
                 }
-                canvas.text(this.authorStr, 108, this.topYA + 24, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
+                canvas.text(this.authorStr, x0 + 108, this.topYA + 24, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
 
                 // TIME LABELS, VOLUME PERCENT AND VERTICAL DIVIDERS
                 final int timeY = this.transportYA + Math.max(0, (28 - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2);
-                canvas.text(this.leftTime, 26, timeY, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, false);
-                canvas.text(this.rightTime, 112 + this.barW + 18, timeY, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
+                canvas.text(this.leftTime, x0 + 26, timeY, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, false);
+                canvas.text(this.rightTime, x0 + 112 + this.barW + 18, timeY, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
                 canvas.fill(this.dividerXA, this.controlsYA - 6, 1, 32, AppTheme.STROKE_BRIGHT);
                 canvas.fill(this.volDividerXA, this.controlsYA - 6, 1, 32, AppTheme.STROKE_BRIGHT);
                 final MediaPlayer p = PlayerScreen.this.ctx.player;

@@ -40,6 +40,8 @@ public final class AppTheme {
     public static final Color AMBER = hex(0xFFC266);
     public static final Color RED = hex(0xFF6C8E);
 
+    // SEMANTIC TYPE TOKENS. TINY/SUBTITLE/BODY DELIBERATELY RESOLVE TO THE SAME SCALE FOR NOW SO A LATER
+    // RETUNE CAN DIFFERENTIATE THEM WITHOUT TOUCHING ANY CALL SITE — CALLERS STILL ENCODE THEIR INTENT.
     public static final float TEXT_TINY = textScale(12);
     public static final float TEXT_SUBTITLE = textScale(12);
     public static final float TEXT_BODY = textScale(12);

@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
@@ -141,5 +142,18 @@ public class HuffmanTableTest {
     void testNullCodeLengthsHandled() throws XCodecException {
         // NULL CODE LENGTHS MUST PRODUCE A VALID FALLBACK TABLE
         assertNotNull(HuffmanTable.build(null, 10), "Should handle null code lengths");
+    }
+
+    @Test
+    @DisplayName("Over-subscribed code lengths are rejected")
+    void testOverSubscribedCodeLengthsRejected() {
+        // THREE LENGTH-1 CODES OVER-SUBSCRIBE THE TREE (KRAFT SUM 1.5 > 1); BUILDING THEM WOULD
+        // COLLIDE IN THE LOOKUP TABLE, SO build() MUST REJECT IT INSTEAD OF DECODING TO GARBAGE
+        final int[] over = new int[8];
+        over[0] = 1;
+        over[1] = 1;
+        over[2] = 1;
+        assertThrows(XCodecException.class, () -> HuffmanTable.build(over, 8),
+                "Over-subscribed code lengths must throw");
     }
 }

@@ -12,7 +12,7 @@ import java.nio.file.Path;
 /**
  * DirectDraw Surface (DDS) container with the modern {@code DX10} extended header — the storage
  * format for {@link org.watermedia.api.codecs.common.bc.BCCodec BC}-compressed frames, the same way
- * {@link org.watermedia.api.codecs.readers.webp.riff.RiffParser RIFF} is the container for WebP.
+ * RIFF is the container for WebP.
  * This class knows the container only; the block codec is independent.
  *
  * <p>An animation is stored as a 2D texture array (one array slice per frame). DDS itself has no
@@ -136,7 +136,9 @@ public final class DDSHeader {
      */
     public static long[] readFooter(final ByteBuffer src, final int expectedCount) throws XCodecException {
         final ByteBuffer b = src.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        if (b.remaining() < FOOTER_HEAD_BYTES + expectedCount * Long.BYTES) {
+        // LONG MATH: expectedCount*8 OVERFLOWS int FOR expectedCount > ~268M, BYPASSING THE TRUNCATION
+        // CHECK INTO A MULTI-GB new long[count]; ALSO REJECTS A FORGED COUNT THAT CANNOT FIT IN THE BUFFER
+        if (expectedCount < 0 || (long) FOOTER_HEAD_BYTES + (long) expectedCount * Long.BYTES > b.remaining()) {
             throw new XCodecException("Truncated DDS footer");
         }
         if (b.getInt() != FOOTER_MAGIC) throw new XCodecException("Bad DDS footer magic");

@@ -1,5 +1,6 @@
 package org.watermedia.api.platform.web;
 
+import com.google.gson.annotations.SerializedName;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
@@ -11,6 +12,7 @@ import org.watermedia.tools.DataTool;
 
 import java.net.URI;
 import java.time.Instant;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,10 +46,10 @@ public final class SendvidPlatform implements IPlatform {
         LOGGER.debug(IT, "Sendvid resolving video '{}'", videoId);
 
         final StatusResponse status = NetRequest.fetchJson(SendvidPlatform.class, statusUri, StatusResponse.class);
-        if (!"done".equals(status.state)) {
-            LOGGER.debug(IT, "Sendvid video '{}' not ready yet (state={}, queue={})", videoId, status.state, status.placeInQueue);
-            if (status.placeInQueue > MAX_QUEUE) {
-                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' is in queue position " + status.placeInQueue + " (> " + MAX_QUEUE + "), too far to wait");
+        if (!"done".equals(status.state())) {
+            LOGGER.debug(IT, "Sendvid video '{}' not ready yet (state={}, queue={})", videoId, status.state(), status.placeInQueue());
+            if (status.placeInQueue() > MAX_QUEUE) {
+                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' is in queue position " + status.placeInQueue() + " (> " + MAX_QUEUE + "), too far to wait");
             }
             this.waitForReady(statusUri, videoId);
         }
@@ -73,7 +75,7 @@ public final class SendvidPlatform implements IPlatform {
             }
 
             // PREFER THE PAGE'S video_duration; FALL BACK TO THE STATUS API VALUE
-            long durationMs = (long) (status.duration * 1000);
+            long durationMs = (long) (status.duration() * 1000);
             final Matcher durationMatcher = PATTERN_DURATION.matcher(html);
             if (durationMatcher.find()) {
                 durationMs = (long) (Double.parseDouble(durationMatcher.group(1)) * 1000);
@@ -91,7 +93,7 @@ public final class SendvidPlatform implements IPlatform {
             LOGGER.info(IT, "Sendvid resolved video '{}' (durationMs={}, expires={})", videoId, durationMs, expires);
             final var entry = new DataSource(MediaType.VIDEO, thumbnailUri, metadata,
                     RequestHeaders.defaults(uri),
-                    new DataQuality[] {new DataQuality(videoUri, 0, 0)},
+                    List.of(new DataQuality(videoUri, 0, 0)),
                     null, null);
             return new PlatformData(expires, entry);
         }
@@ -101,20 +103,15 @@ public final class SendvidPlatform implements IPlatform {
         for (int i = 0; i < 30; i++) {
             Thread.sleep(2000);
             final StatusResponse status = NetRequest.fetchJson(SendvidPlatform.class, statusUri, StatusResponse.class);
-            LOGGER.debug(IT, "Sendvid {} status: {} ({}%)", videoId, status.state, status.progress);
-            if ("done".equals(status.state)) return;
-            if (status.placeInQueue > MAX_QUEUE) {
-                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' queue position grew to " + status.placeInQueue);
+            LOGGER.debug(IT, "Sendvid {} status: {} ({}%)", videoId, status.state(), status.progress());
+            if ("done".equals(status.state())) return;
+            if (status.placeInQueue() > MAX_QUEUE) {
+                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' queue position grew to " + status.placeInQueue());
             }
         }
         throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' did not become ready after 60 seconds");
     }
 
-    private static class StatusResponse {
-        int progress;
-        @com.google.gson.annotations.SerializedName("place_in_queue")
-        int placeInQueue;
-        String state;
-        double duration;
+    private record StatusResponse(int progress, @SerializedName("place_in_queue") int placeInQueue, String state, double duration) {
     }
 }

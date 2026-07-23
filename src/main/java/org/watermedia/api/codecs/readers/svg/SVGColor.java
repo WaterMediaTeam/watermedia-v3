@@ -12,12 +12,60 @@ import java.util.Map;
  * the unsigned 32-bit range ({@code 0..0xFFFFFFFF}, cast to {@code int} after checking) and
  * {@link #INVALID} is negative — every 32-bit pattern is a legal ARGB colour, so no int sentinel works.
  */
-final class SvgColor {
+final class SVGColor {
     // SENTINEL RETURNED FOR AN UNPARSEABLE COLOUR TOKEN — NEGATIVE, SO IT CANNOT COLLIDE WITH ANY
     // PACKED ARGB VALUE (e.g. rgba(0,0,1,0) == 0x00000001 IS A REAL, FULLY TRANSPARENT COLOUR)
     static final long INVALID = -1L;
 
-    private SvgColor() {}
+    // COMMON SVG NAMED COLOURS (the references use hex/rgb/hsl; this covers the frequent names)
+    private static final Map<String, Integer> NAMED = Map.ofEntries(
+            Map.entry("black", argb(255, 0, 0, 0)),
+            Map.entry("white", argb(255, 255, 255, 255)),
+            Map.entry("red", argb(255, 255, 0, 0)),
+            Map.entry("green", argb(255, 0, 128, 0)),
+            Map.entry("lime", argb(255, 0, 255, 0)),
+            Map.entry("blue", argb(255, 0, 0, 255)),
+            Map.entry("yellow", argb(255, 255, 255, 0)),
+            Map.entry("cyan", argb(255, 0, 255, 255)),
+            Map.entry("aqua", argb(255, 0, 255, 255)),
+            Map.entry("magenta", argb(255, 255, 0, 255)),
+            Map.entry("fuchsia", argb(255, 255, 0, 255)),
+            Map.entry("gray", argb(255, 128, 128, 128)),
+            Map.entry("grey", argb(255, 128, 128, 128)),
+            Map.entry("silver", argb(255, 192, 192, 192)),
+            Map.entry("maroon", argb(255, 128, 0, 0)),
+            Map.entry("olive", argb(255, 128, 128, 0)),
+            Map.entry("navy", argb(255, 0, 0, 128)),
+            Map.entry("teal", argb(255, 0, 128, 128)),
+            Map.entry("purple", argb(255, 128, 0, 128)),
+            Map.entry("orange", argb(255, 255, 165, 0)),
+            Map.entry("pink", argb(255, 255, 192, 203)),
+            Map.entry("brown", argb(255, 165, 42, 42)),
+            Map.entry("gold", argb(255, 255, 215, 0)),
+            Map.entry("indigo", argb(255, 75, 0, 130)),
+            Map.entry("violet", argb(255, 238, 130, 238)),
+            Map.entry("darkgray", argb(255, 169, 169, 169)),
+            Map.entry("darkgrey", argb(255, 169, 169, 169)),
+            Map.entry("lightgray", argb(255, 211, 211, 211)),
+            Map.entry("lightgrey", argb(255, 211, 211, 211)),
+            Map.entry("dimgray", argb(255, 105, 105, 105)),
+            Map.entry("crimson", argb(255, 220, 20, 60)),
+            Map.entry("coral", argb(255, 255, 127, 80)),
+            Map.entry("salmon", argb(255, 250, 128, 114)),
+            Map.entry("tomato", argb(255, 255, 99, 71)),
+            Map.entry("skyblue", argb(255, 135, 206, 235)),
+            Map.entry("steelblue", argb(255, 70, 130, 180)),
+            Map.entry("royalblue", argb(255, 65, 105, 225)),
+            Map.entry("forestgreen", argb(255, 34, 139, 34)),
+            Map.entry("seagreen", argb(255, 46, 139, 87)),
+            Map.entry("khaki", argb(255, 240, 230, 140)),
+            Map.entry("beige", argb(255, 245, 245, 220)),
+            Map.entry("ivory", argb(255, 255, 255, 240)),
+            Map.entry("lavender", argb(255, 230, 230, 250)),
+            Map.entry("turquoise", argb(255, 64, 224, 208))
+    );
+
+    private SVGColor() {}
 
     static int argb(final int a, final int r, final int g, final int b) {
         return (a << 24) | (r << 16) | (g << 8) | b;
@@ -147,52 +195,4 @@ final class SvgColor {
         if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
         throw new NumberFormatException("bad hex: " + ch);
     }
-
-    // COMMON SVG NAMED COLOURS (the references use hex/rgb/hsl; this covers the frequent names)
-    private static final Map<String, Integer> NAMED = Map.ofEntries(
-            Map.entry("black", argb(255, 0, 0, 0)),
-            Map.entry("white", argb(255, 255, 255, 255)),
-            Map.entry("red", argb(255, 255, 0, 0)),
-            Map.entry("green", argb(255, 0, 128, 0)),
-            Map.entry("lime", argb(255, 0, 255, 0)),
-            Map.entry("blue", argb(255, 0, 0, 255)),
-            Map.entry("yellow", argb(255, 255, 255, 0)),
-            Map.entry("cyan", argb(255, 0, 255, 255)),
-            Map.entry("aqua", argb(255, 0, 255, 255)),
-            Map.entry("magenta", argb(255, 255, 0, 255)),
-            Map.entry("fuchsia", argb(255, 255, 0, 255)),
-            Map.entry("gray", argb(255, 128, 128, 128)),
-            Map.entry("grey", argb(255, 128, 128, 128)),
-            Map.entry("silver", argb(255, 192, 192, 192)),
-            Map.entry("maroon", argb(255, 128, 0, 0)),
-            Map.entry("olive", argb(255, 128, 128, 0)),
-            Map.entry("navy", argb(255, 0, 0, 128)),
-            Map.entry("teal", argb(255, 0, 128, 128)),
-            Map.entry("purple", argb(255, 128, 0, 128)),
-            Map.entry("orange", argb(255, 255, 165, 0)),
-            Map.entry("pink", argb(255, 255, 192, 203)),
-            Map.entry("brown", argb(255, 165, 42, 42)),
-            Map.entry("gold", argb(255, 255, 215, 0)),
-            Map.entry("indigo", argb(255, 75, 0, 130)),
-            Map.entry("violet", argb(255, 238, 130, 238)),
-            Map.entry("darkgray", argb(255, 169, 169, 169)),
-            Map.entry("darkgrey", argb(255, 169, 169, 169)),
-            Map.entry("lightgray", argb(255, 211, 211, 211)),
-            Map.entry("lightgrey", argb(255, 211, 211, 211)),
-            Map.entry("dimgray", argb(255, 105, 105, 105)),
-            Map.entry("crimson", argb(255, 220, 20, 60)),
-            Map.entry("coral", argb(255, 255, 127, 80)),
-            Map.entry("salmon", argb(255, 250, 128, 114)),
-            Map.entry("tomato", argb(255, 255, 99, 71)),
-            Map.entry("skyblue", argb(255, 135, 206, 235)),
-            Map.entry("steelblue", argb(255, 70, 130, 180)),
-            Map.entry("royalblue", argb(255, 65, 105, 225)),
-            Map.entry("forestgreen", argb(255, 34, 139, 34)),
-            Map.entry("seagreen", argb(255, 46, 139, 87)),
-            Map.entry("khaki", argb(255, 240, 230, 140)),
-            Map.entry("beige", argb(255, 245, 245, 220)),
-            Map.entry("ivory", argb(255, 255, 255, 240)),
-            Map.entry("lavender", argb(255, 230, 230, 250)),
-            Map.entry("turquoise", argb(255, 64, 224, 208))
-    );
 }

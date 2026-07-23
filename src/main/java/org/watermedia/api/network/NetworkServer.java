@@ -15,7 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import org.watermedia.tools.ThreadTool;
 
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.network.NetworkAPI.*;
@@ -26,28 +29,46 @@ public final class NetworkServer {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private static Path storageDir;
+    private static volatile HttpServer server;
+    private static volatile ExecutorService serverExecutor;
 
     public static void start(final int port, final WaterMedia instance) {
         try {
             storageDir = instance.cwd.resolve("watermedia").resolve("files");
             Files.createDirectories(storageDir);
 
-            final HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            final HttpServer srv = HttpServer.create(new InetSocketAddress(port), 0);
+            srv.createContext("/upload", NetworkServer::handleUpload);
+            srv.createContext("/", NetworkServer::handleRoot);
 
-            server.createContext("/upload", NetworkServer::handleUpload);
-            server.createContext("/", NetworkServer::handleRoot);
+            // NAMED DAEMON POOL SO THE SERVER NEVER KEEPS THE JVM ALIVE AND stop() CAN SHUT IT DOWN
+            final ExecutorService exec = Executors.newCachedThreadPool(ThreadTool.createFactory("NetworkServer", Thread.NORM_PRIORITY));
+            srv.setExecutor(exec);
+            srv.start();
+            server = srv;
+            serverExecutor = exec;
 
-            server.setExecutor(Executors.newCachedThreadPool());
-            server.start();
-
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                server.stop(0);
-                LOGGER.info(IT, "Successfully stopped network server");
-            }, "NetworkServer-Shutdown"));
+            // STOP ON JVM EXIT AS A SAFETY NET WHEN release()/stop() IS NEVER CALLED
+            Runtime.getRuntime().addShutdownHook(new Thread(NetworkServer::stop, "NetworkServer-Shutdown"));
 
             LOGGER.info(IT, "Successfully started network server on port {} - storage: {}", port, storageDir);
         } catch (final Exception e) {
             LOGGER.error(IT, "Failed to start network server", e);
+        }
+    }
+
+    // STOPS THE RUNNING SERVER AND SHUTS DOWN ITS THREAD POOL; IDEMPOTENT (SAFE FROM BOTH release() AND THE HOOK)
+    public static void stop() {
+        final HttpServer srv = server;
+        if (srv != null) {
+            server = null;
+            srv.stop(0);
+            LOGGER.info(IT, "Successfully stopped network server");
+        }
+        final ExecutorService exec = serverExecutor;
+        if (exec != null) {
+            serverExecutor = null;
+            exec.shutdownNow();
         }
     }
 
@@ -271,7 +292,7 @@ public final class NetworkServer {
     /**
      * Tracks the progress of a file upload to a WaterMedia server.
      * Returned by {@link NetworkAPI#upload(java.io.File)} methods.
-     * All getters are thread-safe and can be polled from any thread.
+     * All accessors are thread-safe and can be polled from any thread.
      */
     public static class UploadStatus {
         private final long totalBytes;
@@ -295,8 +316,8 @@ public final class NetworkServer {
         /** Server-assigned ID, null until upload completes */
         public String id() { return this.id; }
 
-        public boolean isComplete() { return this.complete; }
-        public boolean isFailed() { return this.failed; }
+        public boolean completed() { return this.complete; }
+        public boolean failed() { return this.failed; }
         public String error() { return this.error; }
 
         /** Upload progress from 0.0 to 100.0 */
@@ -309,8 +330,8 @@ public final class NetworkServer {
             return NetworkAPI.displaySpeed(this.speed);
         }
 
-        void setUploadedBytes(final long bytes) { this.uploadedBytes = bytes; }
-        void setSpeed(final long speed) { this.speed = speed; }
+        void uploadedBytes(final long bytes) { this.uploadedBytes = bytes; }
+        void speed(final long speed) { this.speed = speed; }
 
         void complete(final String id) {
             this.id = id;

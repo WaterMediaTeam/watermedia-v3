@@ -141,6 +141,14 @@ public final class JPEGReader extends ImageReader {
     }
 
     @Override
+    public boolean reset() {
+        // FULLY DECODED INTO directOut AT CONSTRUCTION; REPLAYING IS JUST CLEARING THE DELIVERY FLAG
+        this.delivered = false;
+        this.currentDelay = 0L;
+        return true;
+    }
+
+    @Override
     public ByteBuffer next() throws IOException {
         if (this.delivered) throw new EOFException("No more JPEG frames");
         this.delivered = true;
@@ -970,10 +978,10 @@ public final class JPEGReader extends ImageReader {
         }
     }
 
-    private static final int LUT_BITS = 8;
-    private static final int LUT_SIZE = 1 << LUT_BITS;
-
     private static final class HuffmanTable {
+        private static final int LUT_BITS = 8;
+        private static final int LUT_SIZE = 1 << LUT_BITS;
+
         private final int[] maxCode = new int[18];
         private final int[] valueOffset = new int[17];
         private final int[] values;

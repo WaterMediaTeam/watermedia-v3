@@ -13,12 +13,14 @@ import java.util.List;
  * downloading. Devs can read {@link DataQuality#width()}/{@link DataQuality#height()}
  * and {@link #metadata()} directly to pick a link.
  */
-public record DataSource(MediaType type, URI thumbnail, Metadata metadata, RequestHeaders headers, DataQuality[] variants, List<DataSlave> audioSlaves, List<DataSlave> subSlaves) {
+public record DataSource(MediaType type, URI thumbnail, Metadata metadata, RequestHeaders headers, List<DataQuality> variants, List<DataSlave> audioSlaves, List<DataSlave> subSlaves) {
 
     public DataSource {
-        if (variants == null || variants.length == 0) throw new IllegalArgumentException("Entry constructed with no variants");
+        if (variants == null || variants.isEmpty()) throw new IllegalArgumentException("Entry constructed with no variants");
         if (headers == null) headers = new RequestHeaders();
 
+        // DEFENSIVE COPIES: RECORD COMPONENTS MUST NOT EXPOSE MUTABLE STATE SHARED WITH THE PLATFORM
+        variants = List.copyOf(variants);
         audioSlaves = audioSlaves == null ? List.of() : List.copyOf(audioSlaves);
         subSlaves = subSlaves == null ? List.of() : List.copyOf(subSlaves);
     }

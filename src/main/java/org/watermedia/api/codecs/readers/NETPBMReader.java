@@ -30,33 +30,35 @@ public final class NETPBMReader extends ImageReader {
     private final NetpbmType type;
     private final NetpbmHeader header;
     private final ByteBuffer directOut;
+    private final int rasterStart;
     private byte[] rowScratch = new byte[0];
 
     private boolean delivered;
 
     public NETPBMReader(final ByteBuffer data, final int version) throws IOException {
         super(data);
-        // Re-synthesize "P<digit>" so we can reuse NetpbmHeader.parse(ByteBuffer)
-        // which expects to consume the "Pn" version token first. The header is small
-        // (a few tokens of ASCII whitespace-separated text) so buffering it is fine.
+        // RE-SYNTHESIZE "P<digit>" SO WE CAN REUSE NetpbmHeader.parse; IT CONSUMES THE "Pn" VERSION
+        // TOKEN FIRST. THE HEADER IS A FEW TOKENS OF ASCII TEXT, SO BUFFERING IT IS CHEAP.
         final byte[] headerBytes = readHeaderBytes(this.data, version);
-        this.header = new NetpbmHeader().parse(ByteBuffer.wrap(headerBytes));
+        this.header = NetpbmHeader.parse(ByteBuffer.wrap(headerBytes));
 
-        this.type = NetpbmType.fromVersion(this.header.versionString);
+        this.type = NetpbmType.fromVersion(this.header.versionString());
         if (this.type == null) {
-            throw new UnsupportedFormatException("Unsupported Netpbm version: " + this.header.versionString);
+            throw new UnsupportedFormatException("Unsupported Netpbm version: " + this.header.versionString());
         }
 
         // SECURITY CAP: SIBLING READERS ALL ENFORCE 16384; WITHOUT IT A TINY HEADER FORCES A MULTI-GB DIRECT ALLOC (OR AN INT OVERFLOW)
-        if (this.header.width > MAX_DIM || this.header.height > MAX_DIM) {
-            throw new XCodecException("Netpbm dimensions too big: " + this.header.width + "x" + this.header.height + " (max " + MAX_DIM + ")");
+        if (this.header.width() > MAX_DIM || this.header.height() > MAX_DIM) {
+            throw new XCodecException("Netpbm dimensions too big: " + this.header.width() + "x" + this.header.height() + " (max " + MAX_DIM + ")");
         }
 
-        this.directOut = ByteBuffer.allocateDirect(this.header.width * this.header.height * 4).order(ByteOrder.LITTLE_ENDIAN);
+        this.directOut = ByteBuffer.allocateDirect(this.header.width() * this.header.height() * 4).order(ByteOrder.LITTLE_ENDIAN);
+        // SNAPSHOT THE RASTER START SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
+        this.rasterStart = this.data.position();
     }
 
-    @Override public int width() { return this.header.width; }
-    @Override public int height() { return this.header.height; }
+    @Override public int width() { return this.header.width(); }
+    @Override public int height() { return this.header.height(); }
     @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
     @Override public boolean variableFrameRate() { return false; }
@@ -67,22 +69,24 @@ public final class NETPBMReader extends ImageReader {
     }
 
     @Override
+    public boolean reset() {
+        this.data.position(this.rasterStart);
+        this.delivered = false;
+        this.currentDelay = 0L;
+        return true;
+    }
+
+    @Override
     public ByteBuffer next() throws IOException {
         if (this.delivered) throw new EOFException("No more Netpbm frames");
         this.delivered = true;
 
         this.directOut.clear();
-        try {
-            switch (this.type) {
-                case PBM -> this.decodePbmBits();
-                case PGM -> this.decodeGrayscale(1, this.header.maxVal);
-                case PPM -> this.decodeColor(3, this.header.maxVal, false);
-                case PAM -> this.decodePam();
-            }
-        } catch (final XCodecException e) {
-            throw e;
-        } catch (final Exception e) {
-            throw new XCodecException("Failed to decode Netpbm raster", e);
+        switch (this.type) {
+            case PBM -> this.decodePbmBits();
+            case PGM -> this.decodeGrayscale(1, this.header.maxVal());
+            case PPM -> this.decodeColor(3, this.header.maxVal(), false);
+            case PAM -> this.decodePam();
         }
         this.directOut.flip();
         this.currentDelay = 0L;
@@ -91,11 +95,11 @@ public final class NETPBMReader extends ImageReader {
     }
 
     private void decodePam() throws IOException {
-        final int depth = this.header.depth;
-        final int maxVal = this.header.maxVal;
-        final String tupleType = this.header.tuplType != null ? this.header.tuplType : "";
+        final int depth = this.header.depth();
+        final int maxVal = this.header.maxVal();
+        final String tupleType = this.header.tuplType() != null ? this.header.tuplType() : "";
         switch (tupleType) {
-            case "BLACKANDWHITE" -> this.decodeBW(depth, maxVal, false);
+            case "BLACKANDWHITE" -> this.decodeBW(depth, maxVal);
             case "GRAYSCALE" -> this.decodeGrayscale(depth, maxVal);
             case "RGB" -> this.decodeColor(depth, maxVal, false);
             case "RGB_ALPHA" -> this.decodeColor(depth, maxVal, true);
@@ -104,77 +108,75 @@ public final class NETPBMReader extends ImageReader {
     }
 
     private void decodePbmBits() throws IOException {
-        final int rowBytes = (this.header.width + 7) >> 3;
+        final int rowBytes = (this.header.width() + 7) >> 3;
         final byte[] row = this.ensureRowScratch(rowBytes);
-        for (int y = 0; y < this.header.height; y++) {
+        for (int y = 0; y < this.header.height(); y++) {
             readFully(this.data, row, 0, rowBytes);
-            for (int x = 0; x < this.header.width; x++) {
+            for (int x = 0; x < this.header.width(); x++) {
                 final int packed = row[x >> 3] & 0xFF;
                 final int bit = (packed >> (7 - (x & 7))) & 1;
                 final int v = bit == 1 ? 0 : 255;
-                this.putArgb(0xFF000000 | (v << 16) | (v << 8) | v);
+                this.directOut.putInt(0xFF000000 | (v << 16) | (v << 8) | v);
             }
         }
     }
 
-    private void decodeBW(final int depth, final int maxVal, final boolean flip) throws IOException {
+    private void decodeBW(final int depth, final int maxVal) throws IOException {
         if (maxVal != 1) throw new XCodecException("black and white images must have maxVal of 1");
         final int bytesPerSample = bytesPerSample(maxVal);
-        final int rowBytes = this.header.width * depth * bytesPerSample;
+        final int rowBytes = this.header.width() * depth * bytesPerSample;
         final byte[] row = this.ensureRowScratch(rowBytes);
-        for (int y = 0; y < this.header.height; y++) {
+        for (int y = 0; y < this.header.height(); y++) {
             readFully(this.data, row, 0, rowBytes);
             int offset = 0;
-            for (int x = 0; x < this.header.width; x++) {
+            for (int x = 0; x < this.header.width(); x++) {
                 final int value = readSample(row, offset, bytesPerSample);
                 offset += depth * bytesPerSample;
-                final int v = (value == (flip ? 1 : 0)) ? 0 : 255;
-                this.putArgb(0xFF000000 | (v << 16) | (v << 8) | v);
+                final int v = value == 0 ? 0 : 255;
+                this.directOut.putInt(0xFF000000 | (v << 16) | (v << 8) | v);
             }
         }
     }
 
     private void decodeGrayscale(final int depth, final int maxVal) throws IOException {
         final int bytesPerSample = bytesPerSample(maxVal);
-        final int rowBytes = this.header.width * depth * bytesPerSample;
+        final int rowBytes = this.header.width() * depth * bytesPerSample;
         final byte[] row = this.ensureRowScratch(rowBytes);
-        for (int y = 0; y < this.header.height; y++) {
+        for (int y = 0; y < this.header.height(); y++) {
             readFully(this.data, row, 0, rowBytes);
             int offset = 0;
-            for (int x = 0; x < this.header.width; x++) {
-                int gray = readSample(row, offset, bytesPerSample);
+            for (int x = 0; x < this.header.width(); x++) {
+                final int sample = readSample(row, offset, bytesPerSample);
                 offset += depth * bytesPerSample;
-                gray = (gray * 255) / maxVal;
-                this.putArgb(0xFF000000 | (gray << 16) | (gray << 8) | gray);
+                // CLAMP: A MALFORMED SAMPLE ABOVE maxVal WOULD RESCALE PAST 8 BITS AND CORRUPT ADJACENT CHANNELS
+                final int gray = Math.min(255, (sample * 255) / maxVal);
+                this.directOut.putInt(0xFF000000 | (gray << 16) | (gray << 8) | gray);
             }
         }
     }
 
     private void decodeColor(final int depth, final int maxVal, final boolean hasAlpha) throws IOException {
         final int bytesPerSample = bytesPerSample(maxVal);
-        final int rowBytes = this.header.width * depth * bytesPerSample;
+        final int rowBytes = this.header.width() * depth * bytesPerSample;
         final byte[] row = this.ensureRowScratch(rowBytes);
-        for (int y = 0; y < this.header.height; y++) {
+        for (int y = 0; y < this.header.height(); y++) {
             readFully(this.data, row, 0, rowBytes);
             int offset = 0;
-            for (int x = 0; x < this.header.width; x++) {
-                int r = readSample(row, offset, bytesPerSample);
-                int g = depth >= 2 ? readSample(row, offset + bytesPerSample, bytesPerSample) : 0;
-                int b = depth >= 3 ? readSample(row, offset + bytesPerSample * 2, bytesPerSample) : 0;
-                int a = hasAlpha && depth >= 4 ? readSample(row, offset + bytesPerSample * 3, bytesPerSample) : maxVal;
+            for (int x = 0; x < this.header.width(); x++) {
+                final int rs = readSample(row, offset, bytesPerSample);
+                final int gs = depth >= 2 ? readSample(row, offset + bytesPerSample, bytesPerSample) : 0;
+                final int bs = depth >= 3 ? readSample(row, offset + bytesPerSample * 2, bytesPerSample) : 0;
+                final int as = hasAlpha && depth >= 4 ? readSample(row, offset + bytesPerSample * 3, bytesPerSample) : maxVal;
                 offset += depth * bytesPerSample;
 
-                r = (r * 255) / maxVal;
-                g = (g * 255) / maxVal;
-                b = (b * 255) / maxVal;
-                a = (a * 255) / maxVal;
-                this.putArgb((a << 24) | (r << 16) | (g << 8) | b);
+                // CLAMP: A MALFORMED SAMPLE ABOVE maxVal WOULD RESCALE PAST 8 BITS AND BLEED INTO ADJACENT CHANNELS
+                final int r = Math.min(255, (rs * 255) / maxVal);
+                final int g = Math.min(255, (gs * 255) / maxVal);
+                final int b = Math.min(255, (bs * 255) / maxVal);
+                final int a = Math.min(255, (as * 255) / maxVal);
+                this.directOut.putInt((a << 24) | (r << 16) | (g << 8) | b);
             }
         }
-    }
-
-    private void putArgb(final int argb) {
-        this.directOut.putInt(argb);
     }
 
     private byte[] ensureRowScratch(final int size) {
@@ -201,7 +203,7 @@ public final class NETPBMReader extends ImageReader {
     }
 
     /**
-     * Re-emits "P<digit>\n" then drains the ASCII header from the stream until the raster begins.
+     * Re-emits "P<digit>" then drains the ASCII header from the stream until the raster begins.
      * The raster boundary depends on version: P4/P5/P6 end after the last numeric token's trailing
      * whitespace byte (consumed); P7 ends after the "ENDHDR\n" line.
      */
@@ -211,8 +213,7 @@ public final class NETPBMReader extends ImageReader {
         out.write('0' + version);
 
         if (version == 7) {
-            // Read until "\nENDHDR\n"
-            int state = 0; // 0: scanning; 1: just saw '\n' at start of new line
+            // READ UNTIL "\nENDHDR\n"
             final byte[] sentinel = "ENDHDR".getBytes();
             int sentIdx = 0;
             boolean endhdrSeen = false;
@@ -222,13 +223,12 @@ public final class NETPBMReader extends ImageReader {
                 if (b < 0) throw new EOFException("Truncated PAM header");
                 out.write(b);
                 if (endhdrSeen) {
+                    // IGNORE THE REST OF THE ENDHDR LINE UNTIL ITS TERMINATOR
                     if (b == '\n') return out.toByteArray();
-                    // ignore until newline
                     continue;
                 }
                 if (last == '\n' || last == -1) {
-                    if (b == sentinel[0]) { sentIdx = 1; }
-                    else { sentIdx = 0; }
+                    sentIdx = b == sentinel[0] ? 1 : 0;
                 } else if (sentIdx > 0 && sentIdx < sentinel.length && b == sentinel[sentIdx]) {
                     sentIdx++;
                     if (sentIdx == sentinel.length) endhdrSeen = true;
@@ -239,11 +239,11 @@ public final class NETPBMReader extends ImageReader {
             }
         }
 
-        // P4/P5/P6: header is "<digit> WSP <width> WSP <height> [WSP <maxval>] WSP".
-        // Tokens are whitespace-separated; comments start with '#' and run to '\n'.
-        // P4 → 3 tokens (Pn, width, height). P5/P6 → 4 tokens (Pn, width, height, maxval).
+        // P4/P5/P6: HEADER IS "<digit> WSP <width> WSP <height> [WSP <maxval>] WSP".
+        // TOKENS ARE WHITESPACE-SEPARATED; COMMENTS START WITH '#' AND RUN TO '\n'.
+        // P4 -> 3 TOKENS (Pn, width, height). P5/P6 -> 4 TOKENS (Pn, width, height, maxval).
         final int expectedTokens = (version == 4) ? 3 : 4;
-        int tokens = 1; // already wrote "Pn"
+        int tokens = 1; // ALREADY WROTE "Pn"
         boolean inComment = false;
         boolean inToken = false;
         while (tokens < expectedTokens || inToken) {

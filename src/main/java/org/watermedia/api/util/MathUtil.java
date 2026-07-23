@@ -1,196 +1,58 @@
 package org.watermedia.api.util;
 
 /**
- *
- * This API its safe to use even if watermedia isn't successfully loaded
+ * This API is safe to use even if watermedia isn't successfully loaded.
  */
 public enum MathUtil {
-    EASE_IN {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeIn(start, end, value);
-        }
-    },
-    EASE_OUT {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOut(start, end, value);
-        }
-    },
-    EASE_IN_OUT {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOut(start, end, value);
-        }
-    },
-    EASE_OUT_IN {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutIn(start, end, value);
-        }
-    },
-    EASE_IN_SINE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInSine(start, end, value);
-        }
-    },
-    EASE_OUT_SINE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutSine(start, end, value);
-        }
-    },
-    EASE_IN_OUT_SINE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutSine(start, end, value);
-        }
-    },
-    EASE_IN_CUBIC {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInCubic(start, end, value);
-        }
-    },
-    EASE_OUT_CUBIC {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutCubic(start, end, value);
-        }
-    },
-    EASE_IN_OUT_CUBIC {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutCubic(start, end, value);
-        }
-    },
-    EASE_IN_QUAD {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInQuad(start, end, value);
-        }
-    },
-    EASE_OUT_QUAD {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutQuad(start, end, value);
-        }
-    },
-    EASE_IN_OUT_QUAD {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutQuad(start, end, value);
-        }
-    },
-    EASE_IN_ELASTIC {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInElastic(start, end, value);
-        }
-    },
-    EASE_OUT_ELASTIC {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutElastic(start, end, value);
-        }
-    },
-    EASE_IN_OUT_ELASTIC {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutElastic(start, end, value);
-        }
-    },
-    EASE_IN_QUINT {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInQuint(start, end, value);
-        }
-    },
-    EASE_OUT_QUINT {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutQuint(start, end, value);
-        }
-    },
-    EASE_IN_OUT_QUINT {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutQuint(start, end, value);
-        }
-    },
-    EASE_IN_CIRCLE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInCircle(start, end, value);
-        }
-    },
-    EASE_OUT_CIRCLE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutCircle(start, end, value);
-        }
-    },
-    EASE_IN_OUT_CIRCLE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutCircle(start, end, value);
-        }
-    },
-    EASE_IN_EXPO {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInExpo(start, end, value);
-        }
-    },
-    EASE_OUT_EXPO {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutExpo(start, end, value);
-        }
-    },
-    EASE_IN_OUT_EXPO {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutExpo(start, end, value);
-        }
-    },
-    EASE_IN_BACK {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInBack(start, end, value);
-        }
-    },
-    EASE_OUT_BACK {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutBack(start, end, value);
-        }
-    },
-    EASE_IN_OUT_BACK {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutBack(start, end, value);
-        }
-    },
-    EASE_IN_BOUNCE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInBounce(start, end, value);
-        }
-    },
-    EASE_OUT_BOUNCE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeOutBounce(start, end, value);
-        }
-    },
-    EASE_IN_OUT_BOUNCE {
-        @Override
-        public double apply(final double start, final double end, final double value) {
-            return MathUtil.easeInOutBounce(start, end, value);
-        }
-    };
+    EASE_IN(MathUtil::easeIn),
+    EASE_OUT(MathUtil::easeOut),
+    EASE_IN_OUT(MathUtil::easeInOut),
+    EASE_OUT_IN(MathUtil::easeOutIn),
+    EASE_IN_SINE(MathUtil::easeInSine),
+    EASE_OUT_SINE(MathUtil::easeOutSine),
+    EASE_IN_OUT_SINE(MathUtil::easeInOutSine),
+    EASE_IN_CUBIC(MathUtil::easeInCubic),
+    EASE_OUT_CUBIC(MathUtil::easeOutCubic),
+    EASE_IN_OUT_CUBIC(MathUtil::easeInOutCubic),
+    // EASE_IN/EASE_OUT ALREADY COVER QUADRATIC IN/OUT; ONLY THE START↔END IN-OUT SHAPE IS DISTINCT
+    EASE_IN_OUT_QUAD(MathUtil::easeInOutQuad),
+    EASE_IN_ELASTIC(MathUtil::easeInElastic),
+    EASE_OUT_ELASTIC(MathUtil::easeOutElastic),
+    EASE_IN_OUT_ELASTIC(MathUtil::easeInOutElastic),
+    EASE_IN_QUINT(MathUtil::easeInQuint),
+    EASE_OUT_QUINT(MathUtil::easeOutQuint),
+    EASE_IN_OUT_QUINT(MathUtil::easeInOutQuint),
+    EASE_IN_CIRCLE(MathUtil::easeInCircle),
+    EASE_OUT_CIRCLE(MathUtil::easeOutCircle),
+    EASE_IN_OUT_CIRCLE(MathUtil::easeInOutCircle),
+    EASE_IN_EXPO(MathUtil::easeInExpo),
+    EASE_OUT_EXPO(MathUtil::easeOutExpo),
+    EASE_IN_OUT_EXPO(MathUtil::easeInOutExpo),
+    EASE_IN_BACK(MathUtil::easeInBack),
+    EASE_OUT_BACK(MathUtil::easeOutBack),
+    EASE_IN_OUT_BACK(MathUtil::easeInOutBack),
+    EASE_IN_BOUNCE(MathUtil::easeInBounce),
+    EASE_OUT_BOUNCE(MathUtil::easeOutBounce),
+    EASE_IN_OUT_BOUNCE(MathUtil::easeInOutBounce);
+
+    private final Easing easing;
+
+    MathUtil(final Easing easing) {
+        this.easing = easing;
+    }
+
+    // APPLIES THE EASING CURVE: INTERPOLATES BETWEEN start AND end AT NORMALISED TIME value (0.0-1.0)
+    public double apply(final double start, final double end, final double value) {
+        return this.easing.apply(start, end, value);
+    }
+
+    /**
+     * A single easing curve mapping {@code (start, end, t)} to an interpolated value.
+     */
+    @FunctionalInterface
+    public interface Easing {
+        double apply(double start, double end, double t);
+    }
 
     public static long parseLong(final String s) {
         try {
@@ -199,8 +61,6 @@ public enum MathUtil {
             return 0L;
         }
     }
-
-    public abstract double apply(double start, double end, double value);
 
     private static final int SIN_SIZE = 65536;
     private static final float[] SIN = new float[SIN_SIZE];
@@ -243,7 +103,7 @@ public enum MathUtil {
      * @param sec Time in seconds
      * @return seconds converted in milliseconds
      */
-    public static long secondsToMs(final double sec) { return ((long) sec * 1000L); }
+    public static long secondsToMs(final double sec) { return (long) (sec * 1000.0); }
 
     /**
      * Converts milliseconds in a floating-point seconds
@@ -508,18 +368,6 @@ public enum MathUtil {
     }
 
     /**
-     * Converts arguments into an easy-ease value usable on animations.
-     *
-     * @param start The beginning of the result across time.
-     * @param end The end of the result across time.
-     * @param t Time from 0.0 to 1.0
-     * @return The calculated result of easy-ease interpolation between start and end at time t.
-     */
-    public static double easyEase(final double start, final double end, final double t) {
-        return start + (end - start) * ((t < 0.5) ? 2 * t * t : -1 + 2 * t * (2 - t));
-    }
-
-    /**
      * Converts arguments into an ease-in-sine value usable on animations.
      *
      * @param start The beginning of the result across time.
@@ -721,30 +569,6 @@ public enum MathUtil {
     }
 
     /**
-     * Converts arguments into an ease-in-quad value usable on animations.
-     *
-     * @param start The beginning of the result across time.
-     * @param end The end of the result across time.
-     * @param t Time from 0.0 to 1.0
-     * @return The calculated result of ease-in-quad interpolation between start and end at time t.
-     */
-    public static double easeInQuad(final double start, final double end, final double t) {
-        return (end - start) * (t * t) + start;
-    }
-
-    /**
-     * Converts arguments into an ease-in-quart value usable on animations.
-     *
-     * @param start The beginning of the result across time.
-     * @param end The end of the result across time.
-     * @param t Time from 0.0 to 1.0
-     * @return The calculated result of ease-in-quart interpolation between start and end at time t.
-     */
-    public static double easeInQuart(final double start, final double end, final double t) {
-        return (end - start) * (t * t * t * t) + start;
-    }
-
-    /**
      * Converts arguments into an ease-in-expo value usable on animations.
      *
      * @param start The beginning of the result across time.
@@ -815,30 +639,6 @@ public enum MathUtil {
     }
 
     /**
-     * Converts arguments into an ease-out-quad value usable on animations.
-     *
-     * @param start The beginning of the result across time.
-     * @param end The end of the result across time.
-     * @param t Time from 0.0 to 1.0
-     * @return The calculated result of ease-out-quad interpolation between start and end at time t.
-     */
-    public static double easeOutQuad(final double start, final double end, final double t) {
-        return start + (end - start) * (1 - Math.pow(1 - t, 2));
-    }
-
-    /**
-     * Converts arguments into an ease-out-quart value usable on animations.
-     *
-     * @param start The beginning of the result across time.
-     * @param end The end of the result across time.
-     * @param t Time from 0.0 to 1.0
-     * @return The calculated result of ease-out-quart interpolation between start and end at time t.
-     */
-    public static double easeOutQuart(final double start, final double end, final double t) {
-        return start + (end - start) * (1 - Math.pow(1 - t, 4));
-    }
-
-    /**
      * Converts arguments into an ease-out-expo value usable on animations.
      *
      * @param start The beginning of the result across time.
@@ -881,22 +681,6 @@ public enum MathUtil {
             return start + (end - start) * (2 * t * t);
         } else {
             return start + (end - start) * (1 - Math.pow(-2 * t + 2, 2) / 2);
-        }
-    }
-
-    /**
-     * Converts arguments into an ease-in-out-quart value usable on animations.
-     *
-     * @param start The beginning of the result across time.
-     * @param end The end of the result across time.
-     * @param t Time from 0.0 to 1.0
-     * @return The calculated result of ease-in-out-quart interpolation between start and end at time t.
-     */
-    public static double easeInOutQuart(final double start, final double end, final double t) {
-        if (t < 0.5) {
-            return start + (end - start) * (8 * Math.pow(t, 4));
-        } else {
-            return start + (end - start) * (1 - Math.pow(-2 * t + 2, 4) / 2);
         }
     }
 
@@ -999,7 +783,7 @@ public enum MathUtil {
      * @return The approximate cosine of the angle.
      */
     public static float cos(final float pValue) {
-        return SIN[(int)(pValue * 10430.378F + 16384.0F) & '\uffff'];
+        return SIN[(int)(pValue * 10430.378F + 16384.0F) & 0xFFFF];
     }
 
     public static double bytesToKB(final long bytes) { return bytes / 1024.0; }

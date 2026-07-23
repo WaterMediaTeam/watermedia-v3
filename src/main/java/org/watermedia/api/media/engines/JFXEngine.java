@@ -8,6 +8,8 @@ import javafx.scene.image.WritableImage;
 
 import java.nio.ByteBuffer;
 
+import static org.watermedia.WaterMedia.LOGGER;
+
 /**
  * {@link SWEngine} that renders frames into a JavaFX {@link Image}.
  * <p>
@@ -38,8 +40,8 @@ public final class JFXEngine extends SWEngine {
         try {
             this.pixelBuffer = new PixelBuffer<>(width, height, bgra, PixelFormat.getByteBgraPreInstance());
             this.image = new WritableImage(this.pixelBuffer);
-        } catch (final Throwable t) {
-            org.watermedia.WaterMedia.LOGGER.error("JFXEngine: failed to allocate the {}x{} surface", width, height, t);
+        } catch (final RuntimeException t) {
+            LOGGER.error("JFXEngine: failed to allocate the {}x{} surface", width, height, t);
         }
     }
 
@@ -58,9 +60,10 @@ public final class JFXEngine extends SWEngine {
         if (pb == null) return;
         if (!this.loggedPresent) {
             this.loggedPresent = true;
-            org.watermedia.WaterMedia.LOGGER.info("JFXEngine: first frame presented ({}x{})", this.width, this.height);
+            LOGGER.info("JFXEngine: first frame presented ({}x{})", this.width, this.height);
         }
-        // updateBuffer MUST RUN ON THE JAVAFX APPLICATION THREAD; null MARKS THE WHOLE BUFFER DIRTY
+        // updateBuffer MUST RUN ON THE FX THREAD; null MARKS THE WHOLE BUFFER DIRTY. THE NEXT DECODE-THREAD
+        // WRITE INTO bgra MAY RACE PRISM'S READ — ACCEPTED: OPAQUE VIDEO FRAMES TEAR AT WORST ONE PULSE.
         Platform.runLater(() -> pb.updateBuffer(b -> null));
     }
 

@@ -8,10 +8,12 @@ import java.util.List;
  * canvas — fully independent of {@code java.awt}. Filling uses a scanline algorithm with 4x vertical
  * supersampling and analytic horizontal coverage, honouring both non-zero and even-odd winding.
  *
- * <p>Stroking reuses the fill path: the stroke outline is built as the union of one quad per segment
- * plus a disc at every vertex/endpoint, which exactly reproduces {@code stroke-linecap:round} and
- * {@code stroke-linejoin:round} (the only stroke styles the supported SVGs use). Overlapping union
- * pieces are filled in a single non-zero pass, so internal seams never anti-alias against each other.
+ * <p>Stroking reuses the fill path: the stroke outline is the union of one quad per segment plus a
+ * disc at each open endpoint and at interior/closing vertices where the turn is sharp enough to leave
+ * a gap. This reproduces {@code stroke-linecap:round} and {@code stroke-linejoin:round} (the only
+ * stroke styles the supported SVGs use) while a smooth flattened curve of near-collinear segments
+ * emits no join discs at all. Overlapping union pieces are filled in a single non-zero pass, so
+ * internal seams never anti-alias against each other.
  */
 final class SVGRasterizer {
     // VERTICAL SUPERSAMPLES PER PIXEL ROW
@@ -30,6 +32,11 @@ final class SVGRasterizer {
     private int[] edir = new int[64];
     private int edgeN;
 
+    // EDGE INDICES SORTED BY TOP Y, PLUS THE ACTIVE-EDGE WINDOW SWEPT DOWN THE SCANLINES
+    private int[] order = new int[64];
+    private int[] active = new int[64];
+    private long[] sortKeys = new long[64];
+
     // PER-SCANLINE CROSSINGS
     private double[] cxs = new double[32];
     private int[] cdir = new int[32];
@@ -42,35 +49,54 @@ final class SVGRasterizer {
     }
 
     void fill(final Path.Polys polys, final boolean evenOdd, final Paint paint, final float opacity) {
-        if (opacity <= 0 || polys.lines.isEmpty()) return;
-        this.buildEdges(polys.lines);
+        if (opacity <= 0 || polys.subpaths.isEmpty()) return;
+        this.buildEdges(polys.subpaths);
         if (this.edgeN == 0) return;
         this.scan(evenOdd, paint, opacity);
     }
 
     void stroke(final Path.Polys polys, final double halfWidth, final Paint paint, final float opacity) {
-        if (opacity <= 0 || halfWidth <= 0 || polys.lines.isEmpty()) return;
-        // BUILD THE STROKE OUTLINE IN DEVICE SPACE: QUAD PER SEGMENT + DISC PER VERTEX (ROUND CAP/JOIN)
+        if (opacity <= 0 || halfWidth <= 0 || polys.subpaths.isEmpty()) return;
+        // BUILD THE STROKE OUTLINE IN DEVICE SPACE: QUAD PER SEGMENT + ROUND CAP/JOIN DISCS
         final Path g = new Path();
-        final List<double[]> lines = polys.lines;
-        for (int li = 0; li < lines.size(); li++) {
-            final double[] p = lines.get(li);
+        for (final Path.Subpath sp: polys.subpaths) {
+            final double[] p = sp.pts();
             final int n = p.length / 2;
-            final boolean closed = polys.closed.get(li);
+            final boolean closed = sp.closed();
             for (int i = 0; i + 1 < n; i++) {
                 segmentQuad(g, p[2 * i], p[2 * i + 1], p[2 * i + 2], p[2 * i + 3], halfWidth);
             }
             if (closed && n > 1) {
                 segmentQuad(g, p[2 * (n - 1)], p[2 * (n - 1) + 1], p[0], p[1], halfWidth);
             }
+            // DISCS ONLY WHERE THEY MATTER: OPEN ENDPOINTS (ROUND CAPS) AND SHARP JOINS. A DISC AT
+            // EVERY FLATTENED VERTEX WOULD EXPLODE THE EDGE TABLE ON SMOOTH CURVES FOR NO VISUAL GAIN
             for (int i = 0; i < n; i++) {
-                g.ellipse(p[2 * i], p[2 * i + 1], halfWidth, halfWidth);
+                final boolean endpoint = !closed && (i == 0 || i == n - 1);
+                if (endpoint || (n > 1 && sharpJoin(p, n, i, closed, halfWidth))) {
+                    g.ellipse(p[2 * i], p[2 * i + 1], halfWidth, halfWidth);
+                }
             }
         }
         // FILL THE UNION WITH NON-ZERO WINDING SO OVERLAPS DO NOT DOUBLE-BLEND
-        this.buildEdges(g.flatten(Affine.IDENTITY, STROKE_TOL).lines);
+        this.buildEdges(g.flatten(Affine.IDENTITY, STROKE_TOL).subpaths);
         if (this.edgeN == 0) return;
         this.scan(false, paint, opacity);
+    }
+
+    // TRUE WHEN THE TURN AT VERTEX i BENDS ENOUGH THAT THE TWO SEGMENT QUADS LEAVE A GAP A ROUND JOIN
+    // MUST FILL. THE GAP ≈ hw*(1 - cos(turn/2)); EMIT ONLY WHEN IT EXCEEDS ~1/4 px
+    private static boolean sharpJoin(final double[] p, final int n, final int i, final boolean closed, final double hw) {
+        final int prev = i > 0 ? i - 1 : (closed ? n - 1 : -1);
+        final int next = i < n - 1 ? i + 1 : (closed ? 0 : -1);
+        if (prev < 0 || next < 0) return false; // OPEN ENDPOINT — HANDLED AS A CAP
+        final double inx = p[2 * i] - p[2 * prev], iny = p[2 * i + 1] - p[2 * prev + 1];
+        final double outx = p[2 * next] - p[2 * i], outy = p[2 * next + 1] - p[2 * i + 1];
+        final double li = Math.sqrt(inx * inx + iny * iny), lo = Math.sqrt(outx * outx + outy * outy);
+        if (li < 1e-9 || lo < 1e-9) return true; // DUPLICATE VERTEX — LET A DISC COVER IT
+        final double cosTurn = (inx * outx + iny * outy) / (li * lo);
+        final double cosHalf = Math.sqrt(Math.max(0, (1 + cosTurn) / 2));
+        return hw * (1 - cosHalf) > 0.25;
     }
 
     private static void segmentQuad(final Path g, final double x0, final double y0, final double x1, final double y1, final double hw) {
@@ -87,9 +113,10 @@ final class SVGRasterizer {
         g.close();
     }
 
-    private void buildEdges(final List<double[]> lines) {
+    private void buildEdges(final List<Path.Subpath> subs) {
         this.edgeN = 0;
-        for (final double[] p: lines) {
+        for (final Path.Subpath sp: subs) {
+            final double[] p = sp.pts();
             final int n = p.length / 2;
             if (n < 2) continue;
             // EVERY SUBPATH IS CLOSED FOR FILLING — INCLUDE THE CLOSING EDGE
@@ -133,11 +160,28 @@ final class SVGRasterizer {
         final int xhi = Math.min(this.width, (int) Math.ceil(xMax));
         if (y0 >= y1 || xlo >= xhi) return;
 
+        // SORT EDGES BY TOP Y ONCE; A SINGLE ACTIVE-EDGE WINDOW ADVANCES WITH THE MONOTONIC SCANLINE
+        // INSTEAD OF RESCANNING THE WHOLE EDGE TABLE PER SUB-SCANLINE
+        this.sortEdgesByTop();
+        int nextEdge = 0, activeN = 0;
+
         for (int y = y0; y < y1; y++) {
             Arrays.fill(this.cov, xlo, xhi, 0f);
             for (int s = 0; s < SS; s++) {
                 final double ys = y + (s + 0.5) / SS;
-                final int cnt = this.crossings(ys);
+                // ADMIT EDGES THAT HAVE STARTED, THEN RETIRE EDGES THAT HAVE ENDED (ys IS INCREASING)
+                while (nextEdge < this.edgeN && this.eyTop[this.order[nextEdge]] <= ys) {
+                    if (activeN == this.active.length) this.active = Arrays.copyOf(this.active, activeN * 2);
+                    this.active[activeN++] = this.order[nextEdge++];
+                }
+                int keep = 0;
+                for (int a = 0; a < activeN; a++) {
+                    final int e = this.active[a];
+                    if (this.eyBot[e] > ys) this.active[keep++] = e;
+                }
+                activeN = keep;
+
+                final int cnt = this.crossings(ys, activeN);
                 if (cnt < 2) continue;
                 int wind = 0;
                 for (int i = 0; i < cnt - 1; i++) {
@@ -159,11 +203,30 @@ final class SVGRasterizer {
         }
     }
 
-    // GATHERS SORTED X-CROSSINGS OF THE EDGE TABLE WITH SUB-SCANLINE ys
-    private int crossings(final double ys) {
-        int cnt = 0;
+    // SORTS THE EDGE INDICES BY TOP Y. EACH KEY PACKS eyTop AS A SIGNED-ASCENDING long IN THE HIGH
+    // BITS AND THE EDGE INDEX IN THE LOW 24 (edgeN NEVER APPROACHES 2^24), SO Arrays.sort ORDERS THEM.
+    private void sortEdgesByTop() {
+        if (this.order.length < this.edgeN) {
+            this.order = new int[this.edgeN];
+            this.sortKeys = new long[this.edgeN];
+        }
+        final long[] keys = this.sortKeys;
         for (int i = 0; i < this.edgeN; i++) {
-            if (ys < this.eyTop[i] || ys >= this.eyBot[i]) continue;
+            // MAP IEEE bits TO A SIGNED-ORDER-PRESERVING long: FLIP THE LOWER 63 BITS FOR NEGATIVES SO
+            // OFF-CANVAS-TOP EDGES (eyTop < 0) STILL SORT BEFORE POSITIVE ONES UNDER Arrays.sort (SIGNED)
+            long bits = Double.doubleToLongBits(this.eyTop[i]);
+            bits ^= (bits >> 63) & Long.MAX_VALUE;
+            keys[i] = (bits & ~0xFFFFFFL) | i;
+        }
+        Arrays.sort(keys, 0, this.edgeN);
+        for (int i = 0; i < this.edgeN; i++) this.order[i] = (int) (keys[i] & 0xFFFFFFL);
+    }
+
+    // GATHERS SORTED X-CROSSINGS OF THE ACTIVE EDGES AT SUB-SCANLINE ys (ALL ACTIVE EDGES SPAN ys)
+    private int crossings(final double ys, final int activeN) {
+        int cnt = 0;
+        for (int a = 0; a < activeN; a++) {
+            final int i = this.active[a];
             final double x = this.exTop[i] + (ys - this.eyTop[i]) * this.edxdy[i];
             final int dir = this.edir[i];
             if (cnt == this.cxs.length) this.growCrossings();

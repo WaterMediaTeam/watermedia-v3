@@ -85,6 +85,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static final int MAX_FRAME_TEXTURES = 256;
     private static final long PAUSE_WAIT_MS = 200L;
     private static final long REFILL_PERMIT_TIMEOUT_MS = 5_000L;
+    // release() PROCEEDS AFTER THIS BOUND EVEN IF A PREPARE IS STILL BLOCKED ON SOCKET I/O,
+    // SO A RENDER/GAME-THREAD release() NEVER HANGS FOR THE FULL NETWORK TIMEOUT.
+    private static final long RELEASE_WAIT_TIMEOUT_MS = 5_000L;
     private static final ExecutorService SINGLE_FRAME_POOL = Executors.newFixedThreadPool(
             Math.max(1, ThreadTool.minThreads()),
             ThreadTool.createFactory("TxPlayer-SingleFrame", Thread.NORM_PRIORITY - 1));
@@ -114,6 +117,13 @@ public final class TxMediaPlayer extends MediaPlayer {
     // STATUS
     private volatile Status status = Status.WAITING;
     private volatile float speed = 1.0f;
+
+    // STATIC-IMAGE DISPLAY CLOCK — A STILL IMAGE TRANSITIONS TO ENDED AFTER displayTimeMs OF
+    // PLAYBACK SO STATUS-DRIVEN PLAYLISTS ADVANCE OFF ended(). 0 = UNLIMITED (SHOW FOREVER).
+    // WHEN staticTimed IS SET, THE STATIC IMAGE RIDES THE SAME PASSIVE clock AS MODE 2 (texTime()),
+    // WITH knownDuration = displayTimeMs AND NO FRAME-TEXTURE SWITCHING.
+    private volatile long displayTimeMs;
+    private volatile boolean staticTimed;
 
     // LIFECYCLE THREAD (MODE 3 ONLY)
     private volatile Thread lifecycleThread;
@@ -187,25 +197,27 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.stop();
         }
         final Thread old = this.lifecycleThread;
-        final int serial = this.lifecycleSerial + 1;
-        this.lifecycleSerial = serial;
-
-        this.resetForStart(initialPause);
+        // MINT THE SERIAL AND HAND THE PREPARE TASK OFF ATOMICALLY: TWO CONCURRENT start() CALLS
+        // (GAME THREAD + NETWORK HANDLER) MUST NOT READ-MODIFY-WRITE THE SAME lifecycleSerial AND
+        // LET BOTH PREPARE PASSES BELIEVE THEY ARE CURRENT AND INTERLEAVE STATUS/BUFFER WRITES.
         synchronized (this.signals) {
+            final int serial = this.lifecycleSerial + 1;
+            this.lifecycleSerial = serial;
+            this.resetForStart(initialPause);
             this.prepareActive++;
-        }
-        this.lifecycleTask = SINGLE_FRAME_POOL.submit(() -> {
-            try {
-                if (old != null) ThreadTool.join(old);
-                if (oldTask != null && !oldTask.isDone()) oldTask.cancel(true);
-                this.prepare(serial);
-            } finally {
-                synchronized (this.signals) {
-                    this.prepareActive--;
-                    this.signals.notifyAll();
+            this.lifecycleTask = SINGLE_FRAME_POOL.submit(() -> {
+                try {
+                    if (old != null) ThreadTool.join(old);
+                    if (oldTask != null && !oldTask.isDone()) oldTask.cancel(true);
+                    this.prepare(serial);
+                } finally {
+                    synchronized (this.signals) {
+                        this.prepareActive--;
+                        this.signals.notifyAll();
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     @Override
@@ -244,10 +256,17 @@ public final class TxMediaPlayer extends MediaPlayer {
         // WHILE super.release() TEARS DOWN THE ENGINE THAT PREPARE MAY STILL BE FEEDING (VULKAN:
         // CONCURRENT IMPORT-CACHE ACCESS / SUBMISSION OF A JUST-DESTROYED BUFFER).
         boolean interrupted = false;
+        final long deadline = System.currentTimeMillis() + RELEASE_WAIT_TIMEOUT_MS;
         synchronized (this.signals) {
             while (this.prepareActive > 0) {
+                final long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) {
+                    // A prepare() STUCK ON SOCKET I/O CAN IGNORE THE INTERRUPT — PROCEED RATHER THAN HANG.
+                    LOGGER.warn(IT, "release() proceeding with {} prepare task(s) still running for {}", this.prepareActive, this.source);
+                    break;
+                }
                 try {
-                    this.signals.wait(50L);
+                    this.signals.wait(Math.min(50L, remaining));
                 } catch (final InterruptedException e) {
                     interrupted = true;
                 }
@@ -328,7 +347,11 @@ public final class TxMediaPlayer extends MediaPlayer {
                 if (this.lifecycleSerial == serial) this.status = Status.STOPPED;
             } else {
                 LOGGER.error(IT, "Lifecycle error: {}", this.source, e);
-                if (this.lifecycleSerial == serial) this.status = Status.ERROR;
+                if (this.lifecycleSerial == serial) {
+                    final Status prev = this.status;
+                    this.status = Status.ERROR;
+                    this.publishStatus(prev, Status.ERROR);
+                }
             }
         } finally {
             if (!handedOff) {
@@ -349,11 +372,31 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ONE FRAME IS UPLOADED ONCE AND THE READER IS MARKED EXHAUSTED. NO LIFECYCLE
     // THREAD IS NEEDED — THE GFX HANDLE REMAINS LIVE UNTIL STOP/RELEASE.
     private void showStatic(final ImageReader reader) throws IOException {
+        // ARM THE DISPLAY CLOCK BEFORE showFirstFrame MARKS loaded, SO knownDuration/staticTimed ARE
+        // ALREADY CORRECT THE INSTANT A CALLER OBSERVES loaded (NO WINDOW REPORTING reader.duration()).
+        this.armStaticClock();
         this.showFirstFrame(reader);
         this.readerExhausted = true;
         this.commitCodec(); // SINGLE-FRAME TEXTURE: THE ONE FRAME WAS FED IN showFirstFrame
-        LOGGER.debug(IT, "Loaded: {} ({}x{}, static, cache/threadless)",
-                this.source, this.sourceWidth, this.sourceHeight);
+        LOGGER.debug(IT, "Loaded: {} ({}x{}, static, cache/threadless{})",
+                this.source, this.sourceWidth, this.sourceHeight,
+                this.staticTimed ? ", displayTime=" + this.displayTimeMs + "ms" : "");
+    }
+
+    // ARMS THE STATIC DISPLAY CLOCK WHEN displayTime(ms>0) WAS SET: THE STILL IMAGE RIDES THE
+    // PASSIVE clock (knownDuration = displayTimeMs) AND texTime() TRANSITIONS IT TO ENDED.
+    private void armStaticClock() {
+        final long display = this.displayTimeMs;
+        this.staticTimed = display > 0L;
+        if (!this.staticTimed) {
+            this.knownDuration = 0L; // UNLIMITED STATIC REPORTS NO DURATION
+            return;
+        }
+        this.knownDuration = display;
+        synchronized (this.clock) {
+            this.clockBase = 0L;
+            this.wallBase = System.currentTimeMillis();
+        }
     }
 
     // ==========================================================================
@@ -380,7 +423,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     private void prepareTextures(final ImageReader reader) throws IOException {
         this.status = Status.BUFFERING;
-        this.clearQueues();
+        this.clearBuffers();
 
         // DECODE EVERY FRAME. IF readAll() YIELDS ONLY ONE FRAME (E.G. APNG WITH A SINGLE FCTL)
         // FALL BACK TO STATIC SEMANTICS RATHER THAN BUILDING A CLOCK FOR NOTHING.
@@ -451,7 +494,10 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // RESOLVES THE PASSIVE-CLOCK MEDIA TIME, FOLDING LOOP WRAPS AND THE ENDED TRANSITION.
+    // SHARED BY MODE 2 FRAME TEXTURES AND THE TIMED-STATIC DISPLAY CLOCK.
     private long texTime() {
+        final Status prev;
+        final long result;
         synchronized (this.clock) {
             final long duration = Math.max(1L, this.knownDuration);
             long t = this.clockBase;
@@ -467,9 +513,13 @@ public final class TxMediaPlayer extends MediaPlayer {
             }
             this.clockBase = duration;
             this.wallBase = System.currentTimeMillis();
+            prev = this.status;
             if (this.status == Status.PLAYING) this.status = Status.ENDED;
-            return duration;
+            result = duration;
         }
+        // PUBLISH OUTSIDE THE clock LOCK SO A LISTENER RE-ENTERING THE PLAYER CANNOT DEADLOCK
+        if (prev == Status.PLAYING) this.publishStatus(prev, Status.ENDED);
+        return result;
     }
 
     private boolean stepTexture(final int direction) {
@@ -532,7 +582,11 @@ public final class TxMediaPlayer extends MediaPlayer {
                 if (this.lifecycleSerial == serial) this.status = Status.STOPPED;
             } else {
                 LOGGER.error(IT, "Lifecycle error: {}", this.source, e);
-                if (this.lifecycleSerial == serial) this.status = Status.ERROR;
+                if (this.lifecycleSerial == serial) {
+                    final Status prev = this.status;
+                    this.status = Status.ERROR;
+                    this.publishStatus(prev, Status.ERROR);
+                }
             }
         } finally {
             // SAFETY NET: A CLEAN EOF ALREADY COMMITTED (WRITER NULL); THIS DROPS A SESSION LEFT
@@ -617,14 +671,14 @@ public final class TxMediaPlayer extends MediaPlayer {
                 continue;
             }
 
-            // DISPLAY WINDOW: DECODE AHEAD, THEN WAIT OUT THE REMAINDER. THE WAIT IS SIGNALED
-            // BY SEEK/PAUSE/STOP SO LONG FRAME DELAYS DON'T DELAY CONTROL REACTIONS.
-            final long sleepBudgetMs = Math.max(1L, (long) (this.currentDelayMs / this.speed));
-            final long deadline = System.currentTimeMillis() + sleepBudgetMs;
-            this.fillQueueUntil(reader, deadline);
-            long remaining;
-            while (!Thread.currentThread().isInterrupted() && !this.signaled()
-                    && (remaining = deadline - System.currentTimeMillis()) > 0L) {
+            // DISPLAY WINDOW: DECODE AHEAD, THEN WAIT OUT THE REMAINDER. THE DEADLINE IS RECOMPUTED
+            // FROM THE LIVE speed EACH ITERATION SO A speed(float) CHANGE (WHICH CALLS wake()) RESCALES
+            // THIS FRAME INSTEAD OF ONLY TAKING EFFECT NEXT FRAME. SEEK/PAUSE/STOP ALSO SIGNAL THE WAIT.
+            final long frameStart = System.currentTimeMillis();
+            this.fillQueueUntil(reader, frameStart + Math.max(1L, (long) (this.currentDelayMs / this.speed)));
+            while (!Thread.currentThread().isInterrupted() && !this.signaled()) {
+                final long remaining = frameStart + Math.max(1L, (long) (this.currentDelayMs / this.speed)) - System.currentTimeMillis();
+                if (remaining <= 0L) break;
                 this.awaitSignal(remaining);
             }
             if (this.signaled()) continue; // RE-ENTER WITHOUT ADVANCING THE CLOCK
@@ -662,7 +716,9 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.clearPrefetch();
                 reader = this.reopen(reader);
                 if (!reader.hasNext()) {
+                    final Status prev = this.status;
                     this.status = Status.ENDED;
+                    this.publishStatus(prev, Status.ENDED);
                     return reader;
                 }
                 this.uploadFrame(reader.next());
@@ -672,7 +728,9 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.nextDecodedIndex = 1;
                 this.readerExhausted = false;
             } else {
+                final Status prev = this.status;
                 this.status = Status.ENDED;
+                this.publishStatus(prev, Status.ENDED);
                 return reader;
             }
         }
@@ -928,7 +986,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // STREAMING MODES — TEXTURE MODE NEVER CALLS IT BECAUSE IT BULK-UPLOADS UPFRONT.
     private void showFirstFrame(final ImageReader reader) throws IOException {
         this.status = Status.BUFFERING;
-        this.clearQueues();
+        this.clearBuffers();
 
         if (!reader.hasNext()) {
             throw new IOException("No frames decoded from: " + this.source);
@@ -1351,19 +1409,15 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.outHeight = 0;
         this.texTimeline = null;
         this.texDelays = null;
+        // staticTimed IS RE-DERIVED AT LOAD (showStatic); displayTimeMs IS USER CONFIG AND PERSISTS
+        this.staticTimed = false;
         this.lifecycleThread = null;
         this.activeReader = null;
         // CODEC WRITE STATE — codecActive IS RE-RESOLVED IN prepare(); THE WRITER ITSELF IS OWNED
         // AND TORN DOWN BY THE PRODUCER THREAD'S finally, SO IT IS NOT TOUCHED HERE.
         this.codecActive = false;
         this.codecExpect = 0;
-        this.clearQueues();
-    }
-
-    private void clearQueues() {
-        this.clearPrefetch();
-        this.bufferPool.clear();
-        this.inFlight.clear();
+        this.clearBuffers();
     }
 
     private void resetAfterRelease() {
@@ -1373,6 +1427,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.clearBuffers();
     }
 
+    // DRAINS THE PREFETCH QUEUE, THE SPARE POOL, AND THE IN-FLIGHT BUFFERS — EVERYTHING IS DISCARDED.
     private void clearBuffers() {
         this.prefetchQueue.clear();
         this.bufferPool.clear();
@@ -1404,6 +1459,19 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public boolean pause(final boolean paused) {
         if (!this.animated && this.loaded) {
+            if (this.staticTimed) {
+                // FREEZE/REBASE THE STATIC DISPLAY CLOCK LIKE THE PASSIVE CLOCK
+                synchronized (this.clock) {
+                    final long now = System.currentTimeMillis();
+                    if (paused && this.status == Status.PLAYING) {
+                        this.clockBase += (long) ((now - this.wallBase) * this.speed);
+                    }
+                    this.wallBase = now;
+                    this.paused = paused;
+                    this.status = paused ? Status.PAUSED : Status.PLAYING;
+                }
+                return true;
+            }
             this.paused = paused;
             this.status = paused ? Status.PAUSED : Status.PLAYING;
             return true;
@@ -1491,14 +1559,22 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     @Override
     public Status status() {
-        // TEXTURE MODE RESOLVES THE ENDED TRANSITION LAZILY FROM THE PASSIVE CLOCK
-        if (this.texTimeline != null && this.status == Status.PLAYING && !this.repeat()) this.texTime();
+        // TEXTURE MODE AND TIMED STATICS RESOLVE THE ENDED TRANSITION LAZILY FROM THE PASSIVE CLOCK
+        if ((this.texTimeline != null || this.staticTimed) && this.status == Status.PLAYING && !this.repeat()) this.texTime();
         return this.status;
     }
 
     @Override
     public long time() {
-        return this.texTimeline != null ? this.texTime() : this.time;
+        return this.texTimeline != null || this.staticTimed ? this.texTime() : this.time;
+    }
+
+    @Override
+    public void displayTime(final long ms) {
+        // STATIC-IMAGE DISPLAY DURATION; ms <= 0 KEEPS THE UNLIMITED SHOW (CURRENT BEHAVIOUR).
+        this.displayTimeMs = ms;
+        // (RE)ARM AT ONCE IF A STATIC IMAGE IS ALREADY LIVE; OTHERWISE showStatic ARMS IT AT LOAD.
+        if (this.loaded && !this.animated && this.texTimeline == null) this.armStaticClock();
     }
 
     @Override
@@ -1521,14 +1597,16 @@ public final class TxMediaPlayer extends MediaPlayer {
     public boolean speed(final float speed) {
         if (!Float.isFinite(speed) || speed <= 0 || speed > 4.0f) return false;
         synchronized (this.clock) {
-            // REBASE THE PASSIVE CLOCK SO THE SPEED CHANGE DOESN'T JUMP THE MEDIA TIME
-            if (this.texTimeline != null && this.status == Status.PLAYING) {
+            // REBASE THE PASSIVE / STATIC CLOCK SO THE SPEED CHANGE DOESN'T JUMP THE MEDIA TIME
+            if ((this.texTimeline != null || this.staticTimed) && this.status == Status.PLAYING) {
                 final long now = System.currentTimeMillis();
                 this.clockBase += (long) ((now - this.wallBase) * this.speed);
                 this.wallBase = now;
             }
             this.speed = speed;
         }
+        // WAKE THE STREAMING LOOP SO A LIVE SPEED CHANGE RESCALES THE CURRENT FRAME DELAY (MODE 3)
+        this.wake();
         return true;
     }
 

@@ -15,6 +15,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -92,7 +93,7 @@ public final class OdyseePlatform implements IPlatform {
             final Metadata metadata = new Metadata(title, description, publishedAt, durationMs, author);
             final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
                     RequestHeaders.defaults(uri),
-                    new DataQuality[] {new DataQuality(videoUri, 0, 0)},
+                    List.of(new DataQuality(videoUri, 0, 0)),
                     null, null);
 
             return new PlatformData(null, entry);

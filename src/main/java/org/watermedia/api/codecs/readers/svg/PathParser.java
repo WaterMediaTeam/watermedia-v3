@@ -40,11 +40,14 @@ final class PathParser {
                 break; // MALFORMED: OPERANDS BEFORE ANY COMMAND
             }
 
+            // A num() OF NaN MEANS THE COMMAND RAN OUT OF OPERANDS AT A FOLLOWING COMMAND LETTER;
+            // continue DROPS THE INCOMPLETE COMMAND AND LETS THE LOOP RE-DISPATCH THAT LETTER
             switch (cmd) {
                 case 'M', 'm' -> {
                     final boolean rel = cmd == 'm';
                     double x = this.num(), y = this.num();
                     if (rel) { x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     path.moveTo(x, y);
                     this.cx = this.sx = x; this.cy = this.sy = y;
                     this.lastCmd = cmd;
@@ -54,18 +57,21 @@ final class PathParser {
                     final boolean rel = cmd == 'l';
                     double x = this.num(), y = this.num();
                     if (rel) { x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     path.lineTo(x, y);
                     this.cx = x; this.cy = y; this.lastCmd = cmd;
                 }
                 case 'H', 'h' -> {
                     double x = this.num();
                     if (cmd == 'h') x += this.cx;
+                    if (Double.isNaN(x)) continue;
                     path.lineTo(x, this.cy);
                     this.cx = x; this.lastCmd = cmd;
                 }
                 case 'V', 'v' -> {
                     double y = this.num();
                     if (cmd == 'v') y += this.cy;
+                    if (Double.isNaN(y)) continue;
                     path.lineTo(this.cx, y);
                     this.cy = y; this.lastCmd = cmd;
                 }
@@ -75,6 +81,7 @@ final class PathParser {
                     double c2x = this.num(), c2y = this.num();
                     double x = this.num(), y = this.num();
                     if (rel) { c1x += this.cx; c1y += this.cy; c2x += this.cx; c2y += this.cy; x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     path.cubicTo(c1x, c1y, c2x, c2y, x, y);
                     this.lastCtrlX = c2x; this.lastCtrlY = c2y;
                     this.cx = x; this.cy = y; this.lastCmd = cmd;
@@ -84,6 +91,7 @@ final class PathParser {
                     double c2x = this.num(), c2y = this.num();
                     double x = this.num(), y = this.num();
                     if (rel) { c2x += this.cx; c2y += this.cy; x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     final boolean reflect = this.lastCmd == 'C' || this.lastCmd == 'c' || this.lastCmd == 'S' || this.lastCmd == 's';
                     final double c1x = reflect ? 2 * this.cx - this.lastCtrlX : this.cx;
                     final double c1y = reflect ? 2 * this.cy - this.lastCtrlY : this.cy;
@@ -96,6 +104,7 @@ final class PathParser {
                     double cxp = this.num(), cyp = this.num();
                     double x = this.num(), y = this.num();
                     if (rel) { cxp += this.cx; cyp += this.cy; x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     path.quadTo(cxp, cyp, x, y);
                     this.lastCtrlX = cxp; this.lastCtrlY = cyp;
                     this.cx = x; this.cy = y; this.lastCmd = cmd;
@@ -104,6 +113,7 @@ final class PathParser {
                     final boolean rel = cmd == 't';
                     double x = this.num(), y = this.num();
                     if (rel) { x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     final boolean reflect = this.lastCmd == 'Q' || this.lastCmd == 'q' || this.lastCmd == 'T' || this.lastCmd == 't';
                     final double cxp = reflect ? 2 * this.cx - this.lastCtrlX : this.cx;
                     final double cyp = reflect ? 2 * this.cy - this.lastCtrlY : this.cy;
@@ -117,6 +127,7 @@ final class PathParser {
                     final boolean large = this.flag(), sweep = this.flag();
                     double x = this.num(), y = this.num();
                     if (rel) { x += this.cx; y += this.cy; }
+                    if (Double.isNaN(x) || Double.isNaN(y)) continue;
                     this.arc(path, rx, ry, rot, large, sweep, x, y);
                     this.cx = x; this.cy = y; this.lastCmd = cmd;
                 }
@@ -242,7 +253,15 @@ final class PathParser {
             while (this.pos < this.len && this.d.charAt(this.pos) >= '0' && this.d.charAt(this.pos) <= '9') { expDigits = true; this.pos++; }
             if (!expDigits) this.pos = save; // NOT AN EXPONENT AFTER ALL
         }
-        if (!digits) { this.pos = start + Math.max(1, this.pos - start); return 0; }
+        if (!digits) {
+            // NO NUMBER HERE. IF WE ARE ON A COMMAND LETTER THE PREVIOUS COMMAND RAN OUT OF OPERANDS —
+            // SIGNAL IT WITH NaN WITHOUT CONSUMING, SO run() DISPATCHES THAT LETTER INSTEAD OF EATING
+            // IT AS A BOGUS COORDINATE; OTHERWISE SKIP ONE STRAY CHAR TO GUARANTEE FORWARD PROGRESS
+            this.pos = start;
+            if (this.pos < this.len && isCommand(this.d.charAt(this.pos))) return Double.NaN;
+            if (this.pos < this.len) this.pos++;
+            return 0;
+        }
         try {
             return Double.parseDouble(this.d.substring(start, this.pos));
         } catch (final NumberFormatException e) {

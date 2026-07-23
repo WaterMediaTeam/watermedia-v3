@@ -6,9 +6,9 @@ import org.watermedia.api.media.MRL;
 import java.net.URI;
 import java.net.URLConnection;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -17,7 +17,7 @@ import java.util.Objects;
  * <p>
  * Used by {@link NetRequest} for both the headers we send and the headers we receive.
  * {@link #toRawString()} produces the {@code "Name: Value\r\n..."} form expected by raw
- * consumers like FFmpeg's {@code headers} option.
+ * consumers like FFmpeg's {@code -headers} option.
  */
 public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
 
@@ -154,27 +154,28 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
     }
 
     /**
-     * Serializes the headers as {@code "Name: Value\n"} pairs, terminated by {@code CRLF}.
+     * Serializes the headers as {@code "Name: Value\r\n"} pairs (each terminated by {@code CRLF}).
      * Empty when there are no entries. Suitable for FFmpeg's {@code -headers} option.
      */
     public String toRawString() {
         if (this.entries.isEmpty()) return "";
         final StringBuilder sb = new StringBuilder(this.entries.size() * 32);
         for (final Entry e: this.entries) {
-            sb.append(e.name).append(": ").append(e.value).append("\n");
+            sb.append(e.name).append(": ").append(e.value).append("\r\n");
         }
         return sb.toString();
     }
 
     @Override
-    public Iterator<Entry> iterator() { return this.entries().iterator(); }
+    public Iterator<Entry> iterator() { return Collections.unmodifiableList(this.entries).iterator(); }
 
     @Override
     public String toString() { return this.toRawString(); }
 
+    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
     private static boolean eq(final String a, final String b) {
         if (a == b) return true;
         if (a == null || b == null) return false;
-        return a.toLowerCase(Locale.ROOT).equals(b.toLowerCase(Locale.ROOT));
+        return a.equalsIgnoreCase(b);
     }
 }

@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.render.opengl;
 
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.ARBDebugOutput;
+import org.lwjgl.opengl.GLDebugMessageARBCallback;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
@@ -92,7 +93,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
             """;
 
     private static final int FLOATS_PER_VERTEX = 8;
-    private static final int DEFAULT_VERTEX_CAPACITY = 8192;
+    // MATCHES RenderEngine.MAX_VERTICES — THE ENGINE VALIDATES DRAWS AGAINST THE SAME CAP; KEEP THEM IN SYNC.
+    private static final int MAX_VERTICES = 8192;
 
     private final long window;
     private int program;
@@ -118,31 +120,35 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private String deviceVersion = "";
     private int glVerMajor;
     private int glVerMinor;
+    private GLDebugMessageARBCallback debugCallback; // RETAINED SO THE NATIVE CLOSURE OUTLIVES THE CALL AND IS FREED IN cleanup()
 
     public OpenGLRenderBackend(final long window) {
         this.window = window;
     }
 
-    /**
-     * Makes the GL context current on this backend's window and loads the GL capabilities. Must run
-     * before {@link #init()} (which compiles shaders). Also silences the debug context output.
-     */
-    public void attachContext() {
+    // ==========================================================================
+    // CONTEXT / CAPABILITIES
+    // ==========================================================================
+    // MAKES THE GL CONTEXT CURRENT AND LOADS CAPABILITIES; RUN AS THE FIRST STEP OF init() (BEFORE SHADERS).
+    private void attachContext() {
         // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (e.g. NVIDIA) REPORT VERBATIM RATHER
-        // THAN THE GPU MAX. PROBE THE DRIVER'S HIGHEST VERSION VIA A THROWAWAY DEFAULT-HINTS CONTEXT FIRST,
-        // FULLY TORN DOWN BEFORE THE REAL CONTEXT IS MADE CURRENT. captureInfo() KEEPS THE HIGHER VERSION.
+        // THAN THE GPU MAX. PROBE THE DRIVER'S HIGHEST VERSION VIA A THROWAWAY DEFAULT-HINTS CONTEXT FIRST.
+        long probe = 0L;
         try {
             glfwDefaultWindowHints();
             glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-            final long probe = glfwCreateWindow(1, 1, "wm-gl-probe", 0L, 0L);
+            probe = glfwCreateWindow(1, 1, "wm-gl-probe", 0L, 0L);
             if (probe != 0L) {
                 glfwMakeContextCurrent(probe);
                 GL.createCapabilities();
                 this.captureInfo();
-                glfwMakeContextCurrent(0L);
-                glfwDestroyWindow(probe);
             }
         } catch (final Throwable ignored) {
+        } finally {
+            // TEAR DOWN THE THROWAWAY CONTEXT ON EVERY PATH, THEN RESTORE DEFAULT HINTS SO LATER WINDOWS RE-HINT CLEANLY.
+            glfwMakeContextCurrent(0L);
+            if (probe != 0L) glfwDestroyWindow(probe);
+            glfwDefaultWindowHints();
         }
 
         glfwMakeContextCurrent(this.window);
@@ -150,11 +156,12 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL.createCapabilities();
         // FALLBACK / GPU NAME FROM THE REAL CONTEXT (captureInfo ONLY RAISES THE VERSION, NEVER LOWERS IT)
         this.captureInfo();
-        // ONLY WHEN A DEBUG CONTEXT WAS ACTUALLY REQUESTED: SILENCE ITS OUTPUT WITH AN EMPTY CALLBACK.
+        // ONLY WHEN A DEBUG CONTEXT WAS REQUESTED: SILENCE ITS OUTPUT WITH A RETAINED EMPTY CALLBACK (FREED IN cleanup()).
         // WITHOUT THE DEBUG CONTEXT (THE DEFAULT) THERE IS NOTHING TO SILENCE AND ARB_debug_output MAY BE ABSENT.
         if (RenderSystem.GL_DEBUG) {
-            ARBDebugOutput.glDebugMessageCallbackARB((source, type, id, severity, length, message, userParam) -> {
-            }, 0);
+            this.debugCallback = GLDebugMessageARBCallback.create((source, type, id, severity, length, message, userParam) -> {
+            });
+            ARBDebugOutput.glDebugMessageCallbackARB(this.debugCallback, 0);
         }
     }
 
@@ -182,6 +189,9 @@ public final class OpenGLRenderBackend implements RenderBackend {
         return () -> new GLEngine.Builder(renderThread, renderExecutor).build();
     }
 
+    // ==========================================================================
+    // PER-FRAME FLOW
+    // ==========================================================================
     @Override
     public void beginFrame() {
         this.init();
@@ -215,9 +225,13 @@ public final class OpenGLRenderBackend implements RenderBackend {
         return this.deviceVersion;
     }
 
+    // ==========================================================================
+    // LIFECYCLE (SHADERS / BUFFERS)
+    // ==========================================================================
     @Override
     public void init() {
         if (this.initialized) return;
+        this.attachContext(); // MAKE THE GL CONTEXT CURRENT + LOAD CAPABILITIES BEFORE COMPILING SHADERS
 
         final int vertexShader = compileShader(GL20.GL_VERTEX_SHADER, VERT_SRC);
         final int fragmentShader = compileShader(GL20.GL_FRAGMENT_SHADER, FRAG_SRC);
@@ -273,7 +287,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL30.glBindVertexArray(this.vao);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
         GL15.glBufferData(GL15.GL_ARRAY_BUFFER,
-                (long) DEFAULT_VERTEX_CAPACITY * FLOATS_PER_VERTEX * Float.BYTES,
+                (long) MAX_VERTICES * FLOATS_PER_VERTEX * Float.BYTES,
                 GL15.GL_STREAM_DRAW);
 
         final int stride = FLOATS_PER_VERTEX * Float.BYTES;
@@ -285,13 +299,19 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL20.glVertexAttribPointer(2, 4, GL11.GL_FLOAT, false, stride, 4L * Float.BYTES);
         GL30.glBindVertexArray(0);
 
-        this.uploadBuffer = MemoryUtil.memAllocFloat(DEFAULT_VERTEX_CAPACITY * FLOATS_PER_VERTEX);
+        this.uploadBuffer = MemoryUtil.memAllocFloat(MAX_VERTICES * FLOATS_PER_VERTEX);
         this.projectionBuffer = MemoryUtil.memAllocFloat(16);
         this.initialized = true;
     }
 
     @Override
     public void cleanup() {
+        // FREE THE RETAINED DEBUG CLOSURE FIRST (EVEN IF init() FAILED AFTER ATTACHING IT) — LEAKING IT WOULD
+        // OUTLIVE THE CONTEXT, AND THE DRIVER CALLING A COLLECTED CLOSURE CAN CRASH THE JVM.
+        if (this.debugCallback != null) {
+            this.debugCallback.free();
+            this.debugCallback = null;
+        }
         if (!this.initialized) return;
         GL20.glDeleteProgram(this.program);
         GL20.glDeleteProgram(this.sdfProgram);
@@ -324,6 +344,9 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL11.glDisable(GL11.GL_DEPTH_TEST);
     }
 
+    // ==========================================================================
+    // TEXTURES
+    // ==========================================================================
     @Override
     public TextureHandle createTexture(final int width, final int height, final ByteBuffer rgba) {
         this.init();
@@ -365,6 +388,9 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.projectionDirty = true;
     }
 
+    // ==========================================================================
+    // DRAWING
+    // ==========================================================================
     @Override
     public void draw(final DrawMode mode, final float[] vertices, final int vertexCount, final boolean textured) {
         this.init();
@@ -399,7 +425,9 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.uploadBuffer.clear();
         this.uploadBuffer.put(vertices, 0, floats);
         this.uploadBuffer.flip();
-        GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, this.uploadBuffer);
+        // ORPHAN + UPLOAD IN ONE CALL: RESPECIFYING THE STORE HANDS BACK FRESH DRIVER MEMORY INSTEAD OF STALLING
+        // ON THE PRIOR DRAW STILL READING THE SAME REGION (THE UNSYNCHRONIZED-STREAMING HAZARD OF SUBDATA-AT-0).
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, this.uploadBuffer, GL15.GL_STREAM_DRAW);
 
         GL11.glDrawArrays(toGLMode(mode), 0, vertexCount);
 
@@ -446,7 +474,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
         this.uploadBuffer.clear();
         this.uploadBuffer.put(this.softQuad, 0, this.softQuad.length);
         this.uploadBuffer.flip();
-        GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, this.uploadBuffer);
+        // ORPHAN + UPLOAD (SEE draw()): AVOID STALLING ON THE PRIOR DRAW STILL READING THE SAME VBO REGION.
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, this.uploadBuffer, GL15.GL_STREAM_DRAW);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
 
         if (this.frameActive) {
@@ -478,13 +507,13 @@ public final class OpenGLRenderBackend implements RenderBackend {
     }
 
     @Override
-    public void enableClip(final int x, final int y, final int width, final int height, final int canvasHeight) {
+    public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
         GL11.glEnable(GL11.GL_SCISSOR_TEST);
         GL11.glScissor(x, canvasHeight - y - height, width, height);
     }
 
     @Override
-    public void disableClip() {
+    public void clearClip() {
         GL11.glDisable(GL11.GL_SCISSOR_TEST);
     }
 
@@ -506,7 +535,6 @@ public final class OpenGLRenderBackend implements RenderBackend {
             case TRIANGLE_FAN -> GL11.GL_TRIANGLE_FAN;
             case LINES -> GL11.GL_LINES;
             case LINE_LOOP -> GL11.GL_LINE_LOOP;
-            case LINE_STRIP -> GL11.GL_LINE_STRIP;
         };
     }
 }

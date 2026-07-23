@@ -47,7 +47,7 @@ public class FFMediaPlayerTest {
     // OPENS A VIDEO-ONLY FF PLAYER, APPLIES THE SCALING CONFIG, STARTS IT AND WAITS UNTIL
     // THE DECODE PIPELINE IS LIVE (gfx DIMENSIONS ARE CONFIGURED BY THEN).
     private static FFMediaPlayer open(final HeadlessGFXEngine gfx, final Path file, final Consumer<FFMediaPlayer> config) {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(file));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(file));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, gfx, null);
@@ -74,7 +74,7 @@ public class FFMediaPlayerTest {
 
             // FRAMES MUST ACTUALLY FLOW TO THE ENGINE
             assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
-            assertNotNull(gfx.lastFormat());
+            assertNotNull(gfx.format());
         } finally {
             player.stop();
             player.release();

@@ -90,10 +90,10 @@ public class RequestHeadersTest {
         }
 
         @Test
-        @DisplayName("toRawString emits Name: Value lines terminated by newline")
+        @DisplayName("toRawString emits Name: Value lines terminated by CRLF")
         void rawString() {
             final RequestHeaders h = new RequestHeaders().set("A", "1").set("B", "2");
-            assertEquals("A: 1\nB: 2\n", h.toRawString());
+            assertEquals("A: 1\r\nB: 2\r\n", h.toRawString());
         }
 
         @Test

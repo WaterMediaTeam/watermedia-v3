@@ -32,12 +32,12 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -54,6 +54,11 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class MRLSelectorScreen extends Screen {
 
     private static final long LOAD_TIMEOUT_MS = 30000L;
+
+    // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
+    private static final List<Keybind> KEYS_DEFAULT = List.of(
+            new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
 
     private final Consumer<HomeScreen.Action> navigator;
     private volatile boolean loading;
@@ -76,9 +81,9 @@ public final class MRLSelectorScreen extends Screen {
     private List<AppContext.TestURI> filtered = new ArrayList<>();
 
     // THUMBNAIL PLAYERS KEYED BY MRL NAME
-    private final Map<String, MediaPlayer> thumbnailPlayers = new LinkedHashMap<>();
-    private final Set<String> thumbnailAttempted = new HashSet<>();
-    private final Set<String> thumbnailSubscriptions = new HashSet<>();
+    private final Map<String, MediaPlayer> thumbPlayers = new LinkedHashMap<>();
+    private final Set<String> thumbAttempted = new HashSet<>();
+    private final Set<String> thumbSubscribed = new HashSet<>();
     private final Set<String> groupSubscriptions = new HashSet<>();
 
     public MRLSelectorScreen(final TextRenderer text, final AppContext ctx, final Consumer<HomeScreen.Action> navigator) {
@@ -147,7 +152,7 @@ public final class MRLSelectorScreen extends Screen {
         super.onEnter();
         this.stopLoad();
         this.groupSubscriptions.clear();
-        this.thumbnailSubscriptions.clear();
+        this.thumbSubscribed.clear();
         this.search.value("").focused(false);
         this.applyFilter();
         this.list.selection(0);
@@ -157,25 +162,24 @@ public final class MRLSelectorScreen extends Screen {
     @Override
     public void onExit() {
         this.stopLoad();
-        this.releaseThumbnailPlayers();
+        this.releaseThumbs();
     }
 
     @Override
     public void releaseMedia() {
         // HOT-SWAP HOOK — DROP EVERY THUMBNAIL PLAYER (OFF-THREAD) SO THE NEXT FRAME REBUILDS ON THE NEW ENGINE
-        this.releaseThumbnailPlayers();
+        this.releaseThumbs();
     }
 
     @Override
     public List<Keybind> keybinds() {
-        if (this.loading) return List.of(new Keybind("ESC", "Cancel"));
-        return List.of(new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
+        return this.loading ? KEYS_LOADING : KEYS_DEFAULT;
     }
 
     @Override
     public boolean continuous() {
         // CARET BLINK, LOADING DOTS AND LIVE THUMBNAILS — THE GLOBAL CRT ANIMATION IS THE SHELL'S CONCERN
-        return this.loading || this.textInputActive() || this.hasActiveAnimatedThumbnail();
+        return this.loading || this.textInputActive() || this.thumbsAnimating();
     }
 
     @Override
@@ -192,9 +196,9 @@ public final class MRLSelectorScreen extends Screen {
             }
         }
         this.subscribeGroupMRLs();
-        this.updateThumbnailPlayers(this.activeThumbnailNames());
+        this.updateThumbs(this.activeThumbNames());
         this.header.sub(this.ctx.selectedGroup.name());
-        this.headerLabel.text(this.ctx.selectedGroup.name().toUpperCase());
+        this.headerLabel.text(this.ctx.selectedGroup.name().toUpperCase(Locale.ROOT));
         this.headerCount.text(this.filtered.size() + " ITEMS");
         int failed = 0;
         for (final MRL mrl: this.ctx.groupMRLs.values()) {
@@ -242,9 +246,9 @@ public final class MRLSelectorScreen extends Screen {
         final AppContext.TestURI prev = this.selectedUri();
         final List<AppContext.TestURI> next = new ArrayList<>();
         if (this.ctx.selectedGroup != null) {
-            final String q = this.search.value() == null ? "" : this.search.value().trim().toLowerCase();
+            final String q = this.search.value() == null ? "" : this.search.value().trim().toLowerCase(Locale.ROOT);
             for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
-                if (q.isEmpty() || uri.name().toLowerCase().contains(q) || uri.uri().toLowerCase().contains(q)) {
+                if (q.isEmpty() || uri.name().toLowerCase(Locale.ROOT).contains(q) || uri.uri().toLowerCase(Locale.ROOT).contains(q)) {
                     next.add(uri);
                 }
             }
@@ -281,24 +285,30 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    private void subscribeThumbnailMRL(final URI uri, final MRL mrl) {
+    private void subscribeThumbMRL(final URI uri, final MRL mrl) {
         if (uri == null || mrl == null || loaded(mrl)) return;
-        if (this.thumbnailSubscriptions.add(uri.toString())) {
+        if (this.thumbSubscribed.add(uri.toString())) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
     }
 
+    // RESOLVE-OR-CREATE, WITH SUBSCRIBE + REQUEST-RENDER. ONLY CALL FROM onUpdate / INPUT PATHS — NEVER FROM onDraw
     private MRL mrlFor(final AppContext.TestURI uri) {
         if (uri == null) return null;
         MRL mrl = this.ctx.groupMRLs.get(uri.name());
         if (mrl != null) return mrl;
-        mrl = MediaAPI.getMRL(uri.uri());
+        mrl = MediaAPI.mrl(uri.uri());
         this.ctx.groupMRLs.put(uri.name(), mrl);
         if (!loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
         this.ctx.requestRender();
         return mrl;
+    }
+
+    // READ-ONLY LOOKUP FOR THE DRAW PATH — RETURNS null ON A MISS (RESOLUTION HAPPENS IN onUpdate VIA mrlFor)
+    private MRL mrlOf(final AppContext.TestURI uri) {
+        return uri == null ? null : this.ctx.groupMRLs.get(uri.name());
     }
 
     private void scheduleLoadTimeout(final int generation) {
@@ -312,9 +322,9 @@ public final class MRLSelectorScreen extends Screen {
         });
     }
 
-    private void releaseInactiveThumbnailPlayers(final Set<String> activeNames) {
+    private void releaseInactiveThumbs(final Set<String> activeNames) {
         List<MediaPlayer> evicted = null;
-        final Iterator<Map.Entry<String, MediaPlayer>> it = this.thumbnailPlayers.entrySet().iterator();
+        final Iterator<Map.Entry<String, MediaPlayer>> it = this.thumbPlayers.entrySet().iterator();
         while (it.hasNext()) {
             final Map.Entry<String, MediaPlayer> entry = it.next();
             if (activeNames.contains(entry.getKey())) continue;
@@ -322,15 +332,13 @@ public final class MRLSelectorScreen extends Screen {
             if (evicted == null) evicted = new ArrayList<>();
             evicted.add(entry.getValue());
             it.remove();
-            this.thumbnailAttempted.remove(entry.getKey());
+            this.thumbAttempted.remove(entry.getKey());
         }
         if (evicted != null) this.releaseAsync(evicted);
     }
 
-    // HANDS THUMBNAIL PLAYERS OFF FOR BACKGROUND RELEASE — MIRRORS AppContext.releasePlayer. THE PLAYERS
-    // MUST ALREADY BE REMOVED FROM thumbnailPlayers SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER.
-    // stop() IS NON-BLOCKING; release() JOINS THE DECODE THREADS (~HUNDREDS OF MS) AND SO RUNS OFF THE RENDER
-    // THREAD. THE ENGINE TEARDOWN IS THREAD-SAFE (GL DEFERS ITS TEXTURE DELETES TO THE RENDER EXECUTOR).
+    // BACKGROUND RELEASE OF EVICTED THUMBNAIL PLAYERS (ALREADY REMOVED FROM thumbPlayers): stop() IS NON-BLOCKING,
+    // THE BLOCKING release() RUNS ON THE SHUTDOWN-AWAITED CHAIN SO A TEARDOWN CANNOT OUTLIVE THE RENDER-DEVICE DESTROY.
     private void releaseAsync(final List<MediaPlayer> players) {
         if (players.isEmpty()) return;
         for (final MediaPlayer player: players) player.stop();
@@ -342,16 +350,16 @@ public final class MRLSelectorScreen extends Screen {
     }
 
     // KEEPS THUMBNAIL PLAYERS SCOPED TO ENTRIES THE SELECTOR IS CURRENTLY SHOWING.
-    private void updateThumbnailPlayers(final Set<String> activeNames) {
+    private void updateThumbs(final Set<String> activeNames) {
         if (this.ctx.selectedGroup == null) return;
 
-        this.releaseInactiveThumbnailPlayers(activeNames);
+        this.releaseInactiveThumbs(activeNames);
 
         for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
             final String name = uri.name();
             if (!activeNames.contains(name)) continue;
-            if (this.thumbnailPlayers.containsKey(name)) continue;
-            if (this.thumbnailAttempted.contains(name)) continue;
+            if (this.thumbPlayers.containsKey(name)) continue;
+            if (this.thumbAttempted.contains(name)) continue;
 
             final MRL mrl = this.mrlFor(uri);
             if (mrl == null) continue;
@@ -359,7 +367,7 @@ public final class MRLSelectorScreen extends Screen {
 
             final var sources = mrl.sources();
             if (sources.isEmpty()) {
-                this.thumbnailAttempted.add(name);
+                this.thumbAttempted.add(name);
                 continue;
             }
 
@@ -370,11 +378,11 @@ public final class MRLSelectorScreen extends Screen {
             for (final MRL.Source src: sources) {
                 final URI thumbnailUri = src.thumbnail();
                 if (thumbnailUri == null) continue;
-                final MRL thumbnailMrl = MediaAPI.getMRL(thumbnailUri.toString());
+                final MRL thumbnailMrl = MediaAPI.mrl(thumbnailUri.toString());
                 final MRL.Status thumbStatus = thumbnailMrl.status();
                 if (thumbStatus == MRL.Status.FETCHING) {
                     pendingThumbnail = true;
-                    this.subscribeThumbnailMRL(thumbnailUri, thumbnailMrl);
+                    this.subscribeThumbMRL(thumbnailUri, thumbnailMrl);
                     break;
                 }
                 if (thumbStatus != MRL.Status.LOADED) continue; // ERROR/EXPIRED/BLOCKED/FORGOTTEN — TRY NEXT SOURCE
@@ -394,25 +402,25 @@ public final class MRLSelectorScreen extends Screen {
                 }
             }
 
-            this.thumbnailAttempted.add(name);
+            this.thumbAttempted.add(name);
 
             if (player != null) {
                 player.repeat(true);
                 player.start();
-                this.thumbnailPlayers.put(name, player);
+                this.thumbPlayers.put(name, player);
             }
         }
     }
 
-    private void releaseThumbnailPlayers() {
-        if (!this.thumbnailPlayers.isEmpty()) {
+    private void releaseThumbs() {
+        if (!this.thumbPlayers.isEmpty()) {
             // SNAPSHOT AND CLEAR FIRST SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER
-            final List<MediaPlayer> players = new ArrayList<>(this.thumbnailPlayers.values());
-            this.thumbnailPlayers.clear();
+            final List<MediaPlayer> players = new ArrayList<>(this.thumbPlayers.values());
+            this.thumbPlayers.clear();
             this.releaseAsync(players);
         }
-        this.thumbnailAttempted.clear();
-        this.thumbnailSubscriptions.clear();
+        this.thumbAttempted.clear();
+        this.thumbSubscribed.clear();
         this.groupSubscriptions.clear();
     }
 
@@ -456,15 +464,15 @@ public final class MRLSelectorScreen extends Screen {
         // FORGOTTEN MRLS WERE EVICTED FROM THE CACHE — FETCH A FRESH INSTANCE INSTEAD
         // OF RELOADING THE DISPOSED ONE.
         if (mrl == null || mrl.status() == MRL.Status.FORGOTTEN) {
-            mrl = MediaAPI.getMRL(uri.uri());
+            mrl = MediaAPI.mrl(uri.uri());
             this.ctx.groupMRLs.put(name, mrl);
         } else {
             mrl.reload();
         }
 
-        final MediaPlayer thumbnail = this.thumbnailPlayers.remove(name);
+        final MediaPlayer thumbnail = this.thumbPlayers.remove(name);
         if (thumbnail != null) this.releaseAsync(List.of(thumbnail));
-        this.thumbnailAttempted.remove(name);
+        this.thumbAttempted.remove(name);
         this.groupSubscriptions.remove(name);
         if (!loaded(mrl) && this.groupSubscriptions.add(name)) {
             mrl.subscribe(done -> this.ctx.requestRender());
@@ -535,8 +543,8 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    private boolean hasActiveAnimatedThumbnail() {
-        for (final MediaPlayer player: this.thumbnailPlayers.values()) {
+    private boolean thumbsAnimating() {
+        for (final MediaPlayer player: this.thumbPlayers.values()) {
             if (player == null || player.error() || player.stopped() || player.ended()) continue;
             if (player instanceof TxMediaPlayer) {
                 if (player.duration() > 0L && !player.paused()) return true;
@@ -549,7 +557,7 @@ public final class MRLSelectorScreen extends Screen {
 
     // THE SELECTED ITEM PLUS EVERY ROW CURRENTLY ON SCREEN (FROM THE PREVIOUS FRAME'S LAYOUT). THIS SCOPES
     // THUMBNAIL PLAYERS TO WHAT THE SELECTOR IS SHOWING, EXACTLY LIKE THE LEGACY VISIBLE-WINDOW COMPUTATION.
-    private Set<String> activeThumbnailNames() {
+    private Set<String> activeThumbNames() {
         final Set<String> active = new LinkedHashSet<>();
         final AppContext.TestURI selected = this.selectedUri();
         if (selected != null) active.add(selected.name());
@@ -612,7 +620,7 @@ public final class MRLSelectorScreen extends Screen {
     // TOP IS A CrtOverlay CHILD OF THE CALLING CONTAINER, DRAWN AFTER THIS (LEGACY DRAW ORDER).
     private void drawThumb(final Canvas canvas, final AppContext.TestURI uri, final int x, final int y,
                            final int w, final int h, final boolean mini) {
-        final MediaPlayer player = this.thumbnailPlayers.get(uri.name());
+        final MediaPlayer player = this.thumbPlayers.get(uri.name());
         if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
             canvas.pushClip(x, y, w, h);
             final float imgAspect = (float) player.width() / player.height();
@@ -632,7 +640,7 @@ public final class MRLSelectorScreen extends Screen {
             canvas.popClip();
             return;
         }
-        final MRL mrl = this.mrlFor(uri);
+        final MRL mrl = this.mrlOf(uri);
         final MRL.Status status = mrl == null ? null : mrl.status();
         final boolean ready = status == MRL.Status.LOADED;
         // ERROR/BLOCKED/EXPIRED/FORGOTTEN — A FINAL STATE THAT NEEDS REGENERATION.
@@ -703,13 +711,16 @@ public final class MRLSelectorScreen extends Screen {
         return mrl.sources().get(0).type();
     }
 
+    // PLAIN NESTED LOOP (NO STREAM/Optional) — THIS RUNS PER FRAME IN THE PREVIEW DRAW PATH
     private static String bestQuality(final MRL mrl) {
-        if (!loaded(mrl) || mrl.sources().isEmpty()) return "UNKNOWN";
-        return mrl.sources().stream()
-                .flatMap(source -> source.availableQualities().stream())
-                .max(Comparator.comparingInt(q -> q.threshold))
-                .orElse(MediaQuality.UNKNOWN)
-                .name();
+        if (!loaded(mrl)) return "UNKNOWN";
+        MediaQuality best = MediaQuality.UNKNOWN;
+        for (final MRL.Source source: mrl.sources()) {
+            for (final MediaQuality q: source.availableQualities()) {
+                if (q.threshold > best.threshold) best = q;
+            }
+        }
+        return best.name();
     }
 
     // SPLITS THE CONTENT BAND INTO THE LEFT (SEARCH + LIST) COLUMN AND THE RIGHT PREVIEW STACK USING THE
@@ -854,8 +865,8 @@ public final class MRLSelectorScreen extends Screen {
             triangle(canvas, x - 1, this.panelY - 1, 10, true);
             triangle(canvas, x + w - 9, this.panelY + this.panelH - 9, 10, false);
 
-            final MRL mrl = mrlFor(sel);
-            final String title = text.truncateToWidth(sel.name().toUpperCase(), w - 410, AppTheme.TEXT_SECTION, Font.BOLD);
+            final MRL mrl = mrlOf(sel);
+            final String title = text.truncateToWidth(sel.name().toUpperCase(Locale.ROOT), w - 410, AppTheme.TEXT_SECTION, Font.BOLD);
             canvas.text(title, x + 16, this.panelY + 14, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION, true);
             final MediaType type = firstMediaType(mrl);
             if (type != null) {
@@ -917,7 +928,7 @@ public final class MRLSelectorScreen extends Screen {
             final int y = this.top;
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
-            final MRL mrl = mrlFor(this.uri);
+            final MRL mrl = mrlOf(this.uri);
             final Color stateColor = statusColor(mrl);
             if (this.selected) {
                 canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON, 26));
@@ -929,7 +940,7 @@ public final class MRLSelectorScreen extends Screen {
             final int textX = x + 88;
             final int statusX = x + w - 19;
             final int maxTextW = Math.max(40, statusX - textX - 14);
-            canvas.text(text.truncateToWidth(this.uri.name().toUpperCase(), maxTextW, AppTheme.TEXT_BUTTON, Font.BOLD),
+            canvas.text(text.truncateToWidth(this.uri.name().toUpperCase(Locale.ROOT), maxTextW, AppTheme.TEXT_BUTTON, Font.BOLD),
                     textX, y + 12, this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, AppTheme.TEXT_BUTTON, true);
             canvas.text(text.truncateToWidth(this.uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
                     textX, y + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);

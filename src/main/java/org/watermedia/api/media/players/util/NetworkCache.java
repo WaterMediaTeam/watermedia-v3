@@ -33,6 +33,9 @@ import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -78,9 +81,15 @@ public final class NetworkCache {
     // AND NEVER EXPIRE ON THEIR OWN — THEY ARE DROPPED ONLY WHEN UNREADABLE OR ON MANUAL CLEANUP.
     private static final String CODEC_CONTENT_TYPE = "image/vnd-ms.dds";
     private static final long CODEC_NEVER_EXPIRES = Long.MAX_VALUE;
+    // FALLBACK TTL FOR ORIGINS THAT SEND NO Cache-Control/Expires: CACHE FOR A WEEK INSTEAD OF
+    // FOREVER SO THE %TEMP% STORE CANNOT GROW UNBOUNDED ACROSS SESSIONS FROM HEADER-LESS BODIES.
+    private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
 
     // INDEX KEY = tier.prefix + ":" + hex(hash) SO BOTH TIERS CAN COEXIST FOR THE SAME URI.
     private static final Map<String, Entry> INDEX = new HashMap<>();
+    // SINGLE-FLIGHT REGISTRY: CONCURRENT read/readFile CALLS FOR THE SAME NETWORK KEY SHARE ONE
+    // DOWNLOAD INSTEAD OF EACH HITTING THE ORIGIN. KEYED BY hex(hash), CLEARED WHEN THE FETCH ENDS.
+    private static final Map<String, CompletableFuture<CachedBytes>> INFLIGHT = new ConcurrentHashMap<>();
     private static final Object[] LOCKS = new Object[LOCK_STRIPES];
 
     private static Path cacheDir;
@@ -143,6 +152,7 @@ public final class NetworkCache {
     // ==========================================================================
     // PUBLIC API — LIFECYCLE
     // ==========================================================================
+    /** Opens the on-disk store at {@code dir}, loads the index, and resolves the caching mode. */
     public static synchronized void start(final Path dir) throws IOException {
         cacheDir = dir.toAbsolutePath();
         indexPath = cacheDir.resolve(INDEX_FILE);
@@ -154,6 +164,7 @@ public final class NetworkCache {
         LOGGER.info(IT, "Media network cache initialized at {} (mode={})", cacheDir, mode);
     }
 
+    /** Clears the in-memory index and detaches the store; the on-disk files are left in place. */
     public static synchronized void release() {
         INDEX.clear();
         cacheDir = null;
@@ -164,10 +175,17 @@ public final class NetworkCache {
     // ==========================================================================
     // PUBLIC API — NETWORK TIER
     // ==========================================================================
+    /** Reads {@code uri} into memory, serving a fresh cached body when one exists. */
     public static CachedBytes read(final URI uri, final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
         return read(uri, headers, accept, maxBytes, WaterMediaConfig.media.tx.cache);
     }
 
+    /**
+     * Reads {@code uri} into memory. When {@code enabled} and the URI is cacheable, a fresh stored
+     * body is returned; otherwise the source is downloaded (single-flight per key) and, if the
+     * response is cacheable, persisted. The stripe lock is held only for the store read/write, never
+     * for the transfer, so a slow origin cannot block other keys sharing its lock stripe.
+     */
     public static CachedBytes read(final URI uri, final RequestHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         if (!enabled || !isHttp(uri) || cacheDir == null) {
@@ -190,15 +208,24 @@ public final class NetworkCache {
                     }
                 }
             }
+        }
 
-            final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes);
-            if (downloaded.expiresAt > System.currentTimeMillis()) {
+        final CachedBytes downloaded = fetchShared(hex, uri, headers, accept, maxBytes);
+        if (downloaded.expiresAt > System.currentTimeMillis()) {
+            synchronized (lock(Tier.NETWORK, hex)) {
                 storeWrite(Tier.NETWORK, hash, downloaded.bytes, downloaded.expiresAt, downloaded.contentType);
             }
-            return downloaded;
         }
+        return downloaded;
     }
 
+    /**
+     * Reads {@code uri} as an on-disk file for direct streaming (used by {@code FFMediaPlayer}).
+     * Returns {@code null} — meaning "stream the URI directly, do not cache" — when caching is
+     * disabled/inapplicable, when the body is a playlist (m3u8/DASH, which must never be served from
+     * a stale file), or when the response is uncacheable. Otherwise the body is downloaded
+     * (single-flight per key) and stored, and a handle to the cached file is returned.
+     */
     public static CachedFile readFile(final URI uri, final RequestHeaders headers, final String accept,
                                       final long maxBytes, final boolean enabled) throws IOException {
         if (!enabled || !isHttp(uri) || cacheDir == null) return null;
@@ -216,13 +243,16 @@ public final class NetworkCache {
                     if (Files.size(file) <= maxBytes) return new CachedFile(file, true, entry.contentType);
                 }
             }
-
-            final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes);
-            if (isPlaylist(downloaded.contentType)) return null;
-            if (downloaded.expiresAt <= System.currentTimeMillis()) return null;
-            final Path file = storeWrite(Tier.NETWORK, hash, downloaded.bytes, downloaded.expiresAt, downloaded.contentType);
-            return new CachedFile(file, false, downloaded.contentType);
         }
+
+        final CachedBytes downloaded = fetchShared(hex, uri, headers, accept, maxBytes);
+        if (isPlaylist(downloaded.contentType)) return null;
+        if (downloaded.expiresAt <= System.currentTimeMillis()) return null;
+        final Path file;
+        synchronized (lock(Tier.NETWORK, hex)) {
+            file = storeWrite(Tier.NETWORK, hash, downloaded.bytes, downloaded.expiresAt, downloaded.contentType);
+        }
+        return new CachedFile(file, false, downloaded.contentType);
     }
 
     // ==========================================================================
@@ -295,6 +325,34 @@ public final class NetworkCache {
     // ==========================================================================
     // NETWORK FETCH
     // ==========================================================================
+    // SINGLE-FLIGHT WRAPPER: THE FIRST CALLER FOR A KEY DOWNLOADS; CONCURRENT CALLERS RIDE THE
+    // SAME RESULT INSTEAD OF DUPLICATING THE FETCH. RIDERS RE-FETCH ONLY IF THE SHARED BODY
+    // OVERRUNS THEIR OWN maxBytes OR THE LEADER FAILED. NO STRIPE LOCK IS HELD DURING THE TRANSFER.
+    private static CachedBytes fetchShared(final String hex, final URI uri, final RequestHeaders headers,
+                                           final String accept, final long maxBytes) throws IOException {
+        final CompletableFuture<CachedBytes> mine = new CompletableFuture<>();
+        final CompletableFuture<CachedBytes> leader = INFLIGHT.putIfAbsent(hex, mine);
+        if (leader != null) {
+            try {
+                final CachedBytes shared = leader.join();
+                if (shared.bytes.length <= maxBytes) return shared;
+            } catch (final CompletionException ignored) {
+                // LEADER FAILED — FALL THROUGH TO AN INDEPENDENT FETCH BELOW
+            }
+            return fetch(uri, headers, accept, maxBytes);
+        }
+        try {
+            final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes);
+            mine.complete(downloaded);
+            return downloaded;
+        } catch (final IOException | RuntimeException e) {
+            mine.completeExceptionally(e);
+            throw e;
+        } finally {
+            INFLIGHT.remove(hex, mine);
+        }
+    }
+
     private static CachedBytes fetch(final URI uri, final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
         final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
         if (accept != null && (headers == null || !headers.has("Accept"))) {
@@ -425,7 +483,9 @@ public final class NetworkCache {
                     INDEX.put(indexKey(tier, hex), entry);
                 }
             }
-        } catch (final IOException e) {
+        } catch (final IOException | RuntimeException e) {
+            // A FLIPPED TIER BYTE MAKES Tier.of THROW IllegalArgumentException; TREAT ANY MALFORMED
+            // INDEX (I/O OR PARSE) AS CORRUPT AND START EMPTY RATHER THAN ABORTING CACHE INIT.
             INDEX.clear();
             LOGGER.warn(IT, "Ignoring corrupt media cache index at {}", indexPath, e);
         }
@@ -488,7 +548,8 @@ public final class NetworkCache {
                 return -1L;
             }
         }
-        return Long.MAX_VALUE;
+        // NO CACHING HEADERS — BOUND THE LIFETIME INSTEAD OF CACHING FOREVER.
+        return now + DEFAULT_TTL_MS;
     }
 
     private static boolean isHttp(final URI uri) {

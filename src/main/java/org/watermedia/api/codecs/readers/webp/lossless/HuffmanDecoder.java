@@ -36,17 +36,11 @@ public final class HuffmanDecoder {
         // DISTANCE: 40
         final int greenSize = 256 + 24 + colorCacheSize;
 
-        LOGGER.trace(IT, "readGroup: before GREEN: {}", reader.bitPosition());
         final HuffmanTable green = readTable(reader, greenSize);
-        LOGGER.trace(IT, "readGroup: before RED: {}", reader.bitPosition());
         final HuffmanTable red = readTable(reader, 256);
-        LOGGER.trace(IT, "readGroup: before BLUE: {}", reader.bitPosition());
         final HuffmanTable blue = readTable(reader, 256);
-        LOGGER.trace(IT, "readGroup: before ALPHA: {}", reader.bitPosition());
         final HuffmanTable alpha = readTable(reader, 256);
-        LOGGER.trace(IT, "readGroup: before DIST: {}", reader.bitPosition());
         final HuffmanTable dist = readTable(reader, 40);
-        LOGGER.trace(IT, "readGroup: after DIST: {}", reader.bitPosition());
 
         return new HuffmanGroup(green, red, blue, alpha, dist);
     }
@@ -98,7 +92,6 @@ public final class HuffmanDecoder {
 
         // BUILD CODE LENGTH HUFFMAN TABLE
         final HuffmanTable codeLengthTable = HuffmanTable.build(codeLengthCodeLengths, 19);
-        LOGGER.trace(IT, "  codeLengthTable: {}", codeLengthTable.debugInfo());
 
         // READ MAX SYMBOL
         final int maxSymbol;
@@ -126,7 +119,6 @@ public final class HuffmanDecoder {
         int symbol = 0;
         int tokensRemaining = maxSymbol;
 
-        LOGGER.trace(IT, "  Reading code lengths, maxSymbol={}, position before: {}", maxSymbol, reader.bitPosition());
         while (symbol < alphabetSize && tokensRemaining > 0) {
             tokensRemaining--;
             final int code = codeLengthTable.read(reader);
@@ -165,15 +157,6 @@ public final class HuffmanDecoder {
                 symbol += repeat;
             }
         }
-
-        // COUNT SYMBOLS WITH CODES
-        int symbolCount = 0;
-        for (int i = 0; i < alphabetSize; i++) {
-            if (codeLengths[i] > 0) {
-                symbolCount++;
-            }
-        }
-        LOGGER.trace(IT, "  symbolCount={}, position after: {}", symbolCount, reader.bitPosition());
 
         return HuffmanTable.build(codeLengths, alphabetSize);
     }

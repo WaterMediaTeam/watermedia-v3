@@ -57,24 +57,20 @@ public final class PacketQueue {
      * @return false if the queue was aborted.
      */
     public boolean put(final AVPacket packet) {
-        final AVPacket clone = avcodec.av_packet_clone(packet);
-        if (clone == null) return false;
-
         synchronized (this.lock) {
             while (this.totalBytes >= this.maxBytes && !this.aborted) {
                 try {
                     this.lock.wait();
                 } catch (final InterruptedException e) {
-                    avcodec.av_packet_free(clone);
                     Thread.currentThread().interrupt();
                     return false;
                 }
             }
-            if (this.aborted) {
-                avcodec.av_packet_free(clone);
-                return false;
-            }
+            if (this.aborted) return false;
 
+            // CLONE ONLY ONCE THE ENTRY WILL ACTUALLY BE ENQUEUED — NO NATIVE ALLOC ON REJECTION
+            final AVPacket clone = avcodec.av_packet_clone(packet);
+            if (clone == null) return false;
             this.packets.addLast(new Entry(clone, this.serial));
             this.totalBytes += clone.size();
             this.lock.notifyAll();
@@ -87,14 +83,11 @@ public final class PacketQueue {
      * The caller's original packet is not consumed on failure.
      */
     public boolean tryPut(final AVPacket packet) {
-        final AVPacket clone = avcodec.av_packet_clone(packet);
-        if (clone == null) return false;
-
         synchronized (this.lock) {
-            if (this.totalBytes >= this.maxBytes || this.aborted) {
-                avcodec.av_packet_free(clone);
-                return false;
-            }
+            // A DEMUX THREAD POLLING A SATURATED QUEUE MUST NOT PAY A NATIVE CLONE+FREE PER ATTEMPT
+            if (this.totalBytes >= this.maxBytes || this.aborted) return false;
+            final AVPacket clone = avcodec.av_packet_clone(packet);
+            if (clone == null) return false;
             this.packets.addLast(new Entry(clone, this.serial));
             this.totalBytes += clone.size();
             this.lock.notifyAll();
@@ -212,8 +205,12 @@ public final class PacketQueue {
         }
     }
 
-    /** Releases all pending packets. */
+    /**
+     * Releases all pending packets during final cleanup — the counterpart of
+     * {@link FrameQueue#free()}. PacketQueue pre-allocates no native structs, so this only
+     * drains the outstanding clones; unlike {@link #flush()} it does not bump the serial.
+     */
     public void free() {
-        this.flush();
+        this.clear();
     }
 }

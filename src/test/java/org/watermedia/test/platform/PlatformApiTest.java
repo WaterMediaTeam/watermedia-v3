@@ -76,7 +76,7 @@ public class PlatformApiTest {
     private static PlatformData marker(final String url) {
         final DataSource entry = new DataSource(MediaType.VIDEO, null, null,
                 new RequestHeaders(),
-                new DataQuality[] { new DataQuality(URI.create(url), 0, 0) },
+                List.of(new DataQuality(URI.create(url), 0, 0)),
                 null, null);
         return new PlatformData(null, entry);
     }

@@ -54,9 +54,10 @@ public interface RenderBackend {
 
     void lineWidth(float width);
 
-    void enableClip(int x, int y, int width, int height, int canvasHeight);
+    // NAMED clip/clearClip TO MATCH THE RenderEngine SEAM — SAME CONCEPT, SAME NAME ACROSS LAYERS
+    void clip(int x, int y, int width, int height, int canvasHeight);
 
-    void disableClip();
+    void clearClip();
 
     /**
      * Builds the media graphics engine that matches this backend, for a {@code MediaPlayer} to upload

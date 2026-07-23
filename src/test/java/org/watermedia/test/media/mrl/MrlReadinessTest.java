@@ -9,7 +9,9 @@ import org.watermedia.test.support.Fixtures;
 import java.net.URI;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -26,7 +28,7 @@ public class MrlReadinessTest {
     @Test
     @DisplayName("Local image loads cleanly")
     void testLocalImageLoadsCleanly() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(TIMEOUT_MS));
         assertTrue(mrl.status().loaded());
         assertFalse(mrl.status().failed());
@@ -36,7 +38,7 @@ public class MrlReadinessTest {
     @Test
     @DisplayName("Nonexistent file marks an error after load")
     void testNonexistentFileMarksErrorAfterLoad() {
-        final MRL mrl = MediaAPI.getMRL(URI.create("file:///nonexistent/abc.png"));
+        final MRL mrl = MediaAPI.mrl(URI.create("file:///nonexistent/abc.png"));
         assertTrue(mrl.await(TIMEOUT_MS));
         assertFalse(mrl.status().loaded());
         assertTrue(mrl.status().failed());
@@ -45,8 +47,19 @@ public class MrlReadinessTest {
     @Test
     @DisplayName("Freshly loaded local MRL is not expired")
     void testFreshlyLoadedLocalMrlIsNotExpired() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(TIMEOUT_MS));
         assertNotSame(MRL.Status.EXPIRED, mrl.status());
+    }
+
+    @Test
+    @DisplayName("Malformed URI string yields an ERROR MRL instead of throwing")
+    void testMalformedUriStringYieldsErrorMrl() {
+        // SPACES IN THE AUTHORITY MAKE URI.create THROW — mrl(String) MUST ABSORB IT AS Status.ERROR
+        final MRL mrl = MediaAPI.mrl("http://exa mple.com/bad path");
+        assertNotNull(mrl);
+        assertSame(MRL.Status.ERROR, mrl.status());
+        assertTrue(mrl.status().failed());
+        assertNotNull(mrl.exception());
     }
 }

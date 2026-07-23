@@ -125,7 +125,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public long time() {
         return switch (this.status) {
-            case PLAYING -> this.computeTime();
+            case PLAYING -> {
+                final long t = this.computeTime();
+                final long d = this.duration;
+                // CLAMP/MODULO AGAINST DURATION SO time() NEVER OVERRUNS BETWEEN 50ms TICKS
+                yield d > 0 ? (this.repeat() ? t % d : Math.min(t, d)) : t;
+            }
             case PAUSED, STOPPED, ENDED -> this.accumulatedMs;
             default -> 0;
         };
@@ -228,15 +233,20 @@ public final class ServerMediaPlayer extends MediaPlayer {
         if (this.status != Status.PLAYING) return;
 
         final long d = this.duration;
-        if (d > 0 && this.computeTime() >= d) {
-            if (this.repeat()) {
-                this.accumulatedMs = 0;
-                this.segmentStartNanos = System.nanoTime();
-            } else {
-                this.accumulatedMs = d;
-                this.status = Status.ENDED;
-                ACTIVE.remove(this);
-            }
+        if (d <= 0) return;
+        final long now = this.computeTime();
+        if (now < d) return;
+
+        if (this.repeat()) {
+            // CARRY THE OVERSHOOT ACROSS THE LOOP BOUNDARY — DISCARDING IT SLIPPED THE AUTHORITATIVE
+            // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT.
+            this.accumulatedMs = now % d;
+            this.segmentStartNanos = System.nanoTime();
+        } else {
+            this.accumulatedMs = d;
+            this.status = Status.ENDED;
+            ACTIVE.remove(this);
+            this.publishStatus(Status.PLAYING, Status.ENDED);
         }
     }
 }

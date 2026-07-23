@@ -3,10 +3,21 @@ package org.watermedia.api.media.engines;
 import org.lwjgl.openal.*;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayDeque;
-import java.util.HashMap;
-import java.util.Map;
 
+/**
+ * Default OpenAL-backed {@link SFXEngine}, driven through LWJGL.
+ * <p>
+ * Decoded PCM is uploaded into a small fixed pool of AL buffers streamed onto a single AL source;
+ * the pool depth is what absorbs game hitches (GC, chunk loads) without underrunning, while the
+ * media clock follows the audible position via {@link #pendingMs()} so depth never desyncs A/V.
+ * When {@code AL_SOFT_source_latency} is present, latency queries compensate for device output
+ * latency for sub-sample A/V precision.
+ * <p>
+ * <b>Precondition:</b> a current OpenAL device/context must already exist when an ALEngine is
+ * constructed — in a mod the sound system owns that context, so it must be initialized first.
+ * Construction fails fast with {@link IllegalStateException} when no context is current.
+ * Use {@link Builder} or {@link #buildDefault()} to create instances.
+ */
 public final class ALEngine extends SFXEngine {
     // DEFAULTS
     // 8 BUFFERS × ~43ms (2048 SAMPLES @ 48kHz) ≈ 340ms OF DEPTH. THE QUEUE DEPTH IS
@@ -28,41 +39,49 @@ public final class ALEngine extends SFXEngine {
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL };
     private static final long[] SUPPORTED_CHANNELS = {
             //ch U8 S16 FLT DBL --  --  --
-            0x01_FF_FF_FF_FF_00_00_00L, // mono:   all four types
-            0x02_FF_FF_FF_FF_00_00_00L, // stereo: all four types
-            0x04_FF_FF_FF_00_00_00_00L, // quad:   no DBL
-            0x06_FF_FF_FF_00_00_00_00L, // 5.1:    no DBL
-            0x07_FF_FF_FF_00_00_00_00L, // 6.1:    no DBL
-            0x08_FF_FF_FF_00_00_00_00L, // 7.1:    no DBL
+            0x01_FF_FF_FF_FF_00_00_00L, // MONO:   ALL FOUR TYPES
+            0x02_FF_FF_FF_FF_00_00_00L, // STEREO: ALL FOUR TYPES
+            0x04_FF_FF_FF_00_00_00_00L, // QUAD:   NO DBL
+            0x06_FF_FF_FF_00_00_00_00L, // 5.1:    NO DBL
+            0x07_FF_FF_FF_00_00_00_00L, // 6.1:    NO DBL
+            0x08_FF_FF_FF_00_00_00_00L, // 7.1:    NO DBL
     };
 
     private final int[] buffers;
     private final boolean latencySupported;
-    // BUFFER OWNERSHIP — FREE BUFFERS READY TO FILL, AND DURATION BOOKKEEPING FOR
-    // BUFFERS CURRENTLY QUEUED ON THE SOURCE (USED BY pendingMs()).
-    private final ArrayDeque<Integer> freeBuffers = new ArrayDeque<>();
-    private final Map<Integer, Long> queuedDurationUs = new HashMap<>();
+    // BUFFER OWNERSHIP AS PRIMITIVE RINGS — NO BOXING IN THE UPLOAD/CLOCK HOT PATH.
+    // freeIds IS A LIFO STACK OF BUFFER IDS READY TO FILL. queuedDur IS A FIFO RING OF PER-BUFFER
+    // DURATIONS MIRRORING THE SOURCE QUEUE ORDER, SO reclaimProcessed POPS DURATIONS IN THE SAME
+    // ORDER AL RETURNS THE PROCESSED BUFFERS (USED BY pendingMs()).
+    private final int[] freeIds;
+    private int freeCount;
+    private final long[] queuedDur;
+    private int queuedHead;
+    private int queuedCount;
     private long totalQueuedUs;
     // PRECOMPUTED AL FORMAT CONSTANT — UPDATED BY setAudioFormat, READ BY upload
     private int alFormat;
     private int bytesPerFrame; // BYTES PER SAMPLE-FRAME (channels × sample size)
+    // REUSED SCRATCH FOR AL_SOFT_source_latency QUERIES: [0] = offset seconds, [1] = device latency seconds
+    private final double[] latencyValues = new double[2];
 
-    public ALEngine(final int bufferCount) {
+    private ALEngine(final int bufferCount) {
         this.buffers = new int[bufferCount];
+        this.freeIds = new int[bufferCount];
+        this.queuedDur = new long[bufferCount];
         // sampleType / channels / sampleRate / alFormat ARE POPULATED BY setAudioFormat
         // BEFORE FIRST UPLOAD — UNINITIALIZED STATE IS A CALLER BUG
-        // FINAL INIT
         this.source = this.genSource();
-        for (final int buffer: this.buffers) this.freeBuffers.push(buffer);
-        // DETECT AL_SOFT_source_latency ONCE — CONTEXT MUST BE CURRENT (alGenSources SUCCEEDED ABOVE)
+        // A CURRENT OPENAL CONTEXT IS REQUIRED: WITHOUT ONE alGenSources YIELDS 0 AND/OR SETS AN
+        // ERROR, LEAVING A SILENTLY-BROKEN ENGINE. FAIL FAST INSTEAD.
+        final int err = AL10.alGetError();
+        if (this.source == 0 || err != AL10.AL_NO_ERROR)
+            throw new IllegalStateException("OpenAL source/buffer generation failed (err=0x" + Integer.toHexString(err)
+                    + "); a current OpenAL context must exist before creating an ALEngine");
+        for (final int buffer: this.buffers) this.freeIds[this.freeCount++] = buffer;
+        // DETECT AL_SOFT_source_latency ONCE — CONTEXT IS CURRENT (alGenSources SUCCEEDED ABOVE)
         final ALCapabilities caps = AL.getCapabilities();
         this.latencySupported = caps.AL_SOFT_source_latency;
-    }
-
-    @Override
-    protected int genSource() {
-        AL10.alGenBuffers(this.buffers);
-        return AL10.alGenSources();
     }
 
     @Override
@@ -99,6 +118,11 @@ public final class ALEngine extends SFXEngine {
         this.flush();
         AL10.alDeleteSources(this.source);
         AL10.alDeleteBuffers(this.buffers);
+        // CLEAR OWNERSHIP SO A LATE upload() CAN'T POLL A DELETED BUFFER ID AND alBufferData A DEAD BUFFER
+        this.freeCount = 0;
+        this.queuedHead = 0;
+        this.queuedCount = 0;
+        this.totalQueuedUs = 0;
     }
 
     @Override
@@ -134,15 +158,17 @@ public final class ALEngine extends SFXEngine {
         // LEAVING STALE BUFFERS QUEUED MAKES OLD AUDIO PLAY AGAIN.
         this.reclaimProcessed();
 
-        final Integer buffer = this.freeBuffers.poll();
-        if (buffer == null) return false; // NO BUFFER AVAILABLE — TRY LATER
+        if (this.freeCount == 0) return false; // NO BUFFER AVAILABLE — TRY LATER
+        final int buffer = this.freeIds[--this.freeCount];
 
         final long durationUs = this.bytesPerFrame > 0 && this.sampleRate > 0
                 ? (data.remaining() / this.bytesPerFrame) * 1_000_000L / this.sampleRate
                 : 0L;
         AL10.alBufferData(buffer, this.alFormat, data, this.sampleRate);
         AL10.alSourceQueueBuffers(this.source, buffer);
-        this.queuedDurationUs.put(buffer, durationUs);
+        // ENQUEUE THE DURATION AT THE FIFO TAIL
+        this.queuedDur[(this.queuedHead + this.queuedCount) % this.queuedDur.length] = durationUs;
+        this.queuedCount++;
         this.totalQueuedUs += durationUs;
         return true;
     }
@@ -155,11 +181,10 @@ public final class ALEngine extends SFXEngine {
         // SAFETY NET FOR BUFFERS THE DRIVER DIDN'T REPORT YET
         final int queued = AL10.alGetSourcei(this.source, AL10.AL_BUFFERS_QUEUED);
         for (int i = 0; i < queued; i++) {
-            final int buffer = AL10.alSourceUnqueueBuffers(this.source);
-            this.queuedDurationUs.remove(buffer);
-            this.freeBuffers.push(buffer);
+            this.freeIds[this.freeCount++] = AL10.alSourceUnqueueBuffers(this.source);
         }
-        this.queuedDurationUs.clear();
+        this.queuedHead = 0;
+        this.queuedCount = 0;
         this.totalQueuedUs = 0;
     }
 
@@ -176,9 +201,8 @@ public final class ALEngine extends SFXEngine {
         // offset − deviceLatency, SO THE PENDING WINDOW GROWS BY THE LATENCY).
         final double offsetSec;
         if (this.latencySupported) {
-            final double[] values = new double[2];
-            SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, values);
-            offsetSec = values[0] - values[1];
+            SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, this.latencyValues);
+            offsetSec = this.latencyValues[0] - this.latencyValues[1];
         } else {
             offsetSec = AL10.alGetSourcef(this.source, AL11.AL_SEC_OFFSET);
         }
@@ -187,15 +211,41 @@ public final class ALEngine extends SFXEngine {
         return Math.max(0L, (this.totalQueuedUs - playedUs) / 1000L);
     }
 
-    // UNQUEUES EVERY PROCESSED BUFFER AND RETURNS IT TO THE FREE LIST,
-    // KEEPING THE QUEUED-DURATION BOOKKEEPING IN SYNC.
+    @Override
+    public long playbackMs() {
+        final int state = AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE);
+        if (state == AL10.AL_INITIAL) return -1;
+
+        if (this.latencySupported) {
+            SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, this.latencyValues);
+            return (long) ((this.latencyValues[0] - this.latencyValues[1]) * 1000.0);
+        }
+        return (long) (AL10.alGetSourcef(this.source, AL11.AL_SEC_OFFSET) * 1000f);
+    }
+
+    @Override
+    protected int genSource() {
+        AL10.alGenBuffers(this.buffers);
+        return AL10.alGenSources();
+    }
+
+    /** Returns a defensive copy of the AL buffer ids owned by this engine. */
+    public int[] buffers() {
+        return this.buffers.clone();
+    }
+
+    // UNQUEUES EVERY PROCESSED BUFFER AND RETURNS IT TO THE FREE STACK, KEEPING THE QUEUED-DURATION
+    // FIFO IN SYNC (AL RETURNS PROCESSED BUFFERS IN QUEUE ORDER, SO WE POP THE FIFO FRONT).
     private void reclaimProcessed() {
         int processed = AL10.alGetSourcei(this.source, AL10.AL_BUFFERS_PROCESSED);
         while (processed-- > 0) {
             final int buffer = AL10.alSourceUnqueueBuffers(this.source);
-            final Long durationUs = this.queuedDurationUs.remove(buffer);
-            if (durationUs != null) this.totalQueuedUs -= durationUs;
-            this.freeBuffers.push(buffer);
+            if (this.queuedCount > 0) {
+                this.totalQueuedUs -= this.queuedDur[this.queuedHead];
+                this.queuedHead = (this.queuedHead + 1) % this.queuedDur.length;
+                this.queuedCount--;
+            }
+            this.freeIds[this.freeCount++] = buffer;
         }
     }
 
@@ -210,10 +260,9 @@ public final class ALEngine extends SFXEngine {
     }
 
     // MAPS A CANONICAL SAMPLE TYPE + CHANNEL COUNT TO AN OPENAL FORMAT CONSTANT.
-    // RETURNS -1 IF THE COMBINATION IS NOT SUPPORTED.
+    // RETURNS -1 IF THE COMBINATION IS NOT SUPPORTED. type IS ALREADY NON-NULL (setAudioFormat GUARDS IT).
     // ASSUMES OPENAL SOFT — AL_EXT_MCFORMATS, AL_EXT_FLOAT32, AND AL_EXT_DOUBLE ARE ALWAYS AVAILABLE THERE.
     private static int alFormatFor(final SampleType type, final int channels) {
-        if (type == null) return -1;
         return switch (type) {
             case U8 -> switch (channels) {
                 case 1 -> AL10.AL_FORMAT_MONO8;
@@ -251,28 +300,6 @@ public final class ALEngine extends SFXEngine {
                 default -> -1;
             };
         };
-    }
-
-    @Override
-    public long playbackMs() {
-        final int state = AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE);
-        if (state == AL10.AL_INITIAL) return -1;
-
-        if (this.latencySupported) {
-            // [0] = offset seconds (fractional), [1] = device output latency seconds
-            final double[] values = new double[2];
-            SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, values);
-            return (long) ((values[0] - values[1]) * 1000.0);
-        }
-        return (long) (AL10.alGetSourcef(this.source, AL11.AL_SEC_OFFSET) * 1000f);
-    }
-
-    public int[] buffers() {
-        return this.buffers;
-    }
-
-    public int[] buffersCopy() {
-        return this.buffers.clone();
     }
 
     /**

@@ -114,9 +114,15 @@ public final class FrameQueue {
     /**
      * Confirms that the slot at {@code writeIndex} has been filled.
      * After this, the frame is visible to the reader.
+     *
+     * @throws IllegalStateException if called without a slot obtained via {@link #peekWritable()}
      */
     public void push() {
         synchronized (this.lock) {
+            // A PUSH WITHOUT A GRANTED SLOT WOULD OVERWRITE UNREAD FRAMES SILENTLY — FAIL LOUD
+            if (this.size >= this.capacity) {
+                throw new IllegalStateException("push() without a writable slot (queue full)");
+            }
             this.writeIndex = (this.writeIndex + 1) % this.capacity;
             this.size++;
             this.lock.notifyAll();
@@ -151,7 +157,8 @@ public final class FrameQueue {
                 final long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) return null;
                 try {
-                    this.lock.wait(Math.min(remaining, 10));
+                    // push()/abort() BOTH notifyAll, SO WAIT THE FULL REMAINDER INSTEAD OF POLLING AT 10MS
+                    this.lock.wait(remaining);
                 } catch (final InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return null;
@@ -204,6 +211,10 @@ public final class FrameQueue {
     /**
      * Discards all pending frames. Calls {@code av_frame_unref} on each.
      * Use after a seek to clear frames from the previous timestamp.
+     * <p>
+     * Safe against a writer mid {@link #peekWritable()}/{@link #push()}: the write cursor is
+     * preserved, so an outstanding slot still commits into its own position and becomes the
+     * first readable frame (its stale serial is then discarded by the reader as usual).
      */
     public void flush() {
         synchronized (this.lock) {
@@ -211,8 +222,9 @@ public final class FrameQueue {
                 final int idx = (this.readIndex + i) % this.capacity;
                 avutil.av_frame_unref(this.queue[idx].frame);
             }
-            this.readIndex = 0;
-            this.writeIndex = 0;
+            // KEEP writeIndex: A WRITER HOLDING A SLOT (NEVER IN THE UNREF RANGE — THE QUEUE WASN'T
+            // FULL) STILL PUSHES INTO IT; JUMPING THE READ CURSOR THERE KEEPS THE RING CONSISTENT.
+            this.readIndex = this.writeIndex;
             this.size = 0;
             this.lock.notifyAll();
         }

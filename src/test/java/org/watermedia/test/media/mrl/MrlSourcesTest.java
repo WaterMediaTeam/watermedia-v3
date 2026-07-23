@@ -26,7 +26,7 @@ public class MrlSourcesTest {
     @Test
     @DisplayName("Local image only exposes IMAGE sources")
     void testLocalImageOnlyExposesImageSources() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source image = mrl.sourceByType(MediaType.IMAGE);

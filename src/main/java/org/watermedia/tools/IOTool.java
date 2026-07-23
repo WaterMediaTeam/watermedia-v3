@@ -116,20 +116,22 @@ public class IOTool {
     }
 
     public static int deleteOnExit(final File path) {
-        int deletedCount = 0;
         if (path == null || !path.exists()) {
             return 0;
         }
+        // REGISTER THE PARENT BEFORE ITS CHILDREN: deleteOnExit RUNS IN REVERSE REGISTRATION
+        // ORDER, SO DIRECTORIES MUST BE REGISTERED FIRST TO BE DELETED LAST (ONCE EMPTY)
+        path.deleteOnExit();
+        int registered = 1;
         if (path.isDirectory()) {
             final File[] files = path.listFiles();
             if (files != null) {
                 for (final File file: files) {
-                    deletedCount += deleteOnExit(file);
+                    registered += deleteOnExit(file);
                 }
             }
         }
-        path.deleteOnExit();
-        return ++deletedCount;
+        return registered;
     }
 
     public static boolean closeQuietly(final AutoCloseable closeable) {

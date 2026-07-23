@@ -35,13 +35,19 @@ public final class Canvas {
      * multiplicatively when nested; each call must be balanced with {@link #popAlpha()}.
      */
     public void pushAlpha(final float factor) {
-        this.alphaStack[this.alphaDepth++] = this.alpha;
+        // SATURATE AT CAPACITY — 16 NESTED FADES IS BEYOND ANY REAL TREE; PAST IT WE KEEP MULTIPLYING BUT
+        // STOP RECORDING SO A RUNAWAY OR UNBALANCED PUSH CAN NEVER WRITE OUT OF BOUNDS (POP GUARDS UNDERFLOW)
+        if (this.alphaDepth < this.alphaStack.length) this.alphaStack[this.alphaDepth] = this.alpha;
+        this.alphaDepth++;
         this.alpha *= Math.max(0f, Math.min(1f, factor));
     }
 
     /** Restores the alpha multiplier active before the matching {@link #pushAlpha(float)}. */
     public void popAlpha() {
-        if (this.alphaDepth > 0) this.alpha = this.alphaStack[--this.alphaDepth];
+        if (this.alphaDepth > 0) {
+            this.alphaDepth--;
+            if (this.alphaDepth < this.alphaStack.length) this.alpha = this.alphaStack[this.alphaDepth];
+        }
     }
 
     // APPLIES THE GLOBAL ALPHA MULTIPLIER TO A COLOR — IDENTITY (NO ALLOCATION) WHEN NO FADE IS ACTIVE
@@ -68,13 +74,13 @@ public final class Canvas {
         return this.windowHeight;
     }
 
-    // SOLID FILL — RADIUS 0 STAYS A CRISP RECTANGLE (THE UI IS SQUARE-CORNERED BY DESIGN)
+    /** Solid fill; radius 0 stays a crisp rectangle (the UI is square-cornered by design). */
     public void fill(final float x, final float y, final float w, final float h, final Color color) {
         if (color == null) return;
         RenderSystem.fillRounded(x, y, w, h, 0f, this.mul(color));
     }
 
-    // SOLID FILL FROM RAW RGBA COMPONENTS — FOR HAIRLINES AND OVERLAYS WHOSE ALPHA IS NOT A THEME COLOR
+    /** Solid fill from raw RGBA components — for hairlines and overlays whose alpha is not a theme color. */
     public void fill(final float x, final float y, final float w, final float h,
                      final float r, final float g, final float b, final float a) {
         RenderSystem.fill(x, y, w, h, r, g, b, a * this.alpha);
@@ -113,7 +119,7 @@ public final class Canvas {
                 bottom.getRed() / 255f, bottom.getGreen() / 255f, bottom.getBlue() / 255f, bottom.getAlpha() / 255f * this.alpha);
     }
 
-    // VERTICAL GRADIENT FROM RAW RGBA STOPS — FOR BANDS WHOSE PER-STOP ALPHA IS NOT A THEME COLOR'S ALPHA
+    /** Vertical gradient from raw RGBA stops — for bands whose per-stop alpha is not a theme color's alpha. */
     public void gradientV(final float x, final float y, final float w, final float h,
                           final float r1, final float g1, final float b1, final float a1,
                           final float r2, final float g2, final float b2, final float a2) {
@@ -126,26 +132,27 @@ public final class Canvas {
                 right.getRed() / 255f, right.getGreen() / 255f, right.getBlue() / 255f, right.getAlpha() / 255f * this.alpha);
     }
 
-    // HORIZONTAL GRADIENT FROM RAW RGBA STOPS — SEE gradientV
+    /** Horizontal gradient from raw RGBA stops — see {@link #gradientV}. */
     public void gradientH(final float x, final float y, final float w, final float h,
                           final float r1, final float g1, final float b1, final float a1,
                           final float r2, final float g2, final float b2, final float a2) {
         RenderSystem.fillGradientH(x, y, w, h, r1, g1, b1, a1 * this.alpha, r2, g2, b2, a2 * this.alpha);
     }
 
+    /** Draws a straight line between two points at the given width. */
     public void line(final float x1, final float y1, final float x2, final float y2, final Color color, final float lineWidth) {
         RenderSystem.color(this.mul(color));
         RenderSystem.lineWidth(lineWidth);
         RenderSystem.line(x1, y1, x2, y2);
     }
 
-    // AXIS-ALIGNED HORIZONTAL RULE — A HAIRLINE/UNDERLINE OF THE GIVEN LENGTH AND WEIGHT
+    /** Axis-aligned horizontal rule — a hairline/underline of the given length and weight. */
     public void lineH(final float x, final float y, final float length, final Color color, final float lineWidth) {
         if (color == null || lineWidth <= 0f) return;
         RenderSystem.lineH(x, y, length, this.mul(color), lineWidth);
     }
 
-    // TEXTURED BLIT WITH AN OPTIONAL TINT — A NULL TINT DRAWS THE IMAGE AT FULL WHITE
+    /** Textured blit with an optional tint — a null tint draws the image at full white. */
     public void image(final int textureId, final float x, final float y, final float w, final float h, final Color tint) {
         if (textureId <= 0) return;
         RenderSystem.bindTexture(textureId);
@@ -157,7 +164,7 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h);
     }
 
-    // TEXTURED BLIT SAMPLING A SUB-REGION (UV RECT) — USED FOR COVER-FIT CROPPING WITHOUT DISTORTION
+    /** Textured blit sampling a sub-region (UV rect) — used for cover-fit cropping without distortion. */
     public void image(final int textureId, final float x, final float y, final float w, final float h,
                       final float u0, final float v0, final float u1, final float v1, final Color tint) {
         if (textureId <= 0) return;
@@ -170,8 +177,10 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h, u0, v0, u1, v1);
     }
 
-    // MEDIA-PLAYER FRAME BLIT — THE HANDLE IS THE PLAYER'S 64-BIT MEDIA TEXTURE (A GL TEXTURE NAME OR A
-    // VULKAN VkImageView), BOUND THROUGH THE BACKEND'S MEDIA PATH INSTEAD OF THE PLAIN 2D TEXTURE PATH
+    /**
+     * Media-player frame blit — the handle is the player's 64-bit media texture (a GL texture name or a
+     * Vulkan {@code VkImageView}), bound through the backend's media path instead of the plain 2D path.
+     */
     public void mediaImage(final long handle, final float x, final float y, final float w, final float h) {
         if (handle == 0L) return;
         RenderSystem.bindMediaTexture(handle);
@@ -179,7 +188,7 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h);
     }
 
-    // MEDIA BLIT SAMPLING A SUB-REGION (UV RECT) — USED FOR COVER-FIT CROPPING WITHOUT DISTORTION
+    /** Media blit sampling a sub-region (UV rect) — used for cover-fit cropping without distortion. */
     public void mediaImage(final long handle, final float x, final float y, final float w, final float h,
                            final float u0, final float v0, final float u1, final float v1) {
         if (handle == 0L) return;
@@ -188,7 +197,7 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h, u0, v0, u1, v1);
     }
 
-    // PIXEL-ICON DRAW ROUTED THROUGH THE CANVAS SO THE GLOBAL ALPHA MULTIPLIER APPLIES (DIALOG FADES)
+    /** Pixel-icon draw routed through the canvas so the global alpha multiplier applies (dialog fades). */
     public void icon(final String name, final int x, final int y, final int size, final Color color) {
         PixelIcon.draw(name, x, y, size, this.mul(color));
     }
@@ -212,8 +221,22 @@ public final class Canvas {
         return bold ? this.text.glyphHeightBold(scale) : this.text.glyphHeight(scale);
     }
 
-    // SCISSOR CLIP — CALLS MUST BE BALANCED WITH popClip; THE BACKEND KEEPS A SINGLE RECTANGLE, SO NESTED
-    // CLIPS ARE INTERSECTED BY THE CALLER (ParentScroll) RATHER THAN STACKED HERE
+    /** Draws a letter-spaced run — glyph by glyph with extra logical-px spacing, the global alpha applied once. */
+    public void textSpaced(final String value, final float x, final float y, final Color color,
+                           final float scale, final boolean bold, final int letterSpacing) {
+        if (value == null || value.isEmpty()) return;
+        this.text.renderSpaced(value, x, y, this.mul(color), scale, bold, letterSpacing);
+    }
+
+    /** Width of a letter-spaced run — matches {@link #textSpaced} without allocating per-character strings. */
+    public int textSpacedWidth(final String value, final float scale, final boolean bold, final int letterSpacing) {
+        return this.text.spacedWidth(value, scale, bold, letterSpacing);
+    }
+
+    /**
+     * Scissor clip — calls must be balanced with {@link #popClip}. The backend keeps a single rectangle,
+     * so nested clips are intersected by the caller ({@code ParentScroll}) rather than stacked here.
+     */
     public void pushClip(final int x, final int y, final int w, final int h) {
         RenderSystem.clip(x, y, w, h, this.windowHeight);
     }

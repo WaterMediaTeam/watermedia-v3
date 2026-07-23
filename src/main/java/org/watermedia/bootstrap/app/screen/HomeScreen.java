@@ -65,6 +65,26 @@ public class HomeScreen extends Screen {
     private static final Color TILE_BG_EXIT_SEL = new Color(66, 18, 28, 235);
     private static final Color TILE_BG_SEL = new Color(AppTheme.BG_2.getRed(), 34, 66, 235);
 
+    // ACCENT PALETTES — HOISTED SO THE PER-TILE/PER-CARD DRAW PATHS NEVER REALLOCATE THE ARRAY
+    private static final Color[] CATEGORY_PALETTE = {AppTheme.NEON, AppTheme.CYAN, AppTheme.AMBER, AppTheme.GREEN, AppTheme.NEON_LIGHT};
+    private static final Color[] REPO_PALETTE = {AppTheme.AMBER, AppTheme.CYAN, AppTheme.NEON_LIGHT, AppTheme.NEON};
+
+    // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    private static final List<Keybind> KEYS_UPLOAD_REPORT = List.of(
+            new Keybind("UP/DOWN", "Repository"), new Keybind("ENTER", "Submit"), new Keybind("ESC", "Close"));
+    private static final List<Keybind> KEYS_UPLOAD = List.of(
+            new Keybind("ENTER", "Continue"), new Keybind("ESC", "Cancel"));
+    private static final List<Keybind> KEYS_CLEANUP = List.of(
+            new Keybind("ENTER", "Continue"), new Keybind("ESC", "Close"));
+    private static final List<Keybind> KEYS_MENU = List.of(
+            new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Exit"));
+
+    private record MenuEntry(String label, String meta, Action action, int groupIndex) {
+    }
+
+    private record RepoTarget(String name, String slug, String url, Color accent) {
+    }
+
     private final Consumer<Action> navigator;
     private final List<MenuEntry> actions = new ArrayList<>();
     private final List<MenuEntry> mediaTests = new ArrayList<>();
@@ -119,7 +139,7 @@ public class HomeScreen extends Screen {
         this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
         this.actions.add(new MenuEntry("Upload Logs", AppContext.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
         this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
-        // TODO: Settings is still WIP; keep it debug-only until the menu is production-ready.
+        // TODO: SETTINGS IS STILL WIP — KEEP IT DEBUG-ONLY UNTIL THE MENU IS PRODUCTION-READY
         this.actions.add(new MenuEntry("Settings", WaterMedia.LOGGER.isDebugEnabled() ? "S" : "WIP", Action.SETTINGS, -1));
         this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
 
@@ -366,7 +386,7 @@ public class HomeScreen extends Screen {
             case GLFW_KEY_LEFT -> this.switchPanel(0);
             case GLFW_KEY_RIGHT -> this.switchPanel(this.mediaTests.isEmpty() && !this.entertainment.isEmpty() ? 2 : 1);
             case GLFW_KEY_U -> {
-                final int idx = this.uploadActionIndex();
+                final int idx = this.actionIndex(Action.UPLOAD_LOGS);
                 if (idx >= 0) {
                     this.selectedPanel = 0;
                     this.selectedAction = idx;
@@ -374,9 +394,13 @@ public class HomeScreen extends Screen {
                 }
             }
             case GLFW_KEY_S -> {
-                this.selectedPanel = 0;
-                this.selectedAction = Math.min(3, this.actions.size() - 1);
-                this.confirmSelection();
+                // RESOLVE BY ACTION, NOT A HARDCODED SLOT — A MENU REORDER MUST NOT RETARGET S AT ANOTHER ENTRY
+                final int idx = this.actionIndex(Action.SETTINGS);
+                if (idx >= 0) {
+                    this.selectedPanel = 0;
+                    this.selectedAction = idx;
+                    this.confirmSelection();
+                }
             }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.confirmSelection();
             case GLFW_KEY_ESCAPE -> this.navigator.accept(Action.EXIT);
@@ -389,15 +413,9 @@ public class HomeScreen extends Screen {
 
     @Override
     public List<Keybind> keybinds() {
-        if (this.ctx.upload.visible) {
-            return this.ctx.upload.stage >= 3
-                    ? List.of(new Keybind("UP/DOWN", "Repository"), new Keybind("ENTER", "Submit"), new Keybind("ESC", "Close"))
-                    : List.of(new Keybind("ENTER", "Continue"), new Keybind("ESC", "Cancel"));
-        }
-        if (this.ctx.cleanup.visible) {
-            return List.of(new Keybind("ENTER", "Continue"), new Keybind("ESC", "Close"));
-        }
-        return List.of(new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Exit"));
+        if (this.ctx.upload.visible) return this.ctx.upload.stage >= 3 ? KEYS_UPLOAD_REPORT : KEYS_UPLOAD;
+        if (this.ctx.cleanup.visible) return KEYS_CLEANUP;
+        return KEYS_MENU;
     }
 
     @Override
@@ -424,20 +442,15 @@ public class HomeScreen extends Screen {
         this.ctx.selectedGroup = group;
         this.ctx.groupMRLs.clear();
         for (final AppContext.TestURI testUri: group.uris()) {
-            this.ctx.groupMRLs.put(testUri.name(), MediaAPI.getMRL(testUri.uri()));
+            this.ctx.groupMRLs.put(testUri.name(), MediaAPI.mrl(testUri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);
     }
 
     private void openCustomTests() {
         if (this.ctx.customTests.isEmpty()) return;
-        this.ctx.selectedGroup = new AppContext.URIGroup("CUSTOM",
-                this.ctx.customTests.toArray(new AppContext.TestURI[0]));
-        this.ctx.groupMRLs.clear();
-        for (final AppContext.TestURI uri: this.ctx.customTests) {
-            this.ctx.groupMRLs.put(uri.name(), MediaAPI.getMRL(uri.uri()));
-        }
-        this.navigator.accept(Action.MRL_SELECTOR);
+        this.openGroup(new AppContext.URIGroup("CUSTOM",
+                this.ctx.customTests.toArray(new AppContext.TestURI[0])));
     }
 
     private boolean actionEnabled(final MenuEntry entry) {
@@ -446,9 +459,9 @@ public class HomeScreen extends Screen {
         return true;
     }
 
-    private int uploadActionIndex() {
+    private int actionIndex(final Action action) {
         for (int i = 0; i < this.actions.size(); i++) {
-            if (this.actions.get(i).action() == Action.UPLOAD_LOGS) return i;
+            if (this.actions.get(i).action() == action) return i;
         }
         return -1;
     }
@@ -464,9 +477,8 @@ public class HomeScreen extends Screen {
         };
     }
 
-    private Color categoryColor(final int index, final int offset) {
-        final Color[] palette = {AppTheme.NEON, AppTheme.CYAN, AppTheme.AMBER, AppTheme.GREEN, AppTheme.NEON_LIGHT};
-        return palette[Math.floorMod(index + offset, palette.length)];
+    private static Color categoryColor(final int index) {
+        return CATEGORY_PALETTE[Math.floorMod(index, CATEGORY_PALETTE.length)];
     }
 
     private void moveSelection(final int delta) {
@@ -520,22 +532,27 @@ public class HomeScreen extends Screen {
         ThreadTool.createStarted("WaterMedia-CacheSize", () -> {
             final Path cache = WaterMedia.tmp().resolve("cache");
             long bytes = 0L;
-            if (Files.exists(cache)) {
-                try (final var stream = Files.walk(cache)) {
-                    bytes = stream.filter(Files::isRegularFile).mapToLong(path -> {
-                        try {
-                            return Files.size(path);
-                        } catch (final IOException ignored) {
-                            return 0L;
-                        }
-                    }).sum();
-                } catch (final IOException ignored) {
+            try {
+                if (Files.exists(cache)) {
+                    try (final var stream = Files.walk(cache)) {
+                        bytes = stream.filter(Files::isRegularFile).mapToLong(path -> {
+                            try {
+                                return Files.size(path);
+                            } catch (final IOException ignored) {
+                                return 0L;
+                            }
+                        }).sum();
+                    }
                 }
+            } catch (final Exception ignored) {
+                // Files.walk WRAPS TRAVERSAL FAILURES IN UncheckedIOException — CATCH BROADLY SO THE finally ALWAYS RUNS
+            } finally {
+                // RESET IN finally: A THROWN WALK MUST NOT LEAVE cacheWalking LATCHED (WHICH WOULD FREEZE THE LABEL FOREVER)
+                this.cacheLabel = Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
+                this.cacheWalking = false;
+                // REBUILD ON THE RENDER THREAD SO THE CLEANUP ENTRY PICKS UP THE NEW LABEL
+                this.ctx.execute(this::rebuildMenu);
             }
-            this.cacheLabel = Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
-            this.cacheWalking = false;
-            // REBUILD ON THE RENDER THREAD SO THE CLEANUP ENTRY PICKS UP THE NEW LABEL
-            this.ctx.execute(this::rebuildMenu);
         });
     }
 
@@ -600,11 +617,10 @@ public class HomeScreen extends Screen {
         final List<RepoTarget> repos = new ArrayList<>();
         repos.add(new RepoTarget("WaterMedia", "WaterMediaTeam/watermedia", wmUrl, AppTheme.GREEN));
         // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE WaterMediaApp.scanSuspectMods)
-        final Color[] palette = {AppTheme.AMBER, AppTheme.CYAN, AppTheme.NEON_LIGHT, AppTheme.NEON};
         int idx = 0;
         for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
             if (this.ctx.upload.suspectModIds.contains(mod.id())) {
-                repos.add(new RepoTarget(mod.name(), mod.slug(), mod.url(), palette[idx % palette.length]));
+                repos.add(new RepoTarget(mod.name(), mod.slug(), mod.url(), REPO_PALETTE[idx % REPO_PALETTE.length]));
             }
             idx++;
         }
@@ -731,10 +747,8 @@ public class HomeScreen extends Screen {
     // MENU GRID — FIXED TWO-PANEL LAYOUT PORTED ONTO THE RETAINED ELEMENT TREE
     // ==========================================================================
 
-    // FIXED TWO-PANEL GRID: THE ACTION COLUMN ON THE LEFT, THE MEDIA-TILE GRID (PLUS THE ENTERTAINMENT
-    // ROWS) ON THE RIGHT. GEOMETRY MIRRORS THE LEGACY SCREEN EXACTLY, INCLUDING THE visibleMediaCount
-    // OVERFLOW RULE (TILES THAT DO NOT FIT ARE HIDDEN, SO THEY ARE NEITHER DRAWN NOR HIT-TESTED) AND THE
-    // ENTERTAINMENT-FITS CHECK. THE SECTION HEADS AND THE UPLOAD TOOLTIP LIVE HERE TOO.
+    // FIXED TWO-PANEL GRID (ACTIONS LEFT, MEDIA TILES + ENTERTAINMENT RIGHT) WITH THE SECTION HEADS AND
+    // UPLOAD TOOLTIP. OVERFLOWING TILES ARE HIDDEN (visibleMediaCount), SO THEY ARE NEITHER DRAWN NOR HIT-TESTED.
     private final class HomeBody extends Group<HomeBody> {
 
         private static final int TILE_H = 94;
@@ -848,7 +862,7 @@ public class HomeScreen extends Screen {
 
             // THE TOOLTIP HANGS 8px UNDER ITS ANCHOR TILE (THE ELEMENT BOX INCLUDES THE 10px NOTCH ON TOP)
             if (this.tip != null && this.tip.visible()) {
-                final int idx = uploadActionIndex();
+                final int idx = actionIndex(Action.UPLOAD_LOGS);
                 if (idx >= 0 && idx < this.actionElements.size()) {
                     final ActionTile anchor = this.actionElements.get(idx);
                     this.tip.layout(anchor.left(), anchor.top() + anchor.measuredHeight() + 8 - UploadTip.NOTCH_H);
@@ -861,7 +875,7 @@ public class HomeScreen extends Screen {
             this.head(canvas, "Actions", actions.size() + " available", this.innerLeft(), this.innerTop());
             this.head(canvas, "Media tests", mediaTests.size() + " categories", this.rightXAbs, this.innerTop());
             if (this.entHeadVisible) {
-                this.head(canvas, "Entertaiment", entertainment.size() + " available", this.rightXAbs, this.entYAbs);
+                this.head(canvas, "Entertainment", entertainment.size() + " available", this.rightXAbs, this.entYAbs);
             }
             super.onDraw(canvas); // TILES, THEN THE TOOLTIP ON TOP
         }
@@ -989,7 +1003,7 @@ public class HomeScreen extends Screen {
         @Override
         protected void onDraw(final Canvas canvas) {
             final MenuEntry entry = mediaTests.get(this.index);
-            final Color folderColor = categoryColor(entry.groupIndex(), 0);
+            final Color folderColor = categoryColor(entry.groupIndex());
             final int x = this.left;
             final int y = this.top;
             PixelIcon.draw("folder", x + 14, y + 15, 18, folderColor);
@@ -1056,7 +1070,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final int idx = uploadActionIndex();
+            final int idx = actionIndex(Action.UPLOAD_LOGS);
             this.visible = idx >= 0 && selectedPanel == 0 && selectedAction == idx && !HomeScreen.this.ctx.upload.visible;
         }
 
@@ -1452,11 +1466,5 @@ public class HomeScreen extends Screen {
                     "SUBMIT", "", "link", 12, accent, accent, false,
                     sel || this.submitHover, true);
         }
-    }
-
-    private record MenuEntry(String label, String meta, Action action, int groupIndex) {
-    }
-
-    private record RepoTarget(String name, String slug, String url, Color accent) {
     }
 }

@@ -2,6 +2,7 @@ package org.watermedia.api.codecs;
 
 import java.io.IOException;
 
+/** Sealed root of the codec exception hierarchy, thrown on malformed or unsupported image data. */
 public sealed class XCodecException extends IOException permits UnsupportedFormatException {
     public XCodecException() {
         super();

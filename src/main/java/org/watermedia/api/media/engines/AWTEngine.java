@@ -3,6 +3,7 @@ package org.watermedia.api.media.engines;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * {@link SWEngine} that renders frames into an AWT {@link BufferedImage}.
@@ -37,10 +38,16 @@ public final class AWTEngine extends SWEngine {
         final int[] px = this.argb;
         final ByteBuffer b = this.bgra;
         if (px == null || b == null) return;
-        // PACK BGRA BYTES INTO 0xAARRGGBB
-        for (int i = 0, o = 0; i < px.length; i++, o += 4) {
-            px[i] = ((b.get(o + 3) & 0xFF) << 24) | ((b.get(o + 2) & 0xFF) << 16)
-                    | ((b.get(o + 1) & 0xFF) << 8) | (b.get(o) & 0xFF);
+        if (b.order() == ByteOrder.LITTLE_ENDIAN) {
+            // BGRA BYTES READ AS A NATIVE (LE) INT ARE EXACTLY 0xAARRGGBB == TYPE_INT_ARGB — BULK COPY
+            b.clear();
+            b.asIntBuffer().get(px);
+        } else {
+            // BIG-ENDIAN: PACK BGRA BYTES INTO 0xAARRGGBB ONE PIXEL AT A TIME
+            for (int i = 0, o = 0; i < px.length; i++, o += 4) {
+                px[i] = ((b.get(o + 3) & 0xFF) << 24) | ((b.get(o + 2) & 0xFF) << 16)
+                        | ((b.get(o + 1) & 0xFF) << 8) | (b.get(o) & 0xFF);
+            }
         }
     }
 

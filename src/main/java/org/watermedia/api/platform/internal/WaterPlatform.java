@@ -9,6 +9,7 @@ import org.watermedia.api.util.RequestHeaders;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
+import java.util.List;
 
 public final class WaterPlatform implements IPlatform {
     public static final String NAME = "WaterMedia Internal";
@@ -31,7 +32,7 @@ public final class WaterPlatform implements IPlatform {
         final URI resolvedUri = new URI(resolved);
         final var entry = new DataSource(MediaType.UNKNOWN, null, null,
                 RequestHeaders.defaults(uri),
-                new DataQuality[] {new DataQuality(resolvedUri, 0, 0)},
+                List.of(new DataQuality(resolvedUri, 0, 0)),
                 null, null);
         return new PlatformData(null, entry);
     }
@@ -49,7 +50,11 @@ public final class WaterPlatform implements IPlatform {
                 yield file.toUri().toString();
             }
             case HOST_REMOTE -> {
+                // VALIDATE THE CONFIG UP FRONT: A NULL/BLANK OR NON-ABSOLUTE remoteHost WOULD OTHERWISE
+                // YIELD A SCHEME-LESS URI THAT ONLY FAILS MUCH LATER, FAR FROM THE ACTUAL CAUSE
                 String base = WaterMediaConfig.network.remoteHost;
+                if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))
+                    throw new PlatformException(WaterPlatform.class, "network.remoteHost is not configured (expected an absolute http(s) URL): " + base);
                 if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
                 yield base + path;
             }

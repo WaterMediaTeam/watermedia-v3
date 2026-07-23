@@ -401,8 +401,8 @@ public final class VKEngine extends GFXEngine {
         // AN IN-FLIGHT UPLOAD COMMAND BUFFER MAY STILL READ THE IMPORT — DRAIN THE ENGINE'S OWN
         // WORK FIRST, THEN DESTROY IT WHILE THE HOST MEMORY IS STILL VALID.
         this.waitAllIdle();
-        vkDestroyBuffer(this.device, imp.buffer, null);
-        vkFreeMemory(this.device, imp.memory, null);
+        vkDestroyBuffer(this.device, imp.buffer(), null);
+        vkFreeMemory(this.device, imp.memory(), null);
     }
 
     @Override
@@ -626,10 +626,10 @@ public final class VKEngine extends GFXEngine {
     // RETURNS THE VkBuffer, OR 0 IF THE IMPORT IS REJECTED (CALLER FALLS BACK TO STAGING).
     private long importBuffer(final long ptr, final long size) {
         final Imported cached = this.importCache.get(ptr);
-        if (cached != null && cached.size >= size) return cached.buffer;
+        if (cached != null && cached.size() >= size) return cached.buffer();
         if (cached != null) { // A LARGER REGION IS NEEDED — DROP THE STALE IMPORT FIRST
-            vkDestroyBuffer(this.device, cached.buffer, null);
-            vkFreeMemory(this.device, cached.memory, null);
+            vkDestroyBuffer(this.device, cached.buffer(), null);
+            vkFreeMemory(this.device, cached.memory(), null);
             this.importCache.remove(ptr);
         }
         try (MemoryStack stack = stackPush()) {
@@ -686,11 +686,11 @@ public final class VKEngine extends GFXEngine {
     // SOURCE. THE BUFFER GROWS ON DEMAND AND IS MAPPED ONCE (HOST_COHERENT — NO EXPLICIT FLUSH).
     private long stageInto(final Slot slot, final int i, final ByteBuffer src, final long needed) {
         Stage st = slot.stage[i];
-        if (st == null || st.size < needed) {
+        if (st == null || st.size() < needed) {
             if (st != null) {
-                vkUnmapMemory(this.device, st.memory);
-                vkDestroyBuffer(this.device, st.buffer, null);
-                vkFreeMemory(this.device, st.memory, null);
+                vkUnmapMemory(this.device, st.memory());
+                vkDestroyBuffer(this.device, st.buffer(), null);
+                vkFreeMemory(this.device, st.memory(), null);
             }
             try (MemoryStack stack = stackPush()) {
                 final VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(stack).sType$Default()
@@ -719,8 +719,8 @@ public final class VKEngine extends GFXEngine {
                 slot.stage[i] = st;
             }
         }
-        memCopy(memAddress(src), st.mapped, needed);
-        return st.buffer;
+        memCopy(memAddress(src), st.mapped(), needed);
+        return st.buffer();
     }
 
     // ==========================================================================
@@ -733,27 +733,27 @@ public final class VKEngine extends GFXEngine {
         this.destroySlotFormatRes(slot);
         try (MemoryStack stack = stackPush()) {
             final Img out = this.image(stack, this.outFormat, this.width, this.height, this.outUsage, 0L);
-            slot.outImg = out.image;
-            slot.outMem = out.memory;
-            slot.view = out.view;
+            slot.outImg = out.image();
+            slot.outMem = out.memory();
+            slot.view = out.view();
             if (this.ycbcrFmt != 0) {
                 this.ensureYcbcr(); // CONVERSION/SAMPLER/PIPELINE/SETS MUST EXIST BEFORE THE VIEW CHAINS THEM
                 // ONE MULTIPLANAR IMAGE HOLDS EVERY PLANE; ITS SAMPLED VIEW CHAINS THE SAME CONVERSION
                 // THE IMMUTABLE SAMPLER WAS CREATED WITH (REQUIRED TO MATCH).
                 final Img mp = this.image(stack, this.ycbcrFmt, this.width, this.height,
                         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, this.ycbcrConv);
-                slot.planeImg[0] = mp.image;
-                slot.planeMem[0] = mp.memory;
-                slot.planeView[0] = mp.view;
+                slot.planeImg[0] = mp.image();
+                slot.planeMem[0] = mp.memory();
+                slot.planeView[0] = mp.view();
                 // BINDING 0 = MULTIPLANAR VIEW (SAMPLER FIELD IGNORED — THE LAYOUT'S IMMUTABLE SAMPLER
                 // WINS), BINDING 1 = THIS SLOT'S RGBA STORAGE VIEW.
                 final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
                 final VkDescriptorImageInfo.Buffer srcInfo = VkDescriptorImageInfo.calloc(1, stack);
-                srcInfo.get(0).sampler(this.ycbcrSamp).imageView(mp.view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                srcInfo.get(0).sampler(this.ycbcrSamp).imageView(mp.view()).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 writes.get(0).sType$Default().dstSet(slot.ycbcrSet).dstBinding(0).dstArrayElement(0)
                         .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(srcInfo);
                 final VkDescriptorImageInfo.Buffer outInfo = VkDescriptorImageInfo.calloc(1, stack);
-                outInfo.get(0).imageView(out.view).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                outInfo.get(0).imageView(out.view()).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(1).sType$Default().dstSet(slot.ycbcrSet).dstBinding(1).dstArrayElement(0)
                         .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outInfo);
                 vkUpdateDescriptorSets(this.device, writes, null);
@@ -762,9 +762,9 @@ public final class VKEngine extends GFXEngine {
                     final PlaneSpec spec = this.planeSpecs[i];
                     final Img p = this.image(stack, spec.format, spec.w, spec.h,
                             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0L);
-                    slot.planeImg[i] = p.image;
-                    slot.planeMem[i] = p.memory;
-                    slot.planeView[i] = p.view;
+                    slot.planeImg[i] = p.image();
+                    slot.planeMem[i] = p.memory();
+                    slot.planeView[i] = p.view();
                 }
                 this.updateDescriptorSet(stack, slot);
             }
@@ -795,9 +795,9 @@ public final class VKEngine extends GFXEngine {
             if (s.planeImg[j] != 0L) { vkDestroyImage(this.device, s.planeImg[j], null); s.planeImg[j] = 0L; }
             if (s.planeMem[j] != 0L) { vkFreeMemory(this.device, s.planeMem[j], null); s.planeMem[j] = 0L; }
             if (s.stage[j] != null) {
-                vkUnmapMemory(this.device, s.stage[j].memory);
-                vkDestroyBuffer(this.device, s.stage[j].buffer, null);
-                vkFreeMemory(this.device, s.stage[j].memory, null);
+                vkUnmapMemory(this.device, s.stage[j].memory());
+                vkDestroyBuffer(this.device, s.stage[j].buffer(), null);
+                vkFreeMemory(this.device, s.stage[j].memory(), null);
                 s.stage[j] = null;
             }
         }
@@ -808,8 +808,8 @@ public final class VKEngine extends GFXEngine {
 
     private void destroyImportCache() {
         for (final Imported imp: this.importCache.values()) {
-            vkDestroyBuffer(this.device, imp.buffer, null);
-            vkFreeMemory(this.device, imp.memory, null);
+            vkDestroyBuffer(this.device, imp.buffer(), null);
+            vkFreeMemory(this.device, imp.memory(), null);
         }
         this.importCache.clear();
     }
@@ -927,11 +927,9 @@ public final class VKEngine extends GFXEngine {
                 this.plane(0, rF, bps, w, h);
                 this.plane(1, rgF, 2 * bps, w / 2, h / 2);
                 this.planeCount = 2;
-                // NV21 STAYS ON COMPUTE: VULKAN HAS NO VU-ORDER 2-PLANE FORMAT AND COMPONENT
-                // SWIZZLES ON MULTIPLANAR CONVERSIONS ARE DRIVER-FRAGILE. >8BIT STAYS ON COMPUTE:
-                // FFMPEG PLANAR 10/12-BIT IS LSB-ALIGNED WHILE VULKAN G10X6/G12X4 FORMATS ARE
-                // MSB-ALIGNED — INCOMPATIBLE MEMORY LAYOUTS. 420 MULTIPLANAR IMAGES ALSO REQUIRE
-                // EVEN WIDTH AND HEIGHT (VUID-VkImageCreateInfo-format-04712/04713).
+                // ONLY 8-BIT EVEN-SIZED NV12 TAKES THE YCBCR PATH: VULKAN HAS NO VU-ORDER PLANE (NV21),
+                // 10/12-BIT PLANAR IS LSB-ALIGNED VS VULKAN'S MSB-ALIGNED G10X6/G12X4, AND 420
+                // MULTIPLANAR NEEDS EVEN WxH (VUID-VkImageCreateInfo-format-04712/04713).
                 if (this.pixelFormat == PixelFormat.NV12 && bps == 1 && (w & 1) == 0 && (h & 1) == 0) {
                     this.tryYcbcr(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
                 }
@@ -1304,28 +1302,13 @@ public final class VKEngine extends GFXEngine {
     }
 
     // A PERSISTENT MAPPED HOST-VISIBLE STAGING BUFFER (FALLBACK COPY SOURCE).
-    private static final class Stage {
-        final long buffer, memory, mapped, size;
-        Stage(final long buffer, final long memory, final long mapped, final long size) {
-            this.buffer = buffer; this.memory = memory; this.mapped = mapped; this.size = size;
-        }
-    }
+    private record Stage(long buffer, long memory, long mapped, long size) {}
 
     // A HOST POINTER IMPORTED AS A VkBuffer (ZERO-COPY COPY SOURCE).
-    private static final class Imported {
-        final long memory, buffer, size;
-        Imported(final long memory, final long buffer, final long size) {
-            this.memory = memory; this.buffer = buffer; this.size = size;
-        }
-    }
+    private record Imported(long memory, long buffer, long size) {}
 
     // AN IMAGE + ITS BACKING MEMORY + ITS VIEW.
-    private static final class Img {
-        final long image, memory, view;
-        Img(final long image, final long memory, final long view) {
-            this.image = image; this.memory = memory; this.view = view;
-        }
-    }
+    private record Img(long image, long memory, long view) {}
 
     // PER-PLANE GPU IMAGE DESCRIPTOR FOR THE CURRENT FORMAT.
     private static final class PlaneSpec {

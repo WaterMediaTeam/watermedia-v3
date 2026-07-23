@@ -15,6 +15,7 @@ import org.watermedia.tools.JsonTool;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -24,18 +25,18 @@ public final class PornHubPlatform implements IPlatform {
     public static final String NAME = "PornHub";
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");
-    private static final String[] HOSTS = { "pornhub.com" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
     public PlatformData getData(final URI uri) throws Exception {
-        // VALIDATE THE HOST AND REQUIRE A viewkey QUERY PARAM (e.g. ?viewkey=6a159015e4470).
-        // A NULL HOST (e.g. file:// URIs) IS NOT OURS — endsWith IS NOT NULL-SAFE, SO GUARD IT
-        // HERE INSTEAD OF LETTING IT NPE AND BREAK THE PLATFORM RESOLUTION CHAIN.
-        final String host = uri.getHost();
-        if (host == null || !DataTool.endsWith(host, HOSTS)
+        // VALIDATE THE HOST WITH A DOT BOUNDARY (pornhub.com OR *.pornhub.com) SO LOOKALIKES LIKE
+        // "notpornhub.com" ARE REJECTED, AND REQUIRE A viewkey QUERY PARAM (e.g. ?viewkey=6a159015e4470).
+        // A NULL HOST (e.g. file:// URIs) IS NOT OURS — GUARD IT INSTEAD OF NPEing THE RESOLUTION CHAIN.
+        final String raw = uri.getHost();
+        final String host = raw == null ? null : raw.toLowerCase(Locale.ROOT);
+        if (host == null || !(host.equals("pornhub.com") || host.endsWith(".pornhub.com"))
                 || !DataTool.contains(uri.getQuery(), "viewkey="))
             return null;
 
@@ -87,7 +88,7 @@ public final class PornHubPlatform implements IPlatform {
             LOGGER.info(IT, "PornHub resolved viewkey '{}' with {} CDN variant(s) ({} skipped)", viewkey, variants.size(), skipped);
             final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
                     RequestHeaders.defaults(uri),
-                    variants.toArray(DataQuality[]::new),
+                    variants,
                     null, null);
             return new PlatformData(null, entry);
         }

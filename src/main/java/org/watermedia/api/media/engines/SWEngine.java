@@ -1,9 +1,13 @@
 package org.watermedia.api.media.engines;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+
+import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * Software {@link GFXEngine} base for CPU render targets that consume a packed BGRA frame
@@ -12,18 +16,22 @@ import java.nio.ByteOrder;
  * It only accepts single-plane {@code BGRA}/{@code RGBA}; every planar or packed-YUV format is
  * declined, so the frame producer pre-converts those to BGRA through the decoder's scaler. Each
  * frame is written into a reusable direct BGRA buffer that the concrete engine wraps into (or copies
- * to) its native surface. Because there is no GPU texture, {@link #texture()} returns a fixed
- * non-zero sentinel; the real output is the surface the subclass exposes.
+ * to) its native surface. Because there is no GPU texture, {@link #texture()} returns a non-zero
+ * sentinel once the first frame is uploaded (0 before), matching the base contract; the real output
+ * is the surface the subclass exposes.
  * <p>
  * A frame arrives on the player's decode thread: {@link #upload(ByteBuffer, int)} writes the buffer
  * and calls {@link #present()} to publish it, then fires the optional {@code onFrame} callback so a
  * UI can repaint. The surface is reallocated on every {@link #setVideoFormat} (resolution change).
  */
 public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEngine {
+    private static final Marker IT = MarkerManager.getMarker(SWEngine.class.getSimpleName());
+
     // REUSABLE DIRECT BGRA SURFACE — width*height*4 BYTES, REALLOCATED ON RESIZE
     protected ByteBuffer bgra;
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
+    private volatile boolean framed;
     private volatile boolean released;
 
     protected SWEngine(final Runnable onFrame) {
@@ -46,7 +54,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     }
 
     @Override
-    public long texture() { return this.released ? 0L : 1L; }
+    public long texture() { return this.released || !this.framed ? 0L : 1L; }
 
     @Override
     public void upload(final ByteBuffer buffer, final int stride) {
@@ -56,16 +64,26 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         final int h = this.height;
         final int rowBytes = w * 4;
         final int srcStride = stride == 0 ? rowBytes : stride;
+        // WARN-DROP LIKE THE GPU ENGINES INSTEAD OF THROWING FROM THE DECODE THREAD ON A SHORT BUFFER
+        final long needed = (long) (h - 1) * srcStride + rowBytes;
+        if (buffer.remaining() < needed) {
+            LOGGER.warn(IT, "Frame buffer too small: {} < {}", buffer.remaining(), needed);
+            return;
+        }
         final ByteBuffer src = buffer.duplicate();
         final int base = src.position();
 
         dst.clear();
         if (this.pixelFormat == PixelFormat.RGBA) {
-            // SWIZZLE RGBA -> BGRA PER PIXEL
+            // SWIZZLE RGBA->BGRA WITH ONE 32-BIT OP PER PIXEL (SWAP R AND B). FORCING LE VIEWS MAKES
+            // THE BYTE MATH HOST-AGNOSTIC — THE OUTPUT MEMORY IS ALWAYS B,G,R,A REGARDLESS OF ENDIANNESS.
+            final ByteBuffer s = src.order(ByteOrder.LITTLE_ENDIAN);
+            final ByteBuffer d = dst.duplicate().order(ByteOrder.LITTLE_ENDIAN);
             for (int row = 0; row < h; row++) {
                 int o = base + row * srcStride;
                 for (int x = 0; x < w; x++, o += 4) {
-                    dst.put(src.get(o + 2)).put(src.get(o + 1)).put(src.get(o)).put(src.get(o + 3));
+                    final int p = s.getInt(o); // 0xAABBGGRR
+                    d.putInt((p & 0xFF00FF00) | ((p >>> 16) & 0xFF) | ((p & 0xFF) << 16));
                 }
             }
         } else {
@@ -77,6 +95,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
             }
         }
 
+        this.framed = true;
         this.present();
         if (this.onFrame != null) this.onFrame.run();
     }

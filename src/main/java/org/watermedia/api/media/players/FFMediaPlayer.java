@@ -65,8 +65,8 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
-    private static boolean LOADED;
-    private static boolean ERROR;
+    private static volatile boolean LOADED;
+    private static volatile boolean ERROR;
     private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT LOAD)
 
     // AUDIO OUTPUT FORMAT
@@ -158,6 +158,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private volatile boolean qualityRequest = false;
     private volatile boolean ioAbortRequested = false;
     private volatile boolean startPausedRequest = false;
+    private volatile boolean released = false; // ONCE release() RUNS THE ENGINES ARE FREED — REJECT NEW start()s
     private volatile Boolean hlsLiveSource;
     private Callback_Pointer interruptCallback;
 
@@ -255,6 +256,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     // MEDIAPLAYER OVERRIDES
     @Override
     public void start() {
+        // release() FREES gfx/sfx — REBUILDING THE PIPELINE ON DEAD ENGINES WOULD CRASH ON UPLOAD
+        if (this.released) {
+            LOGGER.warn(IT, "start() ignored — player already released");
+            return;
+        }
         LOGGER.debug(IT, "Start requested (quality={})", this.quality);
         if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
             this.stop();
@@ -262,7 +268,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         final Thread oldThread = this.lifecycleThread;
 
         this.lifecycleThread = this.factory.apply("lifecycle", () -> {
+            // join RETURNS false WHEN THIS THREAD IS INTERRUPTED WHILE WAITING — THE RESTART WAS
+            // DROPPED, SO LEAVE A CLEAN TERMINAL STATE INSTEAD OF THE PREVIOUS RUN'S STALE STATUS
             if (oldThread != null && !ThreadTool.join(oldThread)) {
+                LOGGER.warn(IT, "Restart aborted — interrupted while joining the previous lifecycle");
+                this.publishTransition(Status.STOPPED);
                 return;
             }
             this.lifecycle();
@@ -283,6 +293,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public void release() {
         LOGGER.debug(IT, "Release requested");
+        this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
         this.stop();
         // WAIT FOR THE PIPELINE TO EXIT BEFORE FREEING ENGINES — THE CONSUMPTION
         // LOOP KEEPS TOUCHING sfx/gfx AND NATIVE CONTEXTS UNTIL IT FINISHES.
@@ -397,6 +408,14 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public Status status() { return this.clock.status(); }
+
+    // TRANSITIONS THE CLOCK AND NOTIFIES THE STATUS LISTENER. USED FOR TERMINAL STATES
+    // (ENDED/ERROR/STOPPED) SO PLAYLIST CONSUMERS CAN ADVANCE WITHOUT POLLING status().
+    private void publishTransition(final Status next) {
+        final Status prev = this.clock.status();
+        this.clock.transition(next);
+        this.publishStatus(prev, this.clock.status());
+    }
 
     @Override
     public boolean liveSource() {
@@ -681,10 +700,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private static void copyPlane(final BytePointer src, final long bytes, final ByteBuffer dst) {
-        src.capacity(bytes);
+        // DIRECT NATIVE-TO-NATIVE COPY — AVOIDS ALLOCATING A WRAPPER ByteBuffer PER PLANE PER FRAME
+        // (asByteBuffer). CLEAR FIRST SO memAddress RESOLVES TO THE BUFFER BASE (POSITION 0).
         dst.clear();
-        dst.put(src.asByteBuffer());
-        dst.flip();
+        MemoryUtil.memCopy(src.address() + src.position(), MemoryUtil.memAddress(dst), bytes);
+        dst.limit((int) bytes);
     }
 
     // LAZY-INIT SWS RESOURCES FOR FORMAT CONVERSION AND/OR DOWNSCALE. RETURNS FALSE IF INIT FAILS.
@@ -875,7 +895,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // FAILURE IS VISIBLE AND NOT RETRIED FOREVER BY repeat().
                         if (this.videoStreamIndex >= 0 && this.totalRenderedFrames == 0 && this.totalSkippedFrames == 0) {
                             LOGGER.error(IT, "Video decoder emitted no frames for {} — failing instead of reporting ENDED", this.source.uri(this.quality));
-                            this.clock.transition(Status.ERROR);
+                            this.publishTransition(Status.ERROR);
                             break;
                         }
                         if (this.repeat()) {
@@ -885,14 +905,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                             this.clock.requestSeek(0, false);
                             continue;
                         }
-                        this.clock.transition(Status.ENDED);
+                        this.publishTransition(Status.ENDED);
                         break;
                     }
                 }
 
                 if (current == Status.BUFFERING && this.demuxThread != null && !this.demuxThread.isAlive()) {
                     LOGGER.error(IT, "Demux thread died during BUFFERING — setting ERROR");
-                    this.clock.transition(Status.ERROR);
+                    this.publishTransition(Status.ERROR);
                     break;
                 }
 
@@ -1164,17 +1184,17 @@ public final class FFMediaPlayer extends MediaPlayer {
             final Status finalStatus = this.clock.status();
             if (!Thread.currentThread().isInterrupted()
                     && finalStatus != Status.ERROR && finalStatus != Status.ENDED && finalStatus != Status.STOPPED) {
-                this.clock.transition(Status.ENDED);
+                this.publishTransition(Status.ENDED);
             }
 
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             this.stopThreads();
-            this.clock.transition(Status.STOPPED);
+            this.publishTransition(Status.STOPPED);
         } catch (final Throwable e) {
             LOGGER.fatal(IT, "Error in lifecycle for URI {}", this.source.uri(this.quality), e);
             this.stopThreads();
-            this.clock.transition(Status.ERROR);
+            this.publishTransition(Status.ERROR);
         } finally {
             this.freeQueues();
             this.cleanup();
@@ -1185,12 +1205,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     private void demuxLoop() {
         try {
             if (!this.init()) {
-                this.clock.transition(Status.ERROR);
+                this.publishTransition(Status.ERROR);
                 return;
             }
         } catch (final Throwable e) {
             LOGGER.error(IT, "Init failed with exception", e);
-            this.clock.transition(Status.ERROR);
+            this.publishTransition(Status.ERROR);
             return;
         }
         this.clock.start(this.clock.pauseRequested());
@@ -1269,7 +1289,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                             // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS
                             // NOTHING LEFT TO READ FROM, THE PIPELINE CANNOT RECOVER
                             LOGGER.error(IT, "Seek to {}ms failed and the input could not be reopened — stopping pipeline", targetMs);
-                            this.clock.transition(Status.ERROR);
+                            this.publishTransition(Status.ERROR);
                             return;
                         }
                         LOGGER.info(IT, "Seek to {}ms failed — reopened format from beginning", targetMs);
@@ -1986,7 +2006,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
-            this.clock.transition(Status.ERROR);
+            this.publishTransition(Status.ERROR);
             return;
         }
 
@@ -2051,21 +2071,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         return !lower.endsWith(".m3u8") && !lower.endsWith(".mpd");
     }
 
-    private boolean reopenFormat() {
-        final var uri = this.source.uri(this.quality);
-        super.quality(this.source.qualityOf(uri));
-
-        final String url = this.resolveInputUrl(uri, true);
-
-        if (this.formatContext != null) {
-            avformat.avformat_close_input(this.formatContext);
-        }
-
-        this.formatContext = avformat.avformat_alloc_context();
-        if (this.interruptCallback != null) {
-            this.formatContext.interrupt_callback().callback(this.interruptCallback);
-        }
-
+    // APPLIES THE SHARED INPUT OPTIONS AND OPENS THE ALREADY-ALLOCATED this.formatContext.
+    // ON FAILURE LOGS THE DECODED ERROR AND DROPS THE CONTEXT (avformat_open_input FREES IT ON
+    // FAILURE) SO cleanup()/av_read_frame NEVER TOUCH FREED MEMORY. USED BY init() AND reopenFormat().
+    private boolean openInput(final String url) {
         final AVDictionary options = new AVDictionary();
         try {
             av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
@@ -2085,15 +2094,32 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (ret < 0) {
                 final byte[] buf = new byte[256];
                 av_strerror(ret, buf, buf.length);
-                LOGGER.error(IT, "reopenFormat: failed to open input ({}): {}", new String(buf).trim(), url);
-                // avformat_open_input FREES THE CONTEXT ON FAILURE — DROP THE
-                // WRAPPER SO cleanup()/av_read_frame NEVER TOUCH FREED MEMORY
+                LOGGER.error(IT, "Failed to open input ({}): {}", new String(buf).trim(), url);
                 this.formatContext = null;
                 return false;
             }
+            return true;
         } finally {
             av_dict_free(options);
         }
+    }
+
+    private boolean reopenFormat() {
+        final var uri = this.source.uri(this.quality);
+        super.quality(this.source.qualityOf(uri));
+
+        final String url = this.resolveInputUrl(uri, true);
+
+        if (this.formatContext != null) {
+            avformat.avformat_close_input(this.formatContext);
+        }
+
+        this.formatContext = avformat.avformat_alloc_context();
+        if (this.interruptCallback != null) {
+            this.formatContext.interrupt_callback().callback(this.interruptCallback);
+        }
+
+        if (!this.openInput(url)) return false;
 
         if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
             LOGGER.error(IT, "reopenFormat: failed to find stream info");
@@ -2152,7 +2178,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         try {
             final var uri = this.source.uri(this.quality);
             super.quality(this.source.qualityOf(uri));
-            LOGGER.debug(IT, "Quality switchoff {}", this.quality);
+            LOGGER.debug(IT, "Resolved quality {}", this.quality);
             final String url = this.resolveInputUrl(uri, true);
 
             final var audioSlaves = this.source.audioSlaves();
@@ -2171,36 +2197,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             };
             this.formatContext.interrupt_callback().callback(this.interruptCallback);
 
-            final AVDictionary options = new AVDictionary();
-
-            try {
-                LOGGER.debug(IT, "Referer: {}", uri.getScheme() + "://" + uri.getHost());
-                av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
-                this.applyProbeOptions(options);
-                av_dict_set(options, "buffer_size", "33554432", 0);
-                av_dict_set(options, "rtbufsize", "15000000", 0);
-                av_dict_set(options, "http_persistent", "1", 0);
-                av_dict_set(options, "multiple_requests", "0", 0);
-                av_dict_set(options, "reconnect", "1", 0);
-                av_dict_set(options, "reconnect_streamed", "1", 0);
-                av_dict_set(options, "reconnect_delay_max", "5", 0);
-                av_dict_set(options, "timeout", "10000000", 0);
-                av_dict_set(options, "rtsp_transport", "tcp", 0);
-                av_dict_set(options, "max_delay", "5000000", 0);
-
-                final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
-                if (ret < 0) {
-                    final byte[] buf = new byte[256];
-                    av_strerror(ret, buf, buf.length);
-                    LOGGER.error(IT, "Failed to open input ({}): {}", new String(buf).trim(), url);
-                    // avformat_open_input FREES THE CONTEXT ON FAILURE — DROP THE
-                    // WRAPPER SO cleanup() NEVER CLOSES FREED MEMORY
-                    this.formatContext = null;
-                    return false;
-                }
-            } finally {
-                av_dict_free(options);
-            }
+            LOGGER.debug(IT, "Target origin {}://{}", uri.getScheme(), uri.getHost());
+            if (!this.openInput(url)) return false;
 
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
                 LOGGER.error(IT, "Failed to find stream info");

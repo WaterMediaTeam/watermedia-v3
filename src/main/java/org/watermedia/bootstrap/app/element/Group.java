@@ -27,11 +27,13 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     }
 
     public T remove(final Element<?> child) {
-        this.children.remove(child);
+        // NULL THE BACK-POINTER SO A REMOVED CHILD NO LONGER CLAIMS THIS GROUP AS ITS PARENT
+        if (this.children.remove(child)) child.parent = null;
         return this.self();
     }
 
     public T clear() {
+        for (final Element<?> child: this.children) child.parent = null;
         this.children.clear();
         return this.self();
     }
@@ -63,7 +65,14 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     public boolean dispatchClick(final double mx, final double my) {
         if (!this.visible || !this.enabled) return false;
         for (int i = this.children.size() - 1; i >= 0; i--) {
-            if (this.children.get(i).dispatchClick(mx, my)) return true;
+            if (this.children.get(i).dispatchClick(mx, my)) {
+                // BLUR ANY FOCUSED TEXT INPUT THE CONSUMED CLICK DID NOT LAND IN — Group.dispatchClick
+                // SHORT-CIRCUITS TOPMOST-FIRST, SO A CONSUMING SIBLING WOULD OTHERWISE NEVER REACH IT
+                for (int j = this.children.size() - 1; j >= 0; j--) {
+                    if (j != i) this.children.get(j).clearFocus();
+                }
+                return true;
+            }
         }
         if (!this.contains(mx, my)) return false;
         if (this.onClick != null) {
@@ -99,6 +108,11 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     public void clearHover() {
         super.clearHover();
         for (final Element<?> child: this.children) child.clearHover();
+    }
+
+    @Override
+    public void clearFocus() {
+        for (final Element<?> child: this.children) child.clearFocus();
     }
 
     @Override

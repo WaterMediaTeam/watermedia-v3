@@ -29,7 +29,7 @@ public class TxFrameStepTest {
     @Test
     @DisplayName("nextFrame and previousFrame move the clock while paused")
     void testNextAndPreviousFrameMoveClockWhilePaused() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("2.gif")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);

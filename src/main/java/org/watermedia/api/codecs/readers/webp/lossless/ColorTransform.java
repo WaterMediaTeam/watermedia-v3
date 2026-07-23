@@ -90,11 +90,6 @@ public final class ColorTransform {
         }
     }
 
-    // COLOR TRANSFORM DELTA: (t * c) >> 5 WITH SIGNED ARITHMETIC
-    private static int colorTransformDelta(final byte t, final byte c) {
-        return (t * c) >> 5;
-    }
-
     // DECODE COLOR TABLE (SUBTRACT-CODED)
     public static int[] decodeColorTable(final int[] rawTable) {
         final int[] table = new int[rawTable.length];

@@ -19,7 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
-import java.util.List;
+import java.util.List; // EXPLICIT: DISAMBIGUATES FROM java.awt.List (BOTH WILDCARDS ARE IMPORTED)
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -125,6 +125,8 @@ public class AppBootstrap {
     private static void live(final String msg) { System.out.print("\r" + ANSI_BLUE + msg + ANSI_RESET); }
 
     public interface Extension {
+        // DISPLAY NAME FOR LOGS AND THE ISSUE-REPORT DIAGNOSTICS; DEFAULTS TO THE CLASS SIMPLE NAME
+        default String name() { return this.getClass().getSimpleName(); }
         void load();
     }
 
@@ -135,7 +137,10 @@ public class AppBootstrap {
                 WaterMediaApp.start(() -> {
                     WaterMediaApp.log("Launched with embedded WaterMediaApp Bootstrap");
                     WaterMediaApp.log("Searching for extensions...");
-                    ServiceLoader.load(Extension.class).forEach(Extension::load);
+                    ServiceLoader.load(Extension.class).forEach(ext -> {
+                        WaterMediaApp.log("Loading extension: " + ext.name());
+                        ext.load();
+                    });
                 });
             } catch (final Throwable e) {
                 showError(e);
@@ -454,16 +459,22 @@ public class AppBootstrap {
             try (final InputStream in = new BufferedInputStream(c.getInputStream());
                  final OutputStream out = new BufferedOutputStream(Files.newOutputStream(part))) {
                 final byte[] buf = new byte[DOWNLOAD_BUF];
+                // TRANSFER AT LINE SPEED; THROTTLE ONLY THE PROGRESS REPAINT (~20/s) SO THE LIVE LINE
+                // NEVER BECOMES THE BOTTLENECK LIKE THE OLD PER-READ SLEEP (CAPPED THROUGHPUT AT ~1.6MB/s).
+                long lastRepaint = 0;
                 int r;
                 while ((r = in.read(buf)) != -1) {
                     out.write(buf, 0, r);
-                    ThreadTool.sleep(5); // SLEEP TO SLOWDOWN DOWNLOAD SPEED, FOR FANCYNESS
                     dl += r;
-                    if (total > 0) {
-                        live(String.format("[DOWNLOADING] %s %d%% %.1f/%.1fMB", name,
-                                (int) (dl * 100 / total), dl / 1_048_576.0, total / 1_048_576.0));
-                    } else {
-                        live(String.format("[DOWNLOADING] %s %.1fMB", name, dl / 1_048_576.0));
+                    final long now = System.currentTimeMillis();
+                    if (now - lastRepaint >= 50 || dl == total) {
+                        lastRepaint = now;
+                        if (total > 0) {
+                            live(String.format("[DOWNLOADING] %s %d%% %.1f/%.1fMB", name,
+                                    (int) (dl * 100 / total), dl / 1_048_576.0, total / 1_048_576.0));
+                        } else {
+                            live(String.format("[DOWNLOADING] %s %.1fMB", name, dl / 1_048_576.0));
+                        }
                     }
                 }
             }

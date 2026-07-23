@@ -40,7 +40,7 @@ public class TxScalingTest {
     // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE GIVEN SCALING CONFIG, STARTS IT AND
     // WAITS UNTIL THE FIRST FRAME IS LIVE SO width()/height() REFLECT THE UPLOAD SIZE.
     private static TxMediaPlayer startStatic(final HeadlessGFXEngine gfx, final Consumer<TxMediaPlayer> config) {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
@@ -149,7 +149,7 @@ public class TxScalingTest {
     @Test
     @DisplayName("Hot LOD change shrinks the live upload (streaming GIF)")
     void testHotLodChangeShrinksUpload() {
-        final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 
         // HeadlessGFXEngine(false) DISABLES THE FRAME-TEXTURE FAST PATH SO THE GIF RUNS THE
@@ -180,7 +180,7 @@ public class TxScalingTest {
     class Validation {
 
         private TxMediaPlayer newPlayer() {
-            final MRL mrl = MediaAPI.getMRL(Fixtures.fileUri(Fixtures.PNG_STATIC));
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_STATIC));
             assertTrue(mrl.await(MRL_TIMEOUT_MS));
             return new TxMediaPlayer(mrl, 0, new HeadlessGFXEngine());
         }

@@ -1,0 +1,156 @@
+package org.watermedia.test.media.engines;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.lwjgl.openal.AL;
+import org.lwjgl.openal.ALC;
+import org.lwjgl.openal.ALC10;
+import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.JSEngine;
+import org.watermedia.api.media.engines.SFXEngine;
+import org.watermedia.tools.DataTool;
+
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Pure-Java verification of the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer
+ * sync contract depends on: {@link JSEngine} format validation and both engines' packed capability
+ * tables. The OpenAL cases run only when a real device/context can be opened, skipping gracefully
+ * otherwise.
+ */
+@DisplayName("SFXEngine")
+class SFXEngineTest {
+
+    // VERIFIES A PACKED SUPPORTED_CHANNELS TABLE: byte 7 = channel count (1..8), one 0x00/0xFF flag
+    // PER DECLARED TYPE (byte 6-i), AND ALL REMAINING RESERVED BYTES ZERO.
+    private static void assertTableConsistent(final SFXEngine engine) {
+        final SFXEngine.SampleType[] types = engine.supportedTypes();
+        assertTrue(types.length >= 1 && types.length <= 7, "type count must fit the 7 flag bytes");
+
+        for (final long entry: engine.supportedChannels()) {
+            final int channels = DataTool.bytesAt(entry, 7) & 0xFF;
+            assertTrue(channels >= 1 && channels <= 8, "channel count out of range: " + channels);
+
+            for (int i = 0; i < types.length; i++) {
+                final byte flag = DataTool.bytesAt(entry, 6 - i);
+                assertTrue(flag == 0 || flag == (byte) 0xFF, "support flag must be 0x00 or 0xFF, got " + flag);
+            }
+            // BYTES BELOW THE LAST TYPE FLAG ARE RESERVED AND MUST BE ZERO
+            for (int pos = 6 - types.length; pos >= 0; pos--) {
+                assertEquals(0, DataTool.bytesAt(entry, pos), "reserved byte at position " + pos + " must be zero");
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("JSEngine (Java Sound, no OpenAL context)")
+    class JavaSound {
+
+        @Test
+        @DisplayName("Capability table is self-consistent and U8-first")
+        void capabilityTable() {
+            final JSEngine engine = new JSEngine.Builder().build();
+            assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
+            assertEquals(2, engine.supportedTypes().length);
+            assertTableConsistent(engine);
+        }
+
+        @Test
+        @DisplayName("setAudioFormat rejects invalid arguments without opening a line")
+        void formatValidation() {
+            final JSEngine engine = new JSEngine.Builder().build();
+            assertFalse(engine.setAudioFormat(null, 2, 48_000), "null type");
+            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 0, 48_000), "channels < 1");
+            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 9, 48_000), "channels > 8");
+            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 2, 100), "rate below MIN");
+            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 2, 10_000_000), "rate above MAX");
+            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.DBL, 2, 48_000), "DBL has no Java Sound encoding");
+        }
+
+        @Test
+        @DisplayName("No pitch control and no source handle")
+        void capabilityContract() {
+            final JSEngine engine = new JSEngine.Builder().build();
+            assertFalse(engine.speed(), "Java Sound reports no speed control");
+            assertEquals(0, engine.source(), "Java Sound has no source handle");
+            engine.speed(2.0f); // NO-OP, MUST NOT THROW
+        }
+    }
+
+    @Nested
+    @TestInstance(TestInstance.Lifecycle.PER_CLASS) // NON-STATIC @BeforeAll/@AfterAll HOLD THE OPENAL CONTEXT
+    @DisplayName("ALEngine (OpenAL, requires a current context)")
+    class OpenAL {
+        private long device;
+        private long context;
+
+        @BeforeAll
+        void openContext() {
+            try {
+                this.device = ALC10.alcOpenDevice((ByteBuffer) null);
+                Assumptions.assumeTrue(this.device != 0L, "no OpenAL device available");
+                this.context = ALC10.alcCreateContext(this.device, (IntBuffer) null);
+                Assumptions.assumeTrue(this.context != 0L, "no OpenAL context available");
+                ALC10.alcMakeContextCurrent(this.context);
+                AL.createCapabilities(ALC.createCapabilities(this.device));
+            } catch (final Throwable t) {
+                // NO NATIVES / NO AUDIO STACK — SKIP THE OPENAL CASES INSTEAD OF FAILING
+                Assumptions.abort("OpenAL unavailable: " + t.getMessage());
+            }
+        }
+
+        @AfterAll
+        void closeContext() {
+            if (this.context != 0L) {
+                ALC10.alcMakeContextCurrent(0L);
+                ALC10.alcDestroyContext(this.context);
+            }
+            if (this.device != 0L) ALC10.alcCloseDevice(this.device);
+        }
+
+        @Test
+        @DisplayName("Capability table is self-consistent and U8-first")
+        void capabilityTable() {
+            final ALEngine engine = ALEngine.buildDefault();
+            try {
+                assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
+                assertEquals(4, engine.supportedTypes().length);
+                assertTableConsistent(engine);
+                assertNotEquals(0, engine.source(), "a source handle is generated under a live context");
+            } finally {
+                engine.release();
+            }
+        }
+
+        @Test
+        @DisplayName("setAudioFormat accepts supported combos and rejects the rest")
+        void formatNegotiation() {
+            final ALEngine engine = ALEngine.buildDefault();
+            try {
+                assertTrue(engine.setAudioFormat(SFXEngine.SampleType.S16, 2, 48_000), "S16 stereo");
+                assertEquals(2, engine.channels());
+                assertEquals(SFXEngine.SampleType.S16, engine.sampleType());
+
+                assertTrue(engine.setAudioFormat(SFXEngine.SampleType.S16, 6, 48_000), "S16 5.1");
+                assertTrue(engine.setAudioFormat(SFXEngine.SampleType.DBL, 2, 48_000), "DBL stereo");
+
+                assertFalse(engine.setAudioFormat(SFXEngine.SampleType.DBL, 6, 48_000), "DBL multichannel unsupported");
+                assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S32, 2, 48_000), "no native S32 PCM");
+                assertFalse(engine.setAudioFormat(null, 2, 48_000), "null type");
+            } finally {
+                engine.release();
+            }
+        }
+    }
+}

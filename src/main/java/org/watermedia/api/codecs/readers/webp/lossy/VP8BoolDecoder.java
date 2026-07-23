@@ -89,7 +89,6 @@ final class VP8BoolDecoder {
         for (int i = 0; i < n; i++) {
             r = (r << 1) | (this.readBool() ? 1 : 0);
         }
-        LOGGER.trace(IT, "readLit({}): {}", n, r);
         return r;
     }
 
@@ -99,33 +98,4 @@ final class VP8BoolDecoder {
         final int mag = this.readLit(n);
         return this.readBool() ? -mag : mag;
     }
-
-    // READ OPTIONAL SIGNED: FLAG BIT, THEN VALUE IF FLAG SET
-    int readOptSigned(final int n, final int flagProb) throws XCodecException {
-        if (this.readBool(flagProb)) {
-            return this.readSigned(n);
-        }
-        return 0;
-    }
-
-    boolean hasRemaining() {
-        return this.buf.hasRemaining() || this.bitCnt > 0;
-    }
-
-    int remaining() {
-        return this.buf.remaining();
-    }
-
-    int position() {
-        return this.buf.position();
-    }
-
-    int getVal() {
-        return this.val;
-    }
-
-    int getRange() {
-        return this.range;
-    }
-
 }

@@ -173,13 +173,13 @@ public class CodecsApiContractTest {
         }
 
         @Test
-        @DisplayName("Empty metadata fields return null")
-        void testEmptyMetadataFieldsReturnNull() throws Exception {
+        @DisplayName("Empty metadata: scalar fields null, collection fields empty (not null)")
+        void testEmptyMetadataFields() throws Exception {
             try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_BASELINE)))) {
                 final ImageMetadata metadata = reader.metadata();
                 assertNull(metadata.title());
-                assertNull(metadata.authors());
-                assertNull(metadata.values());
+                assertTrue(metadata.authors().isEmpty());
+                assertTrue(metadata.values().isEmpty());
             }
         }
     }

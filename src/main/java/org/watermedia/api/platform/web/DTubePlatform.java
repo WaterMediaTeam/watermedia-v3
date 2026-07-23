@@ -101,7 +101,7 @@ public final class DTubePlatform implements IPlatform {
             LOGGER.info(IT, "D.tube resolved '{}' with {} variant(s) for {}", title, variants.size(), uri);
             final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
                     headers,
-                    variants.toArray(DataQuality[]::new),
+                    variants,
                     null, null);
             return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
         }

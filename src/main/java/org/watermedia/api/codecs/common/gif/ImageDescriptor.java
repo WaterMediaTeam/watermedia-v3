@@ -16,7 +16,7 @@ public record ImageDescriptor(
     // CLAUSE, SO MALFORMED DATA IS REJECTED WITH XCodecException AT THE PARSE BOUNDARY (SEE ALSO
     // GIFReader.readImageDescriptor, WHICH BUILDS THIS RECORD DIRECTLY AND CALLS validate())
     public int getLocalColorTableSize() {
-        // Size = 2^(N + 1)
+        // SIZE = 2^(N + 1)
         return 1 << (this.localColorTableSize + 1);
     }
 

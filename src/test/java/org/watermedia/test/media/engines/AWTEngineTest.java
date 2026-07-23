@@ -53,18 +53,48 @@ class AWTEngineTest {
     }
 
     @Test
-    @DisplayName("onFrame fires and texture() flips to 0 after release")
+    @DisplayName("texture() sentinel is 0 until the first frame, then non-zero, then 0 after release")
     void callbackAndLifecycle() {
         final boolean[] fired = {false};
         final AWTEngine engine = new AWTEngine.Builder().onFrame(() -> fired[0] = true).build();
         engine.setVideoFormat(PixelFormat.BGRA, 1, 1, 8);
-        assertEquals(1L, engine.texture());
+        assertEquals(0L, engine.texture()); // NO FRAME YET — SENTINEL STAYS 0 (MATCHES THE BASE CONTRACT)
 
         engine.upload(direct(1, 2, 3, 4), 0);
         assertTrue(fired[0]);
+        assertEquals(1L, engine.texture()); // FRAME PRESENT — SENTINEL FLIPS NON-ZERO
 
         engine.release();
         assertEquals(0L, engine.texture());
+    }
+
+    @Test
+    @DisplayName("BGRA stride padding beyond w*4 is dropped")
+    void bgraStridePadding() {
+        final AWTEngine engine = new AWTEngine.Builder().build();
+        engine.setVideoFormat(PixelFormat.BGRA, 2, 2, 8);
+        // 2x2 BGRA WITH A 12-BYTE STRIDE: 8 REAL BYTES PER ROW + 4 PADDING BYTES THE ENGINE MUST SKIP
+        engine.upload(direct(
+                10, 20, 30, 255,  40, 50, 60, 255,   1, 2, 3, 4,   // ROW 0 + PAD
+                70, 80, 90, 255, 100, 110, 120, 255,  5, 6, 7, 8),  // ROW 1 + PAD
+                12);
+        final BufferedImage img = engine.image();
+        assertEquals(0xFF1E140A, img.getRGB(0, 0));
+        assertEquals(0xFF3C3228, img.getRGB(1, 0));
+        assertEquals(0xFF5A5046, img.getRGB(0, 1));
+        assertEquals(0xFF786E64, img.getRGB(1, 1));
+    }
+
+    @Test
+    @DisplayName("RGBA stride padding beyond w*4 is dropped and swizzled")
+    void rgbaStridePadding() {
+        final AWTEngine engine = new AWTEngine.Builder().build();
+        engine.setVideoFormat(PixelFormat.RGBA, 2, 1, 8);
+        // 2x1 RGBA, 12-BYTE STRIDE (8 REAL + 4 PAD); R,G,B,A SWIZZLES TO THE SAME ARGB AS THE BGRA CASE
+        engine.upload(direct(30, 20, 10, 255,  60, 50, 40, 255,  1, 2, 3, 4), 12);
+        final BufferedImage img = engine.image();
+        assertEquals(0xFF1E140A, img.getRGB(0, 0));
+        assertEquals(0xFF3C3228, img.getRGB(1, 0));
     }
 
     @Test

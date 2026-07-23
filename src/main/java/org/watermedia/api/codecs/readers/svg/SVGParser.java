@@ -1,10 +1,11 @@
 package org.watermedia.api.codecs.readers.svg;
 
-import javax.xml.XMLConstants;
 import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLResolver;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayDeque;
@@ -14,36 +15,39 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Builds an {@link SvgNode} tree from SVG bytes using the JDK StAX reader, and hosts the small value
+ * Builds an {@link SVGNode} tree from SVG bytes using the JDK StAX reader, and hosts the small value
  * parsers shared by the renderer (transform lists, lengths, inline styles, point lists).
  *
- * <p>The reader is hardened against XXE/SSRF: external entities are disabled and external DTD/schema
- * access is denied ({@code ACCESS_EXTERNAL_DTD}/{@code ACCESS_EXTERNAL_SCHEMA} set to ""), so a
- * {@code SYSTEM} DTD is never fetched over the network. Internal DTD subsets are tolerated (many real
- * SVGs carry a {@code <!DOCTYPE>}); the JDK's entity-expansion limit guards against expansion-bomb inputs.
+ * <p>The reader is hardened against XXE/SSRF: external entities are disabled and an {@link XMLResolver}
+ * returns an empty stream for every external DTD/entity, so a {@code SYSTEM} DTD is never fetched over
+ * the network. Real-world SVGs commonly declare {@code <!DOCTYPE svg PUBLIC ... "http://.../svg11.dtd">};
+ * the resolver lets them parse (an empty DTD) instead of failing, while still touching no network.
  */
 final class SVGParser {
-    private SVGParser() {}
-
-    static SvgNode parse(final InputStream in) throws IOException {
-        final XMLInputFactory factory = XMLInputFactory.newFactory();
-        // BLOCK EXTERNAL ENTITY / EXTERNAL DTD RESOLUTION (XXE / SSRF) WHILE STILL TOLERATING AN INTERNAL DOCTYPE.
-        // ACCESS_EXTERNAL_DTD="" IS THE ONE THAT ACTUALLY STOPS THE JDK StAX PARSER FROM FETCHING A SYSTEM DTD
-        // OVER THE NETWORK; IS_SUPPORTING_EXTERNAL_ENTITIES ALONE DOES NOT
-        setProperty(factory, XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
-        setProperty(factory, XMLInputFactory.SUPPORT_DTD, Boolean.TRUE);
-        setProperty(factory, XMLConstants.ACCESS_EXTERNAL_DTD, "");
-        setProperty(factory, XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+    // RESOLVER RETURNS EMPTY FOR EVERY EXTERNAL DTD/ENTITY: TOLERATES <!DOCTYPE> (INTERNAL OR WITH AN
+    // EXTERNAL SYSTEM ID LIKE INKSCAPE/W3C SVGs) WITHOUT EVER MAKING A NETWORK REQUEST. THIS IS SAFER
+    // THAN ACCESS_EXTERNAL_DTD="" WHICH THROWS A FATAL PARSE ERROR ON ANY EXTERNAL SYSTEM DTD.
+    private static final XMLInputFactory FACTORY;
+    static {
+        final XMLInputFactory f = XMLInputFactory.newFactory();
+        setProperty(f, XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
+        setProperty(f, XMLInputFactory.SUPPORT_DTD, Boolean.TRUE);
+        f.setXMLResolver((publicID, systemID, baseURI, namespace) -> new ByteArrayInputStream(new byte[0]));
         // NAMESPACE-UNAWARE: STAY LENIENT LIKE THE REST OF THE DECODER. NAMESPACE-AWARE MODE MAKES AN
         // UNDECLARED PREFIX (e.g. xlink:href WITH NO xmlns:xlink) A FATAL ERROR; ATTRIBUTES ARE READ
         // BY LOCAL NAME (href / xlink:href BOTH HANDLED), SO PREFIX RESOLUTION IS NOT NEEDED
-        setProperty(factory, XMLInputFactory.IS_NAMESPACE_AWARE, Boolean.FALSE);
+        setProperty(f, XMLInputFactory.IS_NAMESPACE_AWARE, Boolean.FALSE);
+        FACTORY = f;
+    }
 
+    private SVGParser() {}
+
+    static SVGNode parse(final InputStream in) throws IOException {
         XMLStreamReader r = null;
         try {
-            r = factory.createXMLStreamReader(in);
-            final Deque<SvgNode> stack = new ArrayDeque<>();
-            SvgNode root = null;
+            r = FACTORY.createXMLStreamReader(in);
+            final Deque<SVGNode> stack = new ArrayDeque<>();
+            SVGNode root = null;
             while (r.hasNext()) {
                 final int ev = r.next();
                 if (ev == XMLStreamConstants.START_ELEMENT) {
@@ -56,11 +60,13 @@ final class SVGParser {
                     if (style != null) parseStyleInto(attrs, style);
 
                     // NAMESPACE-UNAWARE StAX RETURNS THE RAW QNAME (e.g. "svg:svg") — STRIP THE PREFIX
-                    // SO PREFIXED DOCUMENTS (<svg:svg><svg:path/>) DISPATCH LIKE UNPREFIXED ONES
+                    // SO PREFIXED DOCUMENTS (<svg:svg><svg:path/>) DISPATCH LIKE UNPREFIXED ONES.
+                    // LOWERCASE ONCE HERE: EVERY DISPATCH SITE COMPARES THE TAG CASE-INSENSITIVELY AND
+                    // THE RAW CASING IS NEVER NEEDED, SO STORE THE CANONICAL FORM ON THE NODE
                     String tag = r.getLocalName();
                     final int colon = tag.indexOf(':');
                     if (colon >= 0) tag = tag.substring(colon + 1);
-                    final SvgNode node = new SvgNode(tag, attrs);
+                    final SVGNode node = new SVGNode(tag.toLowerCase(Locale.ROOT), attrs);
                     if (stack.isEmpty()) {
                         if (root == null) root = node;
                     } else {

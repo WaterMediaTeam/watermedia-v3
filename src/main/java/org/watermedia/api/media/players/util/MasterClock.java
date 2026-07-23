@@ -16,7 +16,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>
  * The clock is PTS-drift based (like ffplay):
  * <ul>
- *   <li>{@code time = ptsDrift + now} when playing</li>
+ *   <li>{@code time = ptsDrift + now - elapsed * (1 - speed)} when playing (speed-corrected)</li>
  *   <li>{@code time = pts} when not playing (frozen)</li>
  * </ul>
  * Status is volatile for lock-free reads; all mutations happen under the lock.
@@ -121,8 +121,9 @@ public final class MasterClock {
             // audio_duration/video_duration SPEED (e.g., 20/30 = 0.67x).
             // WITH THE THRESHOLD, THE CLOCK RUNS AT WALLCLOCK RATE AND ONLY
             // CORRECTS FOR REAL DESYNC (SEEK, AUDIO DISCONTINUITY).
-            final double currentTime = this.ptsDrift + now;
-            final double drift = ptsSec - currentTime;
+            // COMPARE AGAINST THE SPEED-CORRECTED time(); A PLAIN ptsDrift+now DIVERGED FROM THE
+            // REAL CLOCK AT |1-speed| AND TRIPPED THE THRESHOLD ON NEARLY EVERY FRAME WHEN speed != 1.
+            final double drift = ptsSec - this.time();
             if (this.status == Status.BUFFERING || Math.abs(drift) > DRIFT_RECALIBRATION_THRESHOLD) {
                 this.ptsDrift = ptsSec - now;
                 this.lastUpdated = now;
@@ -309,6 +310,8 @@ public final class MasterClock {
             while (this.status == initial && this.pendingSeek == initialSeek) {
                 final long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) break;
+                // KEEP A COARSE SAFETY CAP: consumeSeek() CLEARS pendingSeek WITHOUT SIGNALLING,
+                // SO A pure-signal WAIT COULD MISS THAT ONE TRANSITION.
                 this.condition.await(Math.min(remaining, 50), TimeUnit.MILLISECONDS);
             }
             return this.status;
@@ -332,7 +335,8 @@ public final class MasterClock {
             while (this.status == current) {
                 final long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) break;
-                this.condition.await(Math.min(remaining, 50), TimeUnit.MILLISECONDS);
+                // EVERY STATUS MUTATION SIGNALS THIS CONDITION, SO AWAIT THE FULL REMAINDER — NO POLLING CAP
+                this.condition.await(remaining, TimeUnit.MILLISECONDS);
             }
             return this.status;
         } finally {

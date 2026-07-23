@@ -22,6 +22,7 @@ import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -79,14 +80,14 @@ public final class GIFReader extends ImageReader {
     private final List<GifExtension> extensions = new ArrayList<>();
 
     // CANVAS STATE
-    private final int[] canvas;            // current composited canvas
-    private int[] restoreFrame;            // saved canvas for disposal method 3
-    private final ByteBuffer directOut;    // BGRA output buffer (reused)
+    private final int[] canvas;            // CURRENT COMPOSITED CANVAS
+    private int[] restoreFrame;            // SAVED CANVAS FOR DISPOSAL METHOD 3
+    private final ByteBuffer directOut;    // BGRA OUTPUT BUFFER (REUSED)
     private final IntBuffer directOutInts;
     private final int backgroundColor;
 
     // STREAMING STATE
-    private int pendingIntroducer = -1;    // 1-byte look-ahead consumed by constructor
+    private int pendingIntroducer = -1;    // 1-BYTE LOOK-AHEAD CONSUMED BY CONSTRUCTOR
     private boolean done;
     private boolean nextReady;
     private final ImageData.Scan scan;
@@ -98,7 +99,7 @@ public final class GIFReader extends ImageReader {
     private final byte[] descriptorScratch = new byte[9];
     private final byte[] gceScratch = new byte[6];
 
-    // Frame-control between consecutive frames
+    // FRAME-CONTROL BETWEEN CONSECUTIVE FRAMES
     private GraphicExtension currentGce;
     private GraphicExtension previousGce;
     private ImageDescriptor previousId;
@@ -141,7 +142,7 @@ public final class GIFReader extends ImageReader {
                 ? this.globalColorTable.colors()[this.lsd.backgroundColorIndex()]
                 : OPAQUE_BLACK;
 
-        // PRE-IMAGE EXTENSIONS (loop count, initial GCE, etc.) until first introducer that isn't an extension.
+        // PRE-IMAGE EXTENSIONS (LOOP COUNT, INITIAL GCE, ETC.) UNTIL THE FIRST NON-EXTENSION INTRODUCER
         while (true) {
             final int b = readUnsignedOrEnd(this.data);
             if (b < 0) { this.done = true; break; }
@@ -192,7 +193,7 @@ public final class GIFReader extends ImageReader {
                 this.processExtension();
                 continue;
             }
-            // Unknown byte: skip and continue (matches legacy behavior).
+            // UNKNOWN BYTE: SKIP AND CONTINUE (MATCHES LEGACY BEHAVIOR)
         }
     }
 
@@ -249,7 +250,7 @@ public final class GIFReader extends ImageReader {
         final int expectedIndices = id.width() * id.height();
         final byte[] indices = this.decompress(id, lzwMinCodeSize, this.subBlockBuffer, lzwDataLength, expectedIndices);
 
-        // FIRST FRAME: initialize canvas; subsequent frames: dispose then composite.
+        // FIRST FRAME: INITIALIZE CANVAS; SUBSEQUENT FRAMES: DISPOSE THEN COMPOSITE
         if (this.previousId == null) {
             final int initBg = (this.currentGce != null && this.currentGce.transparentColorFlag())
                     ? 0x00000000 : this.backgroundColor;
@@ -338,7 +339,7 @@ public final class GIFReader extends ImageReader {
         final int idWidth = id.width();
         final int idHeight = id.height();
 
-        // Fast path: image descriptor covers the whole canvas exactly — no per-pixel clipping.
+        // FAST PATH: IMAGE DESCRIPTOR COVERS THE WHOLE CANVAS EXACTLY — NO PER-PIXEL CLIPPING
         if (!id.interlacedFlag()
                 && idLeft == 0 && idTop == 0
                 && idWidth == canvasWidth && idHeight == canvasHeight) {
@@ -357,7 +358,7 @@ public final class GIFReader extends ImageReader {
             return;
         }
 
-        // General path: hoist clip rect once instead of per-pixel checks.
+        // GENERAL PATH: HOIST THE CLIP RECT ONCE INSTEAD OF PER-PIXEL CHECKS
         final int clipXStart = Math.max(0, idLeft);
         final int clipYStart = Math.max(0, idTop);
         final int clipXEnd = Math.min(canvasWidth, idLeft + idWidth);
@@ -414,7 +415,7 @@ public final class GIFReader extends ImageReader {
             }
             return srcIdx;
         }
-        // Partial horizontal clip: skip leading/trailing pixels that fall outside the canvas.
+        // PARTIAL HORIZONTAL CLIP: SKIP LEADING/TRAILING PIXELS THAT FALL OUTSIDE THE CANVAS
         for (int x = 0; x < idWidth; x++) {
             final int canvasX = idLeft + x;
             if (canvasX < clipXStart || canvasX >= clipXEnd) { srcIdx++; continue; }
@@ -428,7 +429,7 @@ public final class GIFReader extends ImageReader {
     private void applyDisposal(final GraphicExtension gce, final int background, final ImageDescriptor id) {
         final int disposal = gce != null ? gce.disposalMethod() : 0;
         if (disposal == 2) {
-            // RESTORE TO BACKGROUND for the previous frame's rect — bulk-fill each clipped row.
+            // RESTORE TO BACKGROUND FOR THE PREVIOUS FRAME'S RECT — BULK-FILL EACH CLIPPED ROW
             final int canvasWidth = this.lsd.width();
             final int canvasHeight = this.lsd.height();
             final int xStart = Math.max(0, id.left());
@@ -475,13 +476,13 @@ public final class GIFReader extends ImageReader {
 
         outer:
         while (pixelsLeft > 0) {
-            // Drain pending stack first — this is the most common hot path.
+            // DRAIN THE PENDING STACK FIRST — THIS IS THE MOST COMMON HOT PATH
             while (top > 0) {
                 output[pi++] = pixelStack[--top];
                 if (--pixelsLeft == 0) break outer;
             }
 
-            // Read enough bits for the next code.
+            // READ ENOUGH BITS FOR THE NEXT CODE
             while (bits < codeSize) {
                 if (dataPos >= dataLength) break outer;
                 datum += (data[dataPos++] & 0xFF) << bits;
@@ -530,6 +531,9 @@ public final class GIFReader extends ImageReader {
             }
             oldCode = inCode;
         }
+        // TRUNCATED LZW DATA: ZERO-FILL THE UNWRITTEN TAIL SO MISSING PIXELS DECODE AS INDEX 0 INSTEAD
+        // OF STALE INDICES LEFT IN THE REUSED SCRATCH BY AN EARLIER (POSSIBLY LARGER) FRAME
+        if (pi < expectedSize) Arrays.fill(output, pi, expectedSize, (byte) 0);
         return output;
     }
 
@@ -582,7 +586,7 @@ public final class GIFReader extends ImageReader {
         final long id = readBE(header, 0, 8);
         final int auth = (int) readBE(header, 8, 3);
         if (id == NETSCAPE_EXT_ID && auth == NETSCAPE_AUTH_CODE) {
-            // Concatenated sub-block data: 1 byte sub-id (1), 2 bytes loop count.
+            // CONCATENATED SUB-BLOCK DATA: 1 BYTE SUB-ID (1), 2 BYTES LOOP COUNT
             if (extensionData.length >= 3 && (extensionData[0] & 0xFF) == 1) {
                 final int lo = extensionData[1] & 0xFF;
                 final int hi = extensionData[2] & 0xFF;
@@ -601,7 +605,8 @@ public final class GIFReader extends ImageReader {
     private void storeApplicationExtension(final byte[] header, final byte[] data) {
         final String id = new String(header, StandardCharsets.ISO_8859_1).trim();
         this.extensions.add(new GifExtension(id, data));
-        this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, this.extensions);
+        // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL LIST
+        this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, Collections.unmodifiableList(this.extensions));
     }
 
     // ----- SUB-BLOCK I/O -----
@@ -681,9 +686,9 @@ public final class GIFReader extends ImageReader {
                     currentDelay = delayCs > 0 ? (long) delayCs * DELAY_TIME_MULTIPLIER : DEFAULT_FRAME_DELAY;
                     buffer.position(buffer.position() + 6);
                 } else if (label == APPLICATION_EXTENSION_LABEL) {
-                    loopCount = scan$extension(buffer, loopCount);
+                    loopCount = scanExtension(buffer, loopCount);
                 } else {
-                    scan$skipSubBlocks(buffer);
+                    scanSkipSubBlocks(buffer);
                 }
             } else if (introducer == IMAGE_SEPARATOR) {
                 if (buffer.remaining() < 9) break;
@@ -698,7 +703,7 @@ public final class GIFReader extends ImageReader {
                 }
                 if (!buffer.hasRemaining()) break;
                 buffer.position(buffer.position() + 1); // LZW minimum code size
-                scan$skipSubBlocks(buffer);
+                scanSkipSubBlocks(buffer);
                 delays.add(currentDelay);
                 currentDelay = DEFAULT_FRAME_DELAY;
             } else {
@@ -716,7 +721,7 @@ public final class GIFReader extends ImageReader {
         return new ImageData.Scan(delayArray.length, delayArray, total, loopCount);
     }
 
-    private static int scan$extension(final ByteBuffer buffer, final int fallbackLoopCount) {
+    private static int scanExtension(final ByteBuffer buffer, final int fallbackLoopCount) {
         if (!buffer.hasRemaining()) return fallbackLoopCount;
         final int blockSize = buffer.get() & 0xFF;
         if (buffer.remaining() < blockSize) return fallbackLoopCount;
@@ -738,11 +743,11 @@ public final class GIFReader extends ImageReader {
                 }
             }
         }
-        scan$skipSubBlocks(buffer);
+        scanSkipSubBlocks(buffer);
         return loopCount;
     }
 
-    private static void scan$skipSubBlocks(final ByteBuffer buffer) {
+    private static void scanSkipSubBlocks(final ByteBuffer buffer) {
         while (buffer.hasRemaining()) {
             final int size = buffer.get() & 0xFF;
             if (size == 0) return;

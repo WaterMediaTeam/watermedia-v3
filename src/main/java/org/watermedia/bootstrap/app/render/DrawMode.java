@@ -7,6 +7,5 @@ public enum DrawMode {
     TRIANGLES,
     TRIANGLE_FAN,
     LINES,
-    LINE_LOOP,
-    LINE_STRIP
+    LINE_LOOP
 }
