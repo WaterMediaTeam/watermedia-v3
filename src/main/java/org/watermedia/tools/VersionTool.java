@@ -8,7 +8,8 @@ import java.util.regex.Pattern;
  * Encapsulates semantic version information and related comparison behaviors.
  */
 public class VersionTool implements Comparable<VersionTool> {
-    private static final Pattern VERSION_PATTERN = Pattern.compile("(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)[\\-_\\s]?(.*)");
+    // major.minor.revision ARE REQUIRED; THE .prerelease 4TH COMPONENT IS OPTIONAL (NON-PRERELEASE VERSIONS
+    private static final Pattern VERSION_PATTERN = Pattern.compile("(\\d+)\\.(\\d+)\\.(\\d+)(?:\\.(\\d+))?[\\-_\\s]?(.*)");
 
     public final String version;
     public final int major;
