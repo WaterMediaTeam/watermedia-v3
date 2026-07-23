@@ -12,10 +12,10 @@ import java.net.URI;
  * instead of being copied into each consumer under a different name, and one shared
  * {@link Gson} instance so the whole codebase parses and writes JSON the same way.
  */
-public final class JsonTool {
+public final class JSONTool {
     private static final Gson GSON = new Gson();
 
-    private JsonTool() {}
+    private JSONTool() {}
 
     /**
      * Binds a parsed JSON tree to {@code type} through the shared {@link Gson} instance.

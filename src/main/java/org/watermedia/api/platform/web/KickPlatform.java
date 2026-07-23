@@ -10,7 +10,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.net.URI;
@@ -145,8 +145,8 @@ public final class KickPlatform implements IPlatform {
             final String username = channel.user != null ? channel.user.username : null;
             final String pic = channel.user != null ? channel.user.profilePic : null;
             // SAFE-PARSE THE NETWORK AVATAR URL: A MALFORMED ONE MUST NOT ABORT THE WHOLE RESULT SET
-            final URI thumbnail = JsonTool.uri(pic);
-            final URI page = JsonTool.uri("https://kick.com/" + channel.slug);
+            final URI thumbnail = JSONTool.uri(pic);
+            final URI page = JSONTool.uri("https://kick.com/" + channel.slug);
             if (page == null) continue;
             // THE USERNAME IS THE SEARCH LABEL — THIS ENDPOINT REPORTS NO LIVE STREAM TITLE
             out.add(new PlatformResult(NAME, username != null ? username : channel.slug, thumbnail, page));

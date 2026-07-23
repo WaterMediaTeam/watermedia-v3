@@ -20,7 +20,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
-import static org.watermedia.tools.JsonTool.*;
+import static org.watermedia.tools.JSONTool.*;
 
 public final class OdyseePlatform implements IPlatform {
     public static final String NAME = "Odysee";

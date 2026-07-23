@@ -12,7 +12,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -27,7 +27,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
-import static org.watermedia.tools.JsonTool.*;
+import static org.watermedia.tools.JSONTool.*;
 
 public final class TikTokPlatform implements IPlatform {
     public static final String NAME = "TikTok";
@@ -320,9 +320,9 @@ public final class TikTokPlatform implements IPlatform {
     // METADATA EXTRACTION
     private static URI findThumbnail(final JsonObject awemeDetail, final JsonObject video) {
         for (final String key: new String[]{"originCover", "cover", "thumbnail"}) {
-            URI uri = JsonTool.uri(video, key);
+            URI uri = JSONTool.uri(video, key);
             if (uri != null) return uri;
-            uri = JsonTool.uri(awemeDetail, key);
+            uri = JSONTool.uri(awemeDetail, key);
             if (uri != null) return uri;
         }
         return null;

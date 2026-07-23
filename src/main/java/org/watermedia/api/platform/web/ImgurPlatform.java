@@ -11,7 +11,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -76,7 +76,7 @@ public final class ImgurPlatform implements IPlatform {
             // GALLERY POSTS COME IN TWO SHAPES: ALBUMS CARRY data.images[] WHILE SINGLE-IMAGE
             // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
             final JsonObject root = NetRequest.fetchJson(ImgurPlatform.class, requestUrl, JsonObject.class);
-            final GalleryResponse res = JsonTool.parse(root, GalleryResponse.class);
+            final GalleryResponse res = JSONTool.parse(root, GalleryResponse.class);
             if (!res.success() || res.data() == null) {
                 throw new PlatformException(ImgurPlatform.class, "Post '" + id + "' response was empty or unsuccessful (status "
                         + res.status() + ")");
@@ -88,7 +88,7 @@ public final class ImgurPlatform implements IPlatform {
 
             // SINGLE-IMAGE POST: data IS THE IMAGE ITSELF
             if (data.images() == null && !data.isAlbum()) {
-                final Image img = JsonTool.parse(root.get("data"), Image.class);
+                final Image img = JSONTool.parse(root.get("data"), Image.class);
                 LOGGER.info(IT, "Imgur resolved single-image post '{}' ({})", id, img.type());
                 return new PlatformData(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
             }

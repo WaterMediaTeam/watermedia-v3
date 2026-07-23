@@ -13,7 +13,7 @@ import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.Slave;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
@@ -205,8 +205,8 @@ public final class BlueskyPlatform implements IPlatform {
             if (fullsize == null) continue;
 
             final JsonObject aspectRatio = obj(img, "aspectRatio");
-            final int width = aspectRatio != null ? JsonTool.intOr(aspectRatio, "width", 0) : 0;
-            final int height = aspectRatio != null ? JsonTool.intOr(aspectRatio, "height", 0) : 0;
+            final int width = aspectRatio != null ? JSONTool.intOr(aspectRatio, "width", 0) : 0;
+            final int height = aspectRatio != null ? JSONTool.intOr(aspectRatio, "height", 0) : 0;
 
             final String thumb = str(img, "thumb");
 

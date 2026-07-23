@@ -21,8 +21,8 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
-import static org.watermedia.tools.JsonTool.str;
-import static org.watermedia.tools.JsonTool.uri;
+import static org.watermedia.tools.JSONTool.str;
+import static org.watermedia.tools.JSONTool.uri;
 
 /**
  * YouTube platform backed by yt-dlp. Extends {@link YtDlpPlatform} to reuse its yt-dlp engine (binary

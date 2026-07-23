@@ -10,7 +10,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -53,7 +53,7 @@ public final class PornHubPlatform implements IPlatform {
             if (!matcher.find())
                 throw new PlatformException(PornHubPlatform.class, "flashvars block not found for viewkey '" + viewkey + "' (geo-blocked, removed, or markup changed)");
 
-            final FlashVars flashVars = JsonTool.parse(matcher.group(1), FlashVars.class);
+            final FlashVars flashVars = JSONTool.parse(matcher.group(1), FlashVars.class);
 
             if (flashVars == null || flashVars.mediaDefinitions == null || flashVars.mediaDefinitions.length == 0)
                 throw new PlatformException(PornHubPlatform.class, "flashvars carry no media definitions for viewkey '" + viewkey + "'");

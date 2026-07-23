@@ -8,7 +8,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.net.URI;
@@ -66,7 +66,7 @@ public final class MedalPlatform implements IPlatform {
         // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p). MPEGTool NEVER THROWS —
         // ON A FETCH/PARSE HICCUP IT FALLS BACK TO THE MASTER URL ITSELF SO FFmpeg CAN STILL PROBE IT.
         final List<DataQuality> variants = new ArrayList<>();
-        final URI hls = JsonTool.uri(content.contentUrlHls);
+        final URI hls = JSONTool.uri(content.contentUrlHls);
         if (hls != null) {
             for (final MPEGTool.Variant v: MPEGTool.qualities(hls)) {
                 if (!privacyProtected(v.uri())) variants.add(new DataQuality(v.uri(), v.width(), v.height()));
@@ -74,13 +74,13 @@ public final class MedalPlatform implements IPlatform {
         }
         // FALLBACK: A PROGRESSIVE SOURCE MP4 FOR CLIPS MEDAL NEVER PACKAGED AS HLS (CARRIES REAL SOURCE DIMENSIONS)
         if (variants.isEmpty()) {
-            final URI progressive = JsonTool.uri(content.contentUrl);
+            final URI progressive = JSONTool.uri(content.contentUrl);
             if (progressive != null && !privacyProtected(progressive))
                 variants.add(new DataQuality(progressive, content.sourceWidth, content.sourceHeight));
         }
         // LAST RESORT: THE PRE-RENDERED SOCIAL-SHARE MP4 (NO RELIABLE DIMENSIONS — LET FFMediaPlayer PROBE)
         if (variants.isEmpty()) {
-            final URI social = JsonTool.uri(content.socialMediaVideo);
+            final URI social = JSONTool.uri(content.socialMediaVideo);
             if (social != null && !privacyProtected(social))
                 variants.add(new DataQuality(social, 0, 0));
         }
@@ -97,7 +97,7 @@ public final class MedalPlatform implements IPlatform {
         if (author == null) LOGGER.warn(IT, "Medal clip '{}' has no resolvable author", clipId);
 
         final Metadata metadata = new Metadata(title, desc, postedAt, durationMs, author);
-        final URI thumbnail = JsonTool.uri(content.thumbnailUrl);
+        final URI thumbnail = JSONTool.uri(content.thumbnailUrl);
 
         // MEDAL SIGNS EVERY CDN URL WITH ONE SHARED EXPIRY; HONOR IT SO MRL RE-RESOLVES BEFORE THE LINKS DIE
         final Instant expires = content.urlsExpireAt > 0 ? Instant.ofEpochMilli(content.urlsExpireAt) : null;

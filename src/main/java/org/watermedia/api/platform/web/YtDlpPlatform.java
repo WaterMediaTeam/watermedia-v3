@@ -32,12 +32,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static org.watermedia.tools.JsonTool.bool;
-import static org.watermedia.tools.JsonTool.dbl;
-import static org.watermedia.tools.JsonTool.intOr;
-import static org.watermedia.tools.JsonTool.intOrNull;
-import static org.watermedia.tools.JsonTool.str;
-import static org.watermedia.tools.JsonTool.uri;
+import static org.watermedia.tools.JSONTool.bool;
+import static org.watermedia.tools.JSONTool.dbl;
+import static org.watermedia.tools.JSONTool.intOr;
+import static org.watermedia.tools.JSONTool.intOrNull;
+import static org.watermedia.tools.JSONTool.str;
+import static org.watermedia.tools.JSONTool.uri;
 
 /**
  * Generic yt-dlp platform: a single handler for every site whose extraction needs nothing beyond

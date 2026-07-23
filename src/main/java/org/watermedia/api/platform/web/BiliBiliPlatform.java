@@ -13,7 +13,7 @@ import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.Slave;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -25,7 +25,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
-import static org.watermedia.tools.JsonTool.*;
+import static org.watermedia.tools.JSONTool.*;
 
 public final class BiliBiliPlatform implements IPlatform {
     public static final String NAME = "BiliBili";
@@ -105,7 +105,7 @@ public final class BiliBiliPlatform implements IPlatform {
         final JsonObject owner = viewData.has("owner") && viewData.get("owner").isJsonObject() ? viewData.getAsJsonObject("owner") : null;
         final String author = owner != null ? str(owner, "name") : null;
         final String desc = str(viewData, "desc");
-        final URI thumbnail = JsonTool.uri(viewData, "pic");
+        final URI thumbnail = JSONTool.uri(viewData, "pic");
         // BILIBILI REPORTS VIDEO duration IN SECONDS; Metadata IS MILLISECONDS
         final long durationMs = (viewData.has("duration") ? viewData.get("duration").getAsLong() : 0) * 1000L;
         final Instant publishedAt = viewData.has("pubdate") ? Instant.ofEpochSecond(viewData.get("pubdate").getAsLong()) : null;
@@ -177,7 +177,7 @@ public final class BiliBiliPlatform implements IPlatform {
                 if (String.valueOf(ep.get("id").getAsInt()).equals(epId)) {
                     cid = String.valueOf(ep.get("cid").getAsLong());
                     epTitle = ep.get("share_copy").getAsString();
-                    epCover = JsonTool.uri(ep, "cover");
+                    epCover = JSONTool.uri(ep, "cover");
                     epDurationMs = ep.has("duration") ? ep.get("duration").getAsLong() : 0;
                     break;
                 }
@@ -193,7 +193,7 @@ public final class BiliBiliPlatform implements IPlatform {
 
         final String fullTitle = epTitle != null ? seasonTitle + " - " + epTitle : seasonTitle;
         final String desc = str(result, "evaluate");
-        final URI thumbnail = epCover != null ? epCover : JsonTool.uri(result, "cover");
+        final URI thumbnail = epCover != null ? epCover : JSONTool.uri(result, "cover");
         // BANGUMI episode duration IS ALREADY MILLISECONDS (SEE epDurationMs); PASS IT THROUGH UNCHANGED
         final Metadata metadata = new Metadata(fullTitle, desc, null, epDurationMs, null);
         return this.buildResult(playResult, metadata, thumbnail);
@@ -218,8 +218,8 @@ public final class BiliBiliPlatform implements IPlatform {
             if (roomInfo.has("title") && !roomInfo.get("title").isJsonNull()) {
                 title = roomInfo.get("title").getAsString();
             }
-            thumbnail = JsonTool.uri(roomInfo, "keyframe");
-            if (thumbnail == null) thumbnail = JsonTool.uri(roomInfo, "user_cover");
+            thumbnail = JSONTool.uri(roomInfo, "keyframe");
+            if (thumbnail == null) thumbnail = JSONTool.uri(roomInfo, "user_cover");
         } catch (final Exception e) {
             LOGGER.warn(IT, "BiliBili failed to fetch live room title for room {}", realRoomId);
         }

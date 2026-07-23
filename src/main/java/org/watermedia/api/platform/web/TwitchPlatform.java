@@ -13,7 +13,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.MPEGTool;
 
 import java.io.IOException;
@@ -32,7 +32,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
-import static org.watermedia.tools.JsonTool.*;
+import static org.watermedia.tools.JSONTool.*;
 
 public final class TwitchPlatform implements IPlatform {
     public static final String NAME = "Twitch";
@@ -174,11 +174,11 @@ public final class TwitchPlatform implements IPlatform {
             if (stream != null && !stream.isJsonNull()) {
                 final String preview = str(stream.getAsJsonObject(), "previewImageURL");
                 if (preview != null)
-                    thumbnail = JsonTool.uri(preview.replace("{width}", PREVIEW_WIDTH).replace("{height}", PREVIEW_HEIGHT));
+                    thumbnail = JSONTool.uri(preview.replace("{width}", PREVIEW_WIDTH).replace("{height}", PREVIEW_HEIGHT));
             }
             if (thumbnail == null) {
                 final String profile = str(item, "profileImageURL");
-                if (profile != null) thumbnail = JsonTool.uri(profile);
+                if (profile != null) thumbnail = JSONTool.uri(profile);
             }
 
             out.add(new PlatformResult(NAME, title, thumbnail, URI.create("https://www.twitch.tv/" + login)));
@@ -592,7 +592,7 @@ public final class TwitchPlatform implements IPlatform {
                 .accept("application/json")
                 .contentType("application/json; charset=utf-8")
                 .header("Client-ID", CLIENT_ID)
-                .body(JsonTool.write(body))
+                .body(JSONTool.write(body))
                 .send()) {
             if (req.statusCode() != 200) throw new PlatformException(TwitchPlatform.class, "HTTP " + req.statusCode() + " from GQL endpoint");
             return req.readAllAsString();

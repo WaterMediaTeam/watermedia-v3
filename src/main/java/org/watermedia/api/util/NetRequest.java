@@ -9,7 +9,7 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.IPlatform;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.tools.IOTool;
-import org.watermedia.tools.JsonTool;
+import org.watermedia.tools.JSONTool;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -112,7 +112,7 @@ public final class NetRequest implements AutoCloseable {
 
     /**
      * Fetches {@code uri} with a JSON GET request and binds the response body to {@code type}
-     * through the shared Gson tooling ({@link JsonTool}). This is the common REST resolver for
+     * through the shared Gson tooling ({@link JSONTool}). This is the common REST resolver for
      * platform handlers: one identical implementation instead of a private copy per handler.
      * Every failure — non-200 status, empty/non-JSON body, transport or parse error — surfaces
      * as a {@link PlatformException} tagged with {@code platform}, keeping the root cause.
@@ -254,7 +254,7 @@ public final class NetRequest implements AutoCloseable {
     }
 
     /**
-     * Parses the response body as a generic {@link JsonElement} through {@link JsonTool}.
+     * Parses the response body as a generic {@link JsonElement} through {@link JSONTool}.
      * Returns {@code null} when the {@code content-type} does not contain
      * {@code application/json}. Honors {@link WaterMediaConfig.Network#maxTextSize}.
      */
@@ -263,7 +263,7 @@ public final class NetRequest implements AutoCloseable {
     }
 
     /**
-     * Parses the response body as JSON and binds it to {@code type} through {@link JsonTool}.
+     * Parses the response body as JSON and binds it to {@code type} through {@link JSONTool}.
      * Returns {@code null} when the {@code content-type} does not contain
      * {@code application/json}. Honors {@link WaterMediaConfig.Network#maxTextSize}.
      */
@@ -271,7 +271,7 @@ public final class NetRequest implements AutoCloseable {
         final String body = this.readJsonBody();
         if (body == null) return null;
         try {
-            return JsonTool.parse(body, type);
+            return JSONTool.parse(body, type);
         } catch (final JsonSyntaxException e) {
             throw new IOException("Malformed JSON in response from " + this.uri, e);
         }

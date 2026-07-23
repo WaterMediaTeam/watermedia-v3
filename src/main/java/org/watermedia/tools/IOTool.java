@@ -145,9 +145,7 @@ public class IOTool {
     }
 
     public static byte[] readLimited(final InputStream in, final long maxBytes, final long expectedBytes) throws IOException {
-        final int initialCapacity = expectedBytes > 0L && expectedBytes <= Integer.MAX_VALUE
-                ? (int) expectedBytes
-                : BUFFER_SIZE;
+        final int initialCapacity = expectedBytes > 0L && expectedBytes <= Integer.MAX_VALUE ? (int) expectedBytes : BUFFER_SIZE;
         final ByteArrayOutputStream out = new ByteArrayOutputStream(initialCapacity);
         final byte[] buffer = new byte[BUFFER_SIZE];
         long total = 0L;
@@ -203,10 +201,6 @@ public class IOTool {
         }
     }
 
-    public static boolean jarExtractZip(final String resource, final File output, final ClassLoader from) throws Exception {
-        return jarExtractZip(jarOpenFile(resource, from), output);
-    }
-
     // THROWS BECAUSE THIS IS A MORE COMPLEX TASK AND THE CALLER SHOULD HANDLE FAILURES
     public static boolean jarExtractZip(final InputStream is, final File output) throws Exception {
         try (final var in = new BufferedInputStream(is, BUFFER_SIZE); final var zip = new ZipInputStream(in)) {
@@ -239,11 +233,6 @@ public class IOTool {
             }
             return true;
         }
-    }
-
-    // READ A FILE INSIDE A ZIP, WHICH IS INSIDE THE JAR RESOURCE AND RETURN AS STRING
-    public static String jarReadZip(final String zipResource, final String fileInZip, final ClassLoader from) {
-        return jarReadZip(jarOpenFile(zipResource, from), fileInZip);
     }
 
     public static String jarReadZip(final InputStream in, final String fileInZip) {
