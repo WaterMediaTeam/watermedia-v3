@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Guards the {@link ImageData} duration contract: {@code duration()} is the transparent single-cycle
  * sum (equal to the stored component, so a rebuild from accessors does not compound), while
- * {@code totalDuration()} carries the repeat-aware total.
+ * {@code duration(true)} carries the repeat-aware total.
  */
 @DisplayName("ImageData duration")
 public class ImageDataTest {
@@ -34,11 +34,11 @@ public class ImageDataTest {
     }
 
     @Test
-    @DisplayName("totalDuration() is repeat-aware with a one-cycle floor")
+    @DisplayName("duration(true) is repeat-aware with a one-cycle floor")
     void testDuration() {
-        assertEquals(300L, single(100L, 3).duration(), "positive repeat multiplies the cycle");
-        assertEquals(100L, single(100L, ImageData.REPEAT_FOREVER).duration(), "loop-forever floors at one cycle");
-        assertEquals(100L, single(100L, ImageData.NO_REPEAT).duration(), "play-once floors at one cycle");
+        assertEquals(300L, single(100L, 3).duration(true), "positive repeat multiplies the cycle");
+        assertEquals(100L, single(100L, ImageData.REPEAT_FOREVER).duration(true), "loop-forever floors at one cycle");
+        assertEquals(100L, single(100L, ImageData.NO_REPEAT).duration(true), "play-once floors at one cycle");
     }
 
     @Test
