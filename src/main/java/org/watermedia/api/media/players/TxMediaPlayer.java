@@ -41,7 +41,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  *       spawned and the texture remains live until {@link #stop()} or {@link #release()}.</li>
  *   <li><b>Mode 2 — Pre-uploaded frame textures:</b> when the animation's decoded RGBA frames
  *       fit under the configured VRAM budget <i>and</i> the engine reports
- *       {@link GFXEngine#supportsFrameTextures()}, every frame is uploaded as its own texture.
+ *       {@link GFXEngine#preload()}, every frame is uploaded as its own texture.
  *       Playback is driven by a passive clock: no thread exists, the displayed frame is
  *       resolved from wall time on each {@link #texture()} call, so steady-state cost is zero
  *       uploads and zero wakeups.</li>
@@ -313,7 +313,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.pixelFormat = reader.pixelFormat();
             this.planeCount = reader.planeCount();
             this.applyTarget();
-            this.gfx.setVideoFormat(this.pixelFormat, this.outWidth, this.outHeight);
+            this.gfx.format(this.pixelFormat, this.outWidth, this.outHeight);
             // CODEC WRITE APPLIES ONLY FOR BC-ENCODABLE LAYOUTS WHEN THE CODEC CACHE IS ACTIVE.
             this.codecActive = NetworkCache.codecEnabled() && bcEncodable(this.pixelFormat);
 
@@ -410,7 +410,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // COUNT IS KNOWN AND SANE, AND THE GFX BACKEND SUPPORTS THE PATH.
     private boolean shouldUseFrameTextures(final ImageReader reader) {
         final int frames = reader.frameCount();
-        if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.supportsFrameTextures()) return false;
+        if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.preload()) return false;
         final long budget = Math.max(0L, WaterMediaConfig.media.tx.texturesBudget) * 1024L * 1024L;
         // VRAM COST IS RGBA8 PER FRAME AT THE UPLOAD TARGET REGARDLESS OF THE SOURCE PIXEL LAYOUT.
         final long vramCost = (long) frames * this.outWidth * this.outHeight * 4L;
@@ -459,10 +459,10 @@ public final class TxMediaPlayer extends MediaPlayer {
             frames = scaled;
         }
 
-        if (!this.gfx.uploadFrameTextures(frames, 0)) {
+        if (!this.gfx.preload(frames, 0)) {
             throw new IOException("GFXEngine rejected preloaded frame textures for: " + this.source);
         }
-        this.gfx.useFrameTexture(0);
+        this.gfx.frame(0);
 
         // BUILD THE CUMULATIVE TIMELINE THAT DRIVES THE PASSIVE CLOCK
         final long[] delays = data.delay();
@@ -553,7 +553,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.currentFrameIndex = frame;
                 this.currentDelayMs = delayAt(this.texDelays, frame);
             }
-            this.gfx.useFrameTexture(frame);
+            this.gfx.frame(frame);
         }
         return super.texture();
     }
@@ -809,7 +809,11 @@ public final class TxMediaPlayer extends MediaPlayer {
         try {
             if (!NetworkCache.codecReadable(uri, this.source.headers(), IMAGE_ACCEPT)) return false;
             bc = NetworkCache.openCodecReader(uri, this.source.headers(), IMAGE_ACCEPT);
-            if (bc == null || !this.gfx.supportsCompressedTextures(bc.version())) return false;
+            if (bc == null) return false;
+            // THE CODEC ID MAPS 1:1 TO A COMPRESSED PixelFormat CONSTANT (BC1/BC3/BC7) — THE ENGINE
+            // SAMPLES THE BLOCKS DIRECTLY WHEN IT SUPPORTS THAT FORMAT.
+            final PixelFormat bcFormat = PixelFormat.valueOf(bc.version());
+            if (!this.gfx.supports(bcFormat)) return false;
 
             super.quality(this.source.qualityOf(uri));
             this.sourceWidth = bc.width();
@@ -817,7 +821,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.outWidth = this.sourceWidth;
             this.outHeight = this.sourceHeight;
             this.planeCount = 1;
-            this.pixelFormat = PixelFormat.BGRA; // BC SAMPLES AS RGBA; THE RENDER PATH TREATS IT AS BGRA
+            this.pixelFormat = PixelFormat.BGRA; // PLAYER-SIDE VIEW STAYS BGRA (BC SAMPLES AS RGBA); THE ENGINE GETS THE REAL BC FORMAT
             if (this.quality == MediaQuality.UNKNOWN) {
                 final var realQuality = MediaQuality.of(this.sourceWidth, this.sourceHeight);
                 this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
@@ -826,9 +830,9 @@ public final class TxMediaPlayer extends MediaPlayer {
 
             final ByteBuffer[] blocks = bc.blocks();
             final long[] delays = bc.delays();
-            this.gfx.setVideoFormat(this.pixelFormat, this.outWidth, this.outHeight);
-            if (!this.gfx.uploadCompressedFrames(blocks, bc.version(), bc.blockBytes())) return false;
-            this.gfx.useFrameTexture(0);
+            this.gfx.format(bcFormat, this.outWidth, this.outHeight);
+            if (!this.gfx.preload(blocks, 0)) return false;
+            this.gfx.frame(0);
 
             this.animated = blocks.length > 1;
             this.currentFrameIndex = 0;
@@ -962,7 +966,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             // GPU ENGINES (GL/VK) SAMPLE PLANAR YUV DIRECTLY; A SOFTWARE ENGINE (AWT/JavaFX) NEEDS BGRA, SO ASK
             // THE DECODER FOR IT WHEN THE ENGINE WOULD DECLINE THE NATIVE LAYOUT (MIRRORS FFMediaPlayer'S sws FALLBACK).
             final ByteBuffer bytes = ByteBuffer.wrap(sourceBytes.bytes());
-            final ImageReader reader = this.gfx != null && !this.gfx.supportsFormat(PixelFormat.YUV420P)
+            final ImageReader reader = this.gfx != null && !this.gfx.supports(PixelFormat.YUV420P)
                     ? CodecsAPI.decodeImage(bytes, PixelFormat.BGRA)
                     : CodecsAPI.decodeImage(bytes);
             this.activeReader = reader;
@@ -1125,7 +1129,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private void uploadBuffer(final ByteBuffer buffer, final int w, final int h) {
         // SIZE FLIP (HOT maxSize/LOD CHANGE) — RECONFIGURE THE ENGINE FOR THIS FRAME
         if (this.gfx.width() != w || this.gfx.height() != h) {
-            this.gfx.setVideoFormat(this.pixelFormat, w, h);
+            this.gfx.format(this.pixelFormat, w, h);
         }
         if (this.planeCount <= 1) {
             this.gfx.upload(new ByteBuffer[]{buffer}, new int[]{0});
@@ -1233,6 +1237,8 @@ public final class TxMediaPlayer extends MediaPlayer {
             case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
             case YUVA422P -> pixels * 2L + 2L * chromaW * h;
             case YUVA444P -> pixels * 4L;
+            // BCn: ONE PLANE OF 4x4 BLOCKS — NEVER REACHES THE DECODE POOL, BUT THE BUDGET STAYS HONEST
+            case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * cs.blockBytes();
         };
     }
 

@@ -17,7 +17,7 @@ public final class AWTEngine extends SWEngine {
     private volatile BufferedImage image;
     private int[] argb;
 
-    private AWTEngine(final Runnable onFrame) {
+    public AWTEngine(final Runnable onFrame) {
         super(onFrame);
     }
 
@@ -55,19 +55,5 @@ public final class AWTEngine extends SWEngine {
     protected void disposeSurface() {
         this.image = null;
         this.argb = null;
-    }
-
-    public static final class Builder {
-        private Runnable onFrame;
-
-        /** Hook run on the upload thread after each frame is published; use it to trigger a repaint. */
-        public Builder onFrame(final Runnable onFrame) {
-            this.onFrame = onFrame;
-            return this;
-        }
-
-        public AWTEngine build() {
-            return new AWTEngine(this.onFrame);
-        }
     }
 }

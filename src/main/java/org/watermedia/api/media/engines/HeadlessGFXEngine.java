@@ -9,7 +9,8 @@ import java.nio.ByteBuffer;
  * {@link org.watermedia.api.media.players.MediaPlayer} run its full decode/upload pipeline where no
  * display is available — server-side probing, CI, or headless validation — and lets callers
  * introspect what the pipeline pushed ({@link #uploadCount()}, {@link #lastUpload()},
- * {@link #format()}, {@link #activeFrameTexture()}).
+ * {@link #format()}, {@link #activeFrame()}). It is the only engine allowed to be constructed on a
+ * server-side environment.
  * <p>
  * {@link #texture()} returns a non-zero sentinel once the first frame is captured (0 before),
  * matching the base contract; there is no real texture to bind. Every mutable field is
@@ -19,9 +20,9 @@ public final class HeadlessGFXEngine extends GFXEngine {
     // FIXED NON-ZERO HANDLE — NO REAL GPU TEXTURE EXISTS, BUT texture() MUST READ AS "A FRAME IS PRESENT"
     private static final long SENTINEL_TEXTURE = 1L;
 
-    private final boolean supportsFrameTextures;
+    private final boolean preload;
     private volatile long uploadCount;
-    private volatile int activeFrameTexture;
+    private volatile int activeFrame;
     private volatile ByteBuffer[] preloaded;
     private volatile ByteBuffer lastUpload;
     private volatile boolean framed;
@@ -31,18 +32,19 @@ public final class HeadlessGFXEngine extends GFXEngine {
         this(false);
     }
 
-    public HeadlessGFXEngine(final boolean supportsFrameTextures) {
-        this.supportsFrameTextures = supportsFrameTextures;
+    public HeadlessGFXEngine(final boolean preload) {
+        super(false); // HEADLESS IS THE SANCTIONED SERVER-SIDE ENGINE — SKIP THE CLIENT CHECK
+        this.preload = preload;
     }
 
     @Override
     public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
 
     @Override
-    public boolean supportsFrameTextures() { return this.supportsFrameTextures; }
+    public boolean preload() { return this.preload; }
 
     @Override
-    public boolean uploadFrameTextures(final ByteBuffer[] frames, final int stride) {
+    public boolean preload(final ByteBuffer[] frames, final int stride) {
         // CLONE ON STORE — THE ARRAY IS PUBLIC API, DON'T ALIAS THE PRODUCER'S ARRAY
         this.preloaded = frames != null ? frames.clone() : null;
         this.framed = true;
@@ -50,8 +52,8 @@ public final class HeadlessGFXEngine extends GFXEngine {
     }
 
     @Override
-    public void useFrameTexture(final int frameIndex) {
-        this.activeFrameTexture = frameIndex;
+    public void frame(final int index) {
+        this.activeFrame = index;
     }
 
     @Override
@@ -69,10 +71,10 @@ public final class HeadlessGFXEngine extends GFXEngine {
     /** Number of {@code upload} calls received so far. */
     public long uploadCount() { return this.uploadCount; }
 
-    /** Index last selected through {@link #useFrameTexture(int)}. */
-    public int activeFrameTexture() { return this.activeFrameTexture; }
+    /** Index last selected through {@link #frame(int)}. */
+    public int activeFrame() { return this.activeFrame; }
 
-    /** Frame set last handed to {@link #uploadFrameTextures(ByteBuffer[], int)}, or null. */
+    /** Frame set last handed to {@link #preload(ByteBuffer[], int)}, or null. */
     public ByteBuffer[] preloadedFrames() { return this.preloaded; }
 
     /** Y (or sole) plane of the most recent {@code upload}, or null. */

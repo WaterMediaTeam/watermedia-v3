@@ -7,6 +7,7 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.StackPane;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.engines.JFXEngine;
 import org.watermedia.bootstrap.app.AppContext;
@@ -65,7 +66,7 @@ public final class JFXPlayerWindow {
         @Override
         public GFXEngine newEngine() {
             this.loggedBind = false;
-            return this.engine = new JFXEngine.Builder().build();
+            return this.engine = MediaAPI.jfxEngine(null);
         }
 
         @Override

@@ -22,7 +22,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * A frame arrives on the player's decode thread: {@link #upload(ByteBuffer[], int[])} writes the buffer
  * and calls {@link #present()} to publish it, then fires the optional {@code onFrame} callback so a
- * UI can repaint. The surface is reallocated on every {@link #setVideoFormat} (resolution change).
+ * UI can repaint. The surface is reallocated on every {@link #format(PixelFormat, int, int, int)}
+ * (resolution change).
  */
 public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEngine {
     private static final Marker IT = MarkerManager.getMarker(SWEngine.class.getSimpleName());
@@ -39,14 +40,14 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     }
 
     @Override
-    public boolean supportsFormat(final PixelFormat format) {
-        // ANYTHING ELSE (PLANAR/PACKED YUV, RGB, GRAY) IS DECLINED SO THE PRODUCER CONVERTS IT TO BGRA
+    public boolean supports(final PixelFormat format) {
+        // ANYTHING ELSE (PLANAR/PACKED YUV, RGB, GRAY, BCn) IS DECLINED SO THE PRODUCER CONVERTS IT TO BGRA
         return format == PixelFormat.BGRA || format == PixelFormat.RGBA;
     }
 
     @Override
-    public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height, final int bitsPerComponent) {
-        super.setVideoFormat(pixelFormat, width, height, bitsPerComponent);
+    public void format(final PixelFormat format, final int width, final int height, final int bits) {
+        super.format(format, width, height, bits);
         final int w = Math.max(1, width);
         final int h = Math.max(1, height);
         this.bgra = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
@@ -58,7 +59,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
 
     @Override
     public void upload(final ByteBuffer[] planes, final int[] strides) {
-        // ONLY SINGLE-PLANE BGRA/RGBA IS ACCEPTED (supportsFormat), SO THE FIRST PLANE IS THE WHOLE FRAME
+        // ONLY SINGLE-PLANE BGRA/RGBA IS ACCEPTED (supports), SO THE FIRST PLANE IS THE WHOLE FRAME
         final ByteBuffer buffer = planes[0];
         final int stride = strides[0];
         final ByteBuffer dst = this.bgra;
@@ -77,7 +78,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         final int base = src.position();
 
         dst.clear();
-        if (this.pixelFormat == PixelFormat.RGBA) {
+        if (this.format == PixelFormat.RGBA) {
             // SWIZZLE RGBA->BGRA WITH ONE 32-BIT OP PER PIXEL (SWAP R AND B). FORCING LE VIEWS MAKES
             // THE BYTE MATH HOST-AGNOSTIC — THE OUTPUT MEMORY IS ALWAYS B,G,R,A REGARDLESS OF ENDIANNESS.
             final ByteBuffer s = src.order(ByteOrder.LITTLE_ENDIAN);

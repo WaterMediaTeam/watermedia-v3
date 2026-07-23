@@ -5,7 +5,6 @@ import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
-import org.watermedia.WaterMedia;
 import org.watermedia.api.media.engines.vk.VKContext;
 import org.watermedia.api.util.PixelFormat;
 
@@ -57,7 +56,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * {@link VKContext#queueLock()}, so a single same-queue image barrier (to {@code FRAGMENT_SHADER} /
  * {@code SHADER_READ}) makes each frame visible to the consumer — no cross-thread semaphores.
  * <p>
- * <b>Threading.</b> {@link #upload} and {@link #setVideoFormat} are called from the producer/decode
+ * <b>Threading.</b> {@link #upload} and {@link #format(PixelFormat, int, int, int)} are called from the producer/decode
  * thread; {@link #texture()} from the render thread. {@code texture()} is cheap: it returns the view
  * of the most-recently-submitted slot whose fence has signaled (or the last one it returned), reading
  * published {@code volatile} state and polling fences under the shared queue lock.
@@ -73,7 +72,8 @@ public final class VKEngine extends GFXEngine {
     private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
     private static final long WAIT_TIMEOUT = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
 
-    // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT). SEE compiledSpirv().
+    // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT), FILLED LAZILY
+    // UNDER THE CLASS MONITOR ON THE FIRST CONVERSION FRAME. SEE compileSpirv().
     private static volatile byte[] SPIRV;
     private static volatile byte[] YCBCR_SPIRV;
 
@@ -200,7 +200,7 @@ public final class VKEngine extends GFXEngine {
     // IMPORT CACHE: HOST POINTER -> IMPORTED {VkDeviceMemory, VkBuffer}. PRODUCER-THREAD ONLY.
     private final Map<Long, Imported> importCache = new HashMap<>();
 
-    // FORMAT-DERIVED STATE (BUILT IN setVideoFormat)
+    // FORMAT-DERIVED STATE (BUILT IN format())
     private boolean fmtOk;       // FALSE FOR FORMATS THE ENGINE DOES NOT HANDLE
     private boolean convert;     // TRUE WHEN A COMPUTE PASS PRODUCES THE MANAGED IMAGE
     private int mode;            // COMPUTE MODE WHEN convert
@@ -234,14 +234,99 @@ public final class VKEngine extends GFXEngine {
     private volatile long lastSeq;
     private volatile boolean released;
 
-    private VKEngine(final VKContext ctx) {
-        WaterMedia.checkIsClientSideOrThrow(VKEngine.class);
+    /**
+     * Builds a {@code VKEngine} over the consumer's borrowed {@link VKContext}.
+     * <p>
+     * The context (and every Vulkan object it exposes) must outlive this engine; the engine only
+     * creates its own command pool, descriptors, pipelines and per-slot images on it.
+     * @param ctx the consumer's device bridge, non-null
+     */
+    public VKEngine(final VKContext ctx) {
         if (ctx == null) throw new IllegalArgumentException("VKContext must be non-null");
         this.ctx = ctx;
         this.device = ctx.vkDevice();
         this.memProps = ctx.memoryProperties();
         this.minAlign = ctx.hostImportSupported() ? (int) ctx.minImportedHostPointerAlignment() : 0;
-        this.init();
+
+        // BUILD THE STATIC ENGINE OBJECTS (LIVE FOR THE WHOLE ENGINE LIFETIME).
+        for (int i = 0; i < SLOTS; i++) this.slots[i] = new Slot();
+        try (MemoryStack stack = stackPush()) {
+            // COMMAND POOL + PRIMARY COMMAND BUFFERS (RESETTABLE INDIVIDUALLY).
+            final VkCommandPoolCreateInfo cpci = VkCommandPoolCreateInfo.calloc(stack).sType$Default()
+                    .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(ctx.queueFamily());
+            final LongBuffer pPool = stack.mallocLong(1);
+            check(vkCreateCommandPool(this.device, cpci, null, pPool), "create command pool");
+            this.cmdPool = pPool.get(0);
+
+            final VkCommandBufferAllocateInfo cbai = VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
+                    .commandPool(this.cmdPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(SLOTS);
+            final PointerBuffer pCmd = stack.mallocPointer(SLOTS);
+            check(vkAllocateCommandBuffers(this.device, cbai, pCmd), "alloc command buffers");
+
+            final VkFenceCreateInfo fci = VkFenceCreateInfo.calloc(stack).sType$Default(); // UNSIGNALED
+            for (int i = 0; i < SLOTS; i++) {
+                this.slots[i].cmd = new VkCommandBuffer(pCmd.get(i), this.device);
+                final LongBuffer pf = stack.mallocLong(1);
+                check(vkCreateFence(this.device, fci, null, pf), "create fence");
+                this.slots[i].fence = pf.get(0);
+            }
+
+            // SAMPLER (LINEAR, CLAMP) — PLANAR/NV CHROMA UPSAMPLING; PACKED YUV USES texelFetch.
+            final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                    .magFilter(VK_FILTER_LINEAR).minFilter(VK_FILTER_LINEAR)
+                    .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                    .borderColor(VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK)
+                    .unnormalizedCoordinates(false);
+            final LongBuffer ps = stack.mallocLong(1);
+            check(vkCreateSampler(this.device, sci, null, ps), "create sampler");
+            this.sampler = ps.get(0);
+
+            // DESCRIPTOR SET LAYOUT: 4 COMBINED IMAGE SAMPLERS (PLANES) + 1 STORAGE IMAGE (OUTPUT).
+            final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
+            for (int j = 0; j < MAX_PLANES; j++) {
+                binds.get(j).binding(j).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+            }
+            binds.get(4).binding(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+            final VkDescriptorSetLayoutCreateInfo dlci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
+            final LongBuffer pl = stack.mallocLong(1);
+            check(vkCreateDescriptorSetLayout(this.device, dlci, null, pl), "create descriptor set layout");
+            this.descLayout = pl.get(0);
+
+            // DESCRIPTOR POOL + ONE SET PER SLOT.
+            final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
+            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(MAX_PLANES * SLOTS);
+            sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(SLOTS);
+            final VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
+                    .maxSets(SLOTS).pPoolSizes(sizes);
+            final LongBuffer pdp = stack.mallocLong(1);
+            check(vkCreateDescriptorPool(this.device, dpci, null, pdp), "create descriptor pool");
+            this.descPool = pdp.get(0);
+
+            final LongBuffer layouts = stack.mallocLong(SLOTS);
+            for (int i = 0; i < SLOTS; i++) layouts.put(i, this.descLayout);
+            final VkDescriptorSetAllocateInfo dsai = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
+                    .descriptorPool(this.descPool).pSetLayouts(layouts);
+            final LongBuffer pSets = stack.mallocLong(SLOTS);
+            check(vkAllocateDescriptorSets(this.device, dsai, pSets), "alloc descriptor sets");
+            for (int i = 0; i < SLOTS; i++) this.slots[i].descSet = pSets.get(i);
+
+            // PIPELINE LAYOUT (DESCRIPTOR SET + PUSH CONSTANTS).
+            final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
+            pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(PUSH_BYTES);
+            final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+                    .pSetLayouts(stack.longs(this.descLayout)).pPushConstantRanges(pcr);
+            final LongBuffer ppl = stack.mallocLong(1);
+            check(vkCreatePipelineLayout(this.device, plci, null, ppl), "create pipeline layout");
+            this.pipeLayout = ppl.get(0);
+        }
+        // THE COMPUTE SHADER + PIPELINE ARE BUILT LAZILY ON THE FIRST CONVERSION UPLOAD:
+        // PASSTHROUGH-ONLY ENGINES (E.G. BGRA/RGBA IMAGE THUMBNAILS) NEVER COMPILE, AND THE SPIR-V
+        // IS CACHED ACROSS EVERY ENGINE — SO CREATING MANY ENGINES NEVER RECOMPILES THE SHADER.
         LOGGER.debug(IT, "VKEngine initialized (hostImport={}, minAlign={})", ctx.hostImportSupported(), this.minAlign);
     }
 
@@ -271,7 +356,7 @@ public final class VKEngine extends GFXEngine {
         if (this.released) return 0L;
         // FENCE STATUS IS A FENCE READER; vkResetFences/vkQueueSubmit ON THE SAME FENCE ARE
         // WRITERS. SERIALIZE THEM THROUGH THE SHARED QUEUE LOCK SO THE POLL IS RACE-FREE.
-        // THE lastSeq/lastView READ AND WRITE-BACK STAY INSIDE THE LOCK TOO: setVideoFormat ZEROES
+        // THE lastSeq/lastView READ AND WRITE-BACK STAY INSIDE THE LOCK TOO: format() ZEROES
         // THEM UNDER THIS LOCK BEFORE DESTROYING THE VIEWS, SO A STALE PAIR CAN NEVER BE
         // REPUBLISHED AFTER THE VIEW IT POINTS TO IS GONE.
         synchronized (this.ctx.queueLock()) {
@@ -291,17 +376,18 @@ public final class VKEngine extends GFXEngine {
     }
 
     @Override
-    public int requiredBufferAlignment() {
+    public int alignment() {
         return this.minAlign;
     }
 
     @Override
-    public boolean supportsFormat(final PixelFormat format) {
+    public boolean supports(final PixelFormat format) {
         return switch (format) {
             // RGB (3-BYTE, NO ALPHA) AND GBRA ARE DECLINED: 3-CHANNEL OPTIMAL-TILING SUPPORT IS
             // OPTIONAL IN VULKAN, SO THE PRODUCER PRE-CONVERTS THEM TO BGRA UPSTREAM (ROBUST).
+            // BCn SAMPLING IS NOT WIRED YET — DECLINED UNTIL IT IS.
             case RGB, GBRA -> false;
-            default -> true;
+            default -> !format.compressed();
         };
     }
 
@@ -314,7 +400,7 @@ public final class VKEngine extends GFXEngine {
      * fences are kept.
      */
     @Override
-    public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height, final int bitsPerComponent) {
+    public void format(final PixelFormat format, final int width, final int height, final int bits) {
         if (this.released) return;
         // DRAIN ENGINE WORK SO PER-FORMAT RESOURCES CAN BE DESTROYED SAFELY.
         this.waitAllIdle();
@@ -351,25 +437,115 @@ public final class VKEngine extends GFXEngine {
         // THEY DIE SYNCHRONOUSLY AND ARE LAZILY REBUILT IF THE NEW FORMAT USES THE YCBCR PATH.
         this.destroyYcbcrRes();
 
-        super.setVideoFormat(pixelFormat, width, height, bitsPerComponent);
-        this.buildFormat();
+        super.format(format, width, height, bits);
+
+        // BUILD THE FORMAT TABLE IN ONE PASS: PER-PLANE SPECS, OUTPUT FORMAT/USAGE, COMPUTE MODE
+        // AND THE OPTIONAL SAMPLER-YCBCR ROUTE, ALL DERIVED FROM THE NEW FORMAT.
+        final int bps = bits == 32 ? 4 : (bits > 8 ? 2 : 1);
+        this.bitScale = switch (bits) {
+            case 10 -> 65535.0f / 1023.0f;
+            case 12 -> 65535.0f / 4095.0f;
+            default -> 1.0f; // 8, 16, 32
+        };
+        final int rF = bps == 1 ? VK_FORMAT_R8_UNORM : (bps == 2 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT);
+        final int rgF = bps == 1 ? VK_FORMAT_R8G8_UNORM : (bps == 2 ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R32G32_SFLOAT);
+
+        this.fmtOk = true;
+        this.convert = true;
+        this.planeCount = 0;
+        this.ycbcrFmt = 0;
+        switch (format) {
+            case BGRA -> { this.convert = false; this.outFormat = VK_FORMAT_B8G8R8A8_UNORM; this.outTexelBytes = 4; }
+            case RGBA -> { this.convert = false; this.outFormat = VK_FORMAT_R8G8B8A8_UNORM; this.outTexelBytes = 4; }
+            case GRAY -> {
+                // GRAY IS NOT A YCBCR FORMAT AT ALL — THE SINGLE-PLANE COMPUTE BROADCAST STAYS.
+                this.mode = MODE_GRAY;
+                this.plane(0, rF, bps, width, height);
+                this.planeCount = 1;
+            }
+            case NV12, NV21 -> {
+                this.mode = format == PixelFormat.NV21 ? MODE_NV21 : MODE_NV12;
+                this.plane(0, rF, bps, width, height);
+                this.plane(1, rgF, 2 * bps, width / 2, height / 2);
+                this.planeCount = 2;
+                // ONLY 8-BIT EVEN-SIZED NV12 TAKES THE YCBCR PATH: VULKAN HAS NO VU-ORDER PLANE (NV21),
+                // 10/12-BIT PLANAR IS LSB-ALIGNED VS VULKAN'S MSB-ALIGNED G10X6/G12X4, AND 420
+                // MULTIPLANAR NEEDS EVEN WxH (VUID-VkImageCreateInfo-format-04712/04713).
+                if (format == PixelFormat.NV12 && bps == 1 && (width & 1) == 0 && (height & 1) == 0) {
+                    this.tryYcbcr(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
+                }
+            }
+            case YUV420P, YUV422P, YUV444P -> {
+                this.mode = MODE_YUV3;
+                final int cw = format == PixelFormat.YUV444P ? width : width / 2;
+                final int ch = format == PixelFormat.YUV420P ? height / 2 : height;
+                this.plane(0, rF, bps, width, height);
+                this.plane(1, rF, bps, cw, ch);
+                this.plane(2, rF, bps, cw, ch);
+                this.planeCount = 3;
+                // 8-BIT ONLY (SEE THE NV12 NOTE ON 10/12-BIT ALIGNMENT). SUBSAMPLED MULTIPLANAR
+                // IMAGES REQUIRE EVEN EXTENTS ALONG THE SUBSAMPLED AXES: 420 NEEDS EVEN WxH,
+                // 422 NEEDS EVEN W, 444 HAS NO RESTRICTION.
+                if (bps == 1) {
+                    switch (format) {
+                        case YUV420P -> { if ((width & 1) == 0 && (height & 1) == 0) this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM); }
+                        case YUV422P -> { if ((width & 1) == 0) this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM); }
+                        default -> this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM);
+                    }
+                }
+            }
+            case YUVA420P, YUVA422P, YUVA444P -> {
+                // YUVA STAYS ON COMPUTE: NO VULKAN MULTIPLANAR FORMAT CARRIES AN ALPHA PLANE.
+                this.mode = MODE_YUVA;
+                final int cw = format == PixelFormat.YUVA444P ? width : width / 2;
+                final int ch = format == PixelFormat.YUVA420P ? height / 2 : height;
+                this.plane(0, rF, bps, width, height);
+                this.plane(1, rF, bps, cw, ch);
+                this.plane(2, rF, bps, cw, ch);
+                this.plane(3, rF, bps, width, height);
+                this.planeCount = 4;
+            }
+            // PACKED YUYV/UYVY STAYS ON COMPUTE: THE EXACT PIXEL-PAIR texelFetch DECODE IS ILLEGAL
+            // THROUGH A YCBCR SAMPLER (NO OpImageFetch), AND SINGLE-PLANE 422 PACKED FORMATS
+            // (G8B8G8R8_422) HAVE SPOTTY OPTIMAL-TILING SUPPORT ACROSS DRIVERS.
+            case YUYV, YUYV2 -> {
+                this.mode = format == PixelFormat.YUYV2 ? MODE_UYVY : MODE_YUYV;
+                // CEIL: FOR ODD WIDTHS THE SHADER FETCHES TEXEL gid.x>>1 == w/2 ON THE LAST COLUMN,
+                // SO A FLOOR-SIZED PLANE WOULD BE READ ONE TEXEL OUT OF BOUNDS.
+                this.plane(0, VK_FORMAT_R8G8B8A8_UNORM, 4, (width + 1) / 2, height);
+                this.planeCount = 1;
+            }
+            default -> { // RGB, GBRA, BCn — DECLINED BY supports(); NEVER UPLOADED
+                this.fmtOk = false;
+                this.convert = false;
+                this.outFormat = VK_FORMAT_R8G8B8A8_UNORM;
+                this.outTexelBytes = 4;
+            }
+        }
+        if (this.convert) {
+            this.outFormat = VK_FORMAT_R8G8B8A8_UNORM;
+            this.outUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        } else {
+            this.outUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        }
+
         this.formatGen++;
         this.head = 0L;
         if (this.ycbcrFmt != 0) {
             LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> YCbCr sampler path (vkFormat={}, chromaLoc={}, filter={})",
-                    pixelFormat, width, height, this.planeCount, bitsPerComponent,
+                    format, width, height, this.planeCount, bits,
                     this.ycbcrFmt, this.ycbcrLoc == VK_CHROMA_LOCATION_MIDPOINT ? "midpoint" : "cosited-even",
                     this.ycbcrFilter == VK_FILTER_LINEAR ? "linear" : "nearest");
         } else {
             LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> {} path",
-                    pixelFormat, width, height, this.planeCount, bitsPerComponent,
+                    format, width, height, this.planeCount, bits,
                     this.convert ? "compute" : "passthrough");
         }
     }
 
 
     @Override
-    public void releaseBuffer(final ByteBuffer buffer) {
+    public void release(final ByteBuffer buffer) {
         if (this.released || buffer == null || !buffer.isDirect()) return;
         // THE CACHE IS KEYED BY THE BUFFER'S BASE ADDRESS (POSITION-0 IMPORTS ONLY).
         final Imported imp = this.importCache.remove(memAddress(buffer) - buffer.position());
@@ -527,7 +703,29 @@ public final class VKEngine extends GFXEngine {
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             } else if (this.convert) {
-                this.ensureComputePipeline(); // LAZY: THE FIRST CONVERSION FRAME COMPILES (CACHED) + BUILDS THE PIPELINE
+                // LAZY: THE FIRST CONVERSION FRAME BUILDS THIS ENGINE'S SHADER MODULE + PIPELINE FROM
+                // THE PROCESS-CACHED SPIR-V (shaderc COMPILATION IS THE EXPENSIVE STEP — SHARED BY EVERY ENGINE).
+                if (this.pipeline == 0L) {
+                    byte[] spirv = SPIRV;
+                    if (spirv == null) {
+                        synchronized (VKEngine.class) {
+                            if (SPIRV == null) SPIRV = compileSpirv(COMPUTE_GLSL, "convert.comp");
+                            spirv = SPIRV;
+                        }
+                    }
+                    final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
+                    final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
+                    final LongBuffer pMod = stack.mallocLong(1);
+                    check(vkCreateShaderModule(this.device, smci, null, pMod), "create shader module");
+                    this.shaderModule = pMod.get(0);
+                    final VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
+                            .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(this.shaderModule).pName(stack.UTF8("main"));
+                    final VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, stack);
+                    ci.get(0).sType$Default().stage(stage).layout(this.pipeLayout);
+                    final LongBuffer pp = stack.mallocLong(1);
+                    check(vkCreateComputePipelines(this.device, 0, ci, null, pp), "create compute pipeline");
+                    this.pipeline = pp.get(0);
+                }
                 for (int i = 0; i < this.planeCount; i++) {
                     final PlaneSpec spec = this.planeSpecs[i];
                     this.barrier(stack, slot.cmd, slot.planeImg[i],
@@ -743,27 +941,24 @@ public final class VKEngine extends GFXEngine {
                     slot.planeMem[i] = p.memory();
                     slot.planeView[i] = p.view();
                 }
-                this.updateDescriptorSet(stack, slot);
+                // REWRITE THE SLOT'S DESCRIPTOR SET: BINDINGS 0..3 = PLANE VIEWS, BINDING 4 = OUTPUT.
+                final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
+                for (int j = 0; j < MAX_PLANES; j++) {
+                    // UNUSED PLANE SLOTS BIND PLANE 0 (ALWAYS PRESENT FOR CONVERT) — A VALID VIEW THE SHADER NEVER READS
+                    final long view = j < this.planeCount ? slot.planeView[j] : slot.planeView[0];
+                    final VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
+                    info.get(0).sampler(this.sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    writes.get(j).sType$Default().dstSet(slot.descSet).dstBinding(j).dstArrayElement(0)
+                            .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(info);
+                }
+                final VkDescriptorImageInfo.Buffer outInfo = VkDescriptorImageInfo.calloc(1, stack);
+                outInfo.get(0).imageView(slot.view).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(4).sType$Default().dstSet(slot.descSet).dstBinding(4).dstArrayElement(0)
+                        .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outInfo);
+                vkUpdateDescriptorSets(this.device, writes, null);
             }
         }
         slot.gen = this.formatGen;
-    }
-
-    private void updateDescriptorSet(final MemoryStack stack, final Slot slot) {
-        final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
-        for (int j = 0; j < MAX_PLANES; j++) {
-            // UNUSED PLANE SLOTS BIND PLANE 0 (ALWAYS PRESENT FOR CONVERT) — A VALID VIEW THE SHADER NEVER READS
-            final long view = j < this.planeCount ? slot.planeView[j] : slot.planeView[0];
-            final VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
-            info.get(0).sampler(this.sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            writes.get(j).sType$Default().dstSet(slot.descSet).dstBinding(j).dstArrayElement(0)
-                    .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(info);
-        }
-        final VkDescriptorImageInfo.Buffer outInfo = VkDescriptorImageInfo.calloc(1, stack);
-        outInfo.get(0).imageView(slot.view).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-        writes.get(4).sType$Default().dstSet(slot.descSet).dstBinding(4).dstArrayElement(0)
-                .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outInfo);
-        vkUpdateDescriptorSets(this.device, writes, null);
     }
 
     private void destroySlotFormatRes(final Slot s) {
@@ -872,100 +1067,8 @@ public final class VKEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // FORMAT TABLE
+    // FORMAT TABLE HELPERS
     // ==========================================================================
-    private void buildFormat() {
-        final int w = this.width;
-        final int h = this.height;
-        final int bps = this.bitsPerComponent == 32 ? 4 : (this.bitsPerComponent > 8 ? 2 : 1);
-        this.bitScale = switch (this.bitsPerComponent) {
-            case 10 -> 65535.0f / 1023.0f;
-            case 12 -> 65535.0f / 4095.0f;
-            default -> 1.0f; // 8, 16, 32
-        };
-        final int rF = bps == 1 ? VK_FORMAT_R8_UNORM : (bps == 2 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT);
-        final int rgF = bps == 1 ? VK_FORMAT_R8G8_UNORM : (bps == 2 ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R32G32_SFLOAT);
-
-        this.fmtOk = true;
-        this.convert = true;
-        this.planeCount = 0;
-        this.ycbcrFmt = 0;
-        switch (this.pixelFormat) {
-            case BGRA -> { this.convert = false; this.outFormat = VK_FORMAT_B8G8R8A8_UNORM; this.outTexelBytes = 4; }
-            case RGBA -> { this.convert = false; this.outFormat = VK_FORMAT_R8G8B8A8_UNORM; this.outTexelBytes = 4; }
-            case GRAY -> {
-                // GRAY IS NOT A YCBCR FORMAT AT ALL — THE SINGLE-PLANE COMPUTE BROADCAST STAYS.
-                this.mode = MODE_GRAY;
-                this.plane(0, rF, bps, w, h);
-                this.planeCount = 1;
-            }
-            case NV12, NV21 -> {
-                this.mode = this.pixelFormat == PixelFormat.NV21 ? MODE_NV21 : MODE_NV12;
-                this.plane(0, rF, bps, w, h);
-                this.plane(1, rgF, 2 * bps, w / 2, h / 2);
-                this.planeCount = 2;
-                // ONLY 8-BIT EVEN-SIZED NV12 TAKES THE YCBCR PATH: VULKAN HAS NO VU-ORDER PLANE (NV21),
-                // 10/12-BIT PLANAR IS LSB-ALIGNED VS VULKAN'S MSB-ALIGNED G10X6/G12X4, AND 420
-                // MULTIPLANAR NEEDS EVEN WxH (VUID-VkImageCreateInfo-format-04712/04713).
-                if (this.pixelFormat == PixelFormat.NV12 && bps == 1 && (w & 1) == 0 && (h & 1) == 0) {
-                    this.tryYcbcr(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
-                }
-            }
-            case YUV420P, YUV422P, YUV444P -> {
-                this.mode = MODE_YUV3;
-                final int cw = this.pixelFormat == PixelFormat.YUV444P ? w : w / 2;
-                final int ch = this.pixelFormat == PixelFormat.YUV420P ? h / 2 : h;
-                this.plane(0, rF, bps, w, h);
-                this.plane(1, rF, bps, cw, ch);
-                this.plane(2, rF, bps, cw, ch);
-                this.planeCount = 3;
-                // 8-BIT ONLY (SEE THE NV12 NOTE ON 10/12-BIT ALIGNMENT). SUBSAMPLED MULTIPLANAR
-                // IMAGES REQUIRE EVEN EXTENTS ALONG THE SUBSAMPLED AXES: 420 NEEDS EVEN WxH,
-                // 422 NEEDS EVEN W, 444 HAS NO RESTRICTION.
-                if (bps == 1) {
-                    switch (this.pixelFormat) {
-                        case YUV420P -> { if ((w & 1) == 0 && (h & 1) == 0) this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM); }
-                        case YUV422P -> { if ((w & 1) == 0) this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM); }
-                        default -> this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM);
-                    }
-                }
-            }
-            case YUVA420P, YUVA422P, YUVA444P -> {
-                // YUVA STAYS ON COMPUTE: NO VULKAN MULTIPLANAR FORMAT CARRIES AN ALPHA PLANE.
-                this.mode = MODE_YUVA;
-                final int cw = this.pixelFormat == PixelFormat.YUVA444P ? w : w / 2;
-                final int ch = this.pixelFormat == PixelFormat.YUVA420P ? h / 2 : h;
-                this.plane(0, rF, bps, w, h);
-                this.plane(1, rF, bps, cw, ch);
-                this.plane(2, rF, bps, cw, ch);
-                this.plane(3, rF, bps, w, h);
-                this.planeCount = 4;
-            }
-            // PACKED YUYV/UYVY STAYS ON COMPUTE: THE EXACT PIXEL-PAIR texelFetch DECODE BELOW IS
-            // ILLEGAL THROUGH A YCBCR SAMPLER (NO OpImageFetch), AND SINGLE-PLANE 422 PACKED
-            // FORMATS (G8B8G8R8_422) HAVE SPOTTY OPTIMAL-TILING SUPPORT ACROSS DRIVERS.
-            case YUYV, YUYV2 -> {
-                this.mode = this.pixelFormat == PixelFormat.YUYV2 ? MODE_UYVY : MODE_YUYV;
-                // CEIL: FOR ODD WIDTHS THE SHADER FETCHES TEXEL gid.x>>1 == w/2 ON THE LAST COLUMN,
-                // SO A FLOOR-SIZED PLANE WOULD BE READ ONE TEXEL OUT OF BOUNDS.
-                this.plane(0, VK_FORMAT_R8G8B8A8_UNORM, 4, (w + 1) / 2, h);
-                this.planeCount = 1;
-            }
-            default -> { // RGB, GBRA — DECLINED BY supportsFormat; NEVER UPLOADED
-                this.fmtOk = false;
-                this.convert = false;
-                this.outFormat = VK_FORMAT_R8G8B8A8_UNORM;
-                this.outTexelBytes = 4;
-            }
-        }
-        if (this.convert) {
-            this.outFormat = VK_FORMAT_R8G8B8A8_UNORM;
-            this.outUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        } else {
-            this.outUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        }
-    }
-
     private void plane(final int i, final int format, final int texelBytes, final int w, final int h) {
         PlaneSpec spec = this.planeSpecs[i];
         if (spec == null) { spec = new PlaneSpec(); this.planeSpecs[i] = spec; }
@@ -980,7 +1083,7 @@ public final class VKEngine extends GFXEngine {
     // AND THE ARITHMETIC COMPUTE PATH ALREADY CONFIGURED BY THE CALLER REMAINS ACTIVE.
     private void tryYcbcr(final int fmt) {
         if (!this.ctx.ycbcrSampler()) {
-            LOGGER.info(IT, "YCbCr sampler path declined for {}: samplerYcbcrConversion feature off", this.pixelFormat);
+            LOGGER.info(IT, "YCbCr sampler path declined for {}: samplerYcbcrConversion feature off", this.format);
             return;
         }
         Integer feats = this.ycbcrFeats.get(fmt);
@@ -1000,7 +1103,7 @@ public final class VKEngine extends GFXEngine {
         final boolean cos = (feats & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT) != 0;
         if ((feats & need) != need || (!mid && !cos)) {
             LOGGER.info(IT, "YCbCr sampler path declined for {}: format {} unsupported (optimalTilingFeatures=0x{})",
-                    this.pixelFormat, fmt, Integer.toHexString(feats));
+                    this.format, fmt, Integer.toHexString(feats));
             return;
         }
         this.ycbcrFmt = fmt;
@@ -1012,111 +1115,6 @@ public final class VKEngine extends GFXEngine {
         final int linNeed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
                 | VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
         this.ycbcrFilter = (feats & linNeed) == linNeed ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-    }
-
-    // ==========================================================================
-    // INIT — STATIC ENGINE OBJECTS
-    // ==========================================================================
-    private void init() {
-        for (int i = 0; i < SLOTS; i++) this.slots[i] = new Slot();
-        try (MemoryStack stack = stackPush()) {
-            // COMMAND POOL + PRIMARY COMMAND BUFFERS (RESETTABLE INDIVIDUALLY).
-            final VkCommandPoolCreateInfo cpci = VkCommandPoolCreateInfo.calloc(stack).sType$Default()
-                    .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(this.ctx.queueFamily());
-            final LongBuffer pPool = stack.mallocLong(1);
-            check(vkCreateCommandPool(this.device, cpci, null, pPool), "create command pool");
-            this.cmdPool = pPool.get(0);
-
-            final VkCommandBufferAllocateInfo cbai = VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
-                    .commandPool(this.cmdPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(SLOTS);
-            final PointerBuffer pCmd = stack.mallocPointer(SLOTS);
-            check(vkAllocateCommandBuffers(this.device, cbai, pCmd), "alloc command buffers");
-
-            final VkFenceCreateInfo fci = VkFenceCreateInfo.calloc(stack).sType$Default(); // UNSIGNALED
-            for (int i = 0; i < SLOTS; i++) {
-                this.slots[i].cmd = new VkCommandBuffer(pCmd.get(i), this.device);
-                final LongBuffer pf = stack.mallocLong(1);
-                check(vkCreateFence(this.device, fci, null, pf), "create fence");
-                this.slots[i].fence = pf.get(0);
-            }
-
-            // SAMPLER (LINEAR, CLAMP) — PLANAR/NV CHROMA UPSAMPLING; PACKED YUV USES texelFetch.
-            final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
-                    .magFilter(VK_FILTER_LINEAR).minFilter(VK_FILTER_LINEAR)
-                    .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
-                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .borderColor(VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK)
-                    .unnormalizedCoordinates(false);
-            final LongBuffer ps = stack.mallocLong(1);
-            check(vkCreateSampler(this.device, sci, null, ps), "create sampler");
-            this.sampler = ps.get(0);
-
-            // DESCRIPTOR SET LAYOUT: 4 COMBINED IMAGE SAMPLERS (PLANES) + 1 STORAGE IMAGE (OUTPUT).
-            final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
-            for (int j = 0; j < MAX_PLANES; j++) {
-                binds.get(j).binding(j).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            }
-            binds.get(4).binding(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            final VkDescriptorSetLayoutCreateInfo dlci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
-            final LongBuffer pl = stack.mallocLong(1);
-            check(vkCreateDescriptorSetLayout(this.device, dlci, null, pl), "create descriptor set layout");
-            this.descLayout = pl.get(0);
-
-            // DESCRIPTOR POOL + ONE SET PER SLOT.
-            final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(MAX_PLANES * SLOTS);
-            sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(SLOTS);
-            final VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
-                    .maxSets(SLOTS).pPoolSizes(sizes);
-            final LongBuffer pdp = stack.mallocLong(1);
-            check(vkCreateDescriptorPool(this.device, dpci, null, pdp), "create descriptor pool");
-            this.descPool = pdp.get(0);
-
-            final LongBuffer layouts = stack.mallocLong(SLOTS);
-            for (int i = 0; i < SLOTS; i++) layouts.put(i, this.descLayout);
-            final VkDescriptorSetAllocateInfo dsai = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
-                    .descriptorPool(this.descPool).pSetLayouts(layouts);
-            final LongBuffer pSets = stack.mallocLong(SLOTS);
-            check(vkAllocateDescriptorSets(this.device, dsai, pSets), "alloc descriptor sets");
-            for (int i = 0; i < SLOTS; i++) this.slots[i].descSet = pSets.get(i);
-
-            // PIPELINE LAYOUT (DESCRIPTOR SET + PUSH CONSTANTS).
-            final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
-            pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(PUSH_BYTES);
-            final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                    .pSetLayouts(stack.longs(this.descLayout)).pPushConstantRanges(pcr);
-            final LongBuffer ppl = stack.mallocLong(1);
-            check(vkCreatePipelineLayout(this.device, plci, null, ppl), "create pipeline layout");
-            this.pipeLayout = ppl.get(0);
-        }
-        // THE COMPUTE SHADER + PIPELINE ARE BUILT LAZILY ON THE FIRST CONVERSION UPLOAD (ensureComputePipeline):
-        // PASSTHROUGH-ONLY ENGINES (E.G. BGRA/RGBA IMAGE THUMBNAILS) NEVER COMPILE, AND THE SPIR-V IS CACHED
-        // ACROSS EVERY ENGINE — SO CREATING MANY ENGINES NO LONGER RECOMPILES THE SHADER EACH TIME.
-    }
-
-    // BUILDS THIS ENGINE'S COMPUTE SHADER MODULE + PIPELINE ON FIRST USE, FROM THE PROCESS-CACHED SPIR-V.
-    private void ensureComputePipeline() {
-        if (this.pipeline != 0L) return;
-        final byte[] spirv = compiledSpirv();
-        try (MemoryStack stack = stackPush()) {
-            final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
-            final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            final LongBuffer pMod = stack.mallocLong(1);
-            check(vkCreateShaderModule(this.device, smci, null, pMod), "create shader module");
-            this.shaderModule = pMod.get(0);
-
-            final VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
-                    .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(this.shaderModule).pName(stack.UTF8("main"));
-            final VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, stack);
-            ci.get(0).sType$Default().stage(stage).layout(this.pipeLayout);
-            final LongBuffer pp = stack.mallocLong(1);
-            check(vkCreateComputePipelines(this.device, 0, ci, null, pp), "create compute pipeline");
-            this.pipeline = pp.get(0);
-        }
     }
 
     // ==========================================================================
@@ -1176,7 +1174,13 @@ public final class VKEngine extends GFXEngine {
             this.ycbcrPipeLayout = p.get(0);
 
             // PIPELINE FROM THE PROCESS-CACHED TRIVIAL SHADER; THE MODULE DIES RIGHT AFTER (LEGAL).
-            final byte[] spirv = compiledYcbcrSpirv();
+            byte[] spirv = YCBCR_SPIRV;
+            if (spirv == null) {
+                synchronized (VKEngine.class) {
+                    if (YCBCR_SPIRV == null) YCBCR_SPIRV = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
+                    spirv = YCBCR_SPIRV;
+                }
+            }
             final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
             final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
             check(vkCreateShaderModule(this.device, smci, null, p), "create ycbcr shader module");
@@ -1221,18 +1225,9 @@ public final class VKEngine extends GFXEngine {
         if (this.ycbcrConv != 0L) { vkDestroySamplerYcbcrConversion(this.device, this.ycbcrConv, null); this.ycbcrConv = 0L; }
     }
 
-    // COMPILES GLSL TO SPIR-V VIA shaderc ONCE PER PROCESS AND CACHES THE (DEVICE-INDEPENDENT)
-    // BYTECODE. shaderc COMPILATION IS THE EXPENSIVE STEP, SO SHARING IT ACROSS ENGINES IS A BIG WIN.
-    private static synchronized byte[] compiledSpirv() {
-        if (SPIRV == null) SPIRV = compileSpirv(COMPUTE_GLSL, "convert.comp");
-        return SPIRV;
-    }
-
-    private static synchronized byte[] compiledYcbcrSpirv() {
-        if (YCBCR_SPIRV == null) YCBCR_SPIRV = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
-        return YCBCR_SPIRV;
-    }
-
+    // COMPILES GLSL TO SPIR-V VIA shaderc. RUNS ONCE PER PROCESS PER SHADER — CALLERS CACHE THE
+    // (DEVICE-INDEPENDENT) BYTECODE IN SPIRV/YCBCR_SPIRV UNDER THE CLASS MONITOR, SO CREATING MANY
+    // ENGINES NEVER RECOMPILES; shaderc COMPILATION IS THE EXPENSIVE STEP.
     private static byte[] compileSpirv(final String glsl, final String name) {
         final long compiler = shaderc_compiler_initialize();
         if (compiler == 0L) throw new IllegalStateException("VKEngine: shaderc_compiler_initialize failed");
@@ -1292,18 +1287,4 @@ public final class VKEngine extends GFXEngine {
         int format, texelBytes, w, h;
     }
 
-    // ==========================================================================
-    // BUILDER
-    // ==========================================================================
-    public static final class Builder {
-        private final VKContext ctx;
-
-        public Builder(final VKContext ctx) {
-            this.ctx = ctx;
-        }
-
-        public VKEngine build() {
-            return new VKEngine(this.ctx);
-        }
-    }
 }

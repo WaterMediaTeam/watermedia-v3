@@ -10,9 +10,11 @@ import org.junit.jupiter.api.TestInstance;
 import org.lwjgl.openal.AL;
 import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALC10;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.JSEngine;
 import org.watermedia.api.media.engines.SFXEngine;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -31,6 +33,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("SFXEngine")
 class SFXEngineTest {
+
+    @BeforeAll
+    static void boot() {
+        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE SFXEngine BASE — BOOT A CLIENT ENVIRONMENT ONCE
+        MediaBootstrap.client();
+    }
 
     // VERIFIES A SUPPORTED_CHANNELS TABLE: CHANNEL COUNTS IN RANGE, AT LEAST ONE TYPE PER ENTRY,
     // AND EVERY ENTRY TYPE DECLARED IN supportedTypes().
@@ -54,28 +62,28 @@ class SFXEngineTest {
         @Test
         @DisplayName("Capability table is self-consistent and U8-first")
         void capabilityTable() {
-            final JSEngine engine = new JSEngine.Builder().build();
+            final JSEngine engine = MediaAPI.jsEngine();
             assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
             assertEquals(2, engine.supportedTypes().length);
             assertTableConsistent(engine);
         }
 
         @Test
-        @DisplayName("setAudioFormat rejects invalid arguments without opening a line")
+        @DisplayName("format() rejects invalid arguments without opening a line")
         void formatValidation() {
-            final JSEngine engine = new JSEngine.Builder().build();
-            assertFalse(engine.setAudioFormat(null, 2, 48_000), "null type");
-            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 0, 48_000), "channels < 1");
-            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 9, 48_000), "channels > 8");
-            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 2, 100), "rate below MIN");
-            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S16, 2, 10_000_000), "rate above MAX");
-            assertFalse(engine.setAudioFormat(SFXEngine.SampleType.DBL, 2, 48_000), "DBL has no Java Sound encoding");
+            final JSEngine engine = MediaAPI.jsEngine();
+            assertFalse(engine.format(null, 2, 48_000), "null type");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 0, 48_000), "channels < 1");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 9, 48_000), "channels > 8");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, 100), "rate below MIN");
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, 10_000_000), "rate above MAX");
+            assertFalse(engine.format(SFXEngine.SampleType.DBL, 2, 48_000), "DBL has no Java Sound encoding");
         }
 
         @Test
         @DisplayName("No pitch control and no source handle")
         void capabilityContract() {
-            final JSEngine engine = new JSEngine.Builder().build();
+            final JSEngine engine = MediaAPI.jsEngine();
             assertFalse(engine.speed(), "Java Sound reports no speed control");
             assertEquals(0, engine.source(), "Java Sound has no source handle");
             engine.speed(2.0f); // NO-OP, MUST NOT THROW
@@ -116,7 +124,7 @@ class SFXEngineTest {
         @Test
         @DisplayName("Capability table is self-consistent and U8-first")
         void capabilityTable() {
-            final ALEngine engine = ALEngine.buildDefault();
+            final ALEngine engine = MediaAPI.alEngine();
             try {
                 assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
                 assertEquals(4, engine.supportedTypes().length);
@@ -128,20 +136,20 @@ class SFXEngineTest {
         }
 
         @Test
-        @DisplayName("setAudioFormat accepts supported combos and rejects the rest")
+        @DisplayName("format() accepts supported combos and rejects the rest")
         void formatNegotiation() {
-            final ALEngine engine = ALEngine.buildDefault();
+            final ALEngine engine = MediaAPI.alEngine();
             try {
-                assertTrue(engine.setAudioFormat(SFXEngine.SampleType.S16, 2, 48_000), "S16 stereo");
+                assertTrue(engine.format(SFXEngine.SampleType.S16, 2, 48_000), "S16 stereo");
                 assertEquals(2, engine.channels());
                 assertEquals(SFXEngine.SampleType.S16, engine.sampleType());
 
-                assertTrue(engine.setAudioFormat(SFXEngine.SampleType.S16, 6, 48_000), "S16 5.1");
-                assertTrue(engine.setAudioFormat(SFXEngine.SampleType.DBL, 2, 48_000), "DBL stereo");
+                assertTrue(engine.format(SFXEngine.SampleType.S16, 6, 48_000), "S16 5.1");
+                assertTrue(engine.format(SFXEngine.SampleType.DBL, 2, 48_000), "DBL stereo");
 
-                assertFalse(engine.setAudioFormat(SFXEngine.SampleType.DBL, 6, 48_000), "DBL multichannel unsupported");
-                assertFalse(engine.setAudioFormat(SFXEngine.SampleType.S32, 2, 48_000), "no native S32 PCM");
-                assertFalse(engine.setAudioFormat(null, 2, 48_000), "null type");
+                assertFalse(engine.format(SFXEngine.SampleType.DBL, 6, 48_000), "DBL multichannel unsupported");
+                assertFalse(engine.format(SFXEngine.SampleType.S32, 2, 48_000), "no native S32 PCM");
+                assertFalse(engine.format(null, 2, 48_000), "null type");
             } finally {
                 engine.release();
             }

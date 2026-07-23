@@ -321,7 +321,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (set == null) continue;
                 for (int i = 0; i < set.length; i++) {
                     if (set[i] != null) {
-                        this.gfx.releaseBuffer(set[i]); // DROPS A LIVE VULKAN IMPORT; NO-OP AFTER gfx.release()
+                        this.gfx.release(set[i]); // DROPS A LIVE VULKAN IMPORT; NO-OP AFTER gfx.release()
                         MemoryUtil.memAlignedFree(set[i]);
                     }
                     set[i] = null;
@@ -566,7 +566,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // COPIES AVFRAME PLANE DATA TO A POOLED BUFFER SET, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
     private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int width, final int height) {
         // QUERY THE ENGINE'S BUFFER ALIGNMENT ONCE — NON-ZERO ASKS FOR PAGE-ALIGNED POOLS SO A ZERO-COPY ENGINE CAN IMPORT THE HOST POINTER
-        if (this.planeAlign < 0) this.planeAlign = (this.gfx != null) ? this.gfx.requiredBufferAlignment() : 0;
+        if (this.planeAlign < 0) this.planeAlign = (this.gfx != null) ? this.gfx.alignment() : 0;
 
         // GRAB THE NEXT BUFFER SET FROM THE ROTATING POOL (SEE planePool), ALLOCATING ON FIRST USE
         ByteBuffer[] planes = this.planePool[this.planePoolIdx];
@@ -642,7 +642,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (buf != null) {
                 // DROP THE ENGINE'S IMPORT OF THE OLD POINTER FIRST — FREEING HOST MEMORY UNDER A
                 // LIVE IMPORT (OR RECYCLING ITS ADDRESS) CRASHES THE DRIVER ON THE LATER vkFreeMemory.
-                this.gfx.releaseBuffer(buf);
+                this.gfx.release(buf);
                 MemoryUtil.memAlignedFree(buf);
             }
             final long rounded = (needed + this.planeAlign - 1) / this.planeAlign * this.planeAlign;
@@ -967,7 +967,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         PixFmtMapping mapping = this.cachedUploadMapping;
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
-                        if (mapping != null && this.gfx != null && !this.gfx.supportsFormat(mapping.cs)) mapping = null;
+                        if (mapping != null && this.gfx != null && !this.gfx.supports(mapping.cs)) mapping = null;
                         final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
                         final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
 
@@ -1020,7 +1020,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine
                         if (mapping.cs != this.lastFormat || mapping.bits != this.lastBitsPerComponent
                                 || uploadW != this.lastFrameWidth || uploadH != this.lastFrameHeight) {
-                            this.gfx.setVideoFormat(mapping.cs, uploadW, uploadH, mapping.bits);
+                            this.gfx.format(mapping.cs, uploadW, uploadH, mapping.bits);
                             this.lastFormat = mapping.cs;
                             this.lastBitsPerComponent = mapping.bits;
                             this.lastFrameWidth = uploadW;
@@ -2412,7 +2412,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
             final int targetW = MathUtil.scaled(w, this.scaleWidth, this.lod.percent());
             final int targetH = MathUtil.scaled(h, this.scaleHeight, this.lod.percent());
-            this.gfx.setVideoFormat(initialMapping.cs, targetW, targetH, initialMapping.bits);
+            this.gfx.format(initialMapping.cs, targetW, targetH, initialMapping.bits);
             this.lastFormat = initialMapping.cs;
             this.lastBitsPerComponent = initialMapping.bits;
             this.lastFrameWidth = targetW;
@@ -2619,7 +2619,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             // CONVERTS TOWARD THIS FORMAT (THE ENGINE FORMAT CANNOT CHANGE).
             this.audioOutputAvFormat = sampleTypeToAvFormat(srcType);
             LOGGER.info(IT, "Audio passthrough: type={}, channels={}, rate={}", srcType, srcChannels, this.audioOutputSampleRate);
-            if (!this.sfx.setAudioFormat(srcType, srcChannels, this.audioOutputSampleRate)) {
+            if (!this.sfx.format(srcType, srcChannels, this.audioOutputSampleRate)) {
                 LOGGER.error(IT, "SFX engine rejected passthrough format: type={}, ch={}, rate={}", srcType, srcChannels, this.audioOutputSampleRate);
                 return false;
             }
@@ -2690,7 +2690,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             av_channel_layout_uninit(outputLayout);
         }
 
-        if (!this.sfx.setAudioFormat(outType, this.audioOutputChannels, this.audioOutputSampleRate)) {
+        if (!this.sfx.format(outType, this.audioOutputChannels, this.audioOutputSampleRate)) {
             LOGGER.error(IT, "SFX engine rejected resample output format: type={}, ch={}, rate={}", outType, this.audioOutputChannels, this.audioOutputSampleRate);
             return false;
         }
@@ -2788,7 +2788,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         // FREE THE PLANE POOL ON EVERY TEARDOWN SO A STOPPED-BUT-KEPT PLAYER RETAINS NO FRAME MEMORY
-        // (UP TO 4 FULL FRAME SETS). SAFE FOR VULKAN: releaseBuffer DROPS THE ENGINE'S HOST IMPORTS
+        // (UP TO 4 FULL FRAME SETS). SAFE FOR VULKAN: release(buffer) DROPS THE ENGINE'S HOST IMPORTS
         // (DRAINING PENDING GPU READS) BEFORE EACH BUFFER IS FREED. release() CALLS THIS AGAIN AS A
         // SAFETY NET — IDEMPOTENT.
         this.freePlanePool();

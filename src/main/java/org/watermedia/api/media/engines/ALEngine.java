@@ -16,14 +16,14 @@ import java.nio.ByteBuffer;
  * <b>Precondition:</b> a current OpenAL device/context must already exist when an ALEngine is
  * constructed — in a mod the sound system owns that context, so it must be initialized first.
  * Construction fails fast with {@link IllegalStateException} when no context is current.
- * Use {@link Builder} or {@link #buildDefault()} to create instances.
+ * Create instances through {@code MediaAPI.alEngine}.
  */
 public final class ALEngine extends SFXEngine {
-    // DEFAULTS
     // 8 BUFFERS × ~43ms (2048 SAMPLES @ 48kHz) ≈ 340ms OF DEPTH. THE QUEUE DEPTH IS
     // WHAT ABSORBS GAME HITCHES (GC, CHUNK LOADS) WITHOUT UNDERRUNNING — THE MEDIA
     // CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs(), SO DEPTH DOESN'T DESYNC A/V.
-    private static final int DEFAULT_BUFFER_COUNT = 8;
+    /** Default AL buffer pool depth used by {@code MediaAPI.alEngine()}. */
+    public static final int DEFAULT_BUFFER_COUNT = 8;
 
     // CAPABILITY TABLES.
     // DBL MULTICHANNEL IS NOT SUPPORTED BECAUSE AL_EXT_DOUBLE HAS NO MULTICHANNEL VARIANTS AND
@@ -50,17 +50,18 @@ public final class ALEngine extends SFXEngine {
     private int queuedHead;
     private int queuedCount;
     private long totalQueuedUs;
-    // PRECOMPUTED AL FORMAT CONSTANT — UPDATED BY setAudioFormat, READ BY upload
+    // PRECOMPUTED AL FORMAT CONSTANT — UPDATED BY format(), READ BY upload
     private int alFormat;
     private int bytesPerFrame; // BYTES PER SAMPLE-FRAME (channels × sample size)
     // REUSED SCRATCH FOR AL_SOFT_source_latency QUERIES: [0] = offset seconds, [1] = device latency seconds
     private final double[] latencyValues = new double[2];
 
-    private ALEngine(final int bufferCount) {
+    public ALEngine(final int bufferCount) {
+        if (bufferCount <= 0) throw new IllegalArgumentException("bufferCount must be positive, got " + bufferCount);
         this.buffers = new int[bufferCount];
         this.freeIds = new int[bufferCount];
         this.queuedDur = new long[bufferCount];
-        // sampleType / channels / sampleRate / alFormat ARE POPULATED BY setAudioFormat
+        // sampleType / channels / sampleRate / alFormat ARE POPULATED BY format()
         // BEFORE FIRST UPLOAD — UNINITIALIZED STATE IS A CALLER BUG
         this.source = this.genSource();
         // A CURRENT OPENAL CONTEXT IS REQUIRED: WITHOUT ONE alGenSources YIELDS 0 AND/OR SETS AN
@@ -127,7 +128,7 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    public boolean setAudioFormat(final SampleType type, final int channels, final int sampleRate) {
+    public boolean format(final SampleType type, final int channels, final int sampleRate) {
         if (type == null) return false;
         if (channels < 1 || channels > 8) return false;
         if (sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) return false;
@@ -251,7 +252,7 @@ public final class ALEngine extends SFXEngine {
     }
 
     // MAPS A CANONICAL SAMPLE TYPE + CHANNEL COUNT TO AN OPENAL FORMAT CONSTANT.
-    // RETURNS -1 IF THE COMBINATION IS NOT SUPPORTED. type IS ALREADY NON-NULL (setAudioFormat GUARDS IT).
+    // RETURNS -1 IF THE COMBINATION IS NOT SUPPORTED. type IS ALREADY NON-NULL (format() GUARDS IT).
     // ASSUMES OPENAL SOFT — AL_EXT_MCFORMATS, AL_EXT_FLOAT32, AND AL_EXT_DOUBLE ARE ALWAYS AVAILABLE THERE.
     private static int alFormatFor(final SampleType type, final int channels) {
         return switch (type) {
@@ -293,32 +294,4 @@ public final class ALEngine extends SFXEngine {
         };
     }
 
-    /**
-     * Creates an ALEngine with default parameters: {@value DEFAULT_BUFFER_COUNT} buffers.
-     * The caller must invoke {@link #setAudioFormat(SampleType, int, int)} before uploading.
-     */
-    public static ALEngine buildDefault() {
-        return new Builder().build();
-    }
-
-    /**
-     * Builder for {@link ALEngine}. Kept for consistency with the {@code GFXEngine} construction pattern.
-     * Audio format (sample type, channels, sample rate) is not configurable at construction — it is
-     * always declared later via {@link ALEngine#setAudioFormat(SampleType, int, int)}.
-     */
-    public static final class Builder {
-        private int bufferCount = DEFAULT_BUFFER_COUNT;
-
-        public Builder bufferCount(final int bufferCount) {
-            this.bufferCount = bufferCount;
-            return this;
-        }
-
-        public ALEngine build() {
-            if (this.bufferCount <= 0) {
-                throw new IllegalArgumentException("bufferCount must be positive, got " + this.bufferCount);
-            }
-            return new ALEngine(this.bufferCount);
-        }
-    }
 }

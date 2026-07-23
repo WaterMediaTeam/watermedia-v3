@@ -19,7 +19,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * no external library.
  * <p>
  * Intended as a provisional fallback for when the OpenAL device is unavailable. Unlike
- * {@link ALEngine} it is stream-based: {@link #setAudioFormat} opens a fresh
+ * {@link ALEngine} it is stream-based: {@link #format(SampleType, int, int)} opens a fresh
  * {@link SourceDataLine} and reconfiguration reopens it. Uploads are non-blocking — the line's
  * internal buffer is the backpressure, mirroring {@code ALEngine}'s buffer pool, so the media
  * clock keeps tracking the audible position via {@link #pendingMs()}.
@@ -34,13 +34,14 @@ public final class JSEngine extends SFXEngine {
     // INTERNAL LINE BUFFER DEPTH IN MS. THE DEPTH ABSORBS GAME HITCHES (GC, CHUNK LOADS)
     // WITHOUT UNDERRUNNING — THE MEDIA CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs(), SO
     // EXTRA DEPTH DOESN'T DESYNC A/V (SAME RATIONALE AS ALEngine's 8-BUFFER POOL).
-    private static final int DEFAULT_BUFFER_MS = 300;
+    /** Default internal line buffer depth used by {@code MediaAPI.jsEngine()}. */
+    public static final int DEFAULT_BUFFER_MS = 300;
 
     // CAPABILITY TABLES — STATIC AND DELIBERATELY CONSERVATIVE.
     // JAVA SOUND OPENS 8/16-BIT SIGNED/UNSIGNED PCM MONO/STEREO ON EVERY PLATFORM; 32-BIT,
     // FLOAT AND MULTICHANNEL LINES ARE NOT PORTABLE THROUGH THE DEFAULT MIXER. ADVERTISING ONLY
     // THE UNIVERSAL SET GUARANTEES THE FORMAT NEGOTIATION (SEE FFMediaPlayer#initAudio) ALWAYS
-    // LANDS ON A COMBINATION setAudioFormat CAN ACTUALLY OPEN — THERE IS NO NEGOTIATION FALLBACK
+    // LANDS ON A COMBINATION format() CAN ACTUALLY OPEN — THERE IS NO NEGOTIATION FALLBACK
     // IF THE ENGINE REJECTS THE CHOSEN FORMAT. formatFor() STILL MAPS S32/FLT SO A DIRECT CALLER
     // MAY USE THEM WHEN ITS MIXER SUPPORTS THEM.
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16 };
@@ -50,7 +51,7 @@ public final class JSEngine extends SFXEngine {
     };
 
     private final int bufferMs;
-    // LINE + CONTROL ARE REPLACED ON RECONFIGURE (setAudioFormat) FROM THE PLAYER'S LIFECYCLE
+    // LINE + CONTROL ARE REPLACED ON RECONFIGURE (format()) FROM THE PLAYER'S LIFECYCLE
     // THREAD AND READ FROM THE CONTROL THREAD (volume/pause) — HENCE volatile.
     private volatile SourceDataLine line;
     private volatile FloatControl gainControl;
@@ -62,8 +63,8 @@ public final class JSEngine extends SFXEngine {
     private int bytesPerFrame;
     private byte[] scratch = new byte[0]; // REUSABLE COPY TARGET FOR ByteBuffer → line.write
 
-    private JSEngine(final int bufferMs) {
-        // CONSTRUCTION IS FORCED THROUGH Builder/buildDefault, WHICH ALREADY VALIDATE bufferMs > 0
+    public JSEngine(final int bufferMs) {
+        if (bufferMs <= 0) throw new IllegalArgumentException("bufferMs must be positive, got " + bufferMs);
         this.bufferMs = bufferMs;
         // NO NATIVE SOURCE HANDLE — JAVA SOUND HAS NO OPENAL-STYLE SOURCE ID (source() STAYS 0)
     }
@@ -132,7 +133,7 @@ public final class JSEngine extends SFXEngine {
     }
 
     @Override
-    public boolean setAudioFormat(final SampleType type, final int channels, final int sampleRate) {
+    public boolean format(final SampleType type, final int channels, final int sampleRate) {
         if (type == null) return false;
         if (channels < 1 || channels > 8) return false;
         if (sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) return false;
@@ -260,33 +261,4 @@ public final class JSEngine extends SFXEngine {
         return new AudioFormat(enc, rate, bits, channels, frameSize, rate, false);
     }
 
-    /**
-     * Creates a {@code JSEngine} with the default internal buffer depth ({@value DEFAULT_BUFFER_MS} ms).
-     * The caller must invoke {@link #setAudioFormat(SampleType, int, int)} before uploading.
-     * @return a ready-to-configure Java Sound engine
-     */
-    public static JSEngine buildDefault() {
-        return new Builder().build();
-    }
-
-    /**
-     * Builder for {@link JSEngine}. Kept for consistency with the {@code SFXEngine}/{@code GFXEngine}
-     * construction pattern. The audio format is declared later via
-     * {@link JSEngine#setAudioFormat(SampleType, int, int)}.
-     */
-    public static final class Builder {
-        private int bufferMs = DEFAULT_BUFFER_MS;
-
-        public Builder bufferMs(final int bufferMs) {
-            this.bufferMs = bufferMs;
-            return this;
-        }
-
-        public JSEngine build() {
-            if (this.bufferMs <= 0) {
-                throw new IllegalArgumentException("bufferMs must be positive, got " + this.bufferMs);
-            }
-            return new JSEngine(this.bufferMs);
-        }
-    }
 }

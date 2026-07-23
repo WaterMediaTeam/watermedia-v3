@@ -4,8 +4,16 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.api.media.engines.ALEngine;
+import org.watermedia.api.media.engines.AWTEngine;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.engines.GLEngine;
+import org.watermedia.api.media.engines.HeadlessGFXEngine;
+import org.watermedia.api.media.engines.JFXEngine;
+import org.watermedia.api.media.engines.JSEngine;
 import org.watermedia.api.media.engines.SFXEngine;
+import org.watermedia.api.media.engines.VKEngine;
+import org.watermedia.api.media.engines.vk.VKContext;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
@@ -14,6 +22,7 @@ import org.watermedia.api.util.MediaType;
 
 import java.io.File;
 import java.net.URI;
+import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -129,6 +138,78 @@ public final class MediaAPI extends WaterMediaAPI {
             LOGGER.error(IT, "Player construction failed for: {}", mrl.uri, e);
             return null;
         }
+    }
+
+    // ==========================================================================
+    // ENGINE FACTORIES — THE SINGLE PUBLIC PATH TO BUILD VIDEO/AUDIO SINKS.
+    // THE CLIENT-SIDE CHECK IS ENFORCED BY THE SEALED GFXEngine/SFXEngine BASE CONSTRUCTORS
+    // (HeadlessGFXEngine EXCEPTED), SO NO CONSTRUCTION CAN BYPASS IT.
+    // ==========================================================================
+
+    /**
+     * Creates an OpenGL video engine bound to a render thread and the executor dispatching onto it.
+     * <p>
+     * {@code renderEx} must run its tasks on {@code renderThread} (the thread owning the GL
+     * context) and be pumped every render frame. Passing both {@code null} builds a
+     * no-thread-contract engine whose GL calls run synchronously on the calling thread — which
+     * then must own the context.
+     * @param renderThread thread owning the GL context, or null for the no-thread-contract mode
+     * @param renderEx     executor dispatching onto {@code renderThread}; required when it is non-null
+     */
+    public static GLEngine glEngine(final Thread renderThread, final Executor renderEx) {
+        return new GLEngine(renderThread, renderEx);
+    }
+
+    /**
+     * Creates a Vulkan video engine over the consumer's borrowed {@link VKContext}.
+     * Every object the context exposes must outlive the engine.
+     */
+    public static VKEngine vkEngine(final VKContext context) {
+        return new VKEngine(context);
+    }
+
+    /**
+     * Creates a JavaFX software video engine; bind its {@code image()} to an {@code ImageView}.
+     * @param onFrame hook run on the upload thread after each frame is published, or null
+     */
+    public static JFXEngine jfxEngine(final Runnable onFrame) {
+        return new JFXEngine(onFrame);
+    }
+
+    /**
+     * Creates an AWT/Swing software video engine; paint its {@code image()} from a component.
+     * @param onFrame hook run on the upload thread after each frame is published, or null
+     */
+    public static AWTEngine awtEngine(final Runnable onFrame) {
+        return new AWTEngine(onFrame);
+    }
+
+    /**
+     * Creates a headless capture engine — the only engine allowed on a server-side environment.
+     * @param preload whether the engine reports frame-texture preloading support
+     */
+    public static HeadlessGFXEngine headlessEngine(final boolean preload) {
+        return new HeadlessGFXEngine(preload);
+    }
+
+    /** Creates an OpenAL audio engine with the default buffer pool ({@value ALEngine#DEFAULT_BUFFER_COUNT} buffers). */
+    public static ALEngine alEngine() {
+        return new ALEngine(ALEngine.DEFAULT_BUFFER_COUNT);
+    }
+
+    /** Creates an OpenAL audio engine with an explicit buffer pool depth. */
+    public static ALEngine alEngine(final int buffers) {
+        return new ALEngine(buffers);
+    }
+
+    /** Creates a Java Sound audio engine with the default line depth ({@value JSEngine#DEFAULT_BUFFER_MS} ms). */
+    public static JSEngine jsEngine() {
+        return new JSEngine(JSEngine.DEFAULT_BUFFER_MS);
+    }
+
+    /** Creates a Java Sound audio engine with an explicit line buffer depth in milliseconds. */
+    public static JSEngine jsEngine(final int bufferMs) {
+        return new JSEngine(bufferMs);
     }
 
     @Override

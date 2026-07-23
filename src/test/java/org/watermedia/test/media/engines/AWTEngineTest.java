@@ -1,9 +1,12 @@
 package org.watermedia.test.media.engines;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.AWTEngine;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.awt.image.BufferedImage;
 import java.nio.ByteBuffer;
@@ -20,6 +23,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("AWTEngine")
 class AWTEngineTest {
 
+    @BeforeAll
+    static void boot() {
+        // ENGINE CONSTRUCTION IS CLIENT-GATED BY THE GFXEngine BASE — BOOT A CLIENT ENVIRONMENT ONCE
+        MediaBootstrap.client();
+    }
+
     // BUILDS A DIRECT BUFFER AT POSITION 0 FROM THE GIVEN UNSIGNED BYTES
     private static ByteBuffer direct(final int... bytes) {
         final ByteBuffer b = ByteBuffer.allocateDirect(bytes.length).order(ByteOrder.nativeOrder());
@@ -30,8 +39,8 @@ class AWTEngineTest {
     @Test
     @DisplayName("BGRA bytes pack into ARGB pixels")
     void bgraPacking() {
-        final AWTEngine engine = new AWTEngine.Builder().build();
-        engine.setVideoFormat(PixelFormat.BGRA, 2, 1, 8);
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        engine.format(PixelFormat.BGRA, 2, 1, 8);
         // PIXEL 0: B=10 G=20 R=30 A=255 ; PIXEL 1: B=40 G=50 R=60 A=128
         engine.upload(new ByteBuffer[]{direct(10, 20, 30, 255, 40, 50, 60, 128)}, new int[]{0});
 
@@ -45,8 +54,8 @@ class AWTEngineTest {
     @Test
     @DisplayName("RGBA is swizzled to the same ARGB result")
     void rgbaSwizzle() {
-        final AWTEngine engine = new AWTEngine.Builder().build();
-        engine.setVideoFormat(PixelFormat.RGBA, 1, 1, 8);
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        engine.format(PixelFormat.RGBA, 1, 1, 8);
         // R=30 G=20 B=10 A=255 -> 0xFF1E140A, same pixel as the BGRA case
         engine.upload(new ByteBuffer[]{direct(30, 20, 10, 255)}, new int[]{0});
         assertEquals(0xFF1E140A, engine.image().getRGB(0, 0));
@@ -56,8 +65,8 @@ class AWTEngineTest {
     @DisplayName("texture() sentinel is 0 until the first frame, then non-zero, then 0 after release")
     void callbackAndLifecycle() {
         final boolean[] fired = {false};
-        final AWTEngine engine = new AWTEngine.Builder().onFrame(() -> fired[0] = true).build();
-        engine.setVideoFormat(PixelFormat.BGRA, 1, 1, 8);
+        final AWTEngine engine = MediaAPI.awtEngine(() -> fired[0] = true);
+        engine.format(PixelFormat.BGRA, 1, 1, 8);
         assertEquals(0L, engine.texture()); // NO FRAME YET — SENTINEL STAYS 0 (MATCHES THE BASE CONTRACT)
 
         engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
@@ -71,8 +80,8 @@ class AWTEngineTest {
     @Test
     @DisplayName("BGRA stride padding beyond w*4 is dropped")
     void bgraStridePadding() {
-        final AWTEngine engine = new AWTEngine.Builder().build();
-        engine.setVideoFormat(PixelFormat.BGRA, 2, 2, 8);
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        engine.format(PixelFormat.BGRA, 2, 2, 8);
         // 2x2 BGRA WITH A 12-BYTE STRIDE: 8 REAL BYTES PER ROW + 4 PADDING BYTES THE ENGINE MUST SKIP
         engine.upload(new ByteBuffer[]{direct(
                 10, 20, 30, 255,  40, 50, 60, 255,   1, 2, 3, 4,   // ROW 0 + PAD
@@ -88,8 +97,8 @@ class AWTEngineTest {
     @Test
     @DisplayName("RGBA stride padding beyond w*4 is dropped and swizzled")
     void rgbaStridePadding() {
-        final AWTEngine engine = new AWTEngine.Builder().build();
-        engine.setVideoFormat(PixelFormat.RGBA, 2, 1, 8);
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        engine.format(PixelFormat.RGBA, 2, 1, 8);
         // 2x1 RGBA, 12-BYTE STRIDE (8 REAL + 4 PAD); R,G,B,A SWIZZLES TO THE SAME ARGB AS THE BGRA CASE
         engine.upload(new ByteBuffer[]{direct(30, 20, 10, 255,  60, 50, 40, 255,  1, 2, 3, 4)}, new int[]{12});
         final BufferedImage img = engine.image();
@@ -100,10 +109,10 @@ class AWTEngineTest {
     @Test
     @DisplayName("A resolution change reallocates the image")
     void resizeReallocates() {
-        final AWTEngine engine = new AWTEngine.Builder().build();
-        engine.setVideoFormat(PixelFormat.BGRA, 2, 2, 8);
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        engine.format(PixelFormat.BGRA, 2, 2, 8);
         final BufferedImage first = engine.image();
-        engine.setVideoFormat(PixelFormat.BGRA, 4, 3, 8);
+        engine.format(PixelFormat.BGRA, 4, 3, 8);
         final BufferedImage second = engine.image();
 
         assertEquals(4, second.getWidth());
@@ -114,10 +123,10 @@ class AWTEngineTest {
     @Test
     @DisplayName("Only BGRA/RGBA are accepted; planar/RGB decline so the producer converts")
     void formatDeclines() {
-        final AWTEngine engine = new AWTEngine.Builder().build();
-        assertTrue(engine.supportsFormat(PixelFormat.BGRA));
-        assertTrue(engine.supportsFormat(PixelFormat.RGBA));
-        assertFalse(engine.supportsFormat(PixelFormat.RGB));
-        assertFalse(engine.supportsFormat(PixelFormat.YUV420P));
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        assertTrue(engine.supports(PixelFormat.BGRA));
+        assertTrue(engine.supports(PixelFormat.RGBA));
+        assertFalse(engine.supports(PixelFormat.RGB));
+        assertFalse(engine.supports(PixelFormat.YUV420P));
     }
 }

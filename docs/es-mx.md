@@ -80,7 +80,7 @@ Puede retornar 3 variantes de un media player
 - sourceIndex (int) - el index del source a reproducir
 - renderThread (Thread) - la instancia del render thread (disponible en ``Minecraft.thread``)
 - renderThreadEx (Executor) - el executor que corre tasks en el render thread (``Minecraft.getInstance()``)
-- glEngine (GLEngine) - la instancia que DEBES crear usando GLEngine.Builder. Esto es necesario porque Minecraft depende fuertemente de GlStateManager, así que necesitas redirigir todas las llamadas GL de watermedia hacia los equivalentes de GlStateManager.
+- glEngine (GLEngine) - la instancia que creas con MediaAPI.glEngine(renderThread, renderExecutor). El engine es autocontenido: captura y restaura el estado GL del host alrededor de cada subida, así que GlStateManager (o el tracker de Sodium) nunca se desincroniza y no hace falta ningún proxy.
 - alEngine (ALEngine) - por ahora, esto no necesita ser creado y puedes pasarle un null
 - video (boolean) - habilita el output de video, útil para no desperdiciar recursos de GPU en un player de solo audio, esto solo desactiva el soporte, no fuerza al media a tener o encontrar el media
 - audio (boolean) - igual que video

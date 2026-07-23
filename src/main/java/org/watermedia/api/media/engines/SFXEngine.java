@@ -1,5 +1,7 @@
 package org.watermedia.api.media.engines;
 
+import org.watermedia.WaterMedia;
+
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -12,7 +14,9 @@ import java.util.Set;
  * WATERMeDIA decodes audio, uploads sample data, and exposes a source handle.
  * The developer controls playback through that handle.
  * <p>
- * Implementations are backend-specific (OpenAL, etc.).
+ * Engines are created through {@link org.watermedia.api.media.MediaAPI} factory methods and are
+ * client-side only — construction throws on a server-side environment. Implementations are
+ * backend-specific (OpenAL, Java Sound).
  */
 public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Minimum reasonable sample rate (sub-telephony threshold, below is garbage). */
@@ -67,6 +71,11 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     protected int channels;
     protected int sampleRate;
 
+    // SINGLE ENFORCEMENT POINT: EVERY AUDIO ENGINE CONSTRUCTION PASSES THROUGH HERE.
+    protected SFXEngine() {
+        WaterMedia.checkIsClientSideOrThrow(this.getClass());
+    }
+
     /**
      * Returns the channel-support table, one entry per supported channel count. Callers pick an
      * exact passthrough combination or fall back to the {@link #closestChannelSupport(int)
@@ -115,20 +124,20 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * Reconfigures the engine for a new audio format.
      * Must be called before the first upload and whenever the audio format changes.
      * <p>
-     * Stream-based backends (e.g. hypothetical JavaSound) may close and reopen internal
-     * resources on reconfiguration. Buffer-based backends (OpenAL) simply update state.
-     * Mirrors the contract of {@code GFXEngine#setVideoFormat} for consistency.
+     * Stream-based backends (Java Sound) may close and reopen internal resources on
+     * reconfiguration. Buffer-based backends (OpenAL) simply update state.
+     * Mirrors the contract of {@code GFXEngine#format} for consistency.
      * @param type       canonical sample type
      * @param channels   audio channel count (1=mono, 2=stereo, 6=5.1, 8=7.1, ...)
      * @param sampleRate sample rate in Hz (expected range: {@link #MIN_SAMPLE_RATE}..{@link #MAX_SAMPLE_RATE})
      * @return {@code true} if the format is accepted, {@code false} if unsupported
      */
-    public abstract boolean setAudioFormat(final SampleType type, final int channels, final int sampleRate);
+    public abstract boolean format(final SampleType type, final int channels, final int sampleRate);
 
     /** Current source handle. */
     public int source() { return this.source; }
 
-    /** Current sample type, or {@code null} before {@link #setAudioFormat}. */
+    /** Current sample type, or {@code null} before {@link #format(SampleType, int, int)}. */
     public SampleType sampleType() { return this.sampleType; }
 
     /** Audio channels. */
@@ -179,7 +188,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * is available (caller should retry later).
      * <p>
      * The data is interpreted using the type/channels/rate last passed to
-     * {@link #setAudioFormat(SampleType, int, int)}.
+     * {@link #format(SampleType, int, int)}.
      * @param data direct ByteBuffer with audio sample data
      * @return true if the data was queued, false if no buffer was available
      */

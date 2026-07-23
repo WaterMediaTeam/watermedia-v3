@@ -4,7 +4,6 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
-import org.watermedia.WaterMedia;
 import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
@@ -77,21 +76,39 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // NV12/NV21/P010/P016 → RGB — BT.709 STUDIO RANGE
-    // Y PLANE:  GL_R8/R16    — FULL RESOLUTION   — .r = Y
-    // UV PLANE: GL_RG8/RG16  — HALF RES           — .r = first byte, .g = second byte
+    // EVERY FRAGMENT SHADER SHARES ONE UNIFORM SCHEME — plane0..plane3, bitScale, uvSwap,
+    // outputWidth — SO A SINGLE COMPILE/BIND PATH SERVES ALL OF THEM: LOCATIONS A PROGRAM DOESN'T
+    // DECLARE RESOLVE TO -1, WHICH glUniform* SILENTLY IGNORES (GL SPEC). ALL YUV MATH IS BT.709
+    // STUDIO RANGE, MIRRORED EXACTLY BY VKEngine's COMPUTE SHADER.
+
+    // GRAY → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
+    private static final String FRAGMENT_GRAY = """
+            #version 150 core
+            in vec2 texCoord;
+            out vec4 fragColor;
+            uniform sampler2D plane0;
+            uniform float bitScale;
+            void main() {
+                float luma = texture(plane0, texCoord).r * bitScale;
+                fragColor = vec4(luma, luma, luma, 1.0);
+            }
+            """;
+
+    // NV12/NV21/P010/P016 → RGB
+    // plane0: GL_R8/R16 — FULL RESOLUTION — .r = Y
+    // plane1: GL_RG8/RG16 — HALF RES — .r = first byte, .g = second byte
     // uvSwap: 0.0 = NV12 (BYTE ORDER U,V), 1.0 = NV21 (BYTE ORDER V,U)
     private static final String FRAGMENT_NV = """
             #version 150 core
             in vec2 texCoord;
             out vec4 fragColor;
-            uniform sampler2D yTex;
-            uniform sampler2D uvTex;
+            uniform sampler2D plane0;
+            uniform sampler2D plane1;
             uniform float uvSwap;
             uniform float bitScale;
             void main() {
-                float Y  = texture(yTex, texCoord).r * bitScale * 1.16438 - 0.07306;
-                vec2 raw = texture(uvTex, texCoord).rg * bitScale;
+                float Y  = texture(plane0, texCoord).r * bitScale * 1.16438 - 0.07306;
+                vec2 raw = texture(plane1, texCoord).rg * bitScale;
                 float Cb = mix(raw.x, raw.y, uvSwap) * 1.13839 - 0.57143;
                 float Cr = mix(raw.y, raw.x, uvSwap) * 1.13839 - 0.57143;
                 fragColor = vec4(
@@ -102,32 +119,19 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // GRAY → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
-    private static final String FRAGMENT_GRAY = """
-            #version 150 core
-            in vec2 texCoord;
-            out vec4 fragColor;
-            uniform sampler2D yTex;
-            uniform float bitScale;
-            void main() {
-                float luma = texture(yTex, texCoord).r * bitScale;
-                fragColor = vec4(luma, luma, luma, 1.0);
-            }
-            """;
-
-    // YUV 3-PLANAR → RGB — BT.709 STUDIO RANGE
+    // YUV 3-PLANAR → RGB
     private static final String FRAGMENT_YUV3 = """
             #version 150 core
             in vec2 texCoord;
             out vec4 fragColor;
-            uniform sampler2D yTex;
-            uniform sampler2D uTex;
-            uniform sampler2D vTex;
+            uniform sampler2D plane0;
+            uniform sampler2D plane1;
+            uniform sampler2D plane2;
             uniform float bitScale;
             void main() {
-                float Y  = texture(yTex, texCoord).r * bitScale * 1.16438 - 0.07306;
-                float Cb = texture(uTex, texCoord).r * bitScale * 1.13839 - 0.57143;
-                float Cr = texture(vTex, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float Y  = texture(plane0, texCoord).r * bitScale * 1.16438 - 0.07306;
+                float Cb = texture(plane1, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float Cr = texture(plane2, texCoord).r * bitScale * 1.13839 - 0.57143;
                 fragColor = vec4(
                     Y + 1.5748 * Cr,
                     Y - 0.1873 * Cb - 0.4681 * Cr,
@@ -136,21 +140,21 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // YUVA 4-PLANAR → RGBA — BT.709 STUDIO RANGE + ALPHA
+    // YUVA 4-PLANAR → RGBA (WITH ALPHA)
     private static final String FRAGMENT_YUVA = """
             #version 150 core
             in vec2 texCoord;
             out vec4 fragColor;
-            uniform sampler2D yTex;
-            uniform sampler2D uTex;
-            uniform sampler2D vTex;
-            uniform sampler2D aTex;
+            uniform sampler2D plane0;
+            uniform sampler2D plane1;
+            uniform sampler2D plane2;
+            uniform sampler2D plane3;
             uniform float bitScale;
             void main() {
-                float Y  = texture(yTex, texCoord).r * bitScale * 1.16438 - 0.07306;
-                float Cb = texture(uTex, texCoord).r * bitScale * 1.13839 - 0.57143;
-                float Cr = texture(vTex, texCoord).r * bitScale * 1.13839 - 0.57143;
-                float A  = texture(aTex, texCoord).r * bitScale;
+                float Y  = texture(plane0, texCoord).r * bitScale * 1.16438 - 0.07306;
+                float Cb = texture(plane1, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float Cr = texture(plane2, texCoord).r * bitScale * 1.13839 - 0.57143;
+                float A  = texture(plane3, texCoord).r * bitScale;
                 fragColor = vec4(
                     Y + 1.5748 * Cr,
                     Y - 0.1873 * Cb - 0.4681 * Cr,
@@ -159,17 +163,17 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // YUYV/UYVY PACKED YUV422 → RGB — BT.709 STUDIO RANGE
+    // YUYV/UYVY PACKED YUV422 → RGB
     // PACKED TEXTURE IS RGBA8 AT (WIDTH/2, HEIGHT): EACH TEXEL = ONE PIXEL PAIR
     private static final String FRAGMENT_YUYV = """
             #version 150 core
             in vec2 texCoord;
             out vec4 fragColor;
-            uniform sampler2D packedTex;
+            uniform sampler2D plane0;
             uniform float outputWidth;
             uniform float uvSwap;
             void main() {
-                vec4 packed = texture(packedTex, texCoord);
+                vec4 packed = texture(plane0, texCoord);
                 float pixelX = texCoord.x * outputWidth;
                 float isOdd = mod(floor(pixelX), 2.0);
                 float Y0 = mix(packed.r, packed.g, uvSwap);
@@ -186,6 +190,17 @@ public final class GLEngine extends GFXEngine {
                     1.0);
             }
             """;
+
+    // CONVERSION KINDS — INDEX INTO FRAGMENTS/programs/uniforms; CONV_NONE = DIRECT UPLOAD
+    private static final int CONV_NONE = -1;
+    private static final int CONV_GRAY = 0;
+    private static final int CONV_NV = 1;
+    private static final int CONV_YUV3 = 2;
+    private static final int CONV_YUVA = 3;
+    private static final int CONV_YUYV = 4;
+    private static final String[] FRAGMENTS = { FRAGMENT_GRAY, FRAGMENT_NV, FRAGMENT_YUV3, FRAGMENT_YUVA, FRAGMENT_YUYV };
+    // UNIFORM SLOTS PER PROGRAM: [plane0..plane3, bitScale, uvSwap, outputWidth]
+    private static final String[] UNIFORMS = { "plane0", "plane1", "plane2", "plane3", "bitScale", "uvSwap", "outputWidth" };
 
     // ONE DRAIN HUB PER RENDER THREAD BATCHES EVERY ENGINE INTO ONE TASK/FRAME IN A SINGLE STATE
     // ENVELOPE. ORPHANS (KEYED BY GLCapabilities IDENTITY, NOT THE OS-REUSABLE GLFW HANDLE) HOLDS
@@ -212,7 +227,7 @@ public final class GLEngine extends GFXEngine {
     private int managedTextureH = 0;
 
     // PRELOADED FRAME TEXTURES (ANIMATED IMAGE FAST PATH). UPLOADS ARE SPREAD ACROSS RENDER
-    // TICKS; frameTexReady PUBLISHES HOW MANY FRAMES ARE ALREADY USABLE SO useFrameTexture()
+    // TICKS; frameTexReady PUBLISHES HOW MANY FRAMES ARE ALREADY USABLE SO frame()
     // CAN CLAMP WHILE THE TAIL IS STILL UPLOADING. frameTexGen INVALIDATES STALE UPLOAD TASKS.
     private volatile int[] frameTextures = EMPTY_TEXTURES;
     private volatile int activeFrameTexture = -1;
@@ -247,9 +262,8 @@ public final class GLEngine extends GFXEngine {
     private int quadVAO = 0;
     private int quadVBO = 0;
 
-    // PLANE LAYOUT FOR THE CURRENT FORMAT (BUILT IN setVideoFormat ON THE RENDER THREAD)
+    // PLANE LAYOUT FOR THE CURRENT FORMAT (BUILT IN format() ON THE RENDER THREAD)
     private Plane[] planes = new Plane[0];
-    private boolean convert;              // TRUE WHEN AN FBO SHADER PASS PRODUCES managedTexture
 
     // LEGACY PER-PLANE PBO STATE — pbos[PLANE * NUM_PBOS + BUFFER_INDEX]
     private final int[] pbos = new int[MAX_PLANES * NUM_PBOS];
@@ -260,89 +274,60 @@ public final class GLEngine extends GFXEngine {
     private final long[] planeBytes = new long[MAX_PLANES]; // CURRENTLY ALLOCATED BYTES PER PLANE
     private boolean firstFrame = true;
 
-    // BIT DEPTH DERIVED STATE (SET IN setVideoFormat)
+    // BIT DEPTH DERIVED STATE (SET IN format())
     private int bytesPerSample = 1;
     private float bitScale = 1.0f;
     private int glInternalR = GL30.GL_R8;    // R8 / R16 / R32F
     private int glInternalRG = GL30.GL_RG8;  // RG8 / RG16
     private int glType = GL11.GL_UNSIGNED_BYTE; // UNSIGNED_BYTE / UNSIGNED_SHORT / FLOAT
 
-    // GRAY SHADER
-    private int shaderGray = 0;
-    private int uniformGrayTex = -1;
-    private int uniformGrayBitScale = -1;
+    // COMPILED CONVERSION PROGRAMS + THEIR UNIFORM LOCATIONS, INDEXED BY CONV KIND. LOCATIONS A
+    // PROGRAM DOESN'T DECLARE ARE -1 AND glUniform* IGNORES THEM, SO ONE BIND PATH SERVES ALL.
+    private final int[] programs = new int[FRAGMENTS.length];
+    private final int[][] uniforms = new int[FRAGMENTS.length][];
+    private int conv = CONV_NONE; // ACTIVE CONVERSION KIND FOR THE CURRENT FORMAT
 
-    // NV SHADER (NV12/NV21/P010/P016)
-    private int shaderNV = 0;
-    private int uniformNVYTex = -1;
-    private int uniformNVUVTex = -1;
-    private int uniformNVSwap = -1;
-    private int uniformNVBitScale = -1;
-
-    // YUV3 SHADER (3-PLANAR)
-    private int shaderYUV3 = 0;
-    private int uniformYUV3YTex = -1;
-    private int uniformYUV3UTex = -1;
-    private int uniformYUV3VTex = -1;
-    private int uniformYUV3BitScale = -1;
-
-    // YUVA SHADER (4-PLANAR WITH ALPHA)
-    private int shaderYUVA = 0;
-    private int uniformYUVAYTex = -1;
-    private int uniformYUVAUTex = -1;
-    private int uniformYUVAVTex = -1;
-    private int uniformYUVAATex = -1;
-    private int uniformYUVABitScale = -1;
-
-    // YUYV SHADER (PACKED YUV422)
-    private int shaderYUYV = 0;
-    private int uniformYUYVTex = -1;
-    private int uniformYUYVWidth = -1;
-    private int uniformYUYVSwap = -1;
-
-    // FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE — DECLINED IN supportsFormat SO THE PRODUCER
+    // FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE — DECLINED IN supports() SO THE PRODUCER
     // PRE-CONVERTS IT TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM
     private volatile PixelFormat shaderFailFormat;
 
-    private GLEngine(final Thread renderThread, final Executor renderThreadEx) {
-        WaterMedia.checkIsClientSideOrThrow(GLEngine.class);
+    /**
+     * Builds a {@code GLEngine} bound to a render thread and the executor that dispatches onto it.
+     * <p>
+     * {@code renderThreadEx} <b>must</b> execute its tasks on {@code renderThread} — the thread that
+     * owns the current OpenGL context — and the host must pump it every render frame; that is where
+     * every GL call the engine defers is issued. Passing both {@code null} builds a
+     * <em>no-thread-contract</em> engine: it makes GL calls synchronously on whatever thread invokes
+     * {@code upload}/{@code format}/{@code release}, so the caller must invoke those methods itself
+     * on a thread with the context current — never the decode thread.
+     * @param renderThread   thread owning the GL context, or null for the no-thread-contract mode
+     * @param renderThreadEx executor that dispatches onto {@code renderThread}, pumped every frame;
+     *                       required when {@code renderThread} is non-null
+     */
+    public GLEngine(final Thread renderThread, final Executor renderThreadEx) {
         if (renderThread != null && renderThreadEx == null) {
             throw new IllegalArgumentException("renderThreadEx is required when renderThread is set");
         }
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
+
         // ENGINES SHARING A RENDER THREAD SHARE ITS HUB (FIRST EXECUTOR WINS); THE HUB IS EVICTED WHEN
         // ITS LAST ENGINE RELEASES, SO A HOT-SWAPPED CONTEXT NEITHER LEAKS NOR PINS A STALE EXECUTOR.
-        this.hub = renderThread != null ? acquireHub(renderThread, renderThreadEx) : null;
-
-        // VALIDATE THE THREAD PAIR ASYNCHRONOUSLY. A MISMATCH IS LOGGED, NOT THROWN — THROWING RUNS ON
-        // THE EXECUTOR AND WOULD CRASH THE HOST RENDER LOOP INSTEAD OF THE MISCONFIGURED CALLER.
-        if (renderThreadEx != null && renderThread != null) {
+        // GUARDED BY THE HUBS MONITOR SO ACQUIRE AND EVICT NEVER RACE.
+        if (renderThread != null) {
+            synchronized (HUBS) {
+                this.hub = HUBS.computeIfAbsent(renderThread, t -> new Hub(renderThreadEx));
+                this.hub.engines++;
+            }
+            // VALIDATE THE THREAD PAIR ASYNCHRONOUSLY. A MISMATCH IS LOGGED, NOT THROWN — THROWING RUNS ON
+            // THE EXECUTOR AND WOULD CRASH THE HOST RENDER LOOP INSTEAD OF THE MISCONFIGURED CALLER.
             renderThreadEx.execute(() -> {
                 if (Thread.currentThread() != renderThread) {
                     LOGGER.error(IT, "renderThreadEx does not dispatch to renderThread — uploads will corrupt the GL context");
                 }
             });
-        }
-    }
-
-    // REGISTERS THIS ENGINE ON ITS RENDER THREAD'S SHARED HUB, CREATING ONE ON FIRST USE. GUARDED BY
-    // THE HUBS MONITOR SO ACQUIRE AND EVICT NEVER RACE.
-    private static Hub acquireHub(final Thread thread, final Executor ex) {
-        synchronized (HUBS) {
-            final Hub hub = HUBS.computeIfAbsent(thread, t -> new Hub(ex));
-            hub.engines++;
-            return hub;
-        }
-    }
-
-    // DEREGISTERS THIS ENGINE; THE HUB IS DROPPED ONCE ITS LAST ENGINE LEAVES SO A TORN-DOWN RENDER
-    // THREAD LEAKS NEITHER ITS HUB NOR ITS EXECUTOR. IDEMPOTENT — release() MAY RUN TWICE.
-    private void releaseHub() {
-        if (this.hub == null || this.hubReleased) return;
-        this.hubReleased = true;
-        synchronized (HUBS) {
-            if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
+        } else {
+            this.hub = null;
         }
     }
 
@@ -375,65 +360,61 @@ public final class GLEngine extends GFXEngine {
     }
 
     @Override
-    public boolean supportsFrameTextures() {
+    public boolean preload() {
         return true;
     }
 
     @Override
-    public boolean supportsFormat(final PixelFormat format) {
+    public boolean supports(final PixelFormat format) {
         // A FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE IS DECLINED SO THE PRODUCER RE-ROUTES IT
         // THROUGH THE SCALER TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM.
         if (format == this.shaderFailFormat) return false;
         // GBRA IS DECLINED: THE DEFAULT PLANE PATH UPLOADS IT AS GL_RGBA, WHICH WOULD SAMPLE ITS
         // [G,B,R,A] BYTES AS R,G,B,A (CHANNELS SHUFFLED), SO THE PRODUCER PRE-CONVERTS IT TO BGRA.
-        return format != PixelFormat.GBRA;
+        // BCn SAMPLING (glCompressedTexImage2D) IS NOT WIRED YET — DECLINED UNTIL IT IS.
+        return format != PixelFormat.GBRA && !format.compressed();
     }
 
     @Override
-    public boolean uploadFrameTextures(final ByteBuffer[] frames, final int stride) {
+    public boolean preload(final ByteBuffer[] frames, final int stride) {
         if (frames == null || frames.length == 0 || this.released) return false;
         for (final ByteBuffer frame: frames) {
             if (frame == null || !frame.isDirect()) return false;
         }
-        if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.scheduleFrameTextures(frames, stride);
-            return true;
-        }
-        if (this.width <= 0 || this.height <= 0) return false;
-        if (!this.directTextureUploadSupported()) return false;
-
-        // SYNCHRONOUS PATH (ALREADY ON RENDER THREAD): UPLOAD EVERYTHING NOW.
-        final Env env = Env.save(false);
-        try {
-            this.beginFrameTextures();
-            final int[] textures = new int[frames.length];
-            for (int i = 0; i < frames.length; i++) {
-                textures[i] = this.newTexture();
-                if (!this.uploadDirectTexture(textures[i], frames[i], stride)) {
-                    this.orphanTextures(textures);
-                    return false;
+        if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
+            // SYNCHRONOUS PATH (ALREADY ON RENDER THREAD): UPLOAD EVERYTHING NOW.
+            if (this.width <= 0 || this.height <= 0) return false;
+            if (!this.directTextureUploadSupported()) return false;
+            final Env env = Env.save(false);
+            try {
+                this.beginFrameTextures();
+                final int[] textures = new int[frames.length];
+                for (int i = 0; i < frames.length; i++) {
+                    textures[i] = this.newTexture();
+                    if (!this.uploadDirectTexture(textures[i], frames[i], stride)) {
+                        this.orphanTextures(textures);
+                        return false;
+                    }
                 }
+                this.frameTextures = textures;
+                this.frameTexReady = textures.length;
+                this.activeFrameTexture = 0;
+                return true;
+            } finally {
+                env.restore();
             }
-            this.frameTextures = textures;
-            this.frameTexReady = textures.length;
-            this.activeFrameTexture = 0;
-            return true;
-        } finally {
-            env.restore();
         }
-    }
 
-    // ASYNC FRAME-TEXTURE UPLOAD: ONE RENDER TASK PER FRAME SO A LONG ANIMATION NEVER STALLS A
-    // SINGLE RENDER TICK. FRAME 0 IS PUBLISHED IMMEDIATELY; useFrameTexture() CLAMPS TO THE
-    // UPLOADED PREFIX UNTIL THE TAIL COMPLETES. genBox INVALIDATES THE BATCH IF THE ENGINE IS
-    // RELEASED OR REFORMATTED MID-UPLOAD.
-    private void scheduleFrameTextures(final ByteBuffer[] frames, final int stride) {
+        // ASYNC PATH: ONE RENDER TASK PER FRAME SO A LONG ANIMATION NEVER STALLS A SINGLE RENDER
+        // TICK. FRAME 0 IS PUBLISHED IMMEDIATELY; frame() CLAMPS TO THE UPLOADED PREFIX UNTIL THE
+        // TAIL COMPLETES. genBox INVALIDATES THE BATCH IF THE ENGINE IS RELEASED OR REFORMATTED
+        // MID-UPLOAD.
         final int[] genBox = new int[1];
         final int[][] texBox = new int[1][];
         this.renderThreadEx.execute(() -> {
             if (this.released || this.width <= 0 || this.height <= 0 || !this.directTextureUploadSupported()) {
                 genBox[0] = -1;
-                if (!this.released) LOGGER.warn(IT, "Frame textures rejected: format {} not direct-uploadable", this.pixelFormat);
+                if (!this.released) LOGGER.warn(IT, "Frame textures rejected: format {} not direct-uploadable", this.format);
                 return;
             }
             final Env env = Env.save(false);
@@ -471,6 +452,7 @@ public final class GLEngine extends GFXEngine {
                 }
             });
         }
+        return true;
     }
 
     // PREPARES THE ENGINE FOR A FRESH FRAME-TEXTURE SET: DROPS STREAMING RESOURCES (RING, PBOS)
@@ -484,11 +466,11 @@ public final class GLEngine extends GFXEngine {
     }
 
     @Override
-    public void useFrameTexture(final int frameIndex) {
+    public void frame(final int index) {
         final int ready = this.frameTexReady;
         if (ready <= 0) return;
         // CLAMP TO THE UPLOADED PREFIX WHILE THE TAIL OF THE ANIMATION IS STILL UPLOADING
-        this.activeFrameTexture = Math.min(Math.max(frameIndex, 0), ready - 1);
+        this.activeFrameTexture = Math.min(Math.max(index, 0), ready - 1);
     }
 
     /**
@@ -498,10 +480,10 @@ public final class GLEngine extends GFXEngine {
      * changed.
      */
     @Override
-    public void setVideoFormat(final PixelFormat pixelFormat, final int width, final int height, final int bitsPerComponent) {
+    public void format(final PixelFormat format, final int width, final int height, final int bits) {
         if (this.released) return;
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.setVideoFormat(pixelFormat, width, height, bitsPerComponent));
+            this.renderThreadEx.execute(() -> this.format(format, width, height, bits));
             return;
         }
 
@@ -522,7 +504,7 @@ public final class GLEngine extends GFXEngine {
         this.firstFrame = true;
 
         // DERIVE BIT DEPTH STATE
-        switch (bitsPerComponent) {
+        switch (bits) {
             case 10 -> {
                 this.bytesPerSample = 2;
                 this.bitScale = 65535.0f / 1023.0f;
@@ -561,84 +543,27 @@ public final class GLEngine extends GFXEngine {
         }
 
         // UPDATE BASE STATE THEN BUILD THE PLANE LAYOUT FOR THE NEW FORMAT
-        super.setVideoFormat(pixelFormat, width, height, bitsPerComponent);
+        super.format(format, width, height, bits);
         this.buildPlanes();
         this.activePlanes = this.planes.length;
 
-        // COMPILE SHADERS FOR NEW FORMAT (LAZY — ONLY IF NOT ALREADY COMPILED)
-        switch (pixelFormat) {
-            case GRAY -> {
-                if (this.shaderGray == 0) {
-                    this.shaderGray = this.compileShader(VERTEX_SHADER, FRAGMENT_GRAY);
-                    if (this.shaderGray != 0) {
-                        this.uniformGrayTex = GL20.glGetUniformLocation(this.shaderGray, "yTex");
-                        this.uniformGrayBitScale = GL20.glGetUniformLocation(this.shaderGray, "bitScale");
-                        LOGGER.info(IT, "Successfully compiled Gray shader (program={})", this.shaderGray);
-                    } else {
-                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
-                    }
-                }
+        // COMPILE THE CONVERSION SHADER FOR THE NEW FORMAT (LAZY — ONLY IF NOT ALREADY COMPILED).
+        // EVERY PROGRAM SHARES THE plane0..plane3/bitScale/uvSwap/outputWidth UNIFORM SCHEME, SO
+        // ONE RESOLVE LOOP COVERS ALL KINDS; UNDECLARED UNIFORMS RESOLVE TO -1 AND ARE IGNORED.
+        if (this.conv != CONV_NONE && this.programs[this.conv] == 0) {
+            final int prog = this.compileShader(VERTEX_SHADER, FRAGMENTS[this.conv]);
+            if (prog != 0) {
+                final int[] locs = new int[UNIFORMS.length];
+                for (int i = 0; i < UNIFORMS.length; i++) locs[i] = GL20.glGetUniformLocation(prog, UNIFORMS[i]);
+                this.programs[this.conv] = prog;
+                this.uniforms[this.conv] = locs;
+                LOGGER.info(IT, "Successfully compiled conversion shader for {} (program={})", format, prog);
+            } else {
+                this.shaderFailFormat = format; // DECLINE THIS FORMAT GOING FORWARD (SEE supports)
             }
-            case NV12, NV21 -> {
-                if (this.shaderNV == 0) {
-                    this.shaderNV = this.compileShader(VERTEX_SHADER, FRAGMENT_NV);
-                    if (this.shaderNV != 0) {
-                        this.uniformNVYTex = GL20.glGetUniformLocation(this.shaderNV, "yTex");
-                        this.uniformNVUVTex = GL20.glGetUniformLocation(this.shaderNV, "uvTex");
-                        this.uniformNVSwap = GL20.glGetUniformLocation(this.shaderNV, "uvSwap");
-                        this.uniformNVBitScale = GL20.glGetUniformLocation(this.shaderNV, "bitScale");
-                        LOGGER.info(IT, "Successfully compiled NV shader (program={})", this.shaderNV);
-                    } else {
-                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
-                    }
-                }
-            }
-            case YUV420P, YUV422P, YUV444P -> {
-                if (this.shaderYUV3 == 0) {
-                    this.shaderYUV3 = this.compileShader(VERTEX_SHADER, FRAGMENT_YUV3);
-                    if (this.shaderYUV3 != 0) {
-                        this.uniformYUV3YTex = GL20.glGetUniformLocation(this.shaderYUV3, "yTex");
-                        this.uniformYUV3UTex = GL20.glGetUniformLocation(this.shaderYUV3, "uTex");
-                        this.uniformYUV3VTex = GL20.glGetUniformLocation(this.shaderYUV3, "vTex");
-                        this.uniformYUV3BitScale = GL20.glGetUniformLocation(this.shaderYUV3, "bitScale");
-                        LOGGER.info(IT, "Successfully compiled YUV3 shader (program={})", this.shaderYUV3);
-                    } else {
-                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
-                    }
-                }
-            }
-            case YUVA420P, YUVA422P, YUVA444P -> {
-                if (this.shaderYUVA == 0) {
-                    this.shaderYUVA = this.compileShader(VERTEX_SHADER, FRAGMENT_YUVA);
-                    if (this.shaderYUVA != 0) {
-                        this.uniformYUVAYTex = GL20.glGetUniformLocation(this.shaderYUVA, "yTex");
-                        this.uniformYUVAUTex = GL20.glGetUniformLocation(this.shaderYUVA, "uTex");
-                        this.uniformYUVAVTex = GL20.glGetUniformLocation(this.shaderYUVA, "vTex");
-                        this.uniformYUVAATex = GL20.glGetUniformLocation(this.shaderYUVA, "aTex");
-                        this.uniformYUVABitScale = GL20.glGetUniformLocation(this.shaderYUVA, "bitScale");
-                        LOGGER.info(IT, "Successfully compiled YUVA shader (program={})", this.shaderYUVA);
-                    } else {
-                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
-                    }
-                }
-            }
-            case YUYV, YUYV2 -> {
-                if (this.shaderYUYV == 0) {
-                    this.shaderYUYV = this.compileShader(VERTEX_SHADER, FRAGMENT_YUYV);
-                    if (this.shaderYUYV != 0) {
-                        this.uniformYUYVTex = GL20.glGetUniformLocation(this.shaderYUYV, "packedTex");
-                        this.uniformYUYVWidth = GL20.glGetUniformLocation(this.shaderYUYV, "outputWidth");
-                        this.uniformYUYVSwap = GL20.glGetUniformLocation(this.shaderYUYV, "uvSwap");
-                        LOGGER.info(IT, "Successfully compiled YUYV shader (program={})", this.shaderYUYV);
-                    } else {
-                        this.shaderFailFormat = pixelFormat; // DECLINE THIS FORMAT GOING FORWARD (SEE supportsFormat)
-                    }
-                }
-            }
-            default -> {} // BGRA, RGBA, RGB — NO SHADER NEEDED
         }
 
-        LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc)", pixelFormat, width, height, this.planes.length, bitsPerComponent);
+        LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc)", format, width, height, this.planes.length, bits);
     }
 
     // ==========================================================================
@@ -655,7 +580,7 @@ public final class GLEngine extends GFXEngine {
         if (this.released) return;
         if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
             // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
-            final Env env = Env.save(this.convert);
+            final Env env = Env.save(this.conv != CONV_NONE);
             try {
                 this.renderSubmission(new Submission(bufs, strides, this.sizesOf(bufs), -1L, 0));
             } finally {
@@ -734,7 +659,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         this.firstFrame = false;
-        if (this.convert) this.convertToRGBA();
+        if (this.conv != CONV_NONE) this.convertToRGBA();
     }
 
     // UPLOAD FROM CLIENT MEMORY: FIRST FRAME (OR SIZE CHANGE) RE-SPECS THE TEXTURES DIRECTLY,
@@ -756,7 +681,17 @@ public final class GLEngine extends GFXEngine {
             total += s.sizes[i];
         }
 
-        if (!this.pboInitialized) this.initPBOs(this.planes.length);
+        if (!this.pboInitialized) {
+            // LAZY LEGACY PBO PAIRS — ONE DOUBLE BUFFER PER PLANE
+            final int count = this.planes.length * NUM_PBOS;
+            final int[] ids = new int[count];
+            GL15.glGenBuffers(ids);
+            System.arraycopy(ids, 0, this.pbos, 0, count);
+            this.checkGLError("initPBOs");
+            this.pboInitialized = true;
+            this.pboWriteIdx = 0;
+            this.pboReady = false;
+        }
 
         if (respec) {
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
@@ -911,7 +846,15 @@ public final class GLEngine extends GFXEngine {
     @Override
     public void release() {
         this.released = true; // STOP PRODUCERS IMMEDIATELY; STALE RENDER TASKS BECOME NO-OPS
-        this.releaseHub();    // DROP OUR HUB REFERENCE NOW (THREAD-SAFE, IDEMPOTENT)
+        // DROP OUR HUB REFERENCE NOW (THREAD-SAFE, IDEMPOTENT — release() MAY RUN TWICE). THE HUB
+        // IS EVICTED ONCE ITS LAST ENGINE LEAVES, SO A TORN-DOWN RENDER THREAD LEAKS NEITHER ITS
+        // HUB NOR ITS EXECUTOR.
+        if (this.hub != null && !this.hubReleased) {
+            this.hubReleased = true;
+            synchronized (HUBS) {
+                if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
+            }
+        }
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
             this.renderThreadEx.execute(this::release);
             return;
@@ -928,7 +871,9 @@ public final class GLEngine extends GFXEngine {
             this.managedTextureW = 0;
             this.managedTextureH = 0;
             this.releasePBOs();
-            this.releaseShaders();
+            for (int i = 0; i < this.programs.length; i++) {
+                if (this.programs[i] != 0) { GL20.glDeleteProgram(this.programs[i]); this.programs[i] = 0; }
+            }
             this.firstFrame = true;
         } finally {
             env.restore();
@@ -941,19 +886,34 @@ public final class GLEngine extends GFXEngine {
     // THE HUB/SUBMIT ENVELOPE ALREADY SAVED THE HOST'S PROGRAM/VIEWPORT/FBO/VAO/DRAW TOGGLES
     // AND FORCED A CLEAN DRAW STATE, SO THIS PASS ONLY SETS WHAT IT USES.
     private void convertToRGBA() {
-        final int program = switch (this.pixelFormat) {
-            case GRAY -> this.shaderGray;
-            case NV12, NV21 -> this.shaderNV;
-            case YUV420P, YUV422P, YUV444P -> this.shaderYUV3;
-            case YUVA420P, YUVA422P, YUVA444P -> this.shaderYUVA;
-            case YUYV, YUYV2 -> this.shaderYUYV;
-            default -> 0;
-        };
-        // SHADER COMPILE FAILED — SKIP RATHER THAN BIND PROGRAM 0 (BLACK OUTPUT); supportsFormat NOW DECLINES IT
+        // SHADER COMPILE FAILED — SKIP RATHER THAN BIND PROGRAM 0 (BLACK OUTPUT); supports() NOW DECLINES IT
+        final int program = this.programs[this.conv];
         if (program == 0) return;
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
-        this.initQuad();
+
+        // LAZY FULLSCREEN QUAD (CORE PROFILE — NO IMMEDIATE MODE)
+        if (this.quadVAO == 0) {
+            final float[] verts = {
+                    -1, -1,   0, 0,
+                     1, -1,   1, 0,
+                     1,  1,   1, 1,
+                    -1, -1,   0, 0,
+                     1,  1,   1, 1,
+                    -1,  1,   0, 1,
+            };
+            this.quadVAO = GL30.glGenVertexArrays();
+            GL30.glBindVertexArray(this.quadVAO);
+            this.quadVBO = GL15.glGenBuffers();
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.quadVBO);
+            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, verts, GL15.GL_STATIC_DRAW);
+            GL20.glEnableVertexAttribArray(0);
+            GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 16, 0);
+            GL20.glEnableVertexAttribArray(1);
+            GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
+            GL30.glBindVertexArray(0);
+            this.checkGLError("init quad");
+        }
 
         if (this.managedTextureW != this.width || this.managedTextureH != this.height) {
             // A BOUND UNPACK PBO WOULD TURN THE NULL POINTER INTO OFFSET 0 — UNBIND EXPLICITLY
@@ -969,64 +929,18 @@ public final class GLEngine extends GFXEngine {
         GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, this.managedTexture, 0);
         GL11.glViewport(0, 0, this.width, this.height);
 
-        switch (this.pixelFormat) {
-            case GRAY -> {
-                GL20.glUseProgram(this.shaderGray);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
-                GL20.glUniform1i(this.uniformGrayTex, 0);
-                GL20.glUniform1f(this.uniformGrayBitScale, this.bitScale);
-            }
-            case NV12, NV21 -> {
-                GL20.glUseProgram(this.shaderNV);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
-                GL20.glUniform1i(this.uniformNVYTex, 0);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[1].tex);
-                GL20.glUniform1i(this.uniformNVUVTex, 1);
-                GL20.glUniform1f(this.uniformNVSwap, this.pixelFormat == PixelFormat.NV21 ? 1.0f : 0.0f);
-                GL20.glUniform1f(this.uniformNVBitScale, this.bitScale);
-            }
-            case YUV420P, YUV422P, YUV444P -> {
-                GL20.glUseProgram(this.shaderYUV3);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
-                GL20.glUniform1i(this.uniformYUV3YTex, 0);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[1].tex);
-                GL20.glUniform1i(this.uniformYUV3UTex, 1);
-                GL13.glActiveTexture(GL13.GL_TEXTURE2);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[2].tex);
-                GL20.glUniform1i(this.uniformYUV3VTex, 2);
-                GL20.glUniform1f(this.uniformYUV3BitScale, this.bitScale);
-            }
-            case YUVA420P, YUVA422P, YUVA444P -> {
-                GL20.glUseProgram(this.shaderYUVA);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
-                GL20.glUniform1i(this.uniformYUVAYTex, 0);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[1].tex);
-                GL20.glUniform1i(this.uniformYUVAUTex, 1);
-                GL13.glActiveTexture(GL13.GL_TEXTURE2);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[2].tex);
-                GL20.glUniform1i(this.uniformYUVAVTex, 2);
-                GL13.glActiveTexture(GL13.GL_TEXTURE3);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[3].tex);
-                GL20.glUniform1i(this.uniformYUVAATex, 3);
-                GL20.glUniform1f(this.uniformYUVABitScale, this.bitScale);
-            }
-            case YUYV, YUYV2 -> {
-                GL20.glUseProgram(this.shaderYUYV);
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[0].tex);
-                GL20.glUniform1i(this.uniformYUYVTex, 0);
-                GL20.glUniform1f(this.uniformYUYVWidth, (float) this.width);
-                GL20.glUniform1f(this.uniformYUYVSwap, this.pixelFormat == PixelFormat.YUYV2 ? 1.0f : 0.0f);
-            }
-            default -> {}
+        // ONE BIND PATH FOR EVERY CONVERSION KIND: BIND EACH PLANE TO ITS UNIT AND SET THE SHARED
+        // UNIFORMS — LOCATIONS A PROGRAM DIDN'T DECLARE ARE -1, WHICH glUniform* SILENTLY IGNORES.
+        GL20.glUseProgram(program);
+        final int[] locs = this.uniforms[this.conv];
+        for (int i = 0; i < this.planes.length; i++) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + i);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[i].tex);
+            GL20.glUniform1i(locs[i], i);
         }
+        GL20.glUniform1f(locs[4], this.bitScale);
+        GL20.glUniform1f(locs[5], this.format == PixelFormat.NV21 || this.format == PixelFormat.YUYV2 ? 1.0f : 0.0f);
+        GL20.glUniform1f(locs[6], (float) this.width);
 
         GL30.glBindVertexArray(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
@@ -1044,14 +958,18 @@ public final class GLEngine extends GFXEngine {
         final int w = this.width;
         final int h = this.height;
         final int bps = this.bytesPerSample;
-        this.convert = switch (this.pixelFormat) {
-            case BGRA, RGBA, GBRA, RGB -> false;
-            default -> true;
+        this.conv = switch (this.format) {
+            case GRAY -> CONV_GRAY;
+            case NV12, NV21 -> CONV_NV;
+            case YUV420P, YUV422P, YUV444P -> CONV_YUV3;
+            case YUVA420P, YUVA422P, YUVA444P -> CONV_YUVA;
+            case YUYV, YUYV2 -> CONV_YUYV;
+            default -> CONV_NONE; // BGRA, RGBA, GBRA, RGB — DIRECT UPLOAD, NO SHADER PASS
         };
-        this.planes = switch (this.pixelFormat) {
+        this.planes = switch (this.format) {
             case BGRA -> new Plane[]{
                     new Plane(w, h, GL11.GL_RGBA, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
-            case RGB -> this.bitsPerComponent > 8
+            case RGB -> this.bits > 8
                     ? new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGB, GL11.GL_UNSIGNED_SHORT, 6)}
                     : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGB, GL11.GL_UNSIGNED_BYTE, 3)};
             case GRAY -> new Plane[]{
@@ -1068,7 +986,7 @@ public final class GLEngine extends GFXEngine {
             case YUVA420P -> fourPlanes(w, h, w / 2, h / 2, this.glInternalR, this.glType, bps);
             case YUVA422P -> fourPlanes(w, h, w / 2, h, this.glInternalR, this.glType, bps);
             case YUVA444P -> fourPlanes(w, h, w, h, this.glInternalR, this.glType, bps);
-            default -> this.bitsPerComponent == 16 // RGBA / GBRA
+            default -> this.bits == 16 // RGBA / GBRA
                     ? new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_SHORT, 8)}
                     : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
         };
@@ -1094,12 +1012,12 @@ public final class GLEngine extends GFXEngine {
     // CREATES TARGET TEXTURES LAZILY. DIRECT FORMATS ALIAS PLANE 0 TO managedTexture; PACKED
     // YUYV NEEDS NEAREST FILTERING SO PIXEL PAIRS ARE NOT INTERPOLATED.
     private void ensureTargets() {
-        if (!this.convert) {
+        if (this.conv == CONV_NONE) {
             if (this.managedTexture == 0) this.managedTexture = this.newTexture();
             this.planes[0].tex = this.managedTexture;
             return;
         }
-        final boolean packed = this.pixelFormat == PixelFormat.YUYV || this.pixelFormat == PixelFormat.YUYV2;
+        final boolean packed = this.conv == CONV_YUYV;
         for (final Plane p: this.planes) {
             if (p.tex != 0) continue;
             p.tex = this.newTexture();
@@ -1115,7 +1033,7 @@ public final class GLEngine extends GFXEngine {
     // INTERNAL HELPERS
     // ==========================================================================
     private boolean directTextureUploadSupported() {
-        return switch (this.pixelFormat) {
+        return switch (this.format) {
             case BGRA, RGBA, RGB -> true;
             default -> false;
         };
@@ -1125,17 +1043,17 @@ public final class GLEngine extends GFXEngine {
         final int glFormat;
         final int glType;
         final int bytesPerTexel;
-        switch (this.pixelFormat) {
+        switch (this.format) {
             case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
             case RGB -> {
-                if (this.bitsPerComponent > 8) {
+                if (this.bits > 8) {
                     glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 6;
                 } else {
                     glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_BYTE; bytesPerTexel = 3;
                 }
             }
             default -> {
-                if (this.bitsPerComponent == 16) {
+                if (this.bits == 16) {
                     glFormat = GL11.GL_RGBA; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 8;
                 } else {
                     glFormat = GL11.GL_RGBA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4;
@@ -1226,44 +1144,6 @@ public final class GLEngine extends GFXEngine {
         return tex;
     }
 
-    private void initQuad() {
-        if (this.quadVAO != 0) return;
-        final float[] verts = {
-                -1, -1,   0, 0,
-                 1, -1,   1, 0,
-                 1,  1,   1, 1,
-                -1, -1,   0, 0,
-                 1,  1,   1, 1,
-                -1,  1,   0, 1,
-        };
-
-        this.quadVAO = GL30.glGenVertexArrays();
-        GL30.glBindVertexArray(this.quadVAO);
-
-        this.quadVBO = GL15.glGenBuffers();
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.quadVBO);
-        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, verts, GL15.GL_STATIC_DRAW);
-
-        GL20.glEnableVertexAttribArray(0);
-        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 16, 0);
-        GL20.glEnableVertexAttribArray(1);
-        GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, 16, 8);
-
-        GL30.glBindVertexArray(0);
-        this.checkGLError("initQuad");
-    }
-
-    private void initPBOs(final int planeCount) {
-        final int count = planeCount * NUM_PBOS;
-        final int[] ids = new int[count];
-        GL15.glGenBuffers(ids);
-        System.arraycopy(ids, 0, this.pbos, 0, count);
-        this.checkGLError("initPBOs");
-        this.pboInitialized = true;
-        this.pboWriteIdx = 0;
-        this.pboReady = false;
-    }
-
     private void seedPBO(final int pboArrayIndex, final long sizeBytes, final long dataAddress) {
         final int pboId = this.pbos[pboArrayIndex];
         if (pboId == 0) return;
@@ -1335,14 +1215,6 @@ public final class GLEngine extends GFXEngine {
         Arrays.fill(this.planeBytes, 0);
         this.pboInitialized = false;
         this.pboReady = false;
-    }
-
-    private void releaseShaders() {
-        if (this.shaderGray != 0) { GL20.glDeleteProgram(this.shaderGray); this.shaderGray = 0; }
-        if (this.shaderNV != 0) { GL20.glDeleteProgram(this.shaderNV); this.shaderNV = 0; }
-        if (this.shaderYUV3 != 0) { GL20.glDeleteProgram(this.shaderYUV3); this.shaderYUV3 = 0; }
-        if (this.shaderYUVA != 0) { GL20.glDeleteProgram(this.shaderYUVA); this.shaderYUVA = 0; }
-        if (this.shaderYUYV != 0) { GL20.glDeleteProgram(this.shaderYUYV); this.shaderYUYV = 0; }
     }
 
     private void checkGLError(final String op) {
@@ -1447,7 +1319,7 @@ public final class GLEngine extends GFXEngine {
             }
             if (batch.length == 0) return;
             boolean convert = false;
-            for (final GLEngine e: batch) convert |= e.convert;
+            for (final GLEngine e: batch) convert |= e.conv != CONV_NONE;
             final Env env = Env.save(convert);
             try {
                 for (final GLEngine e: batch) {
@@ -1577,36 +1449,4 @@ public final class GLEngine extends GFXEngine {
         }
     }
 
-    // ==========================================================================
-    // BUILDER
-    // ==========================================================================
-    /**
-     * Builds a {@link GLEngine} bound to a render thread and the executor that dispatches onto it.
-     * <p>
-     * {@code renderThreadEx} <b>must</b> execute its tasks on {@code renderThread} — the thread that
-     * owns the current OpenGL context — and the host must pump it every render frame; that is where
-     * every GL call the engine defers is issued. Passing both {@code null} builds a
-     * <em>no-thread-contract</em> engine: it makes GL calls synchronously on whatever thread invokes
-     * {@code upload}/{@code setVideoFormat}/{@code release}, so the caller must invoke those methods
-     * itself on a thread with the context current — never the decode thread. A non-null
-     * {@code renderThread} requires a non-null {@code renderThreadEx}.
-     */
-    public static class Builder {
-        private final Thread renderThread;
-        private final Executor renderThreadEx;
-
-        /**
-         * @param renderThread   thread owning the GL context, or null for the no-thread-contract mode
-         * @param renderThreadEx executor that dispatches onto {@code renderThread}, pumped every frame;
-         *                       required when {@code renderThread} is non-null
-         */
-        public Builder(final Thread renderThread, final Executor renderThreadEx) {
-            this.renderThread = renderThread;
-            this.renderThreadEx = renderThreadEx;
-        }
-
-        public GLEngine build() {
-            return new GLEngine(this.renderThread, this.renderThreadEx);
-        }
-    }
 }

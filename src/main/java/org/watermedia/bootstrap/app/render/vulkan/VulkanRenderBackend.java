@@ -9,8 +9,8 @@ import org.watermedia.WaterMedia;
 import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.TextureHandle;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.api.media.engines.VKEngine;
 import org.watermedia.api.media.engines.vk.VKContext;
 
 import org.apache.logging.log4j.Marker;
@@ -1056,7 +1056,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {
         // VKEngine BORROWS THIS BACKEND'S DEVICE (THIS IS THE VKContext); THE THREAD/EXECUTOR ARE UNUSED.
-        return () -> new VKEngine.Builder(this).build();
+        return () -> MediaAPI.vkEngine(this);
     }
 
     @Override

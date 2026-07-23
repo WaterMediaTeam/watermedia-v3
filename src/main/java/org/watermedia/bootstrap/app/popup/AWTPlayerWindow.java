@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.popup;
 
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.AWTEngine;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.bootstrap.app.AppContext;
@@ -32,7 +33,7 @@ public final class AWTPlayerWindow {
 
         @Override
         public GFXEngine newEngine() {
-            return this.engine = new AWTEngine.Builder().build();
+            return this.engine = MediaAPI.awtEngine(null);
         }
 
         @Override

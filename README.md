@@ -46,8 +46,8 @@ MRL mrl = MediaAPI.getMrl(URI.create("https://imgur.com/gallery/snow-ducks-YcDd9
 // IN A TICK-LOOP METHOD
 if (mrl.status == MRL.Status.LOADED) {
     MediaPlayer player = MediaAPI.createPlayer(mrl,
-            () -> new GLEngine.Builder(renderThread, renderExecutor).build(),
-            () -> new ALEngine.Builder().build());
+            () -> MediaAPI.glEngine(renderThread, renderExecutor),
+            () -> MediaAPI.alEngine());
 }
 ```
 
@@ -93,7 +93,7 @@ public final class MyVKContext implements VKContext {
 
 ```java
 MediaPlayer player = MediaAPI.createPlayer(mrl,
-        () -> new VKEngine.Builder(myContext).build(),
+        () -> MediaAPI.vkEngine(myContext),
         () -> null);
 
 // EACH FRAME: texture() IS A VkImageView HANDLE (RGBA, SHADER_READ_ONLY) — 0 MEANS NO FRAME YET
@@ -119,7 +119,7 @@ Optional device features the engine uses when you enable them at device creation
 ### Minecraft 26.x (Vulkan backend)
 WaterMedia stays engine-agnostic and never touches Mojang's Blaze3D internals — bridging is the
 mod's job. The recommended pattern is a **mixin that implements ``VKContext`` directly on Mojang's
-``VulkanDevice``**, so the device itself IS the context and the builder only needs a cast.
+``VulkanDevice``**, so the device itself IS the context and ``MediaAPI.vkEngine`` only needs a cast.
 ``VKContext``'s method names avoid overloading that class's members by return type alone (the
 merged bytecode would be legal — the JVM resolves by full descriptor — but duplicate names muddy
 stack traces and crash reports), and MC's own ``vkDevice()`` accessor already satisfies the
@@ -156,12 +156,12 @@ public abstract class VulkanDeviceMixin implements VKContext {
 ```
 
 Unwrap the backend once (``GpuDevice#backend`` is private — one accessor mixin or AT/AW line) and
-cast it in the builder:
+cast it in the factory call:
 
 ```java
 GpuDeviceBackend backend = ((GpuDeviceAccessor) RenderSystem.getDevice()).wm$backend();
 MediaPlayer player = MediaAPI.createPlayer(mrl,
-        () -> new VKEngine.Builder((VKContext) backend).build(),
+        () -> MediaAPI.vkEngine((VKContext) backend),
         () -> null);
 ```
 

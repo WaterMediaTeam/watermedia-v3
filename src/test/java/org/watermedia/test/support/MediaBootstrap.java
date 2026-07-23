@@ -23,6 +23,14 @@ public final class MediaBootstrap {
 
     private MediaBootstrap() {}
 
+    /**
+     * Boots WaterMedia once (idempotent) for tests that only need a client-side environment —
+     * engine construction is client-gated by the sealed {@code GFXEngine}/{@code SFXEngine} bases.
+     */
+    public static void client() {
+        ffmpegAvailable();
+    }
+
     /** Boots WaterMedia once (idempotent) and reports whether the FFmpeg engine came up. */
     public static synchronized boolean ffmpegAvailable() {
         if (attempted) return ffmpeg;

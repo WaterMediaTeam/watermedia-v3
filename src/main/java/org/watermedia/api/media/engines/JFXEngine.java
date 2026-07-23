@@ -26,7 +26,7 @@ public final class JFXEngine extends SWEngine {
     private PixelBuffer<ByteBuffer> pixelBuffer;
     private volatile boolean loggedPresent;
 
-    private JFXEngine(final Runnable onFrame) {
+    public JFXEngine(final Runnable onFrame) {
         super(onFrame);
     }
 
@@ -71,19 +71,5 @@ public final class JFXEngine extends SWEngine {
     protected void disposeSurface() {
         this.image = null;
         this.pixelBuffer = null;
-    }
-
-    public static final class Builder {
-        private Runnable onFrame;
-
-        /** Hook run on the upload thread after each frame is published; use it to trigger a repaint. */
-        public Builder onFrame(final Runnable onFrame) {
-            this.onFrame = onFrame;
-            return this;
-        }
-
-        public JFXEngine build() {
-            return new JFXEngine(this.onFrame);
-        }
     }
 }

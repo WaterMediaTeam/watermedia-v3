@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app;
 
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.JSEngine;
 import org.watermedia.api.media.engines.SFXEngine;
@@ -13,9 +14,9 @@ import java.util.function.Supplier;
  */
 public enum AudioEngine {
     /** LWJGL OpenAL output ({@link ALEngine}) — the default. */
-    OPENAL(ALEngine::buildDefault),
+    OPENAL(MediaAPI::alEngine),
     /** Native, dependency-free Java Sound output ({@link JSEngine}). */
-    JAVASOUND(JSEngine::buildDefault);
+    JAVASOUND(MediaAPI::jsEngine);
 
     private final Supplier<SFXEngine> supplier;
 
