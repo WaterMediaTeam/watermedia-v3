@@ -210,6 +210,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int lastFrameHeight;
     private PixelFormat lastFormat;
     private int lastBitsPerComponent;
+    // PixFmtMapping CACHE (CONSUME THREAD ONLY): THE STREAM PIXEL FORMAT IS STABLE, SO MAP ONCE PER
+    // FORMAT CHANGE INSTEAD OF ALLOCATING A MAPPING EVERY FRAME IN THE UPLOAD HOT PATH.
+    private int cachedUploadFmt = Integer.MIN_VALUE;
+    private PixFmtMapping cachedUploadMapping;
 
     // AUDIO FORMAT NEGOTIATION
     private boolean audioPassthrough;
@@ -1008,7 +1012,11 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // DETERMINE UPLOAD PATH — maxSize/LOD MAY REQUIRE A DOWNSCALE BEFORE UPLOAD.
                         // THE TARGET IS RESOLVED PER FRAME, SO HOT LOD CHANGES APPLY WITHOUT
                         // TOUCHING THE DECODE PIPELINE OR THE CLOCK.
-                        PixFmtMapping mapping = mapPixelFormat(slot.format);
+                        if (slot.format != this.cachedUploadFmt) {
+                            this.cachedUploadFmt = slot.format;
+                            this.cachedUploadMapping = mapPixelFormat(slot.format);
+                        }
+                        PixFmtMapping mapping = this.cachedUploadMapping;
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
                         if (mapping != null && this.gfx != null && !this.gfx.supportsFormat(mapping.cs)) mapping = null;
