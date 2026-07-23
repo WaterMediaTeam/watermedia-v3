@@ -13,18 +13,21 @@ public final class HuffmanTable {
     private final int[] longLens;
     private final int[] longCodes;   // ALREADY REVERSED FOR LSB-FIRST COMPARE
     private final int[] longSymbols;
+    // PER-LENGTH START INDICES: LONG ENTRIES OF LENGTH len OCCUPY [longStart[len], longStart[len+1])
+    private final int[] longStart;
     private final int longMaxLen;
     // SINGLE SYMBOL FLAG - IF TRUE, singleSymbolValue IS RETURNED WITHOUT READING BITS
     private final boolean isSingleSymbol;
     private final int singleSymbolValue;
 
     private HuffmanTable(final int[] lookup,
-                         final int[] longLens, final int[] longCodes, final int[] longSymbols, final int longMaxLen,
+                         final int[] longLens, final int[] longCodes, final int[] longSymbols, final int[] longStart, final int longMaxLen,
                          final boolean isSingleSymbol, final int singleSymbolValue) {
         this.lookup = lookup;
         this.longLens = longLens;
         this.longCodes = longCodes;
         this.longSymbols = longSymbols;
+        this.longStart = longStart;
         this.longMaxLen = longMaxLen;
         this.isSingleSymbol = isSingleSymbol;
         this.singleSymbolValue = singleSymbolValue;
@@ -52,8 +55,9 @@ public final class HuffmanTable {
             for (int curLen = LOOKUP_BITS + 1; curLen <= this.longMaxLen; curLen++) {
                 final int bit = reader.read(1);
                 code |= bit << (curLen - 1);
-                for (int j = 0; j < this.longLens.length; j++) {
-                    if (this.longLens[j] == curLen && this.longCodes[j] == code) {
+                // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
+                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++) {
+                    if (this.longCodes[j] == code) {
                         return this.longSymbols[j];
                     }
                 }
@@ -71,9 +75,10 @@ public final class HuffmanTable {
                 if ((entry & 0xFF) == curLen) {
                     return entry >>> 8;
                 }
-            } else {
-                for (int j = 0; j < this.longLens.length; j++) {
-                    if (this.longLens[j] == curLen && this.longCodes[j] == code) {
+            } else if (curLen <= this.longMaxLen) {
+                // SCAN ONLY THE CONTIGUOUS RANGE OF ENTRIES OF THIS LENGTH (LENGTH ALREADY MATCHES)
+                for (int j = this.longStart[curLen]; j < this.longStart[curLen + 1]; j++) {
+                    if (this.longCodes[j] == code) {
                         return this.longSymbols[j];
                     }
                 }
@@ -173,7 +178,33 @@ public final class HuffmanTable {
             }
         }
 
-        return new HuffmanTable(lookup, longLens, longCodes, longSymbols, longMaxLen, false, 0);
+        // SORT THE THREE PARALLEL LONG ARRAYS TOGETHER BY ASCENDING LENGTH SO ENTRIES OF EACH
+        // LENGTH ARE CONTIGUOUS; SMALL N, IN-PLACE INSERTION SORT KEEPING ALL THREE IN LOCKSTEP
+        for (int a = 1; a < longCount; a++) {
+            final int kLen = longLens[a];
+            final int kCode = longCodes[a];
+            final int kSym = longSymbols[a];
+            int b = a - 1;
+            while (b >= 0 && longLens[b] > kLen) {
+                longLens[b + 1] = longLens[b];
+                longCodes[b + 1] = longCodes[b];
+                longSymbols[b + 1] = longSymbols[b];
+                b--;
+            }
+            longLens[b + 1] = kLen;
+            longCodes[b + 1] = kCode;
+            longSymbols[b + 1] = kSym;
+        }
+
+        // PRECOMPUTE PER-LENGTH START INDICES: ENTRIES OF LENGTH len OCCUPY [longStart[len], longStart[len+1])
+        final int[] longStart = new int[longMaxLen + 2];
+        int startPos = 0;
+        for (int len = 0; len <= longMaxLen + 1; len++) {
+            longStart[len] = startPos;
+            while (startPos < longCount && longLens[startPos] == len) startPos++;
+        }
+
+        return new HuffmanTable(lookup, longLens, longCodes, longSymbols, longStart, longMaxLen, false, 0);
     }
 
     // BUILD SIMPLE TABLE (1-2 SYMBOLS)
@@ -187,12 +218,12 @@ public final class HuffmanTable {
         for (int i = 0; i < LOOKUP_SIZE; i++) {
             lookup[i] = ((i & 1) == 0 ? (sym0 << 8) : (sym1 << 8)) | 1;
         }
-        return new HuffmanTable(lookup, new int[0], new int[0], new int[0], 0, false, 0);
+        return new HuffmanTable(lookup, new int[0], new int[0], new int[0], new int[2], 0, false, 0);
     }
 
     private static HuffmanTable singleSymbolTable(final int symbol) {
         final int[] lookup = new int[LOOKUP_SIZE];
-        return new HuffmanTable(lookup, new int[0], new int[0], new int[0], 0, true, symbol);
+        return new HuffmanTable(lookup, new int[0], new int[0], new int[0], new int[2], 0, true, symbol);
     }
 
     public String debugInfo() {
