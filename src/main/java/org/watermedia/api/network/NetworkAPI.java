@@ -10,6 +10,7 @@ import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executor;
@@ -49,16 +50,25 @@ public final class NetworkAPI extends WaterMediaAPI {
         return status;
     }
 
+    /**
+     * Validated base URL of the remote file server ({@code network.remoteHost}) without the
+     * trailing slash. Fails fast on a blank or non-absolute http(s) value instead of producing
+     * a scheme-less URL that only breaks much later, far from the actual cause.
+     */
+    public static String remoteHost() throws IOException {
+        final String base = WaterMediaConfig.network.remoteHost;
+        if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))
+            throw new IOException("network.remoteHost is not configured (expected an absolute http(s) URL): " + base);
+        return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+    }
+
     private static void upload(final File file, final NetworkServer.UploadStatus status) {
         HttpURLConnection conn = null;
         try {
-            String base = WaterMediaConfig.network.remoteHost;
-            if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-
             // STREAMING UPLOADS WITH BYTE-LEVEL PROGRESS ARE OUT OF SCOPE FOR NetRequest,
             // SO WE DRIVE HttpURLConnection DIRECTLY — BUT USE URI.toURL() TO AVOID THE
             // DEPRECATED new URL(String) CONSTRUCTOR.
-            final URL url = URI.create(base + "/upload").toURL();
+            final URL url = URI.create(remoteHost() + "/upload").toURL();
             conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(WaterMediaConfig.network.timeout);
             conn.setReadTimeout(WaterMediaConfig.network.timeout);
@@ -116,20 +126,6 @@ public final class NetworkAPI extends WaterMediaAPI {
         }
     }
 
-    /**
-     * Formats a bytes-per-second value into a human-readable speed string.
-     * Automatically scales from B/s → KB/s → MB/s → GB/s at 1024 boundaries.
-     * @param bytesPerSecond the speed in bytes per second
-     * @return formatted string (e.g. "1.5 MB/s")
-     */
-    public static String displaySpeed(final long bytesPerSecond) {
-        if (bytesPerSecond < 1024L) return bytesPerSecond + " B/s";
-        if (bytesPerSecond < 1024L * 1024) return String.format("%.1f KB/s", bytesPerSecond / 1024.0);
-        if (bytesPerSecond < 1024L * 1024 * 1024) return String.format("%.1f MB/s", bytesPerSecond / (1024.0 * 1024));
-        return String.format("%.1f GB/s", bytesPerSecond / (1024.0 * 1024 * 1024));
-    }
-
-
     private boolean fileServerEnabled;
 
     @Override
@@ -139,11 +135,10 @@ public final class NetworkAPI extends WaterMediaAPI {
 
     @Override
     public void load(final WaterMedia instance) {
+        super.load(instance);
         this.fileServerEnabled = WaterMediaConfig.network.forceEnableServer
                 || (!instance.clientSide && WaterMediaConfig.network.enableServer);
         this.steps = 1 + (this.fileServerEnabled ? 1 : 0);
-        this.step = 0;
-        this.stepName = "";
     }
 
     @Override
@@ -170,9 +165,7 @@ public final class NetworkAPI extends WaterMediaAPI {
     @Override
     public void release(final WaterMedia instance) {
         NetworkServer.stop(); // STOP THE FILE SERVER AND ITS THREAD POOL SO A LATER start() CAN REBIND THE PORT
-        this.step = 0;
-        this.steps = 0;
-        this.stepName = "";
         this.fileServerEnabled = false;
+        super.release(instance);
     }
 }

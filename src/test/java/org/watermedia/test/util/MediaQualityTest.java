@@ -114,7 +114,7 @@ public class MediaQualityTest {
         void picksClosestNeighbour() {
             final Set<MediaQuality> available = EnumSet.of(MediaQuality.MEDIUM, MediaQuality.HIGHER);
             // PREFERRED HIGH -> NEIGHBOURS MEDIUM (LOWER) AND HIGHER, BOTH ARE 1 STEP AWAY.
-            // LOWER WINS BECAUSE THE LOOP CHECKS LOWER FIRST.
+            // LOWER WINS BECAUSE TIES BREAK TOWARD THE LOWER QUALITY.
             assertSame(MediaQuality.MEDIUM, MediaQuality.closest(available, MediaQuality.HIGH));
         }
 

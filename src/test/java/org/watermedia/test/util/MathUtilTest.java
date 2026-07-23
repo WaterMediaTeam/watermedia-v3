@@ -3,14 +3,15 @@ package org.watermedia.test.util;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.watermedia.api.util.MathEases;
 import org.watermedia.api.util.MathUtil;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exercises the pure helpers in {@link MathUtil}: clamping, modular arithmetic,
- * unit conversions, byte formatting and easing.
+ * Exercises the pure helpers in {@link MathUtil}: clamping, unit conversions,
+ * byte formatting and easing.
  */
 @DisplayName("MathUtil")
 public class MathUtilTest {
@@ -49,35 +50,6 @@ public class MathUtilTest {
         @DisplayName("clip255 floors at 0")
         void clip255Lower() {
             assertEquals(0, MathUtil.clip255(-1));
-        }
-    }
-
-    @Nested
-    @DisplayName("floorMod safety guard")
-    class FloorModTests {
-
-        @Test
-        @DisplayName("positive operands behave like Math.floorMod")
-        void floorModPositive() {
-            assertEquals(1L, MathUtil.floorMod(7L, 3L));
-        }
-
-        @Test
-        @DisplayName("negative dividend wraps to positive")
-        void floorModNegative() {
-            assertEquals(2L, MathUtil.floorMod(-1L, 3L));
-        }
-
-        @Test
-        @DisplayName("zero dividend returns zero")
-        void floorModZero() {
-            assertEquals(0L, MathUtil.floorMod(0L, 3L));
-        }
-
-        @Test
-        @DisplayName("zero divisor returns zero instead of throwing")
-        void floorModSafeDivision() {
-            assertEquals(0L, MathUtil.floorMod(7L, 0L));
         }
     }
 
@@ -142,23 +114,6 @@ public class MathUtilTest {
         @DisplayName("parseLong of null returns 0")
         void nullInput() {
             assertEquals(0L, MathUtil.parseLong(null));
-        }
-    }
-
-    @Nested
-    @DisplayName("array sums")
-    class SumArrayTests {
-
-        @Test
-        @DisplayName("sumArray(int[])")
-        void sumInts() {
-            assertEquals(6, MathUtil.sumArray(new int[]{1, 2, 3}));
-        }
-
-        @Test
-        @DisplayName("sumArray(long[])")
-        void sumLongs() {
-            assertEquals(6L, MathUtil.sumArray(new long[]{1L, 2L, 3L}));
         }
     }
 
@@ -284,9 +239,9 @@ public class MathUtilTest {
     }
 
     @Test
-    @DisplayName("MathUtil.EASE_IN.apply matches MathUtil.easeIn")
+    @DisplayName("MathEases.EASE_IN.apply matches MathUtil.easeIn")
     void enumDelegation() {
         final double expected = MathUtil.easeIn(0.0, 10.0, 0.5);
-        assertEquals(expected, MathUtil.EASE_IN.apply(0.0, 10.0, 0.5), EPSILON);
+        assertEquals(expected, MathEases.EASE_IN.apply(0.0, 10.0, 0.5), EPSILON);
     }
 }

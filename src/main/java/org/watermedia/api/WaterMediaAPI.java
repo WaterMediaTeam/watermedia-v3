@@ -16,11 +16,27 @@ public abstract class WaterMediaAPI {
 
     public abstract String name();
 
-    public abstract void load(WaterMedia instance);
+    /**
+     * Pre-load stage: resets boot progress so progress UIs read a clean state.
+     * Subclasses that publish work override this, call {@code super} and set {@link #steps}.
+     */
+    public void load(final WaterMedia instance) {
+        this.step = 0;
+        this.steps = 0;
+        this.stepName = "";
+    }
 
     public abstract boolean start(WaterMedia instance);
 
-    public abstract void release(WaterMedia instance);
+    /**
+     * Teardown stage: resets boot progress so a later {@link #load} starts clean.
+     * Subclasses that hold resources override this, tear down, and call {@code super}.
+     */
+    public void release(final WaterMedia instance) {
+        this.step = 0;
+        this.steps = 0;
+        this.stepName = "";
+    }
 
     public String stepName() {
         return this.stepName;

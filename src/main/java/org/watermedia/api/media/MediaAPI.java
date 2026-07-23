@@ -138,9 +138,8 @@ public final class MediaAPI extends WaterMediaAPI {
 
     @Override
     public void load(final WaterMedia instance) {
+        super.load(instance);
         this.steps = instance.clientSide ? 2 : 0; // CACHE + FFMPEG
-        this.step = 0;
-        this.stepName = "";
     }
 
     @Override
@@ -171,9 +170,7 @@ public final class MediaAPI extends WaterMediaAPI {
 
     @Override
     public void release(final WaterMedia instance) {
-        this.step = 0;
-        this.steps = 0;
-        this.stepName = "";
         NetworkCache.release();
+        super.release(instance);
     }
 }

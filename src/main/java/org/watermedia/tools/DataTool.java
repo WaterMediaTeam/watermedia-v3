@@ -104,6 +104,15 @@ public class DataTool {
         return result;
     }
 
+    public static int sumArray(final int... array) {
+        int i = 0;
+        int result = 0;
+        while (i < array.length) {
+            result += array[i++];
+        }
+        return result;
+    }
+
     public static short toShort(final byte one, final byte two, final ByteOrder order) {
         return (short) ((one & 0xFF) << shiftFor(8, 0, order) | (two & 0xFF) << shiftFor(8, 8, order));
     }

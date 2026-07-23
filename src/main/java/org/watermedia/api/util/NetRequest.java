@@ -8,7 +8,6 @@ import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.IPlatform;
 import org.watermedia.api.platform.PlatformException;
-import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.JsonTool;
 
@@ -48,85 +47,12 @@ public final class NetRequest implements AutoCloseable {
     public static final String ACCEPT_MEDIA = "audio/*, video/*, application/vnd.apple.mpegurl, application/x-mpegURL, application/dash+xml";
     public static final String ACCEPT_JSON = "application/json";
     public static final String ACCEPT_JSON_ANY = "application/json, application/json5";
-    /**
-     * Extra MIME type mappings registered into {@link URLConnection#getFileNameMap()}.
-     * Java's bundled {@code content-types.properties} is missing a lot of formats that
-     * WaterMedia consumes (codecs API + FFmpeg). When {@link URLConnection} cannot
-     * resolve a file name we fall back to this table so platform code can rely on
-     * {@code URLConnection.guessContentTypeFromName(...)} returning a sensible value.
-     */
-    private static final Map<String, String> EXTRA_MIME_TYPES = DataTool.arrayMapper(new String[] {
-            // IMAGE: CODECS DECODED BY WATERMEDIA'S CODECS API
-            "apng", "image/apng",
-            "webp", "image/webp",
-            "jfif", "image/jpeg",
-            "pbm",  "image/x-portable-bitmap",
-            "pgm",  "image/x-portable-graymap",
-            "ppm",  "image/x-portable-pixmap",
-            "pam",  "image/x-portable-arbitrarymap",
-            // IMAGE: NOT SUPPORTED YET
-            "bmp",  "image/bmp",
-            "tif",  "image/tiff",
-            "tiff", "image/tiff",
-            "ico",  "image/x-icon",
-            "avif", "image/avif",
-            "heic", "image/heic",
-            "heif", "image/heif",
-
-            // VIDEO
-            "mp4",  "video/mp4",
-            "m4v",  "video/x-m4v",
-            "mkv",  "video/x-matroska",
-            "webm", "video/webm",
-            "mov",  "video/quicktime",
-            "avi",  "video/x-msvideo",
-            "wmv",  "video/x-ms-wmv",
-            "flv",  "video/x-flv",
-            "f4v",  "video/x-f4v",
-            "ts",   "video/mp2t",
-            "mts",  "video/mp2t",
-            "m2ts", "video/mp2t",
-            "mpg",  "video/mpeg",
-            "mpeg", "video/mpeg",
-            "3gp",  "video/3gpp",
-            "3g2",  "video/3gpp2",
-            "ogv",  "video/ogg",
-            "asf",  "video/x-ms-asf",
-            "vob",  "video/dvd",
-            "rm",   "application/vnd.rn-realmedia",
-            "rmvb", "application/vnd.rn-realmedia-vbr",
-            "m3u",  "application/vnd.apple.mpegurl",
-            "m3u8", "application/vnd.apple.mpegurl",
-            "mpd",  "application/dash+xml",
-
-            // AUDIO
-            "mp3",  "audio/mpeg",
-            "aac",  "audio/aac",
-            "m4a",  "audio/mp4",
-            "ogg",  "audio/ogg",
-            "oga",  "audio/ogg",
-            "opus", "audio/opus",
-            "flac", "audio/flac",
-            "wav",  "audio/wav",
-            "wma",  "audio/x-ms-wma",
-            "ac3",  "audio/ac3",
-            "dts",  "audio/vnd.dts",
-            "amr",  "audio/amr",
-            "aiff", "audio/aiff",
-            "aif",  "audio/aiff",
-            "au",   "audio/basic",
-
-            // SUBTITLES
-            "vtt",  "text/vtt",
-            "srt",  "application/x-subrip",
-            "ass",  "text/x-ssa",
-            "ssa",  "text/x-ssa",
-    });
-
     private static volatile boolean MIME_INSTALLED;
 
     /**
-     * Extends {@link URLConnection#getFileNameMap()} with {@link #EXTRA_MIME_TYPES}.
+     * Extends {@link URLConnection#getFileNameMap()} with {@link MediaType#mime(String)}'s
+     * extension table, so platform code can rely on
+     * {@code URLConnection.guessContentTypeFromName(...)} returning a sensible value.
      * Idempotent: subsequent calls are no-ops. Invoked once during NetworkAPI startup.
      */
     public static synchronized void installExtraMimeTypes() {
@@ -139,8 +65,7 @@ public final class NetRequest implements AutoCloseable {
             final String name = fileName.toLowerCase(Locale.ROOT);
             final int dot = name.lastIndexOf('.');
             if (dot >= 0 && dot < name.length() - 1) {
-                final String ext = name.substring(dot + 1);
-                final String mapped = EXTRA_MIME_TYPES.get(ext);
+                final String mapped = MediaType.mime(name.substring(dot + 1));
                 if (mapped != null) return mapped;
             }
 
@@ -334,13 +259,7 @@ public final class NetRequest implements AutoCloseable {
      * {@code application/json}. Honors {@link WaterMediaConfig.Network#maxTextSize}.
      */
     public JsonElement json() throws IOException {
-        final String body = this.readJsonBody();
-        if (body == null) return null;
-        try {
-            return JsonTool.parse(body, JsonElement.class);
-        } catch (final JsonSyntaxException e) {
-            throw new IOException("Malformed JSON in response from " + this.uri, e);
-        }
+        return this.json(JsonElement.class);
     }
 
     /**
@@ -400,15 +319,7 @@ public final class NetRequest implements AutoCloseable {
          * preserving multi-valued headers. A {@code null} or empty bag is a no-op.
          */
         public Builder headers(final RequestHeaders headers) {
-            if (headers == null || headers.isEmpty()) return this;
-            final Set<String> seen = new HashSet<>();
-            for (final RequestHeaders.Entry entry: headers.entries()) {
-                if (seen.add(entry.name().toLowerCase(Locale.ROOT))) {
-                    this.header(entry.name(), entry.value());
-                } else {
-                    this.addHeader(entry.name(), entry.value());
-                }
-            }
+            this.headers.merge(headers);
             return this;
         }
         public Builder body(final byte[] body) { this.body = body; return this; }

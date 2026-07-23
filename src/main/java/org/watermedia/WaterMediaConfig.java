@@ -42,7 +42,7 @@ public class WaterMediaConfig {
         @Comment("Hard cap (in MB) for image downloads consumed by TxMediaPlayer")
         @Comment("Sources above this limit are aborted before full buffering")
         @NumberConditions(minInt = 1, math = true)
-        public int maxImageSourceBytesMB = 128;
+        public int maxImageSourceSize = 128;
 
         @Spec.Field
         @Comment("Related config for PNG codec")
@@ -114,7 +114,7 @@ public class WaterMediaConfig {
         @Comment("Total on-disk budget (in MB) for the shared media cache store (network + codec tiers under %TEMP%)")
         @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
         @NumberConditions(minInt = 1, math = true)
-        public int cacheMaxSizeMB = 1024 * 8;
+        public int cacheMaxSize = 1024 * 8;
 
         @Spec.Field
         @Comment("FFMPEG general settings")
@@ -228,7 +228,7 @@ public class WaterMediaConfig {
         @Comment("NOTE: this doesn't affect manual file uploads to the server storage folder or existing files, but only uploads through the API")
         @Comment("Used only on server-side")
         @NumberConditions(minInt = 0, math = true)
-        public int maxUploadSizeMB = 8;
+        public int maxUploadSize = 8;
 
         @Spec.Field
         @NumberConditions(minInt = 1, maxInt = 65535)

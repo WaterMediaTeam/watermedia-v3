@@ -79,5 +79,6 @@ public class DataToolTest {
         assertEquals(3L, DataTool.toLong(null, 3L));
         assertEquals(1.5, DataTool.toDouble("1.5", 0.0));
         assertEquals(6L, DataTool.sumArray(1L, 2L, 3L));
+        assertEquals(6, DataTool.sumArray(1, 2, 3));
     }
 }

@@ -80,26 +80,18 @@ public enum MediaQuality {
      */
     public static MediaQuality closest(final Set<MediaQuality> available, final MediaQuality preferred) {
         if (available == null || available.isEmpty()) return null;
-        if (available.contains(preferred)) return preferred;
 
-        // SEARCH OUTWARD FROM PREFERRED
-        MediaQuality lower = preferred.lower();
-        MediaQuality higher = preferred.higher();
-
-        while (lower != preferred || higher != preferred) {
-            if (lower != preferred) {
-                if (available.contains(lower)) return lower;
-                lower = lower.lower();
+        // LINEAR MIN-DISTANCE SCAN; ASCENDING ORDER BREAKS TIES TOWARD THE LOWER QUALITY
+        MediaQuality best = null;
+        int bestDistance = Integer.MAX_VALUE;
+        for (final MediaQuality quality: VALUES) {
+            if (!available.contains(quality)) continue;
+            final int distance = Math.abs(quality.ordinal() - preferred.ordinal());
+            if (distance < bestDistance) {
+                best = quality;
+                bestDistance = distance;
             }
-            if (higher != preferred) {
-                if (available.contains(higher)) return higher;
-                higher = higher.higher();
-            }
-            // PREVENT INFINITE LOOP
-            if (lower.ordinal() == 0 && higher.ordinal() == VALUES.length - 1) break;
         }
-
-        // FALLBACK: RETURN ANY AVAILABLE
-        return available.iterator().next();
+        return best;
     }
 }

@@ -423,14 +423,14 @@ public final class NetworkCache {
         return file;
     }
 
-    // SWEEPS THE STORE AFTER A WRITE AND EVICTS OLDEST ENTRIES UNTIL THE TOTAL FITS media.cacheMaxSizeMB.
+    // SWEEPS THE STORE AFTER A WRITE AND EVICTS OLDEST ENTRIES UNTIL THE TOTAL FITS media.cacheMaxSize.
     // LAST-MODIFIED TIME IS THE AGE PROXY, SO NO INDEX FORMAT/VERSION CHANGE IS NEEDED. CODEC TEXTURES
     // NEVER EXPIRE ON THEIR OWN BUT ARE STILL EVICTABLE HERE UNDER BUDGET PRESSURE. RUNS UNDER THE CALLER'S
     // STRIPE LOCK; EVERY REMOVAL GOES THROUGH storeDelete (NetworkCache.class MONITOR), KEEPING THE
     // STRIPE->CLASS LOCK ORDER THE REST OF THE STORE USES, SO NO NEW DEADLOCK PATH IS INTRODUCED.
     private static void enforceBudget(final Path written) {
         if (cacheDir == null) return;
-        final long budget = Math.max(1L, WaterMediaConfig.media.cacheMaxSizeMB) * 1024L * 1024L;
+        final long budget = Math.max(1L, WaterMediaConfig.media.cacheMaxSize) * 1024L * 1024L;
 
         // SNAPSHOT COMMITTED PAYLOAD FILES (SKIP index.dat AND *.part TEMPS); STAT FAILURES MEAN THE FILE
         // VANISHED MID-SCAN (CONCURRENT EVICTION/EXPIRY) AND ARE SIMPLY SKIPPED.

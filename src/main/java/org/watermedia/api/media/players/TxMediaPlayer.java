@@ -1055,7 +1055,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     private long maxSourceBytes() {
-        final long limitMb = Math.max(1L, WaterMediaConfig.decoders.maxImageSourceBytesMB);
+        final long limitMb = Math.max(1L, WaterMediaConfig.decoders.maxImageSourceSize);
         return limitMb * 1024L * 1024L;
     }
 

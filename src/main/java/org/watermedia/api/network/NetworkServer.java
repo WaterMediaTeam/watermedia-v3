@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.util.MathUtil;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -111,7 +112,7 @@ public final class NetworkServer {
                 return;
             }
 
-            final long maxBytes = WaterMediaConfig.network.maxUploadSizeMB * 1024L * 1024L;
+            final long maxBytes = WaterMediaConfig.network.maxUploadSize * 1024L * 1024L;
             final String contentLengthHeader = exchange.getRequestHeaders().getFirst("Content-Length");
             final long contentLength;
             try {
@@ -128,7 +129,7 @@ public final class NetworkServer {
             }
 
             if (maxBytes > 0 && contentLength > maxBytes) {
-                LOGGER.warn(IT, "Upload rejected: {} bytes exceeds max size of {} MB", contentLength, WaterMediaConfig.network.maxUploadSizeMB);
+                LOGGER.warn(IT, "Upload rejected: {} bytes exceeds max size of {} MB", contentLength, WaterMediaConfig.network.maxUploadSize);
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_ENTITY_TOO_LARGE, -1);
                 return;
             }
@@ -327,7 +328,7 @@ public final class NetworkServer {
 
         /** Formatted speed string (e.g. "1.5 MB/s") */
         public String displaySpeed() {
-            return NetworkAPI.displaySpeed(this.speed);
+            return MathUtil.displayBytes(this.speed) + "/s";
         }
 
         void uploadedBytes(final long bytes) { this.uploadedBytes = bytes; }

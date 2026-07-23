@@ -204,7 +204,7 @@ public final class CodecsAPI extends WaterMediaAPI {
                 return new NETPBMReader(source, version - '0');
             }
         }
-        if (isSVG(source, start)) {
+        if (looksLikeSvg(probeText(source, start))) {
             // SVG HAS NO FIXED HEADER — THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
             source.position(start);
             return new SVGReader(source, requestedFormat);
@@ -296,7 +296,7 @@ public final class CodecsAPI extends WaterMediaAPI {
         if (DataTool.startsWith(b, 0, KTX_HEADER)) return MediaType.IMAGE;
         if (h[0] == 'P' && h[1] >= '1' && h[1] <= '7') return MediaType.IMAGE; // NETPBM (PBM/PGM/PPM/PAM)
         if (h[0] == '#' && h[1] == '?') return MediaType.IMAGE; // RADIANCE HDR ("#?RADIANCE" / "#?RGBE")
-        if (looksLikeSvg(probeText(h, 0))) return MediaType.IMAGE; // SVG (XML, ROOT <svg>)
+        if (looksLikeSvg(probeText(b, 0))) return MediaType.IMAGE; // SVG (XML, ROOT <svg>)
 
         // VIDEO — CONTAINERS / RAW STREAMS
         if (DataTool.startsWith(b, 0, EBML_HEADER)) return MediaType.VIDEO;
@@ -358,8 +358,9 @@ public final class CodecsAPI extends WaterMediaAPI {
         return MediaType.VIDEO;
     }
 
-    // SVG HAS NO BINARY MAGIC: SKIP A BOM, THEN VERIFY THE FIRST REAL ELEMENT IS <svg>
-    private static boolean isSVG(final ByteBuffer src, final int start) {
+    // EXTRACTS THE LEADING TEXT FOR SVG SNIFFING (NO BINARY MAGIC EXISTS): SKIPS A UTF BOM,
+    // DROPS NUL BYTES SO UTF-16 MARKUP STILL READS AS ASCII, AND CAPS THE SCANNED WINDOW
+    private static String probeText(final ByteBuffer src, final int start) {
         final int limit = src.limit();
         int p = start;
         if (limit - p >= 3 && (src.get(p) & 0xFF) == 0xEF && (src.get(p + 1) & 0xFF) == 0xBB && (src.get(p + 2) & 0xFF) == 0xBF) p += 3;
@@ -368,18 +369,6 @@ public final class CodecsAPI extends WaterMediaAPI {
         final StringBuilder sb = new StringBuilder(Math.max(16, end - p));
         for (int i = p; i < end; i++) {
             final int b = src.get(i) & 0xFF;
-            if (b != 0) sb.append((char) b); // DROP NUL BYTES SO UTF-16 MARKUP STILL READS AS ASCII
-        }
-        return looksLikeSvg(sb.toString());
-    }
-
-    private static String probeText(final byte[] h, final int start) {
-        int p = start;
-        if (h.length - p >= 3 && (h[p] & 0xFF) == 0xEF && (h[p + 1] & 0xFF) == 0xBB && (h[p + 2] & 0xFF) == 0xBF) p += 3;
-        else if (h.length - p >= 2 && (((h[p] & 0xFF) == 0xFF && (h[p + 1] & 0xFF) == 0xFE) || ((h[p] & 0xFF) == 0xFE && (h[p + 1] & 0xFF) == 0xFF))) p += 2;
-        final StringBuilder sb = new StringBuilder(Math.max(16, h.length - p));
-        for (int i = p; i < h.length; i++) {
-            final int b = h[i] & 0xFF;
             if (b != 0) sb.append((char) b);
         }
         return sb.toString();
@@ -451,13 +440,6 @@ public final class CodecsAPI extends WaterMediaAPI {
     }
 
     @Override
-    public void load(final WaterMedia instance) {
-        this.steps = 0;
-        this.step = 0;
-        this.stepName = "";
-    }
-
-    @Override
     public boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
             LOGGER.warn(IT, "Codecs API refuses to load on server-side");
@@ -473,12 +455,4 @@ public final class CodecsAPI extends WaterMediaAPI {
         }
         return true;
     }
-
-    @Override
-    public void release(final WaterMedia instance) {
-        this.step = 0;
-        this.steps = 0;
-        this.stepName = "";
-    }
-
 }

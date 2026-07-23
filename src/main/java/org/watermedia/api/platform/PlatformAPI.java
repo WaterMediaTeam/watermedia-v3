@@ -282,6 +282,7 @@ public final class PlatformAPI extends WaterMediaAPI {
 
     @Override
     public void load(final WaterMedia instance) {
+        super.load(instance);
         this.pendingPlatforms = new ArrayList<>();
         if (instance.clientSide) {
             this.pendingPlatforms.add(new WaterPlatform());
@@ -307,8 +308,6 @@ public final class PlatformAPI extends WaterMediaAPI {
             this.pendingPlatforms.add(new YouTubePlatform());
         }
         this.steps = this.pendingPlatforms.size();
-        this.step = 0;
-        this.stepName = "";
     }
 
     @Override
@@ -342,8 +341,6 @@ public final class PlatformAPI extends WaterMediaAPI {
         }
         PLATFORMS.clear();
         this.pendingPlatforms = null;
-        this.step = 0;
-        this.steps = 0;
-        this.stepName = "";
+        super.release(instance);
     }
 }

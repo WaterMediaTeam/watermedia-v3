@@ -3,56 +3,9 @@ package org.watermedia.api.util;
 /**
  * This API is safe to use even if watermedia isn't successfully loaded.
  */
-public enum MathUtil {
-    EASE_IN(MathUtil::easeIn),
-    EASE_OUT(MathUtil::easeOut),
-    EASE_IN_OUT(MathUtil::easeInOut),
-    EASE_OUT_IN(MathUtil::easeOutIn),
-    EASE_IN_SINE(MathUtil::easeInSine),
-    EASE_OUT_SINE(MathUtil::easeOutSine),
-    EASE_IN_OUT_SINE(MathUtil::easeInOutSine),
-    EASE_IN_CUBIC(MathUtil::easeInCubic),
-    EASE_OUT_CUBIC(MathUtil::easeOutCubic),
-    EASE_IN_OUT_CUBIC(MathUtil::easeInOutCubic),
-    // EASE_IN/EASE_OUT ALREADY COVER QUADRATIC IN/OUT; ONLY THE START↔END IN-OUT SHAPE IS DISTINCT
-    EASE_IN_OUT_QUAD(MathUtil::easeInOutQuad),
-    EASE_IN_ELASTIC(MathUtil::easeInElastic),
-    EASE_OUT_ELASTIC(MathUtil::easeOutElastic),
-    EASE_IN_OUT_ELASTIC(MathUtil::easeInOutElastic),
-    EASE_IN_QUINT(MathUtil::easeInQuint),
-    EASE_OUT_QUINT(MathUtil::easeOutQuint),
-    EASE_IN_OUT_QUINT(MathUtil::easeInOutQuint),
-    EASE_IN_CIRCLE(MathUtil::easeInCircle),
-    EASE_OUT_CIRCLE(MathUtil::easeOutCircle),
-    EASE_IN_OUT_CIRCLE(MathUtil::easeInOutCircle),
-    EASE_IN_EXPO(MathUtil::easeInExpo),
-    EASE_OUT_EXPO(MathUtil::easeOutExpo),
-    EASE_IN_OUT_EXPO(MathUtil::easeInOutExpo),
-    EASE_IN_BACK(MathUtil::easeInBack),
-    EASE_OUT_BACK(MathUtil::easeOutBack),
-    EASE_IN_OUT_BACK(MathUtil::easeInOutBack),
-    EASE_IN_BOUNCE(MathUtil::easeInBounce),
-    EASE_OUT_BOUNCE(MathUtil::easeOutBounce),
-    EASE_IN_OUT_BOUNCE(MathUtil::easeInOutBounce);
+public final class MathUtil {
 
-    private final Easing easing;
-
-    MathUtil(final Easing easing) {
-        this.easing = easing;
-    }
-
-    // APPLIES THE EASING CURVE: INTERPOLATES BETWEEN start AND end AT NORMALISED TIME value (0.0-1.0)
-    public double apply(final double start, final double end, final double value) {
-        return this.easing.apply(start, end, value);
-    }
-
-    /**
-     * A single easing curve mapping {@code (start, end, t)} to an interpolated value.
-     */
-    @FunctionalInterface
-    public interface Easing {
-        double apply(double start, double end, double t);
-    }
+    private MathUtil() {}
 
     public static long parseLong(final String s) {
         try {
@@ -232,68 +185,6 @@ public enum MathUtil {
      */
     public static double scaleDesTempoTick(final int startTick, final int endTick, final int timeTick) {
         return scaleDesTempo(MathUtil.tickToMs(startTick), MathUtil.tickToMs(endTick), MathUtil.tickToMs(timeTick));
-    }
-
-    /**
-     * Returns the floor modulus of the {@code long} arguments.
-     * <p>
-     * The floor modulus is {@code r = x - (floorDiv(x, y) * y)},
-     * has the same sign as the divisor {@code y} or is zero, and
-     * is in the range of {@code -abs(y) < r < +abs(y)}.
-     *
-     * <p>
-     * The relationship between {@code floorDiv} and {@code floorMod} is such that:
-     * <ul>
-     *   <li>{@code floorDiv(x, y) * y + floorMod(x, y) == x}</li>
-     * </ul>
-     * <p>
-     *
-     *     Method doesn't throw exceptions when X and Y is ZERO.
-     *     Instead, returns ZERO by default
-     *
-     * @param x the dividend
-     * @param y the divisor
-     * @return the floor modulus {@code x - (floorDiv(x, y) * y)}
-     * @since 2.0.7
-     */
-    public static long floorMod(final long x, final long y) {
-        if (x == 0 || y == 0) return 0;
-
-        final long r = x % y;
-        // IF SIGNS ARE DIFFERENT AND MODULO NOT ZERO, ADJUST RESULT
-        if ((x ^ y) < 0 && r != 0) {
-            return r + y;
-        }
-        return r;
-    }
-
-    public static int floorMod(final int x, final int y) {
-        if (x == 0 || y == 0) return 0;
-
-        final int r = x % y;
-        // IF SIGNS ARE DIFFERENT AND MODULO NOT ZERO, ADJUST RESULT
-        if ((x ^ y) < 0 && r != 0) {
-            return r + y;
-        }
-        return r;
-    }
-
-    public static int floorMod(final long x, final int y) {
-        // RESULT CANNOT OVERFLOW THE RANGE OF int.
-        return (int) floorMod(x, (long)y);
-    }
-
-    public static int floorMod(final int x, final long y) {
-        // RESULT CANNOT OVERFLOW THE RANGE OF int.
-        return (int) floorMod((long) x, y);
-    }
-
-    public static short min(final short a, final short b) {
-        return (a <= b) ? a : b;
-    }
-
-    public static byte min(final byte a, final byte b) {
-        return (a <= b) ? a : b;
     }
 
     /**
@@ -799,21 +690,5 @@ public enum MathUtil {
         if (bytes < 1024L * 1024) return String.format("%.1f KB", bytes / 1024.0);
         if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
         return String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024));
-    }
-
-    public static int sumArray(final int[] arr) {
-        int r = 0;
-        for (final int i: arr) {
-            r += i;
-        }
-        return r;
-    }
-
-    public static long sumArray(final long[] arr) {
-        long r = 0;
-        for (final long i: arr) {
-            r += i;
-        }
-        return r;
     }
 }

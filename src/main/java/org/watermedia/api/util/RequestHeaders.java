@@ -11,6 +11,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Insertion-ordered, case-insensitive, multi-valued HTTP header bag.
@@ -70,6 +72,21 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
     }
 
     /**
+     * Applies {@code other} on top of this bag: the first occurrence of each name replaces any
+     * existing entries (like {@link #set}), later occurrences append (like {@link #add}),
+     * preserving multi-valued headers. A {@code null} or empty bag is a no-op.
+     */
+    public RequestHeaders merge(final RequestHeaders other) {
+        if (other == null || other.isEmpty()) return this;
+        final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (final Entry e: other.entries) {
+            if (seen.add(e.name)) this.set(e.name, e.value);
+            else this.add(e.name, e.value);
+        }
+        return this;
+    }
+
+    /**
      * Removes every entry whose name matches (case-insensitive).
      */
     public RequestHeaders removeAll(final String name) {
@@ -120,18 +137,10 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
      * for subsequent ones, preserving multi-valued headers.
      */
     void writeTo(final URLConnection conn) {
-        final List<String> seen = new ArrayList<>();
+        final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (final Entry e: this.entries) {
-            boolean first = true;
-            for (final String s: seen) {
-                if (eq(s, e.name)) { first = false; break; }
-            }
-            if (first) {
-                conn.setRequestProperty(e.name, e.value);
-                seen.add(e.name);
-            } else {
-                conn.addRequestProperty(e.name, e.value);
-            }
+            if (seen.add(e.name)) conn.setRequestProperty(e.name, e.value);
+            else conn.addRequestProperty(e.name, e.value);
         }
     }
 

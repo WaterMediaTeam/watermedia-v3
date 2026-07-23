@@ -1,7 +1,7 @@
 package org.watermedia.api.platform.internal;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.RequestHeaders;
@@ -49,15 +49,8 @@ public final class WaterPlatform implements IPlatform {
                 final Path file = WaterMedia.cwd().resolve(path);
                 yield file.toUri().toString();
             }
-            case HOST_REMOTE -> {
-                // VALIDATE THE CONFIG UP FRONT: A NULL/BLANK OR NON-ABSOLUTE remoteHost WOULD OTHERWISE
-                // YIELD A SCHEME-LESS URI THAT ONLY FAILS MUCH LATER, FAR FROM THE ACTUAL CAUSE
-                String base = WaterMediaConfig.network.remoteHost;
-                if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))
-                    throw new PlatformException(WaterPlatform.class, "network.remoteHost is not configured (expected an absolute http(s) URL): " + base);
-                if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-                yield base + path;
-            }
+            // NetworkAPI.remoteHost() VALIDATES THE CONFIG UP FRONT AND STRIPS THE TRAILING SLASH
+            case HOST_REMOTE -> NetworkAPI.remoteHost() + path;
             case HOST_GLOBAL -> {
                 if (path.startsWith("/")) path = path.substring(1);
                 yield GLOBAL_SERVER + path;
