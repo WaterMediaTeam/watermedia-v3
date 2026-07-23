@@ -43,13 +43,10 @@ public final class JSEngine extends SFXEngine {
     // LANDS ON A COMBINATION setAudioFormat CAN ACTUALLY OPEN — THERE IS NO NEGOTIATION FALLBACK
     // IF THE ENGINE REJECTS THE CHOSEN FORMAT. formatFor() STILL MAPS S32/FLT SO A DIRECT CALLER
     // MAY USE THEM WHEN ITS MIXER SUPPORTS THEM.
-    // ENCODING PER long (SEE SFXEngine#supportedChannels): byte 7 = channels, byte 6 = U8 flag,
-    // byte 5 = S16 flag.
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16 };
-    private static final long[] SUPPORTED_CHANNELS = {
-            //ch U8  S16 --  --  --  --  --
-            0x01_FF_FF_00_00_00_00_00L, // MONO:   U8 + S16
-            0x02_FF_FF_00_00_00_00_00L, // STEREO: U8 + S16
+    private static final ChannelSupport[] SUPPORTED_CHANNELS = {
+            new ChannelSupport(1, SampleType.U8, SampleType.S16), // MONO
+            new ChannelSupport(2, SampleType.U8, SampleType.S16), // STEREO
     };
 
     private final int bufferMs;
@@ -125,7 +122,7 @@ public final class JSEngine extends SFXEngine {
     }
 
     @Override
-    public long[] supportedChannels() {
+    public ChannelSupport[] supportedChannels() {
         return SUPPORTED_CHANNELS.clone();
     }
 

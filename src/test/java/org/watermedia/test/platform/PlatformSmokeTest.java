@@ -2,13 +2,13 @@ package org.watermedia.test.platform;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.api.platform.DataQuality;
-import org.watermedia.api.platform.DataSlave;
 import org.watermedia.api.platform.DataSource;
 import org.watermedia.api.platform.IPlatform;
 import org.watermedia.api.platform.PlatformData;
 import org.watermedia.api.platform.web.YouTubePlatform;
 import org.watermedia.api.platform.web.YtDlpPlatform;
 import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.Slave;
 
 import java.net.URI;
 import java.util.List;
@@ -77,7 +77,7 @@ public final class PlatformSmokeTest {
             System.out.println("  " + q.width() + "x" + q.height() + " -> " + u.substring(0, Math.min(90, u.length())));
         }
         if (src.audioSlaves() != null) {
-            for (final DataSlave a: src.audioSlaves()) {
+            for (final Slave a: src.audioSlaves()) {
                 final String u = a.uri().toString();
                 System.out.println("  audio -> " + u.substring(0, Math.min(90, u.length())));
             }

@@ -33,7 +33,7 @@ public class MrlQualityTest {
 
         final MRL.Source source = mrl.source(0);
         assertNotNull(source);
-        assertFalse(source.availableQualities().isEmpty());
+        assertFalse(source.qualities().isEmpty());
 
         final URI resolved = source.uri(MediaQuality.HIGHER);
         assertNotNull(resolved);
@@ -46,15 +46,15 @@ public class MrlQualityTest {
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source before = mrl.source(0);
-        final MediaQuality oldKey = before.availableQualities().iterator().next();
+        final MediaQuality oldKey = before.qualities().keySet().iterator().next();
 
         // SKIP THE NO-OP CASE WHERE HIGH IS ALREADY THE KEY — TEST REMAINS MEANINGFUL.
         final MediaQuality target = oldKey == MediaQuality.HIGH ? MediaQuality.MEDIUM : MediaQuality.HIGH;
         mrl.moveQuality(0, oldKey, target);
 
         final MRL.Source after = mrl.source(0);
-        assertTrue(after.hasQuality(target));
-        assertFalse(after.hasQuality(oldKey));
+        assertTrue(after.qualities().containsKey(target));
+        assertFalse(after.qualities().containsKey(oldKey));
     }
 
     @Test
@@ -64,7 +64,7 @@ public class MrlQualityTest {
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source source = mrl.source(0);
-        final MediaQuality known = source.availableQualities().iterator().next();
+        final MediaQuality known = source.qualities().keySet().iterator().next();
         final URI uri = source.uri(known);
 
         assertEquals(known, source.qualityOf(uri));

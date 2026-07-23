@@ -350,7 +350,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 if (this.lifecycleSerial == serial) {
                     final Status prev = this.status;
                     this.status = Status.ERROR;
-                    this.publishStatus(prev, Status.ERROR);
+                    this.invokeStatus(prev, Status.ERROR);
                 }
             }
         } finally {
@@ -518,7 +518,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             result = duration;
         }
         // PUBLISH OUTSIDE THE clock LOCK SO A LISTENER RE-ENTERING THE PLAYER CANNOT DEADLOCK
-        if (prev == Status.PLAYING) this.publishStatus(prev, Status.ENDED);
+        if (prev == Status.PLAYING) this.invokeStatus(prev, Status.ENDED);
         return result;
     }
 
@@ -585,7 +585,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 if (this.lifecycleSerial == serial) {
                     final Status prev = this.status;
                     this.status = Status.ERROR;
-                    this.publishStatus(prev, Status.ERROR);
+                    this.invokeStatus(prev, Status.ERROR);
                 }
             }
         } finally {
@@ -718,7 +718,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 if (!reader.hasNext()) {
                     final Status prev = this.status;
                     this.status = Status.ENDED;
-                    this.publishStatus(prev, Status.ENDED);
+                    this.invokeStatus(prev, Status.ENDED);
                     return reader;
                 }
                 this.uploadFrame(reader.next());
@@ -730,7 +730,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             } else {
                 final Status prev = this.status;
                 this.status = Status.ENDED;
-                this.publishStatus(prev, Status.ENDED);
+                this.invokeStatus(prev, Status.ENDED);
                 return reader;
             }
         }
@@ -1121,14 +1121,14 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // PUSHES A BUFFER TO THE GPU AND HOLDS BACK THE LAST IN_FLIGHT_KEEP SUBMISSIONS.
     // FOR MULTI-PLANE FORMATS THE BUFFER IS THE PACKED LAYOUT [PLANE0 | PLANE1 | ...] WITH TIGHT
-    // STRIDES — WE SLICE PER-PLANE VIEWS FROM IT AND CALL THE MATCHING gfx.upload OVERLOAD.
+    // STRIDES — WE SLICE PER-PLANE VIEWS FROM IT AND BUILD THE MATCHING gfx.upload PLANE SET.
     private void uploadBuffer(final ByteBuffer buffer, final int w, final int h) {
         // SIZE FLIP (HOT maxSize/LOD CHANGE) — RECONFIGURE THE ENGINE FOR THIS FRAME
         if (this.gfx.width() != w || this.gfx.height() != h) {
             this.gfx.setVideoFormat(this.pixelFormat, w, h);
         }
         if (this.planeCount <= 1) {
-            this.gfx.upload(buffer, 0);
+            this.gfx.upload(new ByteBuffer[]{buffer}, new int[]{0});
         } else {
             this.uploadMultiPlane(buffer, w, h);
         }
@@ -1145,7 +1145,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final int chromaH = (h + 1) >> 1;
                 final ByteBuffer y = sliceView(buffer, 0, w * h);
                 final ByteBuffer uv = sliceView(buffer, w * h, w * chromaH);
-                this.gfx.upload(y, w, uv, w);
+                this.gfx.upload(new ByteBuffer[]{y, uv}, new int[]{w, w});
             }
             case YUV420P -> {
                 final int chromaW = (w + 1) >> 1;
@@ -1155,7 +1155,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final ByteBuffer y = sliceView(buffer, 0, yLen);
                 final ByteBuffer u = sliceView(buffer, yLen, uvLen);
                 final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
-                this.gfx.upload(y, w, u, chromaW, v, chromaW);
+                this.gfx.upload(new ByteBuffer[]{y, u, v}, new int[]{w, chromaW, chromaW});
             }
             case YUV422P -> {
                 final int chromaW = (w + 1) >> 1;
@@ -1164,14 +1164,14 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final ByteBuffer y = sliceView(buffer, 0, yLen);
                 final ByteBuffer u = sliceView(buffer, yLen, uvLen);
                 final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
-                this.gfx.upload(y, w, u, chromaW, v, chromaW);
+                this.gfx.upload(new ByteBuffer[]{y, u, v}, new int[]{w, chromaW, chromaW});
             }
             case YUV444P -> {
                 final int yLen = w * h;
                 final ByteBuffer y = sliceView(buffer, 0, yLen);
                 final ByteBuffer u = sliceView(buffer, yLen, yLen);
                 final ByteBuffer v = sliceView(buffer, yLen + yLen, yLen);
-                this.gfx.upload(y, w, u, w, v, w);
+                this.gfx.upload(new ByteBuffer[]{y, u, v}, new int[]{w, w, w});
             }
             case YUVA420P -> {
                 final int chromaW = (w + 1) >> 1;
@@ -1182,7 +1182,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final ByteBuffer u = sliceView(buffer, yLen, uvLen);
                 final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
                 final ByteBuffer a = sliceView(buffer, yLen + 2 * uvLen, yLen);
-                this.gfx.upload(y, w, u, chromaW, v, chromaW, a, w);
+                this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, chromaW, chromaW, w});
             }
             case YUVA422P -> {
                 final int chromaW = (w + 1) >> 1;
@@ -1192,7 +1192,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final ByteBuffer u = sliceView(buffer, yLen, uvLen);
                 final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
                 final ByteBuffer a = sliceView(buffer, yLen + 2 * uvLen, yLen);
-                this.gfx.upload(y, w, u, chromaW, v, chromaW, a, w);
+                this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, chromaW, chromaW, w});
             }
             case YUVA444P -> {
                 final int yLen = w * h;
@@ -1200,11 +1200,11 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final ByteBuffer u = sliceView(buffer, yLen, yLen);
                 final ByteBuffer v = sliceView(buffer, 2 * yLen, yLen);
                 final ByteBuffer a = sliceView(buffer, 3 * yLen, yLen);
-                this.gfx.upload(y, w, u, w, v, w, a, w);
+                this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, w, w, w});
             }
             default -> {
                 LOGGER.warn(IT, "Multi-plane upload not implemented for {}; falling back to single-plane", cs);
-                this.gfx.upload(buffer, 0);
+                this.gfx.upload(new ByteBuffer[]{buffer}, new int[]{0});
             }
         }
     }
@@ -1527,9 +1527,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     @Override
     public boolean seekQuick(final long time) { return this.seek(time); }
 
-    @Override
-    public boolean skipTime(final long time) { return this.seek(this.time() + time); }
-
+    // IMAGES USE A FINER 1s STEP THAN THE 5s VIDEO DEFAULT
     @Override
     public boolean forward() { return this.skipTime(1000); }
 

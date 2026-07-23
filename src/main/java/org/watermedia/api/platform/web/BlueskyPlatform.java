@@ -11,6 +11,7 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.api.util.Slave;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JsonTool;
 import org.watermedia.tools.MPEGTool;
@@ -130,7 +131,7 @@ public final class BlueskyPlatform implements IPlatform {
         }
 
         // Subtitle tracks via blob endpoint
-        final List<DataSlave> subSlaves = new ArrayList<>();
+        final List<Slave> subSlaves = new ArrayList<>();
         final String did = str(postCtx, "author", "did");
         if (did != null && recordEmbed != null && recordEmbed.has("captions")) {
             try {
@@ -144,7 +145,7 @@ public final class BlueskyPlatform implements IPlatform {
                                 ? cap.get("lang").getAsString() : "und";
                         final String fileCid = str(cap, "file", "ref", "$link");
                         if (fileCid == null) continue;
-                        subSlaves.add(new DataSlave(lang, lang, URI.create(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)))));
+                        subSlaves.add(new Slave(lang, lang, URI.create(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)))));
                     }
                 }
             } catch (final Exception e) {

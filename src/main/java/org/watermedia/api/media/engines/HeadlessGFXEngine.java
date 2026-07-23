@@ -55,29 +55,8 @@ public final class HeadlessGFXEngine extends GFXEngine {
     }
 
     @Override
-    public void upload(final ByteBuffer buffer, final int stride) {
-        this.lastUpload = buffer;
-        this.uploadCount++;
-        this.framed = true;
-    }
-
-    @Override
-    public void upload(final ByteBuffer y, final int ys, final ByteBuffer uv, final int us) {
-        this.lastUpload = y;
-        this.uploadCount++;
-        this.framed = true;
-    }
-
-    @Override
-    public void upload(final ByteBuffer y, final int ys, final ByteBuffer u, final int us, final ByteBuffer v, final int vs) {
-        this.lastUpload = y;
-        this.uploadCount++;
-        this.framed = true;
-    }
-
-    @Override
-    public void upload(final ByteBuffer y, final int ys, final ByteBuffer u, final int us, final ByteBuffer v, final int vs, final ByteBuffer a, final int as) {
-        this.lastUpload = y;
+    public void upload(final ByteBuffer[] planes, final int[] strides) {
+        this.lastUpload = planes.length > 0 ? planes[0] : null;
         this.uploadCount++;
         this.framed = true;
     }

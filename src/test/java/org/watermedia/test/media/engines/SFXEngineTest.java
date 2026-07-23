@@ -13,10 +13,10 @@ import org.lwjgl.openal.ALC10;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.JSEngine;
 import org.watermedia.api.media.engines.SFXEngine;
-import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -25,30 +25,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Pure-Java verification of the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer
- * sync contract depends on: {@link JSEngine} format validation and both engines' packed capability
+ * sync contract depends on: {@link JSEngine} format validation and both engines' capability
  * tables. The OpenAL cases run only when a real device/context can be opened, skipping gracefully
  * otherwise.
  */
 @DisplayName("SFXEngine")
 class SFXEngineTest {
 
-    // VERIFIES A PACKED SUPPORTED_CHANNELS TABLE: byte 7 = channel count (1..8), one 0x00/0xFF flag
-    // PER DECLARED TYPE (byte 6-i), AND ALL REMAINING RESERVED BYTES ZERO.
+    // VERIFIES A SUPPORTED_CHANNELS TABLE: CHANNEL COUNTS IN RANGE, AT LEAST ONE TYPE PER ENTRY,
+    // AND EVERY ENTRY TYPE DECLARED IN supportedTypes().
     private static void assertTableConsistent(final SFXEngine engine) {
-        final SFXEngine.SampleType[] types = engine.supportedTypes();
-        assertTrue(types.length >= 1 && types.length <= 7, "type count must fit the 7 flag bytes");
+        final List<SFXEngine.SampleType> declared = List.of(engine.supportedTypes());
+        assertFalse(declared.isEmpty(), "at least one supported type must be declared");
 
-        for (final long entry: engine.supportedChannels()) {
-            final int channels = DataTool.bytesAt(entry, 7) & 0xFF;
-            assertTrue(channels >= 1 && channels <= 8, "channel count out of range: " + channels);
-
-            for (int i = 0; i < types.length; i++) {
-                final byte flag = DataTool.bytesAt(entry, 6 - i);
-                assertTrue(flag == 0 || flag == (byte) 0xFF, "support flag must be 0x00 or 0xFF, got " + flag);
-            }
-            // BYTES BELOW THE LAST TYPE FLAG ARE RESERVED AND MUST BE ZERO
-            for (int pos = 6 - types.length; pos >= 0; pos--) {
-                assertEquals(0, DataTool.bytesAt(entry, pos), "reserved byte at position " + pos + " must be zero");
+        for (final SFXEngine.ChannelSupport entry: engine.supportedChannels()) {
+            assertTrue(entry.channels() >= 1 && entry.channels() <= 8, "channel count out of range: " + entry.channels());
+            assertFalse(entry.types().isEmpty(), "entry must support at least one type");
+            for (final SFXEngine.SampleType type: entry.types()) {
+                assertTrue(declared.contains(type), "entry type not declared in supportedTypes: " + type);
             }
         }
     }

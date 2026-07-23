@@ -370,7 +370,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param time the time to skip, in milliseconds.
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean skipTime(long time);
+    public boolean skipTime(final long time) { return this.seek(this.time() + time); }
 
     /**
      * Quickly seeks to a specific time in the media without precise accuracy.
@@ -382,16 +382,18 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public abstract boolean seekQuick(long time);
 
     /**
-     * Skips forward 5 seconds in the media.
+     * Skips forward 5 seconds in the media. Players with a finer natural step
+     * (e.g. animated images) may override the distance.
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean forward();
+    public boolean forward() { return this.skipTime(5000); }
 
     /**
-     * Skips backward 5 seconds in the media.
+     * Skips backward 5 seconds in the media. Players with a finer natural step
+     * (e.g. animated images) may override the distance.
      * @return true if the operation was successful, false otherwise.
      */
-    public abstract boolean rewind();
+    public boolean rewind() { return this.skipTime(-5000); }
 
     /**
      * Provides the Frames per Second
@@ -465,7 +467,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // NOTIFIES THE STATUS LISTENER OF A REAL TRANSITION. SWALLOWS LISTENER FAILURES SO A BROKEN
     // CONSUMER NEVER TEARS DOWN THE PLAYBACK THREAD.
-    protected void publishStatus(final Status prev, final Status next) {
+    protected void invokeStatus(final Status prev, final Status next) {
         final BiConsumer<Status, Status> l = this.statusListener;
         if (l != null && prev != next) {
             try {

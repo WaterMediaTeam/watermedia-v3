@@ -20,7 +20,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * sentinel once the first frame is uploaded (0 before), matching the base contract; the real output
  * is the surface the subclass exposes.
  * <p>
- * A frame arrives on the player's decode thread: {@link #upload(ByteBuffer, int)} writes the buffer
+ * A frame arrives on the player's decode thread: {@link #upload(ByteBuffer[], int[])} writes the buffer
  * and calls {@link #present()} to publish it, then fires the optional {@code onFrame} callback so a
  * UI can repaint. The surface is reallocated on every {@link #setVideoFormat} (resolution change).
  */
@@ -57,7 +57,10 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     public long texture() { return this.released || !this.framed ? 0L : 1L; }
 
     @Override
-    public void upload(final ByteBuffer buffer, final int stride) {
+    public void upload(final ByteBuffer[] planes, final int[] strides) {
+        // ONLY SINGLE-PLANE BGRA/RGBA IS ACCEPTED (supportsFormat), SO THE FIRST PLANE IS THE WHOLE FRAME
+        final ByteBuffer buffer = planes[0];
+        final int stride = strides[0];
         final ByteBuffer dst = this.bgra;
         if (this.released || dst == null) return;
         final int w = this.width;
@@ -99,11 +102,6 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         this.present();
         if (this.onFrame != null) this.onFrame.run();
     }
-
-    // MULTI-PLANE FORMATS ARE DECLINED IN supportsFormat, SO THESE NEVER RUN
-    @Override public void upload(final ByteBuffer y, final int ys, final ByteBuffer uv, final int us) {}
-    @Override public void upload(final ByteBuffer y, final int ys, final ByteBuffer u, final int us, final ByteBuffer v, final int vs) {}
-    @Override public void upload(final ByteBuffer y, final int ys, final ByteBuffer u, final int us, final ByteBuffer v, final int vs, final ByteBuffer a, final int as) {}
 
     @Override
     public void release() {

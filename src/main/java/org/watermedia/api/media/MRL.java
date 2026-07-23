@@ -265,13 +265,8 @@ public final class MRL {
                         qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
                     }
 
-                    final List<DataSlave> audioSlaves = entry.audioSlaves();
-                    final List<DataSlave> subSlave = entry.subSlaves();
-
                     sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
-                            entry.headers(), qualities,
-                            audioSlaves.stream().map(s -> new SlaveEntry(s.name(), s.lang(), s.uri())).toList(),
-                            subSlave.stream().map(s -> new SlaveEntry(s.name(), s.lang(), s.uri())).toList());
+                            entry.headers(), qualities, entry.audioSlaves(), entry.subSlaves());
                 }
 
 
@@ -436,27 +431,6 @@ public final class MRL {
     }
 
     /**
-     * Gets the first video {@link Source}.
-     */
-    public Source videoSource() {
-        return this.sourceByType(MediaType.VIDEO);
-    }
-
-    /**
-     * Gets the first image {@link Source}.
-     */
-    public Source imageSource() {
-        return this.sourceByType(MediaType.IMAGE);
-    }
-
-    /**
-     * Gets the first audio-only {@link Source}.
-     */
-    public Source audioSource() {
-        return this.sourceByType(MediaType.AUDIO);
-    }
-
-    /**
      * Internal: rewires a quality bucket inside an existing {@link Source}.
      * Used by FFMediaPlayer when an HLS rendition turns out to map to a
      * different bucket than the platform reported. Public only because the
@@ -498,8 +472,8 @@ public final class MRL {
      * A URI Source container with multiple quality support and optional slave sources.
      */
     public record Source(MediaType type, URI thumbnail, Metadata metadata, RequestHeaders headers,
-                         Map<MediaQuality, URI> qualities, List<SlaveEntry> audioSlaves,
-                         List<SlaveEntry> subSlaves) {
+                         Map<MediaQuality, URI> qualities, List<Slave> audioSlaves,
+                         List<Slave> subSlaves) {
 
         public Source {
             if (qualities.isEmpty())
@@ -537,69 +511,6 @@ public final class MRL {
             }
             return null;
         }
-
-        /**
-         * Gets the best available URI (highest quality).
-         */
-        public URI bestUri() {
-            return this.uri(MediaQuality.HIGHER);
-        }
-
-        /**
-         * Gets the worst available URI (lowest quality).
-         */
-        public URI worstUri() {
-            return this.uri(MediaQuality.Q144P);
-        }
-
-        /**
-         * Returns all available qualities.
-         */
-        public Set<MediaQuality> availableQualities() {
-            return this.qualities.keySet();
-        }
-
-        /**
-         * Returns true if a specific quality is available.
-         */
-        public boolean hasQuality(final MediaQuality quality) {
-            return this.qualities.containsKey(quality);
-        }
-
-        /**
-         * Returns true if this uri has any slave tracks (audio or subtitle).
-         */
-        public boolean hasSlaves() {
-            // BOTH LISTS ARE NORMALIZED NON-NULL BY THE COMPACT CONSTRUCTOR
-            return !this.audioSlaves.isEmpty() || !this.subSlaves.isEmpty();
-        }
-
-        /**
-         * Returns true if this is a video uri.
-         */
-        public boolean isVideo() {
-            return this.type == MediaType.VIDEO;
-        }
-
-        /**
-         * Returns true if this is an image uri.
-         */
-        public boolean isImage() {
-            return this.type == MediaType.IMAGE;
-        }
-
-        /**
-         * Returns true if this is an audio-only uri.
-         */
-        public boolean isAudio() {
-            return this.type == MediaType.AUDIO;
-        }
-    }
-
-    /**
-     * Slave entry for a media {@link Source}
-     */
-    public record SlaveEntry(String name, String lang, URI uri) {
     }
 
     public enum Status {

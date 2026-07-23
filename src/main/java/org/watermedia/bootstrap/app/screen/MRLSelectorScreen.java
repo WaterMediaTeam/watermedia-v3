@@ -395,7 +395,7 @@ public final class MRLSelectorScreen extends Screen {
             // FALLBACK: USE FIRST IMAGE SOURCE DIRECTLY
             if (player == null) {
                 for (int i = 0; i < sources.size(); i++) {
-                    if (sources.get(i).isImage()) {
+                    if (sources.get(i).type() == MediaType.IMAGE) {
                         player = MediaAPI.createPlayer(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                         break;
                     }
@@ -716,7 +716,7 @@ public final class MRLSelectorScreen extends Screen {
         if (!loaded(mrl)) return "UNKNOWN";
         MediaQuality best = MediaQuality.UNKNOWN;
         for (final MRL.Source source: mrl.sources()) {
-            for (final MediaQuality q: source.availableQualities()) {
+            for (final MediaQuality q: source.qualities().keySet()) {
                 if (q.threshold > best.threshold) best = q;
             }
         }

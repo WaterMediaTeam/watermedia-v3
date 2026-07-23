@@ -10,6 +10,7 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.Slave;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.binaries.YtDlpBinary;
 
@@ -259,7 +260,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         final boolean live = bool(media, "is_live") || "is_live".equals(str(media, "live_status"));
         final URI thumbnail = uri(str(media, "thumbnail"));
         final Metadata metadata = metadata(media);
-        final List<DataSlave> subtitles = subtitles(media);
+        final List<Slave> subtitles = subtitles(media);
 
         // SPLIT FORMATS: VIDEO-ONLY (acodec none), MUXED (both), AUDIO-ONLY (vcodec none). SKIP STORYBOARDS.
         final List<DataQuality> variants = new ArrayList<>();
@@ -299,8 +300,8 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
 
         if (!variants.isEmpty()) {
             final URI bestAudioUri = bestAudio == null ? null : uri(str(bestAudio, "url"));
-            final List<DataSlave> audioSlaves = bestAudioUri == null ? null
-                    : List.of(new DataSlave(null, null, bestAudioUri));
+            final List<Slave> audioSlaves = bestAudioUri == null ? null
+                    : List.of(new Slave(null, null, bestAudioUri));
             final DataSource source = new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
                     variants, audioSlaves, subtitles);
             return new Result(expiry(variants.get(0).uri(), live), source);
@@ -402,8 +403,8 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     // BUILDS SUBTITLE SLAVES FROM subtitles{} (MANUAL) THEN automatic_captions{} (AUTO), ONE PER LANGUAGE
-    private static List<DataSlave> subtitles(final JsonObject media) {
-        final List<DataSlave> out = new ArrayList<>();
+    private static List<Slave> subtitles(final JsonObject media) {
+        final List<Slave> out = new ArrayList<>();
         final Set<String> langs = new HashSet<>();
         collectSubs(media.getAsJsonObject("subtitles"), false, langs, out);
         collectSubs(media.getAsJsonObject("automatic_captions"), true, langs, out);
@@ -411,7 +412,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     private static void collectSubs(final JsonObject subs, final boolean auto,
-                                    final Set<String> langs, final List<DataSlave> out) {
+                                    final Set<String> langs, final List<Slave> out) {
         if (subs == null) return;
         for (final Map.Entry<String, JsonElement> e: subs.entrySet()) {
             final String lang = e.getKey();
@@ -424,7 +425,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
             String name = str(track, "name");
             if (name == null) name = lang;
             if (auto) name = name + " (auto-generated)";
-            out.add(new DataSlave(name, lang, uri(url)));
+            out.add(new Slave(name, lang, uri(url)));
         }
     }
 

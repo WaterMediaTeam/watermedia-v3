@@ -1,6 +1,10 @@
 package org.watermedia.api.media.engines;
 
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Sound engine abstraction for uploading decoded audio data to playback systems.
@@ -32,39 +36,80 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         DBL
     }
 
+    /**
+     * One supported channel count and the sample types playable at it. Declared per channel
+     * count because support is not rectangular (e.g. OpenAL plays {@link SampleType#DBL} only
+     * in mono/stereo, never multichannel).
+     *
+     * @param channels audio channel count (1..8)
+     * @param types    sample types playable at this channel count
+     */
+    public record ChannelSupport(int channels, Set<SampleType> types) {
+
+        public ChannelSupport {
+            types = Collections.unmodifiableSet(EnumSet.copyOf(types));
+        }
+
+        public ChannelSupport(final int channels, final SampleType... types) {
+            this(channels, EnumSet.copyOf(List.of(types)));
+        }
+
+        /**
+         * Whether {@code type} is playable at this channel count.
+         */
+        public boolean supports(final SampleType type) {
+            return type != null && this.types.contains(type);
+        }
+    }
+
     protected int source;
     protected SampleType sampleType;
     protected int channels;
     protected int sampleRate;
 
     /**
-     * Returns the channel-support table as a packed {@code long[]}, one entry per supported channel count.
-     * <p>
-     * Each long encodes:
-     * <ul>
-     *   <li>byte 7 (MSB): channel count (1..8)</li>
-     *   <li>byte 6: support flag for {@code supportedTypes()[0]} — {@code 0xFF} = supported, {@code 0x00} = not</li>
-     *   <li>byte 5: support flag for {@code supportedTypes()[1]}</li>
-     *   <li>... (up to 7 types total, in the order declared by {@link #supportedTypes()})</li>
-     * </ul>
-     * Use {@code org.watermedia.tools.DataTool#bytesAt(long, int)} to decode positions.
-     * <p>
-     * This encoding expresses non-rectangular support (e.g. {@link SampleType#DBL} working for mono/stereo
-     * but not for multichannel in OpenAL). The caller reads both tables to pick an exact passthrough
-     * combination or fall back to the closest supported channel count.
+     * Returns the channel-support table, one entry per supported channel count. Callers pick an
+     * exact passthrough combination or fall back to the {@link #closestChannelSupport(int)
+     * closest} supported channel count.
      * @return a defensive copy of the channel-support entries
      */
-    public abstract long[] supportedChannels();
+    public abstract ChannelSupport[] supportedChannels();
 
     /**
-     * Returns the canonical sample types this backend can play directly for at least one channel count.
-     * A type appearing here is not guaranteed to work at every channel count in {@link #supportedChannels()} —
-     * consult the packed support flags per entry to confirm.
-     * <p>
-     * The order of this array defines the byte positions used in {@link #supportedChannels()} entries.
+     * Returns the canonical sample types this backend can play directly for at least one channel
+     * count, in preference order for fallbacks. A type appearing here is not guaranteed to work
+     * at every channel count — consult {@link ChannelSupport#supports(SampleType)} to confirm.
      * @return a defensive copy of the supported sample types
      */
     public abstract SampleType[] supportedTypes();
+
+    /**
+     * Support entry for exactly {@code channels}, or {@code null} when this backend does not
+     * expose that channel count.
+     */
+    public final ChannelSupport channelSupport(final int channels) {
+        for (final ChannelSupport entry: this.supportedChannels()) {
+            if (entry.channels() == channels) return entry;
+        }
+        return null;
+    }
+
+    /**
+     * Support entry with the channel count closest to {@code channels}; ties prefer the lower
+     * count (downmix is more predictable than upmix). Returns {@code null} on an empty table.
+     */
+    public final ChannelSupport closestChannelSupport(final int channels) {
+        ChannelSupport best = null;
+        int bestDiff = Integer.MAX_VALUE;
+        for (final ChannelSupport entry: this.supportedChannels()) {
+            final int diff = Math.abs(entry.channels() - channels);
+            if (diff < bestDiff || (diff == bestDiff && best != null && entry.channels() < best.channels())) {
+                best = entry;
+                bestDiff = diff;
+            }
+        }
+        return best;
+    }
 
     /**
      * Reconfigures the engine for a new audio format.

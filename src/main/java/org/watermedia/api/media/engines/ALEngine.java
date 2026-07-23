@@ -26,25 +26,16 @@ public final class ALEngine extends SFXEngine {
     private static final int DEFAULT_BUFFER_COUNT = 8;
 
     // CAPABILITY TABLES.
-    // SUPPORTED_TYPES DEFINES THE BYTE ORDER USED IN SUPPORTED_CHANNELS ENTRIES.
-    // SUPPORTED_CHANNELS ENCODING PER long (MSB → LSB):
-    //   byte 7 = channel count
-    //   byte 6 = U8  support flag (0xFF or 0x00)
-    //   byte 5 = S16 support flag
-    //   byte 4 = FLT support flag
-    //   byte 3 = DBL support flag
-    //   bytes 2..0 = reserved for future types
     // DBL MULTICHANNEL IS NOT SUPPORTED BECAUSE AL_EXT_DOUBLE HAS NO MULTICHANNEL VARIANTS AND
     // AL_EXT_MCFORMATS ONLY DEFINES 8/16-BIT INT + 32-BIT FLOAT FORMATS (NO 64-BIT).
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL };
-    private static final long[] SUPPORTED_CHANNELS = {
-            //ch U8 S16 FLT DBL --  --  --
-            0x01_FF_FF_FF_FF_00_00_00L, // MONO:   ALL FOUR TYPES
-            0x02_FF_FF_FF_FF_00_00_00L, // STEREO: ALL FOUR TYPES
-            0x04_FF_FF_FF_00_00_00_00L, // QUAD:   NO DBL
-            0x06_FF_FF_FF_00_00_00_00L, // 5.1:    NO DBL
-            0x07_FF_FF_FF_00_00_00_00L, // 6.1:    NO DBL
-            0x08_FF_FF_FF_00_00_00_00L, // 7.1:    NO DBL
+    private static final ChannelSupport[] SUPPORTED_CHANNELS = {
+            new ChannelSupport(1, SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL), // MONO
+            new ChannelSupport(2, SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL), // STEREO
+            new ChannelSupport(4, SampleType.U8, SampleType.S16, SampleType.FLT),                 // QUAD
+            new ChannelSupport(6, SampleType.U8, SampleType.S16, SampleType.FLT),                 // 5.1
+            new ChannelSupport(7, SampleType.U8, SampleType.S16, SampleType.FLT),                 // 6.1
+            new ChannelSupport(8, SampleType.U8, SampleType.S16, SampleType.FLT),                 // 7.1
     };
 
     private final int[] buffers;
@@ -126,7 +117,7 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    public long[] supportedChannels() {
+    public ChannelSupport[] supportedChannels() {
         return SUPPORTED_CHANNELS.clone();
     }
 

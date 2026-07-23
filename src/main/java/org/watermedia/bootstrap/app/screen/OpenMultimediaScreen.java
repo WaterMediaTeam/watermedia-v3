@@ -8,6 +8,7 @@ import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.platform.PlatformSearch;
 import org.watermedia.api.util.MediaQuality;
+import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.element.Box;
@@ -675,7 +676,7 @@ public class OpenMultimediaScreen extends Screen {
 
         final var sources = mrl.sources();
         for (int i = 0; i < sources.size(); i++) {
-            if (sources.get(i).isImage()) {
+            if (sources.get(i).type() == MediaType.IMAGE) {
                 final MediaPlayer player = MediaAPI.createPlayer(mrl, i,
                         mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) {
@@ -832,7 +833,7 @@ public class OpenMultimediaScreen extends Screen {
         final MRL.Source src = this.firstSource();
         if (src == null) return null;
         MediaQuality best = MediaQuality.UNKNOWN;
-        for (final MediaQuality q: src.availableQualities()) {
+        for (final MediaQuality q: src.qualities().keySet()) {
             if (q.threshold > best.threshold) best = q;
         }
         return best == MediaQuality.UNKNOWN ? null : best.name();

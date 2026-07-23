@@ -15,8 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link MRL#sourceByType}, {@link MRL#imageSource}, {@link MRL#videoSource},
- * and {@link MRL#sourcesByType} consistently classify a local image as IMAGE-only.
+ * Verifies {@link MRL#sourceByType} and {@link MRL#sourcesByType} consistently
+ * classify a local image as IMAGE-only.
  */
 @DisplayName("MRL source classification")
 public class MrlSourcesTest {
@@ -31,10 +31,10 @@ public class MrlSourcesTest {
 
         final MRL.Source image = mrl.sourceByType(MediaType.IMAGE);
         assertNotNull(image);
-        assertNull(mrl.videoSource());
+        assertNull(mrl.sourceByType(MediaType.VIDEO));
 
-        // imageSource() IS A CONVENIENCE FOR sourceByType(IMAGE) — VERIFY THE SAME OBJECT COMES BACK.
-        assertSame(image, mrl.imageSource());
+        // THE FIRST-MATCH LOOKUP AND THE FULL FILTER MUST AGREE ON THE SAME OBJECT.
+        assertSame(image, mrl.sourcesByType(MediaType.IMAGE).get(0));
 
         assertFalse(mrl.sourcesByType(MediaType.IMAGE).isEmpty());
         assertEquals(0, mrl.sourcesByType(MediaType.VIDEO).size());

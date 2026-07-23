@@ -33,7 +33,7 @@ class AWTEngineTest {
         final AWTEngine engine = new AWTEngine.Builder().build();
         engine.setVideoFormat(PixelFormat.BGRA, 2, 1, 8);
         // PIXEL 0: B=10 G=20 R=30 A=255 ; PIXEL 1: B=40 G=50 R=60 A=128
-        engine.upload(direct(10, 20, 30, 255, 40, 50, 60, 128), 0);
+        engine.upload(new ByteBuffer[]{direct(10, 20, 30, 255, 40, 50, 60, 128)}, new int[]{0});
 
         final BufferedImage img = engine.image();
         assertEquals(2, img.getWidth());
@@ -48,7 +48,7 @@ class AWTEngineTest {
         final AWTEngine engine = new AWTEngine.Builder().build();
         engine.setVideoFormat(PixelFormat.RGBA, 1, 1, 8);
         // R=30 G=20 B=10 A=255 -> 0xFF1E140A, same pixel as the BGRA case
-        engine.upload(direct(30, 20, 10, 255), 0);
+        engine.upload(new ByteBuffer[]{direct(30, 20, 10, 255)}, new int[]{0});
         assertEquals(0xFF1E140A, engine.image().getRGB(0, 0));
     }
 
@@ -60,7 +60,7 @@ class AWTEngineTest {
         engine.setVideoFormat(PixelFormat.BGRA, 1, 1, 8);
         assertEquals(0L, engine.texture()); // NO FRAME YET — SENTINEL STAYS 0 (MATCHES THE BASE CONTRACT)
 
-        engine.upload(direct(1, 2, 3, 4), 0);
+        engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
         assertTrue(fired[0]);
         assertEquals(1L, engine.texture()); // FRAME PRESENT — SENTINEL FLIPS NON-ZERO
 
@@ -74,10 +74,10 @@ class AWTEngineTest {
         final AWTEngine engine = new AWTEngine.Builder().build();
         engine.setVideoFormat(PixelFormat.BGRA, 2, 2, 8);
         // 2x2 BGRA WITH A 12-BYTE STRIDE: 8 REAL BYTES PER ROW + 4 PADDING BYTES THE ENGINE MUST SKIP
-        engine.upload(direct(
+        engine.upload(new ByteBuffer[]{direct(
                 10, 20, 30, 255,  40, 50, 60, 255,   1, 2, 3, 4,   // ROW 0 + PAD
-                70, 80, 90, 255, 100, 110, 120, 255,  5, 6, 7, 8),  // ROW 1 + PAD
-                12);
+                70, 80, 90, 255, 100, 110, 120, 255,  5, 6, 7, 8)}, // ROW 1 + PAD
+                new int[]{12});
         final BufferedImage img = engine.image();
         assertEquals(0xFF1E140A, img.getRGB(0, 0));
         assertEquals(0xFF3C3228, img.getRGB(1, 0));
@@ -91,7 +91,7 @@ class AWTEngineTest {
         final AWTEngine engine = new AWTEngine.Builder().build();
         engine.setVideoFormat(PixelFormat.RGBA, 2, 1, 8);
         // 2x1 RGBA, 12-BYTE STRIDE (8 REAL + 4 PAD); R,G,B,A SWIZZLES TO THE SAME ARGB AS THE BGRA CASE
-        engine.upload(direct(30, 20, 10, 255,  60, 50, 40, 255,  1, 2, 3, 4), 12);
+        engine.upload(new ByteBuffer[]{direct(30, 20, 10, 255,  60, 50, 40, 255,  1, 2, 3, 4)}, new int[]{12});
         final BufferedImage img = engine.image();
         assertEquals(0xFF1E140A, img.getRGB(0, 0));
         assertEquals(0xFF3C3228, img.getRGB(1, 0));

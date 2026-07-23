@@ -599,7 +599,7 @@ public final class PlayerScreen extends Screen {
 
     private void loadQualitiesForSource(final int sourceIndex) {
         if (this.ctx.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.availableSources.length) return;
-        final var qualities = this.ctx.availableSources[sourceIndex].availableQualities();
+        final var qualities = this.ctx.availableSources[sourceIndex].qualities().keySet();
         if (qualities == null || qualities.isEmpty()) return;
 
         this.ctx.availableQualities = qualities.toArray(new MediaQuality[0]);
@@ -967,7 +967,7 @@ public final class PlayerScreen extends Screen {
             canvas.text(title, this.left + 34, this.top + 10,
                     this.selected ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
             final int count = PlayerScreen.this.ctx.availableSources != null ? PlayerScreen.this.ctx.availableSources.length : 1;
-            canvas.text("SOURCE " + (this.index + 1) + "/" + count + " - " + this.source.availableQualities().size() + " QUALITIES",
+            canvas.text("SOURCE " + (this.index + 1) + "/" + count + " - " + this.source.qualities().size() + " QUALITIES",
                     this.left + 34, this.top + 32, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
             super.onDraw(canvas);
         }

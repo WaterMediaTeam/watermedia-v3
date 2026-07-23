@@ -642,40 +642,13 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // UPLOAD ENTRY POINTS — THIN WRAPPERS OVER submit()
-    // ==========================================================================
-    @Override
-    public void upload(final ByteBuffer buffer, final int stride) {
-        this.submit(new ByteBuffer[]{buffer}, new int[]{stride});
-    }
-
-    @Override
-    public void upload(final ByteBuffer yBuffer, final int yStride, final ByteBuffer uvBuffer, final int uvStride) {
-        this.submit(new ByteBuffer[]{yBuffer, uvBuffer}, new int[]{yStride, uvStride});
-    }
-
-    @Override
-    public void upload(final ByteBuffer yBuffer, final int yStride,
-                       final ByteBuffer uBuffer, final int uStride,
-                       final ByteBuffer vBuffer, final int vStride) {
-        this.submit(new ByteBuffer[]{yBuffer, uBuffer, vBuffer}, new int[]{yStride, uStride, vStride});
-    }
-
-    @Override
-    public void upload(final ByteBuffer yBuffer, final int yStride,
-                       final ByteBuffer uBuffer, final int uStride,
-                       final ByteBuffer vBuffer, final int vStride,
-                       final ByteBuffer aBuffer, final int aStride) {
-        this.submit(new ByteBuffer[]{yBuffer, uBuffer, vBuffer, aBuffer}, new int[]{yStride, uStride, vStride, aStride});
-    }
-
-    // ==========================================================================
     // SUBMISSION — PRODUCER SIDE
     // ==========================================================================
     // VALIDATES THE FRAME, TRIES TO WRITE IT INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY),
     // AND OTHERWISE PARKS THE CLIENT BUFFERS IN THE LATEST-WINS PENDING SLOT. THE SHARED HUB
     // QUEUES AT MOST ONE BATCHED DRAIN TASK PER RENDER THREAD AT ANY TIME.
-    private void submit(final ByteBuffer[] bufs, final int[] strides) {
+    @Override
+    public void upload(final ByteBuffer[] bufs, final int[] strides) {
         for (final ByteBuffer buf: bufs) {
             if (buf == null || !buf.isDirect()) return;
         }

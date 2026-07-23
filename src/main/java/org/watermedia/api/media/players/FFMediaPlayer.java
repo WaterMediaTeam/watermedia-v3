@@ -28,6 +28,7 @@ import org.watermedia.api.media.players.util.PacketQueue;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
+import org.watermedia.api.util.Slave;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
 import org.lwjgl.system.MemoryUtil;
@@ -387,9 +388,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean skipTime(final long timeMs) { return this.seek(this.time() + timeMs); }
-
-    @Override
     public boolean previousFrame() {
         if (!this.canSeek()) return false;
         return this.seek(Math.max(0, this.time() - this.clock.frameDurationMs()));
@@ -402,12 +400,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean forward() { return this.skipTime(5000); }
-
-    @Override
-    public boolean rewind() { return this.skipTime(-5000); }
-
-    @Override
     public float fps() { return this.clock.fps(); }
 
     @Override
@@ -418,7 +410,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private void publishTransition(final Status next) {
         final Status prev = this.clock.status();
         this.clock.transition(next);
-        this.publishStatus(prev, this.clock.status());
+        this.invokeStatus(prev, this.clock.status());
     }
 
     @Override
@@ -561,56 +553,12 @@ public final class FFMediaPlayer extends MediaPlayer {
         return fps >= 1.0 && fps <= 1000.0;
     }
 
-    // EXTRACTS THE CHANNEL COUNT STORED IN MSB (byte 7) OF A SUPPORT ENTRY.
-    private static int channelsOf(final long entry) {
-        return DataTool.bytesAt(entry, 7) & 0xFF;
-    }
-
-    // CHECKS WHETHER THE TYPE AT typeIdx IS SUPPORTED IN THE GIVEN ENTRY.
-    // TYPE BYTES OCCUPY POSITIONS 6..0 (MAX 7 TYPES).
-    private static boolean typeOkAt(final long entry, final int typeIdx) {
-        if (typeIdx < 0 || typeIdx > 6) return false;
-        return DataTool.bytesAt(entry, 6 - typeIdx) == (byte) 0xFF;
-    }
-
-    // FINDS THE ENTRY MATCHING channels EXACTLY, OR 0 IF NONE.
-    // VALID ENTRIES HAVE channels > 0 IN THE MSB, SO 0 IS A SAFE "NOT FOUND" SENTINEL.
-    private static long entryFor(final long[] table, final int channels) {
-        for (final long e: table) if (channelsOf(e) == channels) return e;
-        return 0L;
-    }
-
-    // PICKS THE ENTRY WITH CHANNEL COUNT CLOSEST TO target. ON TIE, PREFERS THE LOWER COUNT
-    // (DOWNMIX IS MORE PREDICTABLE THAN UPMIX IN AUDIO PROCESSING).
-    private static long closestEntry(final long[] table, final int target) {
-        long best = table[0];
-        int bestCh = channelsOf(best);
-        int bestDiff = Math.abs(bestCh - target);
-        for (final long e: table) {
-            final int ch = channelsOf(e);
-            final int diff = Math.abs(ch - target);
-            if (diff < bestDiff || (diff == bestDiff && ch < bestCh)) {
-                best = e;
-                bestCh = ch;
-                bestDiff = diff;
-            }
-        }
-        return best;
-    }
-
-    // FINDS THE INDEX OF t IN types, OR -1.
-    private static int typeIndex(final SFXEngine.SampleType[] types, final SFXEngine.SampleType t) {
-        if (t == null) return -1;
-        for (int i = 0; i < types.length; i++) if (types[i] == t) return i;
-        return -1;
-    }
-
-    // PICKS A FALLBACK TYPE SUPPORTED AT entry. PREFERS S16 (UNIVERSAL) IF AVAILABLE.
-    private static SFXEngine.SampleType fallbackType(final SFXEngine.SampleType[] types, final long entry) {
-        final int s16Idx = typeIndex(types, SFXEngine.SampleType.S16);
-        if (s16Idx >= 0 && typeOkAt(entry, s16Idx)) return SFXEngine.SampleType.S16;
-        for (int i = 0; i < types.length; i++) {
-            if (typeOkAt(entry, i)) return types[i];
+    // PICKS A FALLBACK TYPE SUPPORTED AT entry, WALKING THE ENGINE'S PREFERENCE ORDER.
+    // PREFERS S16 (UNIVERSAL) IF AVAILABLE.
+    private static SFXEngine.SampleType fallbackType(final SFXEngine.SampleType[] types, final SFXEngine.ChannelSupport entry) {
+        if (entry.supports(SFXEngine.SampleType.S16)) return SFXEngine.SampleType.S16;
+        for (final SFXEngine.SampleType type: types) {
+            if (entry.supports(type)) return type;
         }
         return null;
     }
@@ -633,7 +581,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 final long ySize = (long) yStride * height;
                 planes[0] = this.ensurePlane(planes[0], ySize);
                 copyPlane(frame.data(0), ySize, planes[0]);
-                this.gfx.upload(planes[0], yStride);
+                this.gfx.upload(new ByteBuffer[]{planes[0]}, new int[]{yStride});
             }
             case NV12, NV21 -> {
                 final int yStride = frame.linesize(0);
@@ -644,7 +592,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 planes[1] = this.ensurePlane(planes[1], uvSize);
                 copyPlane(frame.data(0), ySize, planes[0]);
                 copyPlane(frame.data(1), uvSize, planes[1]);
-                this.gfx.upload(planes[0], yStride, planes[1], uvStride);
+                this.gfx.upload(new ByteBuffer[]{planes[0], planes[1]}, new int[]{yStride, uvStride});
             }
             case YUV420P, YUV422P, YUV444P -> {
                 final int chromaH = (cs == PixelFormat.YUV420P) ? (height + 1) / 2 : height;
@@ -660,7 +608,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 copyPlane(frame.data(0), ySize, planes[0]);
                 copyPlane(frame.data(1), uSize, planes[1]);
                 copyPlane(frame.data(2), vSize, planes[2]);
-                this.gfx.upload(planes[0], yStride, planes[1], uStride, planes[2], vStride);
+                this.gfx.upload(new ByteBuffer[]{planes[0], planes[1], planes[2]}, new int[]{yStride, uStride, vStride});
             }
             case YUVA420P, YUVA422P, YUVA444P -> {
                 final int chromaH = (cs == PixelFormat.YUVA420P) ? (height + 1) / 2 : height;
@@ -680,7 +628,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 copyPlane(frame.data(1), uSize, planes[1]);
                 copyPlane(frame.data(2), vSize, planes[2]);
                 copyPlane(frame.data(3), aSize, planes[3]);
-                this.gfx.upload(planes[0], yStride, planes[1], uStride, planes[2], vStride, planes[3], aStride);
+                this.gfx.upload(new ByteBuffer[]{planes[0], planes[1], planes[2], planes[3]}, new int[]{yStride, uStride, vStride, aStride});
             }
             default -> LOGGER.warn(IT, "Unsupported native upload: {}", cs);
         }
@@ -2190,7 +2138,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             final String url = this.resolveInputUrl(uri, true);
 
             final var audioSlaves = this.source.audioSlaves();
-            MRL.SlaveEntry audioSlave = null;
+            Slave audioSlave = null;
             if (this.sfx != null && !audioSlaves.isEmpty()) {
                 audioSlave = audioSlaves.get(0);
             }
@@ -2311,7 +2259,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.mediaDurationMs = (duration == avutil.AV_NOPTS_VALUE || duration < 0) ? NO_DURATION : duration / 1000;
     }
 
-    private boolean initAudioSlave(final MRL.SlaveEntry slave) {
+    private boolean initAudioSlave(final Slave slave) {
         final var slaveUri = slave.uri();
         if (slaveUri == null) {
             LOGGER.error(IT, "Audio slave has no URI for quality {}", this.quality);
@@ -2651,11 +2599,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         final boolean srcPlanar = av_sample_fmt_is_planar(srcFormat) != 0;
         final SFXEngine.SampleType srcType = toSampleType(srcFormat);
 
-        final long[] supCh = this.sfx.supportedChannels();
         final SFXEngine.SampleType[] supTypes = this.sfx.supportedTypes();
-        final int typeIdx = typeIndex(supTypes, srcType);
-        final long exactEntry = entryFor(supCh, srcChannels);
-        final boolean exactCombinationOk = exactEntry != 0L && typeIdx >= 0 && typeOkAt(exactEntry, typeIdx);
+        final SFXEngine.ChannelSupport exactEntry = this.sfx.channelSupport(srcChannels);
+        final boolean exactCombinationOk = exactEntry != null && exactEntry.supports(srcType);
 
         this.audioOutputSampleRate = codecParams.sample_rate();
 
@@ -2684,11 +2630,15 @@ public final class FFMediaPlayer extends MediaPlayer {
         //   CHANNELS: exact match if possible, else closest supported count
         //   TYPE:     preserve if supported AT TARGET CHANNEL COUNT, else fallback (prefers S16)
         this.audioPassthrough = false;
-        final long targetEntry = exactEntry != 0L ? exactEntry : closestEntry(supCh, srcChannels);
-        this.audioOutputChannels = channelsOf(targetEntry);
+        final SFXEngine.ChannelSupport targetEntry = exactEntry != null ? exactEntry : this.sfx.closestChannelSupport(srcChannels);
+        if (targetEntry == null) {
+            LOGGER.error(IT, "SFX engine exposes an empty channel-support table");
+            return false;
+        }
+        this.audioOutputChannels = targetEntry.channels();
 
         final SFXEngine.SampleType outType;
-        if (typeIdx >= 0 && typeOkAt(targetEntry, typeIdx)) {
+        if (targetEntry.supports(srcType)) {
             outType = srcType;
         } else {
             outType = fallbackType(supTypes, targetEntry);

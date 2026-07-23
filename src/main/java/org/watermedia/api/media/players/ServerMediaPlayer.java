@@ -137,23 +137,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean skipTime(final long time) {
-        return this.seek(this.time() + time);
-    }
-
-    @Override
     public boolean seekQuick(final long time) {
         return this.seek(time);
-    }
-
-    @Override
-    public boolean forward() {
-        return this.skipTime(5000);
-    }
-
-    @Override
-    public boolean rewind() {
-        return this.skipTime(-5000);
     }
 
     @Override
@@ -246,7 +231,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.accumulatedMs = d;
             this.status = Status.ENDED;
             ACTIVE.remove(this);
-            this.publishStatus(Status.PLAYING, Status.ENDED);
+            this.invokeStatus(Status.PLAYING, Status.ENDED);
         }
     }
 }

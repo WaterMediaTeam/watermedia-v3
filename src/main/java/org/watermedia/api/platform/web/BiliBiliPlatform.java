@@ -11,6 +11,7 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.api.util.Slave;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JsonTool;
 
@@ -270,9 +271,9 @@ public final class BiliBiliPlatform implements IPlatform {
                 LOGGER.debug(IT, "BiliBili DASH: {} raw video stream(s), {} audio stream(s) -> {} variant(s)",
                         videoStreams.size(), audioStreams != null ? audioStreams.size() : 0, variants.size());
 
-                List<DataSlave> audioSlaves = null;
+                List<Slave> audioSlaves = null;
                 if (audioStreams != null && !audioStreams.isEmpty()) {
-                    audioSlaves = List.of(new DataSlave(null, null, URI.create(audioStreams.get(0).getAsJsonObject().get("baseUrl").getAsString())));
+                    audioSlaves = List.of(new Slave(null, null, URI.create(audioStreams.get(0).getAsJsonObject().get("baseUrl").getAsString())));
                 } else {
                     LOGGER.warn(IT, "BiliBili DASH '{}' has no audio stream; video will play muted", metadata.title());
                 }

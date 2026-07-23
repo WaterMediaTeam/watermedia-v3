@@ -367,30 +367,6 @@ public final class VKEngine extends GFXEngine {
         }
     }
 
-    @Override
-    public void upload(final ByteBuffer buffer, final int stride) {
-        this.submit(new ByteBuffer[]{buffer}, new int[]{stride});
-    }
-
-    @Override
-    public void upload(final ByteBuffer yBuffer, final int yStride, final ByteBuffer uvBuffer, final int uvStride) {
-        this.submit(new ByteBuffer[]{yBuffer, uvBuffer}, new int[]{yStride, uvStride});
-    }
-
-    @Override
-    public void upload(final ByteBuffer yBuffer, final int yStride,
-                       final ByteBuffer uBuffer, final int uStride,
-                       final ByteBuffer vBuffer, final int vStride) {
-        this.submit(new ByteBuffer[]{yBuffer, uBuffer, vBuffer}, new int[]{yStride, uStride, vStride});
-    }
-
-    @Override
-    public void upload(final ByteBuffer yBuffer, final int yStride,
-                       final ByteBuffer uBuffer, final int uStride,
-                       final ByteBuffer vBuffer, final int vStride,
-                       final ByteBuffer aBuffer, final int aStride) {
-        this.submit(new ByteBuffer[]{yBuffer, uBuffer, vBuffer, aBuffer}, new int[]{yStride, uStride, vStride, aStride});
-    }
 
     @Override
     public void releaseBuffer(final ByteBuffer buffer) {
@@ -440,10 +416,11 @@ public final class VKEngine extends GFXEngine {
     // ==========================================================================
     // SUBMISSION (PRODUCER THREAD)
     // ==========================================================================
-    private void submit(final ByteBuffer[] bufs, final int[] strides) {
+    @Override
+    public void upload(final ByteBuffer[] bufs, final int[] strides) {
         if (this.released || !this.fmtOk || this.width <= 0 || this.height <= 0) return;
         final int sources = this.convert ? this.planeCount : 1;
-        if (bufs.length != sources) return; // STALE FORMAT / WRONG OVERLOAD
+        if (bufs.length != sources) return; // STALE FORMAT / WRONG PLANE COUNT
         for (final ByteBuffer b: bufs) {
             if (b == null || !b.isDirect()) return;
         }

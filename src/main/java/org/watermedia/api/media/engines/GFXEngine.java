@@ -82,7 +82,7 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
 
     /**
      * Whether this engine can keep a small animated image as one texture per frame.
-     * Engines that return false keep using {@link #upload(ByteBuffer, int)} each frame.
+     * Engines that return false keep using {@link #upload(ByteBuffer[], int[])} each frame.
      */
     public boolean supportsFrameTextures() { return false; }
 
@@ -108,7 +108,7 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
 
     /**
      * Whether this engine can sample block-compressed (BCn) textures of the given codec.
-     * Engines that return false keep receiving decoded pixels through the {@code upload} overloads.
+     * Engines that return false keep receiving decoded pixels through {@link #upload(ByteBuffer[], int[])}.
      * @param codec a codec id such as {@code "BC7"} (see {@code CodecsAPI.CODEC_BC7})
      */
     public boolean supportsCompressedTextures(final String codec) { return false; }
@@ -154,55 +154,21 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     public void releaseBuffer(final ByteBuffer buffer) {}
 
     /**
-     * Uploads a single-plane frame (BGRA, RGBA, RGB, GRAY, YUYV).
+     * Uploads one decoded frame as its ordered plane set.
      * <p>
-     * <b>Buffer retention contract (applies to all {@code upload} overloads):</b> engines may
-     * consume the submitted buffers asynchronously, but must finish reading (or drop) them
-     * before the second subsequent {@code upload} call on the same engine returns. Callers in
-     * turn must not modify a submitted buffer until they have submitted two newer frames.
-     * @param buffer  direct ByteBuffer pointing to native pixel data
-     * @param stride  row stride in <b>bytes</b>, or 0 for tightly-packed rows
+     * The plane count must match the active {@link #setVideoFormat video format}: one entry for
+     * packed layouts (BGRA, RGBA, RGB, GRAY, YUYV), two for semi-planar (NV12/NV21), three for
+     * planar YUV (Y, U, V) and four for planar YUV plus alpha.
+     * <p>
+     * <b>Buffer retention contract:</b> engines may consume the submitted buffers asynchronously,
+     * but must finish reading (or drop) them before the second subsequent {@code upload} call on
+     * the same engine returns. Callers in turn must not modify a submitted buffer until they have
+     * submitted two newer frames, and must pass freshly allocated arrays on every call — the
+     * engine may retain them until the frame is consumed.
+     * @param planes  direct ByteBuffers pointing to native pixel data, one per plane
+     * @param strides per-plane row strides in <b>bytes</b>, or 0 for tightly-packed rows
      */
-    public abstract void upload(final ByteBuffer buffer, final int stride);
-
-    /**
-     * Uploads a two-plane frame (NV12, NV21, P010, P016).
-     * @param yBuffer   Y plane
-     * @param yStride   Y row stride in bytes, or 0 for tightly-packed
-     * @param uvBuffer  interleaved UV (NV12) or VU (NV21) plane
-     * @param uvStride  UV row stride in bytes, or 0 for tightly-packed
-     */
-    public abstract void upload(final ByteBuffer yBuffer, final int yStride,
-                                final ByteBuffer uvBuffer, final int uvStride);
-
-    /**
-     * Uploads a three-plane frame (YUV420P, YUV422P, YUV444P).
-     * @param yBuffer  Y plane — full resolution
-     * @param yStride  Y row stride in bytes
-     * @param uBuffer  U (Cb) plane — chroma-subsampled
-     * @param uStride  U row stride in bytes
-     * @param vBuffer  V (Cr) plane — chroma-subsampled
-     * @param vStride  V row stride in bytes
-     */
-    public abstract void upload(final ByteBuffer yBuffer, final int yStride,
-                                final ByteBuffer uBuffer, final int uStride,
-                                final ByteBuffer vBuffer, final int vStride);
-
-    /**
-     * Uploads a four-plane frame (YUVA420P, YUVA422P, YUVA444P).
-     * @param yBuffer  Y plane — full resolution
-     * @param yStride  Y row stride in bytes
-     * @param uBuffer  U (Cb) plane — chroma-subsampled
-     * @param uStride  U row stride in bytes
-     * @param vBuffer  V (Cr) plane — chroma-subsampled
-     * @param vStride  V row stride in bytes
-     * @param aBuffer  Alpha plane — full resolution
-     * @param aStride  Alpha row stride in bytes
-     */
-    public abstract void upload(final ByteBuffer yBuffer, final int yStride,
-                                final ByteBuffer uBuffer, final int uStride,
-                                final ByteBuffer vBuffer, final int vStride,
-                                final ByteBuffer aBuffer, final int aStride);
+    public abstract void upload(final ByteBuffer[] planes, final int[] strides);
 
     /**
      * Releases all GPU resources. The engine is unusable after this call.
