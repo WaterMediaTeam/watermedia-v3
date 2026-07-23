@@ -24,7 +24,18 @@ public class VersionToolTest {
         assertEquals(3, v.major);
         assertEquals(2, v.minor);
         assertEquals(1, v.revision);
+        assertEquals(-1, v.prerelease); // NO 4TH COMPONENT
         assertEquals("beta", v.extra);
+    }
+
+    @Test
+    @DisplayName("the fourth prerelease component is optional")
+    void optionalPrerelease() {
+        assertEquals(-1, new VersionTool("3.2.1").prerelease);
+        assertEquals(5, new VersionTool("3.2.1.5").prerelease);
+        final VersionTool full = new VersionTool("3.2.1.5-beta");
+        assertEquals(5, full.prerelease);
+        assertEquals("beta", full.extra);
     }
 
     @Test
@@ -47,10 +58,11 @@ public class VersionToolTest {
     }
 
     @Test
-    @DisplayName("compareTo weighs major.minor.revision only")
+    @DisplayName("compareTo weighs major.minor.revision.prerelease, ignoring the qualifier")
     void comparison() {
         assertTrue(new VersionTool("1.2.3").compareTo(new VersionTool("1.2.4")) < 0);
         assertTrue(new VersionTool("1.3.0").compareTo(new VersionTool("1.2.9")) > 0);
+        assertTrue(new VersionTool("1.2.3.1").compareTo(new VersionTool("1.2.3.2")) < 0);
         assertEquals(0, new VersionTool("1.2.3-gpl").compareTo(new VersionTool("1.2.3-lgpl")));
         assertTrue(new VersionTool("2.0.0").atLeast(new VersionTool("2.0.0")));
         assertTrue(new VersionTool("2.5.0").inRange(new VersionTool("2.0.0"), new VersionTool("3.0.0")));

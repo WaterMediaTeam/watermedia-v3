@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 
@@ -1047,6 +1048,10 @@ public final class PlayerScreen extends Screen {
         private String speedStr = "1.00";
         private long fpsKey = Long.MIN_VALUE;
         private long speedKey = Long.MIN_VALUE;
+        // RENDER-THREAD-ONLY WRAP MEMOS (ONE PER WRAPPED ROW) — wrap() REBUILDS ONLY WHEN TEXT/WIDTH/MAXLINES MOVE
+        private final WrapCache mrlWrap = new WrapCache();
+        private final WrapCache titleWrap = new WrapCache();
+        private final WrapCache descWrap = new WrapCache();
 
         @Override
         protected void onUpdate() {
@@ -1106,7 +1111,7 @@ public final class PlayerScreen extends Screen {
             y = this.head(canvas, "ENGINE", x, y);
             y = this.metric(canvas, "Engine", player.getClass().getSimpleName(), x, y, AppTheme.NEON_LIGHT);
             if (ctx.selectedMRL != null) {
-                y = this.wrappedMetric(canvas, "MRL", ctx.selectedMRL.uri.toString(), x, y, AppTheme.TEXT_SOFT, 2);
+                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.selectedMRL.uri.toString(), x, y, AppTheme.TEXT_SOFT, 2);
             }
             y = this.metric(canvas, "Source", (ctx.sourceSelectorIndex + 1) + "/" +
                     (ctx.availableSources != null ? ctx.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
@@ -1128,7 +1133,7 @@ public final class PlayerScreen extends Screen {
             y = this.head(canvas, "METADATA", x, y);
 
             if (meta != null) {
-                y = this.wrappedMetric(canvas, "Title", meta.title(), x, y, AppTheme.TEXT_SOFT, 2);
+                y = this.wrappedMetric(canvas, this.titleWrap, "Title", meta.title(), x, y, AppTheme.TEXT_SOFT, 2);
                 y = this.metric(canvas, "Author", meta.author(), x, y, AppTheme.TEXT_SOFT);
                 if (meta.postedAt() != null) {
                     y = this.metric(canvas, "Published", PlayerScreen.this.formatDate(meta), x, y, AppTheme.TEXT_SOFT);
@@ -1165,12 +1170,12 @@ public final class PlayerScreen extends Screen {
             return y + text.lineHeight(META_SCALE) + 4;
         }
 
-        private int wrappedMetric(final Canvas canvas, final String label, final String value, final int x, final int y,
+        private int wrappedMetric(final Canvas canvas, final WrapCache cache, final String label, final String value, final int x, final int y,
                                   final Color valueColor, final int maxLines) {
             final TextRenderer text = PlayerScreen.this.text;
             final int valueX = this.valueX(x);
             final int maxPixelW = Math.max(80, this.left + this.measuredWidth - valueX - 14);
-            final List<String> lines = this.wrap(value, maxPixelW, META_SCALE, maxLines);
+            final List<String> lines = cache.lines(value, maxPixelW, META_SCALE, maxLines);
             canvas.text(label + ":", x, y, AppTheme.TEXT_FAINT, META_SCALE, false);
             final int lineH = text.lineHeight(META_SCALE) + 2;
             for (int i = 0; i < lines.size(); i++) {
@@ -1193,7 +1198,7 @@ public final class PlayerScreen extends Screen {
             final String desc = meta != null && meta.desc() != null && !meta.desc().isBlank()
                     ? meta.desc()
                     : "No description available.";
-            final List<String> lines = this.wrap(desc, w - 20, META_DESC_SCALE, 3);
+            final List<String> lines = this.descWrap.lines(desc, w - 20, META_DESC_SCALE, 3);
             final int labelH = text.lineHeight(META_DESC_LABEL_SCALE);
             final int lineH = text.lineHeight(META_DESC_SCALE) + 2;
             final int h = 22 + labelH + lines.size() * lineH + 14;
@@ -1273,6 +1278,28 @@ public final class PlayerScreen extends Screen {
                 }
             }
             return best > 4 ? best : limit;
+        }
+
+        // RENDER-THREAD-ONLY MEMO FOR ONE WRAPPED ROW: KEYS THE CACHED LINE LIST ON (TEXT, WIDTH, MAXLINES) SO
+        // wrap() ONLY REBUILDS WHEN AN INPUT MOVES (MRL/METADATA CHANGE OR PANEL RESIZE), NOT EVERY FRAME.
+        // TOUCHED ONLY DURING onDraw ON THE RENDER THREAD, SO NO VOLATILE/SYNC IS NEEDED
+        private final class WrapCache {
+
+            private String text;
+            private int width = -1;
+            private int maxLines = -1;
+            private List<String> lines;
+
+            List<String> lines(final String value, final int maxPixelWidth, final float scale, final int maxLines) {
+                if (this.lines == null || this.width != maxPixelWidth || this.maxLines != maxLines
+                        || !Objects.equals(this.text, value)) {
+                    this.text = value;
+                    this.width = maxPixelWidth;
+                    this.maxLines = maxLines;
+                    this.lines = MetricsPanel.this.wrap(value, maxPixelWidth, scale, maxLines);
+                }
+                return this.lines;
+            }
         }
     }
 
