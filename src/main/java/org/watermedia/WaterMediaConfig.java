@@ -110,6 +110,12 @@ public class WaterMediaConfig {
         @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
         public float cleanupInterval = 60.0f;
 
+        @Spec.Field(suffix = "MB")
+        @Comment("Total on-disk budget (in MB) for the shared media cache store (network + codec tiers under %TEMP%)")
+        @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
+        @NumberConditions(minInt = 1, math = true)
+        public int cacheMaxSizeMB = 1024 * 8;
+
         @Spec.Field
         @Comment("FFMPEG general settings")
         public final Ffmpeg ffmpeg = new Ffmpeg();

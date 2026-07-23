@@ -30,12 +30,16 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -414,7 +418,57 @@ public final class NetworkCache {
         Files.write(tmp, bytes);
         IOTool.move(tmp, file);
         storeIndex(tier, hash, expiresAt, contentType);
+        // ENFORCE THE TOTAL-SIZE CAP AFTER PUBLISHING SO THE %TEMP% STORE CANNOT GROW UNBOUNDED.
+        enforceBudget(file);
         return file;
+    }
+
+    // SWEEPS THE STORE AFTER A WRITE AND EVICTS OLDEST ENTRIES UNTIL THE TOTAL FITS media.cacheMaxSizeMB.
+    // LAST-MODIFIED TIME IS THE AGE PROXY, SO NO INDEX FORMAT/VERSION CHANGE IS NEEDED. CODEC TEXTURES
+    // NEVER EXPIRE ON THEIR OWN BUT ARE STILL EVICTABLE HERE UNDER BUDGET PRESSURE. RUNS UNDER THE CALLER'S
+    // STRIPE LOCK; EVERY REMOVAL GOES THROUGH storeDelete (NetworkCache.class MONITOR), KEEPING THE
+    // STRIPE->CLASS LOCK ORDER THE REST OF THE STORE USES, SO NO NEW DEADLOCK PATH IS INTRODUCED.
+    private static void enforceBudget(final Path written) {
+        if (cacheDir == null) return;
+        final long budget = Math.max(1L, WaterMediaConfig.media.cacheMaxSizeMB) * 1024L * 1024L;
+
+        // SNAPSHOT COMMITTED PAYLOAD FILES (SKIP index.dat AND *.part TEMPS); STAT FAILURES MEAN THE FILE
+        // VANISHED MID-SCAN (CONCURRENT EVICTION/EXPIRY) AND ARE SIMPLY SKIPPED.
+        final List<StoreFile> files = new ArrayList<>();
+        try (final Stream<Path> stream = Files.list(cacheDir)) {
+            stream.forEach(path -> {
+                final String name = path.getFileName().toString();
+                if (!name.startsWith(FILE_PREFIX) || !name.endsWith(FILE_SUFFIX)) return;
+                try {
+                    files.add(new StoreFile(name, Files.size(path), Files.getLastModifiedTime(path).toMillis()));
+                } catch (final IOException ignored) {}
+            });
+        } catch (final IOException e) {
+            LOGGER.warn(IT, "Failed to scan media cache store for budget enforcement", e);
+            return;
+        }
+
+        long total = files.stream().mapToLong(StoreFile::size).sum();
+        if (total <= budget) return;
+
+        // OLDEST FIRST; NEVER EVICT THE ENTRY WE JUST WROTE SO THE RETURNED PATH STAYS VALID. storeDelete
+        // DROPS BOTH THE FILE AND ITS INDEX ENTRY, REUSING THE EXISTING CORRUPTION/EXPIRY REMOVAL PATH.
+        final String keep = written.getFileName().toString();
+        files.sort(Comparator.comparingLong(StoreFile::modified));
+        for (final StoreFile file: files) {
+            if (total <= budget) break;
+            if (file.name().equals(keep)) continue;
+            final int sep = file.name().indexOf('_', FILE_PREFIX.length());
+            if (sep < 0) continue;
+            // wm_<tier.prefix>_<hex>.tmp -> RESOLVE (tier, hex) SO storeDelete REBUILDS THE EXACT PATH.
+            final String prefix = file.name().substring(FILE_PREFIX.length(), sep);
+            final String hex = file.name().substring(sep + 1, file.name().length() - FILE_SUFFIX.length());
+            final Tier tier = Tier.NETWORK.prefix.equals(prefix) ? Tier.NETWORK
+                            : Tier.CODEC.prefix.equals(prefix) ? Tier.CODEC : null;
+            if (tier == null) continue;
+            storeDelete(tier, hex);
+            total -= file.size();
+        }
     }
 
     // REGISTERS (tier, hash) IN THE INDEX AND PERSISTS IT.
@@ -671,4 +725,7 @@ public final class NetworkCache {
             return this.expiresAt >= 0L && this.expiresAt <= now;
         }
     }
+
+    // BUDGET-SWEEP CARRIER: A COMMITTED PAYLOAD FILE WITH ITS SIZE AND LAST-MODIFIED AGE PROXY.
+    private record StoreFile(String name, long size, long modified) {}
 }
