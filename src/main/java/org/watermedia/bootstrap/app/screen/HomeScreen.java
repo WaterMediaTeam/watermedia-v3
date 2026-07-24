@@ -281,7 +281,7 @@ public class HomeScreen extends Screen {
                 .border(AppTheme.STROKE_BRIGHT, 1f)
                 .width(MAX_PARENT);
 
-        this.cleanupCancel = new Button("CANCEL").subText("ESC")
+        this.cleanupCancel = new Button("CANCEL").subText("ESC").icon("x")
                 .accent(AppTheme.STROKE_BRIGHT).textColor(AppTheme.TEXT);
         this.cleanupCancel.size(170, Theme.BUTTON_LG).onClick(b -> this.dismissCleanup());
         this.cleanupPrimary = new Button().subText("ENTER");
@@ -361,12 +361,13 @@ public class HomeScreen extends Screen {
                 .title(cl.done ? "CACHE CLEANED" : "CLEAN CACHE")
                 .accent(cl.error ? AppTheme.RED : cl.done ? AppTheme.GREEN : AppTheme.CYAN)
                 .panelWidth(Math.min(740, this.ctx.logicalWidth() - 48));
-        this.cleanupCancel.label(cl.done ? "CLOSE" : "CANCEL");
+        // ONCE THE CLEAN RAN THE PRIMARY ALREADY SAYS CLOSE — HIDE CANCEL SO THE FOOTER NEVER SHOWS TWO CLOSE BUTTONS
+        this.cleanupCancel.visible(cl.stage <= 1);
         final boolean clEnabled = this.cleanupPrimaryEnabled();
         final String clLabel = this.cleanupPrimaryLabel();
         final Color clColor = !clEnabled ? AppTheme.TEXT_FAINT : cl.done ? AppTheme.GREEN : AppTheme.CYAN;
         this.cleanupPrimary.label(clLabel)
-                .icon(clLabel.startsWith("CLEAN") ? "broom" : "")
+                .icon(clLabel.startsWith("CLEAN") ? "broom" : "x")
                 .accent(clColor).textColor(clColor)
                 .enabled(clEnabled);
     }
