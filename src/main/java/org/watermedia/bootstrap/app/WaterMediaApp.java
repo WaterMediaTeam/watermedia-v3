@@ -147,8 +147,8 @@ public class WaterMediaApp {
         // PHASE 2 — show the loading splash INSIDE the shell (live titlebar +
         // pulsing backend strip), initialize the app-side audio output, then
         // run WaterMedia.start() in the background. The splash polls WaterMedia
-        // progress each frame and renders the boot stack.
-        final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx, RenderSystem.engineName());
+        // progress each frame and renders the three boot bars.
+        final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx);
         loadingScreen.onEnter();
         root.mount(loadingScreen);
         renderLoadingFrame();

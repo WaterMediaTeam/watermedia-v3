@@ -208,6 +208,12 @@ public class WaterMedia {
         return module == null ? "" : module.workName;
     }
 
+    /** Bar 3 — whether the demanding task downloads from the network; {@code false} means local extraction. */
+    public static boolean workRemote() {
+        final WaterMediaModule module = currentModule;
+        return module != null && module.workRemote;
+    }
+
     /** A non-fatal boot failure: the module that reported it and the step that failed. */
     public record Failure(String api, String step) {}
 

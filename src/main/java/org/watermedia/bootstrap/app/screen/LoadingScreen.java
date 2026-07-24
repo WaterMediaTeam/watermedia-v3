@@ -14,15 +14,13 @@ import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.Spacing;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
-import java.awt.Color;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Locale;
 
 /**
- * Boot splash matching the handoff loading layout, as a fully retained tree: a centered column with
- * the glowing banner, the animated duck (or the glowing pack icon as fallback), the spaced title, one
- * thin aggregate progress bar and the stacked boot log tail. Live boot state (progress ramp, duck
- * frame, log lines) is pulled in the elements' {@code onUpdate} hooks every frame.
+ * Boot splash as a fully retained tree: a centered column with the glowing banner, the animated duck
+ * (or the glowing pack icon as fallback), the spaced title and three captioned progress bars — the
+ * overall module boot, the active module's steps and the download/extraction byte progress. Live boot
+ * state is pulled from the {@link WaterMedia} metrics in the elements' {@code onUpdate} hooks every frame.
  */
 public final class LoadingScreen extends Screen {
 
@@ -33,26 +31,21 @@ public final class LoadingScreen extends Screen {
     private static final int DUCK_SIZE = 216;
     private static final int BAR_W = 380;
     private static final int BAR_H = 8;
-    private static final int STATUS_LINE_H = 28;
+    private static final int CAPTION_GAP = 8;
+    private static final int CAPTION_H = 22;
     private static final int PROGRESS_ANIM_MS = 520;
     private static final int TITLE_SPACING = 3;
     private static final float TITLE_SCALE = AppTheme.TEXT_DISPLAY;
-    private static final float STATUS_SCALE = AppTheme.TEXT_SECTION;
-
-    // RENDER ENGINE LABEL FOR THE BOOT LOG — FIXED BEFORE THE SPLASH EXISTS, INJECTED SO THE RETAINED
-    // TREE STAYS FULLY DECOUPLED FROM THE RENDER BACKEND
-    private final String engine;
+    private static final float CAPTION_SCALE = AppTheme.TEXT_SECTION;
 
     /**
      * Creates the boot splash.
      *
-     * @param text   the shared text renderer
-     * @param ctx    the application context
-     * @param engine the display name of the active render engine, shown in the boot log
+     * @param text the shared text renderer
+     * @param ctx  the application context
      */
-    public LoadingScreen(final TextRenderer text, final AppContext ctx, final String engine) {
+    public LoadingScreen(final TextRenderer text, final AppContext ctx) {
         super(text, ctx);
-        this.engine = engine == null ? "" : engine;
     }
 
     @Override
@@ -63,8 +56,9 @@ public final class LoadingScreen extends Screen {
                 .add(new Duck().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 22, 0)))
                 .add(new Text("LOADING WATERMEDIA...").scale(TITLE_SCALE).letterSpacing(TITLE_SPACING)
                         .color(AppTheme.NEON_LIGHT).gravity(Gravity.CENTER).margin(new Spacing(0, 0, 24, 0)))
-                .add(new Bar().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 26, 0)))
-                .add(new BootLog().gravity(Gravity.CENTER)));
+                .add(new ModuleBar().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 14, 0)))
+                .add(new StepBar().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 14, 0)))
+                .add(new WorkBar().gravity(Gravity.CENTER)));
     }
 
     @Override
@@ -93,21 +87,21 @@ public final class LoadingScreen extends Screen {
                 glowW * sx, glowH * sy, null);
     }
 
-    private static StatusLine ok(final String message) {
-        return new StatusLine("[OK]", message, AppTheme.GREEN, AppTheme.TEXT);
+    // WORK FRACTION OF THE DEMANDING TASK IN FLIGHT — FULL WHEN NONE IS ACTIVE SO STEP RATIOS COMPLETE
+    private static float workFrac() {
+        final long total = WaterMedia.workTotal();
+        return total > 0 ? clamp01((float) WaterMedia.work() / total) : 1f;
     }
 
-    private static StatusLine pending(final String message) {
-        return new StatusLine("[..]", message, AppTheme.TEXT_FAINT, AppTheme.TEXT_SOFT);
-    }
-
-    private static StatusLine fail(final String message) {
-        return new StatusLine("[NO]", message, AppTheme.RED, AppTheme.TEXT_SOFT);
-    }
-
-    private static String apiMessage(final String apiName, final String stepName) {
-        final String name = clean(apiName).isEmpty() ? "WaterMedia API" : apiName;
-        return clean(stepName).isEmpty() ? name : name + ": " + stepName;
+    // HUMAN-READABLE BYTES FOR THE WORK CAPTION — ONE UNIT FOR BOTH VALUES PICKED FROM THE LARGEST;
+    // A ZERO TOTAL (UNKNOWN SIZE) SHOWS ONLY THE PROCESSED AMOUNT
+    private static String bytes(final long done, final long total) {
+        final boolean mb = Math.max(done, total) >= 1L << 20;
+        final double div = mb ? 1048576.0 : 1024.0;
+        final String unit = mb ? " MB" : " KB";
+        return total > 0
+                ? String.format(Locale.ROOT, "%.1f/%.1f%s", done / div, total / div, unit)
+                : String.format(Locale.ROOT, "%.1f%s", done / div, unit);
     }
 
     private static String clean(final String value) {
@@ -120,9 +114,6 @@ public final class LoadingScreen extends Screen {
 
     private static double clamp01(final double v) {
         return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
-    }
-
-    private record StatusLine(String tag, String message, Color tagColor, Color messageColor) {
     }
 
     // FITTED PIXEL SIZE — NAMED Fit (NOT Box) SO IT NEVER SHADOWS THE element.Box DRAWABLE THE SIBLING SCREENS USE
@@ -229,40 +220,44 @@ public final class LoadingScreen extends Screen {
         }
     }
 
-    // AGGREGATE PROGRESS BAR — DARK TRACK, NEON OUTLINE AND GLOW, GRADIENT FILL; THE DISPLAYED VALUE
-    // CHASES THE LIVE WaterMedia STEP RATIO WITH THE LEGACY EASE-IN-OUT RAMP
-    private static final class Bar extends Element<Bar> {
+    // SHARED BAR CHASSIS — NEON TRACK + GRADIENT FILL WITH A CENTERED CAPTION BELOW; SUBCLASSES FEED
+    // THE GOAL RATIO AND CAPTION EVERY FRAME, THE SHOWN VALUE OPTIONALLY CHASES IT WITH THE EASE RAMP
+    private abstract static class Bar<T extends Bar<T>> extends Element<T> {
 
+        protected String caption = "";
+        protected String alert = ""; // RED SUFFIX (FAILED STEPS) — EMPTY WHEN CLEAN
         private float shown;
         private float from;
         private float target;
         private long startMs;
 
-        @Override
-        protected void onUpdate() {
-            // OVERALL RATIO FROM THE THREE BOOT BARS: MODULES DONE + THE CURRENT MODULE'S STEP FRACTION,
-            // ITSELF REFINED BY THE ACTIVE DOWNLOAD/EXTRACTION DIMENSION WHEN ONE IS RUNNING
-            final int apis = WaterMedia.steps();
-            final int api = WaterMedia.step();
-            final long workTotal = WaterMedia.workTotal();
-            final float workFrac = workTotal > 0 ? clamp01((float) WaterMedia.work() / workTotal) : 1f;
-            final int taskSteps = WaterMedia.taskSteps();
-            final float taskFrac = taskSteps > 0 ? clamp01((WaterMedia.taskStep() - 1 + workFrac) / taskSteps) : 0f;
-            final float goal = api <= 0 || apis <= 0 ? 0f : clamp01((api - 1 + taskFrac) / apis);
+        // FEEDS THE GOAL RATIO; EASED CHASES WITH THE EASE-IN-OUT RAMP, OTHERWISE IT SNAPS (LIVE BYTES)
+        protected final void goal(final float goal, final boolean eased) {
+            if (!eased) {
+                this.shown = this.target = clamp01(goal);
+                return;
+            }
             final long now = System.currentTimeMillis();
             if (Math.abs(goal - this.target) > 0.001f) {
                 this.from = this.shown;
-                this.target = goal;
+                this.target = clamp01(goal);
                 this.startMs = now;
             }
             final double t = clamp01((now - this.startMs) / (double) PROGRESS_ANIM_MS);
             this.shown = t >= 1.0 ? this.target : clamp01((float) MathUtil.easeInOutQuad(this.from, this.target, t));
         }
 
+        // DROPS THE RAMP STATE TO ZERO — USED WHEN THE TRACKED SCOPE CHANGES (NEW MODULE)
+        protected final void rebase() {
+            this.shown = 0f;
+            this.from = 0f;
+            this.target = 0f;
+        }
+
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             this.contentWidth = Math.min(BAR_W, Math.max(180, innerAvailWidth - 96));
-            this.contentHeight = BAR_H;
+            this.contentHeight = BAR_H + CAPTION_GAP + CAPTION_H;
         }
 
         @Override
@@ -270,103 +265,84 @@ public final class LoadingScreen extends Screen {
             final int x = this.left;
             final int y = this.top;
             final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
             final float fillW = Math.max(0f, (w - 2) * this.shown);
-            canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_2, 235));
-            canvas.stroke(x, y, w, h, AppTheme.NEON_DARK, 1f);
-            canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.20f);
+            canvas.fill(x, y, w, BAR_H, AppTheme.alpha(AppTheme.BG_2, 235));
+            canvas.stroke(x, y, w, BAR_H, AppTheme.NEON_DARK, 1f);
+            canvas.glow(x, y, w, BAR_H, 0f, AppTheme.NEON, 0.20f);
             if (fillW > 0f) {
-                canvas.gradientH(x + 1, y + 1, fillW, Math.max(1, h - 2), AppTheme.NEON_DARK, AppTheme.NEON_LIGHT);
-                canvas.glow(x + 1, y + 1, fillW, Math.max(1, h - 2), 0f, AppTheme.NEON, 0.36f);
+                canvas.gradientH(x + 1, y + 1, fillW, BAR_H - 2, AppTheme.NEON_DARK, AppTheme.NEON_LIGHT);
+                canvas.glow(x + 1, y + 1, fillW, BAR_H - 2, 0f, AppTheme.NEON, 0.36f);
             }
+            // CAPTION CENTERED UNDER THE TRACK, THE ALERT SUFFIX PAINTED IN RED RIGHT AFTER IT
+            final int captionW = canvas.textWidth(this.caption, CAPTION_SCALE, false);
+            final int alertW = this.alert.isEmpty() ? 0 : canvas.textWidth(this.alert, CAPTION_SCALE, false);
+            final float tx = x + (w - captionW - alertW) * 0.5f;
+            final int ty = y + BAR_H + CAPTION_GAP;
+            canvas.text(this.caption, tx, ty, AppTheme.TEXT, CAPTION_SCALE, false);
+            if (alertW > 0) canvas.text(this.alert, tx + captionW, ty, AppTheme.RED, CAPTION_SCALE, false);
         }
     }
 
-    // BOOT LOG TAIL — REBUILDS THE LINE LIST FROM LIVE BOOT STATE EVERY FRAME AND PAINTS AS MANY
-    // TRAILING LINES AS FIT BETWEEN ITS TOP AND THE SLOT BOTTOM (THE LEGACY TAIL-SCROLL BEHAVIOR)
-    private final class BootLog extends Element<BootLog> {
-
-        private final List<StatusLine> completed = new ArrayList<>();
-        private List<StatusLine> lines = List.of();
-        private String trackedApi = "";
-        private String trackedStep = "";
-        private int trackedFailures; // FAILURE LINES ALREADY ARCHIVED — failures() ONLY GROWS DURING BOOT
-        private String signature; // LAST INPUT SIGNATURE — THE LINE LIST IS ONLY REBUILT WHEN IT MOVES
+    // BAR 1 (MAIN) — OVERALL BOOT: MODULES DONE PLUS THE ACTIVE MODULE'S STEP FRACTION (ITSELF REFINED
+    // BY THE LIVE WORK BYTES); OUTSIDE THE MODULE WALK IT IS THE APP ITSELF LOADING ITS OWN PIECES
+    private static final class ModuleBar extends Bar<ModuleBar> {
 
         @Override
         protected void onUpdate() {
-            final String api = clean(WaterMedia.stepName());
-            if (!api.isEmpty()) {
-                // ARCHIVE THE PREVIOUS MODULE AS A COMPLETED LINE WHEN THE ACTIVE ONE CHANGES
-                if (!this.trackedApi.isEmpty() && !this.trackedApi.equals(api)) {
-                    this.completed.add(ok(apiMessage(this.trackedApi, this.trackedStep)));
-                    this.trackedStep = "";
-                }
-                this.trackedApi = api;
-                final String step = clean(WaterMedia.taskName());
-                if (!step.isEmpty()) this.trackedStep = step;
-            }
-
-            // ARCHIVE NEW SAFE-FAILURE LINES AS THEY APPEAR (BOOT IS SEQUENTIAL, SO THE LIST ONLY GROWS)
-            final List<WaterMedia.Failure> failures = WaterMedia.failures();
-            for (int i = this.trackedFailures; i < failures.size(); i++) {
-                this.completed.add(fail(apiMessage(failures.get(i).api(), failures.get(i).step())));
-            }
-            this.trackedFailures = failures.size();
-
-            // DIMENSION PROGRESS (DOWNLOAD/EXTRACTION) SHOWN AS A PERCENTAGE ON THE ACTIVE LINE
-            final long workTotal = WaterMedia.workTotal();
-            final int workPct = workTotal > 0 ? (int) (clamp01((double) WaterMedia.work() / workTotal) * 100.0) : -1;
-
-            // THE SPLASH REPAINTS EVERY FRAME; REBUILD THE LINE LIST (AND ITS STRINGS) ONLY WHEN A TRACKED
-            // INPUT ACTUALLY CHANGED, KEEPING THE PREVIOUS LIST OTHERWISE
-            final int audio = this.ctx.audioError ? 2 : this.ctx.audioReady ? 1 : 0;
-            final String signature = api.isEmpty()
-                    ? audio + "|-|" + this.completed.size()
-                    : audio + "|" + api + "|" + this.trackedStep + "|" + WaterMedia.taskStep() + "/" + WaterMedia.taskSteps() + "|" + workPct + "|" + this.completed.size();
-            if (signature.equals(this.signature)) return;
-            this.signature = signature;
-
-            final List<StatusLine> out = new ArrayList<>();
-            out.add(ok("init " + LoadingScreen.this.engine + " context"));
-            out.add(ok("render engine: " + LoadingScreen.this.engine));
-            if (this.ctx.audioError) {
-                out.add(fail("init audio output"));
-            } else if (this.ctx.audioReady) {
-                out.add(ok("init audio output"));
+            final int steps = WaterMedia.steps();
+            final int step = WaterMedia.step();
+            if (!this.ctx.backendsLoading) {
+                this.goal(1f, true);
+                this.caption = "Starting: WaterMediaApp";
+            } else if (step > 0 && steps > 0) {
+                final int taskSteps = WaterMedia.taskSteps();
+                final float taskFrac = taskSteps > 0 ? clamp01((WaterMedia.taskStep() - 1 + workFrac()) / taskSteps) : 0f;
+                this.goal(clamp01((step - 1 + taskFrac) / steps), true);
+                this.caption = "Starting: " + clean(WaterMedia.stepName()) + " (" + step + "/" + steps + ")";
             } else {
-                out.add(pending("init audio output"));
+                this.goal(0f, true);
+                this.caption = "Starting: WaterMediaApp";
             }
-            out.addAll(this.completed);
-            if (!api.isEmpty()) {
-                String message = apiMessage(api, this.trackedStep);
-                if (workPct >= 0) message += " (" + workPct + "%)";
-                final boolean complete = WaterMedia.taskSteps() <= 0 || WaterMedia.taskStep() >= WaterMedia.taskSteps();
-                out.add(complete ? ok(message) : pending(message));
-            } else {
-                out.add(pending("prepare API registry"));
-            }
-            this.lines = out;
+            final int failed = WaterMedia.failures().size();
+            this.alert = failed > 0 ? " [" + failed + " step(s) failed]" : "";
         }
+    }
+
+    // BAR 2 — ACTIVE MODULE STEPS: VISIBLE ONLY WHILE THE BOOT PUBLISHES STEPS, GONE ONCE THE MODULES
+    // FINISH AND ONLY THE APP KEEPS LOADING; THE RAMP REBASES WHEN THE ACTIVE MODULE CHANGES
+    private static final class StepBar extends Bar<StepBar> {
+
+        private int tracked; // LAST MODULE INDEX SEEN — A CHANGE DROPS THE RAMP TO ZERO
 
         @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.contentWidth = Math.min(920, Math.max(360, innerAvailWidth - 96));
-            this.contentHeight = Math.min(this.lines.size(), 8) * STATUS_LINE_H;
+        protected void onUpdate() {
+            final int taskSteps = WaterMedia.taskSteps();
+            final int taskStep = WaterMedia.taskStep();
+            this.visible = this.ctx.backendsLoading && taskSteps > 0 && taskStep > 0;
+            if (!this.visible) return;
+            final int module = WaterMedia.step();
+            if (module != this.tracked) {
+                this.tracked = module;
+                this.rebase();
+            }
+            this.goal(clamp01((taskStep - 1 + workFrac()) / taskSteps), true);
+            final String step = clean(WaterMedia.taskName());
+            this.caption = (step.isEmpty() ? "Loading" : "Loading: " + step) + " (" + taskStep + "/" + taskSteps + ")";
         }
+    }
+
+    // BAR 3 — DEMANDING WORK (DOWNLOAD/EXTRACTION BYTES): ONLY VISIBLE WHILE ONE IS IN FLIGHT; AN
+    // UNKNOWN TOTAL KEEPS THE TRACK EMPTY AND THE CAPTION COUNTING RAW BYTES
+    private static final class WorkBar extends Bar<WorkBar> {
 
         @Override
-        protected void onDraw(final Canvas canvas) {
-            final int bottom = LoadingScreen.this.top() + LoadingScreen.this.measuredHeight();
-            final int maxLines = Math.max(4, Math.min(8, (bottom - this.top - 12) / STATUS_LINE_H));
-            int y = this.top;
-            for (int i = Math.max(0, this.lines.size() - maxLines); i < this.lines.size(); i++) {
-                final StatusLine line = this.lines.get(i);
-                canvas.text(line.tag(), this.left, y, line.tagColor(), STATUS_SCALE, false);
-                canvas.text(line.message(), this.left + canvas.textWidth(line.tag() + " ", STATUS_SCALE, false),
-                        y, line.messageColor(), STATUS_SCALE, false);
-                y += STATUS_LINE_H;
-            }
+        protected void onUpdate() {
+            final long total = WaterMedia.workTotal();
+            this.visible = this.ctx.backendsLoading && (total > 0 || !clean(WaterMedia.workName()).isEmpty());
+            if (!this.visible) return;
+            final long done = WaterMedia.work();
+            this.goal(total > 0 ? clamp01((float) done / total) : 0f, false);
+            this.caption = (WaterMedia.workRemote() ? "Downloading: " : "Extracting: ") + bytes(done, total);
         }
     }
 }

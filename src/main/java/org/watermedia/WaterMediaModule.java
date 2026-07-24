@@ -21,6 +21,7 @@ public abstract class WaterMediaModule {
     protected volatile long work;
     protected volatile long workTotal;
     protected volatile String workName = "";
+    protected volatile boolean workRemote; // TRUE WHEN THE WORK DOWNLOADS FROM THE NETWORK, FALSE = LOCAL EXTRACTION
 
     // NON-FATAL ("SAFE") STEP FAILURES IN OCCURRENCE ORDER — COW: RARE WRITES, LOCK-FREE UI READS
     protected final List<String> failures = new CopyOnWriteArrayList<>();
@@ -58,6 +59,7 @@ public abstract class WaterMediaModule {
         this.work = 0L;
         this.workTotal = 0L;
         this.workName = "";
+        this.workRemote = false;
         this.failures.clear();
     }
 }
