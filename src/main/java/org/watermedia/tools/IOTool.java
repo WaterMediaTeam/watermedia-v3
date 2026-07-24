@@ -5,6 +5,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -236,6 +238,7 @@ public class IOTool {
     }
 
     public static String jarReadZip(final InputStream in, final String fileInZip) {
+        if (in == null) return null; // MISSING RESOURCE: LET THE CALLER REPORT IT INSTEAD OF SWALLOWING AN NPE
         try (in; final var zip = new ZipInputStream(in)) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
@@ -252,12 +255,19 @@ public class IOTool {
     }
 
     public static String jarVersion() {
-        try {
-            final String version = new Manifest(jarOpenFile("/META-INF/MANIFEST.MF", IOTool.class.getClassLoader())).getMainAttributes().getValue("Implementation-Version");
-            return version == null ? "3.0.0-unknown" : version;
-        } catch (final IOException e) {
-            throw new RuntimeException("Failed to read self manifest", e);
+        // MANIFEST OF THE JAR THAT LOADED THIS CLASS: A PLAIN CLASSLOADER LOOKUP WOULD RETURN THE FIRST
+        // MANIFEST OF THE WHOLE CLASSPATH (E.G. LOG4J'S) AND REPORT A FOREIGN VERSION. CLASSES-DIR RUNS
+        // (IDE) SHIP NO MANIFEST AND FALL TO THE DEV PLACEHOLDER.
+        final String cls = IOTool.class.getName().replace('.', '/') + ".class";
+        final URL url = IOTool.class.getClassLoader().getResource(cls);
+        if (url != null) {
+            final String base = url.toString();
+            try (final var in = URI.create(base.substring(0, base.length() - cls.length()) + "META-INF/MANIFEST.MF").toURL().openStream()) {
+                final String version = new Manifest(in).getMainAttributes().getValue("Implementation-Version");
+                if (version != null) return version;
+            } catch (final Exception ignored) {}
         }
+        return "3.0.0-unknown";
     }
 
     public static String jarRead(final String path) {

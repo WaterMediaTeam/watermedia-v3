@@ -67,8 +67,10 @@ sourceSets {
     test.compileClasspath += configurations.library
     test.runtimeClasspath += configurations.library
 
-    // BINARIES RESOURCES (FFMPEG ZIPS) SHIP ONLY IN THE BINARIES JAR; PUT THEM ON THE TEST RUNTIME
-    // CLASSPATH SO MediaBootstrap-GATED TESTS EXTRACT AND LOAD FFMPEG LIKE PRODUCTION DOES
+    // BINARIES RESOURCES (FFMPEG ZIPS) SHIP ONLY IN THE BINARIES JAR; PUT THEM ON THE MAIN + TEST
+    // RUNTIME CLASSPATHS SO THE DEV APP RUN AND MediaBootstrap-GATED TESTS EXTRACT AND LOAD FFMPEG
+    // LIKE PRODUCTION DOES (main DOES NOT PROPAGATE TO test: THEY ARE INDEPENDENT FILE COLLECTIONS)
+    main.runtimeClasspath += files("binaries/src/main/resources")
     test.runtimeClasspath += files("binaries/src/main/resources")
 }
 
@@ -134,7 +136,7 @@ dependencies {
 // Process target resources with mod info
 processResources {
     outputs.upToDateWhen { false }
-    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json', "watermedia/version.cfg"]) {
+    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json']) {
         expand(project.properties)
     }
 }
