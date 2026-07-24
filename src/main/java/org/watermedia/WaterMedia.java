@@ -4,8 +4,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import me.srrapero720.waterconfig.WaterConfig;
-import org.watermedia.api.WaterMediaAPI;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.platform.PlatformAPI;
@@ -15,6 +13,7 @@ import org.watermedia.tools.IOTool;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -31,10 +30,13 @@ public class WaterMedia {
     // PROCESS WORKING DIRECTORY: new File("") RESOLVES TO user.dir WHEN MADE ABSOLUTE
     private static final Path DEFAULT_CWD = new File("").toPath().toAbsolutePath();
 
-    // API REGISTRY — EACH ENTRY COUNTS AS ONE OUTER STEP. ORDER MATTERS: CODECS
-    // FIRST (SO CONSUMERS CAN DECODE IMAGES), THEN PLATFORMS (SO MRL LOOKUPS
-    // WORK), THEN THE MEDIA ENGINE (FFMPEG), THEN THE NETWORK LAYER.
-    private static final List<WaterMediaAPI> APIS = List.of(
+    // MODULE REGISTRY — EACH ENTRY IS ONE OUTER BOOT STEP. ORDER MATTERS: BINARIES FIRST (SO FFMPEG
+    // FILES EXIST ON DISK), THEN CONFIG (SO EVERY LATER MODULE READS REGISTERED VALUES), THEN CODECS
+    // (SO CONSUMERS CAN DECODE IMAGES), PLATFORMS (SO MRL LOOKUPS WORK), THE MEDIA ENGINE (FFMPEG)
+    // AND FINALLY THE NETWORK LAYER.
+    private static final List<WaterMediaModule> MODULES = List.of(
+            new WaterMediaBinaries(),
+            new WaterMediaConfig(),
             new CodecsAPI(),
             new PlatformAPI(),
             new MediaAPI(),
@@ -42,7 +44,7 @@ public class WaterMedia {
     );
 
     private static volatile WaterMedia instance;
-    private static volatile WaterMediaAPI currentAPI;
+    private static volatile WaterMediaModule currentModule;
     private static volatile int currentStep;
     public final String name;
     public final Path tmp, cwd;
@@ -78,43 +80,23 @@ public class WaterMedia {
         LOGGER.info(IT, "Process PATH: {}", instance.cwd.toAbsolutePath());
         LOGGER.info(IT, "Temp folder PATH: {}", instance.tmp.toAbsolutePath());
 
-        if (clientSide) {
-            LOGGER.info(IT, "Starting binary dependency {}", WaterMediaBinaries.NAME);
-            // DO NOT THROW — SOME ENVIRONMENTS MAY NOT NEED IT
-            try {
-                WaterMediaBinaries.start(instance.name, instance.tmp, instance.cwd, true);
-            } catch (Throwable t) {
-                LOGGER.error(IT, "Failed to start binary dependency {}", WaterMediaBinaries.NAME, t);
-            }
-        } else {
-            LOGGER.info(IT, "Skipping WMB startup on server-side environment");
-        }
-
-        LOGGER.info(IT, "Starting config dependency {}", WaterConfig.ID); {
-            WaterConfig.init();
-            WaterConfig.registerBlocking(WaterMediaConfig.class);
-        }
-
-        // PRE-LOAD: EACH API COMPUTES ITS OWN STEP COUNT UP-FRONT SO PROGRESS UIS
-        // CAN READ steps() BEFORE ANY WORK BEGINS.
-        for (final WaterMediaAPI api: APIS) {
-            api.load(instance);
-        }
-
-        // LOAD: WALK THE REGISTERED APIS IN ORDER. EACH API PUBLISHES ITS PROGRESS
-        // THROUGH step()/steps()/stepName(), AND WaterMedia TRACKS WHICH API IS
-        // CURRENTLY RUNNING VIA currentAPI()/step()/steps().
-        for (int i = 0; i < APIS.size(); i++) {
-            final WaterMediaAPI api = APIS.get(i);
-            currentAPI = api;
+        // BOOT: WALK THE MODULE REGISTRY IN ORDER. EACH MODULE COMPUTES ITS STEP COUNT IN load()
+        // RIGHT BEFORE ITS OWN start(), SO CONFIG-DEPENDENT COUNTS READ THE CONFIG MODULE'S RESULT.
+        // A MODULE FAILURE IS NEVER FATAL: IT IS LOGGED AND RECORDED IN ITS failures FOR THE UI.
+        for (int i = 0; i < MODULES.size(); i++) {
+            final WaterMediaModule module = MODULES.get(i);
+            currentModule = module;
             currentStep = i + 1;
-            LOGGER.info(IT, "Starting {} API ({}/{})", api.name(), currentStep, APIS.size());
+            LOGGER.info(IT, "Starting {} ({}/{})", module.name(), currentStep, MODULES.size());
             try {
-                if (!api.start(instance)) {
-                    LOGGER.error(IT, "Failed to start {} API", api.name());
+                module.load(instance);
+                if (!module.start(instance)) {
+                    LOGGER.error(IT, "Failed to start {}", module.name());
+                    module.failures.add(module.name());
                 }
             } catch (final Throwable t) {
-                LOGGER.error(IT, "Failed to start {} API", api.name(), t);
+                LOGGER.error(IT, "Failed to start {}", module.name(), t);
+                module.failures.add(module.stepName.isEmpty() ? module.name() : module.stepName);
             }
         }
 
@@ -122,22 +104,22 @@ public class WaterMedia {
     }
 
     /**
-     * Tears down every registered API in reverse boot order and clears the singleton so
+     * Tears down every registered module in reverse boot order and clears the singleton so
      * {@link #start(String, Path, Path, boolean)} can run again in the same process. A never-started
      * (or already-stopped) instance is a no-op.
      */
     public static synchronized void stop() {
         if (instance == null) return;
-        // REVERSE ORDER SO DEPENDENTS TEAR DOWN BEFORE THE APIS THEY DEPEND ON
-        for (int i = APIS.size() - 1; i >= 0; i--) {
-            final WaterMediaAPI api = APIS.get(i);
+        // REVERSE ORDER SO DEPENDENTS TEAR DOWN BEFORE THE MODULES THEY DEPEND ON
+        for (int i = MODULES.size() - 1; i >= 0; i--) {
+            final WaterMediaModule module = MODULES.get(i);
             try {
-                api.release(instance);
+                module.release(instance);
             } catch (final Throwable t) {
-                LOGGER.error(IT, "Failed to stop {} API", api.name(), t);
+                LOGGER.error(IT, "Failed to stop {}", module.name(), t);
             }
         }
-        currentAPI = null;
+        currentModule = null;
         currentStep = 0;
         instance = null;
         LOGGER.info(IT, "{} stopped", NAME);
@@ -169,63 +151,75 @@ public class WaterMedia {
             throw new IllegalStateException("Called a " + clazz.getSimpleName() + " method on a server-side environment");
     }
 
-    /**
-     * Total number of registered APIs — each one counts as a single outer step
-     * for boot progress reporting (e.g. {@code 2/4 - NetworkAPI}).
-     */
+    // ==========================================================================
+    // BOOT METRICS — THREE PROGRESS BARS PLUS SAFE FAILURES, ALL BY NAME.
+    // MODULE INSTANCES ARE NEVER EXPOSED; UIS POLL THESE STATICS EVERY FRAME.
+    // ==========================================================================
+
+    /** Bar 1 — total number of registered modules. */
     public static int steps() {
-        return APIS.size();
+        return MODULES.size();
     }
 
-    /**
-     * Sum of every API work unit. APIs that do not publish inner work still
-     * count as one unit so the boot bar always has a finite target.
-     */
-    public static int totalWorkSteps() {
-        int total = 0;
-        for (final WaterMediaAPI api: APIS) {
-            total += Math.max(1, api.steps());
-        }
-        return Math.max(1, total);
-    }
-
-    /**
-     * Completed boot work units across all registered APIs.
-     */
-    public static int completedWorkSteps() {
-        final WaterMediaAPI current = currentAPI;
-        if (current == null) return 0;
-
-        int completed = 0;
-        for (int i = 0; i < APIS.size(); i++) {
-            final WaterMediaAPI api = APIS.get(i);
-            final int apiSteps = Math.max(1, api.steps());
-            if (api == current) {
-                completed += Math.min(apiSteps, Math.max(0, api.step()));
-                break;
-            }
-            if (currentStep > i + 1) {
-                completed += apiSteps;
-            }
-        }
-        return completed;
-    }
-
-    /**
-     * 1-based index of the API currently being initialized. Returns 0 before
-     * {@link #start(String, Path, Path, boolean)} starts iterating the registry.
-     */
+    /** Bar 1 — 1-based index of the module currently booting; 0 before boot starts. */
     public static int step() {
         return currentStep;
     }
 
+    /** Bar 1 — name of the module currently booting; empty before boot starts. */
+    public static String stepName() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? "" : module.name();
+    }
+
+    /** Bar 2 — number of elements the current module loads; 0 when none or between modules. */
+    public static int taskSteps() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? 0 : module.steps;
+    }
+
+    /** Bar 2 — 1-based index of the element the current module is loading. */
+    public static int taskStep() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? 0 : module.step;
+    }
+
+    /** Bar 2 — name of the element the current module is loading (e.g. {@code FFMPEG}). */
+    public static String taskName() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? "" : module.stepName;
+    }
+
+    /** Bar 3 — completed units of the demanding task in flight (bytes for downloads/extractions). */
+    public static long work() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? 0L : module.work;
+    }
+
+    /** Bar 3 — total units of the demanding task in flight; 0 when no such task is active. */
+    public static long workTotal() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? 0L : module.workTotal;
+    }
+
+    /** Bar 3 — display name of the demanding task in flight (e.g. the file being extracted). */
+    public static String workName() {
+        final WaterMediaModule module = currentModule;
+        return module == null ? "" : module.workName;
+    }
+
+    /** A non-fatal boot failure: the module that reported it and the step that failed. */
+    public record Failure(String api, String step) {}
+
     /**
-     * The API currently being initialized. Callers building a loading screen
-     * should poll {@link WaterMediaAPI#step()}, {@link WaterMediaAPI#steps()}
-     * and {@link WaterMediaAPI#stepName()} on this instance to render the
-     * inner progress bar (e.g. {@code Loading FFMPEG} / {@code Loading KickPlatform}).
+     * Snapshot of every non-fatal ("safe") boot failure recorded so far, in boot order —
+     * e.g. a failed FFmpeg load or binaries extraction. Empty when boot went clean.
      */
-    public static WaterMediaAPI currentAPI() {
-        return currentAPI;
+    public static List<Failure> failures() {
+        final List<Failure> out = new ArrayList<>();
+        for (final WaterMediaModule module: MODULES) {
+            for (final String step: module.failures) out.add(new Failure(module.name(), step));
+        }
+        return List.copyOf(out);
     }
 }

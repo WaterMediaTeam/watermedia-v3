@@ -14,7 +14,7 @@ uses Java 17 and upper. Superseding the old rusty FancyVideo-API mod, using FFMP
 
 FFMPEG binaries comes in a companion library jar called **WATERMeDIA: Binaries**, with that JAR you won't need
 to compile or install FFMPEG or any other native application, plug and play as you deserve. Its sources now live
-in this repository under [`binaries/`](binaries) — see [📦 Binaries](#-binaries).
+in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries) — see [📦 Binaries](#-binaries).
 
 # 🧩 Projects using WATERMeDIA
 - 🖼️ [WATERFrAMES](https://www.curseforge.com/minecraft/mc-mods/waterframes) - By SrRapero720
@@ -183,7 +183,7 @@ Two caveats verified against the 26.2 sources:
 # 📦 Binaries
 FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
 With that jar you won't need to compile or install FFMPEG or any other native application — plug and
-play. Its sources live in this repository under [`binaries/`](binaries) and it is
+play. Its sources live in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries) and it is
 published as its own dependency (WaterMedia requires it on CurseForge/Modrinth).
 
 ## Supported platforms

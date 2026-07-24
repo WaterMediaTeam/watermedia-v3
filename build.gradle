@@ -25,8 +25,6 @@ java {
 }
 
 sourcesJar {
-    exclude("videolan/**.zip")
-    exclude("videolan/**.7z")
     exclude("org/watermedia/binaries/**") // COMPILED HERE FOR THE CODEPENDENCY; SHIPPED BY THE BINARIES JAR
 }
 
@@ -68,6 +66,10 @@ sourceSets {
     main.runtimeClasspath += configurations.library
     test.compileClasspath += configurations.library
     test.runtimeClasspath += configurations.library
+
+    // BINARIES RESOURCES (FFMPEG ZIPS) SHIP ONLY IN THE BINARIES JAR; PUT THEM ON THE TEST RUNTIME
+    // CLASSPATH SO MediaBootstrap-GATED TESTS EXTRACT AND LOAD FFMPEG LIKE PRODUCTION DOES
+    test.runtimeClasspath += files("binaries/src/main/resources")
 }
 
 // HOST JAVAFX CLASSIFIER FOR THE COMPILE-ONLY JFXEngine (win/linux/mac + aarch64 variants)
@@ -172,7 +174,7 @@ publishMods {
     file = jar.archiveFile
     changelog = getChangelogText()
     type = ["alpha": ALPHA, "beta": BETA, "release": STABLE].getOrDefault(project.versiontype.toString().toLowerCase(), ALPHA)
-    displayName = "$publishname/$version"
+    displayName = "$version"
     modLoaders.addAll(loaders)
 
     additionalFiles.from(sourcesJar.archiveFile)
@@ -189,9 +191,10 @@ publishMods {
         serverRequired = true
         projectSlug = id
         additionalFile(sourcesJar) {
-            name = "$publishname-sources/$version"
+            name = "$version-sources"
         }
         requires("watermedia-binaries")
+        // THE CURSEFORGE UPLOAD API HAS NO ENDPOINT TO EDIT THE PROJECT PAGE DESCRIPTION; SYNC IS MODRINTH-ONLY
     }
 
     modrinth {
@@ -199,6 +202,7 @@ publishMods {
         projectId = modrinthid
         minecraftVersions.addAll(mcVers)
         requires("watermedia-binaries")
+        projectDescription = providers.fileContents(layout.projectDirectory.file("README.md")).asText
     }
 }
 

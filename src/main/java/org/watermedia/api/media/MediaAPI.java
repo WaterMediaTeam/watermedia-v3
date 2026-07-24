@@ -2,8 +2,16 @@ package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.bytedeco.ffmpeg.avutil.AVBufferRef;
+import org.bytedeco.ffmpeg.global.avcodec;
+import org.bytedeco.ffmpeg.global.avformat;
+import org.bytedeco.ffmpeg.global.avutil;
+import org.bytedeco.ffmpeg.global.swresample;
+import org.bytedeco.ffmpeg.global.swscale;
+import org.bytedeco.javacpp.BytePointer;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.WaterMediaConfig;
+import org.watermedia.WaterMediaModule;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.AWTEngine;
 import org.watermedia.api.media.engines.GFXEngine;
@@ -19,6 +27,8 @@ import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.util.MediaType;
+import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.tools.IOTool;
 
 import java.io.File;
 import java.net.URI;
@@ -27,8 +37,15 @@ import java.util.function.Supplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class MediaAPI extends WaterMediaAPI {
+public final class MediaAPI extends WaterMediaModule {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
+    private static final String STEP_CACHE = "CACHE";
+    private static final String STEP_FFMPEG = "FFMPEG";
+
+    // FFMPEG ENGINE STATE — SET ONCE AT BOOT BY start(), POLLED FROM UI/PLAYER THREADS
+    private static volatile boolean FFMPEG_LOADED;
+    private static volatile boolean FFMPEG_ERROR;
+    private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
 
     /**
      * Gets or creates an MRL for the given URI string.
@@ -123,7 +140,7 @@ public final class MediaAPI extends WaterMediaAPI {
                 return new TxMediaPlayer(mrl, sourceIndex, gfxEngine);
             }
 
-            if (FFMediaPlayer.loaded()) {
+            if (FFMPEG_LOADED) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
                 gfxEngine = gfx.get();
                 sfxEngine = sfx.get();
@@ -212,46 +229,172 @@ public final class MediaAPI extends WaterMediaAPI {
         return new JSEngine(bufferMs);
     }
 
+    // ==========================================================================
+    // FFMPEG ENGINE STATE
+    // ==========================================================================
+
+    /** @return {@code true} once the FFmpeg engine initialized successfully at boot */
+    public static boolean ffmpegLoaded() {
+        return FFMPEG_LOADED;
+    }
+
+    /** @return {@code true} if the FFmpeg engine failed to initialize at boot */
+    public static boolean ffmpegError() {
+        return FFMPEG_ERROR;
+    }
+
+    /**
+     * Whether this FFmpeg build and the GPU/driver can create a Vulkan hardware-decode device (probed
+     * once at boot). Even when {@code true}, frames are still decoded in software and host-imported,
+     * because the shipped FFmpeg JNI does not expose {@code AVVkFrame}/{@code AVVulkanDeviceContext}
+     * for a true GPU-to-GPU import — so Vulkan decode would only add a GPU-to-RAM download here.
+     * @return {@code true} when Vulkan hardware decode is supported and available on this system
+     */
+    public static boolean vulkanDecode() {
+        return VULKAN_DECODE;
+    }
+
     @Override
     public String name() {
         return MediaAPI.class.getSimpleName();
     }
 
     @Override
-    public void load(final WaterMedia instance) {
+    protected void load(final WaterMedia instance) {
         super.load(instance);
         this.steps = instance.clientSide ? 2 : 0; // CACHE + FFMPEG
     }
 
     @Override
-    public boolean start(final WaterMedia instance) {
+    protected boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
             LOGGER.warn(IT, "Skipping media API start on server-side");
             return false;
         }
 
         this.step++;
-        this.stepName = "CACHE";
+        this.stepName = STEP_CACHE;
         LOGGER.info(IT, "Starting media network cache");
         try {
             NetworkCache.start(instance.tmp.resolve("cache"));
         } catch (final Exception e) {
             LOGGER.warn(IT, "Failed to initialize media network cache", e);
+            this.failures.add(STEP_CACHE);
         }
 
         this.step++;
-        this.stepName = "FFMPEG";
+        this.stepName = STEP_FFMPEG;
         LOGGER.info(IT, "Starting media engines");
-        if (!FFMediaPlayer.load(instance)) {
-            LOGGER.error(IT, "Failed to load FFMediaPlayer engine");
+        // A DISABLED-BY-CONFIG FFMPEG IS A SKIP; ONLY A REAL LOAD CRASH COUNTS AS A SAFE FAILURE
+        if (!startFFmpeg() && FFMPEG_ERROR) {
+            this.failures.add(STEP_FFMPEG);
         }
 
         return true;
     }
 
     @Override
-    public void release(final WaterMedia instance) {
+    protected void release(final WaterMedia instance) {
         NetworkCache.release();
         super.release(instance);
+    }
+
+    // BOOTS THE BUNDLED FFMPEG NATIVES: POINTS JAVACPP AT THE EXTRACTED BINARIES, LOGS THE BUILD
+    // BANNER AND PROBES HARDWARE ACCELERATION. RETURNS false WHEN DISABLED BY CONFIG OR ON FAILURE.
+    private static boolean startFFmpeg() {
+        LOGGER.info(IT, "Starting FFMPEG...");
+        if (WaterMediaConfig.media.ffmpeg.disable) {
+            LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
+            return false;
+        }
+
+        try {
+            final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
+            final String configPath = WaterMediaConfig.media.ffmpeg.customPath != null ? WaterMediaConfig.media.ffmpeg.customPath.toAbsolutePath().toString() : null;
+            final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
+
+            System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
+            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
+
+            final String currentLibPath = System.getProperty("java.library.path");
+            if (currentLibPath == null || currentLibPath.isEmpty()) {
+                System.setProperty("java.library.path", ffmpegPath);
+            } else if (!currentLibPath.contains(ffmpegPath)) {
+                System.setProperty("java.library.path", ffmpegPath + File.pathSeparator + currentLibPath);
+            }
+
+            LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
+
+            LOGGER.info(IT, "=== FFMPEG Build Info ===");
+            LOGGER.info(IT, "• avformat: {}", avformat.avformat_version());
+            LOGGER.info(IT, "• avcodec:  {}", avcodec.avcodec_version());
+            LOGGER.info(IT, "• avutil:   {}", avutil.avutil_version());
+            LOGGER.info(IT, "• swscale:  {}", swscale.swscale_version());
+            LOGGER.info(IT, "• swresample: {}", swresample.swresample_version());
+
+            try {
+                final BytePointer config = avformat.avformat_configuration();
+                LOGGER.info(IT, "Configuration: {}", text(config, "unavailable"));
+            } catch (final Exception e) {
+                LOGGER.warn(IT, "Configuration: unavailable");
+            }
+
+            LOGGER.info(IT, "Hardware Acceleration:");
+            int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
+            int hwCount = 0;
+            boolean vulkanInBuild = false;
+            do {
+                hwType = avutil.av_hwdevice_iterate_types(hwType);
+                if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
+
+                final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
+                final String hwNameStr = text(hwName, null);
+                if (hwNameStr != null) {
+                    LOGGER.info(IT, "• {}", hwNameStr);
+                    if ("vulkan".equals(hwNameStr)) vulkanInBuild = true;
+                    hwCount++;
+                }
+                IOTool.closeQuietly(hwName);
+            } while (true);
+
+            if (hwCount == 0) {
+                LOGGER.info(IT, "  (none available)");
+            }
+
+            // PROBE VULKAN HARDWARE DECODE (BUILD + DRIVER) BY CREATING A VULKAN HW DEVICE. NOTE: TRUE
+            // GPU->GPU ZERO-COPY ALSO NEEDS THE AVVkFrame / AVVulkanDeviceContext JNI TYPES, WHICH THIS
+            // BYTEDECO BUILD DOES NOT EXPOSE — SO EVEN WHEN AVAILABLE IT IS NOT PREFERRED (IT WOULD ADD A
+            // GPU->RAM DOWNLOAD OVER THE SOFTWARE DECODE + HOST-IMPORT PATH). DIAGNOSTICS ONLY.
+            boolean vulkanDecode = false;
+            if (vulkanInBuild) {
+                try {
+                    final AVBufferRef ref = new AVBufferRef();
+                    if (avutil.av_hwdevice_ctx_create(ref, avutil.AV_HWDEVICE_TYPE_VULKAN, (String) null, null, 0) >= 0) {
+                        avutil.av_buffer_unref(ref);
+                        vulkanDecode = true;
+                    }
+                } catch (final Throwable t) {
+                    // NO VULKAN DEVICE — LEAVE THE PROBE NEGATIVE
+                }
+            }
+            VULKAN_DECODE = vulkanDecode;
+            LOGGER.info(IT, "Vulkan hardware decode: {}", vulkanDecode
+                    ? "available (zero-copy GPU import needs AVVkFrame JNI, absent here — software decode + host-import is used)"
+                    : "unavailable");
+
+            final BytePointer license = avformat.avformat_license();
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), text(license, "unknown"));
+            IOTool.closeQuietly(license);
+            return FFMPEG_LOADED = true;
+        } catch (final Throwable t) {
+            LOGGER.error(IT, "Failed to load FFMPEG", t);
+            FFMPEG_ERROR = true;
+            return false;
+        }
+    }
+
+    // NULL-SAFE BytePointer -> String FOR THE FFMPEG BOOT BANNER LOGS
+    private static String text(final BytePointer p, final String orElse) {
+        return p == null || p.isNull() ? orElse : p.getString();
     }
 }

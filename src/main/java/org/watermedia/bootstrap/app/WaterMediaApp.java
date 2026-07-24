@@ -26,7 +26,7 @@ import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
@@ -555,7 +555,7 @@ public class WaterMediaApp {
 
             case OPEN_MULTIMEDIA -> {
                 // CHECK FFMPEG AVAILABILITY FIRST
-                if (!FFMediaPlayer.loaded()) {
+                if (!MediaAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
@@ -576,7 +576,7 @@ public class WaterMediaApp {
 
             case PLAYER -> {
                 // CHECK FFMPEG AVAILABILITY FIRST
-                if (!FFMediaPlayer.loaded()) {
+                if (!MediaAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
                             null);
@@ -1435,7 +1435,7 @@ public class WaterMediaApp {
                 "- Java: " + System.getProperty("java.version") + " (" + System.getProperty("java.vendor") + ")\n" +
                 "- Java Home: " + System.getProperty("java.home") + "\n" +
                 "- FFmpeg Path: " + ffmpegPath() + "\n" +
-                "- FFmpeg Loaded: " + FFMediaPlayer.loaded() + "\n" +
+                "- FFmpeg Loaded: " + MediaAPI.ffmpegLoaded() + "\n" +
                 "- User Dir: " + System.getProperty("user.dir") + "\n";
     }
 
@@ -1453,7 +1453,7 @@ public class WaterMediaApp {
     }
 
     private static String ffmpegVersion() {
-        if (!FFMediaPlayer.loaded()) return "not loaded";
+        if (!MediaAPI.ffmpegLoaded()) return "not loaded";
         try {
             return "avutil " + avVersion(avutil.avutil_version())
                     + ", avcodec " + avVersion(avcodec.avcodec_version())
@@ -1471,7 +1471,7 @@ public class WaterMediaApp {
     private static String ffmpegHwAccel() {
         // WATERMEDIA'S OWN IMAGE CODECS ARE PURE-JAVA (ALWAYS PRESENT), SO THE USEFUL, VARIABLE SIGNAL IS
         // WHICH FFMPEG HARDWARE ACCELERATIONS THE PLATFORM BUILD/GPU EXPOSES (dxva2/d3d11va/cuda/qsv/vaapi...).
-        if (!FFMediaPlayer.loaded()) return "not loaded";
+        if (!MediaAPI.ffmpegLoaded()) return "not loaded";
         try {
             final StringBuilder sb = new StringBuilder();
             int type = avutil.AV_HWDEVICE_TYPE_NONE;
@@ -1494,7 +1494,7 @@ public class WaterMediaApp {
         // SOFTWARE (NON-HW) DECODERS COMPILED INTO THIS BUILD. UNLIKE WATERMEDIA'S PURE-JAVA IMAGE CODECS,
         // THIS SET CAN DIFFER BY OS/ARCH (e.g. AN EXTERNAL-LIB DECODER PRESENT ON x64 BUT NOT ARM), SO IT IS
         // WORTH CAPTURING TO VALIDATE WHETHER A CODEC IS SIMPLY MISSING FROM THE PLATFORM BUILD.
-        if (!FFMediaPlayer.loaded()) return "not loaded";
+        if (!MediaAPI.ffmpegLoaded()) return "not loaded";
         try {
             final TreeSet<String> names = new TreeSet<>();
             try (final PointerPointer<Pointer> opaque = new PointerPointer<>(1L)) {
@@ -1521,7 +1521,7 @@ public class WaterMediaApp {
         final List<String> alerts = new ArrayList<>();
         final String nvidia = nvidiaThreadedOptimizationAlert();
         if (nvidia != null) alerts.add(nvidia);
-        if (FFMediaPlayer.loadError()) {
+        if (MediaAPI.ffmpegError()) {
             alerts.add("FFmpeg failed to load — media playback is unavailable. See the attached logs for the native load error.");
         }
         if (alerts.isEmpty()) return "- None detected\n";

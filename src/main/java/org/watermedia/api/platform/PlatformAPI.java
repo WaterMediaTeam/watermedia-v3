@@ -4,7 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.WaterMediaModule;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.platform.internal.WaterPlatform;
 import org.watermedia.api.platform.web.*;
@@ -34,7 +34,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Platforms return {@link PlatformData} (their own structure); {@link MRL} and other
  * consumers build their domain types (e.g. {@code MRL.Source}) from that data.
  */
-public final class PlatformAPI extends WaterMediaAPI {
+public final class PlatformAPI extends WaterMediaModule {
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
     // CopyOnWriteArrayList: registration is rare, iteration (from MRL loader threads)
     // is hot and must not throw ConcurrentModificationException.
@@ -281,7 +281,7 @@ public final class PlatformAPI extends WaterMediaAPI {
     }
 
     @Override
-    public void load(final WaterMedia instance) {
+    protected void load(final WaterMedia instance) {
         super.load(instance);
         this.pendingPlatforms = new ArrayList<>();
         if (instance.clientSide) {
@@ -311,7 +311,7 @@ public final class PlatformAPI extends WaterMediaAPI {
     }
 
     @Override
-    public boolean start(final WaterMedia instance) {
+    protected boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
             LOGGER.warn(IT, "Platform API refuses to load on server-side");
             return false;
@@ -330,7 +330,7 @@ public final class PlatformAPI extends WaterMediaAPI {
     }
 
     @Override
-    public void release(final WaterMedia instance) {
+    protected void release(final WaterMedia instance) {
         // STOP THE ACTIVE SEARCH AND DROP THE HISTORY; KEEP THE (IDLE DAEMON) POOL FOR A LATER start()
         synchronized (SEARCH_LOCK) {
             if (searchTask != null) searchTask.cancel(true);

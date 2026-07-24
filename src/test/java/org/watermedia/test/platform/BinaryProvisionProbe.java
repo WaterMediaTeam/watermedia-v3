@@ -18,7 +18,7 @@ public final class BinaryProvisionProbe {
     public static void main(final String[] args) throws Exception {
         final Path tmp = Files.createTempDirectory("wm-binprobe");
         System.out.println("base dir: " + tmp);
-        WaterMediaBinaries.start("PROBE", tmp, null, true); // REGISTERS THE yt-dlp/botguard CACHE DIRS
+        WaterMediaBinaries.resolve(tmp); // REGISTERS THE yt-dlp/botguard CACHE DIRS
 
         final Path ytdlp = new YtDlpBinary().executable();
         System.out.println("yt-dlp:   " + ytdlp + " (" + Files.size(ytdlp) + " bytes)");

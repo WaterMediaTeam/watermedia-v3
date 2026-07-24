@@ -1,6 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
-import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.bootstrap.app.element.Box;
 import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Group;
@@ -48,8 +48,8 @@ public final class KeybindsBar extends Group<KeybindsBar> {
         this.binds = Parent.row().spacing(0);
         final StatusText ffmpeg = new StatusText("FFMPEG")
                 .status(() -> {
-                    if (FFMediaPlayer.loadError()) return StatusSquare.Status.ERROR;
-                    if (FFMediaPlayer.loaded()) return StatusSquare.Status.OK;
+                    if (MediaAPI.ffmpegError()) return StatusSquare.Status.ERROR;
+                    if (MediaAPI.ffmpegLoaded()) return StatusSquare.Status.OK;
                     return this.ctx != null && this.ctx.backendsLoading ? StatusSquare.Status.PENDING : StatusSquare.Status.ERROR;
                 });
         // RENDER ENGINES REFLECT THE ACTIVE BACKEND: OK = ACTIVE, OFF = AVAILABLE BUT INACTIVE (DIM),

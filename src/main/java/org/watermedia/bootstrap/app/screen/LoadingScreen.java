@@ -1,7 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.api.WaterMediaAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.Assets;
@@ -241,7 +240,15 @@ public final class LoadingScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final float goal = clamp01((float) WaterMedia.completedWorkSteps() / Math.max(1, WaterMedia.totalWorkSteps()));
+            // OVERALL RATIO FROM THE THREE BOOT BARS: MODULES DONE + THE CURRENT MODULE'S STEP FRACTION,
+            // ITSELF REFINED BY THE ACTIVE DOWNLOAD/EXTRACTION DIMENSION WHEN ONE IS RUNNING
+            final int apis = WaterMedia.steps();
+            final int api = WaterMedia.step();
+            final long workTotal = WaterMedia.workTotal();
+            final float workFrac = workTotal > 0 ? clamp01((float) WaterMedia.work() / workTotal) : 1f;
+            final int taskSteps = WaterMedia.taskSteps();
+            final float taskFrac = taskSteps > 0 ? clamp01((WaterMedia.taskStep() - 1 + workFrac) / taskSteps) : 0f;
+            final float goal = api <= 0 || apis <= 0 ? 0f : clamp01((api - 1 + taskFrac) / apis);
             final long now = System.currentTimeMillis();
             if (Math.abs(goal - this.target) > 0.001f) {
                 this.from = this.shown;
@@ -281,31 +288,42 @@ public final class LoadingScreen extends Screen {
 
         private final List<StatusLine> completed = new ArrayList<>();
         private List<StatusLine> lines = List.of();
-        private WaterMediaAPI trackedApi;
-        private String trackedName = "";
+        private String trackedApi = "";
         private String trackedStep = "";
+        private int trackedFailures; // FAILURE LINES ALREADY ARCHIVED — failures() ONLY GROWS DURING BOOT
         private String signature; // LAST INPUT SIGNATURE — THE LINE LIST IS ONLY REBUILT WHEN IT MOVES
 
         @Override
         protected void onUpdate() {
-            final WaterMediaAPI api = WaterMedia.currentAPI();
-            if (api != null) {
-                // ARCHIVE THE PREVIOUS API AS A COMPLETED LINE WHEN THE ACTIVE ONE CHANGES
-                if (this.trackedApi != null && this.trackedApi != api) {
-                    this.completed.add(ok(apiMessage(this.trackedName, this.trackedStep)));
+            final String api = clean(WaterMedia.stepName());
+            if (!api.isEmpty()) {
+                // ARCHIVE THE PREVIOUS MODULE AS A COMPLETED LINE WHEN THE ACTIVE ONE CHANGES
+                if (!this.trackedApi.isEmpty() && !this.trackedApi.equals(api)) {
+                    this.completed.add(ok(apiMessage(this.trackedApi, this.trackedStep)));
+                    this.trackedStep = "";
                 }
                 this.trackedApi = api;
-                this.trackedName = api.name();
-                final String step = clean(api.stepName());
+                final String step = clean(WaterMedia.taskName());
                 if (!step.isEmpty()) this.trackedStep = step;
             }
+
+            // ARCHIVE NEW SAFE-FAILURE LINES AS THEY APPEAR (BOOT IS SEQUENTIAL, SO THE LIST ONLY GROWS)
+            final List<WaterMedia.Failure> failures = WaterMedia.failures();
+            for (int i = this.trackedFailures; i < failures.size(); i++) {
+                this.completed.add(fail(apiMessage(failures.get(i).api(), failures.get(i).step())));
+            }
+            this.trackedFailures = failures.size();
+
+            // DIMENSION PROGRESS (DOWNLOAD/EXTRACTION) SHOWN AS A PERCENTAGE ON THE ACTIVE LINE
+            final long workTotal = WaterMedia.workTotal();
+            final int workPct = workTotal > 0 ? (int) (clamp01((double) WaterMedia.work() / workTotal) * 100.0) : -1;
 
             // THE SPLASH REPAINTS EVERY FRAME; REBUILD THE LINE LIST (AND ITS STRINGS) ONLY WHEN A TRACKED
             // INPUT ACTUALLY CHANGED, KEEPING THE PREVIOUS LIST OTHERWISE
             final int audio = this.ctx.audioError ? 2 : this.ctx.audioReady ? 1 : 0;
-            final String signature = api == null
+            final String signature = api.isEmpty()
                     ? audio + "|-|" + this.completed.size()
-                    : audio + "|" + api.name() + "|" + this.trackedStep + "|" + api.step() + "/" + api.steps() + "|" + this.completed.size();
+                    : audio + "|" + api + "|" + this.trackedStep + "|" + WaterMedia.taskStep() + "/" + WaterMedia.taskSteps() + "|" + workPct + "|" + this.completed.size();
             if (signature.equals(this.signature)) return;
             this.signature = signature;
 
@@ -320,10 +338,10 @@ public final class LoadingScreen extends Screen {
                 out.add(pending("init audio output"));
             }
             out.addAll(this.completed);
-            if (api != null) {
-                final String step = clean(api.stepName());
-                final String message = apiMessage(api.name(), step.isEmpty() ? this.trackedStep : step);
-                final boolean complete = api.steps() <= 0 || api.step() >= api.steps();
+            if (!api.isEmpty()) {
+                String message = apiMessage(api, this.trackedStep);
+                if (workPct >= 0) message += " (" + workPct + "%)";
+                final boolean complete = WaterMedia.taskSteps() <= 0 || WaterMedia.taskStep() >= WaterMedia.taskSteps();
                 out.add(complete ? ok(message) : pending(message));
             } else {
                 out.add(pending("prepare API registry"));

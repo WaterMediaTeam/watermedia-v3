@@ -17,7 +17,6 @@ import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.SFXEngine;
@@ -29,7 +28,6 @@ import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.Slave;
-import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.*;
 import org.lwjgl.system.MemoryUtil;
 
@@ -39,7 +37,6 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Objects;
 import java.util.function.BiFunction;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
@@ -66,9 +63,6 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
     private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
-    private static volatile boolean LOADED;
-    private static volatile boolean ERROR;
-    private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT LOAD)
 
     // AUDIO OUTPUT FORMAT
     private static final int AUDIO_SAMPLES = 2048;
@@ -2812,121 +2806,4 @@ public final class FFMediaPlayer extends MediaPlayer {
     // CONVERTS A NATIVE STRING POINTER TO JAVA, OR RETURNS orElse (STRING-IFIED) WHEN THE POINTER IS NULL
     private static String getString(final BytePointer p, final Object orElse) { return !isNull(p) ? p.getString() : orElse != null ? String.valueOf(orElse) : null; }
     private static boolean isNull(final Pointer p) { return p == null || p.isNull(); }
-
-    // STATIC
-    /**
-     * Loads and initializes the bundled FFmpeg native libraries. Call once at startup before
-     * creating any player; it honors the {@code disableFFMPEG} config flag and logs the build
-     * version and hardware-acceleration support of the loaded libraries.
-     * @param watermedia the owning WaterMedia instance, must not be {@code null}
-     * @return {@code true} if FFmpeg loaded successfully, {@code false} if disabled or on failure
-     */
-    public static boolean load(final WaterMedia watermedia) {
-        Objects.requireNonNull(watermedia, "WaterMedia instance cannot be null");
-
-        LOGGER.info(IT, "Starting FFMPEG...");
-        if (WaterMediaConfig.media.ffmpeg.disable) {
-            LOGGER.warn(IT, "FFMPEG startup was cancelled, user settings disables it");
-            return false;
-        }
-
-        try {
-            final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
-            final String configPath = WaterMediaConfig.media.ffmpeg.customPath != null ? WaterMediaConfig.media.ffmpeg.customPath.toAbsolutePath().toString() : null;
-            final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
-
-            System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
-            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
-
-            final String currentLibPath = System.getProperty("java.library.path");
-            if (currentLibPath == null || currentLibPath.isEmpty()) {
-                System.setProperty("java.library.path", ffmpegPath);
-            } else if (!currentLibPath.contains(ffmpegPath)) {
-                System.setProperty("java.library.path", ffmpegPath + java.io.File.pathSeparator + currentLibPath);
-            }
-
-            LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
-
-            LOGGER.info(IT, "=== FFMPEG Build Info ===");
-            LOGGER.info(IT, "• avformat: {}", avformat.avformat_version());
-            LOGGER.info(IT, "• avcodec:  {}", avcodec.avcodec_version());
-            LOGGER.info(IT, "• avutil:   {}", avutil.avutil_version());
-            LOGGER.info(IT, "• swscale:  {}", swscale.swscale_version());
-            LOGGER.info(IT, "• swresample: {}", swresample.swresample_version());
-
-            try {
-                final BytePointer config = avformat.avformat_configuration();
-                LOGGER.info(IT, "Configuration: {}", getString(config, "unavailable"));
-            } catch (final Exception e) {
-                LOGGER.warn(IT, "Configuration: unavailable");
-            }
-
-            LOGGER.info(IT, "Hardware Acceleration:");
-            int hwType = avutil.AV_HWDEVICE_TYPE_NONE;
-            int hwCount = 0;
-            boolean vulkanInBuild = false;
-            do {
-                hwType = avutil.av_hwdevice_iterate_types(hwType);
-                if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
-
-                final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
-                final String hwNameStr = getString(hwName, null);
-                if (hwNameStr != null) {
-                    LOGGER.info(IT, "• {}", hwNameStr);
-                    if ("vulkan".equals(hwNameStr)) vulkanInBuild = true;
-                    hwCount++;
-                }
-                IOTool.closeQuietly(hwName);
-            } while (true);
-
-            if (hwCount == 0) {
-                LOGGER.info(IT, "  (none available)");
-            }
-
-            // PROBE VULKAN HARDWARE DECODE (BUILD + DRIVER). NOTE: TRUE GPU->GPU ZERO-COPY ALSO NEEDS THE
-            // AVVkFrame / AVVulkanDeviceContext JNI TYPES, WHICH THIS BYTEDECO BUILD DOES NOT EXPOSE — SO
-            // EVEN WHEN AVAILABLE IT IS NOT PREFERRED (IT WOULD ADD A GPU->RAM DOWNLOAD OVER THE SOFTWARE
-            // DECODE + HOST-IMPORT PATH). THE PROBE ANSWERS "DOES THE HARDWARE SUPPORT IT" FOR DIAGNOSTICS.
-            VULKAN_DECODE = vulkanInBuild && probeVulkanDecode();
-            LOGGER.info(IT, "Vulkan hardware decode: {}", VULKAN_DECODE
-                    ? "available (zero-copy GPU import needs AVVkFrame JNI, absent here — software decode + host-import is used)"
-                    : "unavailable");
-
-            final BytePointer license = avformat.avformat_license();
-            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), getString(license, "unknown"));
-            IOTool.closeQuietly(license);
-            return LOADED = true;
-        } catch (final Throwable t) {
-            LOGGER.error(IT, "Failed to load FFMPEG", t);
-            ERROR = true;
-            return false;
-        }
-    }
-
-    /** @return {@code true} once {@link #load(WaterMedia)} has successfully initialized FFmpeg */
-    public static boolean loaded() { return LOADED; }
-
-    /**
-     * Whether this FFmpeg build and the GPU/driver can create a Vulkan hardware-decode device (probed
-     * once at load). Even when {@code true}, frames are still decoded in software and host-imported,
-     * because the shipped FFmpeg JNI does not expose {@code AVVkFrame}/{@code AVVulkanDeviceContext}
-     * for a true GPU-to-GPU import — so Vulkan decode would only add a GPU-to-RAM download here.
-     * @return {@code true} when Vulkan hardware decode is supported and available on this system
-     */
-    public static boolean vulkanDecodeAvailable() { return VULKAN_DECODE; }
-
-    // ATTEMPTS TO CREATE A VULKAN HW DEVICE — CONFIRMS THE BUILD AND DRIVER CAN DECODE WITH VULKAN.
-    private static boolean probeVulkanDecode() {
-        try {
-            final AVBufferRef ref = new AVBufferRef();
-            if (av_hwdevice_ctx_create(ref, AV_HWDEVICE_TYPE_VULKAN, (String) null, null, 0) < 0) return false;
-            av_buffer_unref(ref);
-            return true;
-        } catch (final Throwable t) {
-            return false;
-        }
-    }
-
-    /** @return {@code true} if {@link #load(WaterMedia)} failed to initialize FFmpeg */
-    public static boolean loadError() { return ERROR; }
 }

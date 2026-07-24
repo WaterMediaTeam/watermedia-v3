@@ -4,7 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.WaterMediaModule;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.ThreadTool;
 
@@ -17,7 +17,7 @@ import java.util.concurrent.Executor;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class NetworkAPI extends WaterMediaAPI {
+public final class NetworkAPI extends WaterMediaModule {
     static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
     private static final Executor EXECUTOR = ThreadTool.createRecommendedThreadPool("NetworkAPI-Upload", 5);
     private static final String STEP_MIME = "MIME registry";
@@ -134,7 +134,7 @@ public final class NetworkAPI extends WaterMediaAPI {
     }
 
     @Override
-    public void load(final WaterMedia instance) {
+    protected void load(final WaterMedia instance) {
         super.load(instance);
         this.fileServerEnabled = WaterMediaConfig.network.forceEnableServer
                 || (!instance.clientSide && WaterMediaConfig.network.enableServer);
@@ -142,7 +142,7 @@ public final class NetworkAPI extends WaterMediaAPI {
     }
 
     @Override
-    public boolean start(final WaterMedia instance) {
+    protected boolean start(final WaterMedia instance) {
         // EXTEND THE PLATFORM FILE NAME MAP WITH MIME TYPES JAVA DOES NOT KNOW ABOUT
         // (webp, apng, NETPBM VARIANTS, mkv, opus, ETC). JAVA'S content-types.properties
         // SHIPS A TINY SET; WITHOUT THIS, URLConnection.guessContentTypeFromName() RETURNS
@@ -156,14 +156,20 @@ public final class NetworkAPI extends WaterMediaAPI {
         if (this.fileServerEnabled) {
             this.step++;
             this.stepName = STEP_SERVER;
-            NetworkServer.start(WaterMediaConfig.network.serverPort, instance);
+            try {
+                NetworkServer.start(WaterMediaConfig.network.serverPort, instance);
+            } catch (final Exception e) {
+                // A DEAD FILE SERVER MUST NOT MARK THE WHOLE NETWORK MODULE AS CRASHED — RECORD AND CARRY ON
+                LOGGER.error(IT, "Failed to start the network file server", e);
+                this.failures.add(STEP_SERVER);
+            }
         }
 
         return true;
     }
 
     @Override
-    public void release(final WaterMedia instance) {
+    protected void release(final WaterMedia instance) {
         NetworkServer.stop(); // STOP THE FILE SERVER AND ITS THREAD POOL SO A LATER start() CAN REBIND THE PORT
         this.fileServerEnabled = false;
         super.release(instance);

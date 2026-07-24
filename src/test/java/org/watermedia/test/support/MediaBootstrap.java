@@ -1,7 +1,7 @@
 package org.watermedia.test.support;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.MediaAPI;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,7 +39,7 @@ public final class MediaBootstrap {
             final Path tmp = Files.createTempDirectory("wm-test");
             tmp.toFile().deleteOnExit();
             WaterMedia.start("WMTEST", tmp, Path.of("").toAbsolutePath(), true);
-            ffmpeg = FFMediaPlayer.loaded();
+            ffmpeg = MediaAPI.ffmpegLoaded();
         } catch (final Throwable t) {
             ffmpeg = false;
         }

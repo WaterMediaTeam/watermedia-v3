@@ -3,7 +3,7 @@ package org.watermedia.api.codecs;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.api.WaterMediaAPI;
+import org.watermedia.WaterMediaModule;
 import org.watermedia.api.codecs.readers.GIFReader;
 import org.watermedia.api.codecs.readers.JPEGReader;
 import org.watermedia.api.codecs.readers.NETPBMReader;
@@ -31,7 +31,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * format headers, identifies the format, advances the buffer position past the matched header,
  * and returns the matching {@link ImageReader}. Readers parse only the format body.
  */
-public final class CodecsAPI extends WaterMediaAPI {
+public final class CodecsAPI extends WaterMediaModule {
     private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());
 
     // ==========================================================================
@@ -440,13 +440,21 @@ public final class CodecsAPI extends WaterMediaAPI {
     }
 
     @Override
-    public boolean start(final WaterMedia instance) {
+    protected void load(final WaterMedia instance) {
+        super.load(instance);
+        this.steps = instance.clientSide ? 1 : 0; // BC PROBE
+    }
+
+    @Override
+    protected boolean start(final WaterMedia instance) {
         if (!instance.clientSide) {
             LOGGER.warn(IT, "Codecs API refuses to load on server-side");
             return false;
         }
         // RIGIDLY PROBE THE NATIVE BLOCK-COMPRESSION LIBRARY ONCE, HERE — CODECS ARE NOT
         // PLUGGABLE AT RUNTIME, SO available(...) REFLECTS ONLY WHAT THIS METHOD RESOLVES.
+        this.step++;
+        this.stepName = "BC";
         BCCodec.init();
         if (BCCodec.any()) {
             LOGGER.info(IT, "Block-compression codecs available (best: {})", BCCodec.best());

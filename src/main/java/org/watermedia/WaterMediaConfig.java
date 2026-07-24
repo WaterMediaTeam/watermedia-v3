@@ -11,7 +11,7 @@ import java.nio.file.Path;
 import java.util.regex.Pattern;
 
 @Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
-public class WaterMediaConfig {
+public class WaterMediaConfig extends WaterMediaModule {
     private static final int DEFAULT_NETWORK_SERVER_PORT = 25572;
 
     @Spec.Field
@@ -264,5 +264,30 @@ public class WaterMediaConfig {
         @Comment("Hard cap (in bytes) for NetworkRequest text/JSON bodies — anything larger throws")
         @NumberConditions(minInt = 1024, math = true)
         public int maxTextSize = (1024 * 1024) * 16;
+    }
+
+    // ==========================================================================
+    // MODULE LIFECYCLE — THE CONFIG IS REGISTERED AS THE SECOND BOOT MODULE
+    // (RIGHT AFTER BINARIES) SO EVERY LATER MODULE READS REGISTERED VALUES.
+    // ==========================================================================
+
+    @Override
+    public String name() {
+        return WaterMediaConfig.class.getSimpleName();
+    }
+
+    @Override
+    protected void load(final WaterMedia instance) {
+        super.load(instance);
+        this.steps = 1; // TOML REGISTRATION
+    }
+
+    @Override
+    protected boolean start(final WaterMedia instance) {
+        this.step++;
+        this.stepName = "TOML";
+        WaterConfig.init();
+        WaterConfig.registerBlocking(WaterMediaConfig.class);
+        return true;
     }
 }
