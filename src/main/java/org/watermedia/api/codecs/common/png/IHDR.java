@@ -18,14 +18,17 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     /**
      * Reads IHDR chunk from buffer (reads length/type header first)
      */
-    public static IHDR read(final ByteBuffer buffer) {
+    public static IHDR read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated IHDR chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new IllegalArgumentException("IHDR chunk length must be 13, got " + length);
+            throw new XCodecException("IHDR chunk length must be 13, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated IHDR chunk");
 
         return new IHDR(
                 buffer.getInt(),    // WIDTH (4 BYTES)
@@ -41,13 +44,13 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     /**
      * Converts a generic CHUNK to IHDR
      */
-    public static IHDR convert(final CHUNK chunk, final ByteOrder order) {
+    public static IHDR convert(final CHUNK chunk, final ByteOrder order) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(chunk.type()));
         }
         final byte[] data = chunk.data();
-        if (data.length != 13) {
-            throw new IllegalArgumentException("Invalid IHDR data length: " + data.length + " (expected 13)");
+        if (data.length != LENGTH) {
+            throw new XCodecException("Invalid IHDR data length: " + data.length + " (expected 13)");
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);

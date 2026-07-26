@@ -29,15 +29,18 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
     /**
      * Reads fcTL chunk from buffer (legacy method, reads length/type from buffer)
      */
-    public static FCTL read(final ByteBuffer buffer) {
+    public static FCTL read(final ByteBuffer buffer) throws XCodecException {
         // CHUNK HEADER: LENGTH (4 BYTES), TYPE (4 BYTES)
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated fcTL chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new IllegalArgumentException("fcTL chunk length must be 26, got " + length);
+            throw new XCodecException("fcTL chunk length must be 26, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated fcTL chunk");
 
         return new FCTL(
                 buffer.getInt(),     // SEQUENCE NUMBER
@@ -55,14 +58,14 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
     /**
      * Converts a generic CHUNK to FCTL
      */
-    public static FCTL convert(final CHUNK chunk, final ByteOrder order) {
+    public static FCTL convert(final CHUNK chunk, final ByteOrder order) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new IllegalArgumentException("fcTL data must be 26 bytes, got " + data.length);
+            throw new XCodecException("fcTL data must be 26 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);

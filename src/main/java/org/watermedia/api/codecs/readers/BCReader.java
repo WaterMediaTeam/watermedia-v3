@@ -46,12 +46,16 @@ public final class BCReader implements Closeable {
         this.version = info.codec();
         this.blockBytes = info.blockBytes();
 
-        final int frameBytes = DDSHeader.frameBytes(this.width, this.height, this.version);
+        // SANITY, RANGE, THEN TRUNCATION — IN THAT ORDER. THE RANGE CHECK IS WHAT MAKES THE int CASTS
+        // BELOW SOUND, SO RUNNING THE TRUNCATION CHECK FIRST LEFT IT GUARDING NOTHING
+        final long frameBytes = DDSHeader.frameBytes(this.width, this.height, this.version);
+        if (frameBytes <= 0) throw new XCodecException("Invalid BC frame size: " + frameBytes + " bytes");
         final long texLen = (long) info.arraySize() * frameBytes;
+        if (texLen > Integer.MAX_VALUE) throw new XCodecException("BC texture too large: " + texLen + " bytes");
         final long need = (long) DDSHeader.BYTES + texLen + DDSHeader.FOOTER_HEAD_BYTES + (long) info.arraySize() * Long.BYTES;
         if (file.remaining() < need) throw new XCodecException("Truncated BC texture: need " + need + " bytes");
-        if (texLen > Integer.MAX_VALUE) throw new XCodecException("BC texture too large: " + texLen + " bytes");
 
+        final int frameLen = (int) frameBytes;
         final int base = file.position();
         final int texStart = base + DDSHeader.BYTES;
 
@@ -66,7 +70,7 @@ public final class BCReader implements Closeable {
         this.frames = new ByteBuffer[info.arraySize()];
         for (int i = 0; i < this.frames.length; i++) {
             final ByteBuffer view = tex.duplicate().order(tex.order());
-            view.position(i * frameBytes).limit((i + 1) * frameBytes);
+            view.position(i * frameLen).limit((i + 1) * frameLen);
             this.frames[i] = view.slice().order(tex.order());
         }
 

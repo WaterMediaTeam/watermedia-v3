@@ -7,7 +7,6 @@ import org.watermedia.api.codecs.XCodecException;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -73,7 +72,7 @@ public final class SVGReader extends ImageReader {
 
     @Override
     public ByteBuffer next() throws IOException {
-        if (this.consumed) throw new EOFException("SVG has a single frame");
+        if (this.consumed) throw new XCodecException("SVG has a single frame");
         if (this.rendered == null) this.rendered = this.rasterize();
         this.rendered.rewind(); // RE-ARM POSITION 0 SO A SECOND PASS (AFTER reset()) READS THE FULL FRAME
         this.consumed = true;

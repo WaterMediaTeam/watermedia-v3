@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import java.util.Arrays;
+
 /**
  * Resolved fill/stroke paint. A paint is turned into a per-pixel {@link Paint} sampler at draw time
  * via {@link #sampler(Affine, double, double, double, double)}, which receives the current device
@@ -58,7 +60,9 @@ sealed interface SVGPaint permits SVGPaint.Solid, SVGPaint.Linear {
             return (px, py) -> {
                 final double gx = inv.x(px, py), gy = inv.y(px, py);
                 final double t = ((gx - gx1) * dx + (gy - gy1) * dy) / lenSq;
-                if (t <= 0) return col[0];
+                // NEGATED TEST SO A NaN t (OVERFLOWING GRADIENT SPACE) LANDS ON THE FIRST STOP INSTEAD
+                // OF REACHING THE BINARY SEARCH, WHERE NaN SORTS PAST THE LAST OFFSET
+                if (!(t > 0)) return col[0];
                 if (t >= 1) return col[col.length - 1];
                 return lookup(off, col, (float) t);
             };
@@ -69,9 +73,10 @@ sealed interface SVGPaint permits SVGPaint.Solid, SVGPaint.Linear {
             // PAD BEYOND THE STOP RANGE (STOPS NEED NOT SPAN [0,1])
             if (t <= off[0]) return col[0];
             if (t >= off[off.length - 1]) return col[col.length - 1];
-            int hi = 1;
-            while (hi < off.length && off[hi] < t) hi++;
-            if (hi >= off.length) return col[col.length - 1];
+            // BINARY SEARCH, NOT A LINEAR WALK: THIS RUNS ONCE PER COVERED PIXEL, SO WITH MANY STOPS A
+            // SCAN COSTS O(stops) PER PIXEL. THE TWO TESTS ABOVE PIN THE RESULT INSIDE [1, len-1]
+            int hi = Arrays.binarySearch(off, t);
+            if (hi < 0) hi = -hi - 1; else if (hi == 0) hi = 1;
             final int lo = hi - 1;
             final float span = off[hi] - off[lo];
             final float f = span <= 0 ? 0 : (t - off[lo]) / span;

@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -16,14 +18,17 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     /**
      * Reads cHRM chunk from buffer (reads length/type header first)
      */
-    public static CHRM read(final ByteBuffer buffer) {
+    public static CHRM read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated cHRM chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new IllegalArgumentException("cHRM chunk length must be 32, got " + length);
+            throw new XCodecException("cHRM chunk length must be 32, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated cHRM chunk");
 
         return new CHRM(
                 buffer.getInt(), // WHITE POINT X
@@ -40,14 +45,14 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     /**
      * Converts a generic CHUNK to CHRM
      */
-    public static CHRM convert(final CHUNK chunk) {
+    public static CHRM convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
-        if (data.length != 32) {
-            throw new IllegalArgumentException("cHRM data must be 32 bytes, got " + data.length);
+        if (data.length != LENGTH) {
+            throw new XCodecException("cHRM data must be 32 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);

@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -11,16 +13,22 @@ import java.nio.ByteOrder;
  */
 public record HIST(int[] frequencies) {
     public static final int SIGNATURE = 0x68_49_53_54; // "hIST"
+    // ONE FREQUENCY PER PALETTE ENTRY (2 BYTES EACH), AND THE SPEC CAPS THE PALETTE AT 256 ENTRIES
+    public static final int MAX_LENGTH = 256 * 2;
 
     /**
      * Reads hIST chunk from buffer (reads length/type header first)
      */
-    public static HIST read(final ByteBuffer buffer) {
+    public static HIST read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated hIST chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for hIST: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for hIST: 0x" + Integer.toHexString(type));
+        if (length < 0 || length > MAX_LENGTH || buffer.remaining() < length)
+            throw new XCodecException("Invalid hIST chunk length: " + Integer.toUnsignedString(length));
 
         // LENGTH IS 2 BYTES PER PALETTE ENTRY
         final int paletteSize = length / 2;
@@ -34,14 +42,14 @@ public record HIST(int[] frequencies) {
     /**
      * Converts a generic CHUNK to HIST
      */
-    public static HIST convert(final CHUNK chunk, final int paletteSize) {
+    public static HIST convert(final CHUNK chunk, final int paletteSize) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for hIST: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != paletteSize * 2) {
-            throw new IllegalArgumentException("hIST data must have " + paletteSize + " entries (" +
+            throw new XCodecException("hIST data must have " + paletteSize + " entries (" +
                     (paletteSize * 2) + " bytes), got " + data.length + " bytes");
         }
 

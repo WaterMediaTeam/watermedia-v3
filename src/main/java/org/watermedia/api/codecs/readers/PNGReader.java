@@ -67,7 +67,10 @@ public final class PNGReader extends ImageReader {
 
     // SECURITY CAPS
     private static final int MAX_DIM = 16384;                          // 16K PER AXIS (1:1); KEEPS width*height*4 WITHIN INT
+    private static final int MAX_PIXELS = 1 << 26;                     // 64 MEGAPIXEL CANVAS, SAME CEILING AS WEBPReader
     private static final int MAX_INFLATED_IMAGE_BYTES = Integer.MAX_VALUE - 8; // JAVA ARRAY-SIZE SAFE UPPER BOUND
+    private static final int MIN_INFLATE_BUFFER = 64 * 1024;           // FLOOR FOR THE INPUT-DERIVED INFLATE BUFFER
+    private static final int INFLATE_RATIO_GUESS = 32;                 // ASSUMED DEFLATE RATIO WHEN SIZING THAT BUFFER
 
     // FILTER TYPES (FILTER METHOD 0)
     private static final int FILTER_NONE = 0;
@@ -106,6 +109,7 @@ public final class PNGReader extends ImageReader {
     // STREAMING STATE
     private CHUNK pendingChunk;     // NEXT CHUNK TO CONSUME AT START OF next()
     private boolean done;            // TRUE ONCE IEND SEEN OR EOF REACHED
+    private int animFrames;          // fcTL-DRIVEN FRAMES EMITTED SO FAR, CHECKED AGAINST scan.frameCount()
     private final ImageData.Scan scan;
 
     // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
@@ -145,6 +149,9 @@ public final class PNGReader extends ImageReader {
 
         this.parseUntilFirstFrame();
         if (this.ihdr == null) throw new XCodecException("Missing IHDR chunk");
+        // FAIL BEFORE THE CANVAS IS ALLOCATED: A STREAM THAT REACHES IEND OR EOF WITHOUT IDAT/fcTL HAS
+        // NO FRAME TO DECODE, SO PAYING FOR THE BUFFERS FIRST WOULD ONLY BE A FREE ALLOCATION FOR AN ATTACKER
+        if (this.pendingChunk == null) throw new XCodecException("PNG stream contains no IDAT");
 
         // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
         this.resetPos = this.data.position();
@@ -196,9 +203,11 @@ public final class PNGReader extends ImageReader {
 
     @Override
     public boolean reset() {
+        if (this.inflaterClosed) return false;
         this.data.position(this.resetPos);
         this.pendingChunk = this.resetChunk;
         this.done = this.resetDone;
+        this.animFrames = 0;
         this.currentDelay = 0L;
         // RE-INIT THE CANVAS EXACTLY AS THE CONSTRUCTOR LEAVES IT (BKGD COLOR OR TRANSPARENT);
         // frameBuffer AND previousBuffer NEED NO CLEARING BECAUSE EACH next() FULLY WRITES THE
@@ -208,13 +217,15 @@ public final class PNGReader extends ImageReader {
     }
 
     @Override
-    public boolean hasNext() {
+    public boolean hasNext() throws XCodecException {
+        // close() ENDS THE INFLATER; A LATER next() WOULD OTHERWISE NPE INSIDE inflater.reset()
+        if (this.inflaterClosed) throw new XCodecException("PNGReader is closed");
         return !this.done && this.pendingChunk != null;
     }
 
     @Override
     public ByteBuffer next() throws IOException {
-        if (!this.hasNext()) throw new java.io.EOFException("No more PNG frames");
+        if (!this.hasNext()) throw new XCodecException("No more PNG frames");
 
         FCTL fctl = null;
         final List<ChunkSlice> compressed = new ArrayList<>();
@@ -278,6 +289,14 @@ public final class PNGReader extends ImageReader {
             } catch (final XCodecException e) {
                 this.done = true;
                 throw e;
+            }
+            // THE FRAME COUNT WAS RECONCILED AGAINST THE fcTL RECORDS IN scan(); acTL num_frames ALONE IS
+            // ATTACKER-CONTROLLED, AND A STREAM CARRYING MORE FRAMES THAN IT DECLARES IS AN ANIMATION BOMB.
+            // ONLY fcTL-DRIVEN FRAMES COUNT: A LEADING IDAT DEFAULT IMAGE IS NOT PART OF THE ANIMATION.
+            if (++this.animFrames > this.scan.frameCount()) {
+                this.done = true;
+                throw new XCodecException("APNG declares " + this.scan.frameCount()
+                        + " frames but the stream carries more");
             }
         }
 
@@ -466,10 +485,13 @@ public final class PNGReader extends ImageReader {
                 final int r = (argb >>> 16) & 0xFF;
                 final int g = (argb >>> 8) & 0xFF;
                 final int b = argb & 0xFF;
-                pixels[rowBase + x] = (a << 24)
-                        | (Math.round(lut[r] * 255) << 16)
-                        | (Math.round(lut[g] * 255) << 8)
-                        | Math.round(lut[b] * 255);
+                // CLAMP EACH CHANNEL: AN OUT-OF-RANGE LUT ENTRY (Math.round SATURATES Infinity TO
+                // 0x7FFFFFFF) WOULD OTHERWISE SHIFT STRAIGHT OVER THE ALPHA BYTE AND TURN A FULLY
+                // TRANSPARENT PIXEL OPAQUE — A SILENT MASK BYPASS, WITH NO EXCEPTION ANYWHERE
+                final int cr = Math.min(255, Math.max(0, Math.round(lut[r] * 255)));
+                final int cg = Math.min(255, Math.max(0, Math.round(lut[g] * 255)));
+                final int cb = Math.min(255, Math.max(0, Math.round(lut[b] * 255)));
+                pixels[rowBase + x] = (a << 24) | (cr << 16) | (cg << 8) | cb;
             }
         }
     }
@@ -540,6 +562,13 @@ public final class PNGReader extends ImageReader {
         if (ihdr.width() > MAX_DIM || ihdr.height() > MAX_DIM) {
             throw new XCodecException("PNG dimensions too big: " + ihdr.width() + "x" + ihdr.height() + " (max " + MAX_DIM + ")");
         }
+        // THE PER-AXIS CAP IS ONLY A CHEAP PRE-FILTER: 16384x16384 STILL MULTIPLIES OUT TO A 2 GB CANVAS
+        // (int[] + DIRECT BUFFER + APNG FRAME/PREVIOUS BUFFERS), SO THE PRODUCT IS THE REAL GATE. long
+        // MATH BECAUSE THE int PRODUCT WRAPS NEGATIVE WELL BEFORE THE LIMIT IS REACHED.
+        if ((long) ihdr.width() * ihdr.height() > MAX_PIXELS) {
+            throw new XCodecException("PNG canvas too big: " + ihdr.width() + "x" + ihdr.height()
+                    + " (max " + MAX_PIXELS + " pixels)");
+        }
         // CHECK AND THROW INSTEAD OF LET "OF" METHOD THROW IAE
         final int colorTypeByte = ihdr.colorType();
         if (colorTypeByte < 0 || colorTypeByte > 6) {
@@ -578,9 +607,18 @@ public final class PNGReader extends ImageReader {
             throw new XCodecException("PNG image data too large: " + expectedLong + " bytes");
         }
         final int expected = (int) expectedLong;
+        // SIZE THE FIRST BUFFER FROM THE COMPRESSED BYTES ACTUALLY PRESENT, NOT FROM THE HEADER: AN
+        // 8-BYTE IDAT UNDER A 8192x8192 16-BIT IHDR OTHERWISE PINS A ~400 MB ARRAY IN `decompressed`.
+        // growInflateOutput STILL EXPANDS UP TO `expected` FOR GENUINELY LARGE IMAGES.
+        long compressedBytes = 0L;
+        for (final ChunkSlice chunk: compressed) {
+            if (chunk.length() > 0) compressedBytes += chunk.length();
+        }
+        final int initial = (int) Math.min(Math.max(32, expected),
+                Math.max(MIN_INFLATE_BUFFER, compressedBytes * INFLATE_RATIO_GUESS));
         byte[] output = this.decompressed;
-        if (output.length < Math.max(32, expected)) {
-            output = new byte[Math.max(32, expected)];
+        if (output.length < initial) {
+            output = new byte[initial];
             this.decompressed = output;
         }
         int outputSize = 0;
@@ -1113,7 +1151,6 @@ public final class PNGReader extends ImageReader {
         final List<Long> delays = new ArrayList<>();
         int declaredFrameCount = 0;
         int declaredLoopCount = ImageData.NO_REPEAT;
-        long total = 0L;
 
         while (buffer.remaining() >= 12) {
             final int length = buffer.getInt();
@@ -1125,25 +1162,34 @@ public final class PNGReader extends ImageReader {
             if (type == ACTL.SIGNATURE && length >= ACTL.LENGTH) {
                 declaredFrameCount = buffer.getInt(dataPos);
                 final int loop = buffer.getInt(dataPos + 4);
-                declaredLoopCount = (loop == 0) ? ImageData.REPEAT_FOREVER : loop;
+                // num_plays IS UNSIGNED IN THE APNG SPEC, SO A HIGH-BIT VALUE READS BACK NEGATIVE AND
+                // ImageData'S COMPACT CONSTRUCTOR REJECTS IT. TREAT ANY NON-POSITIVE COUNT AS "LOOP FOREVER"
+                declaredLoopCount = (loop <= 0) ? ImageData.REPEAT_FOREVER : loop;
             } else if (type == FCTL.SIGNATURE && length == FCTL.LENGTH) {
                 final int delayNum = ((buffer.get(dataPos + 20) & 0xFF) << 8) | (buffer.get(dataPos + 21) & 0xFF);
                 int delayDen = ((buffer.get(dataPos + 22) & 0xFF) << 8) | (buffer.get(dataPos + 23) & 0xFF);
                 if (delayDen == 0) delayDen = 100;
-                final long delay = ((long) delayNum * 1000L) / delayDen;
-                delays.add(delay);
-                total += delay;
+                delays.add(((long) delayNum * 1000L) / delayDen);
             }
 
             buffer.position(Math.min(buffer.limit(), dataPos + length + 4));
             if (type == IEND.SIGNATURE) break;
         }
 
-        final int frameCount = declaredFrameCount > 0 ? declaredFrameCount : delays.size();
-        if (frameCount <= 1 || delays.isEmpty()) return ImageData.Scan.EMPTY;
+        // RECONCILE acTL num_frames WITH THE fcTL RECORDS ACTUALLY WALKED: THE DECLARED COUNT IS
+        // ATTACKER-CONTROLLED, AND TRUSTING IT OVER THE STREAM LETS A FILE DECLARE TWO FRAMES WHILE
+        // CARRYING FIVE HUNDRED, SO EVERY DOWNSTREAM MEMORY GATE COMPUTES FROM A LIE
+        final int frameCount = (declaredFrameCount > 0 && !delays.isEmpty())
+                ? Math.min(declaredFrameCount, delays.size())
+                : delays.size();
+        if (frameCount <= 1) return ImageData.Scan.EMPTY;
 
-        final long[] delayArray = new long[delays.size()];
-        for (int i = 0; i < delayArray.length; i++) delayArray[i] = delays.get(i);
+        final long[] delayArray = new long[frameCount];
+        long total = 0L;
+        for (int i = 0; i < frameCount; i++) {
+            delayArray[i] = delays.get(i);
+            total += delayArray[i];
+        }
         return new ImageData.Scan(frameCount, delayArray, total, declaredLoopCount);
     }
 

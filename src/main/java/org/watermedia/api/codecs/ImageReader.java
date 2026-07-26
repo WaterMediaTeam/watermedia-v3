@@ -3,7 +3,6 @@ package org.watermedia.api.codecs;
 import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
-import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -24,6 +23,15 @@ import java.util.List;
  * previous frame, it must copy the bytes out before the next {@code next()} call.
  */
 public abstract class ImageReader implements Closeable {
+    /**
+     * Aggregate ceiling on the pixel bytes {@link #readAll()} will retain across every frame of one
+     * image, and the last line of defence against a container that declares far more animation than
+     * it carries. Sized at roughly twice the largest legitimate sample measured (an ordinary
+     * 32-frame animated GIF already decodes to 261 MiB), because a budget tight enough to be
+     * interesting is also tight enough to reject real content.
+     */
+    public static final long MAX_DECODED_BYTES = 512L << 20;
+
     protected final ByteBuffer data;
     protected final PixelFormat requestedFormat;
     protected ByteBuffer currentFrame;
@@ -146,9 +154,18 @@ public abstract class ImageReader implements Closeable {
     public ImageData readAll() throws IOException {
         final List<ByteBuffer> frames = new ArrayList<>();
         final List<Long> frameDelays = new ArrayList<>();
+        long retained = 0L;
         while (this.hasNext()) {
             final ByteBuffer decoded = this.next();
             final int savedPos = decoded.position();
+            // BACKSTOP AGAINST THE ANIMATION BOMB: FRAME COST IS FIXED AT CANVAS SIZE WHILE FRAME
+            // COUNT COMES FROM THE CONTAINER, SO A FEW HUNDRED HEADER BYTES CAN DESCRIBE GIGABYTES.
+            // READERS CAP THEIR OWN FRAME COUNTS; THIS BOUNDS WHAT SURVIVES ALL OF THEM COMBINED.
+            retained += decoded.remaining();
+            if (retained > MAX_DECODED_BYTES) {
+                throw new XCodecException("Decoded animation exceeds budget: " + retained
+                        + " bytes over " + frames.size() + " frames (max " + MAX_DECODED_BYTES + ")");
+            }
             final ByteBuffer copy = ByteBuffer.allocateDirect(decoded.remaining()).order(decoded.order());
             copy.put(decoded);
             copy.flip();
@@ -157,7 +174,7 @@ public abstract class ImageReader implements Closeable {
             frameDelays.add(this.currentDelay);
         }
         if (frames.isEmpty()) {
-            throw new EOFException("No frames decoded by " + this.name());
+            throw new XCodecException("No frames decoded by " + this.name());
         }
         final long[] delayArray = new long[frameDelays.size()];
         long total = 0L;

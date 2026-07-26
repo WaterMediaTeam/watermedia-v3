@@ -70,6 +70,11 @@ public final class VP8LossyDecoder {
 
         // RFC6386 SECTION 9.2-9.11 - PARSE COMPRESSED HEADER
         final State st = parseCompressedHeader(hdrBr, frm);
+        // THE COMPRESSED HEADER IS FIXED-SHAPE (OVER A THOUSAND BOOLS), SO A PARTITION 0 THAT RAN
+        // OUT WHILE PARSING IT MEANS EVERY FIELD BELOW WAS INVENTED. FAIL HERE, BEFORE THE
+        // FRAME-SIZED PLANES ARE ALLOCATED FROM THOSE FIELDS
+        if (hdrBr.eof())
+            throw new XCodecException("VP8 bitstream truncated: bool decoder ran past partition 0 end");
 
         // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES AND DECODERS
         buf.position(frm.hdrSz + frm.p0Sz);
@@ -494,6 +499,13 @@ public final class VP8LossyDecoder {
 
                 // INNER-EDGE FILTERING APPLIES TO I4X4 MBS OR MBS THAT ACTUALLY CARRY COEFFICIENTS
                 st.mbFInner[mbIdx] = (isI4x4 || nzAny) ? 1 : 0;
+
+                // PER-MACROBLOCK EXHAUSTION CHECK (WHAT libwebp DOES): ONCE EITHER PARTITION IS
+                // SPENT THE REMAINING GRID WOULD BE SYNTHESISED FROM IMPLICIT ZERO BYTES, WHICH IS
+                // HOW A 2-BYTE TOKEN PARTITION "DECODES" A 64-MEGAPIXEL FRAME
+                if (hdrBr.eof() || tbr.eof())
+                    throw new XCodecException("VP8 bitstream truncated: bool decoder ran past partition end at macroblock "
+                            + mbX + "," + mbY + " of " + mbW + "x" + mbH);
             }
         }
     }

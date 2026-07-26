@@ -12,6 +12,10 @@ import java.nio.ByteBuffer;
 public record NetpbmHeader(String versionString, int version, int width, int height,
                            Integer depth, Integer maxVal, String tuplType) {
 
+    // TUPLTYPE IS THE ONLY FREE-FORM HEADER VALUE AND IT REACHES EXCEPTION MESSAGES — AND THE LOG —
+    // VERBATIM. A REAL PAM HEADER IS UNDER 200 BYTES IN TOTAL, SO THIS IS ALREADY GENEROUS
+    private static final int MAX_TUPLTYPE = 256;
+
     /**
      * Parses an ASCII Netpbm header starting at the {@code Pn} version token and validates it.
      *
@@ -24,7 +28,8 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
         int height = 0;
         Integer depth = null;
         Integer maxVal = null;
-        final StringBuilder tuplType = new StringBuilder();
+        String tuplType = "";
+        boolean tuplTypeSeen = false;
         int tokenIndex = 0;
 
         label:
@@ -69,8 +74,11 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
                         case "DEPTH" -> depth = nextTokenInt(data);
                         case "MAXVAL" -> maxVal = nextTokenInt(data);
                         case "TUPLTYPE" -> {
-                            if (!tuplType.isEmpty()) tuplType.append(' ');
-                            tuplType.append(readRestOfLine(data).trim());
+                            // REPEATED TAGS USED TO CONCATENATE INSTEAD OF OVERWRITING, LETTING ONE
+                            // FILE GROW A SINGLE ATTACKER-CHOSEN STRING WITHOUT ANY BOUND
+                            if (tuplTypeSeen) throw new XCodecException("Duplicate PAM TUPLTYPE");
+                            tuplTypeSeen = true;
+                            tuplType = readRestOfLine(data).trim();
                         }
                         case "ENDHDR" -> {
                             break label;
@@ -87,6 +95,19 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
             // ENFORCE THE UPPER BOUND THE MESSAGE ALREADY CLAIMS; AN UNBOUNDED DEPTH OVERFLOWS THE RASTER MATH
             if (depth == null || depth <= 0 || depth > 65535)
                 throw new XCodecException("Invalid DEPTH: " + depth + ". Must be between 1 and 65535.");
+
+            // DEPTH SIZES EVERY ROW BUFFER AND IS THE ONE RASTER DIMENSION THE READER'S MAX_DIM DOES
+            // NOT COVER, SO BIND IT TO THE TUPLE TYPE: "DEPTH 65535 / TUPLTYPE RGB" IS A 2 GiB ROW
+            // BUFFER DESCRIBED BY 69 BYTES. UNKNOWN TUPLE TYPES CARRY NO SAMPLE COUNT AND ARE REFUSED
+            // BY THE READER BEFORE ANY RASTER IS SIZED
+            final int expectedDepth = switch (tuplType) {
+                case "BLACKANDWHITE", "GRAYSCALE" -> 1;
+                case "RGB" -> 3;
+                case "RGB_ALPHA" -> 4;
+                default -> 0;
+            };
+            if (expectedDepth != 0 && depth != expectedDepth)
+                throw new XCodecException("PAM DEPTH " + depth + " does not match TUPLTYPE " + tuplType);
         }
 
         // PGM/PPM/PAM ALL REQUIRE MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
@@ -96,7 +117,15 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
         if (maxVal != null && (maxVal <= 0 || maxVal > 65535))
             throw new XCodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
 
-        return new NetpbmHeader(versionString, version, width, height, depth, maxVal, tuplType.toString());
+        return new NetpbmHeader(versionString, version, width, height, depth, maxVal, tuplType);
+    }
+
+    /**
+     * Netpbm header whitespace, matching C {@code isspace()} — the raster begins right after one.
+     * Shared with the reader's header pre-scanner: both parsers must agree on where tokens end.
+     */
+    public static boolean whitespace(final int c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C;
     }
 
     private static int nextTokenInt(final ByteBuffer buf) throws XCodecException {
@@ -115,30 +144,36 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
 
     private static String nextToken(final ByteBuffer buf) {
         final StringBuilder sb = new StringBuilder();
-        boolean inComment = false;
-
         while (buf.hasRemaining()) {
-            final char c = (char) buf.get();
-            if (c == '#') inComment = true;
-            if (inComment) {
-                if (c == '\n') inComment = false;
+            // & 0xFF: A BARE CAST SIGN-EXTENDS 0x80.. INTO U+FF80.., CORRUPTING THE TOKEN AND DOUBLING ITS FOOTPRINT
+            final char c = (char) (buf.get() & 0xFF);
+            if (c == '#') {
+                // A COMMENT ENDS THE CURRENT TOKEN AND RUNS TO END OF LINE. SWALLOWING ITS NEWLINE IN A
+                // COMMENT BRANCH IS WHAT MERGED "1#x\n6384" INTO THE SINGLE TOKEN "16384" — EVERY
+                // REFERENCE DECODER READS THAT AS TWO TOKENS, SO THE FORGED DIMENSION WAS A DIFFERENTIAL
+                while (buf.hasRemaining() && buf.get() != '\n') { /* SKIP THE COMMENT BODY */ }
+                if (!sb.isEmpty()) break;
                 continue;
             }
-            if (Character.isWhitespace(c)) {
+            if (whitespace(c)) {
                 if (!sb.isEmpty()) break;
-                else continue;
+                continue;
             }
             sb.append(c);
         }
         return sb.toString();
     }
 
-    private static String readRestOfLine(final ByteBuffer buf) {
+    // READS A TAG VALUE UP TO ITS END OF LINE. THE VALUE IS ATTACKER-CHOSEN AND IS INTERPOLATED INTO
+    // MESSAGES THE PLAYER LOGS VERBATIM, SO IT IS BOUNDED AND EVERYTHING OUTSIDE PRINTABLE ASCII
+    // BECOMES A SPACE — A RAW CR/LF WOULD LET AN IMAGE FORGE WHOLE LINES INTO latest.log
+    private static String readRestOfLine(final ByteBuffer buf) throws XCodecException {
         final StringBuilder sb = new StringBuilder();
         while (buf.hasRemaining()) {
-            final char c = (char) buf.get();
+            final char c = (char) (buf.get() & 0xFF);
             if (c == '\n') break;
-            sb.append(c);
+            if (sb.length() >= MAX_TUPLTYPE) throw new XCodecException("PAM TUPLTYPE too long");
+            sb.append(c >= 0x20 && c < 0x7F ? c : ' ');
         }
         return sb.toString();
     }

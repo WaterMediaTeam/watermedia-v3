@@ -3,7 +3,6 @@ package org.watermedia.api.codecs.common.png;
 import org.watermedia.api.codecs.XCodecException;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.DataFormatException;
@@ -24,46 +23,49 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
     /**
      * Reads iTXt chunk from buffer (reads length/type header first)
      */
-    public static ITXT read(final ByteBuffer buffer) {
+    public static ITXT read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated iTXt chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(type));
+        if (length < 0 || buffer.remaining() < length)
+            throw new XCodecException("Truncated iTXt chunk");
 
-        final int startPosition = buffer.position();
+        final int endPosition = buffer.position() + length;
 
-        // READ KEYWORD (1-79 BYTES + NULL)
+        // READ KEYWORD (1-79 BYTES + NULL). EVERY SCAN IS BOUNDED BY endPosition SO A MISSING
+        // TERMINATOR CANNOT EAT PAST THE CHUNK AND DRIVE textLength NEGATIVE
         final StringBuilder keywordBuilder = new StringBuilder();
         byte b;
-        while (buffer.hasRemaining() && (b = buffer.get()) != 0) {
+        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
             keywordBuilder.append((char) (b & 0xFF));
         }
         final String keyword = keywordBuilder.toString();
 
-        // COMPRESSION FLAG (1 BYTE)
+        // COMPRESSION FLAG + METHOD (2 BYTES)
+        if (endPosition - buffer.position() < 2) throw new XCodecException("Truncated iTXt: missing compression flag/method");
         final boolean compressed = buffer.get() != 0;
-
-        // COMPRESSION METHOD (1 BYTE)
         final int compressionMethod = buffer.get() & 0xFF;
 
         // LANGUAGE TAG (0+ BYTES + NULL)
         final StringBuilder langBuilder = new StringBuilder();
-        while (buffer.hasRemaining() && (b = buffer.get()) != 0) {
+        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
             langBuilder.append((char) (b & 0xFF));
         }
         final String languageTag = langBuilder.toString();
 
         // TRANSLATED KEYWORD (0+ BYTES + NULL)
         final ByteArrayOutputStream translatedBytes = new ByteArrayOutputStream();
-        while (buffer.hasRemaining() && (b = buffer.get()) != 0) {
+        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
             translatedBytes.write(b);
         }
         final String translatedKeyword = translatedBytes.toString(StandardCharsets.UTF_8);
 
         // TEXT DATA (REMAINING BYTES)
-        final int bytesRead = buffer.position() - startPosition;
-        final int textLength = length - bytesRead;
+        final int textLength = endPosition - buffer.position();
         final byte[] textData = new byte[textLength];
         buffer.get(textData);
 
@@ -129,13 +131,13 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
     /**
      * Returns the text content, decompressing if necessary
      */
-    public String getText() throws IOException {
+    public String getText() throws XCodecException {
         if (!this.compressed) {
             return new String(this.textData, StandardCharsets.UTF_8);
         }
 
         if (this.compressionMethod != 0) {
-            throw new IOException("Unknown compression method: " + this.compressionMethod);
+            throw new XCodecException("Unknown compression method: " + this.compressionMethod);
         }
 
         final Inflater inflater = new Inflater();
@@ -145,18 +147,26 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
         final byte[] buffer = new byte[1024];
 
         try {
-            while (!inflater.finished()) {
+            // EVERY ITERATION EITHER PRODUCES BYTES OR LEAVES THE LOOP: A ZLIB HEADER WITH FDICT SET
+            // RETURNS Z_NEED_DICT (0 IN, 0 OUT, needsInput() FALSE) AND WOULD OTHERWISE SPIN FOREVER
+            while (true) {
                 final int length = inflater.inflate(buffer);
-                if (length == 0 && inflater.needsInput()) {
-                    break;
+                if (length > 0) {
+                    if (output.size() + length > MAX_DECOMPRESSED) {
+                        throw new XCodecException("iTXt exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
+                    }
+                    output.write(buffer, 0, length);
+                    continue;
                 }
-                if (output.size() + length > MAX_DECOMPRESSED) {
-                    throw new IOException("iTXt exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
+                if (inflater.finished()) break;
+                if (inflater.needsDictionary()) {
+                    throw new XCodecException("iTXt uses an unsupported compression dictionary");
                 }
-                output.write(buffer, 0, length);
+                if (inflater.needsInput()) break; // TRUNCATED TEXT: KEEP WHAT DECOMPRESSED, THE IMAGE IS STILL USABLE
+                throw new XCodecException("Invalid compressed text stream");
             }
         } catch (final DataFormatException e) {
-            throw new IOException("Invalid compressed text: " + e.getMessage());
+            throw new XCodecException("Invalid compressed text: " + e.getMessage());
         } finally {
             inflater.end();
         }

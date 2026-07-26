@@ -119,7 +119,9 @@ final class SVGColor {
 
     private static long parseRgb(final String s) {
         final int open = s.indexOf('('), close = s.indexOf(')');
-        if (open < 0 || close < 0) return INVALID;
+        // close > open, NOT MERELY "BOTH PRESENT": "rgb)(" WOULD MAKE substring THROW WITH begin > end,
+        // AND AN UNPARSEABLE COLOUR MUST SIMPLY BE INVALID — CALLERS ALREADY HANDLE THAT
+        if (open < 0 || close <= open) return INVALID;
         final String[] parts = s.substring(open + 1, close).trim().split("[,\\s/]+");
         if (parts.length < 3) return INVALID;
         try {
@@ -135,7 +137,8 @@ final class SVGColor {
 
     private static long parseHsl(final String s) {
         final int open = s.indexOf('('), close = s.indexOf(')');
-        if (open < 0 || close < 0) return INVALID;
+        // SAME ORDERING GUARD AS parseRgb: "hsl)(" MUST BE INVALID, NOT A StringIndexOutOfBoundsException
+        if (open < 0 || close <= open) return INVALID;
         final String[] parts = s.substring(open + 1, close).trim().split("[,\\s/]+");
         if (parts.length < 3) return INVALID;
         try {
@@ -185,8 +188,10 @@ final class SVGColor {
     }
 
     private static int clamp255(final double v) {
-        final int i = (int) Math.round(v);
-        return i < 0 ? 0 : Math.min(255, i);
+        // CLAMP BEFORE THE NARROWING CAST: Math.round SATURATES A HUGE/INFINITE VALUE TO Long.MAX_VALUE,
+        // WHICH WRAPS TO -1 AS AN int AND WOULD THEN READ AS 0 INSTEAD OF 255. THE NEGATED TEST DROPS NaN
+        if (!(v > 0)) return 0;
+        return v >= 255 ? 255 : (int) Math.round(v);
     }
 
     private static int hex(final char ch) {

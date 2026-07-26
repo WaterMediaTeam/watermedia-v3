@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -15,14 +17,14 @@ public record FDAT(int sequence, byte[] data) {
     /**
      * Converts a generic CHUNK to FDAT
      */
-    public static FDAT convert(final CHUNK chunk) {
+    public static FDAT convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for fdAT: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] rawData = chunk.data();
         if (rawData.length < 4) {
-            throw new IllegalArgumentException("fdAT data must be at least 4 bytes");
+            throw new XCodecException("fdAT data must be at least 4 bytes");
         }
 
         // FIRST 4 BYTES ARE SEQUENCE NUMBER

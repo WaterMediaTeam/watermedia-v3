@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
@@ -27,18 +29,23 @@ public record TEXT(String keyword, String text) {
     /**
      * Reads tEXt chunk from buffer (reads length/type header first)
      */
-    public static TEXT read(final ByteBuffer buffer) {
+    public static TEXT read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated tEXt chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for tEXt: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for tEXt: 0x" + Integer.toHexString(type));
+        if (length < 0 || buffer.remaining() < length)
+            throw new XCodecException("Truncated tEXt chunk");
 
         // READ KEYWORD (1-79 BYTES + NULL)
+        final int endPosition = buffer.position() + length;
         final StringBuilder keywordBuilder = new StringBuilder();
         byte b;
         int bytesRead = 0;
-        while (bytesRead < 80 && buffer.hasRemaining() && (b = buffer.get()) != 0) {
+        while (bytesRead < 80 && buffer.position() < endPosition && (b = buffer.get()) != 0) {
             keywordBuilder.append((char) (b & 0xFF));
             bytesRead++;
         }
@@ -46,8 +53,9 @@ public record TEXT(String keyword, String text) {
 
         final String keyword = keywordBuilder.toString();
 
-        // READ TEXT (REMAINING BYTES)
+        // READ TEXT (REMAINING BYTES): AN UNTERMINATED KEYWORD OVERSHOOTS THE CHUNK AND GOES NEGATIVE
         final int textLength = length - bytesRead;
+        if (textLength < 0) throw new XCodecException("Invalid tEXt: unterminated keyword");
         final byte[] textBytes = new byte[textLength];
         buffer.get(textBytes);
         final String text = new String(textBytes, StandardCharsets.ISO_8859_1);
@@ -58,7 +66,7 @@ public record TEXT(String keyword, String text) {
     /**
      * Converts a generic CHUNK to TEXT
      */
-    public static TEXT convert(final CHUNK chunk) {
+    public static TEXT convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for tEXt: 0x" + Integer.toHexString(chunk.type()));
         }
@@ -75,7 +83,7 @@ public record TEXT(String keyword, String text) {
         }
 
         if (nullIndex < 1 || nullIndex > 79) {
-            throw new IllegalArgumentException("Invalid tEXt: keyword must be 1-79 characters");
+            throw new XCodecException("Invalid tEXt: keyword must be 1-79 characters");
         }
 
         final String keyword = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);

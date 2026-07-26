@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -20,14 +22,17 @@ public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) {
     /**
      * Reads pHYs chunk from buffer (reads length/type header first)
      */
-    public static PHYS read(final ByteBuffer buffer) {
+    public static PHYS read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated pHYs chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for pHYs: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for pHYs: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new IllegalArgumentException("pHYs chunk length must be 9, got " + length);
+            throw new XCodecException("pHYs chunk length must be 9, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated pHYs chunk");
 
         return new PHYS(
                 buffer.getInt() & 0xFFFFFFFFL, // PIXELS PER UNIT X
@@ -39,14 +44,14 @@ public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) {
     /**
      * Converts a generic CHUNK to PHYS
      */
-    public static PHYS convert(final CHUNK chunk) {
+    public static PHYS convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for pHYs: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
-        if (data.length != 9) {
-            throw new IllegalArgumentException("pHYs data must be 9 bytes, got " + data.length);
+        if (data.length != LENGTH) {
+            throw new XCodecException("pHYs data must be 9 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);

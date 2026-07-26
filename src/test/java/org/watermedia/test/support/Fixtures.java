@@ -27,6 +27,8 @@ public final class Fixtures {
     public static final Path SVG_DIR = RESOURCES.resolve("svg");
     public static final Path SVG_PNG_DIR = SVG_DIR.resolve("png");
     public static final Path MP4_DIR = RESOURCES.resolve("mp4");
+    /** Hostile corpus driving {@code Pentesting}; regenerate with {@link MaliciousImages}. */
+    public static final Path PENTEST_DIR = RESOURCES.resolve("pentest");
 
     public static final Path MP4_H264 = MP4_DIR.resolve("fibonaccisongh264.mp4");
     public static final Path PNG_STATIC = PNG_DIR.resolve("2.png");

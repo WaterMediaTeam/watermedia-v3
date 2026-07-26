@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.util.Locale;
 import java.util.Map;
 
@@ -34,7 +36,7 @@ record RenderState(Affine ctm, SVGPaint fill, float fillOpacity, boolean evenOdd
     float fillEff() { return this.fillOpacity * this.opacity; }
     float strokeEff() { return this.strokeOpacity * this.opacity; }
 
-    RenderState derive(final SVGNode node, final Map<String, SVGPaint> gradients, final double diag) {
+    RenderState derive(final SVGNode node, final Map<String, SVGPaint> gradients, final double diag) throws XCodecException {
         final Map<String, String> a = node.attrs();
 
         Affine ctm = this.ctm;
@@ -76,7 +78,9 @@ record RenderState(Affine ctm, SVGPaint fill, float fillOpacity, boolean evenOdd
 
         double strokeWidth = this.strokeWidth;
         final String sw = a.get("stroke-width");
-        // PERCENTAGE STROKE WIDTH RESOLVES AGAINST THE NORMALIZED VIEWPORT DIAGONAL PER SVG SPEC
+        // PERCENTAGE STROKE WIDTH RESOLVES AGAINST THE NORMALIZED VIEWPORT DIAGONAL PER SVG SPEC.
+        // A NON-FINITE WIDTH ("1e999") IS REJECTED BY length(): AN INFINITE HALF-WIDTH MAKES EVERY
+        // JOIN LOOK SHARP AND APPENDS AN INFINITE-RADIUS DISC PER VERTEX, WHICH IS AN INSTANT OOM
         if (sw != null) strokeWidth = SVGParser.length(sw, this.strokeWidth, diag);
 
         return new RenderState(ctm, fill, fillOpacity, evenOdd, stroke, strokeWidth, strokeOpacity, opacity, color, visible);
@@ -121,7 +125,7 @@ record RenderState(Affine ctm, SVGPaint fill, float fillOpacity, boolean evenOdd
         return s;
     }
 
-    private static float opacityValue(final String v, final float inherited) {
+    private static float opacityValue(final String v, final float inherited) throws XCodecException {
         if (v == null) return inherited;
         final String s = v.trim().toLowerCase(Locale.ROOT);
         if (s.equals("inherit")) return inherited;

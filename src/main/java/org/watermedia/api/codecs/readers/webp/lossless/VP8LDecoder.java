@@ -15,13 +15,23 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public final class VP8LDecoder {
     static final Marker IT = MarkerManager.getMarker(VP8LDecoder.class.getSimpleName());
-    // RECOMMENDED (LOG-ONLY) HUFFMAN GROUP COUNT. THE ENTROPY IMAGE CAN DECLARE UP TO 65536
-    // GROUPS (16-BIT META CODES) AND EACH ONE COSTS 5 TABLES; COUNTS THE REMAINING BITSTREAM
-    // CANNOT PHYSICALLY ENCODE ARE REJECTED BEFORE TABLE ALLOCATION (SEE FEASIBILITY GATE BELOW)
-    private static final int RECOMMENDED_GROUPS = 256;
+    // HARD HUFFMAN GROUP CAP. THE 16-BIT META CODE ALLOWS 65536 GROUPS OF 5 TABLES EACH, WHILE NO
+    // REAL ENCODER GOES NEAR THIS (libwebp CAPS ITS ENTROPY IMAGE AT ~2600 BLOCKS, SO AT MOST THAT
+    // MANY GROUPS). A RECOMMENDATION THAT ONLY LOGS IS NOT A LIMIT
+    private static final int MAX_GROUPS = 4096;
     // MINIMUM BITS ONE GROUP CAN OCCUPY: 5 SIMPLE-CODE TABLES x 4 BITS (isSimple + numSymbols +
     // is8Bits + 1-BIT SYMBOL) EACH
     private static final int MIN_GROUP_BITS = 20;
+    // TOTAL-PIXEL CAP, MIRRORS WEBPReader#MAX_PIXELS (64 MPX). SUB-IMAGES DERIVE THEIR SIZE FROM
+    // THE MAIN ONE, SO ONE CEILING COVERS EVERY decodeImageData ENTRY POINT
+    private static final int MAX_PIXELS = 1 << 26;
+    // CEILING FOR IMAGES NO AMOUNT OF INPUT CAN BOUND (SEE THE FEASIBILITY GATE): A CONSTANT FILL
+    // IS DECODED FROM ZERO BITS, SO ITS ONLY LIMIT IS ITS OWN DECLARED SIZE. 16 MPX STILL COVERS
+    // EVERY REALISTIC SOLID IMAGE OR UNIFORM ALPHA PLANE WHILE KEEPING THE FILE-TO-HEAP RATIO OF A
+    // 30-BYTE FILE BOUNDED
+    private static final int MAX_FILL_PIXELS = 1 << 24;
+    // LONGEST COPY ONE LZ77 TOKEN CAN EMIT (RFC 9649 LENGTH PREFIX 23 -> 3072 + 1023 + 1)
+    private static final int MAX_COPY_LENGTH = 4096;
 
     private VP8LDecoder() {
     }
@@ -95,17 +105,16 @@ public final class VP8LDecoder {
             }
 
             final int numGroups = maxCode + 1;
-            // FEASIBILITY GATE: A GROUP COUNT THE REMAINING BITSTREAM CANNOT POSSIBLY ENCODE IS
-            // CORRUPT OR MALICIOUS (A 1x1 ENTROPY IMAGE CAN DECLARE 65536 GROUPS ~ 200 MB OF
-            // TABLES FROM A FEW-KB FILE); FAIL BEFORE ALLOCATING INSTEAD OF AFTER
-            final long feasibleGroups = (reader.remaining() * 8L + reader.bitsAvail()) / MIN_GROUP_BITS;
-            if (numGroups > feasibleGroups)
-                throw new XCodecException("VP8L declares " + numGroups + " huffman groups, bitstream can hold at most " + feasibleGroups);
-            if (numGroups > RECOMMENDED_GROUPS) {
-                LOGGER.warn(IT, "VP8L declares {} huffman groups, above the recommended limit of {}", numGroups, RECOMMENDED_GROUPS);
-                LOGGER.trace(IT, "VP8L huffman groups: declared={}, meta={}x{} (bits={}), colorCacheSize={}, tables={}",
-                        numGroups, metaWidth, metaHeight, metaBits, colorCacheSize, numGroups * 5);
-            }
+            // GROUP-COUNT GATE, THREE INDEPENDENT BOUNDS APPLIED BEFORE ANY TABLE IS ALLOCATED: THE
+            // ENTROPY IMAGE CANNOT REFERENCE MORE GROUPS THAN IT HAS PIXELS, THE REMAINING BITSTREAM
+            // CANNOT ENCODE MORE THAN ONE GROUP PER MIN_GROUP_BITS, AND NOTHING LEGITIMATE EXCEEDS
+            // MAX_GROUPS. UNGATED, A 1x1 IMAGE BUYS 65536 GROUPS OF LIVE TABLES WITH A FEW KB
+            final long maxGroups = Math.min(Math.min(MAX_GROUPS, metaPrefixImage.length),
+                    (reader.remaining() * 8L + reader.bitsAvail()) / MIN_GROUP_BITS);
+            if (numGroups > maxGroups)
+                throw new XCodecException("VP8L declares " + numGroups + " huffman groups, max " + maxGroups);
+            LOGGER.trace(IT, "VP8L huffman groups: declared={}, meta={}x{} (bits={}), colorCacheSize={}, tables={}",
+                    numGroups, metaWidth, metaHeight, metaBits, colorCacheSize, numGroups * 5);
             huffmanGroups = HuffmanDecoder.readGroups(reader, numGroups, colorCacheSize);
         } else {
             // SINGLE HUFFMAN GROUP
@@ -193,7 +202,31 @@ public final class VP8LDecoder {
                                          final HuffmanGroup[] groups, final int[] metaImage,
                                          final int metaBits, final int metaWidth,
                                          final ColorCache colorCache) throws XCodecException {
-        final int total = width * height;
+        final long declared = (long) width * height;
+        if (width <= 0 || height <= 0 || declared > MAX_PIXELS)
+            throw new XCodecException("Invalid VP8L image size: " + width + "x" + height + " (max " + MAX_PIXELS + " pixels)");
+
+        // PIXEL FEASIBILITY GATE, EVALUATED BEFORE THE ALLOCATION. RFC 9649 LETS A ONE-SYMBOL PREFIX
+        // CODE COST ZERO BITS, SO A GROUP WHOSE ENTIRE TOKEN PATH IS ONE-SYMBOL EMITS PIXELS OUT OF
+        // NOTHING: THE IMAGE IS THEN A CONSTANT FILL AND ONLY ITS DECLARED SIZE BOUNDS IT. EVERY
+        // OTHER GROUP SPENDS AT LEAST ONE BIT PER TOKEN AND A TOKEN YIELDS AT MOST MAX_COPY_LENGTH
+        // PIXELS, WHICH TIES THE PIXEL COUNT TO THE BITS THE STREAM CAN PHYSICALLY SUPPLY
+        boolean fill = false;
+        for (final HuffmanGroup group: groups) {
+            final int green = group.green().symbol();
+            final int dist = group.dist().symbol();
+            if (green >= 256 + 24 // COLOR CACHE CODE: RESOLVES WITHOUT READING ANY OTHER TABLE
+                    || (green >= 0 && green < 256 && group.red().symbol() >= 0 && group.blue().symbol() >= 0 && group.alpha().symbol() >= 0)
+                    || (green >= 256 && green < 260 && dist >= 0 && dist < 4)) { // LZ77 WITHOUT LENGTH/DISTANCE EXTRA BITS
+                fill = true;
+                break;
+            }
+        }
+        final long feasible = fill ? MAX_FILL_PIXELS : (reader.remaining() * 8L + reader.bitsAvail() + 1L) * MAX_COPY_LENGTH;
+        if (declared > feasible)
+            throw new XCodecException("VP8L declares " + declared + " pixels, bitstream can encode at most " + feasible);
+
+        final int total = (int) declared;
         final int[] pixels = new int[total];
         int pos = 0;
         // INCREMENTAL PIXEL COORDS FOR THE META-GROUP LOOKUP, AVOIDING PER-PIXEL DIV/MOD

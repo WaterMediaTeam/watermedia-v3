@@ -1,8 +1,11 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 
@@ -19,14 +22,17 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
     /**
      * Reads tIME chunk from buffer (reads length/type header first)
      */
-    public static TIME read(final ByteBuffer buffer) {
+    public static TIME read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated tIME chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for tIME: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for tIME: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new IllegalArgumentException("tIME chunk length must be 7, got " + length);
+            throw new XCodecException("tIME chunk length must be 7, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated tIME chunk");
 
         return new TIME(
                 buffer.getShort() & 0xFFFF, // YEAR (2 BYTES)
@@ -41,14 +47,14 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
     /**
      * Converts a generic CHUNK to TIME
      */
-    public static TIME convert(final CHUNK chunk) {
+    public static TIME convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for tIME: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
-        if (data.length != 7) {
-            throw new IllegalArgumentException("tIME data must be 7 bytes, got " + data.length);
+        if (data.length != LENGTH) {
+            throw new XCodecException("tIME data must be 7 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
@@ -66,9 +72,12 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
      * Returns the modification time as a LocalDateTime
      */
     public LocalDateTime toLocalDateTime() {
-        // HANDLE LEAP SECOND BY CLAMPING TO 59
-        final int sec = Math.min(this.second, 59);
-        return LocalDateTime.of(this.year, this.month, this.day, this.hour, this.minute, sec);
+        // CLAMP EVERY FIELD: THE CHUNK CARRIES RAW BYTES, AND LocalDateTime.of THROWS DateTimeException
+        // ON ANYTHING OUT OF RANGE (LEAP SECOND 60, MONTH 0, DAY 31 IN FEBRUARY, ...)
+        final int m = Math.min(Math.max(this.month, 1), 12);
+        final int d = Math.min(Math.max(this.day, 1), YearMonth.of(this.year, m).lengthOfMonth());
+        return LocalDateTime.of(this.year, m, d,
+                Math.min(this.hour, 23), Math.min(this.minute, 59), Math.min(this.second, 59));
     }
 
     /**

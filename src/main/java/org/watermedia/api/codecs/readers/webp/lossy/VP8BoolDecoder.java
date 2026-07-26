@@ -12,10 +12,18 @@ import static org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder.IT;
 // MAINTAINS 'VALUE' AND 'RANGE' TO TRACK CURRENT POSITION IN ARITHMETIC CODING INTERVAL
 // KEY CONSTRAINTS: 128 <= RANGE <= 255, VALUE CONTAINS AT LEAST 8 SIGNIFICANT BITS
 final class VP8BoolDecoder {
+    // BYTES THE DECODER MAY FABRICATE PAST THE END OF ITS PARTITION BEFORE THE STREAM IS DECLARED
+    // TRUNCATED. THE RENORMALIZER RUNS UP TO TWO BYTES AHEAD OF THE BITS IT HAS ACTUALLY USED AND
+    // ENCODERS FLUSH WITH A SHORT ZERO TAIL, SO A FEW PHANTOM BYTES ARE NORMAL AT THE VERY END OF A
+    // VALID PARTITION — A FRAME'S WORTH OF THEM IS NOT
+    private static final int MAX_PAD_BYTES = 16;
+
     private final ByteBuffer buf;
     private int range;    // ALWAYS 128-255 PER RFC6386 7.2
     private int val;      // CURRENT CODED VALUE
     private int bitCnt;   // NUMBER OF BITS SHIFTED OUT, MAX 7
+    private int padBytes; // IMPLICIT ZERO BYTES CONSUMED PAST THE PARTITION END
+    private boolean eof;  // SET ONCE padBytes EXCEEDS THE TOLERATED FLUSH TAIL
 
     // RFC6386 SECTION 7.3 - DECODER INITIALIZATION
     // READS FIRST TWO BYTES TO INITIALIZE VALUE, SETS RANGE = 255
@@ -68,6 +76,11 @@ final class VP8BoolDecoder {
                 bc -= 8;
                 if (this.buf.hasRemaining()) {
                     v |= (this.buf.get() & 0xFF) << bc;
+                } else if (++this.padBytes > MAX_PAD_BYTES) {
+                    // NOTHING LEFT TO READ: EVERY FURTHER BIT IS INVENTED, NOT DECODED. WITHOUT THIS
+                    // FLAG A 2-BYTE PARTITION "DECODES" A FULL 64-MEGAPIXEL FRAME OUT OF ZEROS
+                    // (libwebp CVE-2018-25009 / 25010 / 25012 / 25014)
+                    this.eof = true;
                 }
             }
             this.bitCnt = bc;
@@ -75,6 +88,11 @@ final class VP8BoolDecoder {
         this.range = r;
         this.val = v;
         return bit;
+    }
+
+    // TRUE ONCE THE DECODER HAS RUN PAST ITS PARTITION BY MORE THAN A FLUSH TAIL
+    boolean eof() {
+        return this.eof;
     }
 
     // RFC6386 SECTION 7.3 - 50% PROBABILITY BOOL (FLAG)

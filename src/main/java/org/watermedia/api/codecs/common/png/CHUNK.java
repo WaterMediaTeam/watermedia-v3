@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -42,7 +44,8 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
         try {
             if (buffer.remaining() < 8) throw new EOFException("Unexpected EOF while reading chunk header");
             final int length = buffer.getInt();
-            if (length < 0) throw new IOException("Invalid chunk length: " + length);
+            // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE — REPORT THE RAW VALUE
+            if (length < 0) throw new XCodecException("Invalid chunk length: " + Integer.toUnsignedString(length));
             // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE EOF CHECK INTO A ~2GB ALLOC
             if (buffer.remaining() < (long) length + 4) {
                 throw new EOFException("Unexpected EOF while reading chunk data");
@@ -63,12 +66,13 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
      */
     public static CHUNK read(final InputStream in) throws IOException {
         final int length = readIntBE(in);
+        // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE — REPORT THE RAW VALUE
         if (length < 0) {
-            throw new IOException("Invalid chunk length: " + length);
+            throw new XCodecException("Invalid chunk length: " + Integer.toUnsignedString(length));
         }
         // NO STREAM-LENGTH IS KNOWN HERE, SO A HARD SANITY CAP STOPS A ~2GB ALLOC FROM 4 ATTACKER BYTES
         if (length > MAX_CHUNK_LENGTH) {
-            throw new IOException("PNG chunk too large: " + length + " bytes (max " + MAX_CHUNK_LENGTH + ")");
+            throw new XCodecException("PNG chunk too large: " + length + " bytes (max " + MAX_CHUNK_LENGTH + ")");
         }
         final int type = readIntBE(in);
         final byte[] data = new byte[length];

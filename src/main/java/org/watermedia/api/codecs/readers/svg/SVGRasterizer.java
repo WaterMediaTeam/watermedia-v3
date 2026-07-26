@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -14,6 +16,11 @@ import java.util.List;
  * stroke styles the supported SVGs use) while a smooth flattened curve of near-collinear segments
  * emits no join discs at all. Overlapping union pieces are filled in a single non-zero pass, so
  * internal seams never anti-alias against each other.
+ *
+ * <p>Cost is budgeted on two axes: the edge table of a single shape, and the number of edge crossings
+ * the whole document is allowed to evaluate. The crossing count is the real cost model of a scanline
+ * fill (active edges x sub-scanlines), so it is what keeps a hostile document from freezing the
+ * decode thread no matter how the geometry is arranged — one enormous fill or thousands of small ones.
  */
 final class SVGRasterizer {
     // VERTICAL SUPERSAMPLES PER PIXEL ROW
@@ -22,12 +29,19 @@ final class SVGRasterizer {
     // DEVICE-SPACE FLATTENING TOLERANCE FOR THE GENERATED STROKE GEOMETRY
     private static final double STROKE_TOL = 0.2;
 
+    // PER-SHAPE EDGE BUDGET (SIX PARALLEL ARRAYS, ~48 BYTES AN EDGE) AND A DOCUMENT-WIDE CROSSING
+    // BUDGET. A CROSSING IS ONE ACTIVE EDGE ON ONE SUB-SCANLINE, SO THE SECOND FIGURE IS THE WHOLE
+    // COST MODEL: 6 MILLION IS AN ORDER OF MAGNITUDE ABOVE A DETAILED MAP OR OUTLINED TEXT AT THE
+    // 512 px DEFAULT CANVAS, YET IT STOPS THOUSANDS OF FULL-HEIGHT EDGES SWEPT DOWN THE WHOLE IMAGE
+    private static final int MAX_EDGES = 200_000;
+    private static final long MAX_CROSSINGS = 6_000_000L;
+
     final int width, height;
     final int[] canvas;
 
     private final float[] cov;
 
-    // EDGE TABLE SCRATCH (DEVICE SPACE, HORIZONTAL EDGES DROPPED)
+    // EDGE TABLE SCRATCH (DEVICE SPACE, HORIZONTAL AND NON-FINITE EDGES DROPPED)
     private double[] eyTop = new double[64], eyBot = new double[64], exTop = new double[64], edxdy = new double[64];
     private int[] edir = new int[64];
     private int edgeN;
@@ -37,9 +51,11 @@ final class SVGRasterizer {
     private int[] active = new int[64];
     private long[] sortKeys = new long[64];
 
-    // PER-SCANLINE CROSSINGS
+    // PER-SCANLINE CROSSINGS: THE PACKED SORT KEYS AND THE DECODED (x, winding) PAIRS
+    private long[] ckeys = new long[32];
     private double[] cxs = new double[32];
     private int[] cdir = new int[32];
+    private long crossWork; // CROSSINGS EVALUATED SO FAR BY THIS DOCUMENT
 
     SVGRasterizer(final int width, final int height) {
         this.width = width;
@@ -48,15 +64,16 @@ final class SVGRasterizer {
         this.cov = new float[width];
     }
 
-    void fill(final Path.Polys polys, final boolean evenOdd, final Paint paint, final float opacity) {
+    void fill(final Path.Polys polys, final boolean evenOdd, final Paint paint, final float opacity) throws XCodecException {
         if (opacity <= 0 || polys.subpaths.isEmpty()) return;
         this.buildEdges(polys.subpaths);
         if (this.edgeN == 0) return;
         this.scan(evenOdd, paint, opacity);
     }
 
-    void stroke(final Path.Polys polys, final double halfWidth, final Paint paint, final float opacity) {
-        if (opacity <= 0 || halfWidth <= 0 || polys.subpaths.isEmpty()) return;
+    void stroke(final Path.Polys polys, final double halfWidth, final Paint paint, final float opacity) throws XCodecException {
+        // NEGATED WIDTH TEST SO A NaN HALF-WIDTH IS REJECTED INSTEAD OF BUILDING NaN STROKE GEOMETRY
+        if (opacity <= 0 || !(halfWidth > 0) || polys.subpaths.isEmpty()) return;
         // BUILD THE STROKE OUTLINE IN DEVICE SPACE: QUAD PER SEGMENT + ROUND CAP/JOIN DISCS
         final Path g = new Path();
         for (final Path.Subpath sp: polys.subpaths) {
@@ -99,7 +116,7 @@ final class SVGRasterizer {
         return hw * (1 - cosHalf) > 0.25;
     }
 
-    private static void segmentQuad(final Path g, final double x0, final double y0, final double x1, final double y1, final double hw) {
+    private static void segmentQuad(final Path g, final double x0, final double y0, final double x1, final double y1, final double hw) throws XCodecException {
         final double dx = x1 - x0, dy = y1 - y0;
         final double len = Math.sqrt(dx * dx + dy * dy);
         if (len < 1e-9) return; // ZERO-LENGTH SEGMENT — THE VERTEX DISC COVERS IT
@@ -113,7 +130,7 @@ final class SVGRasterizer {
         g.close();
     }
 
-    private void buildEdges(final List<Path.Subpath> subs) {
+    private void buildEdges(final List<Path.Subpath> subs) throws XCodecException {
         this.edgeN = 0;
         for (final Path.Subpath sp: subs) {
             final double[] p = sp.pts();
@@ -127,8 +144,14 @@ final class SVGRasterizer {
         }
     }
 
-    private void addEdge(final double xa, final double ya, final double xb, final double yb) {
-        if (ya == yb) return; // HORIZONTAL EDGES DO NOT CROSS SCANLINES
+    private void addEdge(final double xa, final double ya, final double xb, final double yb) throws XCodecException {
+        // HORIZONTAL EDGES DO NOT CROSS SCANLINES. NON-FINITE ONES ARE DROPPED FOR A HARDER REASON: THEIR
+        // SLOPE FEEDS exTop + (ys - eyTop) * edxdy, WHERE 0 * Infinity IS NaN, AND A NaN CROSSING TURNS
+        // INTO AN UNCLAMPED SPAN INDEX. KEEPING THEM OUT OF THE TABLE IS THE INVARIANT scan() RELIES ON
+        if (ya == yb || !Double.isFinite(xa) || !Double.isFinite(ya) || !Double.isFinite(xb) || !Double.isFinite(yb)) return;
+        final double dxdy = (xb - xa) / (yb - ya);
+        if (!Double.isFinite(dxdy)) return;
+        if (this.edgeN == MAX_EDGES) throw new XCodecException("SVG shape exceeds " + MAX_EDGES + " edges");
         if (this.edgeN == this.edir.length) this.growEdges();
         final int i = this.edgeN++;
         final double yt, yb2, xt;
@@ -138,11 +161,11 @@ final class SVGRasterizer {
         this.eyTop[i] = yt;
         this.eyBot[i] = yb2;
         this.exTop[i] = xt;
-        this.edxdy[i] = (xb - xa) / (yb - ya);
+        this.edxdy[i] = dxdy;
         this.edir[i] = dir;
     }
 
-    private void scan(final boolean evenOdd, final Paint paint, final float opacity) {
+    private void scan(final boolean evenOdd, final Paint paint, final float opacity) throws XCodecException {
         double yMin = Double.POSITIVE_INFINITY, yMax = Double.NEGATIVE_INFINITY;
         double xMin = Double.POSITIVE_INFINITY, xMax = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < this.edgeN; i++) {
@@ -180,9 +203,16 @@ final class SVGRasterizer {
                     if (this.eyBot[e] > ys) this.active[keep++] = e;
                 }
                 activeN = keep;
+                if (activeN < 2) continue;
+
+                // CHARGED BEFORE THE WORK IS DONE, AND ACROSS EVERY SHAPE OF THE DOCUMENT: THIS IS THE
+                // ONLY BOUND THAT SURVIVES ANY ARRANGEMENT OF EDGES (ONE HUGE FILL OR THOUSANDS OF THEM)
+                this.crossWork += activeN;
+                if (this.crossWork > MAX_CROSSINGS) {
+                    throw new XCodecException("SVG rasterization exceeds " + MAX_CROSSINGS + " edge crossings");
+                }
 
                 final int cnt = this.crossings(ys, activeN);
-                if (cnt < 2) continue;
                 int wind = 0;
                 for (int i = 0; i < cnt - 1; i++) {
                     wind += this.cdir[i];
@@ -222,34 +252,50 @@ final class SVGRasterizer {
         for (int i = 0; i < this.edgeN; i++) this.order[i] = (int) (keys[i] & 0xFFFFFFL);
     }
 
-    // GATHERS SORTED X-CROSSINGS OF THE ACTIVE EDGES AT SUB-SCANLINE ys (ALL ACTIVE EDGES SPAN ys)
+    // GATHERS THE X-CROSSINGS OF THE ACTIVE EDGES AT SUB-SCANLINE ys, SORTED ASCENDING (ALL ACTIVE EDGES
+    // SPAN ys). EACH KEY PACKS THE CROSSING X AS AN ORDER-PRESERVING long IN THE HIGH BITS AND THE
+    // WINDING DIRECTION IN BIT 0, SO ONE Arrays.sort ORDERS BOTH WITHOUT A PARALLEL PERMUTATION; GIVING
+    // UP THE LOW 24 MANTISSA BITS COSTS UNDER 1e-5 px AT CANVAS SCALE. REBUILDING A SORTED LIST WITH AN
+    // INSERTION SORT INSTEAD WOULD BE Theta(activeN^2) PER SUB-SCANLINE AND FREEZES ON DENSE GEOMETRY
     private int crossings(final double ys, final int activeN) {
-        int cnt = 0;
+        if (this.ckeys.length < activeN) {
+            // GEOMETRIC GROWTH — THE ACTIVE SET TYPICALLY GAINS ONE EDGE AT A TIME AS THE SWEEP DESCENDS
+            final int cap = Math.max(activeN, this.ckeys.length * 2);
+            this.ckeys = new long[cap];
+            this.cxs = new double[cap];
+            this.cdir = new int[cap];
+        }
+        final long[] keys = this.ckeys;
         for (int a = 0; a < activeN; a++) {
             final int i = this.active[a];
             final double x = this.exTop[i] + (ys - this.eyTop[i]) * this.edxdy[i];
-            final int dir = this.edir[i];
-            if (cnt == this.cxs.length) this.growCrossings();
-            // INSERTION INTO THE SORTED CROSSING LIST
-            int k = cnt - 1;
-            while (k >= 0 && this.cxs[k] > x) {
-                this.cxs[k + 1] = this.cxs[k];
-                this.cdir[k + 1] = this.cdir[k];
-                k--;
-            }
-            this.cxs[k + 1] = x;
-            this.cdir[k + 1] = dir;
-            cnt++;
+            long bits = Double.doubleToLongBits(x);
+            bits ^= (bits >> 63) & Long.MAX_VALUE; // SIGNED-ORDER-PRESERVING, AS IN sortEdgesByTop
+            keys[a] = (bits & ~0xFFFFFFL) | (this.edir[i] > 0 ? 1 : 0);
         }
-        return cnt;
+        Arrays.sort(keys, 0, activeN);
+        for (int a = 0; a < activeN; a++) {
+            final long key = keys[a];
+            long bits = key & ~0xFFFFFFL;
+            bits ^= (bits >> 63) & Long.MAX_VALUE; // THE MAPPING IS ITS OWN INVERSE
+            this.cxs[a] = Double.longBitsToDouble(bits);
+            this.cdir[a] = (key & 1) == 0 ? -1 : 1;
+        }
+        return activeN;
     }
 
     private void addSpan(double xa, double xb, final int xlo, final int xhi) {
-        if (xb <= xa) return;
-        if (xa < xlo) xa = xlo;
-        if (xb > xhi) xb = xhi;
-        if (xa >= xb) return;
-        final int ia = (int) Math.floor(xa), ib = (int) Math.floor(xb);
+        // EVERY TEST IS NEGATED SO A NaN BOUND FAILS CLOSED. THE POSITIVE FORM (xa < xlo, xb > xhi,
+        // xa >= xb) IS FALSE FOR NaN, WHICH LET A LARGE FINITE xa THROUGH UNCLAMPED AND TURNED
+        // (int) Math.floor(xa) INTO AN ARBITRARY INDEX INTO cov
+        if (!(xb > xa)) return;
+        if (!(xa > xlo)) xa = xlo;
+        if (!(xb < xhi)) xb = xhi;
+        if (!(xb > xa)) return;
+        // THE CLAMPS ABOVE ALREADY PIN BOTH ENDS INSIDE [xlo, xhi]; RE-CLAMPING THE INDICES COSTS TWO
+        // COMPARES AND MAKES THE cov WRITES SAFE BY CONSTRUCTION RATHER THAN BY PROOF
+        final int ia = Math.min(xhi - 1, Math.max(xlo, (int) Math.floor(xa)));
+        final int ib = Math.min(xhi, Math.max(xlo, (int) Math.floor(xb)));
         if (ia == ib) {
             this.cov[ia] += SS_WEIGHT * (float) (xb - xa);
             return;
@@ -290,11 +336,5 @@ final class SVGRasterizer {
         this.exTop = Arrays.copyOf(this.exTop, cap);
         this.edxdy = Arrays.copyOf(this.edxdy, cap);
         this.edir = Arrays.copyOf(this.edir, cap);
-    }
-
-    private void growCrossings() {
-        final int cap = this.cxs.length * 2;
-        this.cxs = Arrays.copyOf(this.cxs, cap);
-        this.cdir = Arrays.copyOf(this.cdir, cap);
     }
 }

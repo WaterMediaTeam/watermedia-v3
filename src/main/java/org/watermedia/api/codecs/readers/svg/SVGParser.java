@@ -1,12 +1,13 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLResolver;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -22,8 +23,20 @@ import java.util.Map;
  * returns an empty stream for every external DTD/entity, so a {@code SYSTEM} DTD is never fetched over
  * the network. Real-world SVGs commonly declare {@code <!DOCTYPE svg PUBLIC ... "http://.../svg11.dtd">};
  * the resolver lets them parse (an empty DTD) instead of failing, while still touching no network.
+ *
+ * <p>Entity expansion is budgeted twice over: explicitly on the factory (the JDK defaults swing from
+ * 64,000 expansions / 50 MB on 17-21 to a couple of thousand on newer releases, so relying on them
+ * would leave the shipping JDKs wide open) and again by this class, which caps the element count and
+ * the attribute text it is willing to retain.
  */
 final class SVGParser {
+    // DECODER-OWN PARSE BUDGETS. EVERY EXPANDED START_ELEMENT RETAINS A NODE (RECORD + MAP + LIST + TAG)
+    // AND EVERY ATTRIBUTE RETAINS ITS EXPANDED TEXT, SO AN ENTITY BOMB IS FIRST OF ALL A HEAP BOMB.
+    // THESE SIT ORDERS OF MAGNITUDE ABOVE ANY REAL DOCUMENT AND ARE INDEPENDENT OF THE JDK LIMITS BELOW
+    private static final int MAX_ELEMENTS = 100_000;
+    private static final int MAX_ATTR_CHARS = 1_000_000;   // ONE ATTRIBUTE VALUE (A LONG d="" IS LEGITIMATE)
+    private static final long MAX_DOC_CHARS = 16_000_000L; // ALL ATTRIBUTE VALUES OF THE DOCUMENT
+
     // RESOLVER RETURNS EMPTY FOR EVERY EXTERNAL DTD/ENTITY: TOLERATES <!DOCTYPE> (INTERNAL OR WITH AN
     // EXTERNAL SYSTEM ID LIKE INKSCAPE/W3C SVGs) WITHOUT EVER MAKING A NETWORK REQUEST. THIS IS SAFER
     // THAN ACCESS_EXTERNAL_DTD="" WHICH THROWS A FATAL PARSE ERROR ON ANY EXTERNAL SYSTEM DTD.
@@ -37,24 +50,44 @@ final class SVGParser {
         // UNDECLARED PREFIX (e.g. xlink:href WITH NO xmlns:xlink) A FATAL ERROR; ATTRIBUTES ARE READ
         // BY LOCAL NAME (href / xlink:href BOTH HANDLED), SO PREFIX RESOLUTION IS NOT NEEDED
         setProperty(f, XMLInputFactory.IS_NAMESPACE_AWARE, Boolean.FALSE);
+        // NEVER INHERIT THE JDK ENTITY DEFAULTS: THEY DIFFER BY ORDERS OF MAGNITUDE ACROSS THE RELEASES
+        // THIS RUNS ON, SO A DOCUMENT THAT LOOKS DEFUSED ON ONE IS A SEVERAL-HUNDRED-MEGABYTE BOMB ON
+        // ANOTHER. REAL SVGs EXPAND NO ENTITIES AT ALL, WHICH MAKES EVEN THESE VALUES GENEROUS
+        setProperty(f, "jdk.xml.entityExpansionLimit", 2_000);
+        setProperty(f, "jdk.xml.entityReplacementLimit", 100_000);
+        setProperty(f, "jdk.xml.totalEntitySizeLimit", 1_000_000);
+        setProperty(f, "jdk.xml.maxGeneralEntitySizeLimit", 100_000);
         FACTORY = f;
     }
 
     private SVGParser() {}
 
-    static SVGNode parse(final InputStream in) throws IOException {
+    static SVGNode parse(final InputStream in) throws XCodecException {
         XMLStreamReader r = null;
         try {
             r = FACTORY.createXMLStreamReader(in);
             final Deque<SVGNode> stack = new ArrayDeque<>();
             SVGNode root = null;
+            int elements = 0;
+            long chars = 0;
             while (r.hasNext()) {
                 final int ev = r.next();
                 if (ev == XMLStreamConstants.START_ELEMENT) {
+                    // BUDGETS CHECKED BEFORE ANY ALLOCATION — THE WHOLE POINT IS TO NOT RETAIN THE NODE
+                    if (++elements > MAX_ELEMENTS) {
+                        throw new XCodecException("SVG element count exceeds " + MAX_ELEMENTS);
+                    }
                     final Map<String, String> attrs = new HashMap<>();
                     final int count = r.getAttributeCount();
                     for (int i = 0; i < count; i++) {
-                        attrs.put(r.getAttributeLocalName(i), r.getAttributeValue(i));
+                        // ENTITIES EXPAND INSIDE ATTRIBUTE VALUES TOO: A SINGLE d="" CAN REACH TENS OF
+                        // MILLIONS OF CHARACTERS AND HAND THE PATH PARSER A SEGMENT BOMB
+                        final String value = r.getAttributeValue(i);
+                        chars += value.length();
+                        if (value.length() > MAX_ATTR_CHARS || chars > MAX_DOC_CHARS) {
+                            throw new XCodecException("SVG attribute data exceeds the decoder budget");
+                        }
+                        attrs.put(r.getAttributeLocalName(i), value);
                     }
                     final String style = attrs.get("style");
                     if (style != null) parseStyleInto(attrs, style);
@@ -79,7 +112,9 @@ final class SVGParser {
             }
             return root;
         } catch (final XMLStreamException e) {
-            throw new IOException("Malformed SVG document: " + e.getMessage(), e);
+            // EVERY StAX FAILURE FUNNELS HERE, INCLUDING EACH JDK ENTITY-LIMIT TRIP. THE JDK MESSAGE IS
+            // LOCALE-DEPENDENT, SO IT IS ONLY EVER CARRIED ALONG — NEVER INSPECTED
+            throw new XCodecException("Malformed SVG document: " + e.getMessage(), e);
         } finally {
             if (r != null) {
                 try { r.close(); } catch (final XMLStreamException ignored) { /* BEST EFFORT */ }
@@ -110,7 +145,7 @@ final class SVGParser {
 
     // ----- TRANSFORM LIST → AFFINE (functions composed left to right) -----
 
-    static Affine parseTransform(final String s) {
+    static Affine parseTransform(final String s) throws XCodecException {
         if (s == null || s.isBlank()) return Affine.IDENTITY;
         Affine m = Affine.IDENTITY;
         int i = 0;
@@ -145,8 +180,17 @@ final class SVGParser {
 
     // ----- LENGTHS AND NUMBERS -----
 
+    // NO NUMBER PARSED OUT OF A DOCUMENT MAY BE NON-FINITE. THE SCANNERS BELOW ACCEPT EXPONENTS, SO
+    // "1e999" READS AS INFINITY, AND AN INFINITE COORDINATE OR STROKE WIDTH POISONS EVERYTHING
+    // DOWNSTREAM: FLATNESS TESTS BECOME FALSE-BY-NaN AND SUBDIVIDE TO FULL DEPTH, AND SCANLINE
+    // CROSSINGS BECOME 0*Infinity == NaN. THE DOCUMENT IS REJECTED INSTEAD OF RENDERED WRONG
+    private static double finite(final double v) throws XCodecException {
+        if (!Double.isFinite(v)) throw new XCodecException("Non-finite number in SVG document");
+        return v;
+    }
+
     // PARSES A LENGTH INTO USER UNITS (px). UNKNOWN UNITS AND "%" FALL BACK TO THE RAW NUMBER.
-    static double length(final String v, final double def) {
+    static double length(final String v, final double def) throws XCodecException {
         if (v == null || v.isBlank()) return def;
         final String s = v.trim();
         int end = 0;
@@ -174,7 +218,7 @@ final class SVGParser {
             return def;
         }
         final String unit = s.substring(end).trim().toLowerCase(Locale.ROOT);
-        return switch (unit) {
+        return finite(switch (unit) {
             case "", "px" -> num;
             case "pt" -> num * 96.0 / 72.0;
             case "pc" -> num * 16.0;
@@ -184,19 +228,21 @@ final class SVGParser {
             case "em" -> num * 16.0;
             case "ex" -> num * 8.0;
             default -> num; // INCLUDING "%": HANDLED BY CALLERS THAT HAVE A REFERENCE LENGTH
-        };
+        });
     }
 
     // PARSES A LENGTH, RESOLVING "%" AGAINST THE GIVEN REFERENCE LENGTH (SVG VIEWPORT AXIS/DIAGONAL)
-    static double length(final String v, final double def, final double ref) {
+    static double length(final String v, final double def, final double ref) throws XCodecException {
         if (v == null || v.isBlank()) return def;
         final String s = v.trim();
         if (s.endsWith("%")) {
+            final double pct;
             try {
-                return Double.parseDouble(s.substring(0, s.length() - 1)) / 100.0 * ref;
+                pct = Double.parseDouble(s.substring(0, s.length() - 1));
             } catch (final NumberFormatException e) {
                 return def;
             }
+            return finite(pct / 100.0 * ref);
         }
         return length(s, def);
     }
@@ -206,20 +252,23 @@ final class SVGParser {
     }
 
     // PARSES A NUMBER POSSIBLY EXPRESSED AS A PERCENT (RETURNS THE FRACTION FOR "%", ELSE THE NUMBER)
-    static double ratioOrNumber(final String v, final double def) {
+    static double ratioOrNumber(final String v, final double def) throws XCodecException {
         if (v == null || v.isBlank()) return def;
         final String s = v.trim();
+        final double num;
         try {
-            if (s.endsWith("%")) return Double.parseDouble(s.substring(0, s.length() - 1)) / 100.0;
-            return Double.parseDouble(s);
+            num = s.endsWith("%")
+                    ? Double.parseDouble(s.substring(0, s.length() - 1)) / 100.0
+                    : Double.parseDouble(s);
         } catch (final NumberFormatException e) {
             return def;
         }
+        return finite(num);
     }
 
     // SCANS A NUMBER LIST, TOLERATING SVG'S COMPACT FORMS: NUMBERS SEPARATED BY WHITESPACE, COMMAS,
     // OR ONLY A SIGN (e.g. points="100-50") OR A DECIMAL POINT, PLUS EXPONENTS
-    static double[] numbers(final String s) {
+    static double[] numbers(final String s) throws XCodecException {
         if (s == null || s.isBlank()) return new double[0];
         final int n = s.length();
         double[] out = new double[8];
@@ -245,13 +294,14 @@ final class SVGParser {
                 }
             }
             if (!digits) { i = start + 1; continue; } // SKIP A STRAY NON-NUMERIC CHARACTER
-            if (k == out.length) out = java.util.Arrays.copyOf(out, out.length * 2);
+            final double num;
             try {
-                // parseDouble IS EVALUATED BEFORE THE STORE, SO ON FAILURE k IS LEFT UNCHANGED
-                out[k++] = Double.parseDouble(s.substring(start, i));
+                num = Double.parseDouble(s.substring(start, i));
             } catch (final NumberFormatException e) {
-                // DROP MALFORMED TOKEN
+                continue; // DROP MALFORMED TOKEN WITHOUT CONSUMING A SLOT
             }
+            if (k == out.length) out = java.util.Arrays.copyOf(out, out.length * 2);
+            out[k++] = finite(num);
         }
         return k == out.length ? out : java.util.Arrays.copyOf(out, k);
     }

@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -12,6 +14,10 @@ import java.util.List;
  * <p>Elliptical arcs are not stored directly — callers convert them to cubic segments before
  * appending (see {@link PathParser}). Basic shapes ({@code rect}, {@code circle}, {@code ellipse},
  * polylines) build themselves here through cubic approximations.
+ *
+ * <p>Both the stored segment list and the flattened output are hard-budgeted, and no non-finite
+ * coordinate is ever accepted: an entity-expanded {@code d=""} can otherwise carry millions of
+ * segments, and a single degenerate curve can subdivide to {@code 2^MAX_FLATTEN_DEPTH} points.
  */
 final class Path {
     // SEGMENT OPCODES AND THEIR COORDINATE COUNTS
@@ -22,28 +28,33 @@ final class Path {
 
     private static final int MAX_FLATTEN_DEPTH = 18;
 
+    // SEGMENT BUDGET (COORDINATES FOLLOW: AT MOST 6 PER COMMAND) AND FLATTENED-POINT BUDGET. A STROKE
+    // OUTLINE ADDS ~5 COMMANDS PER SOURCE VERTEX PLUS A DISC PER SHARP JOIN, SO IT IS BUDGETED TOO
+    private static final int MAX_SEGMENTS = 500_000;
+    private static final int MAX_POINTS = 500_000;
+
     private byte[] cmd = new byte[16];
     private double[] coord = new double[64];
     private int cmdN, coordN;
 
-    void moveTo(final double x, final double y) { this.pushCmd(MOVE); this.pushCoord(x, y); }
-    void lineTo(final double x, final double y) { this.pushCmd(LINE); this.pushCoord(x, y); }
+    void moveTo(final double x, final double y) throws XCodecException { this.pushCmd(MOVE); this.pushCoord(x, y); }
+    void lineTo(final double x, final double y) throws XCodecException { this.pushCmd(LINE); this.pushCoord(x, y); }
 
-    void quadTo(final double cx, final double cy, final double x, final double y) {
+    void quadTo(final double cx, final double cy, final double x, final double y) throws XCodecException {
         this.pushCmd(QUAD); this.pushCoord(cx, cy); this.pushCoord(x, y);
     }
 
-    void cubicTo(final double c1x, final double c1y, final double c2x, final double c2y, final double x, final double y) {
+    void cubicTo(final double c1x, final double c1y, final double c2x, final double c2y, final double x, final double y) throws XCodecException {
         this.pushCmd(CUBIC); this.pushCoord(c1x, c1y); this.pushCoord(c2x, c2y); this.pushCoord(x, y);
     }
 
-    void close() { this.pushCmd(CLOSE); }
+    void close() throws XCodecException { this.pushCmd(CLOSE); }
 
     boolean isEmpty() { return this.cmdN == 0; }
 
     // ----- BASIC SHAPE BUILDERS (CUBIC APPROXIMATION FOR ROUND PARTS) -----
 
-    void rect(final double x, final double y, final double w, final double h, final double rx, final double ry) {
+    void rect(final double x, final double y, final double w, final double h, final double rx, final double ry) throws XCodecException {
         if (rx <= 0 || ry <= 0) {
             this.moveTo(x, y);
             this.lineTo(x + w, y);
@@ -68,7 +79,7 @@ final class Path {
         this.close();
     }
 
-    void ellipse(final double cx, final double cy, final double rx, final double ry) {
+    void ellipse(final double cx, final double cy, final double rx, final double ry) throws XCodecException {
         final double ox = rx * KAPPA, oy = ry * KAPPA;
         this.moveTo(cx + rx, cy);
         this.cubicTo(cx + rx, cy + oy, cx + ox, cy + ry, cx, cy + ry);
@@ -79,7 +90,7 @@ final class Path {
     }
 
     // POLYLINE / POLYGON FROM A FLAT [x0,y0,x1,y1,...] ARRAY
-    void poly(final double[] pts, final int n, final boolean closed) {
+    void poly(final double[] pts, final int n, final boolean closed) throws XCodecException {
         if (n < 2) return;
         this.moveTo(pts[0], pts[1]);
         for (int i = 2; i + 1 < n; i += 2) this.lineTo(pts[i], pts[i + 1]);
@@ -113,7 +124,7 @@ final class Path {
         final List<Subpath> subpaths = new ArrayList<>();
     }
 
-    Polys flatten(final Affine m, final double tol) {
+    Polys flatten(final Affine m, final double tol) throws XCodecException {
         final Polys out = new Polys();
         final Builder b = new Builder(out, m, tol * tol);
         int ci = 0;
@@ -136,7 +147,7 @@ final class Path {
         private final Affine m;
         private final double tolSq;
         private double[] buf = new double[64];
-        private int n;
+        private int n, total; // total COUNTS EVERY POINT OF THE FLATTEN, INCLUDING ALREADY FLUSHED SUBPATHS
         private double curX, curY, startX, startY;
         private boolean pendingClose;
 
@@ -144,7 +155,7 @@ final class Path {
             this.out = out; this.m = m; this.tolSq = tolSq;
         }
 
-        void moveTo(final double ux, final double uy) {
+        void moveTo(final double ux, final double uy) throws XCodecException {
             this.flush();
             this.curX = this.m.x(ux, uy);
             this.curY = this.m.y(ux, uy);
@@ -153,14 +164,14 @@ final class Path {
             this.add(this.curX, this.curY);
         }
 
-        void lineTo(final double ux, final double uy) {
+        void lineTo(final double ux, final double uy) throws XCodecException {
             this.ensureStarted();
             this.curX = this.m.x(ux, uy);
             this.curY = this.m.y(ux, uy);
             this.add(this.curX, this.curY);
         }
 
-        void quadTo(final double ucx, final double ucy, final double ux, final double uy) {
+        void quadTo(final double ucx, final double ucy, final double ux, final double uy) throws XCodecException {
             this.ensureStarted();
             final double cx = this.m.x(ucx, ucy), cy = this.m.y(ucx, ucy);
             final double ex = this.m.x(ux, uy), ey = this.m.y(ux, uy);
@@ -168,7 +179,7 @@ final class Path {
             this.curX = ex; this.curY = ey;
         }
 
-        void cubicTo(final double uc1x, final double uc1y, final double uc2x, final double uc2y, final double ux, final double uy) {
+        void cubicTo(final double uc1x, final double uc1y, final double uc2x, final double uc2y, final double ux, final double uy) throws XCodecException {
             this.ensureStarted();
             final double c1x = this.m.x(uc1x, uc1y), c1y = this.m.y(uc1x, uc1y);
             final double c2x = this.m.x(uc2x, uc2y), c2y = this.m.y(uc2x, uc2y);
@@ -187,12 +198,12 @@ final class Path {
         }
 
         // SEED A FRESH SUBPATH FROM THE CURRENT POINT WHEN A DRAW FOLLOWS A close()/START
-        private void ensureStarted() {
+        private void ensureStarted() throws XCodecException {
             if (this.n == 0) this.add(this.curX, this.curY);
         }
 
         private void quad(final double x0, final double y0, final double cx, final double cy,
-                          final double x1, final double y1, final int depth) {
+                          final double x1, final double y1, final int depth) throws XCodecException {
             if (depth >= MAX_FLATTEN_DEPTH || quadFlat(x0, y0, cx, cy, x1, y1, this.tolSq)) {
                 this.add(x1, y1);
                 return;
@@ -205,7 +216,7 @@ final class Path {
         }
 
         private void cubic(final double x0, final double y0, final double c1x, final double c1y,
-                           final double c2x, final double c2y, final double x1, final double y1, final int depth) {
+                           final double c2x, final double c2y, final double x1, final double y1, final int depth) throws XCodecException {
             if (depth >= MAX_FLATTEN_DEPTH || cubicFlat(x0, y0, c1x, c1y, c2x, c2y, x1, y1, this.tolSq)) {
                 this.add(x1, y1);
                 return;
@@ -220,7 +231,13 @@ final class Path {
             this.cubic(mx, my, x123, y123, x23, y23, x1, y1, depth + 1);
         }
 
-        private void add(final double x, final double y) {
+        private void add(final double x, final double y) throws XCodecException {
+            // BUDGET THE WHOLE FLATTEN, NOT THE CURRENT SUBPATH: FLUSHED SUBPATHS STAY RETAINED IN out,
+            // AND A STROKE OUTLINE IS ONE SUBPATH PER SEGMENT QUAD PLUS ONE PER JOIN DISC
+            if (this.total == MAX_POINTS) {
+                throw new XCodecException("SVG path exceeds " + MAX_POINTS + " flattened points");
+            }
+            this.total++;
             if (this.n + 2 > this.buf.length) {
                 final double[] grown = new double[this.buf.length * 2];
                 System.arraycopy(this.buf, 0, grown, 0, this.n);
@@ -241,16 +258,18 @@ final class Path {
         }
     }
 
-    // FLATNESS: SQUARED DISTANCE OF THE CONTROL POINT FROM THE CHORD
+    // FLATNESS: SQUARED DISTANCE OF THE CONTROL POINT FROM THE CHORD. THE TEST IS NEGATED SO THAT A NaN
+    // DISTANCE COUNTS AS FLAT AND STOPS THE RECURSION: WITH THE POSITIVE FORM (d <= tolSq) A NaN READS
+    // AS "NOT FLAT" AND EVERY CURVE SUBDIVIDES TO FULL DEPTH — 2^18 POINTS PER SEGMENT (cairo CVE-2019-6461)
     private static boolean quadFlat(final double x0, final double y0, final double cx, final double cy,
                                     final double x1, final double y1, final double tolSq) {
-        return distSqToLine(cx, cy, x0, y0, x1, y1) <= tolSq;
+        return !(distSqToLine(cx, cy, x0, y0, x1, y1) > tolSq);
     }
 
     private static boolean cubicFlat(final double x0, final double y0, final double c1x, final double c1y,
                                      final double c2x, final double c2y, final double x1, final double y1, final double tolSq) {
-        return distSqToLine(c1x, c1y, x0, y0, x1, y1) <= tolSq
-                && distSqToLine(c2x, c2y, x0, y0, x1, y1) <= tolSq;
+        return !(distSqToLine(c1x, c1y, x0, y0, x1, y1) > tolSq)
+                && !(distSqToLine(c2x, c2y, x0, y0, x1, y1) > tolSq);
     }
 
     private static double distSqToLine(final double px, final double py,
@@ -265,7 +284,12 @@ final class Path {
         return (cross * cross) / lenSq;
     }
 
-    private void pushCmd(final byte c) {
+    private void pushCmd(final byte c) throws XCodecException {
+        // ONE BUDGET COVERS BOTH ARRAYS: EVERY COORDINATE PAIR BELONGS TO A COMMAND, AND NO COMMAND
+        // CARRIES MORE THAN THREE OF THEM, SO coordN CAN NEVER EXCEED 6 * MAX_SEGMENTS
+        if (this.cmdN == MAX_SEGMENTS) {
+            throw new XCodecException("SVG path exceeds " + MAX_SEGMENTS + " segments");
+        }
         if (this.cmdN == this.cmd.length) {
             final byte[] grown = new byte[this.cmd.length * 2];
             System.arraycopy(this.cmd, 0, grown, 0, this.cmdN);
@@ -274,7 +298,12 @@ final class Path {
         this.cmd[this.cmdN++] = c;
     }
 
-    private void pushCoord(final double x, final double y) {
+    private void pushCoord(final double x, final double y) throws XCodecException {
+        // SINGLE CHOKE POINT FOR THE "NO NON-FINITE GEOMETRY" INVARIANT — THE PATH PARSER, THE SHAPE
+        // BUILDERS AND THE GENERATED STROKE OUTLINE ALL FUNNEL THROUGH HERE
+        if (!Double.isFinite(x) || !Double.isFinite(y)) {
+            throw new XCodecException("Non-finite path coordinate");
+        }
         if (this.coordN + 2 > this.coord.length) {
             final double[] grown = new double[this.coord.length * 2];
             System.arraycopy(this.coord, 0, grown, 0, this.coordN);

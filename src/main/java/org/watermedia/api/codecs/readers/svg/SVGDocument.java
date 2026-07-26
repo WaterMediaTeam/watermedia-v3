@@ -2,7 +2,6 @@ package org.watermedia.api.codecs.readers.svg;
 
 import org.watermedia.api.codecs.XCodecException;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -27,6 +26,12 @@ final class SVGDocument {
     private static final double DEFAULT_W = 300, DEFAULT_H = 150;
     // GUARD AGAINST ADVERSARIAL DEEP NESTING — REAL DOCUMENTS NEST A FEW LEVELS, NEVER HUNDREDS
     private static final int MAX_DEPTH = 512;
+    // THE href TEMPLATE CHAIN IS WALKED ONCE PER GRADIENT AND AGAIN PER ATTRIBUTE LOOKUP, SO AN
+    // UNBOUNDED LENGTH IS QUADRATIC IN THE GRADIENT COUNT. REAL DOCUMENTS USE A SINGLE HOP
+    private static final int MAX_CHAIN = 16;
+    // STOPS ARE SCANNED PER COVERED PIXEL AND <stop> NEEDS NO id, SO IT AMPLIFIES PERFECTLY THROUGH
+    // ENTITY EXPANSION. EVERY REAL GRADIENT USES A HANDFUL
+    private static final int MAX_STOPS = 256;
 
     private final SVGNode root;
     private final Map<String, SVGPaint> gradients;
@@ -37,7 +42,7 @@ final class SVGDocument {
     private final double refW, refH, refD; // PERCENTAGE REFERENCE LENGTHS: VIEWPORT WIDTH/HEIGHT/DIAGONAL
     private final boolean aspectNone; // preserveAspectRatio="none"
 
-    SVGDocument(final SVGNode root) throws IOException {
+    SVGDocument(final SVGNode root) throws XCodecException {
         this.root = root;
 
         final double[] vb = SVGParser.numbers(root.attr("viewBox"));
@@ -79,7 +84,7 @@ final class SVGDocument {
     double intrinsicWidth() { return this.intrinsicW; }
     double intrinsicHeight() { return this.intrinsicH; }
 
-    void render(final RasterOutput out) throws IOException {
+    void render(final RasterOutput out) throws XCodecException {
         // display:none ON THE ROOT HIDES THE WHOLE DOCUMENT
         if (hidden(this.root)) return;
         final Affine view = this.viewTransform(out.width(), out.height());
@@ -104,7 +109,7 @@ final class SVGDocument {
         return Affine.scale(outW / this.intrinsicW, outH / this.intrinsicH);
     }
 
-    private void renderNode(final SVGNode node, final RenderState state, final RasterOutput out, final int depth) throws IOException {
+    private void renderNode(final SVGNode node, final RenderState state, final RasterOutput out, final int depth) throws XCodecException {
         if (depth > MAX_DEPTH) throw new XCodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
         // display:none REMOVES THE ELEMENT AND ITS ENTIRE SUBTREE FROM RENDERING (NOT INHERITED — CHECK PER NODE)
         if (hidden(node)) return;
@@ -134,7 +139,7 @@ final class SVGDocument {
         return display != null && display.trim().equalsIgnoreCase("none");
     }
 
-    private Path geometry(final SVGNode node) {
+    private Path geometry(final SVGNode node) throws XCodecException {
         final Path p = new Path();
         switch (node.tag()) {
             case "rect" -> {
@@ -182,7 +187,7 @@ final class SVGDocument {
 
     // ----- GRADIENTS -----
 
-    private void collectGradients(final SVGNode node) throws IOException {
+    private void collectGradients(final SVGNode node) throws XCodecException {
         // FIRST INDEX ALL GRADIENT NODES BY id (FOR href TEMPLATE RESOLUTION), THEN BUILD PAINTS
         final Map<String, SVGNode> nodes = new HashMap<>();
         indexGradients(node, nodes, 1);
@@ -199,7 +204,7 @@ final class SVGDocument {
         }
     }
 
-    private static void indexGradients(final SVGNode node, final Map<String, SVGNode> out, final int depth) throws IOException {
+    private static void indexGradients(final SVGNode node, final Map<String, SVGNode> out, final int depth) throws XCodecException {
         if (depth > MAX_DEPTH) throw new XCodecException("SVG nesting exceeds " + MAX_DEPTH + " levels");
         final String tag = node.tag();
         if (tag.equals("lineargradient") || tag.equals("radialgradient")) {
@@ -209,7 +214,7 @@ final class SVGDocument {
         for (final SVGNode c: node.children()) indexGradients(c, out, depth + 1);
     }
 
-    private SVGPaint buildLinear(final SVGNode node, final Map<String, SVGNode> nodes) {
+    private SVGPaint buildLinear(final SVGNode node, final Map<String, SVGNode> nodes) throws XCodecException {
         final List<SVGNode> chain = resolveChain(node, nodes);
         final boolean userSpace = "userSpaceOnUse".equalsIgnoreCase(attr(chain, "gradientUnits"));
         final Affine gt = SVGParser.parseTransform(attr(chain, "gradientTransform"));
@@ -237,7 +242,7 @@ final class SVGDocument {
     }
 
     // PARSES A <stop>: stop-color (default black) WITH stop-opacity FOLDED INTO THE ALPHA
-    private static int stopColor(final SVGNode stop) {
+    private static int stopColor(final SVGNode stop) throws XCodecException {
         final String sc = stop.attr("stop-color");
         final long parsed = sc == null ? SVGColor.INVALID : SVGColor.parse(sc, 0xFF000000);
         int c = parsed == SVGColor.INVALID ? 0xFF000000 : (int) parsed;
@@ -251,7 +256,7 @@ final class SVGDocument {
     }
 
     // SOLID APPROXIMATION FOR AN UNSUPPORTED (RADIAL) GRADIENT: THE AVERAGE OF ITS STOP COLOURS
-    private static SVGPaint buildRadialFallback(final SVGNode node, final Map<String, SVGNode> nodes) {
+    private static SVGPaint buildRadialFallback(final SVGNode node, final Map<String, SVGNode> nodes) throws XCodecException {
         final List<SVGNode> stops = stopsOf(resolveChain(node, nodes));
         if (stops.isEmpty()) return null;
         long a = 0, r = 0, g = 0, b = 0;
@@ -265,11 +270,14 @@ final class SVGDocument {
 
     // FOLLOWS THE href/xlink:href TEMPLATE CHAIN (SELF FIRST) WITH AN IDENTITY-BASED CYCLE GUARD.
     // SVG ALLOWS ARBITRARY-DEPTH CHAINS, SO ATTRIBUTES/STOPS MAY LIVE ON ANY ANCESTOR, NOT JUST ONE HOP.
-    private static List<SVGNode> resolveChain(final SVGNode node, final Map<String, SVGNode> nodes) {
+    // THE CYCLE GUARD STOPS LOOPS BUT NOT LENGTH, HENCE MAX_CHAIN: EVERY GRADIENT WALKS ITS CHAIN ONCE
+    // PER BUILD AND ONCE PER ATTRIBUTE LOOKUP, SO M CHAINED GRADIENTS WOULD COST Theta(M^2)
+    private static List<SVGNode> resolveChain(final SVGNode node, final Map<String, SVGNode> nodes) throws XCodecException {
         final List<SVGNode> chain = new ArrayList<>();
         final Set<SVGNode> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         SVGNode cur = node;
         while (cur != null && seen.add(cur)) {
+            if (chain.size() == MAX_CHAIN) throw new XCodecException("Gradient href chain exceeds " + MAX_CHAIN);
             chain.add(cur);
             String href = cur.attr("href");
             if (href == null) href = cur.attr("xlink:href");
@@ -288,11 +296,13 @@ final class SVGDocument {
     }
 
     // STOPS FROM THE FIRST CHAIN ELEMENT THAT DECLARES ANY
-    private static List<SVGNode> stopsOf(final List<SVGNode> chain) {
+    private static List<SVGNode> stopsOf(final List<SVGNode> chain) throws XCodecException {
         for (final SVGNode n: chain) {
             final List<SVGNode> stops = new ArrayList<>();
             for (final SVGNode c: n.children()) {
-                if (c.tag().equals("stop")) stops.add(c);
+                if (!c.tag().equals("stop")) continue;
+                if (stops.size() == MAX_STOPS) throw new XCodecException("Gradient exceeds " + MAX_STOPS + " stops");
+                stops.add(c);
             }
             if (!stops.isEmpty()) return stops;
         }
@@ -300,7 +310,7 @@ final class SVGDocument {
     }
 
     // GRADIENT COORDINATE: OBB → FRACTION; userSpaceOnUse → USER UNITS (PERCENT SCALES BY VIEWPORT)
-    private static double coord(final String value, final double defFraction, final boolean userSpace, final double ref) {
+    private static double coord(final String value, final double defFraction, final boolean userSpace, final double ref) throws XCodecException {
         if (value == null) return userSpace ? defFraction * ref : defFraction;
         if (userSpace) {
             return SVGParser.isPercent(value) ? SVGParser.ratioOrNumber(value, defFraction) * ref : SVGParser.length(value, defFraction);

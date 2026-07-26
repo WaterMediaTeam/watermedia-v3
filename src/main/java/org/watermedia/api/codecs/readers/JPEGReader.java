@@ -5,7 +5,6 @@ import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.XCodecException;
 import org.watermedia.api.util.PixelFormat;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -20,8 +19,22 @@ import java.util.Arrays;
  */
 public final class JPEGReader extends ImageReader {
 
+    // DECODABLE FRAME TYPES. SOF1 IS BIT-IDENTICAL TO SOF0 FOR 8-BIT HUFFMAN DATA, SO IT SHARES readFrame()
     private static final int SOF0 = 0xC0;
+    private static final int SOF1 = 0xC1;
     private static final int SOF2 = 0xC2;
+    // FRAME TYPES THIS DECODER DOES NOT IMPLEMENT. NAMED SO parse() CAN REJECT THEM EXPLICITLY: THE WHOLE
+    // 0xC0..0xCF BLOCK CARRIES A SEGMENT LENGTH, SO THE GENERIC SKIP PATH WOULD SWALLOW THEM AS PADDING
+    private static final int SOF3 = 0xC3;
+    private static final int SOF5 = 0xC5;
+    private static final int SOF6 = 0xC6;
+    private static final int SOF7 = 0xC7;
+    private static final int SOF9 = 0xC9;
+    private static final int SOF10 = 0xCA;
+    private static final int SOF11 = 0xCB;
+    private static final int SOF13 = 0xCD;
+    private static final int SOF14 = 0xCE;
+    private static final int SOF15 = 0xCF;
     private static final int DHT = 0xC4;
     private static final int SOI = 0xD8;
     private static final int EOI = 0xD9;
@@ -33,6 +46,19 @@ public final class JPEGReader extends ImageReader {
     // SECURITY CAP: 16-BIT SOF WIDTH/HEIGHT OTHERWISE OVERFLOW THE coefficient/sample/BGRA INT MATH AND
     // ALLOW MULTI-GB ALLOCATIONS FROM A FEW-BYTE HEADER. 16K PER AXIS (1:1) KEEPS EVERY PRODUCT WITHIN INT.
     private static final int MAX_DIM = 16384;
+    // TOTAL-PIXEL CAP (64 MPX, SAME VALUE AS WEBPReader). MAX_DIM BOUNDS EACH AXIS BUT NOT THEIR PRODUCT:
+    // A 23-BYTE HEADER DECLARING 16384x16384x3 ASKS FOR 1 GiB OF COEFFICIENTS PER COMPONENT.
+    private static final int MAX_PIXELS = 1 << 26;
+    // WORKING-SET CAP FOR ONE FRAME (COEFFICIENTS + SAMPLE PLANES + OUTPUT BUFFER). DELIBERATELY AN
+    // ABSOLUTE FIGURE RATHER THAN A MULTIPLE OF ImageReader.MAX_DECODED_BYTES: THAT ONE TRACKS WHAT
+    // REAL ANIMATIONS RETAIN AND MOVES WITH THEM, WHICH HAS NO BEARING ON ONE FRAME'S DECODE COST.
+    // NEEDED BECAUSE MAX_PIXELS ALONE STILL ALLOWS 12 BYTES OF COEFFICIENTS PER PIXEL ON 4:4:4 FRAMES.
+    private static final long MAX_FRAME_BYTES = 512L << 20;
+    // SCAN CEILING (libjpeg-turbo USES THE SAME 100). EVERY SCAN REWALKS THE WHOLE COEFFICIENT GRID,
+    // SO AN UNBOUNDED SOS CHAIN IS A CPU BOMB NO MATTER HOW LITTLE ENTROPY DATA EACH SCAN CARRIES.
+    private static final int MAX_SCANS = 100;
+    // POINT-TRANSFORM CEILING: Al ABOVE THIS SHIFTS COEFFICIENTS OUT OF ANY MEANINGFUL RANGE (libjpeg AGREES)
+    private static final int MAX_APPROXIMATION = 13;
 
     private static final int[] ZIGZAG = {
             0, 1, 8, 16, 9, 2, 3, 10,
@@ -103,6 +129,7 @@ public final class JPEGReader extends ImageReader {
     private int[] planeStrides = { 0 };
     private boolean delivered;
     private int eobRun;
+    private int scans;
 
     public JPEGReader(final ByteBuffer data, final PixelFormat requestedFormat) throws IOException {
         super(data, requestedFormat);
@@ -143,14 +170,25 @@ public final class JPEGReader extends ImageReader {
     @Override
     public boolean reset() {
         // FULLY DECODED INTO directOut AT CONSTRUCTION; REPLAYING IS JUST CLEARING THE DELIVERY FLAG
+        if (this.directOut == null) return false;
         this.delivered = false;
         this.currentDelay = 0L;
         return true;
     }
 
     @Override
+    public void close() {
+        // THE DECODED FRAME LIVES OFF-HEAP (UP TO width*height*4 BYTES) AND ONLY THE Cleaner CAN FREE IT.
+        // DROPPING THE REFERENCE HERE RELEASES IT AS SOON AS THE CALLER IS DONE INSTEAD OF WHEN THE WHOLE
+        // READER BECOMES UNREACHABLE, WHICH MAY BE MUCH LATER.
+        this.directOut = null;
+        this.currentFrame = null;
+        this.delivered = true;
+    }
+
+    @Override
     public ByteBuffer next() throws IOException {
-        if (this.delivered) throw new EOFException("No more JPEG frames");
+        if (this.delivered) throw new XCodecException("No more JPEG frames");
         this.delivered = true;
         this.currentDelay = 0L;
         this.currentFrame = this.directOut;
@@ -167,19 +205,35 @@ public final class JPEGReader extends ImageReader {
                 case EOI -> {
                     return;
                 }
-                case SOF0, SOF2 -> this.readFrame(marker);
+                case SOF0, SOF1, SOF2 -> this.readFrame(marker);
+                case SOF3, SOF5, SOF6, SOF7, SOF9, SOF10, SOF11, SOF13, SOF14, SOF15 -> {
+                    // NAME THE CODING PROCESS INSTEAD OF SKIPPING THE SEGMENT: SKIPPING LEAVES THE DECODE
+                    // WITHOUT A FRAME HEADER AND IT DIES LATER ON THE MISLEADING "scan before frame header"
+                    final String process = switch (marker) {
+                        case SOF3 -> "lossless";
+                        case SOF5, SOF6, SOF7 -> "differential";
+                        case SOF9, SOF10, SOF11 -> "arithmetic coding";
+                        default -> "differential arithmetic coding";
+                    };
+                    throw new XCodecException("Unsupported JPEG frame type FF" + hex(marker) + " (" + process + ")");
+                }
                 case DQT -> this.readQuantTables();
                 case DHT -> this.readHuffmanTables();
                 case DRI -> this.readRestartInterval();
                 case SOS -> {
+                    if (++this.scans > MAX_SCANS) throw new XCodecException("Too many JPEG scans (max " + MAX_SCANS + ")");
                     final Scan scan = this.readScanHeader();
                     final EntropyReader entropy = new EntropyReader(this.data);
                     this.decodeScan(scan, entropy);
+                    // A SCAN THAT READ NO ENTROPY BYTE CANNOT HAVE MADE PROGRESS; IT ONLY REPLAYS WORK OVER
+                    // THE COEFFICIENT GRID FOR FREE, SO IT IS MALFORMED RATHER THAN MERELY EMPTY
+                    if (entropy.consumed == 0) throw new XCodecException("JPEG scan consumed no entropy data");
                     marker = entropy.finishScan();
                     continue;
                 }
                 default -> {
-                    if (isApp(marker) || marker == COM || hasSegmentLength(marker)) this.skipSegment();
+                    // RETURN VALUE IGNORED ON PURPOSE: THE SEGMENT BODY IS IRRELEVANT, ONLY SKIPPING IT MATTERS
+                    if (isApp(marker) || marker == COM || hasSegmentLength(marker)) this.segment();
                     else if (!isRestart(marker)) throw new XCodecException("Unsupported JPEG marker FF" + hex(marker));
                 }
             }
@@ -187,32 +241,43 @@ public final class JPEGReader extends ImageReader {
         }
     }
 
-    private void readFrame(final int marker) throws IOException {
-        final int length = this.readSegmentLength();
-        if (length < 8) throw new XCodecException("Truncated JPEG frame header");
-        final int end = this.checkedSegmentEnd(length);
-        final int precision = readU8(this.data);
+    private void readFrame(final int marker) throws XCodecException {
+        // T.81 ALLOWS EXACTLY ONE FRAME HEADER. A REPEATED SOF DROPS THE PREVIOUS COEFFICIENT ARRAYS AND
+        // ALLOCATES A FRESH ZEROED SET, SO PEAK MEMORY STAYS FLAT WHILE THE JVM IS FORCED TO ALLOCATE AND
+        // ZERO TENS OF GIGABYTES FROM A FEW KILOBYTES OF 19-BYTE HEADERS
+        if (this.components != null) throw new XCodecException("Duplicate JPEG frame header");
+
+        final ByteBuffer segment = this.segment();
+        if (segment.remaining() < 6) throw new XCodecException("Truncated JPEG frame header");
+        final int precision = readU8(segment);
         if (precision != 8) throw new XCodecException("Unsupported JPEG precision: " + precision);
 
-        this.height = readU16(this.data);
-        this.width = readU16(this.data);
+        this.height = readU16(segment);
+        this.width = readU16(segment);
         if (this.width <= 0 || this.height <= 0) throw new XCodecException("Invalid JPEG dimensions");
         if (this.width > MAX_DIM || this.height > MAX_DIM)
             throw new XCodecException("JPEG dimensions too big: " + this.width + "x" + this.height + " (max " + MAX_DIM + ")");
+        if ((long) this.width * this.height > MAX_PIXELS)
+            throw new XCodecException("JPEG frame too large: " + this.width + "x" + this.height + " (max " + MAX_PIXELS + " pixels)");
 
-        final int count = readU8(this.data);
+        final int count = readU8(segment);
         if (count != 1 && count != 3) throw new XCodecException("Unsupported JPEG component count: " + count);
+        // Lf MUST BE EXACTLY 8 + 3*Nf. WITHOUT THIS THE COMPONENT TRIPLETS BELOW ARE HAPPILY READ FROM
+        // WHATEVER FOLLOWS THE SEGMENT (CVE-2013-6629 SHAPE); THE SLICE LIMIT TURNS THAT INTO A HARD ERROR
+        if (segment.remaining() != count * 3)
+            throw new XCodecException("Malformed JPEG frame header length " + (segment.limit() + 2)
+                    + " (expected " + (8 + count * 3) + " for " + count + " components)");
 
         this.progressive = marker == SOF2;
         this.components = new Component[count];
         this.maxH = 1;
         this.maxV = 1;
         for (int i = 0; i < count; i++) {
-            final int id = readU8(this.data);
-            final int sampling = readU8(this.data);
+            final int id = readU8(segment);
+            final int sampling = readU8(segment);
             final int h = sampling >>> 4;
             final int v = sampling & 0x0F;
-            final int table = readU8(this.data);
+            final int table = readU8(segment);
             if (h <= 0 || v <= 0 || h > 4 || v > 4) {
                 throw new XCodecException("Unsupported JPEG sampling factor " + h + "x" + v);
             }
@@ -224,6 +289,8 @@ public final class JPEGReader extends ImageReader {
 
         this.mcusX = ceilDiv(this.width, this.maxH * 8);
         this.mcusY = ceilDiv(this.height, this.maxV * 8);
+        // OUTPUT BUFFER AT ITS BGRA WORST CASE; THE PLANAR LAYOUTS ARE STRICTLY CHEAPER
+        long frameBytes = (long) this.width * this.height * 4L;
         for (final Component component: this.components) {
             // MCU-PADDED GRID: USED FOR STORAGE STRIDE AND INTERLEAVED (MCU) SCAN ITERATION
             component.blocksX = this.mcusX * component.h;
@@ -232,76 +299,88 @@ public final class JPEGReader extends ImageReader {
             // PADDING BLOCKS PAST THESE BOUNDS ARE NOT CODED IN NON-INTERLEAVED SCANS (T.81 A.2.2).
             component.widthInBlocks = ceilDiv(this.width * component.h, this.maxH * 8);
             component.heightInBlocks = ceilDiv(this.height * component.v, this.maxV * 8);
+            // 4 BYTES PER COEFFICIENT (int[]) PLUS 1 BYTE PER IDCT SAMPLE (byte[], ALLOCATED IN buildComponent)
+            frameBytes += (long) component.blocksX * component.blocksY * 64L * 5L;
+        }
+        // SUM THE WHOLE FRAME IN long BEFORE THE FIRST ALLOCATION: PER-AXIS AND PER-PIXEL CAPS BOUND ONE
+        // COMPONENT, NOT THE SUM OVER COMPONENTS, AND EVERY int PRODUCT BELOW IS ONLY SAFE ONCE THIS PASSES
+        if (frameBytes > MAX_FRAME_BYTES)
+            throw new XCodecException("JPEG frame needs " + frameBytes + " bytes to decode (max " + MAX_FRAME_BYTES + ")");
+        for (final Component component: this.components) {
             component.coefficients = new int[component.blocksX * component.blocksY * 64];
         }
-        this.data.position(end);
     }
 
-    private void readQuantTables() throws IOException {
-        final int length = this.readSegmentLength();
-        int remaining = length - 2;
-        while (remaining > 0) {
-            final int info = readU8(this.data);
-            remaining--;
+    private void readQuantTables() throws XCodecException {
+        final ByteBuffer segment = this.segment();
+        while (segment.hasRemaining()) {
+            final int info = readU8(segment);
             final int precision = info >>> 4;
             final int table = info & 0x0F;
             if (table >= this.quantTables.length) throw new XCodecException("Invalid JPEG quantization table " + table);
             final int bytes = precision == 0 ? 64 : precision == 1 ? 128 : -1;
-            if (bytes < 0 || remaining < bytes) throw new XCodecException("Invalid JPEG quantization table precision");
+            if (bytes < 0) throw new XCodecException("Invalid JPEG quantization table precision " + precision);
+            if (segment.remaining() < bytes)
+                throw new XCodecException("Truncated JPEG quantization table " + table + ": " + bytes
+                        + " bytes declared, " + segment.remaining() + " left in segment");
 
             final int[] values = new int[64];
             for (int i = 0; i < 64; i++) {
-                values[ZIGZAG[i]] = precision == 0 ? readU8(this.data) : readU16(this.data);
+                values[ZIGZAG[i]] = precision == 0 ? readU8(segment) : readU16(segment);
             }
             this.quantTables[table] = values;
-            remaining -= bytes;
         }
-        if (remaining != 0) throw new XCodecException("Malformed JPEG quantization segment");
     }
 
-    private void readHuffmanTables() throws IOException {
-        final int length = this.readSegmentLength();
-        int remaining = length - 2;
-        while (remaining > 0) {
-            final int info = readU8(this.data);
-            remaining--;
+    private void readHuffmanTables() throws XCodecException {
+        final ByteBuffer segment = this.segment();
+        while (segment.hasRemaining()) {
+            final int info = readU8(segment);
             final int type = info >>> 4;
             final int table = info & 0x0F;
             if (type > 1 || table >= 4) throw new XCodecException("Invalid JPEG Huffman table");
+            // THE 16 CODE-LENGTH COUNTS MUST FIT IN THIS SEGMENT. READ FROM THE PARENT BUFFER A THREE-BYTE
+            // DHT WOULD ADOPT THE FOLLOWING MARKER AS TABLE DATA INSTEAD OF FAILING (CVE-2013-6629 SHAPE)
+            if (segment.remaining() < 16)
+                throw new XCodecException("Truncated JPEG Huffman table: 16 code counts needed, "
+                        + segment.remaining() + " left in segment");
 
             final int[] counts = new int[17];
             int symbols = 0;
             for (int i = 1; i <= 16; i++) {
-                counts[i] = readU8(this.data);
+                counts[i] = readU8(segment);
                 symbols += counts[i];
             }
-            remaining -= 16;
-            if (remaining < symbols) throw new XCodecException("Truncated JPEG Huffman table");
+            if (segment.remaining() < symbols)
+                throw new XCodecException("Truncated JPEG Huffman table: " + symbols + " symbols declared, "
+                        + segment.remaining() + " left in segment");
             final int[] values = new int[symbols];
-            for (int i = 0; i < symbols; i++) values[i] = readU8(this.data);
-            remaining -= symbols;
+            for (int i = 0; i < symbols; i++) values[i] = readU8(segment);
             this.huffmanTables[type][table] = new HuffmanTable(counts, values);
         }
-        if (remaining != 0) throw new XCodecException("Malformed JPEG Huffman segment");
     }
 
-    private void readRestartInterval() throws IOException {
-        final int length = this.readSegmentLength();
-        if (length != 4) throw new XCodecException("Invalid JPEG DRI segment length");
-        this.restartInterval = readU16(this.data);
+    private void readRestartInterval() throws XCodecException {
+        final ByteBuffer segment = this.segment();
+        if (segment.remaining() != 2) throw new XCodecException("Invalid JPEG DRI segment length " + (segment.limit() + 2));
+        this.restartInterval = readU16(segment);
     }
 
-    private Scan readScanHeader() throws IOException {
+    private Scan readScanHeader() throws XCodecException {
         if (this.components == null) throw new XCodecException("JPEG scan before frame header");
-        final int length = this.readSegmentLength();
-        final int end = this.checkedSegmentEnd(length);
-        final int count = readU8(this.data);
+        final ByteBuffer segment = this.segment();
+        if (!segment.hasRemaining()) throw new XCodecException("Truncated JPEG scan header");
+        final int count = readU8(segment);
         if (count <= 0 || count > this.components.length) throw new XCodecException("Invalid JPEG scan component count");
+        // Ls MUST BE EXACTLY 6 + 2*Ns: Ns COMPONENT PAIRS PLUS Ss, Se AND THE APPROXIMATION BYTE
+        if (segment.remaining() != count * 2 + 3)
+            throw new XCodecException("Malformed JPEG scan header length " + (segment.limit() + 2)
+                    + " (expected " + (6 + count * 2) + " for " + count + " components)");
 
         final Component[] scanComponents = new Component[count];
         for (int i = 0; i < count; i++) {
-            final Component component = this.component(readU8(this.data));
-            final int tables = readU8(this.data);
+            final Component component = this.component(readU8(segment));
+            final int tables = readU8(segment);
             component.dcTable = tables >>> 4;
             component.acTable = tables & 0x0F;
             // TABLE DESTINATION SELECTORS ARE 4-BIT FIELDS BUT ONLY 0..3 ARE VALID; huffmanTables IS [2][4],
@@ -310,13 +389,10 @@ public final class JPEGReader extends ImageReader {
                 throw new XCodecException("Invalid JPEG scan table selector " + component.dcTable + "/" + component.acTable);
             scanComponents[i] = component;
         }
-        final int ss = readU8(this.data);
-        final int se = readU8(this.data);
-        final int approximation = readU8(this.data);
-        final int ah = approximation >>> 4;
-        final int al = approximation & 0x0F;
-        if (this.data.position() != end) throw new XCodecException("Malformed JPEG scan header");
-        return new Scan(scanComponents, ss, se, ah, al);
+        final int ss = readU8(segment);
+        final int se = readU8(segment);
+        final int approximation = readU8(segment);
+        return new Scan(scanComponents, ss, se, approximation >>> 4, approximation & 0x0F);
     }
 
     private void decodeScan(final Scan scan, final EntropyReader entropy) throws IOException {
@@ -325,13 +401,38 @@ public final class JPEGReader extends ImageReader {
             this.decodeSequentialScan(scan, entropy);
             return;
         }
-        if (scan.ss == 0 && scan.se == 0) {
+
+        final boolean dcBand = scan.ss == 0 && scan.se == 0;
+        if (!dcBand) {
+            if (scan.components.length != 1) throw new XCodecException("Progressive AC scan must contain one component");
+            if (scan.ss < 1 || scan.se > 63 || scan.ss > scan.se) throw new XCodecException("Invalid progressive AC range");
+        }
+        // SUCCESSIVE APPROXIMATION (T.81 G.1.1.1.2): A REFINEMENT SCAN LOWERS THE POINT TRANSFORM BY EXACTLY ONE BIT
+        if (scan.al > MAX_APPROXIMATION || (scan.ah != 0 && scan.ah != scan.al + 1))
+            throw new XCodecException("Invalid JPEG successive approximation Ah=" + scan.ah + " Al=" + scan.al);
+
+        // SCAN-ORDERING GATE. approx[k] IS THE POINT TRANSFORM COEFFICIENT k WAS LAST CODED AT, -1 WHEN NEVER
+        // CODED. WITHOUT IT A LONE REFINEMENT SCAN REFINES AN ALL-ZERO ARRAY, AND refineNonZero() THEN WALKS 63
+        // POSITIONS PER BLOCK WHILE CONSUMING NO BITS AT ALL: ONE 15-BIT EOB SYMBOL BUYS 16384 BLOCKS OF WORK.
+        // IT ALSO BOUNDS TOTAL EFFORT, SINCE EACH COEFFICIENT IS NOW VISITABLE ONCE PER APPROXIMATION LEVEL ONLY.
+        for (final Component component: scan.components) {
+            for (int k = scan.ss; k <= scan.se; k++) {
+                if (scan.ah == 0) {
+                    if (component.approx[k] >= 0)
+                        throw new XCodecException("Duplicate JPEG first pass on component " + component.id + " coefficient " + k);
+                } else if (component.approx[k] != scan.ah) {
+                    throw new XCodecException("JPEG refinement scan on component " + component.id + " coefficient " + k
+                            + " has no preceding pass at Al=" + scan.ah);
+                }
+                component.approx[k] = scan.al;
+            }
+        }
+
+        if (dcBand) {
             if (scan.ah == 0) this.decodeDcFirst(scan, entropy);
             else this.decodeDcRefine(scan, entropy);
             return;
         }
-        if (scan.components.length != 1) throw new XCodecException("Progressive AC scan must contain one component");
-        if (scan.ss < 1 || scan.se > 63 || scan.ss > scan.se) throw new XCodecException("Invalid progressive AC range");
         if (scan.ah == 0) this.decodeAcFirst(scan, entropy);
         else this.decodeAcRefine(scan, entropy);
     }
@@ -833,25 +934,33 @@ public final class JPEGReader extends ImageReader {
         final int cbStride = cbc.blocksX * 8;
         final int crStride = crc.blocksX * 8;
 
-        // PRECOMPUTE PER-DESTINATION-COLUMN CHROMA SAMPLE INDICES (REMOVES MUL/DIV/MIN PER PIXEL)
+        // PRECOMPUTE PER-DESTINATION-COLUMN SAMPLE INDICES (REMOVES MUL/DIV/MIN PER PIXEL). LUMA IS CLAMPED
+        // AND SUBSAMPLED LIKE CHROMA ON PURPOSE: A RAW yRow + x INDEX IS ONLY IN RANGE WHILE resolveNativeFormat()
+        // ACCEPTS EXCLUSIVELY 4:4:4/4:2:2/4:2:0, WHERE y.h == maxH AND y.v == maxV. THAT INVARIANT LIVES IN A
+        // FORMAT CLASSIFIER 200 LINES AWAY, SO WIDENING IT TO 4:1:1 OR 4:4:0 WOULD SILENTLY TURN THIS LOOP INTO
+        // AN OUT-OF-BOUNDS READ; CLAMPING KEEPS IT CORRECT FOR ANY LAYOUT AND COSTS ONE TABLE LOOKUP.
+        final int[] yX = new int[this.width];
         final int[] cbX = new int[this.width];
         final int[] crX = new int[this.width];
+        final int ySampleW = yc.blocksX * 8;
         final int cbSampleW = cbc.blocksX * 8;
         final int crSampleW = crc.blocksX * 8;
         for (int x = 0; x < this.width; x++) {
+            yX[x] = Math.min(ySampleW - 1, (x * yc.h) / this.maxH);
             cbX[x] = Math.min(cbSampleW - 1, (x * cbc.h) / this.maxH);
             crX[x] = Math.min(crSampleW - 1, (x * crc.h) / this.maxH);
         }
 
         final ByteBuffer out = this.directOut;
+        final int ySampleH = yc.blocksY * 8;
         final int cbSampleH = cbc.blocksY * 8;
         final int crSampleH = crc.blocksY * 8;
         for (int y = 0; y < this.height; y++) {
-            final int yRow = y * yStride;
+            final int yRow = Math.min(ySampleH - 1, (y * yc.v) / this.maxV) * yStride;
             final int cbRow = Math.min(cbSampleH - 1, (y * cbc.v) / this.maxV) * cbStride;
             final int crRow = Math.min(crSampleH - 1, (y * crc.v) / this.maxV) * crStride;
             for (int x = 0; x < this.width; x++) {
-                final int yy = ySrc[yRow + x] & 0xFF;
+                final int yy = ySrc[yRow + yX[x]] & 0xFF;
                 final int cb = cbSrc[cbRow + cbX[x]] & 0xFF;
                 final int cr = crSrc[crRow + crX[x]] & 0xFF;
                 final int r = clamp(yy + CR_TO_R[cr]);
@@ -869,36 +978,33 @@ public final class JPEGReader extends ImageReader {
         throw new XCodecException("JPEG scan references unknown component " + id);
     }
 
-    private void skipSegment() throws IOException {
-        final int length = this.readSegmentLength();
-        skip(this.data, length - 2);
-    }
-
-    private int readSegmentLength() throws IOException {
+    // READS THE SEGMENT LENGTH AND RETURNS A VIEW BOUNDED TO ITS BODY, LEAVING THE PARENT BUFFER POSITIONED
+    // ON THE NEXT MARKER. EVERY SUB-READ IS THEN CONFINED TO ITS OWN SEGMENT: A SHORT DECLARED LENGTH FAILS
+    // INSIDE THE SLICE INSTEAD OF QUIETLY CONSUMING THE BYTES OF WHATEVER FOLLOWS.
+    private ByteBuffer segment() throws XCodecException {
         final int length = readU16(this.data);
         if (length < 2) throw new XCodecException("Invalid JPEG segment length " + length);
-        if (this.data.remaining() < length - 2) throw new EOFException("Truncated JPEG segment");
-        return length;
+        final int body = length - 2;
+        if (this.data.remaining() < body)
+            throw new XCodecException("Truncated JPEG segment: " + body + " bytes declared, "
+                    + this.data.remaining() + " available");
+        final ByteBuffer segment = this.data.slice(this.data.position(), body);
+        this.data.position(this.data.position() + body);
+        return segment;
     }
 
-    private int checkedSegmentEnd(final int length) throws IOException {
-        final int end = this.data.position() + length - 2;
-        if (end > this.data.limit()) throw new EOFException("Truncated JPEG segment");
-        return end;
-    }
-
-    private static int readMarker(final ByteBuffer input) throws IOException {
+    private static int readMarker(final ByteBuffer input) throws XCodecException {
         while (input.hasRemaining()) {
             if (readU8(input) != 0xFF) continue;
             int marker;
             do {
-                if (!input.hasRemaining()) throw new EOFException("Truncated JPEG marker");
+                if (!input.hasRemaining()) throw new XCodecException("Truncated JPEG marker");
                 marker = readU8(input);
             } while (marker == 0xFF);
             if (marker == 0x00) continue;
             return marker;
         }
-        throw new EOFException("JPEG marker not found");
+        throw new XCodecException("JPEG marker not found");
     }
 
     private static boolean hasSegmentLength(final int marker) {
@@ -913,18 +1019,13 @@ public final class JPEGReader extends ImageReader {
         return marker >= 0xD0 && marker <= 0xD7;
     }
 
-    private static int readU8(final ByteBuffer input) throws IOException {
-        if (!input.hasRemaining()) throw new EOFException("Unexpected JPEG EOF");
+    private static int readU8(final ByteBuffer input) throws XCodecException {
+        if (!input.hasRemaining()) throw new XCodecException("Unexpected JPEG EOF");
         return input.get() & 0xFF;
     }
 
-    private static int readU16(final ByteBuffer input) throws IOException {
+    private static int readU16(final ByteBuffer input) throws XCodecException {
         return (readU8(input) << 8) | readU8(input);
-    }
-
-    private static void skip(final ByteBuffer input, final int bytes) throws IOException {
-        if (bytes < 0 || input.remaining() < bytes) throw new EOFException("Unexpected JPEG EOF");
-        input.position(input.position() + bytes);
     }
 
     private static int ceilDiv(final int value, final int divisor) {
@@ -965,12 +1066,16 @@ public final class JPEGReader extends ImageReader {
         int dc;
         int[] coefficients;
         byte[] samples;
+        // POINT TRANSFORM EACH COEFFICIENT WAS LAST CODED AT, -1 UNTIL A FIRST PASS COVERS IT. DRIVES THE
+        // PROGRESSIVE SCAN-ORDERING GATE IN decodeScan()
+        final int[] approx = new int[64];
 
         Component(final int id, final int h, final int v, final int quantTable) {
             this.id = id;
             this.h = h;
             this.v = v;
             this.quantTable = quantTable;
+            Arrays.fill(this.approx, -1);
         }
 
         int blockOffset(final int x, final int y) {
@@ -1021,7 +1126,7 @@ public final class JPEGReader extends ImageReader {
             this.maxCode[17] = Integer.MAX_VALUE;
         }
 
-        int decode(final EntropyReader r) throws IOException {
+        int decode(final EntropyReader r) throws XCodecException {
             if (r.bitCount < LUT_BITS) r.refill();
             if (r.bitCount >= LUT_BITS) {
                 final int peek = (int) (r.bitBuf >>> (r.bitCount - LUT_BITS)) & (LUT_SIZE - 1);
@@ -1045,6 +1150,8 @@ public final class JPEGReader extends ImageReader {
         private final ByteBuffer input;
         long bitBuf;
         int bitCount;
+        // ENTROPY BYTES FED INTO bitBuf; A SCAN THAT ENDS WITH ZERO OF THEM MADE NO PROGRESS AT ALL
+        int consumed;
         private int pendingMarker = -1;
 
         EntropyReader(final ByteBuffer input) {
@@ -1052,14 +1159,14 @@ public final class JPEGReader extends ImageReader {
         }
 
         // FAST REFILL: ACCUMULATES UP TO 32 BITS INTO bitBuf. STOPS AT TRUNCATION OR EMBEDDED MARKER.
-        void refill() throws IOException {
+        void refill() throws XCodecException {
             while (this.bitCount <= 24) {
                 if (this.pendingMarker >= 0 || !this.input.hasRemaining()) return;
                 final int v = this.input.get() & 0xFF;
                 if (v == 0xFF) {
                     int marker;
                     do {
-                        if (!this.input.hasRemaining()) throw new EOFException("Truncated JPEG entropy stream");
+                        if (!this.input.hasRemaining()) throw new XCodecException("Truncated JPEG entropy stream");
                         marker = this.input.get() & 0xFF;
                     } while (marker == 0xFF);
                     if (marker != 0x00) {
@@ -1072,36 +1179,37 @@ public final class JPEGReader extends ImageReader {
                     this.bitBuf = (this.bitBuf << 8) | v;
                 }
                 this.bitCount += 8;
+                this.consumed++;
             }
         }
 
-        int readBit() throws IOException {
+        int readBit() throws XCodecException {
             if (this.bitCount == 0) {
                 this.refill();
-                if (this.bitCount == 0) throw new EOFException("Unexpected JPEG marker FF" + hex(this.pendingMarker) + " in entropy stream");
+                if (this.bitCount == 0) throw new XCodecException("Unexpected JPEG marker FF" + hex(this.pendingMarker) + " in entropy stream");
             }
             this.bitCount--;
             return (int) (this.bitBuf >>> this.bitCount) & 1;
         }
 
-        int readBits(final int count) throws IOException {
+        int readBits(final int count) throws XCodecException {
             if (count == 0) return 0;
             if (this.bitCount < count) {
                 this.refill();
-                if (this.bitCount < count) throw new EOFException("Unexpected JPEG marker FF" + hex(this.pendingMarker) + " in entropy stream");
+                if (this.bitCount < count) throw new XCodecException("Unexpected JPEG marker FF" + hex(this.pendingMarker) + " in entropy stream");
             }
             this.bitCount -= count;
             return (int) (this.bitBuf >>> this.bitCount) & ((1 << count) - 1);
         }
 
-        int receiveExtend(final int count) throws IOException {
+        int receiveExtend(final int count) throws XCodecException {
             if (count == 0) return 0;
             final int value = this.readBits(count);
             final int threshold = 1 << (count - 1);
             return value < threshold ? value - ((1 << count) - 1) : value;
         }
 
-        int finishScan() throws IOException {
+        int finishScan() throws XCodecException {
             this.bitCount = 0;
             this.bitBuf = 0L;
             if (this.pendingMarker >= 0) {
@@ -1123,7 +1231,7 @@ public final class JPEGReader extends ImageReader {
             return EOI;
         }
 
-        void consumeRestart() throws IOException {
+        void consumeRestart() throws XCodecException {
             this.bitCount = 0;
             this.bitBuf = 0L;
             int marker = -1;
@@ -1135,7 +1243,7 @@ public final class JPEGReader extends ImageReader {
                     final int value = readU8(this.input);
                     if (value != 0xFF) continue;
                     do {
-                        if (!this.input.hasRemaining()) throw new EOFException("Truncated JPEG restart marker");
+                        if (!this.input.hasRemaining()) throw new XCodecException("Truncated JPEG restart marker");
                         marker = readU8(this.input);
                     } while (marker == 0xFF);
                     break;

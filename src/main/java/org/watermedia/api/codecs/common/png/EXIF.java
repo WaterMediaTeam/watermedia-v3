@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -18,12 +20,16 @@ public record EXIF(byte[] data) {
     /**
      * Reads eXIf chunk from buffer (reads length/type header first)
      */
-    public static EXIF read(final ByteBuffer buffer) {
+    public static EXIF read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated eXIf chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(type));
+        if (length < 0 || buffer.remaining() < length)
+            throw new XCodecException("Truncated eXIf chunk");
 
         final byte[] data = new byte[length];
         buffer.get(data);
@@ -33,7 +39,7 @@ public record EXIF(byte[] data) {
     /**
      * Converts a generic CHUNK to EXIF
      */
-    public static EXIF convert(final CHUNK chunk) {
+    public static EXIF convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(chunk.type()));
         }
@@ -42,7 +48,7 @@ public record EXIF(byte[] data) {
 
         // VALIDATE MINIMUM SIZE (AT LEAST TIFF HEADER)
         if (data.length < 8) {
-            throw new IllegalArgumentException("eXIf data too short: " + data.length + " bytes");
+            throw new XCodecException("eXIf data too short: " + data.length + " bytes");
         }
 
         // VALIDATE BYTE ORDER MARKER
@@ -51,7 +57,7 @@ public record EXIF(byte[] data) {
             // TRY LITTLE ENDIAN ORDER
             final short leByteOrder = (short) ((data[1] << 8) | (data[0] & 0xFF));
             if (leByteOrder != BIG_ENDIAN_MARKER && leByteOrder != LITTLE_ENDIAN_MARKER) {
-                throw new IllegalArgumentException("Invalid EXIF byte order marker");
+                throw new XCodecException("Invalid EXIF byte order marker");
             }
         }
 

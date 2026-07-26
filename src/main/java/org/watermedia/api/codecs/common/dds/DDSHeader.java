@@ -36,6 +36,14 @@ public final class DDSHeader {
     /** Byte length of the footer header (magic + version + frameCount), before the delay longs. */
     public static final int FOOTER_HEAD_BYTES = 12;
 
+    // DIMENSION CAPS, MATCHING EVERY SIBLING READER. THE HEADER FIELDS ARE ATTACKER-CONTROLLED AND
+    // SIZE THE BLOCK ARITHMETIC: 65536x65536 IS 2^31 BC1 BYTES (WRAPS NEGATIVE) AND 65535x65535 IS
+    // 2^32 BC7 BYTES (COLLAPSES TO ZERO), BOTH OF WHICH SLIP PAST EVERY DOWNSTREAM SIZE GUARD
+    private static final int MAX_DIM = 16384;
+    private static final int MAX_PIXELS = 1 << 26;
+    // ONE SLICE PER ANIMATION FRAME; A DECLARED COUNT COSTS TWO BUFFER OBJECTS AND EIGHT FOOTER BYTES
+    private static final int MAX_ARRAY_SIZE = 4096;
+
     // 'D','D','S',' ' AS A LITTLE-ENDIAN INT
     private static final int MAGIC = 0x20534444;
     // 'D','X','1','0' AS A LITTLE-ENDIAN INT
@@ -58,15 +66,25 @@ public final class DDSHeader {
      * Builds the {@value #BYTES}-byte prefix for a BC texture array. {@code arraySize} may be left
      * at {@code 0} and patched later with {@link #patchArraySize(Path, int)} when the frame count
      * is only known after streaming.
+     *
+     * @throws IllegalArgumentException when the codec is unknown or the frame does not fit the
+     *                                  container's 32-bit size field
      */
     public static byte[] write(final int width, final int height, final String codec, final int arraySize) {
+        // dwPitchOrLinearSize IS A DWORD: A FRAME BEYOND int WOULD BE SILENTLY TRUNCATED INTO A
+        // HEADER THAT NO READER — INCLUDING read() BELOW — COULD EVER TRUST
+        final long frameBytes = frameBytes(width, height, codec);
+        if (frameBytes <= 0 || frameBytes > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("BC frame does not fit the DDS size field: "
+                    + width + "x" + height + " is " + frameBytes + " bytes");
+        }
         final ByteBuffer b = ByteBuffer.allocate(BYTES).order(ByteOrder.LITTLE_ENDIAN);
         b.putInt(MAGIC);
         b.putInt(124);                  // DDS_HEADER.dwSize
         b.putInt(DDSD_FLAGS);           // dwFlags
         b.putInt(height);               // dwHeight
         b.putInt(width);                // dwWidth
-        b.putInt(frameBytes(width, height, codec)); // dwPitchOrLinearSize (top-level frame size)
+        b.putInt((int) frameBytes);     // dwPitchOrLinearSize (top-level frame size)
         b.putInt(0);                    // dwDepth
         b.putInt(1);                    // dwMipMapCount
         b.position(b.position() + 44);  // dwReserved1[11]
@@ -109,8 +127,9 @@ public final class DDSHeader {
      * Parses and validates the prefix of a BC-in-DDS file from {@code src.position()}, leaving the
      * position unchanged.
      *
-     * @throws XCodecException when the magic, the {@code DX10} header, or the DXGI format is not a
-     *                         supported BC layout
+     * @throws XCodecException when the magic, the {@code DX10} header or the DXGI format is not a
+     *                         supported BC layout, or the declared dimensions or array size are
+     *                         outside the bounds the block arithmetic can represent
      */
     public static Info read(final ByteBuffer src) throws XCodecException {
         final int base = src.position();
@@ -124,8 +143,16 @@ public final class DDSHeader {
         final int arraySize = b.getInt(base + ARRAYSIZE_OFFSET);
         final String codec = codecOf(dxgi);
         if (codec == null) throw new XCodecException("DDS DXGI format is not a supported BC layout: " + dxgi);
-        if (width <= 0 || height <= 0) throw new XCodecException("Invalid DDS dimensions: " + width + "x" + height);
-        if (arraySize <= 0) throw new XCodecException("Invalid DDS arraySize: " + arraySize);
+        if (width <= 0 || height <= 0 || width > MAX_DIM || height > MAX_DIM) {
+            throw new XCodecException("Invalid DDS dimensions: " + width + "x" + height + " (max " + MAX_DIM + ")");
+        }
+        // A PER-AXIS CAP IS NOT A BUDGET: THE BLOCK COUNT, AND EVERY ALLOCATION DERIVED FROM IT, IS THE PRODUCT
+        if ((long) width * height > MAX_PIXELS) {
+            throw new XCodecException("DDS texture too big: " + width + "x" + height + " (max " + MAX_PIXELS + " pixels)");
+        }
+        if (arraySize <= 0 || arraySize > MAX_ARRAY_SIZE) {
+            throw new XCodecException("Invalid DDS arraySize: " + arraySize + " (max " + MAX_ARRAY_SIZE + ")");
+        }
         return new Info(width, height, codec, blockBytesOf(codec), arraySize);
     }
 
@@ -154,18 +181,29 @@ public final class DDSHeader {
     // CONTAINER ⇄ CODEC MAPPINGS
     // ==========================================================================
     /** Number of 4x4 blocks in a frame of the given dimensions (edges padded up to the grid). */
-    public static int blocksPerFrame(final int width, final int height) {
-        return ((width + 3) >> 2) * ((height + 3) >> 2);
+    public static long blocksPerFrame(final int width, final int height) {
+        // LONG MATH THROUGHOUT: THE HEADER FIELDS ARE UNTRUSTED AND THE int PRODUCT WRAPS LONG BEFORE
+        // THEY BECOME IMPLAUSIBLE, HANDING THE CALLER A NEGATIVE — OR EXACTLY ZERO — FRAME SIZE
+        return (((long) width + 3) >> 2) * (((long) height + 3) >> 2);
     }
 
     /** Compressed byte size of one frame for the given codec. */
-    public static int frameBytes(final int width, final int height, final String codec) {
+    public static long frameBytes(final int width, final int height, final String codec) {
         return blocksPerFrame(width, height) * blockBytesOf(codec);
     }
 
-    /** Bytes per 4x4 block for a codec id: {@code 8} for BC1, {@code 16} for BC3/BC7. */
+    /**
+     * Bytes per 4x4 block for a codec id: {@code 8} for BC1, {@code 16} for BC3/BC7.
+     *
+     * @throws IllegalArgumentException when the codec is not a known BC version — silently assuming
+     *                                  16 turned a typo into a plausible but wrong header
+     */
     public static int blockBytesOf(final String codec) {
-        return CodecsAPI.CODEC_BC1.equalsIgnoreCase(codec) ? 8 : 16;
+        return switch (codec == null ? "" : codec.toUpperCase(java.util.Locale.ROOT)) {
+            case CodecsAPI.CODEC_BC1 -> 8;
+            case CodecsAPI.CODEC_BC3, CodecsAPI.CODEC_BC7 -> 16;
+            default -> throw new IllegalArgumentException("Unsupported block codec: " + codec);
+        };
     }
 
     private static int dxgiOf(final String codec) {

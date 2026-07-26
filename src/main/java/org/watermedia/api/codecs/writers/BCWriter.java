@@ -24,7 +24,7 @@ import java.nio.ByteBuffer;
 public final class BCWriter extends ImageWriter {
 
     private final String version;
-    private final int frameBytes;
+    private final long frameBytes;
     private long[] delays = new long[16];
     private int frames;
     private boolean closed;

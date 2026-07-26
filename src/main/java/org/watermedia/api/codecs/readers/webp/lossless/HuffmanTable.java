@@ -6,8 +6,14 @@ import org.watermedia.api.codecs.common.webp.BitReader;
 public final class HuffmanTable {
     private static final int LOOKUP_BITS = 7;
     private static final int LOOKUP_SIZE = 1 << LOOKUP_BITS;
+    // SHARED EMPTY LONG-CODE TABLES. TABLES WHOSE CODES ALL FIT IN LOOKUP_BITS NEVER INDEX THEM,
+    // SO ONE IMMUTABLE INSTANCE IS ENOUGH AND A MINIMALLY-ENCODED HUFFMAN GROUP STOPS COSTING
+    // FIVE THROWAWAY ARRAYS
+    private static final int[] NO_LONG = new int[0];
+    private static final int[] NO_LONG_START = new int[2];
 
-    // LOOKUP TABLE: LOW 8 BITS = LENGTH, HIGH 24 BITS = SYMBOL
+    // LOOKUP TABLE: LOW 8 BITS = LENGTH, HIGH 24 BITS = SYMBOL. NULL FOR SINGLE-SYMBOL TABLES,
+    // WHICH RESOLVE WITHOUT READING BITS AND THEREFORE NEVER TOUCH IT
     private final int[] lookup;
     // PRE-COMPUTED REVERSED LONG CODES (len > LOOKUP_BITS) FOR FAST SLOW-PATH LINEAR SCAN
     private final int[] longLens;
@@ -31,6 +37,11 @@ public final class HuffmanTable {
         this.longMaxLen = longMaxLen;
         this.isSingleSymbol = isSingleSymbol;
         this.singleSymbolValue = singleSymbolValue;
+    }
+
+    /** Symbol this table always returns without consuming a bit, or {@code -1} when it reads bits. */
+    public int symbol() {
+        return this.isSingleSymbol ? this.singleSymbolValue : -1;
     }
 
     public int read(final BitReader reader) throws XCodecException {
@@ -218,15 +229,18 @@ public final class HuffmanTable {
         for (int i = 0; i < LOOKUP_SIZE; i++) {
             lookup[i] = ((i & 1) == 0 ? (sym0 << 8) : (sym1 << 8)) | 1;
         }
-        return new HuffmanTable(lookup, new int[0], new int[0], new int[0], new int[2], 0, false, 0);
+        return new HuffmanTable(lookup, NO_LONG, NO_LONG, NO_LONG, NO_LONG_START, 0, false, 0);
     }
 
+    // A ONE-SYMBOL CODE COSTS ZERO BITS (RFC 9649), SO NO LOOKUP ARRAY IS BUILT AT ALL: ALLOCATING
+    // ONE WOULD MAKE A 20-BIT HUFFMAN GROUP COST KILOBYTES OF LIVE TABLES NOBODY EVER READS
     private static HuffmanTable singleSymbolTable(final int symbol) {
-        final int[] lookup = new int[LOOKUP_SIZE];
-        return new HuffmanTable(lookup, new int[0], new int[0], new int[0], new int[2], 0, true, symbol);
+        return new HuffmanTable(null, NO_LONG, NO_LONG, NO_LONG, NO_LONG_START, 0, true, symbol);
     }
 
     public String debugInfo() {
+        if (this.isSingleSymbol) return "HuffmanTable[singleSymbol=" + this.singleSymbolValue + "]";
+
         int nonZeroLookup = 0;
         int maxLookupLen = 0;
         for (int i = 0; i < LOOKUP_SIZE; i++) {
@@ -235,30 +249,21 @@ public final class HuffmanTable {
             if (len > maxLookupLen) maxLookupLen = len;
         }
 
-        int symbolsWithCode;
-        int maxCodeLen;
-        if (this.isSingleSymbol) {
-            symbolsWithCode = 1;
-            maxCodeLen = 0;
-        } else {
-            // DISTINCT SYMBOLS ACROSS BOTH LOOKUP ENTRIES AND THE LONG-CODE LIST
-            int distinct = this.longLens.length;
-            final boolean[] seen = new boolean[65536];
-            for (int i = 0; i < LOOKUP_SIZE; i++) {
-                final int entry = this.lookup[i];
-                if ((entry & 0xFF) == 0) continue;
-                final int sym = entry >>> 8;
-                if (sym < seen.length && !seen[sym]) {
-                    seen[sym] = true;
-                    distinct++;
-                }
+        // DISTINCT SYMBOLS ACROSS BOTH LOOKUP ENTRIES AND THE LONG-CODE LIST
+        int symbolsWithCode = this.longLens.length;
+        final boolean[] seen = new boolean[65536];
+        for (int i = 0; i < LOOKUP_SIZE; i++) {
+            final int entry = this.lookup[i];
+            if ((entry & 0xFF) == 0) continue;
+            final int sym = entry >>> 8;
+            if (sym < seen.length && !seen[sym]) {
+                seen[sym] = true;
+                symbolsWithCode++;
             }
-            symbolsWithCode = distinct;
-            maxCodeLen = Math.max(maxLookupLen, this.longMaxLen);
         }
 
         return "HuffmanTable[lookupNonZero=" + nonZeroLookup + ", maxLookupLen=" + maxLookupLen +
-                ", symbolsWithCode=" + symbolsWithCode + ", maxCodeLen=" + maxCodeLen + "]";
+                ", symbolsWithCode=" + symbolsWithCode + ", maxCodeLen=" + Math.max(maxLookupLen, this.longMaxLen) + "]";
     }
 
     private static int reverseBits(int value, final int numBits) {

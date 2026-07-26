@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -10,18 +12,25 @@ import java.nio.ByteBuffer;
  */
 public record PLTE(int[] colors) {
     public static final int SIGNATURE = 0x50_4C_54_45; // "PLTE"
+    // THE SPEC CAPS THE PALETTE AT 256 ENTRIES; WITHOUT IT A HUGE PLTE INFLATES TO A 1.33x int[] COPY
+    public static final int MAX_LENGTH = 256 * 3;
 
     /**
      * Reads PLTE chunk from buffer (reads length/type header first)
      */
-    public static PLTE read(final ByteBuffer buffer) {
+    public static PLTE read(final ByteBuffer buffer) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated PLTE chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for PLTE: 0x" + Integer.toHexString(type));
-        if (length % 3 != 0)
-            throw new IllegalArgumentException("PLTE data length must be divisible by 3, got " + length);
+            throw new XCodecException("Invalid chunk type for PLTE: 0x" + Integer.toHexString(type));
+        if (length < 0 || length % 3 != 0)
+            throw new XCodecException("PLTE data length must be divisible by 3, got " + Integer.toUnsignedString(length));
+        if (length > MAX_LENGTH)
+            throw new XCodecException("PLTE holds more than 256 entries: " + (length / 3));
+        if (buffer.remaining() < length) throw new XCodecException("Truncated PLTE chunk");
 
         final int count = length / 3;
         final int[] colors = new int[count];
@@ -39,14 +48,17 @@ public record PLTE(int[] colors) {
     /**
      * Converts a generic CHUNK to PLTE
      */
-    public static PLTE convert(final CHUNK chunk) {
+    public static PLTE convert(final CHUNK chunk) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for PLTE: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length % 3 != 0) {
-            throw new IllegalArgumentException("PLTE data length must be divisible by 3");
+            throw new XCodecException("PLTE data length must be divisible by 3");
+        }
+        if (data.length > MAX_LENGTH) {
+            throw new XCodecException("PLTE holds more than 256 entries: " + (data.length / 3));
         }
 
         final int count = data.length / 3;

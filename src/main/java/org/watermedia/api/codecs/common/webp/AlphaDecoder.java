@@ -51,11 +51,13 @@ public final class AlphaDecoder {
         final byte[] alpha;
 
         if (compMeth == COMPRESS_NONE) {
-            // UNCOMPRESSED: RAW BYTES
-            alpha = new byte[w * h];
-            if (buffer.remaining() < alpha.length) {
-                throw new XCodecException("Alpha data truncated");
+            // UNCOMPRESSED: RAW BYTES. THE TRUNCATION CHECK COMES FIRST SO A ONE-BYTE CHUNK CANNOT
+            // BUY A FULL-CANVAS PLANE BEFORE FAILING
+            final int size = w * h;
+            if (buffer.remaining() < size) {
+                throw new XCodecException("Alpha data truncated: declared " + size + " bytes, " + buffer.remaining() + " available");
             }
+            alpha = new byte[size];
             buffer.get(alpha);
         } else if (compMeth == COMPRESS_LOSSLESS) {
             // VP8L COMPRESSED - EXTRACT GREEN CHANNEL AS ALPHA

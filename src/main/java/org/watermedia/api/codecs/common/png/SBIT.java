@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
+import org.watermedia.api.codecs.XCodecException;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -49,22 +51,26 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
     /**
      * Reads sBIT chunk from buffer based on color type (reads length/type header first)
      */
-    public static SBIT read(final ByteBuffer buffer, final int colorType) {
+    public static SBIT read(final ByteBuffer buffer, final int colorType) throws XCodecException {
+        if (buffer.remaining() < 8) throw new XCodecException("Truncated sBIT chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
+        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new IllegalArgumentException("Invalid chunk type for sBIT: 0x" + Integer.toHexString(type));
+            throw new XCodecException("Invalid chunk type for sBIT: 0x" + Integer.toHexString(type));
+        if (length < 0 || buffer.remaining() < length)
+            throw new XCodecException("Truncated sBIT chunk");
 
         return switch (ColorType.of(colorType)) {
             case GREYSCALE -> {
                 if (length != 1)
-                    throw new IllegalArgumentException("sBIT for greyscale must be 1 byte, got " + length);
+                    throw new XCodecException("sBIT for greyscale must be 1 byte, got " + length);
                 yield new SBIT(buffer.get() & 0xFF);
             }
             case TRUECOLOR, INDEXED -> {
                 if (length != 3)
-                    throw new IllegalArgumentException("sBIT for truecolor/indexed must be 3 bytes, got " + length);
+                    throw new XCodecException("sBIT for truecolor/indexed must be 3 bytes, got " + length);
                 yield SBIT.truecolor(
                         buffer.get() & 0xFF,
                         buffer.get() & 0xFF,
@@ -73,7 +79,7 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
             }
             case GREYSCALE_ALPHA -> {
                 if (length != 2)
-                    throw new IllegalArgumentException("sBIT for greyscale+alpha must be 2 bytes, got " + length);
+                    throw new XCodecException("sBIT for greyscale+alpha must be 2 bytes, got " + length);
                 yield SBIT.greyscaleAlpha(
                         buffer.get() & 0xFF,
                         buffer.get() & 0xFF
@@ -81,7 +87,7 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
             }
             case TRUECOLOR_ALPHA -> {
                 if (length != 4)
-                    throw new IllegalArgumentException("sBIT for truecolor+alpha must be 4 bytes, got " + length);
+                    throw new XCodecException("sBIT for truecolor+alpha must be 4 bytes, got " + length);
                 yield SBIT.truecolorAlpha(
                         buffer.get() & 0xFF,
                         buffer.get() & 0xFF,
@@ -89,14 +95,14 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
                         buffer.get() & 0xFF
                 );
             }
-            case FORBIDDEN_1, FORBIDDEN_5 -> throw new IllegalArgumentException("Forbidden color type: " + colorType);
+            case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + colorType);
         };
     }
 
     /**
      * Converts a generic CHUNK to SBIT based on color type
      */
-    public static SBIT convert(final CHUNK chunk, final int colorType) {
+    public static SBIT convert(final CHUNK chunk, final int colorType) throws XCodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for sBIT: 0x" + Integer.toHexString(chunk.type()));
         }
@@ -106,29 +112,29 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
         return switch (ColorType.of(colorType)) {
             case GREYSCALE -> {
                 if (data.length != 1) {
-                    throw new IllegalArgumentException("sBIT for greyscale must be 1 byte");
+                    throw new XCodecException("sBIT for greyscale must be 1 byte");
                 }
                 yield new SBIT(data[0] & 0xFF);
             }
             case TRUECOLOR, INDEXED -> {
                 if (data.length != 3) {
-                    throw new IllegalArgumentException("sBIT for truecolor/indexed must be 3 bytes");
+                    throw new XCodecException("sBIT for truecolor/indexed must be 3 bytes");
                 }
                 yield SBIT.truecolor(data[0] & 0xFF, data[1] & 0xFF, data[2] & 0xFF);
             }
             case GREYSCALE_ALPHA -> {
                 if (data.length != 2) {
-                    throw new IllegalArgumentException("sBIT for greyscale+alpha must be 2 bytes");
+                    throw new XCodecException("sBIT for greyscale+alpha must be 2 bytes");
                 }
                 yield SBIT.greyscaleAlpha(data[0] & 0xFF, data[1] & 0xFF);
             }
             case TRUECOLOR_ALPHA -> {
                 if (data.length != 4) {
-                    throw new IllegalArgumentException("sBIT for truecolor+alpha must be 4 bytes");
+                    throw new XCodecException("sBIT for truecolor+alpha must be 4 bytes");
                 }
                 yield SBIT.truecolorAlpha(data[0] & 0xFF, data[1] & 0xFF, data[2] & 0xFF, data[3] & 0xFF);
             }
-            case FORBIDDEN_1, FORBIDDEN_5 -> throw new IllegalArgumentException("Forbidden color type: " + colorType);
+            case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + colorType);
         };
     }
 

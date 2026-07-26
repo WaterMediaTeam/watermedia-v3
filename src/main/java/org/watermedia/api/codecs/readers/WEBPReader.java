@@ -14,7 +14,6 @@ import org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder;
 import org.watermedia.api.codecs.readers.webp.riff.RiffChunk;
 import org.watermedia.api.util.PixelFormat;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -51,6 +50,11 @@ public final class WEBPReader extends ImageReader {
     // int[] BUFFER, AND THE ANIMATED PATH HOLDS CANVAS + OUTPUT AT ONCE — A FEW-BYTE HEADER MUST
     // NOT BE ABLE TO FORCE MULTI-HUNDRED-MB ALLOCATIONS
     private static final int MAX_PIXELS = 1 << 26;
+    // XMP PACKETS ARE PARSED IN THE CONSTRUCTOR AND THEIR VALUES ARE RETAINED IN THE METADATA MAP,
+    // SO BOTH THE ELEMENT COUNT AND EACH VALUE NEED A CEILING; NO REAL TITLE, AUTHOR OR DESCRIPTION
+    // COMES NEAR THESE
+    private static final int MAX_XMP_VALUES = 64;
+    private static final int MAX_XMP_VALUE_LENGTH = 4096;
 
     private final int canvasWidth;
     private final int canvasHeight;
@@ -171,7 +175,6 @@ public final class WEBPReader extends ImageReader {
         // INTO GB-SCALE BUFFERS; EVERY ALLOCATION BELOW DEPENDS ON THIS CHECK
         if (this.canvasWidth <= 0 || this.canvasHeight <= 0 || (long) this.canvasWidth * this.canvasHeight > MAX_PIXELS)
             throw new XCodecException("Invalid WEBP dimensions: " + this.canvasWidth + "x" + this.canvasHeight + " (max " + MAX_PIXELS + " pixels)");
-        if (this.animated) this.canvas = new int[this.canvasWidth * this.canvasHeight];
 
         this.outputFormat = resolveOutputFormat(requestedFormat, this.animated, this.bitstreamFourCC, this.hasAlpha, this.alphData);
 
@@ -186,12 +189,10 @@ public final class WEBPReader extends ImageReader {
             this.chromaHeight = 0;
             this.yPlaneSize = 0;
             this.uvPlaneSize = 0;
-            // directOut IS THE ANIMATED COMPOSITING TARGET ONLY; STATIC BGRA DECODERS RETURN THEIR OWN BUFFER,
-            // SO ALLOCATING IT FOR A STATIC IMAGE WOULD WASTE A FULL-FRAME DIRECT BUFFER (UP TO 256 MB)
-            if (this.animated) {
-                this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
-                this.directOutInts = this.directOut.asIntBuffer();
-            }
+            // canvas AND directOut ARE THE ANIMATED COMPOSITING TARGETS AND ARE ALLOCATED LAZILY BY
+            // decodeAnimFrame: STATIC BGRA DECODERS RETURN THEIR OWN BUFFER, AND A VP8X THAT
+            // DECLARES A CANVAS BUT CARRIES NO FRAME MUST COST NOTHING (AT THE PIXEL CAP THE PAIR
+            // IS 256 MB OF HEAP PLUS 256 MB DIRECT)
         }
 
         // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
@@ -282,7 +283,7 @@ public final class WEBPReader extends ImageReader {
 
     @Override
     public ByteBuffer next() throws IOException {
-        if (!this.hasNext()) throw new EOFException("No more WEBP frames");
+        if (!this.hasNext()) throw new XCodecException("No more WEBP frames");
 
         if (!this.animated) {
             this.staticDelivered = true;
@@ -400,6 +401,14 @@ public final class WEBPReader extends ImageReader {
             off = body + paddedSize(sz);
         }
         if (subVp8Off < 0 || subVp8Len <= 0) throw new XCodecException("ANMF without VP8/VP8L sub-chunk");
+
+        // ALLOCATE THE COMPOSITING TARGETS ONLY NOW THAT A REAL FRAME IS ABOUT TO BE DECODED INTO
+        // THEM; THE CANVAS SIZE WAS ALREADY GATED AGAINST MAX_PIXELS IN THE CONSTRUCTOR
+        if (this.canvas == null) {
+            this.canvas = new int[this.canvasWidth * this.canvasHeight];
+            this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
+            this.directOutInts = this.directOut.asIntBuffer();
+        }
 
         LOGGER.debug(IT, "Decoding ANMF: codec={} pos=({},{}) size={}x{} duration={}ms blend={} dispose={} alpha={}",
                 RiffChunk.fourCCString(subVp8FourCC), frameX * 2, frameY * 2, frameW, frameH,
@@ -601,28 +610,29 @@ public final class WEBPReader extends ImageReader {
 
     private record ChunkHdr(int fourCC, int size) {}
 
-    private static ChunkHdr readChunkHdr(final ByteBuffer in) throws IOException {
+    private static ChunkHdr readChunkHdr(final ByteBuffer in) throws XCodecException {
         final int fcc = readIntLE(in);
         final int sz = readIntLE(in);
         return new ChunkHdr(fcc, sz);
     }
 
-    private static ChunkHdr readChunkHdrOrEnd(final ByteBuffer in) throws IOException {
+    private static ChunkHdr readChunkHdrOrEnd(final ByteBuffer in) throws XCodecException {
         if (!in.hasRemaining()) return null;
-        if (in.remaining() < 8) throw new EOFException("Truncated WEBP chunk header");
+        if (in.remaining() < 8) throw new XCodecException("Truncated WEBP chunk header: " + in.remaining() + " of 8 bytes");
         final int fcc = in.getInt();
         final int sz = in.getInt();
         return new ChunkHdr(fcc, sz);
     }
 
-    private static int readIntLE(final ByteBuffer in) throws IOException {
-        if (in.remaining() < 4) throw new EOFException("Truncated WEBP int");
+    private static int readIntLE(final ByteBuffer in) throws XCodecException {
+        if (in.remaining() < 4) throw new XCodecException("Truncated WEBP int: " + in.remaining() + " of 4 bytes");
         return in.getInt();
     }
 
-    private static byte[] readPaddedChunkBody(final ByteBuffer in, final int size) throws IOException {
+    private static byte[] readPaddedChunkBody(final ByteBuffer in, final int size) throws XCodecException {
         if (size < 0) throw new XCodecException("Negative WEBP chunk size: " + size);
-        if (in.remaining() < size) throw new EOFException("Truncated WEBP chunk body");
+        if (in.remaining() < size)
+            throw new XCodecException("Truncated WEBP chunk body: declared " + size + " bytes, " + in.remaining() + " available");
         final byte[] body = new byte[size];
         in.get(body);
         if ((size & 1) == 1) {
@@ -632,9 +642,10 @@ public final class WEBPReader extends ImageReader {
         return body;
     }
 
-    private byte[] readPaddedChunkBodyIntoScratch(final ByteBuffer in, final int size) throws IOException {
+    private byte[] readPaddedChunkBodyIntoScratch(final ByteBuffer in, final int size) throws XCodecException {
         if (size < 0) throw new XCodecException("Negative WEBP chunk size: " + size);
-        if (in.remaining() < size) throw new EOFException("Truncated WEBP chunk body");
+        if (in.remaining() < size)
+            throw new XCodecException("Truncated WEBP chunk body: declared " + size + " bytes, " + in.remaining() + " available");
         if (this.anmfScratch.length < size) this.anmfScratch = new byte[size];
         in.get(this.anmfScratch, 0, size);
         if ((size & 1) == 1) {
@@ -648,7 +659,7 @@ public final class WEBPReader extends ImageReader {
         return (size + 1) & ~1;
     }
 
-    private boolean readMetadataChunk(final ByteBuffer in, final ChunkHdr c) throws IOException {
+    private boolean readMetadataChunk(final ByteBuffer in, final ChunkHdr c) throws XCodecException {
         if (c.fourCC == RiffChunk.ICCP) {
             this.metadata.put(CodecsAPI.WEBP_METAKEY_ICC_PROFILE, readPaddedChunkBody(in, c.size));
             return true;
@@ -666,7 +677,7 @@ public final class WEBPReader extends ImageReader {
         return false;
     }
 
-    private void readXmpCommonFields(final byte[] xmp) {
+    private void readXmpCommonFields(final byte[] xmp) throws XCodecException {
         if (xmp == null || xmp.length == 0) return;
         final String xml = new String(xmp, StandardCharsets.UTF_8);
         this.metadata.title(firstXmlText(xml, "dc:title", "rdf:li"));
@@ -680,45 +691,52 @@ public final class WEBPReader extends ImageReader {
         }
     }
 
-    private static String firstXmlText(final String xml, final String outerTag, final String innerTag) {
+    private static String firstXmlText(final String xml, final String outerTag, final String innerTag) throws XCodecException {
         final List<String> values = xmlTexts(xml, outerTag, innerTag);
         return values.isEmpty() ? null : values.get(0);
     }
 
-    private static List<String> xmlTexts(final String xml, final String outerTag, final String innerTag) {
+    private static List<String> xmlTexts(final String xml, final String outerTag, final String innerTag) throws XCodecException {
         final List<String> values = new ArrayList<>();
         final String outer = extractXmlContent(xml, outerTag);
         if (outer == null) return values;
         if (innerTag == null) {
+            if (outer.length() > MAX_XMP_VALUE_LENGTH)
+                throw new XCodecException("WEBP XMP metadata too large or malformed: <" + outerTag + "> holds "
+                        + outer.length() + " characters (max " + MAX_XMP_VALUE_LENGTH + ")");
             final String clean = cleanXmlText(outer);
             if (clean != null) values.add(clean);
             return values;
         }
+        final String open = "<" + innerTag;
+        final String close = "</" + innerTag + ">";
         int pos = 0;
         while (true) {
-            final String value = extractXmlContent(outer, innerTag, pos);
-            if (value == null) break;
-            final String clean = cleanXmlText(value);
+            final int openStart = outer.indexOf(open, pos);
+            if (openStart < 0) break;
+            final int openEnd = outer.indexOf('>', openStart);
+            if (openEnd < 0) break;
+            final int closeStart = outer.indexOf(close, openEnd + 1);
+            if (closeStart < 0) break;
+            if (values.size() == MAX_XMP_VALUES || closeStart - openEnd - 1 > MAX_XMP_VALUE_LENGTH)
+                throw new XCodecException("WEBP XMP metadata too large or malformed: <" + innerTag + "> inside <"
+                        + outerTag + "> (max " + MAX_XMP_VALUES + " values of " + MAX_XMP_VALUE_LENGTH + " characters)");
+            final String clean = cleanXmlText(outer.substring(openEnd + 1, closeStart));
             if (clean != null) values.add(clean);
-            final int next = outer.indexOf("</" + innerTag + ">", pos);
-            if (next < 0) break;
-            pos = next + innerTag.length() + 3;
+            // ADVANCE PAST THE ELEMENT ACTUALLY CONSUMED. ANCHORING ON THE FIRST CLOSE TAG AT OR
+            // AFTER pos INSTEAD RE-FINDS AND RE-RETAINS THE SAME BODY ONCE PER STRAY TERMINATOR,
+            // WHICH IS O(L^2) HELD LIVE FOR AN L-BYTE CHUNK — AND IT RUNS IN THE CONSTRUCTOR
+            pos = closeStart + close.length();
         }
         return values;
     }
 
     private static String extractXmlContent(final String xml, final String tag) {
-        return extractXmlContent(xml, tag, 0);
-    }
-
-    private static String extractXmlContent(final String xml, final String tag, final int start) {
-        final String openPrefix = "<" + tag;
-        final int openStart = xml.indexOf(openPrefix, start);
+        final int openStart = xml.indexOf("<" + tag);
         if (openStart < 0) return null;
         final int openEnd = xml.indexOf('>', openStart);
         if (openEnd < 0) return null;
-        final String close = "</" + tag + ">";
-        final int closeStart = xml.indexOf(close, openEnd + 1);
+        final int closeStart = xml.indexOf("</" + tag + ">", openEnd + 1);
         if (closeStart < 0) return null;
         return xml.substring(openEnd + 1, closeStart);
     }
@@ -735,8 +753,12 @@ public final class WEBPReader extends ImageReader {
         return clean.isEmpty() ? null : clean;
     }
 
-    private static void skipBytes(final ByteBuffer in, final int n) throws IOException {
-        if (n < 0 || in.remaining() < n) throw new EOFException("EOF skipping WEBP bytes");
+    // SKIP THE BODY OF AN UNINTERESTING CHUNK. paddedSize(-8) IS -8, SO A NEGATIVE DECLARED SIZE
+    // WOULD WALK THE CURSOR BACKWARDS AND RE-PARSE THE SAME BYTES INSTEAD OF ADVANCING
+    private static void skipBytes(final ByteBuffer in, final int n) throws XCodecException {
+        if (n < 0) throw new XCodecException("Negative WEBP chunk size: " + n);
+        if (in.remaining() < n)
+            throw new XCodecException("Truncated WEBP chunk: skipping " + n + " bytes, " + in.remaining() + " available");
         in.position(in.position() + n);
     }
 

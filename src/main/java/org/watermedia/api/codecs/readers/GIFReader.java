@@ -14,8 +14,6 @@ import org.watermedia.api.codecs.common.gif.ImageDescriptor;
 import org.watermedia.api.codecs.common.gif.ScreenDescriptor;
 import org.watermedia.api.util.PixelFormat;
 
-import java.io.EOFException;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
@@ -43,7 +41,17 @@ public final class GIFReader extends ImageReader {
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
 
     // SECURITY CAPS
-    private static final int MAX_DIM = 16384;                       // 16K PER AXIS (1:1); KEEPS width*height*4 WITHIN INT
+    private static final int MAX_DIM = 16384;                       // 16K PER AXIS (1:1); CHEAP PRE-FILTER FOR THE AREA CAP
+    // TOTAL-PIXEL CAP (64 MPX, E.G. 8192x8192). THE PER-AXIS CAP ONLY KEEPS width*height*4 INSIDE INT
+    // RANGE, IT DOES NOT BOUND COST: A 7-BYTE 16K x 16K SCREEN DESCRIPTOR BUYS 1 GiB OF CANVAS PLUS
+    // 1 GiB OF DIRECT BUFFER PLUS 1 GiB OF DISPOSAL-3 SNAPSHOT BEFORE ANY FRAME BYTE IS PARSED
+    private static final int MAX_PIXELS = 1 << 26;
+    // A FRAME COSTS A FULL-CANVAS COMPOSITE AND COPY REGARDLESS OF ITS DESCRIPTOR SIZE, YET IS ONLY
+    // 12 FILE BYTES. BOUNDED PER PASS — reset() STARTS A NEW PASS SO LOOPING PLAYBACK IS UNAFFECTED
+    private static final int MAX_FRAMES = 4096;
+    // METADATA RECORDS ARE RETAINED FOR THE READER'S LIFETIME, SO THEIR COUNT IS CAPPED TOO
+    private static final int MAX_EXTENSIONS = 512;
+    private static final int MAX_COMMENTS = 512;
     private static final int MAX_SUBBLOCK = Integer.MAX_VALUE - 8;  // JAVA ARRAY-SIZE SAFE UPPER BOUND
 
     // BLOCK INTRODUCERS
@@ -78,6 +86,10 @@ public final class GIFReader extends ImageReader {
     private final ColorTable globalColorTable;
     private final ImageMetadata metadata = new ImageMetadata();
     private final List<GifExtension> extensions = new ArrayList<>();
+    private int comments;
+    // HIGHEST STREAM OFFSET WHOSE METADATA BLOCK IS ALREADY RECORDED. reset() REPLAYS THE SAME BYTES,
+    // SO WITHOUT THIS EVERY LOOP RE-APPENDS EVERY MID-STREAM EXTENSION AND THE HEAP CLIMBS FOREVER
+    private int metaMark;
 
     // CANVAS STATE
     private final int[] canvas;            // CURRENT COMPOSITED CANVAS
@@ -90,6 +102,7 @@ public final class GIFReader extends ImageReader {
     private int pendingIntroducer = -1;    // 1-BYTE LOOK-AHEAD CONSUMED BY CONSTRUCTOR
     private boolean done;
     private boolean nextReady;
+    private int frames;                    // FRAMES YIELDED IN THE CURRENT PASS
     private final ImageData.Scan scan;
     private byte[] subBlockBuffer = new byte[4096];
     private byte[] lzwIndexScratch = new byte[0];
@@ -110,7 +123,7 @@ public final class GIFReader extends ImageReader {
     private final boolean resetDone;
     private final GraphicExtension resetGce;
 
-    public GIFReader(final ByteBuffer data) throws IOException {
+    public GIFReader(final ByteBuffer data) throws XCodecException {
         super(data);
         this.data.order(LE);
         this.scan = scan(this.data.duplicate().order(LE));
@@ -118,15 +131,19 @@ public final class GIFReader extends ImageReader {
         // LOGICAL SCREEN DESCRIPTOR (7 bytes)
         final byte[] lsdBytes = readExactly(this.data, ScreenDescriptor.SIGNATURE_SIZE);
         this.lsd = ScreenDescriptor.read(ByteBuffer.wrap(lsdBytes).order(LE));
-        // CAP CANVAS: 16-BIT WIDTH*HEIGHT OTHERWISE OVERFLOWS width*height*4 INT MATH AND ALLOWS MULTI-GB ALLOCATIONS
-        if (this.lsd.width() > MAX_DIM || this.lsd.height() > MAX_DIM)
-            throw new XCodecException("GIF canvas too big: " + this.lsd.width() + "x" + this.lsd.height() + " (max " + MAX_DIM + ")");
+        // CAP THE CANVAS BEFORE ANYTHING IS ALLOCATED. THE PER-AXIS TEST IS THE CHEAP PRE-FILTER THAT
+        // KEEPS width*height*4 INSIDE INT RANGE; THE AREA TEST IS THE ACTUAL BUDGET, IN LONG MATH
+        // BECAUSE TWO CAPPED AXES STILL MULTIPLY TO 268 MPX
+        if (this.lsd.width() > MAX_DIM || this.lsd.height() > MAX_DIM
+                || (long) this.lsd.width() * this.lsd.height() > MAX_PIXELS)
+            throw new XCodecException("GIF canvas too big: " + this.lsd.width() + "x" + this.lsd.height()
+                    + " (max " + MAX_DIM + " per axis, " + MAX_PIXELS + " pixels)");
 
         // GLOBAL COLOR TABLE (optional)
         if (this.lsd.globalColorTableFlag()) {
             final int gctSize = 1 << (this.lsd.globalColorTableSize() + 1);
             if (this.data.remaining() < gctSize * 3) {
-                throw new EOFException("Unexpected EOF in global color table");
+                throw new XCodecException("Unexpected EOF in global color table");
             }
             this.globalColorTable = ColorTable.read(gctSize, this.data);
         } else {
@@ -169,7 +186,7 @@ public final class GIFReader extends ImageReader {
     @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
 
     @Override
-    public boolean hasNext() throws IOException {
+    public boolean hasNext() throws XCodecException {
         if (this.done) return false;
         if (this.nextReady) return true;
 
@@ -185,6 +202,9 @@ public final class GIFReader extends ImageReader {
 
             if (b == TRAILER) { this.done = true; return false; }
             if (b == IMAGE_SEPARATOR) {
+                // COUNTED ONCE PER FRAME: THE nextReady SHORT-CIRCUIT ABOVE ABSORBS REPEATED hasNext() CALLS
+                if (++this.frames > MAX_FRAMES)
+                    throw new XCodecException("GIF frame count exceeds limit: " + this.frames + " (max " + MAX_FRAMES + ")");
                 this.pendingIntroducer = b;
                 this.nextReady = true;
                 return true;
@@ -198,8 +218,8 @@ public final class GIFReader extends ImageReader {
     }
 
     @Override
-    public ByteBuffer next() throws IOException {
-        if (!this.hasNext()) throw new EOFException("No more GIF frames");
+    public ByteBuffer next() throws XCodecException {
+        if (!this.hasNext()) throw new XCodecException("No more GIF frames");
         this.pendingIntroducer = -1;
         this.nextReady = false;
         this.decodeFrame();
@@ -210,7 +230,8 @@ public final class GIFReader extends ImageReader {
     @Override
     public boolean reset() {
         // CANVAS AND restoreFrame NEED NO CLEARING: FRAME 0 FULLY REFILLS THE CANVAS AND
-        // DISPOSAL-3 SNAPSHOTS ARE ALWAYS SAVED BEFORE BEING RESTORED WITHIN THE SAME PASS
+        // DISPOSAL-3 SNAPSHOTS ARE ALWAYS SAVED BEFORE BEING RESTORED WITHIN THE SAME PASS.
+        // METADATA NEEDS NO CLEARING EITHER: metaMark MAKES RE-PARSED BLOCKS A NO-OP (SEE readAppExtension)
         this.data.position(this.resetPos);
         this.pendingIntroducer = this.resetIntroducer;
         this.done = this.resetDone;
@@ -219,19 +240,20 @@ public final class GIFReader extends ImageReader {
         this.previousGce = null;
         this.previousId = null;
         this.currentDelay = 0L;
+        this.frames = 0; // THE FRAME CAP BOUNDS ONE PASS, NOT THE LIFETIME OF A FOREVER-LOOPING READER
         return true;
     }
 
     // ----- FRAME DECODE -----
 
-    private void decodeFrame() throws IOException {
+    private void decodeFrame() throws XCodecException {
         final ImageDescriptor id = this.clampOrReject(this.readImageDescriptor());
 
         ColorTable activeColorTable = this.globalColorTable;
         if (id.localColorTableFlag()) {
             final int lctSize = id.getLocalColorTableSize();
             if (this.data.remaining() < lctSize * 3) {
-                throw new EOFException("Unexpected EOF in local color table");
+                throw new XCodecException("Unexpected EOF in local color table");
             }
             activeColorTable = ColorTable.read(lctSize, this.data);
         }
@@ -241,7 +263,7 @@ public final class GIFReader extends ImageReader {
 
         // LZW: 1 byte min code size + sub-blocks
         final int lzwMinCodeSize = readUnsignedOrEnd(this.data);
-        if (lzwMinCodeSize < 0) throw new EOFException("EOF before LZW min code size");
+        if (lzwMinCodeSize < 0) throw new XCodecException("EOF before LZW min code size");
         if (lzwMinCodeSize < MIN_LZW_CODE_SIZE || lzwMinCodeSize > MAX_LZW_CODE_SIZE) {
             throw new XCodecException("Invalid LZW minimum code size: " + lzwMinCodeSize);
         }
@@ -305,7 +327,7 @@ public final class GIFReader extends ImageReader {
                 id.localColorTableFlag(), id.interlacedFlag(), id.sortFlag(), id.localColorTableSize());
     }
 
-    private ImageDescriptor readImageDescriptor() throws IOException {
+    private ImageDescriptor readImageDescriptor() throws XCodecException {
         readExactly(this.data, this.descriptorScratch, 0, this.descriptorScratch.length);
         final byte[] data = this.descriptorScratch;
         final int left = (data[0] & 0xFF) | ((data[1] & 0xFF) << 8);
@@ -501,6 +523,10 @@ public final class GIFReader extends ImageReader {
                 continue;
             }
             if (oldCode == -1) {
+                // THE FIRST CODE AFTER A CLEAR MUST BE A LITERAL. code == available (clearCode + 2) PASSES THE
+                // BOUNDS CHECK ABOVE AND WOULD READ A DICTIONARY SLOT THIS FRAME NEVER DEFINED — THE TABLE IS
+                // LONG-LIVED, SO THAT SLOT STILL HOLDS THE PREVIOUS FRAME'S DATA. REJECT INSTEAD OF LEAKING IT
+                if (code >= clearCode) throw new XCodecException("LZW first code references undefined entry: " + code);
                 pixelStack[top++] = suffix[code];
                 oldCode = code;
                 first = code;
@@ -539,7 +565,7 @@ public final class GIFReader extends ImageReader {
 
     // ----- EXTENSION HANDLING -----
 
-    private void processExtension() throws IOException {
+    private void processExtension() throws XCodecException {
         final int label = readUnsignedOrEnd(this.data);
         if (label < 0) { this.done = true; return; }
         switch (label) {
@@ -553,16 +579,27 @@ public final class GIFReader extends ImageReader {
         }
     }
 
-    private void readCommentExtension() throws IOException {
+    private void readCommentExtension() throws XCodecException {
         final int length = this.readSubBlocks();
+        if (this.data.position() <= this.metaMark) return; // ALREADY RECORDED BY AN EARLIER PASS OVER THESE BYTES
+        this.metaMark = this.data.position();
+        if (++this.comments > MAX_COMMENTS)
+            throw new XCodecException("Too many GIF comment extensions: " + this.comments + " (max " + MAX_COMMENTS + ")");
         final String comment = new String(this.subBlockBuffer, 0, length, StandardCharsets.ISO_8859_1);
         this.metadata.comment(comment);
         this.metadata.put(CodecsAPI.GIF_METAKEY_COMMENT, comment);
     }
 
-    private void readGce() throws IOException {
+    private void readGce() throws XCodecException {
         // GCE body: 1 (block size, must be 4) + 1 packed + 2 delay + 1 trans index + 1 terminator = 6 bytes
         readExactly(this.data, this.gceScratch, 0, this.gceScratch.length);
+        // BLOCK SIZE AND TERMINATOR ARE FIXED BY THE SPEC AND scan() ALREADY ABORTS ON A WRONG SIZE.
+        // WITHOUT THESE TWO CHECKS THE PRE-PASS AND THE DECODER DISAGREE ON THE FRAME COUNT OF THE
+        // SAME FILE, WHICH TURNS ANY SIZE GATE COMPUTED FROM scan() INTO A BYPASS
+        if ((this.gceScratch[0] & 0xFF) != 4)
+            throw new XCodecException("Invalid GCE block size: " + (this.gceScratch[0] & 0xFF) + " (must be 4)");
+        if (this.gceScratch[5] != 0)
+            throw new XCodecException("Invalid GCE block terminator: " + (this.gceScratch[5] & 0xFF) + " (must be 0)");
         final int packed = this.gceScratch[1] & 0xFF;
         final int delayTime = (this.gceScratch[2] & 0xFF) | ((this.gceScratch[3] & 0xFF) << 8);
         this.currentGce = new GraphicExtension(
@@ -574,22 +611,33 @@ public final class GIFReader extends ImageReader {
         );
     }
 
-    private int readAppExtension() throws IOException {
+    private int readAppExtension() throws XCodecException {
         final int blockSize = readUnsignedOrEnd(this.data);
         if (blockSize < 0) { this.done = true; return -1; }
         final byte[] header = readExactly(this.data, blockSize);
         final int dataLength = this.readSubBlocks();
-        final byte[] extensionData = Arrays.copyOf(this.subBlockBuffer, dataLength);
-        this.storeApplicationExtension(header, extensionData);
+
+        // RECORD THE BLOCK ONLY THE FIRST TIME ITS STREAM OFFSET IS REACHED: reset() REPLAYS THE SAME
+        // BYTES ON EVERY ANIMATION LOOP, SO AN UNGUARDED add() IS A MONOTONIC HEAP CLIMB WITH NO CEILING
+        if (this.data.position() > this.metaMark) {
+            this.metaMark = this.data.position();
+            if (this.extensions.size() >= MAX_EXTENSIONS)
+                throw new XCodecException("Too many GIF application extensions: " + (this.extensions.size() + 1)
+                        + " (max " + MAX_EXTENSIONS + ")");
+            this.extensions.add(new GifExtension(new String(header, StandardCharsets.ISO_8859_1).trim(),
+                    Arrays.copyOf(this.subBlockBuffer, dataLength)));
+            // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL LIST
+            this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, Collections.unmodifiableList(this.extensions));
+        }
 
         if (blockSize != 11) return -1;
         final long id = readBE(header, 0, 8);
         final int auth = (int) readBE(header, 8, 3);
         if (id == NETSCAPE_EXT_ID && auth == NETSCAPE_AUTH_CODE) {
             // CONCATENATED SUB-BLOCK DATA: 1 BYTE SUB-ID (1), 2 BYTES LOOP COUNT
-            if (extensionData.length >= 3 && (extensionData[0] & 0xFF) == 1) {
-                final int lo = extensionData[1] & 0xFF;
-                final int hi = extensionData[2] & 0xFF;
+            if (dataLength >= 3 && (this.subBlockBuffer[0] & 0xFF) == 1) {
+                final int lo = this.subBlockBuffer[1] & 0xFF;
+                final int hi = this.subBlockBuffer[2] & 0xFF;
                 int lc = (hi << 8) | lo;
                 if (lc == 0) lc = ImageData.REPEAT_FOREVER;
                 LOGGER.debug(IT, "Netscape 2.0 extension with loop count: {}", lc);
@@ -602,20 +650,13 @@ public final class GIFReader extends ImageReader {
         return -1;
     }
 
-    private void storeApplicationExtension(final byte[] header, final byte[] data) {
-        final String id = new String(header, StandardCharsets.ISO_8859_1).trim();
-        this.extensions.add(new GifExtension(id, data));
-        // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL LIST
-        this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, Collections.unmodifiableList(this.extensions));
-    }
-
     // ----- SUB-BLOCK I/O -----
 
-    private int readSubBlocks() throws IOException {
+    private int readSubBlocks() throws XCodecException {
         int totalSize = 0;
         while (true) {
             final int size = readUnsignedOrEnd(this.data);
-            if (size < 0) throw new EOFException("EOF in sub-block");
+            if (size < 0) throw new XCodecException("EOF in sub-block");
             if (size == 0) break;
             this.ensureSubBlockCapacity(totalSize + size);
             readExactly(this.data, this.subBlockBuffer, totalSize, size);
@@ -638,7 +679,7 @@ public final class GIFReader extends ImageReader {
         this.subBlockBuffer = Arrays.copyOf(this.subBlockBuffer, next);
     }
 
-    private void skipSubBlocks() throws IOException {
+    private void skipSubBlocks() throws XCodecException {
         while (true) {
             final int size = readUnsignedOrEnd(this.data);
             if (size < 0) { this.done = true; return; }
@@ -647,8 +688,8 @@ public final class GIFReader extends ImageReader {
         }
     }
 
-    private void skipBytes(final int n) throws IOException {
-        if (n < 0 || this.data.remaining() < n) throw new EOFException("EOF skipping GIF bytes");
+    private void skipBytes(final int n) throws XCodecException {
+        if (n < 0 || this.data.remaining() < n) throw new XCodecException("EOF skipping GIF bytes");
         this.data.position(this.data.position() + n);
     }
 
@@ -729,18 +770,17 @@ public final class GIFReader extends ImageReader {
         buffer.get(header);
 
         int loopCount = fallbackLoopCount;
-        if (blockSize == 11) {
-            final long id = readBE(header, 0, 8);
-            final int auth = (int) readBE(header, 8, 3);
-            if (id == NETSCAPE_EXT_ID && auth == NETSCAPE_AUTH_CODE && buffer.remaining() >= 5) {
-                final int sbSize = buffer.get() & 0xFF;
-                final int sbId = buffer.get() & 0xFF;
-                if (sbSize == 3 && sbId == 1 && buffer.remaining() >= 3) {
-                    final int lo = buffer.get() & 0xFF;
-                    final int hi = buffer.get() & 0xFF;
-                    int lc = (hi << 8) | lo;
-                    loopCount = lc == 0 ? ImageData.REPEAT_FOREVER : lc;
-                }
+        // PEEK THE LOOP COUNT WITHOUT CONSUMING (remaining >= 5 KEEPS THE ABSOLUTE READS IN BOUNDS).
+        // ONLY scanSkipSubBlocks MAY WALK THE CHAIN, EXACTLY AS readSubBlocks DOES: CONSUMING THE
+        // SUB-BLOCK HEADER HERE DESYNCS THE PRE-PASS FROM THE DECODER WHENEVER THE DECLARED SUB-BLOCK
+        // SIZE IS NOT 3, AND TWO PARSERS AT DIFFERENT OFFSETS DISAGREE ON THE FRAME COUNT
+        if (blockSize == 11 && buffer.remaining() >= 5
+                && readBE(header, 0, 8) == NETSCAPE_EXT_ID && (int) readBE(header, 8, 3) == NETSCAPE_AUTH_CODE) {
+            // CONCATENATED SUB-BLOCK DATA: 1 BYTE SIZE (3), 1 BYTE SUB-ID (1), 2 BYTES LOOP COUNT
+            final int p = buffer.position();
+            if ((buffer.get(p) & 0xFF) == 3 && (buffer.get(p + 1) & 0xFF) == 1) {
+                final int lc = ((buffer.get(p + 3) & 0xFF) << 8) | (buffer.get(p + 2) & 0xFF);
+                loopCount = lc == 0 ? ImageData.REPEAT_FOREVER : lc;
             }
         }
         scanSkipSubBlocks(buffer);
@@ -765,14 +805,14 @@ public final class GIFReader extends ImageReader {
         return buffer.hasRemaining() ? buffer.get() & 0xFF : -1;
     }
 
-    private static byte[] readExactly(final ByteBuffer buffer, final int n) throws IOException {
+    private static byte[] readExactly(final ByteBuffer buffer, final int n) throws XCodecException {
         final byte[] buf = new byte[n];
         readExactly(buffer, buf, 0, n);
         return buf;
     }
 
-    private static void readExactly(final ByteBuffer buffer, final byte[] dst, final int off, final int len) throws IOException {
-        if (buffer.remaining() < len) throw new EOFException("Unexpected EOF (" + buffer.remaining() + "/" + len + ")");
+    private static void readExactly(final ByteBuffer buffer, final byte[] dst, final int off, final int len) throws XCodecException {
+        if (buffer.remaining() < len) throw new XCodecException("Unexpected EOF (" + buffer.remaining() + "/" + len + ")");
         buffer.get(dst, off, len);
     }
 
