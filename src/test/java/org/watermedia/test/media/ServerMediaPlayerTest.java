@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.players.MediaPlayer.Status;
 import org.watermedia.api.media.players.ServerMediaPlayer;
+import org.watermedia.api.media.players.sync.Sync;
 import org.watermedia.test.support.PlayerWait;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -135,6 +136,120 @@ public class ServerMediaPlayerTest {
         assertNotNull(player.status());
         // NO TERMINAL TRANSITION WAS EVER PUBLISHED WHILE LOOPING.
         assertNull(cap.to);
+        player.release();
+    }
+
+    @Test
+    @DisplayName("revision bumps on successful mutations and stays put on failed ones")
+    void testRevisionBumps() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        final int r0 = player.revision();
+        player.syncDuration(10_000L);
+        assertTrue(player.revision() > r0, "syncDuration must bump the revision");
+
+        int r = player.revision();
+        assertFalse(player.pause());
+        assertFalse(player.stop());
+        assertEquals(r, player.revision(), "failed operations must not bump the revision");
+
+        player.start();
+        assertTrue(player.revision() > r);
+        r = player.revision();
+        assertTrue(player.pause());
+        assertTrue(player.revision() > r);
+        r = player.revision();
+        assertTrue(player.seek(5_000L));
+        assertTrue(player.revision() > r);
+        player.release();
+    }
+
+    @Test
+    @DisplayName("syncDuration is first-wins; divergent or invalid reports are ignored")
+    void testDurationFirstWins() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.syncDuration(10_000L);
+        player.syncDuration(99_000L);
+        assertEquals(10_000L, player.duration());
+        // ZERO/NEGATIVE REPORTS NEVER TOUCH THE SYNCED VALUE
+        player.syncDuration(0L);
+        player.syncDuration(-5L);
+        assertEquals(10_000L, player.duration());
+        player.release();
+    }
+
+    @Test
+    @DisplayName("syncLive flags the source as live and locks speed")
+    void testSyncLive() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.syncDuration(10_000L);
+        assertFalse(player.liveSource());
+        assertTrue(player.canSpeed());
+
+        player.syncLive(true);
+        assertTrue(player.liveSource());
+        assertFalse(player.canSpeed());
+
+        player.syncLive(false);
+        assertFalse(player.liveSource());
+        player.release();
+    }
+
+    @Test
+    @DisplayName("seek() on a finished or stopped clock lands PAUSED at the position")
+    void testSeekAfterEndedPauses() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.syncDuration(150L);
+        player.start();
+        assertTrue(PlayerWait.awaitStatus(player, ENDED_TIMEOUT_MS, Status.ENDED));
+
+        assertTrue(player.seek(50L));
+        assertEquals(Status.PAUSED, player.status());
+        assertEquals(50L, player.time());
+
+        // STOPPED SCRUBS THE SAME WAY
+        assertTrue(player.stop());
+        assertTrue(player.seek(80L));
+        assertEquals(Status.PAUSED, player.status());
+        assertEquals(80L, player.time());
+        player.release();
+    }
+
+    @Test
+    @DisplayName("snapshot() captures the full authoritative state")
+    void testSnapshot() {
+        final ServerMediaPlayer source = new ServerMediaPlayer();
+        source.syncDuration(60_000L);
+        source.repeat(true);
+        source.volume(40);
+        source.start();
+        assertTrue(source.speed(2.0f));
+        assertTrue(source.seek(30_000L));
+
+        final Sync snapshot = source.snapshot();
+        assertEquals(source.revision(), snapshot.revision());
+        assertEquals(Status.PLAYING, snapshot.status());
+        assertEquals(60_000L, snapshot.duration());
+        assertEquals(2.0f, snapshot.speed());
+        assertEquals(40, snapshot.volume());
+        assertTrue(snapshot.repeat());
+        assertFalse(snapshot.live());
+        assertTrue(Math.abs(snapshot.time() - 30_000L) <= TIMING_TOLERANCE_MS,
+                "the snapshot must carry the current position, was " + snapshot.time());
+        source.release();
+    }
+
+    @Test
+    @DisplayName("repeat loop wrap bumps the revision for proxy re-broadcast")
+    void testLoopWrapBumpsRevision() throws InterruptedException {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.syncDuration(120L);
+        player.repeat(true);
+        player.start();
+        final int r = player.revision();
+
+        Thread.sleep(400L); // SEVERAL LOOP PERIODS
+        assertTrue(player.revision() > r, "loop wraps must bump the revision");
+        assertEquals(Status.PLAYING, player.status());
         player.release();
     }
 }

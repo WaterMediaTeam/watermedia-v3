@@ -24,14 +24,19 @@ import org.watermedia.api.media.engines.VKEngine;
 import org.watermedia.api.media.engines.vk.VKContext;
 import org.watermedia.api.media.players.FFMediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.players.ServerMediaPlayer;
 import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
 
+import org.watermedia.api.media.players.sync.Bridge;
+import org.watermedia.api.media.players.sync.Config;
+
 import java.io.File;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
@@ -39,6 +44,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public final class MediaAPI extends WaterMediaModule {
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
+    private static final String STEP_SERVER_PLAYER = "SERVER PLAYER";
     private static final String STEP_CACHE = "CACHE";
     private static final String STEP_FFMPEG = "FFMPEG";
 
@@ -46,6 +52,7 @@ public final class MediaAPI extends WaterMediaModule {
     private static volatile boolean FFMPEG_LOADED;
     private static volatile boolean FFMPEG_ERROR;
     private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
+    private static boolean CLIENT_SIDE;
 
     /**
      * Gets or creates an MRL for the given URI string.
@@ -95,8 +102,58 @@ public final class MediaAPI extends WaterMediaModule {
         return MRL.preload(uri);
     }
 
+    /**
+     * Creates a {@link ServerMediaPlayer} instance to run time accountability and manage synchronization on server-side
+     * <p>
+     * This player doesn't load any media, synchronization needs to be handled by your own methods.
+     * </p>
+     * @return {@link ServerMediaPlayer} instance with no status
+     */
+    public static ServerMediaPlayer createPlayer() {
+        return new ServerMediaPlayer();
+    }
+
+    /**
+     * Creates a broadcasting {@link ServerMediaPlayer} authority: the whole server side of the
+     * sync protocol runs automatically over the given byte carrier. Feed received upstream
+     * payloads through {@link ServerMediaPlayer#sync(ByteBuffer)}.
+     * @param bridge downstream byte carrier that broadcasts to every follower
+     * @param capabilities capabilities granted to the followers
+     * @return the authority instance
+     */
+    public static ServerMediaPlayer createPlayer(final Bridge bridge, final Config.Capability... capabilities) {
+        return new ServerMediaPlayer(bridge, capabilities);
+    }
+
+    /**
+     * Creates a media player for the FIRST MRL source, or {@code null} when no player can be built.
+     * <p>
+     * {@code null} covers two distinct situations, logged distinctly: the source isn't ready yet
+     * (MRL still {@link MRL.Status#FETCHING} — retry next tick) or a permanent failure (failed MRL,
+     * invalid index, missing backend, or a construction crash). Check {@link MRL#status()} to tell
+     * them apart. {@link Error}s always propagate.
+     *
+     * @param mrl the resolved MRL
+     * @param gfx supplier of the video sink, invoked at most once
+     * @param sfx supplier of the audio sink, invoked at most once
+     * @return the player, or {@code null} when not ready or on failure
+     */
     public static MediaPlayer createPlayer(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
-        return createPlayer(mrl, 0, gfx, sfx);
+        return createPlayer(mrl, 0, gfx, sfx, null);
+    }
+
+    /**
+     * Creates a media player for the FIRST MRL source that follows a server-side authority
+     * through the given bridge, or {@code null} when no player can be built.
+     * @param mrl the resolved MRL
+     * @param gfx supplier of the video sink, invoked at most once
+     * @param sfx supplier of the audio sink, invoked at most once
+     * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
+     * @return the player, or {@code null} when not ready or on failure
+     * @see #createPlayer(MRL, int, Supplier, Supplier)
+     */
+    public static MediaPlayer createPlayer(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
+        return createPlayer(mrl, 0, gfx, sfx, bridge);
     }
 
     /**
@@ -107,13 +164,28 @@ public final class MediaAPI extends WaterMediaModule {
      * invalid index, missing backend, or a construction crash). Check {@link MRL#status()} to tell
      * them apart. {@link Error}s always propagate.
      *
-     * @param mrl the resolved (or resolving) MRL
+     * @param mrl the resolved MRL
      * @param sourceIndex index of the source to play
      * @param gfx supplier of the video sink, invoked at most once
      * @param sfx supplier of the audio sink, invoked at most once
      * @return the player, or {@code null} when not ready or on failure
      */
     public static MediaPlayer createPlayer(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
+        return createPlayer(mrl, sourceIndex, gfx, sfx, null);
+    }
+
+    /**
+     * Creates a media player for the given MRL source that follows a server-side authority
+     * through the given bridge, or {@code null} when no player can be built.
+     * @param mrl the resolved MRL
+     * @param sourceIndex index of the source to play
+     * @param gfx supplier of the video sink, invoked at most once
+     * @param sfx supplier of the audio sink, invoked at most once
+     * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
+     * @return the player, or {@code null} when not ready or on failure
+     * @see #createPlayer(MRL, int, Supplier, Supplier)
+     */
+    public static MediaPlayer createPlayer(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
         final MRL.Source source = mrl.source(sourceIndex);
         if (source == null) {
             // STILL FETCHING IS A NORMAL TRANSIENT STATE — DON'T SPAM WARNINGS FOR IT
@@ -137,14 +209,14 @@ public final class MediaAPI extends WaterMediaModule {
             if (source.type() == MediaType.IMAGE) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
                 gfxEngine = gfx.get();
-                return new TxMediaPlayer(mrl, sourceIndex, gfxEngine);
+                return new TxMediaPlayer(mrl, sourceIndex, gfxEngine, bridge);
             }
 
             if (FFMPEG_LOADED) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
                 gfxEngine = gfx.get();
                 sfxEngine = sfx.get();
-                return new FFMediaPlayer(mrl, sourceIndex, gfxEngine, sfxEngine);
+                return new FFMediaPlayer(mrl, sourceIndex, gfxEngine, sfxEngine, bridge);
             }
 
             LOGGER.error(IT, "No media backend available for: {}", mrl.uri);
@@ -262,14 +334,19 @@ public final class MediaAPI extends WaterMediaModule {
     @Override
     protected void load(final WaterMedia instance) {
         super.load(instance);
-        this.steps = instance.clientSide ? 2 : 0; // CACHE + FFMPEG
+        this.steps = instance.clientSide ? 3 : 1; // SERVER_PLAYER + CACHE + FFMPEG | SERVER_PLAYER
     }
 
     @Override
     protected boolean start(final WaterMedia instance) {
+        // THERE'S NO INITIALIZER FOR SERVER-SIDE, WE JUST STORE IF IS CLIENT
+        this.step++;
+        this.stepName = STEP_SERVER_PLAYER;
+        CLIENT_SIDE = instance.clientSide;
+
+        // SKIP REST OF THE START
         if (!instance.clientSide) {
-            LOGGER.warn(IT, "Skipping media API start on server-side");
-            return false;
+            return true;
         }
 
         this.step++;

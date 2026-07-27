@@ -70,7 +70,7 @@ The method can return NULL if the source index doesn't exists (MRL only has 2 so
 It can return 3 variants of a mediaplayer
 - TxMediaPlayer: A Texture based MediaPlayer (pictures, and animated pictures)
 - FFMediaPlayer: Uses FFmpeg as a backend for full video/audio playback.
-- ServerMediaPlayer: Not just a placeholder, it is a utility class to run a server-side time orchestator, **STILL NOT IMPLEMENTED**
+- ServerMediaPlayer: a headless wall-clock player that acts as the server-side time authority for synchronized playback (see SYNCHRONIZED PLAYBACK below)
 
 ### ARGUMENTS
 - sourceIndex (int) - the source index to play
@@ -109,3 +109,58 @@ A MediaPlayer goes through these statuses during its lifecycle:
 - ERROR - An error occurred. Playback cannot continue.
 
 You can check the status using `player#status()` or the convenience methods
+
+# SYNCHRONIZED PLAYBACK (BRIDGE)
+WaterMedia ships the whole sync system; you ship the byte carrier. A **`Bridge`** is one method, `send(ByteBuffer)`, and everything you receive from the other side goes into `player.sync(payload)`. There is no loop to write, no state to poll and no correction math to implement.
+
+Nothing about who the peers are reaches WaterMedia: your bridge knows which session it serves and routes accordingly, which is why the natural shape is a small class holding that key rather than a lambda.
+
+```java
+public final class MediaBridge implements Bridge {
+    private final ResourceLocation session;
+    public MediaBridge(ResourceLocation session) { this.session = session; }
+    public void send(ByteBuffer payload) { Network.send(this.session, payload); }
+}
+```
+
+A player built with a bridge stops being independent:
+- On the server, `ServerMediaPlayer` becomes the **authority**: it registers spectators, broadcasts its state and applies control requests.
+- On the client, any player becomes a **follower**: it replicates the authority and keeps itself aligned with it. Its own control calls (`start`, `pause`, `seek`, `speed`, `repeat`…) are no longer applied locally — they travel upstream as requests and come back as authoritative state.
+
+```java
+// SERVER — YOUR BRIDGE BROADCASTS THE BYTES TO EVERY CLIENT WATCHING THIS MEDIA
+ServerMediaPlayer server = MediaAPI.createPlayer(new MediaBridge(session), Capability.LOCKSTEP);
+server.start();                 // THAT IS ALL — SNAPSHOTS AND HEARTBEATS GO OUT BY THEMSELVES
+
+// SERVER PACKET HANDLER
+server.sync(payload);
+
+// CLIENT — YOUR BRIDGE SENDS THE BYTES TO THE SERVER
+MediaPlayer player = MediaAPI.createPlayer(mrl, gfx, sfx, new MediaBridge(session));
+
+// CLIENT PACKET HANDLER
+player.sync(payload);
+```
+`sync(ByteBuffer)` is safe to call from your network thread: it decodes and validates there (the trust boundary), and everything else happens on WaterMedia's own 50ms tick, never on the game thread.
+
+### THE SEQUENCE
+1. A client player is created and announces itself with a hello; it enters the session as a loading spectator. A newcomer never interrupts the media already running for the others.
+2. The authority answers with the session `Config` (the granted capabilities) plus a fresh snapshot, so a late joiner lands at the right timestamp immediately.
+3. Each follower reports its own status upstream on every transition, plus a keepalive. The first client to know the media reports its duration and live flag, and the authority adopts them (first non-zero report wins for the session).
+4. The authority broadcasts a snapshot whenever its state changes, plus a ~5s heartbeat. Out-of-order packets are rejected by revision; heartbeats re-apply.
+5. On release the follower says goodbye. One that vanishes without saying it is swept by a silence timeout (`watcherTimeout(ms)`, 15s by default), so a client that disappears never freezes the audience.
+
+### CAPABILITIES
+Capabilities are declared on the authority and announced to every follower; the clock and state mirror is always on. Followers can read what was granted with `player.granted(capability)` — handy to grey out a control the audience is not allowed to drive.
+
+- `LOCKSTEP` — one experience for everyone: while any ready spectator is loading or buffering, the authority presents `BUFFERING` with a frozen clock and the whole audience holds; it resumes exactly where it froze. Failed clients are ignored, and a spectator joining mid-playback only starts counting once it reports ready.
+- `CONTROLS` — followers may drive the session: `pause()` on any client travels to the authority, which decides and broadcasts the result to everyone. Permissions are yours: filter before calling `sync()`, or gate your own UI. Without this capability, control calls on a follower are simply dropped.
+- `VOLUME` — the authority also dictates volume and mute. Without it both stay client-local, as scaling and LOD always do.
+
+### TUNING
+One threshold, one correction: drift past the tolerance (`tolerance(ms)`, 1s by default) and playback jumps to where the session is with a `seekQuick`. Nothing else — no rate trimming to converge smoothly. That was tried and dropped: it is perceived as the video randomly running slow, and the client only ever falls *behind* anyway, because the authority is a bare clock with no decoding and no buffers. Drift is circular on repeating media so a loop boundary never fakes a huge gap, corrections are rate-limited while a pipeline resettles, and none run while the local player is loading or buffering.
+
+Correcting needs two positions: where playback **should** be and where it actually is. `authorityTime()` is the first one — the last snapshot aged into a live position, because snapshots arrive seconds apart and a stale target would drag every correction backwards; `authority()` hands you that raw snapshot. The second is the player itself, with its own status (it may still be LOADING) and its own decode position. Inspect the gap with `drift()`, and what this player is with `role()`.
+
+### THE WIRE
+Packets are small fixed-size big-endian records in `org.watermedia.api.media.players.sync`, decoded by `Packet.of(ByteBuffer)`: `Sync` (29 B, the authoritative snapshot), `Config` (11 B), `Watch`/`Unwatch` (10 B), `Report` (20 B) and `Control` (19 B). Decoding takes only the packet's own bytes and leaves the rest in the buffer, so you can embed a payload in a larger frame carrying your own routing fields.

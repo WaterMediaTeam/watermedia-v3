@@ -10,6 +10,7 @@ import org.watermedia.api.codecs.readers.BCReader;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.players.sync.Bridge;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.PixelFormat;
@@ -116,7 +117,6 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // STATUS
     private volatile Status status = Status.WAITING;
-    private volatile float speed = 1.0f;
 
     // STATIC-IMAGE DISPLAY CLOCK — A STILL IMAGE TRANSITIONS TO ENDED AFTER displayTimeMs OF
     // PLAYBACK SO STATUS-DRIVEN PLAYLISTS ADVANCE OFF ended(). 0 = UNLIMITED (SHOW FOREVER).
@@ -181,20 +181,32 @@ public final class TxMediaPlayer extends MediaPlayer {
     private int codecExpect;
 
     public TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine) {
-        super(mrl, sourceIndex, gfxEngine, null);
+        this(mrl, sourceIndex, gfxEngine, null);
+    }
+
+    /**
+     * Creates a player that follows a server-side authority through the given bridge
+     * (see {@link MediaPlayer}).
+     * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
+     */
+    public TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine,
+                         final Bridge bridge) {
+        super(mrl, sourceIndex, gfxEngine, null, bridge);
+        this.arm();
     }
 
     // ==========================================================================
     // LIFECYCLE PUBLIC API
     // ==========================================================================
     @Override
-    public void start() {
+    public boolean start() {
+        if (!super.start()) return false;
         // ONLY startPaused() SEEDS THE INITIAL PAUSE — NEVER A LEFTOVER triggerPause FROM A PRIOR SESSION
         final boolean initialPause = this.startPausedRequest;
         this.startPausedRequest = false;
         final Future<?> oldTask = this.lifecycleTask;
         if ((this.lifecycleThread != null && this.lifecycleThread.isAlive()) || (oldTask != null && !oldTask.isDone())) {
-            this.stop();
+            this.teardown();
         }
         final Thread old = this.lifecycleThread;
         // MINT THE SERIAL AND HAND THE PREPARE TASK OFF ATOMICALLY: TWO CONCURRENT start() CALLS
@@ -218,16 +230,24 @@ public final class TxMediaPlayer extends MediaPlayer {
                 }
             });
         }
+        return true;
     }
 
     @Override
-    public void startPaused() {
+    public boolean startPaused() {
+        if (!super.startPaused()) return false;
         this.startPausedRequest = true;
-        this.start();
+        return this.start();
     }
 
     @Override
     public boolean stop() {
+        return super.stop() && this.teardown();
+    }
+
+    // CANCELS THE PIPELINE AND DROPS THE DECODED TIMELINE. SHARED BY stop() AND THE RESTART PATH IN
+    // start() — THE LATTER IS A LOCAL TEARDOWN THAT MUST NOT REACH THE SYNC AUTHORITY.
+    private boolean teardown() {
         this.triggerStop = true;
         this.texTimeline = null;
         this.texDelays = null;
@@ -502,7 +522,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             final long duration = Math.max(1L, this.knownDuration);
             long t = this.clockBase;
             if (this.status == Status.PLAYING) {
-                t += (long) ((System.currentTimeMillis() - this.wallBase) * this.speed);
+                t += (long) ((System.currentTimeMillis() - this.wallBase) * this.speed());
             }
             if (t < duration) return t;
             if (this.repeat()) {
@@ -675,9 +695,9 @@ public final class TxMediaPlayer extends MediaPlayer {
             // FROM THE LIVE speed EACH ITERATION SO A speed(float) CHANGE (WHICH CALLS wake()) RESCALES
             // THIS FRAME INSTEAD OF ONLY TAKING EFFECT NEXT FRAME. SEEK/PAUSE/STOP ALSO SIGNAL THE WAIT.
             final long frameStart = System.currentTimeMillis();
-            this.fillQueueUntil(reader, frameStart + Math.max(1L, (long) (this.currentDelayMs / this.speed)));
+            this.fillQueueUntil(reader, frameStart + Math.max(1L, (long) (this.currentDelayMs / this.speed())));
             while (!Thread.currentThread().isInterrupted() && !this.signaled()) {
-                final long remaining = frameStart + Math.max(1L, (long) (this.currentDelayMs / this.speed)) - System.currentTimeMillis();
+                final long remaining = frameStart + Math.max(1L, (long) (this.currentDelayMs / this.speed())) - System.currentTimeMillis();
                 if (remaining <= 0L) break;
                 this.awaitSignal(remaining);
             }
@@ -1457,20 +1477,15 @@ public final class TxMediaPlayer extends MediaPlayer {
     // PUBLIC CONTROLS
     // ==========================================================================
     @Override
-    public boolean pause() { return this.pause(true); }
-
-    @Override
-    public boolean resume() { return this.pause(false); }
-
-    @Override
     public boolean pause(final boolean paused) {
+        if (!super.pause(paused)) return false;
         if (!this.animated && this.loaded) {
             if (this.staticTimed) {
                 // FREEZE/REBASE THE STATIC DISPLAY CLOCK LIKE THE PASSIVE CLOCK
                 synchronized (this.clock) {
                     final long now = System.currentTimeMillis();
                     if (paused && this.status == Status.PLAYING) {
-                        this.clockBase += (long) ((now - this.wallBase) * this.speed);
+                        this.clockBase += (long) ((now - this.wallBase) * this.speed());
                     }
                     this.wallBase = now;
                     this.paused = paused;
@@ -1487,7 +1502,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             synchronized (this.clock) {
                 final long now = System.currentTimeMillis();
                 if (paused && this.status == Status.PLAYING) {
-                    this.clockBase += (long) ((now - this.wallBase) * this.speed);
+                    this.clockBase += (long) ((now - this.wallBase) * this.speed());
                     this.paused = true;
                     this.status = Status.PAUSED;
                 } else if (!paused && this.status == Status.PAUSED) {
@@ -1509,11 +1524,12 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean togglePlay() {
-        return this.paused() ? this.resume() : this.pause();
+        return super.togglePlay() && this.pause(!this.paused());
     }
 
     @Override
     public boolean seek(final long time) {
+        if (!super.seek(time)) return false;
         if (!this.loaded || !this.animated) return false;
         long target = Math.max(0L, time);
         if (this.knownDuration > 0L) target = Math.min(target, this.knownDuration - 1L);
@@ -1542,7 +1558,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean previousFrame() {
-        if (!this.paused()) return false;
+        if (!super.previousFrame() || !this.paused()) return false;
         if (this.texTimeline != null) return this.stepTexture(-1);
         this.triggerPrevFrame = true;
         this.wake();
@@ -1551,7 +1567,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean nextFrame() {
-        if (!this.paused()) return false;
+        if (!super.nextFrame() || !this.paused()) return false;
         if (this.texTimeline != null) return this.stepTexture(1);
         this.triggerNextFrame = true;
         this.wake();
@@ -1587,7 +1603,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         return 1000f / this.currentDelayMs;
     }
 
-    @Override public float speed() { return this.speed; }
     @Override public boolean liveSource() { return false; }
     @Override public boolean canSeek() { return this.animated; }
     @Override public boolean canPlay() { return this.loaded; }
@@ -1599,15 +1614,18 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean speed(final float speed) {
-        if (!Float.isFinite(speed) || speed <= 0 || speed > 4.0f) return false;
+        // RESOLVE THE CALL BEFORE TAKING THE CLOCK: A BRIDGED PLAYER SENDS THE REQUEST FROM super,
+        // AND THE RENDER THREAD TAKES THIS SAME LOCK ON EVERY DRAW TO READ THE PASSIVE CLOCK
+        final float old = this.speed();
+        if (!super.speed(speed)) return false;
         synchronized (this.clock) {
-            // REBASE THE PASSIVE / STATIC CLOCK SO THE SPEED CHANGE DOESN'T JUMP THE MEDIA TIME
+            // CLOSE THE PASSIVE / STATIC CLOCK SEGMENT AT THE OUTGOING RATE: THE ELAPSED TIME RAN AT
+            // `old`, SO SCALING IT BY THE NEW RATE WOULD JUMP THE MEDIA TIME
             if ((this.texTimeline != null || this.staticTimed) && this.status == Status.PLAYING) {
                 final long now = System.currentTimeMillis();
-                this.clockBase += (long) ((now - this.wallBase) * this.speed);
+                this.clockBase += (long) ((now - this.wallBase) * old);
                 this.wallBase = now;
             }
-            this.speed = speed;
         }
         // WAKE THE STREAMING LOOP SO A LIVE SPEED CHANGE RESCALES THE CURRENT FRAME DELAY (MODE 3)
         this.wake();

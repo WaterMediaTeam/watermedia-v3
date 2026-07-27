@@ -17,6 +17,7 @@ import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.players.sync.Bridge;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.engines.SFXEngine;
@@ -249,20 +250,32 @@ public final class FFMediaPlayer extends MediaPlayer {
      * @param sfx the audio output engine, or {@code null} for video-only playback
      */
     public FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
-        super(mrl, sourceIndex, gfx, sfx);
+        this(mrl, sourceIndex, gfx, sfx, null);
+    }
+
+    /**
+     * Creates a player that follows a server-side authority through the given bridge
+     * (see {@link MediaPlayer}).
+     * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
+     */
+    public FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx,
+                         final Bridge bridge) {
+        super(mrl, sourceIndex, gfx, sfx, bridge);
+        this.arm();
     }
 
     // MEDIAPLAYER OVERRIDES
     @Override
-    public void start() {
+    public boolean start() {
+        if (!super.start()) return false;
         // release() FREES gfx/sfx — REBUILDING THE PIPELINE ON DEAD ENGINES WOULD CRASH ON UPLOAD
         if (this.released) {
             LOGGER.warn(IT, "start() ignored — player already released");
-            return;
+            return false;
         }
         LOGGER.debug(IT, "Start requested (quality={})", this.quality);
         if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
-            this.stop();
+            this.abort();
         }
         final Thread oldThread = this.lifecycleThread;
 
@@ -278,22 +291,26 @@ public final class FFMediaPlayer extends MediaPlayer {
         });
         this.lifecycleThread.setDaemon(true);
         this.lifecycleThread.start();
+        return true;
     }
 
     @Override
-    public void startPaused() {
+    public boolean startPaused() {
+        if (!super.startPaused()) return false;
         // THE PAUSE INTENT CANNOT LIVE IN THE CLOCK HERE: lifecycle() CALLS
         // clock.reset() WHICH WIPES pauseIntent, SO THE PLAYER WOULD START
         // PLAYING. THE FLAG IS CONSUMED BY lifecycle() RIGHT AFTER THE RESET.
         this.startPausedRequest = true;
-        this.start();
+        return this.start();
     }
 
     @Override
     public void release() {
         LOGGER.debug(IT, "Release requested");
         this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
-        this.stop();
+        // TEAR DOWN DIRECTLY, NEVER THROUGH stop(): ON A BRIDGED PLAYER THAT WOULD ASK THE SYNC
+        // AUTHORITY TO STOP THE MEDIA FOR THE WHOLE AUDIENCE JUST BECAUSE ONE CLIENT WENT AWAY.
+        this.abort();
         // WAIT FOR THE PIPELINE TO EXIT BEFORE FREEING ENGINES — THE CONSUMPTION
         // LOOP KEEPS TOUCHING sfx/gfx AND NATIVE CONTEXTS UNTIL IT FINISHES.
         // ioAbortRequested (SET BY stop()) MAKES BLOCKING NATIVE I/O RETURN FAST.
@@ -329,6 +346,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean pause(final boolean paused) {
+        if (!super.pause(paused)) return false;
         final boolean changed = this.clock.setPaused(paused);
         // ALSO PAUSE/RESUME THE AUDIO ENGINE — WITHOUT THIS, OPENAL KEEPS PLAYING
         // ITS QUEUED BUFFERS UNTIL IT UNDERRUNS AND STOPS, AND THE NEXT RESUME
@@ -345,6 +363,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
+        return super.stop() && this.abort();
+    }
+
+    // INTERRUPTS THE PIPELINE AND ABORTS BLOCKING NATIVE I/O. SHARED BY stop(), THE RESTART PATH IN
+    // start() AND release() — THE LATTER TWO ARE LOCAL TEARDOWNS THAT MUST NOT REACH THE AUTHORITY.
+    private boolean abort() {
         if (this.lifecycleThread != null) {
             LOGGER.debug(IT, "Stop requested (status={}, clock={}ms)", this.clock.status(), this.clock.timeMs());
             this.ioAbortRequested = true; // ABORT BLOCKING NATIVE I/O (OPEN/READ) ASAP
@@ -356,16 +380,18 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean togglePlay() { return this.pause(!this.clock.pauseRequested()); }
+    public boolean togglePlay() {
+        return super.togglePlay() && this.pause(!this.clock.pauseRequested());
+    }
 
     @Override
     public boolean seek(final long timeMs) {
-        return this.requestClampedSeek(timeMs, true);
+        return super.seek(timeMs) && this.requestClampedSeek(timeMs, true);
     }
 
     @Override
     public boolean seekQuick(final long timeMs) {
-        return this.requestClampedSeek(timeMs, false);
+        return super.seekQuick(timeMs) && this.requestClampedSeek(timeMs, false);
     }
 
     // CLAMP ONLY AGAINST A KNOWN DURATION — duration() RETURNS NO_DURATION (0)
@@ -383,13 +409,13 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean previousFrame() {
-        if (!this.canSeek()) return false;
+        if (!super.previousFrame() || !this.canSeek()) return false;
         return this.seek(Math.max(0, this.time() - this.clock.frameDurationMs()));
     }
 
     @Override
     public boolean nextFrame() {
-        if (!this.canSeek()) return false;
+        if (!super.nextFrame() || !this.canSeek()) return false;
         return this.seek(this.time() + this.clock.frameDurationMs());
     }
 
