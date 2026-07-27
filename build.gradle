@@ -1,3 +1,7 @@
+import me.modmuss50.mpp.platforms.curseforge.AdditionalFileOptions
+import me.modmuss50.mpp.platforms.curseforge.Curseforge
+import me.modmuss50.mpp.platforms.modrinth.Modrinth
+
 plugins {
     id 'java'
     id 'java-library'
@@ -173,12 +177,18 @@ jar {
 def mcVers = minecraftversions.split(',').collect { it.trim() }
 def javaVers = javaversions.split(',').collect { JavaVersion.toVersion(it.trim()) }
 def loaders = modloaders.split(',').collect { it.trim() }
+// INSIDE publishMods THE DELEGATE IS THE EXTENSION, SO A BARE `version` HITS ITS Property<String> AND
+// STRINGIFIES TO "extension 'publishMods' property 'version'"; READ THE PROJECT VERSION OUT HERE INSTEAD
+def publishVersion = project.version.toString()
 
+// PLATFORMS ARE CONFIGURED THROUGH THE TYPED Action OVERLOAD AND AN EXPLICIT RECEIVER: THE PLUGIN ALSO
+// EXPOSES KOTLIN Closure OVERLOADS THAT THE GROOVY IDE INSPECTION CANNOT RESOLVE, WHICH FLAGS THE WHOLE
+// BLOCK AND LEAVES IT WITHOUT A DELEGATE (NO COMPLETION); IT ALSO KILLS THE SHADOWING ABOVE FOR GOOD
 publishMods {
     file = jar.archiveFile
     changelog = getChangelogText()
     type = ["alpha": ALPHA, "beta": BETA, "release": STABLE].getOrDefault(project.versiontype.toString().toLowerCase(), ALPHA)
-    displayName = "$version"
+    displayName = publishVersion
     modLoaders.addAll(loaders)
 
     additionalFiles.from(sourcesJar.archiveFile)
@@ -186,28 +196,28 @@ publishMods {
 
     dryRun = false
 
-    curseforge {
-        accessToken = CF_TOKEN
-        projectId = curseforgeid
-        minecraftVersions.addAll(mcVers)
-        javaVersions.addAll(javaVers)
-        clientRequired = true
-        serverRequired = true
-        projectSlug = id
-        additionalFile(sourcesJar) {
-            name = "$version-sources"
-        }
-        requires("watermedia-binaries")
+    curseforge({ Curseforge cf ->
+        cf.accessToken = CF_TOKEN
+        cf.projectId = curseforgeid
+        cf.minecraftVersions.addAll(mcVers)
+        cf.javaVersions.addAll(javaVers)
+        cf.clientRequired = true
+        cf.serverRequired = true
+        cf.projectSlug = id
+        cf.additionalFile(sourcesJar, { AdditionalFileOptions file ->
+            file.name = "$publishVersion-sources"
+        } as Action<AdditionalFileOptions>)
+        cf.requires("watermedia-binaries")
         // THE CURSEFORGE UPLOAD API HAS NO ENDPOINT TO EDIT THE PROJECT PAGE DESCRIPTION; SYNC IS MODRINTH-ONLY
-    }
+    } as Action<Curseforge>)
 
-    modrinth {
-        accessToken = MT_TOKEN
-        projectId = modrinthid
-        minecraftVersions.addAll(mcVers)
-        requires("watermedia-binaries")
-        projectDescription = providers.fileContents(layout.projectDirectory.file("README.md")).asText
-    }
+    modrinth({ Modrinth mr ->
+        mr.accessToken = MT_TOKEN
+        mr.projectId = modrinthid
+        mr.minecraftVersions.addAll(mcVers)
+        mr.requires("watermedia-binaries")
+        mr.projectDescription = providers.fileContents(layout.projectDirectory.file("README.md")).asText
+    } as Action<Modrinth>)
 }
 
 // KEEP `build` ASSEMBLING BOTH CODEPENDENT JARS, AS IT DID WHEN BINARIES WAS A DIRECT DEPENDENCY
