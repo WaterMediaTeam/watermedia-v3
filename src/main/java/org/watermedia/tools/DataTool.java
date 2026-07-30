@@ -1,11 +1,14 @@
 package org.watermedia.tools;
 
+import org.watermedia.api.util.PixelFormat;
+
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -245,6 +248,110 @@ public class DataTool {
             return MessageDigest.getInstance("SHA-256").digest(data);
         } catch (final NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
+    // ============================================================
+    // PIXEL-PLANE AREA SCALING — SHARED BY TxMediaPlayer AND ReaderProxy DOWNSCALING
+    // ============================================================
+
+    // TIGHTLY-PACKED BYTE SIZE OF ONE FRAME IN THE GIVEN FORMAT AT w x h.
+    public static long frameBytes(final PixelFormat cs, final int w, final int h) {
+        final long pixels = (long) w * h;
+        final long chromaW = (w + 1L) >> 1;
+        final long chromaH = (h + 1L) >> 1;
+        return switch (cs) {
+            case GRAY -> pixels;
+            case YUYV, YUYV2 -> pixels * 2L;
+            case RGB -> pixels * 3L;
+            case BGRA, RGBA, GBRA -> pixels * 4L;
+            case NV12, NV21 -> pixels + 2L * chromaW * chromaH;
+            case YUV420P -> pixels + 2L * chromaW * chromaH;
+            case YUV422P -> pixels + 2L * chromaW * h;
+            case YUV444P -> pixels * 3L;
+            case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
+            case YUVA422P -> pixels * 2L + 2L * chromaW * h;
+            case YUVA444P -> pixels * 4L;
+            // BCn: ONE PLANE OF 4x4 BLOCKS
+            case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * cs.blockBytes();
+        };
+    }
+
+    // FORMATS THE AREA SCALER UNDERSTANDS — PACKED YUYV (PIXEL PAIRS SHARE CHROMA) AND
+    // COMPRESSED BCn (GPU-SIDE BLOCKS) CANNOT BE AVERAGED BYTE-WISE.
+    public static boolean scalable(final PixelFormat cs) {
+        return switch (cs) {
+            case YUYV, YUYV2, BC1, BC2, BC3, BC5, BC7 -> false;
+            default -> true;
+        };
+    }
+
+    // AREA-AVERAGE SCALE OF A FULL FRAME (TIGHTLY-PACKED PLANES) FROM sw x sh INTO dst AT dw x dh.
+    // MIRRORS THE PLANE LAYOUT OF frameBytes; EACH OUTPUT PIXEL AVERAGES ITS WHOLE SOURCE BLOCK.
+    public static void scaleArea(final ByteBuffer src, final int sw, final int sh,
+                                 final ByteBuffer dst, final int dw, final int dh, final PixelFormat cs) {
+        final int base = src.position();
+        switch (cs) {
+            case GRAY -> scalePlane(src, base, sw, sh, dst, dw, dh, 1);
+            case RGB -> scalePlane(src, base, sw, sh, dst, dw, dh, 3);
+            case BGRA, RGBA, GBRA -> scalePlane(src, base, sw, sh, dst, dw, dh, 4);
+            case NV12, NV21 -> {
+                scalePlane(src, base, sw, sh, dst, dw, dh, 1);
+                scalePlane(src, base + sw * sh, (sw + 1) >> 1, (sh + 1) >> 1, dst, (dw + 1) >> 1, (dh + 1) >> 1, 2);
+            }
+            case YUV420P, YUVA420P -> {
+                final int scw = (sw + 1) >> 1;
+                final int sch = (sh + 1) >> 1;
+                final int dcw = (dw + 1) >> 1;
+                final int dch = (dh + 1) >> 1;
+                scalePlane(src, base, sw, sh, dst, dw, dh, 1);
+                scalePlane(src, base + sw * sh, scw, sch, dst, dcw, dch, 1);
+                scalePlane(src, base + sw * sh + scw * sch, scw, sch, dst, dcw, dch, 1);
+                if (cs == PixelFormat.YUVA420P) {
+                    scalePlane(src, base + sw * sh + 2 * scw * sch, sw, sh, dst, dw, dh, 1);
+                }
+            }
+            case YUV422P, YUVA422P -> {
+                final int scw = (sw + 1) >> 1;
+                final int dcw = (dw + 1) >> 1;
+                scalePlane(src, base, sw, sh, dst, dw, dh, 1);
+                scalePlane(src, base + sw * sh, scw, sh, dst, dcw, dh, 1);
+                scalePlane(src, base + sw * sh + scw * sh, scw, sh, dst, dcw, dh, 1);
+                if (cs == PixelFormat.YUVA422P) {
+                    scalePlane(src, base + sw * sh + 2 * scw * sh, sw, sh, dst, dw, dh, 1);
+                }
+            }
+            case YUV444P, YUVA444P -> {
+                final int planes = cs == PixelFormat.YUVA444P ? 4 : 3;
+                for (int p = 0; p < planes; p++) {
+                    scalePlane(src, base + p * sw * sh, sw, sh, dst, dw, dh, 1);
+                }
+            }
+            default -> dst.put(src.duplicate()); // YUYV/BCn ARE UNSCALABLE — COPY VERBATIM SO dst IS ALWAYS FILLED
+        }
+    }
+
+    // AREA-AVERAGE DOWNSCALE OF AN 8-BIT PLANE WITH ch INTERLEAVED COMPONENTS.
+    // STRONG REDUCTIONS STAY ALIAS-FREE. READS src ABSOLUTE, WRITES dst RELATIVE.
+    private static void scalePlane(final ByteBuffer src, final int srcOff, final int sw, final int sh,
+                                   final ByteBuffer dst, final int dw, final int dh, final int ch) {
+        final int[] acc = new int[ch];
+        for (int dy = 0; dy < dh; dy++) {
+            final int sy0 = (int) ((long) dy * sh / dh);
+            final int sy1 = Math.max(sy0 + 1, (int) ((long) (dy + 1) * sh / dh));
+            for (int dx = 0; dx < dw; dx++) {
+                final int sx0 = (int) ((long) dx * sw / dw);
+                final int sx1 = Math.max(sx0 + 1, (int) ((long) (dx + 1) * sw / dw));
+                Arrays.fill(acc, 0);
+                for (int sy = sy0; sy < sy1; sy++) {
+                    int p = srcOff + (sy * sw + sx0) * ch;
+                    for (int sx = sx0; sx < sx1; sx++) {
+                        for (int c = 0; c < ch; c++) acc[c] += src.get(p++) & 0xFF;
+                    }
+                }
+                final int count = (sy1 - sy0) * (sx1 - sx0);
+                for (int c = 0; c < ch; c++) dst.put((byte) (acc[c] / count));
+            }
         }
     }
 }

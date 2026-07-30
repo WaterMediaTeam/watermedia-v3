@@ -168,13 +168,12 @@ public final class ALEngine extends SFXEngine {
     @Override
     public void flush() {
         AL10.alSourceStop(this.source);
-        // STOPPING MARKS EVERY QUEUED BUFFER AS PROCESSED — RECLAIM THEM ALL
-        this.reclaimProcessed();
-        // SAFETY NET FOR BUFFERS THE DRIVER DIDN'T REPORT YET
-        final int queued = AL10.alGetSourcei(this.source, AL10.AL_BUFFERS_QUEUED);
-        for (int i = 0; i < queued; i++) {
-            this.freeIds[this.freeCount++] = AL10.alSourceUnqueueBuffers(this.source);
-        }
+        // DETACH THE WHOLE QUEUE IN ONE CALL: ON A STOPPED SOURCE AL_BUFFER=0 CLEARS BOTH THE
+        // QUEUED AND PROCESSED COUNTS, SO THE FREE STACK IS REBUILT TO THE EXACT BUFFER SET
+        // INSTEAD OF INCREMENTALLY UNQUEUEING (WHICH OVERFLOWED freeIds ON DRIVER MISCOUNTS).
+        AL10.alSourcei(this.source, AL10.AL_BUFFER, 0);
+        System.arraycopy(this.buffers, 0, this.freeIds, 0, this.buffers.length);
+        this.freeCount = this.buffers.length;
         this.queuedHead = 0;
         this.queuedCount = 0;
         this.totalQueuedUs = 0;

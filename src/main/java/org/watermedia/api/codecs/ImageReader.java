@@ -1,5 +1,6 @@
 package org.watermedia.api.codecs;
 
+import org.watermedia.api.codecs.proxy.ReaderProxy;
 import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
@@ -34,6 +35,8 @@ public abstract class ImageReader implements Closeable {
 
     protected final ByteBuffer data;
     protected final PixelFormat requestedFormat;
+    // ORDERED SO A POST-PROCESSOR CHAIN RUNS IN INSERTION ORDER (E.G. DOWNSCALE THEN RECOLOR)
+    protected final List<ReaderProxy> proxies = new ArrayList<>(2);
     protected ByteBuffer currentFrame;
     protected long currentDelay;
 
@@ -147,30 +150,46 @@ public abstract class ImageReader implements Closeable {
         return ImageMetadata.EMPTY;
     }
 
+    /** Appends a post-processor to the chain applied to every frame by {@link #readAll()}. */
+    public void addProxy(final ReaderProxy proxy) {
+        this.proxies.add(proxy);
+    }
+
     /**
      * Decodes every available frame and returns a detached {@link ImageData} instance.
      * Each returned frame is copied because concrete readers may reuse their internal buffer.
+     * When proxies are registered, each frame is run through the chain before being retained,
+     * so the resulting geometry comes from the last proxy's output.
      */
     public ImageData readAll() throws IOException {
         final List<ByteBuffer> frames = new ArrayList<>();
         final List<Long> frameDelays = new ArrayList<>();
+        int outWidth = this.width();
+        int outHeight = this.height();
         long retained = 0L;
         while (this.hasNext()) {
             final ByteBuffer decoded = this.next();
-            final int savedPos = decoded.position();
+            final ByteBuffer frame;
+            if (this.proxies.isEmpty()) {
+                frame = detach(decoded);
+            } else {
+                // POST-PROCESS THE FRAME; EACH PROXY CONSUMES THE PREVIOUS OUTPUT'S PROPERTIES
+                ReaderProxy.Frame f = new ReaderProxy.Frame(decoded, this.width(), this.height(), this.pixelFormat());
+                for (final ReaderProxy proxy: this.proxies) f = proxy.compute(f);
+                outWidth = f.width();
+                outHeight = f.height();
+                // A NO-OP CHAIN HANDS BACK THE READER'S REUSED BUFFER; DETACH IT SO FRAMES DON'T ALIAS
+                frame = f.buffer() == decoded ? detach(f.buffer()) : f.buffer();
+            }
             // BACKSTOP AGAINST THE ANIMATION BOMB: FRAME COST IS FIXED AT CANVAS SIZE WHILE FRAME
             // COUNT COMES FROM THE CONTAINER, SO A FEW HUNDRED HEADER BYTES CAN DESCRIBE GIGABYTES.
             // READERS CAP THEIR OWN FRAME COUNTS; THIS BOUNDS WHAT SURVIVES ALL OF THEM COMBINED.
-            retained += decoded.remaining();
+            retained += frame.remaining();
             if (retained > MAX_DECODED_BYTES) {
                 throw new XCodecException("Decoded animation exceeds budget: " + retained
                         + " bytes over " + frames.size() + " frames (max " + MAX_DECODED_BYTES + ")");
             }
-            final ByteBuffer copy = ByteBuffer.allocateDirect(decoded.remaining()).order(decoded.order());
-            copy.put(decoded);
-            copy.flip();
-            decoded.position(savedPos);
-            frames.add(copy);
+            frames.add(frame);
             frameDelays.add(this.currentDelay);
         }
         if (frames.isEmpty()) {
@@ -182,8 +201,16 @@ public abstract class ImageReader implements Closeable {
             delayArray[i] = frameDelays.get(i);
             total += delayArray[i];
         }
-        return new ImageData(frames.toArray(ByteBuffer[]::new), this.width(), this.height(),
+        return new ImageData(frames.toArray(ByteBuffer[]::new), outWidth, outHeight,
                 delayArray, total, this.loopCount());
+    }
+
+    // COPIES A REUSED READER FRAME INTO AN INDEPENDENTLY-OWNED DIRECT BUFFER, READY TO READ.
+    private static ByteBuffer detach(final ByteBuffer src) {
+        final ByteBuffer copy = ByteBuffer.allocateDirect(src.remaining()).order(src.order());
+        copy.put(src.duplicate());
+        copy.flip();
+        return copy;
     }
 
     /**

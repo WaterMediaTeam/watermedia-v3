@@ -14,6 +14,7 @@ import org.watermedia.api.media.players.sync.Bridge;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -472,7 +473,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             final ByteBuffer[] scaled = new ByteBuffer[frames.length];
             for (int i = 0; i < scaled.length; i++) {
                 final ByteBuffer dst = ByteBuffer.allocateDirect(this.bufferByteSize).order(ByteOrder.nativeOrder());
-                this.scaleFrame(frames[i], dst);
+                DataTool.scaleArea(frames[i], this.sourceWidth, this.sourceHeight, dst, this.outWidth, this.outHeight, this.pixelFormat);
                 dst.flip();
                 scaled[i] = dst;
             }
@@ -1239,29 +1240,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         return view.slice().order(src.order());
     }
 
-    // BYTE BUDGET FOR ONE FRAME, TIGHTLY PACKED, AS A FUNCTION OF THE READER'S NATIVE LAYOUT.
-    // KEEPS THE BUFFER POOL FORMAT-AGNOSTIC: ALLOCATION SIZE COMES STRAIGHT FROM (CS, W, H).
-    private static long totalBufferBytes(final PixelFormat cs, final int w, final int h) {
-        final long pixels = (long) w * h;
-        final long chromaW = (w + 1L) >> 1;
-        final long chromaH = (h + 1L) >> 1;
-        return switch (cs) {
-            case GRAY -> pixels;
-            case YUYV, YUYV2 -> pixels * 2L;
-            case RGB -> pixels * 3L;
-            case BGRA, RGBA, GBRA -> pixels * 4L;
-            case NV12, NV21 -> pixels + 2L * chromaW * chromaH;
-            case YUV420P -> pixels + 2L * chromaW * chromaH;
-            case YUV422P -> pixels + 2L * chromaW * h;
-            case YUV444P -> pixels * 3L;
-            case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
-            case YUVA422P -> pixels * 2L + 2L * chromaW * h;
-            case YUVA444P -> pixels * 4L;
-            // BCn: ONE PLANE OF 4x4 BLOCKS — NEVER REACHES THE DECODE POOL, BUT THE BUDGET STAYS HONEST
-            case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * cs.blockBytes();
-        };
-    }
-
     // COPIES THE REUSED READER BUFFER BEFORE UPLOAD BECAUSE RENDER WORK MAY RUN ASYNCHRONOUSLY.
     private void uploadFrame(final ByteBuffer frame) {
         this.uploadBuffer(this.copyFrame(frame), this.outWidth, this.outHeight);
@@ -1272,7 +1250,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private ByteBuffer copyFrame(final ByteBuffer src) {
         final ByteBuffer dst = this.borrowBuffer();
         if (this.outWidth != this.sourceWidth || this.outHeight != this.sourceHeight) {
-            this.scaleFrame(src, dst);
+            DataTool.scaleArea(src, this.sourceWidth, this.sourceHeight, dst, this.outWidth, this.outHeight, this.pixelFormat);
         } else {
             final int savedPos = src.position();
             dst.put(src);
@@ -1288,12 +1266,12 @@ public final class TxMediaPlayer extends MediaPlayer {
     private void applyTarget() throws IOException {
         int w = this.sourceWidth;
         int h = this.sourceHeight;
-        if (scalable(this.pixelFormat)) {
+        if (DataTool.scalable(this.pixelFormat)) {
             w = MathUtil.scaled(this.sourceWidth, this.scaleWidth, this.lod.percent());
             h = MathUtil.scaled(this.sourceHeight, this.scaleHeight, this.lod.percent());
         }
         if (w == this.outWidth && h == this.outHeight) return;
-        final long byteSize = totalBufferBytes(this.pixelFormat, w, h);
+        final long byteSize = DataTool.frameBytes(this.pixelFormat, w, h);
         if (byteSize > Integer.MAX_VALUE) {
             throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
         }
@@ -1304,90 +1282,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.outHeight = h;
         this.bufferByteSize = (int) byteSize;
         this.capPrefetch();
-    }
-
-    // FORMATS THE JAVA AREA SCALER UNDERSTANDS — PACKED YUYV VARIANTS ARE EXCLUDED
-    // (PIXEL PAIRS SHARE CHROMA; AVERAGING THEM BYTE-WISE WOULD MIX COMPONENTS).
-    private static boolean scalable(final PixelFormat cs) {
-        return cs != PixelFormat.YUYV && cs != PixelFormat.YUYV2;
-    }
-
-    // DOWNSCALES A READER FRAME (TIGHTLY PACKED PLANE LAYOUT) INTO dst AT THE UPLOAD
-    // TARGET. MIRRORS THE PLANE LAYOUT USED BY totalBufferBytes/uploadMultiPlane.
-    private void scaleFrame(final ByteBuffer src, final ByteBuffer dst) {
-        final int sw = this.sourceWidth;
-        final int sh = this.sourceHeight;
-        final int dw = this.outWidth;
-        final int dh = this.outHeight;
-        final int base = src.position();
-        switch (this.pixelFormat) {
-            case GRAY -> scaleArea(src, base, sw, sh, dst, dw, dh, 1);
-            case RGB -> scaleArea(src, base, sw, sh, dst, dw, dh, 3);
-            case BGRA, RGBA, GBRA -> scaleArea(src, base, sw, sh, dst, dw, dh, 4);
-            case NV12, NV21 -> {
-                scaleArea(src, base, sw, sh, dst, dw, dh, 1);
-                scaleArea(src, base + sw * sh, (sw + 1) >> 1, (sh + 1) >> 1, dst, (dw + 1) >> 1, (dh + 1) >> 1, 2);
-            }
-            case YUV420P, YUVA420P -> {
-                final int scw = (sw + 1) >> 1;
-                final int sch = (sh + 1) >> 1;
-                final int dcw = (dw + 1) >> 1;
-                final int dch = (dh + 1) >> 1;
-                scaleArea(src, base, sw, sh, dst, dw, dh, 1);
-                scaleArea(src, base + sw * sh, scw, sch, dst, dcw, dch, 1);
-                scaleArea(src, base + sw * sh + scw * sch, scw, sch, dst, dcw, dch, 1);
-                if (this.pixelFormat == PixelFormat.YUVA420P) {
-                    scaleArea(src, base + sw * sh + 2 * scw * sch, sw, sh, dst, dw, dh, 1);
-                }
-            }
-            case YUV422P, YUVA422P -> {
-                final int scw = (sw + 1) >> 1;
-                final int dcw = (dw + 1) >> 1;
-                scaleArea(src, base, sw, sh, dst, dw, dh, 1);
-                scaleArea(src, base + sw * sh, scw, sh, dst, dcw, dh, 1);
-                scaleArea(src, base + sw * sh + scw * sh, scw, sh, dst, dcw, dh, 1);
-                if (this.pixelFormat == PixelFormat.YUVA422P) {
-                    scaleArea(src, base + sw * sh + 2 * scw * sh, sw, sh, dst, dw, dh, 1);
-                }
-            }
-            case YUV444P, YUVA444P -> {
-                final int planes = this.pixelFormat == PixelFormat.YUVA444P ? 4 : 3;
-                for (int p = 0; p < planes; p++) {
-                    scaleArea(src, base + p * sw * sh, sw, sh, dst, dw, dh, 1);
-                }
-            }
-            default -> {
-                // UNREACHABLE — applyTarget NEVER ACTIVATES A TARGET FOR UNSCALABLE FORMATS
-                final int savedPos = src.position();
-                dst.put(src);
-                src.position(savedPos);
-            }
-        }
-    }
-
-    // AREA-AVERAGE DOWNSCALE OF AN 8-BIT PLANE WITH ch INTERLEAVED COMPONENTS.
-    // EACH OUTPUT PIXEL AVERAGES ITS WHOLE SOURCE BLOCK, SO STRONG REDUCTIONS
-    // (LOD FAR/FAR_AWAY) STAY ALIAS-FREE. READS src ABSOLUTE, WRITES dst RELATIVE.
-    private static void scaleArea(final ByteBuffer src, final int srcOff, final int sw, final int sh,
-                                  final ByteBuffer dst, final int dw, final int dh, final int ch) {
-        final int[] acc = new int[ch];
-        for (int dy = 0; dy < dh; dy++) {
-            final int sy0 = (int) ((long) dy * sh / dh);
-            final int sy1 = Math.max(sy0 + 1, (int) ((long) (dy + 1) * sh / dh));
-            for (int dx = 0; dx < dw; dx++) {
-                final int sx0 = (int) ((long) dx * sw / dw);
-                final int sx1 = Math.max(sx0 + 1, (int) ((long) (dx + 1) * sw / dw));
-                Arrays.fill(acc, 0);
-                for (int sy = sy0; sy < sy1; sy++) {
-                    int p = srcOff + (sy * sw + sx0) * ch;
-                    for (int sx = sx0; sx < sx1; sx++) {
-                        for (int c = 0; c < ch; c++) acc[c] += src.get(p++) & 0xFF;
-                    }
-                }
-                final int count = (sy1 - sy0) * (sx1 - sx0);
-                for (int c = 0; c < ch; c++) dst.put((byte) (acc[c] / count));
-            }
-        }
     }
 
     private PrefetchedFrame snapshot(final ByteBuffer frame, final long delay, final int idx) {
