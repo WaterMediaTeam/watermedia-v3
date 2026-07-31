@@ -781,8 +781,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             // ENGINE FULL — ITS BUFFER POOL IS THE BACKPRESSURE; STOP UNTIL IT FREES SLOTS
             if (!this.sfx.upload(audioData)) {
                 if (this.clock.status() == Status.BUFFERING) {
-                    LOGGER.debug(IT, "drainAudio: OpenAL FULL during BUFFERING — can't upload PTS={}ms", framePtsMs);
+                    LOGGER.debug(IT, "drainAudio: SFX engine full during BUFFERING — can't upload PTS={}ms", framePtsMs);
                 }
+                // RE-ASSERT PLAY EVEN ON FAILURE: A STALE MAINTENANCE pause() RACING A RESUME WOULD
+                // OTHERWISE DEADLOCK — A PAUSED ENGINE NEVER FREES BUFFERS, SO UPLOADS FAIL FOREVER
+                if (!this.clock.pauseRequested()) this.sfx.play();
                 break;
             }
 
@@ -2690,7 +2693,10 @@ public final class FFMediaPlayer extends MediaPlayer {
         //   CHANNELS: exact match if possible, else closest supported count
         //   TYPE:     preserve if supported AT TARGET CHANNEL COUNT, else fallback (prefers S16)
         this.audioPassthrough = false;
-        final SFXEngine.ChannelSupport targetEntry = exactEntry != null ? exactEntry : this.sfx.closestChannelSupport(srcChannels);
+        // UNKNOWN LAYOUT (0 CHANNELS) NEGOTIATES AS THE STEREO THE INPUT LAYOUT DEFAULTS TO BELOW —
+        // closestChannelSupport(0) WOULD PICK MONO AGAINST AN ASSUMED-STEREO INPUT
+        final SFXEngine.ChannelSupport targetEntry = exactEntry != null ? exactEntry
+                : this.sfx.closestChannelSupport(srcChannels > 0 ? srcChannels : 2);
         if (targetEntry == null) {
             LOGGER.error(IT, "SFX engine exposes an empty channel-support table");
             return false;

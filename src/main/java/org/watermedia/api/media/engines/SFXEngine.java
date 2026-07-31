@@ -126,7 +126,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * <p>
      * Stream-based backends (Java Sound) may close and reopen internal resources on
      * reconfiguration. Buffer-based backends (OpenAL) simply update state.
-     * Mirrors the contract of {@code GFXEngine#format} for consistency.
+     * Mirrors the call timing of {@code GFXEngine#format}; unlike it, the return reports acceptance.
      * @param type       canonical sample type
      * @param channels   audio channel count (1=mono, 2=stereo, 6=5.1, 8=7.1, ...)
      * @param sampleRate sample rate in Hz (expected range: {@link #MIN_SAMPLE_RATE}..{@link #MAX_SAMPLE_RATE})
@@ -224,7 +224,4 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * @return playback position in ms within the queued buffers, or {@code -1} if playback hasn't started
      */
     public abstract long playbackMs();
-
-    // GENERATES BACKEND BUFFERS AND INITIALIZES THE INTERNAL SOURCE HANDLE
-    protected abstract int genSource();
 }

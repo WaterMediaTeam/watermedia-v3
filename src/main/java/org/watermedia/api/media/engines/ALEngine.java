@@ -63,7 +63,9 @@ public final class ALEngine extends SFXEngine {
         this.queuedDur = new long[bufferCount];
         // sampleType / channels / sampleRate / alFormat ARE POPULATED BY format()
         // BEFORE FIRST UPLOAD — UNINITIALIZED STATE IS A CALLER BUG
-        this.source = this.genSource();
+        AL10.alGetError(); // DRAIN ANY RESIDUAL HOST ERROR (MC's SOUND ENGINE) SO THE CHECK BELOW SEES ONLY OURS
+        AL10.alGenBuffers(this.buffers);
+        this.source = AL10.alGenSources();
         // A CURRENT OPENAL CONTEXT IS REQUIRED: WITHOUT ONE alGenSources YIELDS 0 AND/OR SETS AN
         // ERROR, LEAVING A SILENTLY-BROKEN ENGINE. FAIL FAST INSTEAD.
         final int err = AL10.alGetError();
@@ -150,7 +152,14 @@ public final class ALEngine extends SFXEngine {
         // LEAVING STALE BUFFERS QUEUED MAKES OLD AUDIO PLAY AGAIN.
         this.reclaimProcessed();
 
-        if (this.freeCount == 0) return false; // NO BUFFER AVAILABLE — TRY LATER
+        // A STOPPED SOURCE MARKS EVERY QUEUED BUFFER PROCESSED — EVEN FRESH ONES — SO AN UPLOAD
+        // WOULD BE RECLAIMED AND LOST ON THE NEXT CALL; REWIND TO INITIAL SO NEW AUDIO PENDS PROPERLY
+        if (this.queuedCount == 0 && AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE) == AL10.AL_STOPPED) {
+            AL10.alSourceRewind(this.source);
+        }
+
+        // UNCONFIGURED (NO format() YET) OR NO BUFFER AVAILABLE — SIGNAL BACKPRESSURE
+        if (this.alFormat == 0 || this.freeCount == 0) return false;
         final int buffer = this.freeIds[--this.freeCount];
 
         final long durationUs = this.bytesPerFrame > 0 && this.sampleRate > 0
@@ -172,6 +181,9 @@ public final class ALEngine extends SFXEngine {
         // QUEUED AND PROCESSED COUNTS, SO THE FREE STACK IS REBUILT TO THE EXACT BUFFER SET
         // INSTEAD OF INCREMENTALLY UNQUEUEING (WHICH OVERFLOWED freeIds ON DRIVER MISCOUNTS).
         AL10.alSourcei(this.source, AL10.AL_BUFFER, 0);
+        // LAND ON INITIAL, NOT STOPPED: A STOPPED SOURCE REPORTS EVERY FUTURE QUEUED BUFFER AS
+        // PROCESSED, SO PAUSED WARM-UP UPLOADS AFTER A SEEK WOULD BE RECLAIMED AND LOST
+        AL10.alSourceRewind(this.source);
         System.arraycopy(this.buffers, 0, this.freeIds, 0, this.buffers.length);
         this.freeCount = this.buffers.length;
         this.queuedHead = 0;
@@ -209,15 +221,10 @@ public final class ALEngine extends SFXEngine {
 
         if (this.latencySupported) {
             SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, this.latencyValues);
-            return (long) ((this.latencyValues[0] - this.latencyValues[1]) * 1000.0);
+            // DEVICE LATENCY CAN EXCEED THE OFFSET RIGHT AFTER START — CLAMP SO -1 STAYS UNAMBIGUOUS
+            return Math.max(0L, (long) ((this.latencyValues[0] - this.latencyValues[1]) * 1000.0));
         }
         return (long) (AL10.alGetSourcef(this.source, AL11.AL_SEC_OFFSET) * 1000f);
-    }
-
-    @Override
-    protected int genSource() {
-        AL10.alGenBuffers(this.buffers);
-        return AL10.alGenSources();
     }
 
     /** Returns a defensive copy of the AL buffer ids owned by this engine. */
@@ -230,6 +237,8 @@ public final class ALEngine extends SFXEngine {
     private void reclaimProcessed() {
         int processed = AL10.alGetSourcei(this.source, AL10.AL_BUFFERS_PROCESSED);
         while (processed-- > 0) {
+            // DRIVER MISCOUNT GUARD: A FULL FREE STACK MEANS EVERY OWNED BUFFER IS ALREADY RECLAIMED
+            if (this.freeCount == this.freeIds.length) break;
             final int buffer = AL10.alSourceUnqueueBuffers(this.source);
             if (this.queuedCount > 0) {
                 this.totalQueuedUs -= this.queuedDur[this.queuedHead];

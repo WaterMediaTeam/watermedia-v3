@@ -45,8 +45,9 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
 
     /**
      * Reconfigures the engine for a new video format with explicit bit depth.
-     * <b>This resets all internal rendering state</b> — plane textures, PBOs, shaders,
-     * and any buffered frame data are released and re-initialized on the next upload.
+     * <b>This resets all internal rendering state</b> — plane textures, upload buffers and any
+     * buffered frame data are released and re-initialized on the next upload; compiled conversion
+     * programs may be cached and reused across formats.
      * Must be called before the first upload and whenever resolution or pixel format changes.
      * @param format pixel layout of incoming frames
      * @param width  frame width in pixels

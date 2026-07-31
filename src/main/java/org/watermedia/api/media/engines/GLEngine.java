@@ -291,6 +291,10 @@ public final class GLEngine extends GFXEngine {
     // PRE-CONVERTS IT TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM
     private volatile PixelFormat shaderFailFormat;
 
+    // LAST REQUESTED FORMAT (PRODUCER-SIDE SNAPSHOT): format() DEFERS FIELD UPDATES TO THE RENDER
+    // THREAD, SO ASYNC preload() VALIDATES AGAINST THIS TO REJECT SYNCHRONOUSLY INSTEAD OF WARN-ONLY
+    private volatile Req req;
+
     /**
      * Builds a {@code GLEngine} bound to a render thread and the executor that dispatches onto it.
      * <p>
@@ -384,7 +388,7 @@ public final class GLEngine extends GFXEngine {
         if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
             // SYNCHRONOUS PATH (ALREADY ON RENDER THREAD): UPLOAD EVERYTHING NOW.
             if (this.width <= 0 || this.height <= 0) return false;
-            if (!this.directTextureUploadSupported()) return false;
+            if (!directUpload(this.format)) return false;
             final Env env = Env.save(false);
             try {
                 this.beginFrameTextures();
@@ -405,6 +409,11 @@ public final class GLEngine extends GFXEngine {
             }
         }
 
+        // REJECT SYNCHRONOUSLY WHAT THE RENDER-THREAD TASK COULD ONLY WARN ABOUT: THE CALLER TREATS
+        // true AS "MODE ARMED", SO AN ASYNC-ONLY REJECTION WOULD BLANK THE MEDIA SILENTLY
+        final Req req = this.req;
+        if (req == null || req.width <= 0 || req.height <= 0 || !directUpload(req.format)) return false;
+
         // ASYNC PATH: ONE RENDER TASK PER FRAME SO A LONG ANIMATION NEVER STALLS A SINGLE RENDER
         // TICK. FRAME 0 IS PUBLISHED IMMEDIATELY; frame() CLAMPS TO THE UPLOADED PREFIX UNTIL THE
         // TAIL COMPLETES. genBox INVALIDATES THE BATCH IF THE ENGINE IS RELEASED OR REFORMATTED
@@ -412,7 +421,7 @@ public final class GLEngine extends GFXEngine {
         final int[] genBox = new int[1];
         final int[][] texBox = new int[1][];
         this.renderThreadEx.execute(() -> {
-            if (this.released || this.width <= 0 || this.height <= 0 || !this.directTextureUploadSupported()) {
+            if (this.released || this.width <= 0 || this.height <= 0 || !directUpload(this.format)) {
                 genBox[0] = -1;
                 if (!this.released) LOGGER.warn(IT, "Frame textures rejected: format {} not direct-uploadable", this.format);
                 return;
@@ -446,6 +455,9 @@ public final class GLEngine extends GFXEngine {
                     textures[index] = this.newTexture();
                     if (this.uploadDirectTexture(textures[index], frames[index], stride)) {
                         this.frameTexReady = index + 1;
+                    } else {
+                        // ABORT THE TAIL — ADVANCING ready PAST A FAILED FRAME WOULD EXPOSE AN EMPTY TEXTURE
+                        genBox[0] = -1;
                     }
                 } finally {
                     env.restore();
@@ -475,13 +487,14 @@ public final class GLEngine extends GFXEngine {
 
     /**
      * Resets the entire pipeline and prepares for a new format.
-     * Releases plane textures, PBOs, the persistent ring, and recompiles shaders if the pixel
-     * format changed. The managed texture is kept but reallocated on next upload if dimensions
-     * changed.
+     * Releases plane textures, PBOs and the persistent ring, and compiles the conversion shader
+     * for the new format on first use (compiled programs are cached per conversion kind). The
+     * managed texture is kept but reallocated on next upload if dimensions changed.
      */
     @Override
     public void format(final PixelFormat format, final int width, final int height, final int bits) {
         if (this.released) return;
+        this.req = new Req(format, width, height);
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
             this.renderThreadEx.execute(() -> this.format(format, width, height, bits));
             return;
@@ -846,13 +859,15 @@ public final class GLEngine extends GFXEngine {
     @Override
     public void release() {
         this.released = true; // STOP PRODUCERS IMMEDIATELY; STALE RENDER TASKS BECOME NO-OPS
-        // DROP OUR HUB REFERENCE NOW (THREAD-SAFE, IDEMPOTENT — release() MAY RUN TWICE). THE HUB
-        // IS EVICTED ONCE ITS LAST ENGINE LEAVES, SO A TORN-DOWN RENDER THREAD LEAKS NEITHER ITS
-        // HUB NOR ITS EXECUTOR.
-        if (this.hub != null && !this.hubReleased) {
-            this.hubReleased = true;
+        // DROP OUR HUB REFERENCE NOW (THREAD-SAFE, IDEMPOTENT — release() MAY RUN TWICE, EVEN
+        // CONCURRENTLY, SO THE TEST-AND-SET LIVES INSIDE THE HUBS MONITOR). THE HUB IS EVICTED ONCE
+        // ITS LAST ENGINE LEAVES, SO A TORN-DOWN RENDER THREAD LEAKS NEITHER ITS HUB NOR ITS EXECUTOR.
+        if (this.hub != null) {
             synchronized (HUBS) {
-                if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
+                if (!this.hubReleased) {
+                    this.hubReleased = true;
+                    if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
+                }
             }
         }
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
@@ -1032,11 +1047,8 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // INTERNAL HELPERS
     // ==========================================================================
-    private boolean directTextureUploadSupported() {
-        return switch (this.format) {
-            case BGRA, RGBA, RGB -> true;
-            default -> false;
-        };
+    private static boolean directUpload(final PixelFormat format) {
+        return format == PixelFormat.BGRA || format == PixelFormat.RGBA || format == PixelFormat.RGB;
     }
 
     private boolean uploadDirectTexture(final int texture, final ByteBuffer buffer, final int stride) {
@@ -1246,6 +1258,9 @@ public final class GLEngine extends GFXEngine {
     // SENTINEL FOR "RING FULL — FRAME DROPPED"
     private static final Submission DROPPED = new Submission(null, null, new int[0], -2L, 0);
 
+    // PRODUCER-VISIBLE SNAPSHOT OF THE LAST format() REQUEST (SEE req FIELD)
+    private record Req(PixelFormat format, int width, int height) {}
+
     // PER-PLANE TEXTURE LAYOUT FOR THE CURRENT FORMAT
     private static final class Plane {
         final int w;
@@ -1366,6 +1381,7 @@ public final class GLEngine extends GFXEngine {
         private boolean scissor;
         private boolean logicOp;
         private boolean cull;
+        private boolean rasterDiscard;
 
         static Env save(final boolean convert) {
             return new Env(convert);
@@ -1406,12 +1422,14 @@ public final class GLEngine extends GFXEngine {
             this.scissor = GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
             this.logicOp = GL11.glIsEnabled(GL11.GL_COLOR_LOGIC_OP);
             this.cull = GL11.glIsEnabled(GL11.GL_CULL_FACE);
+            this.rasterDiscard = GL11.glIsEnabled(GL30.GL_RASTERIZER_DISCARD);
 
             // FORCE A CLEAN DRAW STATE FOR THE FULLSCREEN CONVERT PASS
             if (this.blend) GL11.glDisable(GL11.GL_BLEND);
             if (this.scissor) GL11.glDisable(GL11.GL_SCISSOR_TEST);
             if (this.logicOp) GL11.glDisable(GL11.GL_COLOR_LOGIC_OP);
             if (this.cull) GL11.glDisable(GL11.GL_CULL_FACE);
+            if (this.rasterDiscard) GL11.glDisable(GL30.GL_RASTERIZER_DISCARD);
             GL11.glColorMask(true, true, true, true);
             GL11.glPolygonMode(GL11.GL_FRONT_AND_BACK, GL11.GL_FILL);
         }
@@ -1435,6 +1453,7 @@ public final class GLEngine extends GFXEngine {
                 if (this.scissor) GL11.glEnable(GL11.GL_SCISSOR_TEST);
                 if (this.logicOp) GL11.glEnable(GL11.GL_COLOR_LOGIC_OP);
                 if (this.cull) GL11.glEnable(GL11.GL_CULL_FACE);
+                if (this.rasterDiscard) GL11.glEnable(GL30.GL_RASTERIZER_DISCARD);
             }
             GL13.glActiveTexture(this.active);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.activeTex);

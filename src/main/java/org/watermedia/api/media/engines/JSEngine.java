@@ -60,6 +60,7 @@ public final class JSEngine extends SFXEngine {
     // PENDING-AUDIO BOOKKEEPING (pendingMs) — SINGLE-THREADED WITH upload/flush ON THE LIFECYCLE
     // THREAD. framesWritten - line.getLongFramePosition() = FRAMES WRITTEN BUT NOT YET AUDIBLE.
     private long framesWritten;
+    private long playedBaseUs; // PLAYBACK EPOCH BASE — REBASED ON flush() SO playbackMs() IS PER-QUEUE LIKE ALEngine
     private int bytesPerFrame;
     private byte[] scratch = new byte[0]; // REUSABLE COPY TARGET FOR ByteBuffer → line.write
 
@@ -67,11 +68,6 @@ public final class JSEngine extends SFXEngine {
         if (bufferMs <= 0) throw new IllegalArgumentException("bufferMs must be positive, got " + bufferMs);
         this.bufferMs = bufferMs;
         // NO NATIVE SOURCE HANDLE — JAVA SOUND HAS NO OPENAL-STYLE SOURCE ID (source() STAYS 0)
-    }
-
-    @Override
-    protected int genSource() {
-        return 0; // NO HANDLE
     }
 
     @Override
@@ -178,6 +174,7 @@ public final class JSEngine extends SFXEngine {
         this.sampleRate = sampleRate;
         this.bytesPerFrame = frameSize;
         this.framesWritten = 0L;
+        this.playedBaseUs = 0L; // FRESH LINE, FRESH PLAYBACK EPOCH
         this.started = false;
         this.applyGain(); // RE-APPLY THE LAST REQUESTED VOLUME TO THE NEW LINE
         return true;
@@ -211,6 +208,10 @@ public final class JSEngine extends SFXEngine {
         l.stop();
         l.flush();
         this.framesWritten = l.getLongFramePosition();
+        // NEW PLAYBACK EPOCH: playbackMs() MEASURES WITHIN THE POST-FLUSH QUEUE AND RETURNS -1
+        // UNTIL play() RESTARTS IT, MIRRORING ALEngine's REWOUND SOURCE
+        this.playedBaseUs = l.getMicrosecondPosition();
+        this.started = false;
     }
 
     @Override
@@ -225,9 +226,9 @@ public final class JSEngine extends SFXEngine {
     public long playbackMs() {
         final SourceDataLine l = this.line;
         if (l == null || !this.started) return -1;
-        // getMicrosecondPosition() IS THE RENDERED (AUDIBLE) POSITION SINCE THE LINE OPENED.
+        // RENDERED (AUDIBLE) POSITION WITHIN THE CURRENT EPOCH (SINCE OPEN OR LAST flush()).
         // JAVA SOUND EXPOSES NO DEVICE-LATENCY OFFSET, SO THIS IS NOT LATENCY-COMPENSATED.
-        return l.getMicrosecondPosition() / 1000L;
+        return (l.getMicrosecondPosition() - this.playedBaseUs) / 1000L;
     }
 
     // APPLIES THE LAST REQUESTED LINEAR GAIN TO THE CURRENT LINE VIA MASTER_GAIN (IN DECIBELS).
