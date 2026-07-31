@@ -234,23 +234,26 @@ public final class MRL {
                                     null, null)));
                         }
                     } else {
-                        MediaType type = MediaType.of(contentType);
-                        if (type == MediaType.UNKNOWN) {
-                            // SERVER GAVE AN AMBIGUOUS MIME (e.g. application/octet-stream). SNIFF THE
-                            // LEADING BYTES — AUTHORITATIVE — THEN FALL BACK TO THE URL EXTENSION.
-                            try (final InputStream in = req.inputStream()) {
-                                type = CodecsAPI.getMediaType(in);
-                            } catch (final IOException e) {
-                                LOGGER.warn(IT, "Failed to sniff media type for {}", this.uri, e);
-                            }
-                            if (type == MediaType.UNKNOWN) type = MediaType.ofExtension(this.uri.getPath());
-                        }
-
-                        data = new PlatformData(null, List.of(new DataSource(type, null, null,
+                        data = new PlatformData(null, List.of(new DataSource(sniffType(req, this.uri), null, null,
                                 RequestHeaders.defaults(this.uri),
                                 List.of(new DataQuality(this.uri, 0, 0)),
                                 null, null)));
                     }
+                }
+            } else if (data.size() == 1 && data.entries().get(0).type() == MediaType.UNKNOWN) {
+                // PLATFORMS THAT CANNOT KNOW THE PAYLOAD TYPE (water://, MEDIAFIRE) DELIVER UNKNOWN, WHICH
+                // DISPATCHES TO FFMPEG REGARDLESS OF CONTENT; CLASSIFY THE RESOLVED URL LIKE A DIRECT ONE.
+                // MULTI-SOURCE DATA (IPTV LISTS) IS EXEMPT — PROBING EVERY CHANNEL IS A REQUEST STORM.
+                final DataSource entry = data.entries().get(0);
+                final URI target = entry.variants().get(0).uri();
+                try (final NetRequest req = NetRequest.create(target).headers(entry.headers()).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
+                    final MediaType type = req.statusCode() >= 400 ? MediaType.UNKNOWN : sniffType(req, target);
+                    if (type != MediaType.UNKNOWN) {
+                        data = new PlatformData(data.expires(), new DataSource(type, entry.thumbnail(), entry.metadata(),
+                                entry.headers(), entry.variants(), entry.audioSlaves(), entry.subSlaves()));
+                    }
+                } catch (final IOException e) {
+                    LOGGER.warn(IT, "Failed to classify {} resolved from {}: {}", target, this.uri, e.getMessage());
                 }
             }
 
@@ -294,6 +297,19 @@ public final class MRL {
 
             this.fireListeners();
         }
+    }
+
+    // RESOLVES THE MEDIA TYPE OF AN OPEN REQUEST: CONTENT-TYPE FIRST, THEN LEADING-BYTE SNIFF
+    // (AUTHORITATIVE FOR AMBIGUOUS MIMES LIKE application/octet-stream), THEN THE URL EXTENSION.
+    private static MediaType sniffType(final NetRequest req, final URI uri) {
+        MediaType type = MediaType.of(req.contentType());
+        if (type != MediaType.UNKNOWN) return type;
+        try (final InputStream in = req.inputStream()) {
+            type = CodecsAPI.getMediaType(in);
+        } catch (final IOException e) {
+            LOGGER.warn(IT, "Failed to sniff media type for {}", uri, e);
+        }
+        return type != MediaType.UNKNOWN ? type : MediaType.ofExtension(uri.getPath());
     }
 
     private void fireListeners() {

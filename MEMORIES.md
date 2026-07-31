@@ -450,6 +450,18 @@ deleting the PNG/GIF chunk write side as dead code.
   A SOLO clock resumed after ENDED/STOPPED re-registers the ticker in `pause(false)` or it never ENDs again.
   WF-side residue: session key = BlockPos, so a URL swap can race a stale follower's Report into the NEW session
   and latch the OLD media's duration — divergence the ENDED gate now survives, but WF should key sessions per media.
+- **water:// classification (2026-07-31, the static/loop-image PLAYING→ENDED→LOADING roundtrip):** WF field
+  test — `WaterPlatform` (and MediaFire) return `DataSource(UNKNOWN)` and MRL's sniff only ran on the direct
+  (platform-less) path, so `water://remote` uploads dispatched to **FFMediaPlayer**: a static PNG = one-frame
+  40ms "video" → instant ENDED → follower/playlist restart storm every ~100ms (TxMediaPlayer was innocent —
+  a correctly-typed static image reports duration 0, the clock never latches, everyone stays PLAYING).
+  Fix: `MRL.doLoad` classifies **single-source** platform data typed UNKNOWN like a direct URL via static
+  `sniffType(req, uri)` (content-type → byte sniff → extension); multi-source (IPTV) exempt — probe storms.
+  Tx hardening in the same pass: the single-frame Mode-2 fallback and the codec-cache static replay both
+  `armStaticClock()` (no scan-duration leak into the session; `displayTime` honored on both), `knownDuration`
+  zeroes in `resetForStart`, `resetForStart` no longer clears the buffer deques (raced the dying lifecycle
+  thread — every prepare path clears after the join), and the EOF ENDED block is deduped (`continue` on a
+  successful repeat rewind, shared ENDED tail).
 - **Sync review fixes (2026-07-30):** `ServerMediaPlayer.release()` locks ONLY the local teardown and calls
   `super.release()` unlocked (a follower's Unwatch rides the dev's bridge — lock-after-super applies to release
   too); `Watcher.lastSeenNanos` stamps at construction (the TTL sweep races registration and reads 0 as expired);

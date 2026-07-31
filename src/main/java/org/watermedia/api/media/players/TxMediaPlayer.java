@@ -457,11 +457,12 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (data.frames().length <= 1) {
             this.uploadFrame(data.frames()[0]);
             this.currentFrameIndex = 0;
-            this.currentDelayMs = delayAt(data.delay(), 0);
+            this.currentDelayMs = 0L;
             this.time = 0L;
-            this.loaded = true;
             this.animated = false;
             this.readerExhausted = true;
+            this.armStaticClock();
+            this.loaded = true;
             this.resolveInitialStatus();
             return;
         }
@@ -736,24 +737,20 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.repeat()) {
                 this.clearPrefetch();
                 reader = this.reopen(reader);
-                if (!reader.hasNext()) {
-                    final Status prev = this.status;
-                    this.status = Status.ENDED;
-                    this.invokeStatus(prev, Status.ENDED);
-                    return reader;
+                if (reader.hasNext()) {
+                    this.uploadFrame(reader.next());
+                    this.time = 0L;
+                    this.currentFrameIndex = 0;
+                    this.currentDelayMs = delayAt(reader, 0);
+                    this.nextDecodedIndex = 1;
+                    this.readerExhausted = false;
+                    continue;
                 }
-                this.uploadFrame(reader.next());
-                this.time = 0L;
-                this.currentFrameIndex = 0;
-                this.currentDelayMs = delayAt(reader, 0);
-                this.nextDecodedIndex = 1;
-                this.readerExhausted = false;
-            } else {
-                final Status prev = this.status;
-                this.status = Status.ENDED;
-                this.invokeStatus(prev, Status.ENDED);
-                return reader;
             }
+            final Status prev = this.status;
+            this.status = Status.ENDED;
+            this.invokeStatus(prev, Status.ENDED);
+            return reader;
         }
         if (this.triggerStop) {
             this.triggerStop = false;
@@ -876,7 +873,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.texDelays = delays;
                 this.texTimeline = timeline;
             } else {
-                this.knownDuration = 0L;
+                this.armStaticClock();
             }
             this.loaded = true;
             this.resolveInitialStatus();
@@ -1087,7 +1084,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // RESOLVES THE PLAYBACK STATUS AFTER THE FIRST FRAME GOES LIVE, RESPECTING
     // A PENDING PAUSE TRIGGER LEFT BY startPaused().
     private void resolveInitialStatus() {
-        if (this.triggerPause) {
+        if (this.triggerPause || this.paused) {
             this.paused = true;
             this.triggerPause = false;
             this.status = Status.PAUSED;
@@ -1319,6 +1316,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.animated = false;
         this.status = Status.WAITING;
         this.time = 0L;
+        this.knownDuration = 0L;
         this.currentDelayMs = 0L;
         this.currentFrameIndex = -1;
         this.nextDecodedIndex = 0;
@@ -1334,10 +1332,11 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.lifecycleThread = null;
         this.activeReader = null;
         // CODEC WRITE STATE — codecActive IS RE-RESOLVED IN prepare(); THE WRITER ITSELF IS OWNED
-        // AND TORN DOWN BY THE PRODUCER THREAD'S finally, SO IT IS NOT TOUCHED HERE.
+        // AND TORN DOWN BY THE PRODUCER THREAD'S finally, SO IT IS NOT TOUCHED HERE. BUFFERS ARE NOT
+        // CLEARED HERE EITHER: THE OUTGOING LIFECYCLE THREAD MAY STILL TOUCH THE DEQUES UNTIL THE NEW
+        // PREPARE TASK JOINS IT — EVERY PREPARE PATH CLEARS THEM AFTER THAT JOIN.
         this.codecActive = false;
         this.codecExpect = 0;
-        this.clearBuffers();
     }
 
     private void resetAfterRelease() {
