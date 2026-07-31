@@ -461,7 +461,14 @@ deleting the PNG/GIF chunk write side as dead code.
   `armStaticClock()` (no scan-duration leak into the session; `displayTime` honored on both), `knownDuration`
   zeroes in `resetForStart`, `resetForStart` no longer clears the buffer deques (raced the dying lifecycle
   thread — every prepare path clears after the join), and the EOF ENDED block is deduped (`continue` on a
-  successful repeat rewind, shared ENDED tail).
+  successful repeat rewind, shared ENDED tail). Regression pinned by `MrlPlatformClassificationTest` +
+  fixture `png/broken.png` (`Fixtures.PNG_BROKEN`, the field-test upload: static PNG, trailing garbage
+  after IEND): a single UNKNOWN platform source over an extensionless `file://` copy must resolve IMAGE,
+  a two-source UNKNOWN result must stay UNKNOWN (probe exemption). The test copies the opaque file ONCE
+  into `build/test-sniff/` — per-test @TempDir delete/replace of a just-written 2MB file flakes on Windows
+  (AV scan locks). Fallout fix: `NetRequest.close()` released nothing for non-HTTP connections while
+  `FileURLConnection.connect()` opens its stream eagerly — every `file://` resolve leaked an OS handle
+  until GC; `close()` now closes the connection stream for non-HTTP protocols.
 - **Sync review fixes (2026-07-30):** `ServerMediaPlayer.release()` locks ONLY the local teardown and calls
   `super.release()` unlocked (a follower's Unwatch rides the dev's bridge — lock-after-super applies to release
   too); `Watcher.lastSeenNanos` stamps at construction (the TTL sweep races registration and reads 0 as expired);

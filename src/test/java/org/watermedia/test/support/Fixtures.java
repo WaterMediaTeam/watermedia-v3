@@ -32,6 +32,8 @@ public final class Fixtures {
 
     public static final Path MP4_H264 = MP4_DIR.resolve("fibonaccisongh264.mp4");
     public static final Path PNG_STATIC = PNG_DIR.resolve("2.png");
+    /** Real-world static PNG with trailing garbage after IEND (waterframes field-test upload). */
+    public static final Path PNG_BROKEN = PNG_DIR.resolve("broken.png");
     public static final Path PNG_ANIMATED = PNG_DIR.resolve("1.png");
     public static final Path GIF_ANIMATED = GIF_DIR.resolve("1.gif");
     public static final Path WEBP_ANIMATED = WEBP_ANIMATED_DIR.resolve("1.webp");

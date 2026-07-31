@@ -287,7 +287,14 @@ public final class NetRequest implements AutoCloseable {
 
     @Override
     public void close() {
-        if (this.connection instanceof final HttpURLConnection http) http.disconnect();
+        if (this.connection instanceof final HttpURLConnection http) {
+            http.disconnect();
+            return;
+        }
+        // FILE/FTP CONNECTIONS OPEN THEIR STREAM AT connect() — RELEASE IT OR THE HANDLE LIVES UNTIL GC
+        try {
+            this.connection.getInputStream().close();
+        } catch (final IOException ignored) {}
     }
 
     public static final class Builder {
