@@ -124,6 +124,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // (ENDED/ERROR) WITHOUT POLLING status() EVERY TICK. INVOKED FROM INTERNAL THREADS.
     private volatile BiConsumer<Status, Status> statusListener;
 
+    // FAILURE BEHIND THE CURRENT ERROR STATE — SET BY SUBCLASSES, CLEARED ON EVERY LOCAL start()
+    private volatile Throwable exception;
+
     // VIDEO UPLOAD SCALING — WRITTEN BY THE CALLER (OR A SUBCLASS), READ BY THE PLAYBACK
     // THREADS. EACH SUBCLASS RESOLVES ITS UPLOAD SIZE FROM THESE VIA MathUtil.scaled(native,
     // scale, lod.percent()): THE SCALE IS THE PER-AXIS CEILING (NO_SIZE = NO CAP, NEVER
@@ -515,6 +518,16 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     public MediaQuality quality() { return this.quality; }
 
+    // RESOLVES A STILL-UNKNOWN QUALITY TO THE REAL ONE ONCE THE DECODED DIMENSIONS ARE KNOWN,
+    // RELOCATING THE URI INSIDE THE MRL SO LATER LOOKUPS FIND IT UNDER ITS TRUE QUALITY.
+    protected final void resolveQuality(final int width, final int height) {
+        if (this.quality != MediaQuality.UNKNOWN) return;
+        final MediaQuality real = MediaQuality.of(width, height);
+        this.mrl.moveQuality(this.sourceIndex, this.quality, real);
+        LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(real), this.quality, real);
+        this.quality = real;
+    }
+
     /** The media reference this player renders. */
     public MRL mrl() { return this.mrl; }
 
@@ -697,35 +710,21 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean mute() { return this.muted; }
 
     /**
-     * Starts media playback from the beginning.
-     * <p>If the media is already playing, it will restart from the beginning.</p>
-     * If the media is paused, it will resume playback from the current position.
-     * <p>If the media is stopped, it will start playback from the beginning.</p>
-     * If the media is in an error state, it will attempt to recover and start playback.
-     * <p>If the media is loading or buffering, it will wait until the media is ready before starting playback.</p>
-     * If the media is ended, it will restart playback from the beginning.
-     * <p>If the media uri is invalid, it will log an error and not start playback.</p>
-     * This method is non-blocking and returns immediately.
+     * Starts media playback from the beginning, recovering from any previous state
+     * (stopped, ended or error). An already-playing player restarts. Non-blocking.
      * @return true if playback was started locally, false when it was requested from the
      *         sync authority instead (see {@link #sync(ByteBuffer)}) or refused.
      */
-    public boolean start() { return !this.request(Control.Op.START, 0L); }
+    public boolean start() {
+        if (this.request(Control.Op.START, 0L)) return false;
+        this.exception = null; // A NEW LOCAL RUN INVALIDATES THE PREVIOUS FAILURE
+        return true;
+    }
 
     /**
-     * Starts media playback in a paused state from the beginning.
-     * <p>If the media is already playing, it will restart from the beginning and pause
-     * immediately.</p>
-     * If the media is paused, it will restart playback from the beginning and remain paused.
-     * <p>If the media is stopped, it will start playback from the beginning and remain paused.</p>
-     * If the media is in an error state, it will attempt to recover and start playback in a paused state.
-     * <p>If the media is loading or buffering,
-     * it will wait until the media is ready before starting playback in a paused state.</p>
-     * If the media is ended, it will restart playback from the beginning and remain paused.
-     * <p>If the media uri is invalid, it will log an error and not start playback.</p>
-     * This method is non-blocking and returns immediately.
-     * @implNote Semantically like {@link #start()} that lands in a paused state, but not a plain
-     *           {@code start()} then {@link #pause()}: the two calls race the pipeline setup, so
-     *           implementations latch the pause intent before playback begins.
+     * Starts media playback like {@link #start()} but landing in a paused state. Not equivalent
+     * to {@code start()} followed by {@link #pause()}: those two calls race the pipeline setup,
+     * so implementations latch the pause intent before playback begins. Non-blocking.
      * @return true if playback was started locally, false when it was requested from the
      *         sync authority instead or refused.
      * @see MediaPlayer#start()
@@ -891,6 +890,19 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public void onStatus(final BiConsumer<Status, Status> listener) { this.statusListener = listener; }
 
+    /**
+     * The failure behind the current {@link Status#ERROR ERROR} state, useful to surface the real
+     * cause (bad URL, unsupported codec, network failure) instead of a bare error flag.
+     * @return the last playback failure, or {@code null} when none occurred since the last start
+     */
+    public final Throwable exception() { return this.exception; }
+
+    // RECORDS THE FAILURE BEHIND AN ERROR TRANSITION. FIRST FAILURE OF A RUN WINS — LATER ONES
+    // ARE USUALLY CASCADE NOISE OF THE ROOT CAUSE. start() CLEARS IT FOR THE NEXT RUN.
+    protected final void exception(final Throwable t) {
+        if (this.exception == null) this.exception = t;
+    }
+
     // NOTIFIES THE STATUS LISTENER OF A REAL TRANSITION. SWALLOWS LISTENER FAILURES SO A BROKEN
     // CONSUMER NEVER TEARS DOWN THE PLAYBACK THREAD.
     protected void invokeStatus(final Status prev, final Status next) {
@@ -913,6 +925,12 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public void displayTime(final long ms) {}
 
     /**
+     * Returns the display duration configured via {@link #displayTime(long)}.
+     * @return the display duration in milliseconds, or 0 when unlimited or not applicable
+     */
+    public long displayTime() { return 0; }
+
+    /**
      * Check if the media player equals to {@link Status#WAITING WAITING}
      * @return true if the media player is in WAITING status, false otherwise.
      */
@@ -929,6 +947,16 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if the media player is in BUFFERING status, false otherwise.
      */
     public boolean buffering() { return this.status() == Status.BUFFERING; }
+
+    /**
+     * Best-effort fill of the playback read-ahead buffers as a percentage (0-100).
+     * Complements {@link #buffering()}: while the player loads or buffers this reports how full
+     * its pipeline is, so a UI can show real progress instead of an indeterminate spinner.
+     * Players without a streaming pipeline (images, server clocks) report 100 whenever they
+     * {@link #canPlay()}.
+     * @return the buffered percentage (0-100)
+     */
+    public int buffered() { return this.canPlay() ? 100 : 0; }
 
     /**
      * Check if the media player equals to {@link Status#PAUSED PAUSED}

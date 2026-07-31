@@ -343,6 +343,33 @@ deleting the PNG/GIF chunk write side as dead code.
   joins the lifecycle thread before freeing engines. Public getters (`duration()/liveSource()/canPlay()`) must
   never touch native structs.
 
+### MediaPlayer surface & state machine (2026-07-31 review pass)
+- New base surface: `exception()` (Throwable behind ERROR; protected setter is FIRST-WINS per run — later
+  failures are cascade noise — and base `start()` clears it when the call lands locally), `buffered()`
+  (0-100 read-ahead fill; base = `canPlay() ? 100 : 0` which already covers Tx and ServerMediaPlayer,
+  ONLY FFMediaPlayer overrides: demux packet-queue byte fill averaged over active streams, hard 100 once
+  `opened && isDemuxFinished` — do NOT read `sfx.pendingMs()` from the game thread, ALEngine bookkeeping
+  is lifecycle-thread-only), `displayTime()` getter, protected `resolveQuality(w,h)` (dedup of the
+  UNKNOWN→real MediaQuality move; used by FF.initVideo, Tx.prepare, Tx.tryCodecTextures).
+- **`startPaused()` can NOT be lowered into the base** (flag + `this.start()` is duplicated in FF/Tx on
+  purpose): the base method must stay pure sync-routing because `ServerMediaPlayer.startPaused()` calls
+  `super.startPaused()` only for the routing answer and must not trigger `start()` semantics.
+- **FF one-frame hold:** at EOF full drain with `repeat()`, a source with video, NO audio and
+  `rendered+skipped <= 1` (an image that still fell into FFmpeg) HOLDS the uploaded frame
+  (`awaitChange(500)` idle, `hlsLiveSource=false` so it never reports live) instead of `requestSeek(0)` —
+  reseeking roundtripped the whole pipeline forever for the same pixels. Without repeat it still ENDs
+  (playlists advance).
+- **MasterClock transitions added (all were real stuck states):** WAITING/LOADING→STOPPED (`stop()`
+  during LOADING was silently rejected → player stuck LOADING forever), PAUSED→ENDED (pipeline drained
+  while paused could never END). The lifecycle's interrupted loop-exit now publishes STOPPED when the
+  clock is left non-terminal (stop() racing demux's `clock.start()` used to leave PLAYING on a dead
+  pipeline).
+- **HLS live/VOD probe is ASYNC** (daemon `hls-probe` thread) — it only refines `liveSource()`; until it
+  lands the duration heuristic answers (HLS VOD playlists carry a duration, live ones don't). Don't make
+  it synchronous again: it cost 1-2 HTTP roundtrips of startup latency on every HLS start.
+- lifecycle() also resets `renderDebtSec` and `qualityRequest` per run (frame-drop debt and a stale
+  quality switch leaked across restarts). FF queue fields are volatile for `buffered()` visibility.
+
 ### JSEngine (javax.sound.sampled)
 - A native, dependency-free `SFXEngine`, **first-class user-selectable alternative to ALEngine, not an automatic
   fallback**. `enum AudioEngine {OPENAL, JAVASOUND}` carries the supplier; `AppContext.audioEngine` holds the

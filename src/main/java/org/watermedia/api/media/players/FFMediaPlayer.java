@@ -42,7 +42,6 @@ import java.util.function.BiFunction;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
 import static org.bytedeco.ffmpeg.global.avutil.*;
-import static org.bytedeco.ffmpeg.global.avutil.av_get_pix_fmt_name;
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
@@ -143,11 +142,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     private Thread videoDecodeThread;
     private Thread audioDecodeThread;
 
-    // QUEUES
-    private PacketQueue videoPacketQueue;
-    private PacketQueue audioPacketQueue;
-    private FrameQueue videoFrameQueue;
-    private FrameQueue audioFrameQueue;
+    // QUEUES — VOLATILE: buffered() READS THEM FROM THE GAME/RENDER THREAD WHILE THE
+    // LIFECYCLE THREAD CREATES AND FREES THEM (THE QUEUES THEMSELVES ARE SYNCHRONIZED)
+    private volatile PacketQueue videoPacketQueue;
+    private volatile PacketQueue audioPacketQueue;
+    private volatile FrameQueue videoFrameQueue;
+    private volatile FrameQueue audioFrameQueue;
 
     // STATUS + SYNCHRONIZATION
     private final MasterClock clock = new MasterClock();
@@ -448,6 +448,25 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public long duration() { return this.liveSource() ? NO_DURATION : this.mediaDurationMs; }
+
+    @Override
+    public int buffered() {
+        // AFTER DEMUX EOF THERE IS NOTHING LEFT TO READ AHEAD — THE PIPELINE IS AS FULL AS IT GETS
+        if (this.opened && this.clock.isDemuxFinished()) return 100;
+        final PacketQueue video = this.videoPacketQueue;
+        final PacketQueue audio = this.audioPacketQueue;
+        long sum = 0;
+        int parts = 0;
+        if (video != null && this.videoStreamIndex >= 0) {
+            sum += Math.min(100, video.byteSize() * 100 / VIDEO_PACKET_QUEUE_BYTES);
+            parts++;
+        }
+        if (audio != null && this.audioStreamIndex >= 0) {
+            sum += Math.min(100, audio.byteSize() * 100 / AUDIO_PACKET_QUEUE_BYTES);
+            parts++;
+        }
+        return parts == 0 ? 0 : (int) (sum / parts);
+    }
 
     @Override
     public void quality(final MediaQuality quality) {
@@ -804,6 +823,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.clock.transition(Status.LOADING);
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
+            this.renderDebtSec = 0;
+            this.qualityRequest = false; // this.quality IS ALREADY THE LATEST — A STALE SWITCH WOULD REBUILD THE FRESH PIPELINE
             // STARVATION DETECTION
             long starvationStartMs = 0;
             long lastStarvationRecoveryMs = 0;
@@ -867,10 +888,19 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // FAILURE IS VISIBLE AND NOT RETRIED FOREVER BY repeat().
                         if (this.videoStreamIndex >= 0 && this.totalRenderedFrames == 0 && this.totalSkippedFrames == 0) {
                             LOGGER.error(IT, "Video decoder emitted no frames for {} — failing instead of reporting ENDED", this.source.uri(this.quality));
+                            this.exception(new IOException("Video decoder emitted no frames — unsupported or broken stream"));
                             this.publishTransition(Status.ERROR);
                             break;
                         }
                         if (this.repeat()) {
+                            // IMAGE-LIKE SOURCE (ONE VIDEO FRAME, NO AUDIO — E.G. A PNG THAT FELL INTO
+                            // FFMPEG): LOOPING WOULD ROUNDTRIP THE WHOLE PIPELINE FOREVER FOR THE SAME
+                            // PIXELS, SO HOLD THE UPLOADED FRAME AND IDLE UNTIL A CONTROL ARRIVES.
+                            if (this.audioStreamIndex < 0 && this.totalRenderedFrames + this.totalSkippedFrames <= 1) {
+                                this.hlsLiveSource = false; // A FULLY DRAINED FINITE SOURCE IS NEVER LIVE
+                                this.clock.awaitChange(500);
+                                continue;
+                            }
                             // ALL DATA CONSUMED — SEEK TO BEGINNING FOR REPEAT.
                             // THIS TRIGGERS AFTER FULL DRAIN, NOT AT DEMUX EOF,
                             // SO NO UNPROCESSED PACKETS ARE THROWN AWAY.
@@ -884,6 +914,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                 if (current == Status.BUFFERING && this.demuxThread != null && !this.demuxThread.isAlive()) {
                     LOGGER.error(IT, "Demux thread died during BUFFERING — setting ERROR");
+                    this.exception(new IOException("Demux thread died during BUFFERING"));
                     this.publishTransition(Status.ERROR);
                     break;
                 }
@@ -987,7 +1018,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         PixFmtMapping mapping = this.cachedUploadMapping;
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
-                        if (mapping != null && this.gfx != null && !this.gfx.supports(mapping.cs)) mapping = null;
+                        if (mapping != null && !this.gfx.supports(mapping.cs)) mapping = null;
                         final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
                         final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
 
@@ -1157,10 +1188,11 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             this.stopThreads();
 
+            // AN INTERRUPTED EXIT (stop()/RESTART RACING THE LOOP) MUST STILL LAND ON A TERMINAL
+            // STATE — LEAVING PLAYING/BUFFERING BEHIND WOULD REPORT A LIVE STATUS ON A DEAD PIPELINE
             final Status finalStatus = this.clock.status();
-            if (!Thread.currentThread().isInterrupted()
-                    && finalStatus != Status.ERROR && finalStatus != Status.ENDED && finalStatus != Status.STOPPED) {
-                this.publishTransition(Status.ENDED);
+            if (finalStatus != Status.ERROR && finalStatus != Status.ENDED && finalStatus != Status.STOPPED) {
+                this.publishTransition(Thread.currentThread().isInterrupted() ? Status.STOPPED : Status.ENDED);
             }
 
         } catch (final InterruptedException e) {
@@ -1169,6 +1201,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.publishTransition(Status.STOPPED);
         } catch (final Throwable e) {
             LOGGER.fatal(IT, "Error in lifecycle for URI {}", this.source.uri(this.quality), e);
+            this.exception(e);
             this.stopThreads();
             this.publishTransition(Status.ERROR);
         } finally {
@@ -1186,6 +1219,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
         } catch (final Throwable e) {
             LOGGER.error(IT, "Init failed with exception", e);
+            this.exception(e);
             this.publishTransition(Status.ERROR);
             return;
         }
@@ -1265,6 +1299,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                             // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS
                             // NOTHING LEFT TO READ FROM, THE PIPELINE CANNOT RECOVER
                             LOGGER.error(IT, "Seek to {}ms failed and the input could not be reopened — stopping pipeline", targetMs);
+                            this.exception(new IOException("Seek to " + targetMs + "ms failed and the input could not be reopened"));
                             this.publishTransition(Status.ERROR);
                             return;
                         }
@@ -2070,7 +2105,9 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (ret < 0) {
                 final byte[] buf = new byte[256];
                 av_strerror(ret, buf, buf.length);
-                LOGGER.error(IT, "Failed to open input ({}): {}", new String(buf).trim(), url);
+                final String reason = new String(buf).trim();
+                LOGGER.error(IT, "Failed to open input ({}): {}", reason, url);
+                this.exception(new IOException("Failed to open input (" + reason + "): " + url));
                 this.formatContext = null;
                 return false;
             }
@@ -2178,6 +2215,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
                 LOGGER.error(IT, "Failed to find stream info");
+                this.exception(new IOException("Failed to find stream info: " + url));
                 return false;
             }
 
@@ -2185,23 +2223,30 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final String fmtName = this.formatContext.iformat() != null ? this.formatContext.iformat().name().getString() : "";
             if (url.contains(".m3u8") || fmtName.contains("hls")) {
-                try {
-                    MPEGTool.Playlist hlsResult = MPEGTool.fetch(uri);
-                    // MASTER PLAYLIST: FOLLOW THE FIRST VARIANT (URL ALREADY ABSOLUTE) DOWN TO A REAL MEDIA PLAYLIST
-                    if (hlsResult instanceof final MPEGTool.Master master && !master.variants().isEmpty()) {
-                        hlsResult = MPEGTool.fetch(master.variants().get(0).uri());
-                    }
-                    if (hlsResult instanceof final MPEGTool.Media media) {
-                        this.hlsLiveSource = media.live();
-                        LOGGER.info(IT, "HLS probe: live={}, vod={}, totalDuration={}s", media.live(), media.vod(), media.totalDuration());
-                    } else {
+                // ASYNC ON PURPOSE: THE PROBE COSTS 1-2 EXTRA HTTP ROUNDTRIPS AND ONLY REFINES
+                // liveSource() — UNTIL IT LANDS, THE DURATION HEURISTIC (HLS VOD PLAYLISTS CARRY A
+                // DURATION, LIVE ONES DON'T) ANSWERS CORRECTLY, SO PLAYBACK NEEDN'T WAIT FOR IT.
+                final Thread probe = this.factory.apply("hls-probe", () -> {
+                    try {
+                        MPEGTool.Playlist hlsResult = MPEGTool.fetch(uri);
+                        // MASTER PLAYLIST: FOLLOW THE FIRST VARIANT (URL ALREADY ABSOLUTE) DOWN TO A REAL MEDIA PLAYLIST
+                        if (hlsResult instanceof final MPEGTool.Master master && !master.variants().isEmpty()) {
+                            hlsResult = MPEGTool.fetch(master.variants().get(0).uri());
+                        }
+                        if (hlsResult instanceof final MPEGTool.Media media) {
+                            this.hlsLiveSource = media.live();
+                            LOGGER.info(IT, "HLS probe: live={}, vod={}, totalDuration={}s", media.live(), media.vod(), media.totalDuration());
+                        } else {
+                            this.hlsLiveSource = false;
+                            LOGGER.warn(IT, "HLS probe: inconclusive ({}), defaulting to VOD", hlsResult.kind());
+                        }
+                    } catch (final IOException e) {
                         this.hlsLiveSource = false;
-                        LOGGER.warn(IT, "HLS probe: inconclusive ({}), defaulting to VOD", hlsResult.kind());
+                        LOGGER.warn(IT, "HLS probe failed ({}), defaulting to VOD", e.getMessage());
                     }
-                } catch (final IOException e) {
-                    this.hlsLiveSource = false;
-                    LOGGER.warn(IT, "HLS probe failed ({}), defaulting to VOD", e.getMessage());
-                }
+                });
+                probe.setDaemon(true);
+                probe.start();
             }
 
             for (int i = 0; i < this.formatContext.nb_streams(); i++) {
@@ -2268,6 +2313,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             return true;
         } catch (final Exception e) {
             LOGGER.error(IT, "Failed to initialize FFMediaPlayer", e);
+            this.exception(e);
             return false;
         }
     }
@@ -2418,13 +2464,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final int h = this.videoCodecContext.height();
         this.sourceWidth = w;
         this.sourceHeight = h;
-
-        if (this.quality == MediaQuality.UNKNOWN) {
-            final var realQuality = MediaQuality.of(w, h);
-            this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
-            LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(this.quality), this.quality, realQuality);
-            this.quality = realQuality;
-        }
+        this.resolveQuality(w, h);
 
         final PixFmtMapping initialMapping = mapPixelFormat(this.videoCodecContext.pix_fmt());
         if (initialMapping != null) {

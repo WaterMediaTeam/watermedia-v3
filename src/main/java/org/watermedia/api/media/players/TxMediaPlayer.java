@@ -12,7 +12,6 @@ import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.players.sync.Bridge;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
@@ -323,12 +322,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.sourceWidth <= 0 || this.sourceHeight <= 0) {
                 throw new IOException("Invalid image dimensions: " + this.sourceWidth + "x" + this.sourceHeight);
             }
-            if (this.quality == MediaQuality.UNKNOWN) {
-                final var realQuality = MediaQuality.of(this.sourceWidth, this.sourceHeight);
-                this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
-                LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(this.quality), this.quality, realQuality);
-                this.quality = realQuality;
-            }
+            this.resolveQuality(this.sourceWidth, this.sourceHeight);
             this.animated = reader.frameCount() != 1;
             this.knownDuration = Math.max(0L, reader.duration());
             this.pixelFormat = reader.pixelFormat();
@@ -369,6 +363,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             } else {
                 LOGGER.error(IT, "Lifecycle error: {}", this.source, e);
                 if (this.lifecycleSerial == serial) {
+                    this.exception(e);
                     final Status prev = this.status;
                     this.status = Status.ERROR;
                     this.invokeStatus(prev, Status.ERROR);
@@ -605,6 +600,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             } else {
                 LOGGER.error(IT, "Lifecycle error: {}", this.source, e);
                 if (this.lifecycleSerial == serial) {
+                    this.exception(e);
                     final Status prev = this.status;
                     this.status = Status.ERROR;
                     this.invokeStatus(prev, Status.ERROR);
@@ -840,11 +836,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.outHeight = this.sourceHeight;
             this.planeCount = 1;
             this.pixelFormat = PixelFormat.BGRA; // PLAYER-SIDE VIEW STAYS BGRA (BC SAMPLES AS RGBA); THE ENGINE GETS THE REAL BC FORMAT
-            if (this.quality == MediaQuality.UNKNOWN) {
-                final var realQuality = MediaQuality.of(this.sourceWidth, this.sourceHeight);
-                this.mrl.moveQuality(this.sourceIndex, this.quality, realQuality);
-                this.quality = realQuality;
-            }
+            this.resolveQuality(this.sourceWidth, this.sourceHeight);
 
             final ByteBuffer[] blocks = bc.blocks();
             final long[] delays = bc.delays();
@@ -1489,6 +1481,9 @@ public final class TxMediaPlayer extends MediaPlayer {
         // (RE)ARM AT ONCE IF A STATIC IMAGE IS ALREADY LIVE; OTHERWISE showStatic ARMS IT AT LOAD.
         if (this.loaded && !this.animated && this.texTimeline == null) this.armStaticClock();
     }
+
+    @Override
+    public long displayTime() { return this.displayTimeMs; }
 
     @Override
     public float fps() {

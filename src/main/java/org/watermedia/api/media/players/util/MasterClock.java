@@ -26,10 +26,12 @@ public final class MasterClock {
     // STATE MACHINE — VALID TRANSITIONS
     private static final Map<Status, Set<Status>> TRANSITIONS = new EnumMap<>(Status.class);
     static {
-        TRANSITIONS.put(Status.WAITING,   EnumSet.of(Status.LOADING));
-        TRANSITIONS.put(Status.LOADING,   EnumSet.of(Status.PLAYING, Status.PAUSED, Status.ERROR));
+        // WAITING/LOADING ALLOW STOPPED: A stop() OR ABORTED RESTART CAN LAND BEFORE PLAYBACK BEGINS
+        TRANSITIONS.put(Status.WAITING,   EnumSet.of(Status.LOADING, Status.STOPPED));
+        TRANSITIONS.put(Status.LOADING,   EnumSet.of(Status.PLAYING, Status.PAUSED, Status.STOPPED, Status.ERROR));
         TRANSITIONS.put(Status.PLAYING,   EnumSet.of(Status.PAUSED, Status.BUFFERING, Status.ENDED, Status.STOPPED, Status.ERROR));
-        TRANSITIONS.put(Status.PAUSED,    EnumSet.of(Status.PLAYING, Status.BUFFERING, Status.STOPPED, Status.ERROR));
+        // PAUSED ALLOWS ENDED: A PIPELINE FULLY DRAINED WHILE PAUSED STILL REACHES ITS END
+        TRANSITIONS.put(Status.PAUSED,    EnumSet.of(Status.PLAYING, Status.BUFFERING, Status.ENDED, Status.STOPPED, Status.ERROR));
         TRANSITIONS.put(Status.BUFFERING, EnumSet.of(Status.PLAYING, Status.PAUSED, Status.LOADING, Status.ENDED, Status.STOPPED, Status.ERROR));
         TRANSITIONS.put(Status.ENDED,     EnumSet.of(Status.BUFFERING, Status.STOPPED));
         TRANSITIONS.put(Status.STOPPED,   EnumSet.noneOf(Status.class)); // TERMINAL
