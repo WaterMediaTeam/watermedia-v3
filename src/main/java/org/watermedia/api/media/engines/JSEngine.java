@@ -18,32 +18,28 @@ import static org.watermedia.WaterMedia.LOGGER;
  * mixer (WASAPI/DirectSound, ALSA/PulseAudio, CoreAudio), so it needs no OpenAL context and
  * no external library.
  * <p>
- * Intended as a provisional fallback for when the OpenAL device is unavailable. Unlike
- * {@link ALEngine} it is stream-based: {@link #format(SampleType, int, int)} opens a fresh
+ * A first-class, user-selectable alternative to {@link ALEngine} that needs no OpenAL context.
+ * Unlike it, this engine is stream-based: {@link #format(SampleType, int, int)} opens a fresh
  * {@link SourceDataLine} and reconfiguration reopens it. Uploads are non-blocking — the line's
  * internal buffer is the backpressure, mirroring {@code ALEngine}'s buffer pool, so the media
  * clock keeps tracking the audible position via {@link #pendingMs()}.
  * <p>
- * Java Sound backend limitations: playback speed has no portable equivalent — {@link #speed()}
- * reports {@code false} and {@link #speed(float)} is a no-op (audio stays at 1.0×); there is no
- * per-source spatialization, so {@link #source()} reports no handle.
+ * Java Sound backend limitations: playback speed has no portable equivalent — {@link #speed(float)}
+ * refuses and audio stays at 1.0×; there is no per-source spatialization, so {@link #source()}
+ * reports no handle.
  */
 public final class JSEngine extends SFXEngine {
     private static final Marker IT = MarkerManager.getMarker(JSEngine.class.getSimpleName());
 
-    // INTERNAL LINE BUFFER DEPTH IN MS. THE DEPTH ABSORBS GAME HITCHES (GC, CHUNK LOADS)
-    // WITHOUT UNDERRUNNING — THE MEDIA CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs(), SO
-    // EXTRA DEPTH DOESN'T DESYNC A/V (SAME RATIONALE AS ALEngine's 8-BUFFER POOL).
+    // INTERNAL LINE BUFFER DEPTH IN MS — RIDES OVER GAME HITCHES WITHOUT UNDERRUNS; THE CLOCK
+    // FOLLOWS THE AUDIBLE POSITION VIA pendingMs() (SAME RATIONALE AS ALEngine's BUFFER POOL).
     /** Default internal line buffer depth used by {@code MediaAPI.jsEngine()}. */
     public static final int DEFAULT_BUFFER_MS = 300;
 
-    // CAPABILITY TABLES — STATIC AND DELIBERATELY CONSERVATIVE.
-    // JAVA SOUND OPENS 8/16-BIT SIGNED/UNSIGNED PCM MONO/STEREO ON EVERY PLATFORM; 32-BIT,
-    // FLOAT AND MULTICHANNEL LINES ARE NOT PORTABLE THROUGH THE DEFAULT MIXER. ADVERTISING ONLY
-    // THE UNIVERSAL SET GUARANTEES THE FORMAT NEGOTIATION (SEE FFMediaPlayer#initAudio) ALWAYS
-    // LANDS ON A COMBINATION format() CAN ACTUALLY OPEN — THERE IS NO NEGOTIATION FALLBACK
-    // IF THE ENGINE REJECTS THE CHOSEN FORMAT. formatFor() STILL MAPS S32/FLT SO A DIRECT CALLER
-    // MAY USE THEM WHEN ITS MIXER SUPPORTS THEM.
+    // CAPABILITY TABLES: JAVA SOUND SUPPORTS U8/S16 PCM MONO/STEREO ON EVERY PLATFORM; IT
+    // DOESN'T SUPPORT FLOAT, S32 NOR MULTICHANNEL THROUGH THE DEFAULT MIXER, SO NEGOTIATION
+    // ALWAYS FALLS BACK INSIDE THIS SET (THERE IS NO SECOND FALLBACK IF format() REJECTS).
+    // formatFor() STILL MAPS S32/FLT SO A DIRECT CALLER MAY USE THEM WHEN ITS MIXER ALLOWS.
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16 };
     private static final ChannelSupport[] SUPPORTED_CHANNELS = {
             new ChannelSupport(1, SampleType.U8, SampleType.S16), // MONO
@@ -87,15 +83,8 @@ public final class JSEngine extends SFXEngine {
     }
 
     @Override
-    public boolean speed() {
-        return false; // NO PORTABLE PITCH/RATE CONTROL — speed(float) IS A NO-OP
-    }
-
-    @Override
-    public void speed(final float speed) {
-        // JAVA SOUND HAS NO PORTABLE PITCH/RATE CONTROL ON A SourceDataLine — HONORING SPEED
-        // WOULD ALSO BREAK THE pendingMs() FRAME MATH (WHICH ASSUMES THE OPEN RATE). AS A
-        // PROVISIONAL BACKEND PLAYBACK STAYS AT 1.0×; USE ALEngine FOR SPEED CONTROL.
+    public boolean speed(final float speed) {
+        return false; // JAVA SOUND DOESN'T SUPPORT SPEED — REFUSED, PLAYBACK STAYS AT 1.0×
     }
 
     @Override
@@ -186,10 +175,8 @@ public final class JSEngine extends SFXEngine {
         if (l == null) return false; // NOT CONFIGURED — CALLER BUG (LIKE ALEngine's UNINITIALIZED STATE)
         final int len = data.remaining();
         if (len == 0) return true;
-        // NON-BLOCKING: available() IS THE FREE SPACE WRITABLE WITHOUT BLOCKING. BELOW len MEANS
-        // THE LINE IS FULL — SIGNAL BACKPRESSURE (ANALOGOUS TO ALEngine's EXHAUSTED BUFFER POOL)
-        // SO THE CONSUMPTION THREAD DOESN'T STALL ON write(). THE MIXER ONLY FREES SPACE
-        // CONCURRENTLY, SO A len ≤ available() WRITE CANNOT BLOCK.
+        // NON-BLOCKING: available() < len MEANS THE LINE IS FULL — BACKPRESSURE, LIKE ALEngine's
+        // EXHAUSTED POOL. THE MIXER ONLY FREES SPACE, SO A len ≤ available() WRITE CANNOT BLOCK.
         if (l.available() < len) return false;
         if (this.scratch.length < len) this.scratch = new byte[len];
         data.get(this.scratch, 0, len);
@@ -202,9 +189,8 @@ public final class JSEngine extends SFXEngine {
     public void flush() {
         final SourceDataLine l = this.line;
         if (l == null) return;
-        // STOP + DISCARD BUFFERED AUDIO (SEEK/QUALITY SWITCH). REBASE THE PENDING BASELINE:
-        // FLUSHED FRAMES WERE COUNTED IN framesWritten BUT NEVER ADVANCE getLongFramePosition(),
-        // SO ALIGNING framesWritten TO THE CURRENT POSITION ZEROES pendingMs() CORRECTLY.
+        // STOP + DISCARD (SEEK/QUALITY SWITCH): FLUSHED FRAMES NEVER ADVANCE getLongFramePosition(),
+        // SO ALIGNING framesWritten TO IT ZEROES pendingMs() CORRECTLY.
         l.stop();
         l.flush();
         this.framesWritten = l.getLongFramePosition();
@@ -245,8 +231,7 @@ public final class JSEngine extends SFXEngine {
         c.setValue(Math.min(c.getMaximum(), Math.max(c.getMinimum(), db)));
     }
 
-    // MAPS A CANONICAL SAMPLE TYPE + CHANNEL COUNT + RATE TO A JAVA SOUND AudioFormat.
-    // CANONICAL TYPES ARE LITTLE-ENDIAN (ENDIANNESS IS MOOT FOR 8-BIT). RETURNS null FOR DBL,
+    // MAPS TYPE + CHANNELS + RATE TO A LITTLE-ENDIAN AudioFormat; RETURNS null FOR DBL,
     // WHICH HAS NO PORTABLE 64-BIT PCM ENCODING.
     private static AudioFormat formatFor(final SampleType type, final int channels, final int rate) {
         final AudioFormat.Encoding enc;

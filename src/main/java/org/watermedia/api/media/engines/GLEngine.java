@@ -202,9 +202,8 @@ public final class GLEngine extends GFXEngine {
     // UNIFORM SLOTS PER PROGRAM: [plane0..plane3, bitScale, uvSwap, outputWidth]
     private static final String[] UNIFORMS = { "plane0", "plane1", "plane2", "plane3", "bitScale", "uvSwap", "outputWidth" };
 
-    // ONE DRAIN HUB PER RENDER THREAD BATCHES EVERY ENGINE INTO ONE TASK/FRAME IN A SINGLE STATE
-    // ENVELOPE. ORPHANS (KEYED BY GLCapabilities IDENTITY, NOT THE OS-REUSABLE GLFW HANDLE) HOLDS
-    // EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION SO A DEAD CONTEXT'S NAMES NEVER LEAK.
+    // ONE DRAIN HUB PER RENDER THREAD (ONE BATCHED TASK/FRAME IN ONE ENVELOPE); ORPHANS, KEYED
+    // BY GLCapabilities IDENTITY, HOLDS EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION.
     private static final Map<Thread, Hub> HUBS = new ConcurrentHashMap<>();
     private static final Map<GLCapabilities, ArrayDeque<Integer>> ORPHANS =
             Collections.synchronizedMap(new WeakHashMap<>());
@@ -226,9 +225,8 @@ public final class GLEngine extends GFXEngine {
     private int managedTextureW = 0;
     private int managedTextureH = 0;
 
-    // PRELOADED FRAME TEXTURES (ANIMATED IMAGE FAST PATH). UPLOADS ARE SPREAD ACROSS RENDER
-    // TICKS; frameTexReady PUBLISHES HOW MANY FRAMES ARE ALREADY USABLE SO frame()
-    // CAN CLAMP WHILE THE TAIL IS STILL UPLOADING. frameTexGen INVALIDATES STALE UPLOAD TASKS.
+    // PRELOADED FRAME TEXTURES (ANIMATED IMAGE FAST PATH), UPLOADED ACROSS RENDER TICKS:
+    // frameTexReady PUBLISHES THE USABLE PREFIX FOR frame(); frameTexGen INVALIDATES STALE TASKS.
     private volatile int[] frameTextures = EMPTY_TEXTURES;
     private volatile int activeFrameTexture = -1;
     private volatile int frameTexReady = 0;
@@ -238,11 +236,10 @@ public final class GLEngine extends GFXEngine {
     // MOST ONE DRAIN PER ENGINE PER WAVE; A NEWER SUBMISSION REPLACES AN UNDRAINED OLDER ONE.
     private volatile Submission pending;
 
-    // PERSISTENT-MAPPED PBO RING (ARB_buffer_storage). THE PRODUCER THREAD MEMCPYS PIXELS INTO
-    // THE MAPPED REGION SO THE RENDER THREAD NEVER TOUCHES CLIENT MEMORY. SLOT LIFECYCLE:
-    // PRODUCER CLAIMS slot = ringProduced WHEN ringProduced - ringRetired < RING_SLOTS;
-    // THE RENDER THREAD CONSUMES THE LATEST SLOT (OLDER ONES ARE SKIPPED), FENCES IT, AND
-    // RETIRES SLOTS IN ORDER ONCE THEIR FENCES SIGNAL. ringLock GUARDS ARM/DESTROY VS MEMCPY.
+    // PERSISTENT-MAPPED PBO RING (ARB_buffer_storage): THE PRODUCER MEMCPYS PIXELS SO THE RENDER
+    // THREAD NEVER TOUCHES CLIENT MEMORY. THE PRODUCER CLAIMS A SLOT WHILE produced - retired <
+    // RING_SLOTS; THE RENDER THREAD CONSUMES THE LATEST (SKIPPING OLDER), FENCES IT, AND RETIRES
+    // IN ORDER AS FENCES SIGNAL. ringLock GUARDS ARM/DESTROY VS MEMCPY.
     private final Object ringLock = new Object();
     private volatile long ringAddr;       // 0 = NOT ARMED. PUBLISHED LAST ON ARM
     private volatile long ringRetired;    // RENDER THREAD WRITER, PRODUCER READER
@@ -315,9 +312,8 @@ public final class GLEngine extends GFXEngine {
         this.renderThread = renderThread;
         this.renderThreadEx = renderThreadEx;
 
-        // ENGINES SHARING A RENDER THREAD SHARE ITS HUB (FIRST EXECUTOR WINS); THE HUB IS EVICTED WHEN
-        // ITS LAST ENGINE RELEASES, SO A HOT-SWAPPED CONTEXT NEITHER LEAKS NOR PINS A STALE EXECUTOR.
-        // GUARDED BY THE HUBS MONITOR SO ACQUIRE AND EVICT NEVER RACE.
+        // ENGINES SHARING A RENDER THREAD SHARE ITS HUB (FIRST EXECUTOR WINS), EVICTED WITH ITS LAST
+        // ENGINE SO A HOT-SWAP NEVER LEAKS; THE HUBS MONITOR KEEPS ACQUIRE AND EVICT FROM RACING.
         if (renderThread != null) {
             synchronized (HUBS) {
                 this.hub = HUBS.computeIfAbsent(renderThread, t -> new Hub(renderThreadEx));
@@ -373,9 +369,8 @@ public final class GLEngine extends GFXEngine {
         // A FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE IS DECLINED SO THE PRODUCER RE-ROUTES IT
         // THROUGH THE SCALER TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM.
         if (format == this.shaderFailFormat) return false;
-        // GBRA IS DECLINED: THE DEFAULT PLANE PATH UPLOADS IT AS GL_RGBA, WHICH WOULD SAMPLE ITS
-        // [G,B,R,A] BYTES AS R,G,B,A (CHANNELS SHUFFLED), SO THE PRODUCER PRE-CONVERTS IT TO BGRA.
-        // BCn SAMPLING (glCompressedTexImage2D) IS NOT WIRED YET — DECLINED UNTIL IT IS.
+        // GBRA WOULD SAMPLE CHANNEL-SHUFFLED THROUGH THE GL_RGBA PLANE PATH — DECLINED SO THE
+        // PRODUCER PRE-CONVERTS TO BGRA; BCn SAMPLING IS NOT WIRED YET, DECLINED UNTIL IT IS.
         return format != PixelFormat.GBRA && !format.compressed();
     }
 
@@ -414,10 +409,8 @@ public final class GLEngine extends GFXEngine {
         final Req req = this.req;
         if (req == null || req.width <= 0 || req.height <= 0 || !directUpload(req.format)) return false;
 
-        // ASYNC PATH: ONE RENDER TASK PER FRAME SO A LONG ANIMATION NEVER STALLS A SINGLE RENDER
-        // TICK. FRAME 0 IS PUBLISHED IMMEDIATELY; frame() CLAMPS TO THE UPLOADED PREFIX UNTIL THE
-        // TAIL COMPLETES. genBox INVALIDATES THE BATCH IF THE ENGINE IS RELEASED OR REFORMATTED
-        // MID-UPLOAD.
+        // ASYNC PATH: ONE RENDER TASK PER FRAME SO A LONG ANIMATION NEVER STALLS ONE RENDER TICK;
+        // frame() CLAMPS TO THE UPLOADED PREFIX AND genBox INVALIDATES THE BATCH ON RELEASE/REFORMAT.
         final int[] genBox = new int[1];
         final int[][] texBox = new int[1][];
         this.renderThreadEx.execute(() -> {
@@ -560,9 +553,8 @@ public final class GLEngine extends GFXEngine {
         this.buildPlanes();
         this.activePlanes = this.planes.length;
 
-        // COMPILE THE CONVERSION SHADER FOR THE NEW FORMAT (LAZY — ONLY IF NOT ALREADY COMPILED).
-        // EVERY PROGRAM SHARES THE plane0..plane3/bitScale/uvSwap/outputWidth UNIFORM SCHEME, SO
-        // ONE RESOLVE LOOP COVERS ALL KINDS; UNDECLARED UNIFORMS RESOLVE TO -1 AND ARE IGNORED.
+        // LAZY-COMPILE THE CONVERSION SHADER (ONCE PER KIND). ALL PROGRAMS SHARE ONE UNIFORM SCHEME,
+        // SO ONE RESOLVE LOOP COVERS EVERY KIND; UNDECLARED UNIFORMS RESOLVE TO -1 AND ARE IGNORED.
         if (this.conv != CONV_NONE && this.programs[this.conv] == 0) {
             final int prog = this.compileShader(VERTEX_SHADER, FRAGMENTS[this.conv]);
             if (prog != 0) {
@@ -582,9 +574,8 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // SUBMISSION — PRODUCER SIDE
     // ==========================================================================
-    // VALIDATES THE FRAME, TRIES TO WRITE IT INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY),
-    // AND OTHERWISE PARKS THE CLIENT BUFFERS IN THE LATEST-WINS PENDING SLOT. THE SHARED HUB
-    // QUEUES AT MOST ONE BATCHED DRAIN TASK PER RENDER THREAD AT ANY TIME.
+    // WRITES THE FRAME INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY) OR PARKS THE CLIENT BUFFERS
+    // IN THE LATEST-WINS SLOT; THE SHARED HUB QUEUES AT MOST ONE BATCHED DRAIN PER RENDER THREAD.
     @Override
     public void upload(final ByteBuffer[] bufs, final int[] strides) {
         for (final ByteBuffer buf: bufs) {
@@ -618,9 +609,8 @@ public final class GLEngine extends GFXEngine {
         return sizes;
     }
 
-    // COPIES ALL PLANES INTO THE NEXT FREE RING SLOT. RETURNS THE SLOT SUBMISSION, NULL WHEN
-    // THE RING IS UNAVAILABLE/TOO SMALL (CALLER FALLS BACK TO CLIENT BUFFERS), OR DROPPED WHEN
-    // ALL SLOTS ARE STILL IN FLIGHT.
+    // COPIES ALL PLANES INTO THE NEXT FREE SLOT; RETURNS null WHEN THE RING IS UNAVAILABLE/TOO
+    // SMALL (CALLER FALLS BACK TO CLIENT BUFFERS) OR DROPPED WHEN EVERY SLOT IS IN FLIGHT.
     private Submission ringWrite(final ByteBuffer[] bufs, final int[] strides, final int[] sizes) {
         long total = 0L;
         for (final int size: sizes) total += size;
@@ -675,9 +665,8 @@ public final class GLEngine extends GFXEngine {
         if (this.conv != CONV_NONE) this.convertToRGBA();
     }
 
-    // UPLOAD FROM CLIENT MEMORY: FIRST FRAME (OR SIZE CHANGE) RE-SPECS THE TEXTURES DIRECTLY,
-    // STEADY STATE GOES THROUGH THE LEGACY DOUBLE-BUFFERED PBO PAIR. AFTERWARDS THE PERSISTENT
-    // RING IS ARMED (OR REGROWN) SO SUBSEQUENT FRAMES SKIP THE RENDER-THREAD MEMCPY.
+    // UPLOAD FROM CLIENT MEMORY: RESPEC ON FIRST FRAME/SIZE CHANGE, LEGACY DOUBLE-BUFFERED PBOS
+    // IN STEADY STATE; AFTERWARDS THE RING IS ARMED (OR REGROWN) SO LATER FRAMES SKIP THIS PATH.
     private void uploadClient(final Submission s) {
         long total = 0L;
         boolean respec = this.firstFrame || !this.pboReady;
@@ -745,9 +734,8 @@ public final class GLEngine extends GFXEngine {
         }
     }
 
-    // UPLOAD FROM A RING SLOT: PIXELS ARE ALREADY IN GPU-VISIBLE MEMORY, SO THIS ONLY ISSUES
-    // texSubImage FROM BUFFER OFFSETS AND FENCES THE SLOT. PLANE SIZE CHANGES RE-SPEC VIA
-    // texImage SOURCED FROM THE SAME OFFSETS.
+    // UPLOAD FROM A RING SLOT: PIXELS ARE ALREADY GPU-VISIBLE, SO ONLY texSub FROM OFFSETS
+    // PLUS A FENCE; PLANE SIZE CHANGES RE-SPEC VIA texImage FROM THE SAME OFFSETS.
     private void uploadRing(final Submission s) {
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.ringBufferId);
         long offset = (s.slot % RING_SLOTS) * this.ringSlotBytes;
@@ -859,9 +847,8 @@ public final class GLEngine extends GFXEngine {
     @Override
     public void release() {
         this.released = true; // STOP PRODUCERS IMMEDIATELY; STALE RENDER TASKS BECOME NO-OPS
-        // DROP OUR HUB REFERENCE NOW (THREAD-SAFE, IDEMPOTENT — release() MAY RUN TWICE, EVEN
-        // CONCURRENTLY, SO THE TEST-AND-SET LIVES INSIDE THE HUBS MONITOR). THE HUB IS EVICTED ONCE
-        // ITS LAST ENGINE LEAVES, SO A TORN-DOWN RENDER THREAD LEAKS NEITHER ITS HUB NOR ITS EXECUTOR.
+        // DROP OUR HUB REFERENCE — TEST-AND-SET INSIDE THE HUBS MONITOR (release() MAY RUN TWICE,
+        // EVEN CONCURRENTLY); THE LAST ENGINE LEAVING EVICTS THE HUB, SO A DEAD THREAD LEAKS NOTHING.
         if (this.hub != null) {
             synchronized (HUBS) {
                 if (!this.hubReleased) {
@@ -966,9 +953,8 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // PLANE LAYOUT
     // ==========================================================================
-    // BUILDS THE PER-PLANE TEXTURE LAYOUT FOR THE CURRENT FORMAT. DIRECT FORMATS (BGRA/RGBA/RGB)
-    // TARGET managedTexture WITHOUT A SHADER PASS; EVERYTHING ELSE RENDERS PLANE TEXTURES
-    // THROUGH AN FBO CONVERT.
+    // BUILDS THE PER-PLANE LAYOUT: DIRECT FORMATS (BGRA/RGBA/RGB) TARGET managedTexture WITHOUT
+    // A SHADER PASS; EVERYTHING ELSE RENDERS PLANE TEXTURES THROUGH THE FBO CONVERT.
     private void buildPlanes() {
         final int w = this.width;
         final int h = this.height;
@@ -1099,9 +1085,8 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // EXPOSED TEXTURE DELETION — DEFERRED UNTIL PROVABLY UNREFERENCED
     // ==========================================================================
-    // FREE STORAGE NOW (ZERO-SIZE RESPEC) BUT DEFER DELETING THE NAME: A HOST BINDING CACHE MAY STILL
-    // POINT AT IT, AND A REUSED NAME WOULD SILENTLY SKIP A FUTURE REBIND. THE ENVELOPE KEEPS HOST STATE
-    // EXACT, SO "UNBOUND ON EVERY UNIT" (SEE sweepOrphans) PROVES THE NAME IS FREE TO DELETE.
+    // FREE STORAGE NOW (ZERO-SIZE RESPEC), DEFER THE NAME: A HOST CACHE MAY STILL POINT AT IT AND A
+    // REUSED NAME SKIPS A FUTURE REBIND — "UNBOUND ON EVERY UNIT" (sweepOrphans) PROVES IT DELETABLE.
     private void orphanTexture(final int texture) {
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
         GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, 0, 0, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
@@ -1351,10 +1336,8 @@ public final class GLEngine extends GFXEngine {
         }
     }
 
-    // EXACT CAPTURE/RESTORE OF EVERY PIECE OF GL CONTEXT STATE THE ENGINE TOUCHES. RESTORING
-    // THE EXACT PRIOR VALUES KEEPS ANY HOST-SIDE SKIP-IF-EQUAL STATE CACHE (MINECRAFT'S
-    // GlStateManager, SODIUM'S TRACKER, ...) TRUTHFUL WITHOUT KNOWING IT EXISTS. THE CONVERT
-    // VARIANT ALSO SAVES THE DRAW STATE AND FORCES IT CLEAN FOR THE FULLSCREEN FBO PASS.
+    // EXACT CAPTURE/RESTORE OF ALL GL STATE THE ENGINE TOUCHES, KEEPING ANY HOST SKIP-IF-EQUAL
+    // CACHE (GlStateManager, SODIUM) TRUTHFUL; THE CONVERT VARIANT ALSO FORCES A CLEAN DRAW STATE.
     private static final class Env {
         private static final int UNITS = 4; // TEXTURE0..3 — THE UNITS THE CONVERT PASS BINDS
 

@@ -70,6 +70,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     protected SampleType sampleType;
     protected int channels;
     protected int sampleRate;
+    protected float speed = 1.0f;
 
     // SINGLE ENFORCEMENT POINT: EVERY AUDIO ENGINE CONSTRUCTION PASSES THROUGH HERE.
     protected SFXEngine() {
@@ -146,6 +147,9 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Sample rate. */
     public int sampleRate() { return this.sampleRate; }
 
+    /** Current playback speed multiplier (1.0 = normal). */
+    public float speed() { return this.speed; }
+
     /**
      * Pauses audio playback.
      */
@@ -157,19 +161,13 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     public abstract void play();
 
     /**
-     * Indicates if this backend can change the playback speed (pitch).
-     * When {@code false}, {@link #speed(float)} is a no-op and playback stays at 1.0×;
-     * callers driving an A/V clock must not scale their timeline against this engine.
-     * @return {@code true} if {@link #speed(float)} takes effect, {@code false} otherwise
-     */
-    public abstract boolean speed();
-
-    /**
-     * Sets the playback speed (pitch).
-     * No-op on backends where {@link #speed()} reports {@code false}.
+     * Sets the playback speed (pitch) when the backend supports rate control.
+     * A refusing backend (Java Sound) keeps playback at 1.0×; callers driving an A/V clock
+     * must not scale their timeline against a refusing engine.
      * @param speed playback speed multiplier (1.0 = normal)
+     * @return {@code true} when applied, {@code false} when the backend cannot change speed
      */
-    public abstract void speed(final float speed);
+    public abstract boolean speed(final float speed);
 
     /**
      * Sets the volume (gain).

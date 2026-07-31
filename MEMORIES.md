@@ -68,6 +68,8 @@ Consumed changes. No context needed — only the mapping, so an old name is reco
 | `VKContext.instance()` · `device()`                                                      | `vkInstance()` · `vkDevice()`                                                        |
 | GLEngine `convert` flag + per-format uniform fields                                      | `conv != CONV_NONE` + one shared uniform scheme                                      |
 | GLEngine's 9 `GlStateManager` callbacks + `BindConsumer`/`TexParamConsumer`              | deleted — `Env` envelope + `Hub` batching + orphan sweep                             |
+| `SFXEngine.speed()` capability + `void speed(float)`                                     | one `boolean speed(float)` (false = keeps 1.0×) + `float speed()` getter             |
+| `SFXEngine.genSource()`                                                                  | deleted — source/buffer generation inline in the engine ctors                        |
 
 ### Players & sync
 | Was                                                                                                             | Now                                                                     |
@@ -342,6 +344,11 @@ deleting the PNG/GIF chunk write side as dead code.
   before re-queueing, `sfx.flush()` on serial change. ALEngine bookkeeping is lifecycle-thread-only; `release()`
   joins the lifecycle thread before freeing engines. Public getters (`duration()/liveSource()/canPlay()`) must
   never touch native structs.
+- **A stopped AL source eats uploads (2026-07-31):** OpenAL marks every buffer queued on a STOPPED source as
+  already processed, so paused post-seek warm-up audio was reclaimed on the next upload and `pendingMs()`
+  returned 0 (paused clock overshoot). `flush()` MUST land the source in AL_INITIAL (`alSourceRewind`) and
+  `upload()` self-heals a stopped empty source the same way; drainAudio re-asserts `play()` even on failed
+  uploads (a maintenance `pause()` racing a resume deadlocked a full engine forever).
 
 ### MediaPlayer surface & state machine (2026-07-31 review pass)
 - New base surface: `exception()` (Throwable behind ERROR; protected setter is FIRST-WINS per run — later
@@ -377,10 +384,11 @@ deleting the PNG/GIF chunk write side as dead code.
 - Capability tables are **static and conservative on purpose** (U8+S16, mono/stereo): `FFMediaPlayer.initAudio()`
   has no fallback when `format` returns false — it just loses audio. Don't widen to FLT/S32/multichannel;
   `formatFor()` still maps them for direct callers.
-- **`speed(float)` is a deliberate no-op** (no portable Java Sound rate control, and honoring SAMPLE_RATE would
-  break the `pendingMs()` frame math). Capability contract: `SFXEngine#speed()` → AL true / JS false;
-  `MediaPlayer#canSpeed()` = `!liveSource() && (sfx == null || sfx.speed())`; `speed(float)` refuses when false
-  (re-requesting the current speed is a success no-op). The app's speed dropdown is `enabled(p.canSpeed())`.
+- **`speed(float)` is a deliberate refusal — returns false** (no portable Java Sound rate control, and honoring
+  SAMPLE_RATE would break the `pendingMs()` frame math). Capability folded into the setter (2026-07-31):
+  `boolean SFXEngine#speed(float)` → AL applies + true / JS false; the no-arg `speed()` is the current-speed
+  getter. `MediaPlayer#canSpeed()` probes via `sfx.speed(sfx.speed())` — re-applying the current speed is a
+  success no-op. The app's speed dropdown is `enabled(p.canSpeed())`.
 - `upload()` is non-blocking via `available()` (returns false = backpressure) — never blocking `write()` on the
   clock-driving thread. `pendingMs()` = `framesWritten − getLongFramePosition()`, and `flush()` MUST rebase
   `framesWritten`. `line/gainControl/gain/started` are volatile; `source()` returns 0.

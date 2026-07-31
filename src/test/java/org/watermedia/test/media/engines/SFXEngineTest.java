@@ -84,9 +84,9 @@ class SFXEngineTest {
         @DisplayName("No pitch control and no source handle")
         void capabilityContract() {
             final JSEngine engine = MediaAPI.jsEngine();
-            assertFalse(engine.speed(), "Java Sound reports no speed control");
+            assertFalse(engine.speed(2.0f), "Java Sound refuses speed control");
+            assertEquals(1.0f, engine.speed(), "a refused speed keeps the 1.0x default");
             assertEquals(0, engine.source(), "Java Sound has no source handle");
-            engine.speed(2.0f); // NO-OP, MUST NOT THROW
         }
     }
 
@@ -130,6 +130,8 @@ class SFXEngineTest {
                 assertEquals(4, engine.supportedTypes().length);
                 assertTableConsistent(engine);
                 assertNotEquals(0, engine.source(), "a source handle is generated under a live context");
+                assertTrue(engine.speed(2.0f), "AL_PITCH applies speed natively");
+                assertEquals(2.0f, engine.speed(), "the applied speed is reflected by the getter");
             } finally {
                 engine.release();
             }

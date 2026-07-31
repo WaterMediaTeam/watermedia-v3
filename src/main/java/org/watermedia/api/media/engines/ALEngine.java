@@ -19,15 +19,13 @@ import java.nio.ByteBuffer;
  * Create instances through {@code MediaAPI.alEngine}.
  */
 public final class ALEngine extends SFXEngine {
-    // 8 BUFFERS × ~43ms (2048 SAMPLES @ 48kHz) ≈ 340ms OF DEPTH. THE QUEUE DEPTH IS
-    // WHAT ABSORBS GAME HITCHES (GC, CHUNK LOADS) WITHOUT UNDERRUNNING — THE MEDIA
-    // CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs(), SO DEPTH DOESN'T DESYNC A/V.
+    // 8 BUFFERS × ~43ms ≈ 340ms OF DEPTH — WHAT RIDES OVER GAME HITCHES WITHOUT UNDERRUNS;
+    // THE MEDIA CLOCK FOLLOWS THE AUDIBLE POSITION VIA pendingMs(), SO DEPTH NEVER DESYNCS A/V.
     /** Default AL buffer pool depth used by {@code MediaAPI.alEngine()}. */
     public static final int DEFAULT_BUFFER_COUNT = 8;
 
-    // CAPABILITY TABLES.
-    // DBL MULTICHANNEL IS NOT SUPPORTED BECAUSE AL_EXT_DOUBLE HAS NO MULTICHANNEL VARIANTS AND
-    // AL_EXT_MCFORMATS ONLY DEFINES 8/16-BIT INT + 32-BIT FLOAT FORMATS (NO 64-BIT).
+    // CAPABILITY TABLES: OPENAL SOFT SUPPORTS U8/S16/FLT UP TO 7.1 BUT DBL ONLY MONO/STEREO
+    // (NO 64-BIT MCFORMATS); S32 HAS NO NATIVE FORMAT — THE NEGOTIATION FALLBACK IS S16/FLT.
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL };
     private static final ChannelSupport[] SUPPORTED_CHANNELS = {
             new ChannelSupport(1, SampleType.U8, SampleType.S16, SampleType.FLT, SampleType.DBL), // MONO
@@ -40,10 +38,8 @@ public final class ALEngine extends SFXEngine {
 
     private final int[] buffers;
     private final boolean latencySupported;
-    // BUFFER OWNERSHIP AS PRIMITIVE RINGS — NO BOXING IN THE UPLOAD/CLOCK HOT PATH.
-    // freeIds IS A LIFO STACK OF BUFFER IDS READY TO FILL. queuedDur IS A FIFO RING OF PER-BUFFER
-    // DURATIONS MIRRORING THE SOURCE QUEUE ORDER, SO reclaimProcessed POPS DURATIONS IN THE SAME
-    // ORDER AL RETURNS THE PROCESSED BUFFERS (USED BY pendingMs()).
+    // PRIMITIVE RINGS, NO BOXING IN THE HOT PATH: freeIds IS A LIFO OF FILLABLE BUFFER IDS,
+    // queuedDur A FIFO OF DURATIONS MIRRORING THE SOURCE QUEUE ORDER (POPPED BY reclaimProcessed).
     private final int[] freeIds;
     private int freeCount;
     private final long[] queuedDur;
@@ -93,13 +89,10 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    public boolean speed() {
-        return true; // AL_PITCH RESAMPLES THE SOURCE NATIVELY
-    }
-
-    @Override
-    public void speed(final float speed) {
-        AL10.alSourcef(this.source, AL10.AL_PITCH, speed);
+    public boolean speed(final float speed) {
+        AL10.alSourcef(this.source, AL10.AL_PITCH, speed); // AL_PITCH RESAMPLES THE SOURCE NATIVELY
+        this.speed = speed;
+        return true;
     }
 
     @Override
@@ -146,10 +139,8 @@ public final class ALEngine extends SFXEngine {
 
     @Override
     public boolean upload(final ByteBuffer data) {
-        // RECLAIM FINISHED BUFFERS FIRST. THIS MUST DRAIN *ALL* PROCESSED BUFFERS:
-        // AFTER AN UNDERRUN THE SOURCE STOPS WITH ITS WHOLE QUEUE MARKED PROCESSED,
-        // AND alSourcePlay ON A STOPPED SOURCE REPLAYS THE QUEUE FROM THE START —
-        // LEAVING STALE BUFFERS QUEUED MAKES OLD AUDIO PLAY AGAIN.
+        // DRAIN *ALL* PROCESSED BUFFERS FIRST: alSourcePlay ON A STOPPED SOURCE (UNDERRUN) REPLAYS
+        // ITS QUEUE FROM THE START, SO ANY STALE BUFFER LEFT QUEUED PLAYS OLD AUDIO AGAIN.
         this.reclaimProcessed();
 
         // A STOPPED SOURCE MARKS EVERY QUEUED BUFFER PROCESSED — EVEN FRESH ONES — SO AN UPLOAD
@@ -177,9 +168,8 @@ public final class ALEngine extends SFXEngine {
     @Override
     public void flush() {
         AL10.alSourceStop(this.source);
-        // DETACH THE WHOLE QUEUE IN ONE CALL: ON A STOPPED SOURCE AL_BUFFER=0 CLEARS BOTH THE
-        // QUEUED AND PROCESSED COUNTS, SO THE FREE STACK IS REBUILT TO THE EXACT BUFFER SET
-        // INSTEAD OF INCREMENTALLY UNQUEUEING (WHICH OVERFLOWED freeIds ON DRIVER MISCOUNTS).
+        // DETACH THE WHOLE QUEUE IN ONE CALL (AL_BUFFER=0 ON A STOPPED SOURCE) AND REBUILD THE FREE
+        // STACK TO THE EXACT BUFFER SET — INCREMENTAL UNQUEUEING OVERFLOWED freeIds ON DRIVER MISCOUNTS.
         AL10.alSourcei(this.source, AL10.AL_BUFFER, 0);
         // LAND ON INITIAL, NOT STOPPED: A STOPPED SOURCE REPORTS EVERY FUTURE QUEUED BUFFER AS
         // PROCESSED, SO PAUSED WARM-UP UPLOADS AFTER A SEEK WOULD BE RECLAIMED AND LOST
@@ -194,14 +184,12 @@ public final class ALEngine extends SFXEngine {
     @Override
     public long pendingMs() {
         final int state = AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE);
-        // STOPPED (UNDERRUN/FLUSH) MEANS EVERYTHING QUEUED ALREADY PLAYED; THE
-        // SAMPLE OFFSET RESETS TO 0 IN THAT STATE, SO THE SUBTRACTION BELOW
-        // WOULD WRONGLY REPORT THE WHOLE QUEUE AS PENDING.
+        // STOPPED (UNDERRUN) MEANS EVERYTHING QUEUED ALREADY PLAYED AND THE OFFSET RESET TO 0,
+        // SO THE SUBTRACTION BELOW WOULD WRONGLY REPORT THE WHOLE QUEUE AS PENDING.
         if (state == AL10.AL_STOPPED) return 0;
 
-        // PLAYBACK OFFSET WITHIN THE CURRENT QUEUE, LATENCY-COMPENSATED WHEN
-        // AL_SOFT_source_latency IS AVAILABLE (THE SAMPLE AT THE LISTENER IS
-        // offset − deviceLatency, SO THE PENDING WINDOW GROWS BY THE LATENCY).
+        // QUEUE PLAYBACK OFFSET, LATENCY-COMPENSATED WHEN AL_SOFT_source_latency EXISTS: THE
+        // SAMPLE AT THE LISTENER IS offset − deviceLatency, GROWING THE PENDING WINDOW.
         final double offsetSec;
         if (this.latencySupported) {
             SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, this.latencyValues);
@@ -259,9 +247,8 @@ public final class ALEngine extends SFXEngine {
         };
     }
 
-    // MAPS A CANONICAL SAMPLE TYPE + CHANNEL COUNT TO AN OPENAL FORMAT CONSTANT.
-    // RETURNS -1 IF THE COMBINATION IS NOT SUPPORTED. type IS ALREADY NON-NULL (format() GUARDS IT).
-    // ASSUMES OPENAL SOFT — AL_EXT_MCFORMATS, AL_EXT_FLOAT32, AND AL_EXT_DOUBLE ARE ALWAYS AVAILABLE THERE.
+    // MAPS TYPE + CHANNELS TO AN OPENAL FORMAT CONSTANT, -1 WHEN UNSUPPORTED. ASSUMES OPENAL
+    // SOFT, WHERE AL_EXT_MCFORMATS/AL_EXT_FLOAT32/AL_EXT_DOUBLE ARE ALWAYS PRESENT.
     private static int alFormatFor(final SampleType type, final int channels) {
         return switch (type) {
             case U8 -> switch (channels) {

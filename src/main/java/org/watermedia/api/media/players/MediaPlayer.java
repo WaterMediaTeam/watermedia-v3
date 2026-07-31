@@ -1011,12 +1011,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Indicates if the playback speed can be changed.
      * Live streams cannot change speed, and neither can media whose audio engine
-     * reports no speed support ({@link SFXEngine#speed()}) — scaling the timeline
-     * against audio stuck at 1.0× would desync the playback clock.
+     * refuses {@link SFXEngine#speed(float)} — scaling the timeline against audio
+     * stuck at 1.0× would desync the playback clock.
      * @return true if {@link #speed(float)} can take effect, false otherwise.
      */
     public boolean canSpeed() {
-        return !this.liveSource() && (this.sfx == null || this.sfx.speed());
+        // RE-APPLYING THE ENGINE'S CURRENT SPEED IS A HARMLESS CAPABILITY PROBE (SUCCESS NO-OP)
+        return !this.liveSource() && (this.sfx == null || this.sfx.speed(this.sfx.speed()));
     }
 
 

@@ -733,14 +733,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         return this.swsContext != null;
     }
 
-    // UPLOADS THE NEXT AUDIO FRAME TO THE SFXEngine (NON-BLOCKING), DRIVEN BY THE LIFECYCLE
-    // CONSUMPTION LOOP — A SECOND CONSUMER ON THE FRAME QUEUE WOULD RACE THE PIPELINE.
-    // FEEDS DECODED AUDIO TO THE SFX ENGINE EAGERLY (ONE FRAME PER LOOP). THE ENGINE'S BUFFER
-    // POOL IS THE BACKPRESSURE (upload() FAILS WHEN FULL); KEEPING IT FULL IS WHAT RIDES OVER
-    // GAME HITCHES WITHOUT UNDERRUNS. A NARROW "JUST IN TIME" GATE HERE WOULD HOLD THE ENGINE
-    // AT ~1 QUEUED BUFFER AND UNDERRUN ON EVERY HICCUP. THE CLOCK FOLLOWS THE AUDIBLE POSITION
-    // (SEE THE updateMs BELOW), SO UPLOADING AHEAD DOES NOT DESYNC VIDEO. AUDIO_MAX_LEAD ONLY
-    // CAPS RUNAWAY PTS JUMPS. A SECOND CONSUMER ON THIS QUEUE WOULD RACE THE PIPELINE.
+    // EAGER AUDIO UPLOADS, LIFECYCLE LOOP ONLY (A SECOND CONSUMER RACES THE PIPELINE). THE ENGINE
+    // POOL IS THE BACKPRESSURE AND THE CLOCK TRACKS THE AUDIBLE POSITION — A JUST-IN-TIME GATE
+    // UNDERRUNS ON EVERY HICCUP; AUDIO_MAX_LEAD ONLY CAPS RUNAWAY PTS JUMPS.
     private boolean drainAudio(final Status current) {
         if (this.sfx == null || this.audioStreamIndex < 0 || this.audioFrameQueue == null) return false;
         boolean didWork = false;
@@ -770,9 +765,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                     .asBuffer()
                     .clear();
 
-            // SERIAL HANDOFF (SEEK/QUALITY SWITCH): THE ENGINE STILL HOLDS QUEUED
-            // AUDIO FROM THE PREVIOUS POSITION — DROP IT BEFORE THE FIRST POST-SEEK
-            // UPLOAD SO IT NEITHER FINISHES PLAYING NOR GETS REPLAYED.
+            // SERIAL HANDOFF (SEEK/QUALITY SWITCH): DROP THE ENGINE'S QUEUED AUDIO FROM THE
+            // PREVIOUS POSITION BEFORE THE FIRST POST-SEEK UPLOAD SO IT NEITHER FINISHES NOR REPLAYS.
             if (frameSerial != this.lastAudioUploadSerial) {
                 this.sfx.flush();
                 this.lastAudioUploadSerial = frameSerial;
@@ -795,10 +789,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.audioFrameQueue.next();
             this.perfAudioUploads++;
 
-            // CLOCK = AUDIBLE POSITION. AUDIO IS UPLOADED AHEAD OF PLAYBACK, SO THE
-            // FRAME PTS ALONE WOULD RUN THE CLOCK AHEAD BY THE ENGINE'S QUEUE DEPTH.
-            // SUBTRACT THE AUDIO STILL PENDING IN THE ENGINE (LATENCY-COMPENSATED
-            // VIA AL_SOFT_source_latency WHEN AVAILABLE) FROM THE END OF THIS FRAME.
+            // CLOCK = AUDIBLE POSITION: THE FRAME PTS ALONE WOULD RUN AHEAD BY THE ENGINE'S QUEUE
+            // DEPTH, SO SUBTRACT THE PENDING (LATENCY-COMPENSATED) AUDIO FROM THIS FRAME'S END.
             final long audiblePtsMs = framePtsMs + frameDurationMs - this.sfx.pendingMs();
 
             final Status beforeUpdate = this.clock.status();
