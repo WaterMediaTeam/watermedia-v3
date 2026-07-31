@@ -146,7 +146,7 @@ player.sync(payload);
 ### THE SEQUENCE
 1. A client player is created and announces itself with a hello; it enters the session as a loading spectator. A newcomer never interrupts the media already running for the others.
 2. The authority answers with the session `Config` (the granted capabilities) plus a fresh snapshot, so a late joiner lands at the right timestamp immediately.
-3. Each follower reports its own status upstream on every transition, plus a keepalive. The first client to know the media reports its duration and live flag, and the authority adopts them (first non-zero report wins for the session).
+3. Each follower reports its own status upstream on every transition, plus a keepalive. The first client to know the media reports its duration and live flag, and the authority adopts them (first non-zero report wins for the session). Until that first report the session clock holds at zero: a timeline the authority cannot wrap nor end is not allowed to run away while nobody can watch it.
 4. The authority broadcasts a snapshot whenever its state changes, plus a ~5s heartbeat. Out-of-order packets are rejected by revision; heartbeats re-apply.
 5. On release the follower says goodbye. One that vanishes without saying it is swept by a silence timeout (`watcherTimeout(ms)`, 15s by default), so a client that disappears never freezes the audience.
 

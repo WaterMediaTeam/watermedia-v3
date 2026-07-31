@@ -3,13 +3,13 @@
 - Comments must be written in UPPERCASE and in English (// THIS DOES THIS)
   - Do not saturate code with big blocks of comments, max 2 lines and elaborate the comment in the simplest way but understandable
   - Do not put comments over bug fixes, changes, feature addition or side tasks done by any of the tasks listed.
-- Ignore your own persistent memory, use instead MEMORIES.md, and consolidate everything in there.
+- Ignore your own persistent memory, use instead MEMORIES.md, read and store everything in there.
 
 # Environment
 - You're running on Windows x64
 - System has 32GB of RAM
-- Six-Core CPU AMD
-- RTX 5060 with 8GB of VRAM
+- AMD Ryzen 7 2700x Eight-Core CPU
+- Nvidia RTX 5060 with 8GB of VRAM
 
 # Dependants
 - [WATERFrAMES](https://github.com/SrRapero720/waterframes) - By SrRapero720
@@ -24,6 +24,7 @@
 # Work Guidelines
 - Do not rush tasks. Take all the time necessary to complete the work in the best way possible, not the fastest. It does not matter how long a task may take.
 - Always take the best route, not the fastest one.
+- Always look for the cleanest result, combining and simplifying code, "write less, do more".
 - Think for the entire panorama, validate if the task you're doing can be applied to other parts of the code, such as optimizations
 - Never took the laziest route, investigate further to enhance the implementation.
 - Never took the overkill overengineered  route, keep it simple, keep it useful
@@ -47,6 +48,12 @@
 - Gradle: do not use {} for simple variables (use $var, not ${var}); only use {} for object.field
 - Gradle: use local gradle installation preferable over gradlew, gradle command is v9
 - Gradle: after all the code changes are done or before commits, run the gradle task "removeSemicolonSpace"
+- After you finish your job, to back to the first instruction, stop and make yourself questions about the changes you have done
+  - ¿This implementation has sense?
+  - ¿Does this change is considered in all the other parts it involved?
+  - ¿This is the simplest way to implement it?
+  - ¿Can´t this change be implemented as part of something else as a condition instead of run on a different place (fields, classes, records)?
+  If all the answers are "Yes" and "Yes, it can't be"(for the last one) then you have done an excelent Job.
 
 # Changelog Guidelines
 - Use Markdown

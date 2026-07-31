@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -56,8 +57,9 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private volatile long accumulatedMs;      // TIME ACCUMULATED BEFORE THE CURRENT PLAY SEGMENT
     private volatile long segmentStartNanos;  // System.nanoTime() WHEN THE CURRENT SEGMENT BEGAN
     private volatile Status status = Status.WAITING;
-    // MUTATION COUNTER — EVERY SUCCESSFUL STATE CHANGE BUMPS IT SO THE BROADCASTER KNOWS TO RESEND
-    private volatile int revision;
+    // MUTATION COUNTER — EVERY SUCCESSFUL STATE CHANGE BUMPS IT SO THE BROADCASTER KNOWS TO RESEND;
+    // AtomicInteger BY APPROVED EXCEPTION: ++ ON volatile ISN'T ATOMIC AND repeat() BUMPS UNLOCKED
+    private final AtomicInteger revision = new AtomicInteger();
 
     // AUTHORITY BRIDGE STATE — watchers IS THE SPECTATOR REGISTRY; gated IS THE LOCKSTEP OVERLAY:
     // WHILE SET, THE UNDERLYING STATUS STAYS PLAYING BUT THE CLOCK FREEZES AND BUFFERING IS PRESENTED.
@@ -123,7 +125,10 @@ public final class ServerMediaPlayer extends MediaPlayer {
             return;
         }
         this.duration = durationMs;
-        this.revision++;
+        // THE TIMELINE JUST BECAME KNOWN — A RUNNING SESSION STARTS COUNTING FROM THIS INSTANT,
+        // SINCE THE CLOCK WAS HELD WHILE IT HAD NOTHING TO MEASURE AGAINST (SEE computeTime)
+        if (this.status == Status.PLAYING && !this.gated && !this.live) this.segmentStartNanos = System.nanoTime();
+        this.revision.incrementAndGet();
     }
 
     /**
@@ -137,7 +142,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         if (this.status == Status.PLAYING && !this.gated) {
             this.segmentStartNanos = System.nanoTime();
         }
-        this.revision++;
+        this.revision.incrementAndGet();
     }
 
     /**
@@ -147,8 +152,11 @@ public final class ServerMediaPlayer extends MediaPlayer {
      */
     public synchronized void syncLive(final boolean live) {
         if (this.live == live) return;
+        // SAME TIMELINE-BECAME-KNOWN REBASE AS syncDuration — A HELD CLOCK STARTS COUNTING NOW
+        if (live && this.duration <= 0 && this.status == Status.PLAYING && !this.gated)
+            this.segmentStartNanos = System.nanoTime();
         this.live = live;
-        this.revision++;
+        this.revision.incrementAndGet();
     }
 
     // --- SNAPSHOT SYNC ---
@@ -161,7 +169,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
      * @return the current revision
      */
     public int revision() {
-        return this.revision;
+        return this.revision.get();
     }
 
     /**
@@ -169,7 +177,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
      * @return a snapshot of revision, status, time, duration, speed, volume, mute, repeat and live
      */
     public synchronized Sync snapshot() {
-        return new Sync(this.revision, this.status(), this.time(), this.duration, this.speed(),
+        return new Sync(this.revision.get(), this.status(), this.time(), this.duration, this.speed(),
                 this.volume(), this.mute(), this.repeat(), this.live);
     }
 
@@ -256,11 +264,14 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     @Override
     protected void tick50() {
-        // A HEADLESS FOLLOWER HAS NO MEDIA TO LEARN THE DURATION FROM — ADOPT THE SESSION'S
-        // SO ITS OWN CLOCK WRAPS AND ENDS ON THE REAL TIMELINE
-        if (this.role() == Role.FOLLOWER && this.duration <= 0) {
+        // A HEADLESS FOLLOWER HAS NO MEDIA TO LEARN THE TIMELINE FROM — ADOPT THE SESSION'S
+        // DURATION AND LIVE FLAG SO ITS OWN CLOCK RUNS, WRAPS AND ENDS ON THE REAL TIMELINE
+        if (this.role() == Role.FOLLOWER && this.duration <= 0 && !this.live) {
             final Sync session = this.authority(); // NULL UNTIL THE FIRST SNAPSHOT LANDS
-            if (session != null) this.syncDuration(session.duration());
+            if (session != null) {
+                this.syncDuration(session.duration());
+                if (session.live()) this.syncLive(true);
+            }
         }
         super.tick50();
         this.update();
@@ -284,7 +295,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         }
         if ((this.capabilities & Config.Capability.LOCKSTEP.bit) != 0) this.gate(hold);
         // THE GATE FLIP BUMPS THE REVISION, SO IT TRAVELS IN THIS VERY BROADCAST
-        final int rev = this.revision;
+        final int rev = this.revision.get();
         if (rev != this.lastCastRevision || now - this.lastCastNanos >= HEARTBEAT_NANOS) {
             this.lastCastRevision = rev;
             this.lastCastNanos = now;
@@ -301,7 +312,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.segmentStartNanos = System.nanoTime();
         }
         this.gated = on;
-        this.revision++;
+        this.revision.incrementAndGet();
     }
 
     // --- PLAYBACK CONTROLS ---
@@ -317,7 +328,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.segmentStartNanos = System.nanoTime();
             this.gated = false;
             this.status = Status.PLAYING;
-            this.revision++;
+            this.revision.incrementAndGet();
             ticking(this, true);
         }
         return true;
@@ -330,7 +341,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.accumulatedMs = 0;
             this.gated = false;
             this.status = Status.PAUSED;
-            this.revision++;
+            this.revision.incrementAndGet();
             ticking(this, true);
         }
         return true;
@@ -350,8 +361,11 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 if (this.status != Status.PAUSED) return false;
                 this.segmentStartNanos = System.nanoTime();
                 this.status = Status.PLAYING;
+                // A SOLO CLOCK DEREGISTERS ON ENDED/STOP; RESUMING AFTER A SEEK MUST TICK AGAIN
+                // OR IT NEVER WRAPS NOR ENDS FOR THE REST OF ITS LIFE
+                ticking(this, true);
             }
-            this.revision++;
+            this.revision.incrementAndGet();
         }
         return true;
     }
@@ -364,7 +378,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.accumulatedMs = 0;
             this.gated = false;
             this.status = Status.STOPPED;
-            this.revision++;
+            this.revision.incrementAndGet();
             ticking(this, false);
         }
         return true;
@@ -407,8 +421,9 @@ public final class ServerMediaPlayer extends MediaPlayer {
         if (this.gated || this.status != Status.PLAYING) return this.accumulatedMs;
         final long t = this.computeTime(this.speed());
         final long d = this.duration;
-        // CLAMP/MODULO AGAINST DURATION SO time() NEVER OVERRUNS BETWEEN 50ms TICKS
-        return d > 0 ? (this.repeat() ? t % d : Math.min(t, d)) : t;
+        // CLAMP/MODULO AGAINST DURATION SO time() NEVER OVERRUNS BETWEEN 50ms TICKS; A LIVE
+        // TIMELINE IS OPEN-ENDED AND RUNS FREE OF ANY MIXED-VARIANT DURATION LATCH
+        return d > 0 && !this.live ? (this.repeat() ? t % d : Math.min(t, d)) : t;
     }
 
     @Override
@@ -422,7 +437,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 this.accumulatedMs = this.computeTime(old);
                 this.segmentStartNanos = System.nanoTime();
             }
-            if (old != speed) this.revision++;
+            if (old != speed) this.revision.incrementAndGet();
         }
         return true;
     }
@@ -431,7 +446,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
     public boolean repeat(final boolean repeat) {
         final boolean old = this.repeat();
         final boolean now = super.repeat(repeat);
-        if (old != now) this.revision++;
+        if (old != now) this.revision.incrementAndGet();
         return now;
     }
 
@@ -439,12 +454,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
     public synchronized void volume(final int volume) {
         final int old = this.volume();
         super.volume(volume);
-        if (this.volume() != old) this.revision++;
+        if (this.volume() != old) this.revision.incrementAndGet();
     }
 
     @Override
     public synchronized void mute(final boolean mute) {
-        if (this.mute() != mute) this.revision++;
+        if (this.mute() != mute) this.revision.incrementAndGet();
         super.mute(mute);
     }
 
@@ -472,7 +487,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean canSeek() {
-        return this.duration > 0;
+        return !this.liveSource();
     }
 
     @Override
@@ -491,10 +506,13 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public synchronized void release() {
-        this.gated = false;
-        this.status = Status.STOPPED;
-        this.watchers.clear();
+    public void release() {
+        synchronized (this) {
+            this.gated = false;
+            this.status = Status.STOPPED;
+            this.watchers.clear();
+        }
+        // OUTSIDE THE LOCK — A FOLLOWER'S super SENDS Unwatch THROUGH THE DEV'S BRIDGE
         super.release();
     }
 
@@ -503,6 +521,10 @@ public final class ServerMediaPlayer extends MediaPlayer {
     // POSITION OF THE RUNNING SEGMENT AT THE GIVEN RATE. THE RATE IS EXPLICIT BECAUSE a speed change
     // MUST CLOSE THE SEGMENT AT THE OUTGOING VALUE BEFORE THE NEW ONE APPLIES.
     private long computeTime(final float rate) {
+        // NO TIMELINE, NO PROGRESSION: WITHOUT A DURATION (AND NOT LIVE) THE CLOCK CANNOT WRAP OR
+        // END, SO RUNNING IT ACCUMULATES HOURS OF NONSENSE ON SESSIONS PLAYING UNWATCHED AND THE
+        // EVENTUAL DURATION LATCH WOULD SNAP EVERY FOLLOWER TO A MEANINGLESS POSITION.
+        if (this.duration <= 0 && !this.live) return this.accumulatedMs;
         final long elapsedNanos = System.nanoTime() - this.segmentStartNanos;
         return this.accumulatedMs + (long) (TimeUnit.NANOSECONDS.toMillis(elapsedNanos) * rate);
     }
@@ -511,8 +533,9 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private synchronized void update() {
         if (this.status != Status.PLAYING || this.gated) return;
 
+        // A LIVE TIMELINE HAS NO END — NEVER WRAP NOR END IT, EVEN WITH A DURATION LATCHED
         final long d = this.duration;
-        if (d <= 0) return;
+        if (d <= 0 || this.live) return;
         final long now = this.computeTime(this.speed());
         if (now < d) return;
 
@@ -522,11 +545,11 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.accumulatedMs = now % d;
             this.segmentStartNanos = System.nanoTime();
             // THE WRAP REBASES THE TIMELINE — BUMP SO THE BROADCASTER RESENDS WHERE CLIENTS DRIFT MOST
-            this.revision++;
+            this.revision.incrementAndGet();
         } else {
             this.accumulatedMs = d;
             this.status = Status.ENDED;
-            this.revision++;
+            this.revision.incrementAndGet();
             ticking(this, false);
             this.invokeStatus(Status.PLAYING, Status.ENDED);
         }
@@ -536,7 +559,9 @@ public final class ServerMediaPlayer extends MediaPlayer {
     // SESSION IS NOT RUNNING, DEFERRED TO THE FIRST READY REPORT FOR MID-PLAYBACK JOINERS.
     private static final class Watcher {
         volatile Status status = Status.LOADING;
-        volatile long lastSeenNanos;
+        // STAMPED AT BIRTH — THE TTL SWEEP RUNS CONCURRENTLY WITH REGISTRATION AND WOULD READ
+        // A ZERO STAMP AS A SPECTATOR SILENT SINCE FOREVER, DROPPING IT ON THE SPOT
+        volatile long lastSeenNanos = System.nanoTime();
         volatile boolean pooled;
     }
 }

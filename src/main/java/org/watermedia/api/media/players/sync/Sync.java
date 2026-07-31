@@ -21,7 +21,6 @@ import java.nio.ByteBuffer;
  * @param repeat   whether playback loops at the end of the media
  * @param live     whether the media source is a live stream
  * @see ServerMediaPlayer#snapshot()
- * @see ServerMediaPlayer#applySnapshot(Sync)
  */
 public record Sync(int revision, Status status, long time, long duration, float speed,
                    int volume, boolean mute, boolean repeat, boolean live) implements Packet {

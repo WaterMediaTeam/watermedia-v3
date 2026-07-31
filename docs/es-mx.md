@@ -150,7 +150,7 @@ player.sync(payload);
 ### LA SECUENCIA
 1. Se crea el player del cliente y se anuncia con un saludo; entra a la sesión como espectador cargando. Un recién llegado nunca interrumpe el media que ya corre para los demás.
 2. La autoridad responde con el `Config` de la sesión (las capabilities otorgadas) más un snapshot fresco, así el que llega tarde aterriza de inmediato en el timestamp correcto.
-3. Cada follower reporta su propio estado hacia arriba en cada transición, más un keepalive. El primer cliente que conoce el media reporta su duración y su flag de live, y la autoridad los adopta (el primer reporte no-cero gana por sesión).
+3. Cada follower reporta su propio estado hacia arriba en cada transición, más un keepalive. El primer cliente que conoce el media reporta su duración y su flag de live, y la autoridad los adopta (el primer reporte no-cero gana por sesión). Hasta ese primer reporte el reloj de la sesión se mantiene en cero: una línea de tiempo que la autoridad no puede envolver ni terminar no debe desbocarse mientras nadie puede verla.
 4. La autoridad broadcastea un snapshot cada vez que su estado cambia, más un heartbeat de ~5s. Los packets fuera de orden se rechazan por revision; los heartbeats se re-aplican.
 5. Al hacer release el follower se despide. El que desaparece sin decirlo lo barre un timeout de silencio (`watcherTimeout(ms)`, 15s por defecto), así un cliente que se cae nunca congela a la audiencia.
 

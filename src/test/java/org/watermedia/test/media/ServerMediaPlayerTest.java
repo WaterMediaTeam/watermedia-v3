@@ -239,6 +239,73 @@ public class ServerMediaPlayerTest {
     }
 
     @Test
+    @DisplayName("a clock without a timeline holds at zero and starts counting when the duration latches")
+    void testHeldClockWithoutTimeline() throws InterruptedException {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.start(); // THE DOCUMENTED FLOW: THE AUTHORITY STARTS BEFORE ANY CLIENT KNOWS THE MEDIA
+
+        // NO DURATION AND NOT LIVE: THE CLOCK MUST NOT ACCUMULATE WALL TIME (A SESSION PLAYING
+        // UNWATCHED FOR HOURS SHOWED THOSE HOURS TO EVERY LATE JOINER)
+        Thread.sleep(200L);
+        assertEquals(Status.PLAYING, player.status());
+        assertEquals(0L, player.time(), "a clock without a timeline must hold still");
+
+        // THE LATCH STARTS THE TIMELINE FROM THIS INSTANT — NO INSTA-ENDED, NO POSITION SNAP
+        player.syncDuration(100_000L);
+        Thread.sleep(100L);
+        assertEquals(Status.PLAYING, player.status());
+        final long t = player.time();
+        assertTrue(t >= 100L - TIMING_TOLERANCE_MS && t <= 100L + 2 * TIMING_TOLERANCE_MS,
+                "time must count from the latch instant, was " + t);
+        player.release();
+    }
+
+    @Test
+    @DisplayName("a live clock runs even without a duration")
+    void testLiveClockRuns() throws InterruptedException {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.start();
+        player.syncLive(true); // A LIVE TIMELINE IS OPEN-ENDED BUT REAL — SESSION TIME COUNTS UP
+        Thread.sleep(120L);
+        assertTrue(player.time() >= 120L - TIMING_TOLERANCE_MS,
+                "a live session clock must advance, was " + player.time());
+        player.release();
+    }
+
+    @Test
+    @DisplayName("a live session never ends nor wraps, even with a latched duration")
+    void testLiveIgnoresLatchedDuration() throws InterruptedException {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        // MIXED-VARIANT SESSION: A VOD CLIENT LATCHED A DURATION, A STREAM CLIENT LATCHED LIVE
+        player.syncDuration(150L);
+        player.syncLive(true);
+        player.start();
+
+        Thread.sleep(400L);
+        assertEquals(Status.PLAYING, player.status(), "a live clock must never END at the phantom duration");
+        assertFalse(player.canSeek(), "a live session is not seekable, matching FFMediaPlayer");
+        assertTrue(player.time() > 150L, "a live clock must run past the phantom duration, was " + player.time());
+        player.release();
+    }
+
+    @Test
+    @DisplayName("resume after a post-ENDED seek keeps the clock ticking to its next end")
+    void testResumeAfterEndedTicksAgain() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        player.syncDuration(150L);
+        player.start();
+        assertTrue(PlayerWait.awaitStatus(player, ENDED_TIMEOUT_MS, Status.ENDED));
+
+        // SCRUB BACK AND RESUME: THE SOLO CLOCK MUST RE-REGISTER ON THE TICKER OR IT NEVER ENDS AGAIN
+        assertTrue(player.seek(50L));
+        assertTrue(player.resume());
+        assertTrue(PlayerWait.awaitStatus(player, ENDED_TIMEOUT_MS, Status.ENDED),
+                "a resumed clock must reach ENDED again");
+        assertEquals(150L, player.time());
+        player.release();
+    }
+
+    @Test
     @DisplayName("repeat loop wrap bumps the revision for proxy re-broadcast")
     void testLoopWrapBumpsRevision() throws InterruptedException {
         final ServerMediaPlayer player = new ServerMediaPlayer();

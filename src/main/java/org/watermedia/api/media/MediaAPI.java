@@ -52,7 +52,6 @@ public final class MediaAPI extends WaterMediaModule {
     private static volatile boolean FFMPEG_LOADED;
     private static volatile boolean FFMPEG_ERROR;
     private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
-    private static boolean CLIENT_SIDE;
 
     /**
      * Gets or creates an MRL for the given URI string.
@@ -339,10 +338,9 @@ public final class MediaAPI extends WaterMediaModule {
 
     @Override
     protected boolean start(final WaterMedia instance) {
-        // THERE'S NO INITIALIZER FOR SERVER-SIDE, WE JUST STORE IF IS CLIENT
+        // SERVER PLAYER NEEDS NO INITIALIZATION — THE STEP JUST MARKS THE API USABLE ON ANY SIDE
         this.step++;
         this.stepName = STEP_SERVER_PLAYER;
-        CLIENT_SIDE = instance.clientSide;
 
         // SKIP REST OF THE START
         if (!instance.clientSide) {

@@ -320,7 +320,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Where the session says playback should be right now. A running session is extrapolated
      * from the last snapshot at its own rate and folded into the media timeline, so a loop
-     * wraps instead of overrunning; a stopped one reports its frozen position.
+     * wraps instead of overrunning; a stopped one reports its frozen position. A live session
+     * is never folded — its timeline is open-ended.
      * @return the authoritative position in milliseconds, or 0 on a non-follower
      */
     public final long authorityTime() {
@@ -331,7 +332,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         final long elapsed = (System.nanoTime() - this.targetNanos) / 1_000_000L + this.aheadMs;
         final long t = target.time() + (long) (elapsed * target.speed());
         final long d = target.duration();
-        if (d <= 0) return t;
+        if (d <= 0 || target.live()) return t;
         return target.repeat() ? t % d : Math.min(t, d);
     }
 
@@ -346,7 +347,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (target == null) return 0;
         long drift = this.authorityTime() - this.time();
         final long d = target.duration();
-        if (target.repeat() && d > 0) {
+        if (target.repeat() && d > 0 && !target.live()) {
             // LOOPING TIMELINES ARE CIRCULAR — MAP INTO [-d/2, d/2) SO THE WRAP NEVER FAKES A HUGE DRIFT
             drift = Math.floorMod(drift + d / 2, d) - d / 2;
         }
@@ -413,8 +414,18 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
                     // START ONCE PER DORMANCY — FF PIPELINES PUBLISH STATUS ASYNC, RE-CALLING START
                     // EVERY TICK WOULD RESTART THE LIFECYCLE FOREVER. SKIP THE TAIL: WITH LESS THAN
                     // THE TOLERANCE OF NON-REPEAT MEDIA LEFT, THE SESSION ENDS BEFORE WE FINISH LOADING.
-                    if (!this.startIssued && (authority.repeat() || authority.duration() <= 0
-                            || authority.duration() - this.authorityTime() > this.toleranceMs)) {
+                    // A PLAYER THAT ALREADY ENDED RESTARTS ONLY WHEN THE SESSION SITS MEANINGFULLY
+                    // BEFORE ITS OWN MEDIA'S END — GATING ON THE SESSION DURATION REPLAYED IT FOREVER
+                    // WHENEVER THE TWO DIVERGED (BAD LATCH, MIXED VARIANTS).
+                    final boolean go;
+                    if (current == Status.ENDED) {
+                        final long end = this.duration() > 0 ? this.duration() : authority.duration();
+                        go = end > 0 && this.authorityTime() < Math.max(end - this.toleranceMs, this.toleranceMs);
+                    } else {
+                        go = authority.repeat() || authority.duration() <= 0
+                                || authority.duration() - this.authorityTime() > this.toleranceMs;
+                    }
+                    if (!this.startIssued && go) {
                         this.start();
                         this.startIssued = true;
                     }
@@ -433,7 +444,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
                 if (current == Status.PLAYING) this.pause();
             }
             case STOPPED -> {
-                if (current != Status.STOPPED && current != Status.WAITING) this.stop();
+                // ENDED IS ALREADY DORMANT AND ITS PIPELINE IS GONE — stop() THERE CANNOT TRANSITION
+                // ANYTHING AND WOULD RE-FIRE EVERY TICK FOREVER
+                if (current != Status.STOPPED && current != Status.WAITING && current != Status.ENDED) this.stop();
                 return;
             }
             // ENDED: LET THE PLAYER REACH ITS OWN END NATURALLY; WAITING/OTHERS: NOTHING TO FOLLOW YET

@@ -72,6 +72,29 @@ public class FollowerClockTest {
     }
 
     @Test
+    @DisplayName("a live session drives the mirror's own clock")
+    void testLiveSessionRunsMirrorClock() throws InterruptedException {
+        final ServerMediaPlayer follower = this.follower();
+        // A LIVE SESSION HAS NO DURATION — THE MIRROR MUST ADOPT THE LIVE FLAG OR THE
+        // TIMELINE-HELD GUARD FREEZES ITS OWN CLOCK AT ZERO FOREVER
+        follower.sync(new Sync(1, Status.PLAYING, 0L, 0L, 1f, 100, false, false, true));
+        Thread.sleep(400L);
+        assertTrue(follower.playing(), "the mirror must start with the session");
+        assertTrue(follower.liveSource(), "the mirror must know the session is live");
+        assertTrue(follower.time() >= 250L, "a live mirror clock must advance, was " + follower.time());
+    }
+
+    @Test
+    @DisplayName("a live session's position is never folded into a latched duration")
+    void testLiveSessionAgesUnfolded() throws InterruptedException {
+        final ServerMediaPlayer follower = this.follower();
+        follower.sync(new Sync(1, Status.PLAYING, 100L, 150L, 1f, 100, false, false, true));
+        Thread.sleep(300L);
+        final long t = follower.authorityTime();
+        assertTrue(t > 150L, "a live session must age past the phantom duration, was " + t);
+    }
+
+    @Test
     @DisplayName("a looping timeline wraps instead of overrunning the media")
     void testWrapsOnRepeat() throws InterruptedException {
         final ServerMediaPlayer follower = this.follower();
@@ -88,6 +111,38 @@ public class FollowerClockTest {
         follower.sync(sync(1, Status.PLAYING, 400L, 500L, false, 1f));
         Thread.sleep(250L);
         assertEquals(500L, follower.authorityTime(), "playback cannot run past the end of the media");
+    }
+
+    @Test
+    @DisplayName("an ended player is not replayed by a session already past its media")
+    void testEndedHoldsAgainstDivergentSession() throws InterruptedException {
+        final ServerMediaPlayer follower = this.follower();
+        // THE FOLLOWER'S OWN MEDIA IS 500ms; THE SESSION LATCHED A DIVERGENT 60s TIMELINE AND
+        // SITS AT 5s — RESTARTING WOULD REPLAY THE MEDIA FOREVER UNTIL THE SESSION CATCHES UP
+        follower.syncDuration(500L);
+        final long deadline = System.currentTimeMillis() + 3000L;
+        boolean ended = false;
+        long restarts = 0, last = 0;
+        while (System.currentTimeMillis() < deadline) {
+            follower.sync(sync(1, Status.PLAYING, 5_000L, 60_000L, false, 1f));
+            Thread.sleep(50L);
+            final long t = follower.time();
+            if (t < last) restarts++;
+            last = t;
+            if (follower.ended()) { ended = true; break; }
+        }
+        assertTrue(ended, "the follower must reach its own end");
+        assertEquals(0, restarts, "no restarts while ending");
+        Thread.sleep(300L); // SEVERAL TICKS OF FRESH SNAPSHOTS MUST NOT REVIVE IT
+        follower.sync(sync(1, Status.PLAYING, 8_000L, 60_000L, false, 1f));
+        Thread.sleep(300L);
+        assertEquals(Status.ENDED, follower.status(), "a session past our media must not replay it");
+
+        // A REWIND BELOW OUR MEDIA'S END IS A REAL REPLAY AND MUST GO THROUGH
+        follower.sync(sync(2, Status.PLAYING, 100L, 60_000L, false, 1f));
+        final long replayDeadline = System.currentTimeMillis() + 2000L;
+        while (System.currentTimeMillis() < replayDeadline && !follower.playing()) Thread.sleep(25L);
+        assertTrue(follower.playing(), "a rewound session must replay the ended media");
     }
 
     @Test
