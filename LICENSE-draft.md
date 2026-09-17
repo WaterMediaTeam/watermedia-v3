@@ -1,7 +1,7 @@
 # FAIR PUBLIC SOURCE SHIELD LICENSE
 
 > Copyright © \<year\> \<your name or organization\>. FPSS Licensed<br>
-> \<website url - this must be done my me\>.
+> \<website url - this must be done by me\>.
 
 # Definitions
 - **Licensor**: the individual or moral entity offering these terms.
