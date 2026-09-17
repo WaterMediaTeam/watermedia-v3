@@ -3,9 +3,13 @@ package org.watermedia.test.media.ff;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer.LodLevel;
 import org.watermedia.api.media.players.MediaPlayer.Status;
 import org.watermedia.api.media.engines.HeadlessGFXEngine;
@@ -14,11 +18,17 @@ import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -137,6 +147,52 @@ public class FFMediaPlayerTest {
                     "upload width should shrink after a hot LOD change");
         } finally {
             player.stop();
+            player.release();
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Status.class, names = { "ENDED", "ERROR" })
+    void terminalCallbackCannotFreeItsOwnPlaybackResources(final Status terminal, @TempDir final Path directory) throws Exception {
+        final int previousPlayers = MediaPlayer.openPlayers();
+        final Path input = terminal == Status.ERROR ? directory.resolve("removed.mp4") : Fixtures.MP4_H264;
+        if (terminal == Status.ERROR) Files.copy(Fixtures.MP4_H264, input);
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(input));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        assertEquals(MRL.Status.LOADED, mrl.status());
+        // REMOVE ONLY THE TEMP COPY AFTER RESOLUTION TO EXERCISE A REAL DEMUX OPEN FAILURE.
+        if (terminal == Status.ERROR) Files.delete(input);
+        final HeadlessGFXEngine graphics = new HeadlessGFXEngine();
+        final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, graphics, null);
+        final CompletableFuture<Throwable> callback = new CompletableFuture<>();
+        final Thread[] callbackThread = new Thread[1];
+        final boolean[] retained = new boolean[1];
+        player.onStatus((previous, next) -> {
+            if (next != terminal || callback.isDone()) return;
+            callbackThread[0] = Thread.currentThread();
+            Throwable failure = null;
+            try { player.release(); }
+            catch (final Throwable rejected) { failure = rejected; }
+            retained[0] = !graphics.released() && MediaPlayer.openPlayers() == previousPlayers + 1;
+            callback.complete(failure);
+        });
+        try {
+            assertTrue(player.start());
+            if (terminal == Status.ENDED) {
+                assertTrue(PlayerWait.awaitCondition(() -> graphics.uploadCount() > 0, LOAD_TIMEOUT_MS));
+                assertTrue(player.duration() > 0);
+                assertTrue(player.seek(Math.max(0, player.duration() - 1000)));
+            }
+            assertInstanceOf(IllegalStateException.class, callback.get(LOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertNotSame(Thread.currentThread(), callbackThread[0]);
+            assertTrue(retained[0], "Callback release must retain graphics and registered ownership");
+            assertFalse(Thread.currentThread().isInterrupted(), "Only the playback thread was interrupted");
+            player.onStatus(null);
+            player.release();
+            assertTrue(graphics.released());
+            assertEquals(previousPlayers, MediaPlayer.openPlayers());
+        } finally {
+            player.onStatus(null);
             player.release();
         }
     }

@@ -13,6 +13,7 @@ import org.watermedia.api.platform.PlatformData;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.io.IOException;
 import java.net.URI;
@@ -35,6 +36,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("MRL platform source classification")
 public class MrlPlatformClassificationTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     private static final long TIMEOUT_MS = 5000L;
 

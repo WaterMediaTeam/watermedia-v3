@@ -1,11 +1,13 @@
 package org.watermedia.test.media.mrl;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.net.URI;
 
@@ -22,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("MRL quality buckets")
 public class MrlQualityTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     private static final long TIMEOUT_MS = 2000L;
 

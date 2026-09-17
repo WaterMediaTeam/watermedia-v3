@@ -1,11 +1,13 @@
 package org.watermedia.test.media.mrl;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -20,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("MRL source classification")
 public class MrlSourcesTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     private static final long TIMEOUT_MS = 2000L;
 

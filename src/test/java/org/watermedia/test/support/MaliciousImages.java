@@ -1,9 +1,12 @@
 package org.watermedia.test.support;
 
+import org.watermedia.test.codecs.Pentesting;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 
@@ -13,7 +16,7 @@ import java.util.zip.Deflater;
  * <p>The fixtures are binary attack payloads that cannot be authored by hand or kept readable in a
  * diff, so they are produced here instead: every file is described once, in code, next to the
  * vulnerability class and the real-world CVE it mirrors. Run {@code main} to (re)write the corpus;
- * the emitted files are committed and {@link org.watermedia.test.codecs.Pentesting} reads them from
+ * the emitted files are committed and {@link Pentesting} reads them from
  * disk, so the suite never depends on this class at test time.
  *
  * <p>Payloads stay small on purpose. Every bomb here expresses its cost through <em>header fields</em>
@@ -62,7 +65,7 @@ public final class MaliciousImages {
         write(dir, "pam-depth-bomb.pam", ascii(
                 "P7\nWIDTH 16384\nHEIGHT 1\nDEPTH 65535\nMAXVAL 65535\nTUPLTYPE RGB\nENDHDR\n"));
 
-        // TRUNCATED HEADERS AND RASTER — THREE RAW java.io.EOFException SITES
+        // TRUNCATED HEADERS AND RASTER — THREE RAW EOFException SITES
         write(dir, "truncated-header.pam", ascii("P5"));
         write(dir, "truncated-pam-header.pam", ascii("P7"));
         write(dir, "truncated-raster.pam", ascii("P5\n1 1 255\n"));
@@ -102,9 +105,7 @@ public final class MaliciousImages {
     // ==========================================================================
     // DDS / BC
     // ==========================================================================
-    // THE BC PATH IS DORMANT: BCCodec.init() HARDCODES EVERY VERSION TO FALSE, SO BCReader THROWS
-    // BEFORE ITS ARITHMETIC RUNS. THESE FIXTURES ARM THEMSELVES THE DAY THE JNI BINDINGS LAND, AND
-    // THE OVERFLOW THEY TARGET IS ALREADY OBSERVABLE TODAY THROUGH THE PUBLIC DDSHeader HELPERS.
+    // THESE FIXTURES EXERCISE DDS STRUCTURE AND BLOCK-SIZE BOUNDS WITHOUT A GPU.
     private static void dds(final Path dir) throws IOException {
         Files.createDirectories(dir);
 
@@ -232,7 +233,7 @@ public final class MaliciousImages {
                 .raw(vp8lGroupBomb(0xFF, 0x0F))
                 .bytes())));
 
-        // SIX RAW java.io.EOFException SITES, ONE FIXTURE EACH
+        // SIX RAW EOFException SITES, ONE FIXTURE EACH
         write(dir, "truncated-preamble.webp", new Buf().ascii("RIFF").le32(4).ascii("WEBP").bytes());
         write(dir, "trailing-partial-chunk.webp", new Buf()
                 .raw(riff(webpChunk("VP8X", vp8xBody(0x00, 1, 1))))
@@ -410,7 +411,7 @@ public final class MaliciousImages {
                         + "<rect width=\"8\" height=\"8\" fill=\"url(#g)\"/></svg>"));
 
         // MALFORMED MARKUP — EVERY XMLStreamException, INCLUDING EVERY JDK ENTITY-LIMIT TRIP, IS
-        // FUNNELLED INTO A BARE java.io.IOException OUTSIDE THE SEALED HIERARCHY. THIS IS THE
+        // FUNNELLED INTO A BARE IOException OUTSIDE THE SEALED HIERARCHY. THIS IS THE
         // TERMINAL OBSERVABLE OF BOTH ENTITY BOMBS ABOVE, WHICH IS WHAT MAKES IT THE MOST REACHABLE
         // CONTRACT VIOLATION IN THE DECODER.
         write(dir, "undefined-entity.svg", ascii(
@@ -434,7 +435,7 @@ public final class MaliciousImages {
         return "<!ENTITY " + name + " \"" + body + "\">\n";
     }
 
-    /** LSB-first bit writer: VP8L packs every field low-bit-first within each byte. */
+    // VP8L PACKS EACH FIELD LOW BIT FIRST WITHIN EACH BYTE.
     static final class Bits {
         private final Buf out = new Buf();
         private int acc;
@@ -538,7 +539,7 @@ public final class MaliciousImages {
                 idatGray1x1()));
 
         // NEGATIVE CHUNK LENGTH — THE PNG LENGTH FIELD IS UNSIGNED; 0x80000000 READS BACK AS A
-        // NEGATIVE int AND IS REJECTED WITH A BARE java.io.IOException, INDISTINGUISHABLE FROM A
+        // NEGATIVE INTEGER AND IS REJECTED WITH A BARE IOException, INDISTINGUISHABLE FROM A
         // TRANSPORT FAILURE. EXACTLY 8 TRAILING BYTES ARE REQUIRED: WITH FEWER, THE EARLIER
         // EOFException FIRES INSTEAD AND THE TARGET LINE IS NEVER REACHED.
         write(dir, "negative-chunk-length.png", new Buf()
@@ -657,7 +658,7 @@ public final class MaliciousImages {
         write(dir, "repeated-sof-churn.jpg", sofs.raw(0xFF, 0xD9).bytes());
 
         // TRUNCATED SEGMENT — SOF DECLARES Lf=17 AND SUPPLIES 3 BYTES. THE COMMONEST TRUNCATION
-        // SHAPE, AND IT SURFACES AS A RAW java.io.EOFException OUTSIDE THE SEALED HIERARCHY, SO A
+        // SHAPE, AND IT SURFACES AS A RAW EOFException OUTSIDE THE SEALED HIERARCHY, SO A
         // RETRY-DRIVEN PIPELINE RE-FETCHES A PERMANENTLY MALFORMED URL FOREVER.
         write(dir, "truncated-segment.jpg", new Buf()
                 .raw(0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x01).bytes());
@@ -724,7 +725,7 @@ public final class MaliciousImages {
 
     private static byte[] filled(final int count, final int value) {
         final byte[] out = new byte[count];
-        java.util.Arrays.fill(out, (byte) value);
+        Arrays.fill(out, (byte) value);
         return out;
     }
 
@@ -760,7 +761,7 @@ public final class MaliciousImages {
         write(dir, "frame-count-bomb.gif", frames.u8(0x3B).bytes());
 
         // TRUNCATED GLOBAL COLOR TABLE — DECLARES A 2-ENTRY GCT (6 BYTES) AND SUPPLIES ONLY 3.
-        // THE READER ANSWERS WITH A RAW java.io.EOFException, WHICH SITS OUTSIDE THE SEALED
+        // THE READER ANSWERS WITH A RAW EOFException, WHICH SITS OUTSIDE THE SEALED
         // XCodecException HIERARCHY AND SO MAKES A MALFORMED IMAGE INDISTINGUISHABLE FROM A
         // SOCKET FAILURE AT EVERY CALL SITE.
         write(dir, "truncated-color-table.gif", new Buf()
@@ -851,7 +852,7 @@ public final class MaliciousImages {
         System.out.printf("  %-40s %,10d bytes%n", dir.getFileName() + "/" + name, data.length);
     }
 
-    /** Append-only byte builder; the fixtures are hand-packed headers, so capacity grows as needed. */
+    // APPEND-ONLY BUILDER FOR HAND-PACKED FIXTURE HEADERS.
     static final class Buf {
         private byte[] a = new byte[256];
         private int n;
@@ -899,7 +900,7 @@ public final class MaliciousImages {
         }
     }
 
-    /** Deflates a payload, used by the PNG zlib-bomb and compressed-text fixtures. */
+    // COMPRESS PAYLOADS FOR PNG BOMB AND TEXT FIXTURES.
     static byte[] deflate(final byte[] raw, final int level) {
         final Deflater d = new Deflater(level);
         d.setInput(raw);
@@ -916,7 +917,7 @@ public final class MaliciousImages {
         return out.bytes();
     }
 
-    /** Builds a PNG chunk with a correct CRC over type+payload. */
+    // BUILD A PNG CHUNK WITH CRC OVER ITS TYPE AND PAYLOAD.
     static byte[] pngChunk(final String type, final byte[] payload) {
         final CRC32 crc = new CRC32();
         final byte[] t = type.getBytes(StandardCharsets.US_ASCII);

@@ -3,15 +3,13 @@ package org.watermedia.api.codecs.common.dds;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.XCodecException;
 
-import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.file.Path;
+import java.util.Locale;
 
 /**
  * DirectDraw Surface (DDS) container with the modern {@code DX10} extended header — the storage
- * format for {@link org.watermedia.api.codecs.common.bc.BCCodec BC}-compressed frames, the same way
+ * format for BC-compressed frames, the same way
  * RIFF is the container for WebP.
  * This class knows the container only; the block codec is independent.
  *
@@ -28,17 +26,16 @@ public final class DDSHeader {
 
     /** Byte length of the {@code "DDS "} + {@code DDS_HEADER} + {@code DDS_HEADER_DXT10} prefix. */
     public static final int BYTES = 148;
-    /** Little-endian offset of the {@code arraySize} field inside the DXT10 header. */
-    public static final int ARRAYSIZE_OFFSET = 140;
-    /** Footer magic: {@code 'W','M','T','C'} (WaterMedia Texture Cache). */
-    public static final int FOOTER_MAGIC = 0x574D5443;
-    public static final int FOOTER_VERSION = 1;
-    /** Byte length of the footer header (magic + version + frameCount), before the delay longs. */
-    public static final int FOOTER_HEAD_BYTES = 12;
+    // LITTLE-ENDIAN ARRAY SIZE OFFSET IN THE DXT10 HEADER.
+    private static final int ARRAYSIZE_OFFSET = 140;
+    // WATERMEDIA ANIMATION FOOTER IDENTIFIER.
+    private static final int FOOTER_MAGIC = 0x574D5443;
+    private static final int FOOTER_VERSION = 1;
+    // MAGIC, VERSION AND FRAME COUNT PRECEDE THE DELAY LONGS.
+    private static final int FOOTER_HEAD_BYTES = 12;
 
-    // DIMENSION CAPS, MATCHING EVERY SIBLING READER. THE HEADER FIELDS ARE ATTACKER-CONTROLLED AND
-    // SIZE THE BLOCK ARITHMETIC: 65536x65536 IS 2^31 BC1 BYTES (WRAPS NEGATIVE) AND 65535x65535 IS
-    // 2^32 BC7 BYTES (COLLAPSES TO ZERO), BOTH OF WHICH SLIP PAST EVERY DOWNSTREAM SIZE GUARD
+    // ATTACKER-CONTROLLED DIMENSIONS CAN OVERFLOW BLOCK SIZE MATH BEFORE ALLOCATION CHECKS.
+    // THESE CAPS ALSO MATCH THE SIBLING IMAGE READERS.
     private static final int MAX_DIM = 16384;
     private static final int MAX_PIXELS = 1 << 26;
     // ONE SLICE PER ANIMATION FRAME; A DECLARED COUNT COSTS TWO BUFFER OBJECTS AND EIGHT FOOTER BYTES
@@ -49,8 +46,6 @@ public final class DDSHeader {
     // 'D','X','1','0' AS A LITTLE-ENDIAN INT
     private static final int FOURCC_DX10 = 0x30315844;
 
-    // DDS_HEADER.dwFlags: CAPS | HEIGHT | WIDTH | PIXELFORMAT | LINEARSIZE
-    private static final int DDSD_FLAGS = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000;
     private static final int DDPF_FOURCC = 0x4;
     private static final int DDSCAPS_TEXTURE = 0x1000;
     private static final int DX10_RESOURCE_DIMENSION_TEXTURE2D = 3;
@@ -61,67 +56,6 @@ public final class DDSHeader {
     private static final int DXGI_BC7_UNORM = 98;
 
     private DDSHeader() {}
-
-    /**
-     * Builds the {@value #BYTES}-byte prefix for a BC texture array. {@code arraySize} may be left
-     * at {@code 0} and patched later with {@link #patchArraySize(Path, int)} when the frame count
-     * is only known after streaming.
-     *
-     * @throws IllegalArgumentException when the codec is unknown or the frame does not fit the
-     *                                  container's 32-bit size field
-     */
-    public static byte[] write(final int width, final int height, final String codec, final int arraySize) {
-        // dwPitchOrLinearSize IS A DWORD: A FRAME BEYOND int WOULD BE SILENTLY TRUNCATED INTO A
-        // HEADER THAT NO READER — INCLUDING read() BELOW — COULD EVER TRUST
-        final long frameBytes = frameBytes(width, height, codec);
-        if (frameBytes <= 0 || frameBytes > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("BC frame does not fit the DDS size field: "
-                    + width + "x" + height + " is " + frameBytes + " bytes");
-        }
-        final ByteBuffer b = ByteBuffer.allocate(BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(MAGIC);
-        b.putInt(124);                  // DDS_HEADER.dwSize
-        b.putInt(DDSD_FLAGS);           // dwFlags
-        b.putInt(height);               // dwHeight
-        b.putInt(width);                // dwWidth
-        b.putInt((int) frameBytes);     // dwPitchOrLinearSize (top-level frame size)
-        b.putInt(0);                    // dwDepth
-        b.putInt(1);                    // dwMipMapCount
-        b.position(b.position() + 44);  // dwReserved1[11]
-        b.putInt(32);                   // ddspf.dwSize
-        b.putInt(DDPF_FOURCC);          // ddspf.dwFlags
-        b.putInt(FOURCC_DX10);          // ddspf.dwFourCC
-        b.position(b.position() + 20);  // dwRGBBitCount + RGBA bit masks (5 dwords, all zero)
-        b.putInt(DDSCAPS_TEXTURE);      // dwCaps
-        b.position(b.position() + 16);  // dwCaps2/3/4 + dwReserved2
-        b.putInt(dxgiOf(codec));        // DXT10.dxgiFormat
-        b.putInt(DX10_RESOURCE_DIMENSION_TEXTURE2D); // resourceDimension
-        b.putInt(0);                    // miscFlag
-        b.putInt(arraySize);            // arraySize
-        b.putInt(0);                    // miscFlags2 (alpha mode unknown)
-        return b.array();
-    }
-
-    /** Serializes the trailing footer carrying the per-frame delays DDS itself cannot hold. */
-    public static byte[] writeFooter(final long[] delays, final int count) {
-        final ByteBuffer b = ByteBuffer.allocate(FOOTER_HEAD_BYTES + count * Long.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(FOOTER_MAGIC);
-        b.putInt(FOOTER_VERSION);
-        b.putInt(count);
-        for (int i = 0; i < count; i++) b.putLong(delays[i]);
-        return b.array();
-    }
-
-    /** Overwrites the {@code arraySize} field of an already-written DDS file. */
-    public static void patchArraySize(final Path file, final int arraySize) throws IOException {
-        try (final RandomAccessFile raf = new RandomAccessFile(file.toFile(), "rw")) {
-            raf.seek(ARRAYSIZE_OFFSET);
-            raf.write(arraySize & 0xFF);
-            raf.write((arraySize >>> 8) & 0xFF);
-            raf.write((arraySize >>> 16) & 0xFF);
-            raf.write((arraySize >>> 24) & 0xFF);
-        }
-    }
 
     /**
      * Parses and validates the prefix of a BC-in-DDS file from {@code src.position()}, leaving the
@@ -137,6 +71,16 @@ public final class DDSHeader {
         final ByteBuffer b = src.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         if (b.getInt(base) != MAGIC) throw new XCodecException("Not a DDS container");
         if (b.getInt(base + 84) != FOURCC_DX10) throw new XCodecException("DDS is not DX10-extended");
+        // THE BLOCK SLICES BELOW REPRESENT ONLY TOP-LEVEL 2D TEXTURES, NEVER MIPS, VOLUMES OR CUBES.
+        if (b.getInt(base + 4) != 124 || b.getInt(base + 76) != 32
+                || (b.getInt(base + 80) & DDPF_FOURCC) == 0
+                || (b.getInt(base + 108) & DDSCAPS_TEXTURE) == 0
+                || b.getInt(base + 24) > 1 || b.getInt(base + 24) < 0
+                || b.getInt(base + 28) > 1 || b.getInt(base + 28) < 0
+                || b.getInt(base + 132) != DX10_RESOURCE_DIMENSION_TEXTURE2D
+                || b.getInt(base + 136) != 0) {
+            throw new XCodecException("Unsupported DDS texture structure");
+        }
         final int height = b.getInt(base + 12);
         final int width = b.getInt(base + 16);
         final int dxgi = b.getInt(base + 128);
@@ -199,18 +143,9 @@ public final class DDSHeader {
      *                                  16 turned a typo into a plausible but wrong header
      */
     public static int blockBytesOf(final String codec) {
-        return switch (codec == null ? "" : codec.toUpperCase(java.util.Locale.ROOT)) {
+        return switch (codec == null ? "" : codec.toUpperCase(Locale.ROOT)) {
             case CodecsAPI.CODEC_BC1 -> 8;
             case CodecsAPI.CODEC_BC3, CodecsAPI.CODEC_BC7 -> 16;
-            default -> throw new IllegalArgumentException("Unsupported block codec: " + codec);
-        };
-    }
-
-    private static int dxgiOf(final String codec) {
-        return switch (codec.toUpperCase(java.util.Locale.ROOT)) {
-            case CodecsAPI.CODEC_BC1 -> DXGI_BC1_UNORM;
-            case CodecsAPI.CODEC_BC3 -> DXGI_BC3_UNORM;
-            case CodecsAPI.CODEC_BC7 -> DXGI_BC7_UNORM;
             default -> throw new IllegalArgumentException("Unsupported block codec: " + codec);
         };
     }

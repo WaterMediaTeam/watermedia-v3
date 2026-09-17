@@ -6,7 +6,6 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
-import org.watermedia.api.codecs.readers.BCReader;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.media.engines.GFXEngine;
@@ -86,8 +85,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static final int MAX_FRAME_TEXTURES = 256;
     private static final long PAUSE_WAIT_MS = 200L;
     private static final long REFILL_PERMIT_TIMEOUT_MS = 5_000L;
-    // release() PROCEEDS AFTER THIS BOUND EVEN IF A PREPARE IS STILL BLOCKED ON SOCKET I/O,
-    // SO A RENDER/GAME-THREAD release() NEVER HANGS FOR THE FULL NETWORK TIMEOUT.
+    // A TIMED-OUT RELEASE RETAINS ENGINE OWNERSHIP UNTIL THE HOST RETRIES AFTER I/O FINISHES.
     private static final long RELEASE_WAIT_TIMEOUT_MS = 5_000L;
     private static final ExecutorService SINGLE_FRAME_POOL = Executors.newFixedThreadPool(
             Math.max(1, ThreadTool.minThreads()),
@@ -95,8 +93,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // GLOBAL PERMITS BOUNDING AGGREGATE DECODE CPU ACROSS ALL TX PLAYERS — MANY ANIMATED
     // IMAGES THROTTLE EACH OTHER INSTEAD OF STARVING THE GAME'S OWN THREADS
     private static final Semaphore DECODE_PERMITS = new Semaphore(Math.max(2, ThreadTool.minThreads()));
-    // ACCEPT HEADER FOR IMAGE FETCHES — SHARED BY THE NETWORK AND CODEC CACHE KEYS SO BOTH TIERS
-    // DERIVE THE SAME LOGICAL-RESOURCE KEY FOR A GIVEN SOURCE.
+    // ACCEPT HEADER SHARED BY IMAGE REQUESTS AND THEIR CACHE KEYS.
     private static final String IMAGE_ACCEPT = "image/*,*/*";
 
     // ==========================================================================
@@ -128,6 +125,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // LIFECYCLE THREAD (MODE 3 ONLY)
     private volatile Thread lifecycleThread;
     private volatile Future<?> lifecycleTask;
+    private volatile boolean released;
     private volatile ImageReader activeReader;
     private volatile int lifecycleSerial;
 
@@ -173,13 +171,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     private final ArrayDeque<ByteBuffer> inFlight = new ArrayDeque<>(IN_FLIGHT_KEEP + 1);
     private int bufferByteSize;
 
-    // CODEC CACHE (BC OVER DDS) — WRITE SIDE. codecActive IS RESOLVED AT PREPARE; codecWriter HOLDS
-    // THE IN-PROGRESS SESSION (OWNED BY THE PRODUCER THREAD) AND codecExpect GUARDS STRICT IN-ORDER
-    // FIRST-PASS FEEDING SO A SEEK/LOOP/SCRUB ABORTS INSTEAD OF WRITING A CORRUPT TEXTURE.
-    private volatile boolean codecActive;
-    private volatile NetworkCache.CodecWriter codecWriter;
-    private int codecExpect;
-
     public TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine) {
         this(mrl, sourceIndex, gfxEngine, null);
     }
@@ -200,6 +191,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     @Override
     public boolean start() {
+        if (this.released) return false;
         if (!super.start()) return false;
         // ONLY startPaused() SEEDS THE INITIAL PAUSE — NEVER A LEFTOVER triggerPause FROM A PRIOR SESSION
         final boolean initialPause = this.startPausedRequest;
@@ -213,14 +205,19 @@ public final class TxMediaPlayer extends MediaPlayer {
         // (GAME THREAD + NETWORK HANDLER) MUST NOT READ-MODIFY-WRITE THE SAME lifecycleSerial AND
         // LET BOTH PREPARE PASSES BELIEVE THEY ARE CURRENT AND INTERLEAVE STATUS/BUFFER WRITES.
         synchronized (this.signals) {
+            if (this.released) return false;
             final int serial = this.lifecycleSerial + 1;
             this.lifecycleSerial = serial;
             this.resetForStart(initialPause);
-            this.prepareActive++;
             this.lifecycleTask = SINGLE_FRAME_POOL.submit(() -> {
+                synchronized (this.signals) {
+                    if (this.released || this.triggerStop || serial != this.lifecycleSerial || Thread.currentThread().isInterrupted()) return;
+                    this.prepareActive++;
+                }
                 try {
                     if (old != null) ThreadTool.join(old);
                     if (oldTask != null && !oldTask.isDone()) oldTask.cancel(true);
+                    if (this.released || this.triggerStop || serial != this.lifecycleSerial || Thread.currentThread().isInterrupted()) return;
                     this.prepare(serial);
                 } finally {
                     synchronized (this.signals) {
@@ -263,7 +260,10 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public void release() {
-        this.triggerStop = true;
+        synchronized (this.signals) {
+            this.released = true;
+            this.triggerStop = true;
+        }
         this.texTimeline = null;
         this.texDelays = null;
         IOTool.closeQuietly(this.activeReader);
@@ -271,28 +271,34 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (task != null) task.cancel(true);
         final Thread t = this.lifecycleThread;
         if (t != null) t.interrupt();
-        if (t != null && Thread.currentThread() != t) ThreadTool.join(t);
-        // AWAIT ANY PREPARE STILL RUNNING ON THE POOL: THE cancel(true) ABOVE ONLY INTERRUPTS IT,
-        // WHILE super.release() TEARS DOWN THE ENGINE THAT PREPARE MAY STILL BE FEEDING (VULKAN:
-        // CONCURRENT IMPORT-CACHE ACCESS / SUBMISSION OF A JUST-DESTROYED BUFFER).
+        if (t == Thread.currentThread())
+            throw new IllegalStateException("Release the image player from its owning host thread after playback stops");
+        if (t != null) ThreadTool.join(t);
+        // CANCELLING A FUTURE DOES NOT END A RUNNING TASK; KEEP ITS ENGINE ALIVE UNTIL IT EXITS.
         boolean interrupted = false;
-        final long deadline = System.currentTimeMillis() + RELEASE_WAIT_TIMEOUT_MS;
-        synchronized (this.signals) {
-            while (this.prepareActive > 0) {
-                final long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0L) {
-                    // A prepare() STUCK ON SOCKET I/O CAN IGNORE THE INTERRUPT — PROCEED RATHER THAN HANG.
-                    LOGGER.warn(IT, "release() proceeding with {} prepare task(s) still running for {}", this.prepareActive, this.source);
-                    break;
-                }
-                try {
-                    this.signals.wait(Math.min(50L, remaining));
-                } catch (final InterruptedException e) {
-                    interrupted = true;
+        final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RELEASE_WAIT_TIMEOUT_MS);
+        try {
+            synchronized (this.signals) {
+                while (this.prepareActive > 0) {
+                    final long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0L)
+                        throw new IllegalStateException("Image preparation has not stopped; release must be retried after I/O finishes");
+                    try {
+                        TimeUnit.NANOSECONDS.timedWait(this.signals, remaining);
+                    } catch (final InterruptedException e) {
+                        interrupted = true;
+                    }
                 }
             }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
-        if (interrupted) Thread.currentThread().interrupt();
+        // PREPARATION MAY HAVE HANDED OFF TO STREAMING WHILE RELEASE WAS WAITING FOR ITS EXIT.
+        final Thread streaming = this.lifecycleThread;
+        if (streaming != null && streaming != t && streaming != Thread.currentThread()) {
+            streaming.interrupt();
+            ThreadTool.join(streaming);
+        }
         this.lifecycleThread = null;
         this.lifecycleTask = null;
         this.resetAfterRelease();
@@ -312,11 +318,8 @@ public final class TxMediaPlayer extends MediaPlayer {
         try {
             this.status = Status.LOADING;
 
-            // CODEC FAST PATH — REPLAY A CACHED BC TEXTURE STRAIGHT TO THE GPU, SKIPPING THE
-            // NETWORK FETCH AND THE SOFTWARE DECODE ENTIRELY. FALLS THROUGH WHEN UNAVAILABLE.
-            if (this.tryCodecTextures()) return;
-
             reader = this.openSource();
+            if (this.released || this.triggerStop || serial != this.lifecycleSerial || Thread.currentThread().isInterrupted()) return;
             this.sourceWidth = reader.width();
             this.sourceHeight = reader.height();
             if (this.sourceWidth <= 0 || this.sourceHeight <= 0) {
@@ -329,8 +332,6 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.planeCount = reader.planeCount();
             this.applyTarget();
             this.gfx.format(this.pixelFormat, this.outWidth, this.outHeight);
-            // CODEC WRITE APPLIES ONLY FOR BC-ENCODABLE LAYOUTS WHEN THE CODEC CACHE IS ACTIVE.
-            this.codecActive = NetworkCache.codecEnabled() && bcEncodable(this.pixelFormat);
 
             if (this.triggerStop || Thread.currentThread().isInterrupted()) {
                 this.status = Status.STOPPED;
@@ -371,9 +372,6 @@ public final class TxMediaPlayer extends MediaPlayer {
             }
         } finally {
             if (!handedOff) {
-                // SAFETY NET: STATIC/MODE-2 PATHS ALREADY COMMITTED (WRITER NULL); THIS DROPS A
-                // SESSION LEFT OPEN BY AN EXCEPTION SO NO HALF-WRITTEN TEXTURE SURVIVES.
-                this.abortCodec();
                 if (this.lifecycleSerial == serial) this.clearBuffers();
                 IOTool.closeQuietly(reader);
                 if (this.lifecycleSerial == serial) this.activeReader = null;
@@ -393,7 +391,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.armStaticClock();
         this.showFirstFrame(reader);
         this.readerExhausted = true;
-        this.commitCodec(); // SINGLE-FRAME TEXTURE: THE ONE FRAME WAS FED IN showFirstFrame
         LOGGER.debug(IT, "Loaded: {} ({}x{}, static, cache/threadless{})",
                 this.source, this.sourceWidth, this.sourceHeight,
                 this.staticTimed ? ", displayTime=" + this.displayTimeMs + "ms" : "");
@@ -503,9 +500,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.loaded = true;
         this.resolveInitialStatus();
 
-        // CODEC CACHE: PERSIST THE WHOLE (SCALED) FRAME SET AS A BC TEXTURE FOR FAST REPLAYS.
-        this.cacheCodecFrames(frames, delays);
-
         LOGGER.debug(IT, "Loaded: {} ({}x{}, {} frame textures, passive clock, duration={}ms)",
                 this.source, this.sourceWidth, this.sourceHeight, timeline.length, this.knownDuration);
     }
@@ -607,9 +601,6 @@ public final class TxMediaPlayer extends MediaPlayer {
                 }
             }
         } finally {
-            // SAFETY NET: A CLEAN EOF ALREADY COMMITTED (WRITER NULL); THIS DROPS A SESSION LEFT
-            // OPEN BY STOP/ERROR/INTERRUPT SO NO HALF-WRITTEN TEXTURE SURVIVES.
-            this.abortCodec();
             if (this.lifecycleSerial == serial) this.clearBuffers();
             IOTool.closeQuietly(reader);
             if (this.lifecycleSerial == serial) this.activeReader = null;
@@ -656,7 +647,6 @@ public final class TxMediaPlayer extends MediaPlayer {
             final long target = this.seekTarget;
             if (target >= 0) {
                 this.seekTarget = -1L;
-                this.abortCodec(); // SEEK BREAKS THE IN-ORDER FIRST PASS — DROP THE PARTIAL TEXTURE
                 this.clearPrefetch();
                 reader = this.reopen(reader);
                 final ByteBuffer frame = this.seekReaderToTime(reader, target);
@@ -676,7 +666,6 @@ public final class TxMediaPlayer extends MediaPlayer {
                     this.triggerPrevFrame = false;
                     final int targetIdx = this.currentFrameIndex - 1;
                     if (targetIdx >= 0) {
-                        this.abortCodec(); // STEP-BACK BREAKS THE IN-ORDER PASS
                         this.clearPrefetch();
                         reader = this.reopen(reader);
                         final ByteBuffer frame = this.seekReaderToFrame(reader, targetIdx);
@@ -727,9 +716,8 @@ public final class TxMediaPlayer extends MediaPlayer {
                 continue;
             }
 
-            // NO FRAME AVAILABLE MEANS EOF — A CLEAN FORWARD PASS COMPLETED, SO PUBLISH THE TEXTURE.
+            // NO FRAME AVAILABLE MEANS EOF.
             if (this.knownDuration <= 0L) this.knownDuration = this.time;
-            this.commitCodec();
             if (this.repeat()) {
                 this.clearPrefetch();
                 reader = this.reopen(reader);
@@ -786,7 +774,6 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // PAUSED STEP-FORWARD PREFERS A QUEUED FRAME, THEN DECODES DIRECTLY IF NEEDED.
     private void stepForward(final ImageReader reader) throws IOException {
-        this.abortCodec(); // MANUAL STEPPING DESYNCS THE IN-ORDER PASS — DROP THE PARTIAL TEXTURE
         final PrefetchedFrame queued = this.prefetchQueue.pollFirst();
         if (queued != null) {
             this.uploadBuffer(queued.pixels, queued.width, queued.height);
@@ -808,159 +795,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // ==========================================================================
-    // CODEC CACHE (BC OVER DDS)
-    // ==========================================================================
-    // READ: a committed BC texture replays straight to the GPU — no fetch, no decode. WRITE: decoded
-    // frames are recompressed to BC and persisted so the next playback takes the read path. Dormant
-    // until a native BC codec is available, so today these helpers no-op transparently.
-
-    // REPLAYS A CACHED BC TEXTURE WHEN ONE EXISTS AND THE ENGINE CAN SAMPLE IT. RETURNS FALSE TO
-    // FALL BACK TO THE NORMAL FETCH+DECODE PATH; ENGINE STATE IS ONLY TOUCHED ONCE COMMITTED.
-    private boolean tryCodecTextures() {
-        if (!NetworkCache.codecEnabled()) return false;
-        final URI uri = this.source.uri(this.quality);
-        BCReader bc = null;
-        try {
-            if (!NetworkCache.codecReadable(uri, this.source.headers(), IMAGE_ACCEPT)) return false;
-            bc = NetworkCache.openCodecReader(uri, this.source.headers(), IMAGE_ACCEPT);
-            if (bc == null) return false;
-            // THE CODEC ID MAPS 1:1 TO A COMPRESSED PixelFormat CONSTANT (BC1/BC3/BC7) — THE ENGINE
-            // SAMPLES THE BLOCKS DIRECTLY WHEN IT SUPPORTS THAT FORMAT.
-            final PixelFormat bcFormat = PixelFormat.valueOf(bc.version());
-            if (!this.gfx.supports(bcFormat)) return false;
-
-            super.quality(this.source.qualityOf(uri));
-            this.sourceWidth = bc.width();
-            this.sourceHeight = bc.height();
-            this.outWidth = this.sourceWidth;
-            this.outHeight = this.sourceHeight;
-            this.planeCount = 1;
-            this.pixelFormat = PixelFormat.BGRA; // PLAYER-SIDE VIEW STAYS BGRA (BC SAMPLES AS RGBA); THE ENGINE GETS THE REAL BC FORMAT
-            this.resolveQuality(this.sourceWidth, this.sourceHeight);
-
-            final ByteBuffer[] blocks = bc.blocks();
-            final long[] delays = bc.delays();
-            this.gfx.format(bcFormat, this.outWidth, this.outHeight);
-            if (!this.gfx.preload(blocks, 0)) return false;
-            this.gfx.frame(0);
-
-            this.animated = blocks.length > 1;
-            this.currentFrameIndex = 0;
-            this.currentDelayMs = delayAt(delays, 0);
-            this.nextDecodedIndex = blocks.length;
-            this.readerExhausted = true;
-            if (this.animated) {
-                // PASSIVE CLOCK — SAME AS MODE 2: THE DISPLAYED FRAME IS RESOLVED FROM WALL TIME.
-                final long[] timeline = new long[blocks.length];
-                long total = 0L;
-                for (int i = 0; i < timeline.length; i++) {
-                    timeline[i] = total;
-                    total += Math.max(1L, delayAt(delays, i));
-                }
-                this.knownDuration = total;
-                synchronized (this.clock) {
-                    this.clockBase = 0L;
-                    this.wallBase = System.currentTimeMillis();
-                }
-                this.texDelays = delays;
-                this.texTimeline = timeline;
-            } else {
-                this.armStaticClock();
-            }
-            this.loaded = true;
-            this.resolveInitialStatus();
-            LOGGER.debug(IT, "Loaded from codec cache: {} ({}x{}, {} {} frame(s), {})",
-                    this.source, this.sourceWidth, this.sourceHeight, blocks.length, bc.version(),
-                    this.animated ? "passive clock" : "static");
-            return true;
-        } catch (final Exception e) {
-            LOGGER.debug(IT, "Codec cache read failed for {}; decoding from source", this.source, e);
-            return false;
-        } finally {
-            IOTool.closeQuietly(bc);
-        }
-    }
-
-    // BULK-WRITES A FULLY DECODED FRAME SET (MODE 2) TO THE CODEC CACHE IN ONE SHOT.
-    private void cacheCodecFrames(final ByteBuffer[] frames, final long[] delays) {
-        if (!this.codecActive) return;
-        final URI uri = this.source.uri(this.quality);
-        try (final NetworkCache.CodecWriter writer = NetworkCache.openCodecWriter(
-                uri, this.source.headers(), IMAGE_ACCEPT, this.outWidth, this.outHeight, this.pixelFormat)) {
-            if (writer == null) return;
-            for (int i = 0; i < frames.length; i++) {
-                final ByteBuffer f = frames[i];
-                final int pos = f.position();
-                writer.write(f, delayAt(delays, i));
-                f.position(pos);
-            }
-            writer.commit();
-        } catch (final IOException e) {
-            LOGGER.debug(IT, "Codec cache write failed for {}", this.source, e);
-        }
-    }
-
-    // OPENS A STREAMING CODEC SESSION (MODE 1/3) BEFORE THE FIRST FRAME. NO-OP WHEN INACTIVE.
-    private void openCodec() {
-        if (!this.codecActive || this.codecWriter != null) return;
-        try {
-            this.codecWriter = NetworkCache.openCodecWriter(this.source.uri(this.quality),
-                    this.source.headers(), IMAGE_ACCEPT, this.outWidth, this.outHeight, this.pixelFormat);
-            this.codecExpect = 0;
-        } catch (final IOException e) {
-            LOGGER.debug(IT, "Codec cache open failed for {}", this.source, e);
-            this.codecWriter = null;
-        }
-    }
-
-    // FEEDS ONE FRAME TO THE STREAMING SESSION, ONLY IN STRICT FIRST-PASS ORDER. ANY GAP (SEEK,
-    // LOOP, SCRUB) ABORTS THE SESSION SO THE CACHED TEXTURE IS NEVER PARTIAL OR REORDERED.
-    private void feedCodec(final ByteBuffer frame, final long delay, final int idx) {
-        final NetworkCache.CodecWriter writer = this.codecWriter;
-        if (writer == null) return;
-        if (idx != this.codecExpect) {
-            this.abortCodec();
-            return;
-        }
-        final int pos = frame.position();
-        try {
-            writer.write(frame, delay);
-            this.codecExpect++;
-        } catch (final IOException e) {
-            LOGGER.debug(IT, "Codec cache write failed for {}; aborting", this.source, e);
-            this.abortCodec();
-        } finally {
-            frame.position(pos);
-        }
-    }
-
-    // FINALIZES AND PUBLISHES THE STREAMING SESSION AFTER A CLEAN FULL FORWARD PASS.
-    private void commitCodec() {
-        final NetworkCache.CodecWriter writer = this.codecWriter;
-        if (writer == null) return;
-        this.codecWriter = null;
-        try {
-            writer.commit();
-        } catch (final IOException e) {
-            LOGGER.debug(IT, "Codec cache commit failed for {}", this.source, e);
-        }
-    }
-
-    // DISCARDS THE STREAMING SESSION WITHOUT PUBLISHING (SEEK/LOOP/STOP/SIZE-CHANGE/ERROR).
-    private void abortCodec() {
-        final NetworkCache.CodecWriter writer = this.codecWriter;
-        if (writer != null) {
-            this.codecWriter = null;
-            writer.abort();
-        }
-    }
-
-    // BC ENCODES PACKED COLOUR LAYOUTS ONLY — YUV/GRAY FRAMES SKIP CODEC CACHING.
-    private static boolean bcEncodable(final PixelFormat cs) {
-        return cs == PixelFormat.BGRA || cs == PixelFormat.RGBA || cs == PixelFormat.GBRA || cs == PixelFormat.RGB;
-    }
-
-    // ==========================================================================
     // SHARED — SOURCE LIFECYCLE
     // ==========================================================================
     private ImageReader openSource() throws IOException {
@@ -969,6 +803,8 @@ public final class TxMediaPlayer extends MediaPlayer {
         final long maxBytes = this.maxSourceBytes();
         try {
             final NetworkCache.CachedBytes sourceBytes = NetworkCache.read(uri, this.source.headers(), IMAGE_ACCEPT, maxBytes);
+            if (this.released || this.triggerStop || Thread.currentThread().isInterrupted())
+                throw new IOException("Image loading was cancelled");
             // THE MEDIA TYPE WAS ALREADY DETERMINED AUTHORITATIVELY BY MRL (BY CONTENT-TYPE OR, FOR
             // AMBIGUOUS MIMES, BY BYTE-SNIFFING) AND decodeImage VALIDATES THE ACTUAL BYTES — SO WE DO
             // NOT SECOND-GUESS WITH THE SERVER'S CONTENT-TYPE HEADER, WHICH WOULD WRONGLY REJECT IMAGES
@@ -1005,11 +841,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (!reader.hasNext()) {
             throw new IOException("No frames decoded from: " + this.source);
         }
-
-        // OPEN THE CODEC SESSION BEFORE FRAME 0 SO IT IS CAPTURED IN-ORDER (NO-OP WHEN INACTIVE).
-        this.openCodec();
         final ByteBuffer first = this.copyFrame(reader.next());
-        this.feedCodec(first, delayAt(reader, 0), 0);
         this.uploadBuffer(first, this.outWidth, this.outHeight);
         this.currentFrameIndex = 0;
         this.currentDelayMs = delayAt(reader, 0);
@@ -1216,10 +1048,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 final ByteBuffer a = sliceView(buffer, 3 * yLen, yLen);
                 this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, w, w, w});
             }
-            default -> {
-                LOGGER.warn(IT, "Multi-plane upload not implemented for {}; falling back to single-plane", cs);
-                this.gfx.upload(new ByteBuffer[]{buffer}, new int[]{0});
-            }
+            default -> throw new IllegalStateException("Unsupported multi-plane pixel format: " + cs);
         }
     }
 
@@ -1264,9 +1093,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (byteSize > Integer.MAX_VALUE) {
             throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
         }
-        // A HOT maxSize/LOD CHANGE MID-STREAM RESIZES SUBSEQUENT FRAMES; THE CODEC TEXTURE IS
-        // FIXED-SIZE, SO DROP ANY IN-PROGRESS WRITE (NO-OP WHEN NO SESSION IS OPEN).
-        this.abortCodec();
         this.outWidth = w;
         this.outHeight = h;
         this.bufferByteSize = (int) byteSize;
@@ -1275,7 +1101,6 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     private PrefetchedFrame snapshot(final ByteBuffer frame, final long delay, final int idx) {
         final ByteBuffer pixels = this.copyFrame(frame);
-        this.feedCodec(pixels, delay, idx); // STREAMING IN-ORDER FEED (NO-OP WHEN INACTIVE)
         return new PrefetchedFrame(pixels, delay, idx, this.outWidth, this.outHeight);
     }
 
@@ -1323,12 +1148,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.staticTimed = false;
         this.lifecycleThread = null;
         this.activeReader = null;
-        // CODEC WRITE STATE — codecActive IS RE-RESOLVED IN prepare(); THE WRITER ITSELF IS OWNED
-        // AND TORN DOWN BY THE PRODUCER THREAD'S finally, SO IT IS NOT TOUCHED HERE. BUFFERS ARE NOT
-        // CLEARED HERE EITHER: THE OUTGOING LIFECYCLE THREAD MAY STILL TOUCH THE DEQUES UNTIL THE NEW
-        // PREPARE TASK JOINS IT — EVERY PREPARE PATH CLEARS THEM AFTER THAT JOIN.
-        this.codecActive = false;
-        this.codecExpect = 0;
     }
 
     private void resetAfterRelease() {

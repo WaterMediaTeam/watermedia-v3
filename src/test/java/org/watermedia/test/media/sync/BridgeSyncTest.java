@@ -11,14 +11,17 @@ import org.watermedia.api.media.players.sync.Config.Capability;
 import org.watermedia.api.media.players.sync.Packet;
 import org.watermedia.api.media.players.sync.Report;
 import org.watermedia.api.media.players.sync.Sync;
+import org.watermedia.api.media.players.sync.Unwatch;
 import org.watermedia.api.media.players.sync.Watch;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -395,5 +398,55 @@ public class BridgeSyncTest {
 
         followers.get(0).release();
         await("the released follower to be dropped", () -> server.watchers() == 2);
+    }
+
+    @Test
+    @DisplayName("release emits its goodbye after an in-flight report without blocking the carrier")
+    void testReleaseDuringReport() throws InterruptedException {
+        final ServerMediaPlayer authority = new ServerMediaPlayer(ignored -> {});
+        final CountDownLatch reporting = new CountDownLatch(1);
+        final CountDownLatch resume = new CountDownLatch(1);
+        final CountDownLatch unwatched = new CountDownLatch(1);
+        final List<Packet> delivered = new CopyOnWriteArrayList<>();
+        final ServerMediaPlayer follower = ServerMediaPlayer.follower(payload -> {
+            final Packet packet = Packet.of(payload);
+            if (packet instanceof Report) {
+                reporting.countDown();
+                try {
+                    if (!resume.await(AWAIT_MS, TimeUnit.MILLISECONDS)) return;
+                } catch (final InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            delivered.add(packet);
+            authority.sync(packet);
+            if (packet instanceof Unwatch) unwatched.countDown();
+        });
+        try {
+            assertEquals(1, authority.watchers());
+            follower.sync(authority.snapshot());
+            assertTrue(reporting.await(AWAIT_MS, TimeUnit.MILLISECONDS), "the real sync ticker must enter the carrier");
+
+            follower.release();
+            follower.release();
+            assertEquals(1L, unwatched.getCount(), "goodbye must wait for the admitted report");
+            resume.countDown();
+
+            assertTrue(unwatched.await(AWAIT_MS, TimeUnit.MILLISECONDS), "the last send must finish deregistration");
+            assertEquals(0, authority.watchers());
+            assertEquals(List.of(Watch.class, Report.class, Unwatch.class),
+                    delivered.stream().map(Object::getClass).toList());
+            authority.start();
+            follower.sync(authority.snapshot());
+            assertFalse(follower.start(), "released players cannot resume sending or ticking");
+            settle();
+            assertEquals(0, authority.watchers(), "late snapshots must not register a released follower again");
+            assertEquals(3, delivered.size());
+        } finally {
+            resume.countDown();
+            follower.release();
+            authority.release();
+        }
     }
 }

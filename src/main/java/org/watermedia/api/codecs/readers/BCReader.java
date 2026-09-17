@@ -1,7 +1,7 @@
 package org.watermedia.api.codecs.readers;
 
 import org.watermedia.api.codecs.XCodecException;
-import org.watermedia.api.codecs.common.bc.BCCodec;
+import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.common.dds.DDSHeader;
 
 import java.io.Closeable;
@@ -10,14 +10,13 @@ import java.nio.ByteOrder;
 
 /**
  * Reader for the BC (BC7/BC3/BC1) texture-compression codec stored in a {@link DDSHeader DDS}
- * container. Unlike the pixel-decoding {@link org.watermedia.api.codecs.ImageReader} readers, BC is
+ * container. Unlike the pixel-decoding {@link ImageReader} readers, BC is
  * sampled by the GPU, so this reader yields the <em>compressed</em> blocks of each frame (in the
  * file's own version) for direct upload — there is no software decode.
  *
- * <p>The file's BC version is read from the container and validated against native availability in
- * the constructor, which throws when that version is not available (codecs are not pluggable, so a
- * reader that exists is always usable). Block buffers are direct and ready for the graphics engine;
- * {@link #version()} is exposed because the GPU upload needs the exact format.
+ * <p>Reading blocks requires no native encoder. The consumer must check that its graphics engine
+ * supports the format reported by {@link #version()}. A WaterMedia animation footer is optional;
+ * without one, texture array slices have zero display delay.
  */
 public final class BCReader implements Closeable {
 
@@ -33,14 +32,10 @@ public final class BCReader implements Closeable {
     /**
      * Parses a complete BC-in-DDS file from {@code file.position()}.
      *
-     * @throws XCodecException when the container is malformed/truncated or its BC version is not
-     *                         natively available
+     * @throws XCodecException when the container is malformed, truncated or exceeds the memory budget
      */
     public BCReader(final ByteBuffer file) throws XCodecException {
         final DDSHeader.Info info = DDSHeader.read(file);
-        if (!BCCodec.available(info.codec())) {
-            throw new XCodecException("BC codec unavailable for cached texture: " + info.codec());
-        }
         this.width = info.width();
         this.height = info.height();
         this.version = info.codec();
@@ -51,13 +46,23 @@ public final class BCReader implements Closeable {
         final long frameBytes = DDSHeader.frameBytes(this.width, this.height, this.version);
         if (frameBytes <= 0) throw new XCodecException("Invalid BC frame size: " + frameBytes + " bytes");
         final long texLen = (long) info.arraySize() * frameBytes;
-        if (texLen > Integer.MAX_VALUE) throw new XCodecException("BC texture too large: " + texLen + " bytes");
-        final long need = (long) DDSHeader.BYTES + texLen + DDSHeader.FOOTER_HEAD_BYTES + (long) info.arraySize() * Long.BYTES;
+        if (texLen > ImageReader.MAX_DECODED_BYTES) throw new XCodecException("BC texture too large: " + texLen + " bytes");
+        final long need = (long) DDSHeader.BYTES + texLen;
         if (file.remaining() < need) throw new XCodecException("Truncated BC texture: need " + need + " bytes");
 
         final int frameLen = (int) frameBytes;
         final int base = file.position();
         final int texStart = base + DDSHeader.BYTES;
+
+        final ByteBuffer footer = file.duplicate();
+        footer.position(texStart + (int) texLen);
+        this.delays = footer.hasRemaining() ? DDSHeader.readFooter(footer, info.arraySize()) : new long[info.arraySize()];
+        long total = 0L;
+        for (final long delay: this.delays) {
+            if (delay < 0 || delay > Long.MAX_VALUE - total) throw new XCodecException("Invalid BC frame delays");
+            total += delay;
+        }
+        this.duration = total;
 
         // COPY THE TEXTURE DATA INTO A SINGLE DIRECT BUFFER AND SLICE PER-FRAME VIEWS FROM IT — THE
         // SLICES STAY DIRECT, SO THE GRAPHICS ENGINE CAN UPLOAD THEM WITHOUT A FURTHER COPY.
@@ -73,13 +78,6 @@ public final class BCReader implements Closeable {
             view.position(i * frameLen).limit((i + 1) * frameLen);
             this.frames[i] = view.slice().order(tex.order());
         }
-
-        final ByteBuffer footer = file.duplicate();
-        footer.position(texStart + (int) texLen);
-        this.delays = DDSHeader.readFooter(footer, info.arraySize());
-        long total = 0L;
-        for (final long d: this.delays) total += d;
-        this.duration = total;
     }
 
     public int width() { return this.width; }

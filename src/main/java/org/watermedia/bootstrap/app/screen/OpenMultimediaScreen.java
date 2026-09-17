@@ -398,7 +398,7 @@ public class OpenMultimediaScreen extends Screen {
         }
 
         final int generation = ++this.previewGeneration;
-        this.previewMRL.reload();
+        this.previewMRL = this.previewMRL.reload();
         this.loadStartTime = System.currentTimeMillis();
         this.subscribePreviewMRL(this.previewMRL, generation);
         this.ctx.requestRender();

@@ -3,6 +3,7 @@ package org.watermedia.api.platform;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
+import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.WaterMediaModule;
 import org.watermedia.api.media.MRL;
@@ -21,8 +22,10 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -34,18 +37,18 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Platforms return {@link PlatformData} (their own structure); {@link MRL} and other
  * consumers build their domain types (e.g. {@code MRL.Source}) from that data.
  */
-public final class PlatformAPI extends WaterMediaModule {
+public final class PlatformAPI {
+    private PlatformAPI() {}
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
     // CopyOnWriteArrayList: registration is rare, iteration (from MRL loader threads)
     // is hot and must not throw ConcurrentModificationException.
     static final CopyOnWriteArrayList<IPlatform> PLATFORMS = new CopyOnWriteArrayList<>();
 
-    // SEARCH IS CLIENT-ONLY: A COORDINATOR TASK RUNS THE ACTIVE SEARCH OFF THE CALLER (UI) THREAD AND
-    // FANS EACH PLATFORM PROBE OUT ONTO THIS SAME POOL, SO A SLOW PROCESS-SPAWNING HANDLER (yt-dlp/
-    // YouTube) NEVER BLOCKS THE FAST HTTP ONES. A NEW SEARCH CANCELS THE IN-FLIGHT COORDINATOR
-    // (searchTask), WHICH CANCELS ITS PROBES. CACHED POOL: DAEMON THREADS SPIN UP ON DEMAND AND ARE
-    // REAPED WHEN IDLE, SO IT COSTS NOTHING BETWEEN SEARCHES AND CAN'T DEADLOCK COORDINATOR-ON-PROBE.
-    private static final ExecutorService SEARCH = Executors.newCachedThreadPool(ThreadTool.createFactory(PlatformAPI.class.getSimpleName() + "-Search", Thread.NORM_PRIORITY));
+    // THE COORDINATOR HAS ITS OWN THREAD SO WAITING FOR BOUNDED PROBES CANNOT DEADLOCK THE POOL.
+    private static ThreadPoolExecutor searchPool;
+    private static ThreadPoolExecutor coordinator;
+    private static boolean searchActive;
+    private static long searchGeneration;
     private static final Object SEARCH_LOCK = new Object();
     // RECENT QUERIES, MOST RECENT FIRST, CAPPED AT HISTORY_LIMIT — GUARDED BY SEARCH_LOCK
     private static final ArrayDeque<String> HISTORY = new ArrayDeque<>();
@@ -68,7 +71,7 @@ public final class PlatformAPI extends WaterMediaModule {
     private static long nextCacheClean;
 
     // PLATFORMS STAGED IN load() AND REGISTERED IN start() — INSTANCE STATE OF THE API LIFECYCLE
-    private List<IPlatform> pendingPlatforms;
+
 
     /**
      * Searches every registered {@link IPlatform} for {@code caption}, with up to
@@ -99,6 +102,11 @@ public final class PlatformAPI extends WaterMediaModule {
      */
     public static PlatformSearch search(final String caption, final int limit) {
         synchronized (SEARCH_LOCK) {
+            final BootStatus.State state = WaterMedia.status().state();
+            if (!searchActive || state == BootStatus.State.STOPPING || state == BootStatus.State.FAILED)
+                throw new IllegalStateException("The platform service is not running");
+            final long generation = ++searchGeneration;
+            final ExecutorService pool = searchPool;
             // SUPERSEDE THE PREVIOUS SEARCH — ONLY ONE IS EVER ACTIVE
             if (searchTask != null) searchTask.cancel(true);
             searchTask = null;
@@ -137,7 +145,9 @@ public final class PlatformAPI extends WaterMediaModule {
             }
 
             final PlatformSearch search = new PlatformSearch(caption, historySnapshot);
-            searchTask = SEARCH.submit(() -> runSearch(search, caption, perPlatform, cacheKey));
+            coordinator.purge();
+            searchPool.purge();
+            searchTask = coordinator.submit(() -> runSearch(search, caption, perPlatform, cacheKey, pool, generation));
             return search;
         }
     }
@@ -159,47 +169,61 @@ public final class PlatformAPI extends WaterMediaModule {
     // CONCURRENTLY, APPENDING HITS TO THE LIVE HANDLE AS EACH ANSWERS, THEN WAITS FOR ALL TO FINISH.
     // COOPERATIVELY STOPS WHEN A NEWER SEARCH INTERRUPTS US: IT CANCELS THE OUTSTANDING PROBES AND
     // LEAVES THE HANDLE FROZEN (NOT MARKED done). ONE PLATFORM FAILING NEVER ABORTS THE WHOLE SEARCH.
-    private static void runSearch(final PlatformSearch search, final String caption, final int limit, final String cacheKey) {
+    private static void runSearch(final PlatformSearch search, final String caption, final int limit, final String cacheKey,
+                                  final ExecutorService pool, final long generation) {
         LOGGER.debug(IT, "Search '{}' started ({} per platform)", caption, limit);
-        final List<Future<?>> probes = new ArrayList<>(PLATFORMS.size());
-        for (int i = PLATFORMS.size() - 1; i >= 0; i--) {
-            final IPlatform platform = PLATFORMS.get(i);
-            probes.add(SEARCH.submit(() -> probePlatform(platform, search, caption, limit)));
-        }
-
+        final IPlatform[] platforms = PLATFORMS.toArray(IPlatform[]::new);
+        final List<Future<?>> probes = new ArrayList<>(platforms.length);
         try {
-            for (final Future<?> probe: probes) probe.get();
+            for (int i = platforms.length - 1; i >= 0; i--) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                final IPlatform platform = platforms[i];
+                probes.add(pool.submit(() -> probePlatform(platform, search, caption, limit, generation)));
+            }
+            for (final Future<?> probe: probes) {
+                try {
+                    probe.get();
+                } catch (final ExecutionException e) {
+                    // AN ESCAPED PROBE FAILURE DOES NOT END THE OTHER PROBES OR COMPLETE THEIR HANDLE.
+                    LOGGER.warn(IT, "Search '{}' probe failed unexpectedly: {}", caption, String.valueOf(e.getCause()));
+                }
+            }
         } catch (final InterruptedException e) { // SUPERSEDED — CANCEL THE OUTSTANDING PROBES AND LEAVE THE HANDLE FROZEN
             for (final Future<?> probe: probes) probe.cancel(true);
             Thread.currentThread().interrupt();
             LOGGER.debug(IT, "Search '{}' superseded before completing", caption);
             return;
-        } catch (final ExecutionException e) { // probePlatform SWALLOWS ITS OWN FAILURES, SO THIS IS UNEXPECTED — LOG AND CARRY ON
-            LOGGER.warn(IT, "Search '{}' probe failed unexpectedly: {}", caption, String.valueOf(e.getCause()));
         }
 
-        search.complete();
+        synchronized (SEARCH_LOCK) {
+            if (!searchActive || generation != searchGeneration) return;
+            search.complete();
+        }
         // CACHE ONLY FULLY-COMPLETED, NON-EMPTY SEARCHES (THE INTERRUPTED RETURN ABOVE NEVER REACHES HERE).
         // SKIPPING EMPTY RESULTS LETS A TRANSIENT TOTAL FAILURE RETRY NEXT TIME INSTEAD OF SERVING STALE NOTHING.
         final List<PlatformResult> finalResults = search.results();
         if (!finalResults.isEmpty()) {
             synchronized (SEARCH_LOCK) {
-                SEARCH_CACHE.put(cacheKey, List.copyOf(finalResults));
+                if (searchActive && generation == searchGeneration) SEARCH_CACHE.put(cacheKey, List.copyOf(finalResults));
             }
         }
         LOGGER.info(IT, "Search '{}' complete with {} result(s)", caption, finalResults.size());
     }
 
-    // PROBES ONE PLATFORM ON A SEARCH-POOL THREAD AND APPENDS ITS HITS TO THE LIVE HANDLE. NEVER THROWS:
-    // A CANCELLATION RESTORES THE INTERRUPT FLAG AND RETURNS, ANY OTHER FAILURE IS LOGGED AND SWALLOWED.
-    private static void probePlatform(final IPlatform platform, final PlatformSearch search, final String caption, final int limit) {
+    // ISOLATES PLATFORM FAILURES; THE COORDINATOR ALSO HANDLES ESCAPED FAILURES.
+    // CANCELLATION RESTORES THE INTERRUPT FLAG AND RETURNS WITHOUT PUBLISHING RESULTS.
+    private static void probePlatform(final IPlatform platform, final PlatformSearch search, final String caption,
+                                      final int limit, final long generation) {
         if (Thread.currentThread().isInterrupted()) return;
         try {
             final List<PlatformResult> hits = platform.search(caption, limit);
             if (hits != null && !hits.isEmpty()) {
                 // DEFENSIVE PER-PLATFORM CAP: THE CONTRACT IS <= limit, BUT DON'T TRUST A MISBEHAVING HANDLER
                 final List<PlatformResult> capped = hits.size() > limit ? hits.subList(0, limit) : hits;
-                search.add(capped);
+                synchronized (SEARCH_LOCK) {
+                    if (!searchActive || generation != searchGeneration || Thread.currentThread().isInterrupted()) return;
+                    search.add(capped);
+                }
                 LOGGER.info(IT, "Search '{}' matched {} result(s) on {}", caption, capped.size(), platform.name());
             }
         } catch (final InterruptedException e) { // CANCELLED — RESTORE THE FLAG SO THE POOL SEES THE INTERRUPT
@@ -230,8 +254,12 @@ public final class PlatformAPI extends WaterMediaModule {
      * @throws PlatformException whatever the matching platform throws while resolving
      */
     public static PlatformData fetch(final URI uri) throws PlatformException {
-        for (int i = PLATFORMS.size() - 1; i >= 0; i--) {
-            final IPlatform platform = PLATFORMS.get(i);
+        final BootStatus.State state = WaterMedia.status().state();
+        if (state == BootStatus.State.STOPPING || state == BootStatus.State.FAILED)
+            throw new IllegalStateException("Platform services are stopping or failed");
+        final IPlatform[] platforms = PLATFORMS.toArray(IPlatform[]::new);
+        for (int i = platforms.length - 1; i >= 0; i--) {
+            final IPlatform platform = platforms[i];
             try {
                 final PlatformData data = platform.getData(uri);
                 if (data != null) {
@@ -275,72 +303,74 @@ public final class PlatformAPI extends WaterMediaModule {
         return List.copyOf(PLATFORMS);
     }
 
-    @Override
-    public String name() {
-        return PlatformAPI.class.getSimpleName();
-    }
-
-    @Override
-    protected void load(final WaterMedia instance) {
-        super.load(instance);
-        this.pendingPlatforms = new ArrayList<>();
-        if (instance.clientSide) {
-            this.pendingPlatforms.add(new WaterPlatform());
-            this.pendingPlatforms.add(new ImgurPlatform());
-            this.pendingPlatforms.add(new KickPlatform());
-            this.pendingPlatforms.add(new StreamablePlatform());
-            this.pendingPlatforms.add(new MedalPlatform());
-            this.pendingPlatforms.add(new PornHubPlatform());
-            this.pendingPlatforms.add(new LightshotPlatform());
-            this.pendingPlatforms.add(new TwitchPlatform());
-            this.pendingPlatforms.add(new TwitterPlatform());
-            this.pendingPlatforms.add(new BlueskyPlatform());
-            this.pendingPlatforms.add(new BiliBiliPlatform());
-            this.pendingPlatforms.add(new DrivePlatform());
-            this.pendingPlatforms.add(new DropboxPlatform());
-            this.pendingPlatforms.add(new MediaFirePlatform());
-            this.pendingPlatforms.add(new SendvidPlatform());
-            this.pendingPlatforms.add(new OdyseePlatform());
-            this.pendingPlatforms.add(new VidLiiPlatform());
-            this.pendingPlatforms.add(new TikTokPlatform());
-            this.pendingPlatforms.add(new DTubePlatform());
-            this.pendingPlatforms.add(new YtDlpPlatform());
-            this.pendingPlatforms.add(new YouTubePlatform());
+    /** Internal bootstrap operation for platform discovery and searches. */
+    public static final class Module extends WaterMediaModule {
+        @Override
+        protected void start(final WaterMedia context) {
+            synchronized (SEARCH_LOCK) {
+                if (searchPool != null) throw new IllegalStateException("Previous platform searches have not stopped");
+                searchPool = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>(), ThreadTool.workerFactory("PlatformAPI-Search", Thread.NORM_PRIORITY));
+                coordinator = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>(1), ThreadTool.workerFactory("PlatformAPI-Coordinator", Thread.NORM_PRIORITY));
+                searchActive = true;
+                searchGeneration++;
+            }
+            final List<IPlatform> platforms = List.of(
+                    new WaterPlatform(),
+                    new ImgurPlatform(),
+                    new KickPlatform(),
+                    new StreamablePlatform(),
+                    new MedalPlatform(),
+                    new PornHubPlatform(),
+                    new LightshotPlatform(),
+                    new TwitchPlatform(),
+                    new TwitterPlatform(),
+                    new BlueskyPlatform(),
+                    new BiliBiliPlatform(),
+                    new DrivePlatform(),
+                    new DropboxPlatform(),
+                    new MediaFirePlatform(),
+                    new SendvidPlatform(),
+                    new OdyseePlatform(),
+                    new VidLiiPlatform(),
+                    new TikTokPlatform(),
+                    new DTubePlatform(),
+                    new YtDlpPlatform(),
+                    new YouTubePlatform()
+            );
+            for (int i = 0; i < platforms.size(); i++) {
+                final IPlatform platform = platforms.get(i);
+                this.task(i + 1, platforms.size(), platform.getClass().getSimpleName());
+                register(platform);
+            }
         }
-        this.steps = this.pendingPlatforms.size();
-    }
 
-    @Override
-    protected boolean start(final WaterMedia instance) {
-        if (!instance.clientSide) {
-            LOGGER.warn(IT, "Platform API refuses to load on server-side");
-            return false;
+        @Override
+        protected void release(final WaterMedia context) throws Exception {
+            final ExecutorService previous, previousCoordinator;
+            synchronized (SEARCH_LOCK) {
+                searchActive = false;
+                searchGeneration++;
+                if (searchTask != null) searchTask.cancel(true);
+                searchTask = null;
+                previous = searchPool;
+                previousCoordinator = coordinator;
+                if (previous != null) previous.shutdownNow();
+                if (previousCoordinator != null) previousCoordinator.shutdownNow();
+                HISTORY.clear();
+                SEARCH_CACHE.clear();
+                nextCacheClean = 0;
+                PLATFORMS.clear();
+            }
+            if (previous != null && !previous.awaitTermination(30, TimeUnit.SECONDS))
+                throw new IOException("Platform searches have not stopped; retry after their network timeout");
+            if (previousCoordinator != null && !previousCoordinator.awaitTermination(30, TimeUnit.SECONDS))
+                throw new IOException("Search coordinator has not stopped");
+            synchronized (SEARCH_LOCK) {
+                if (searchPool == previous) searchPool = null;
+                if (coordinator == previousCoordinator) coordinator = null;
+            }
         }
-
-        LOGGER.info(IT, "Registering supported platforms");
-        // NO ARTIFICIAL PACING: REGISTRATION IS A CopyOnWriteArrayList ADD (EFFECTIVELY FREE); A PER-PLATFORM
-        // SLEEP ONLY EXISTED TO ANIMATE THE BOOTSTRAP BAR AND ADDED ~1s OF STARTUP LATENCY FOR EVERY EMBEDDER.
-        for (final IPlatform platform: this.pendingPlatforms) {
-            this.step++;
-            this.stepName = platform.getClass().getSimpleName();
-            register(platform);
-        }
-        this.pendingPlatforms = null;
-        return true;
-    }
-
-    @Override
-    protected void release(final WaterMedia instance) {
-        // STOP THE ACTIVE SEARCH AND DROP THE HISTORY; KEEP THE (IDLE DAEMON) POOL FOR A LATER start()
-        synchronized (SEARCH_LOCK) {
-            if (searchTask != null) searchTask.cancel(true);
-            searchTask = null;
-            HISTORY.clear();
-            SEARCH_CACHE.clear();
-            nextCacheClean = 0L;
-        }
-        PLATFORMS.clear();
-        this.pendingPlatforms = null;
-        super.release(instance);
     }
 }

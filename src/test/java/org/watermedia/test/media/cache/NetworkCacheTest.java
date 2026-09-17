@@ -132,7 +132,7 @@ public class NetworkCacheTest {
                 for (final byte b: hash) {
                     hex.append(Character.forDigit((b >>> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
                 }
-                assertTrue(Files.isRegularFile(cache.resolve("wm_n_" + hex + ".tmp")));
+                assertTrue(Files.isRegularFile(cache.resolve("wm_" + hex + ".tmp")));
             } finally {
                 NetworkCache.release();
             }

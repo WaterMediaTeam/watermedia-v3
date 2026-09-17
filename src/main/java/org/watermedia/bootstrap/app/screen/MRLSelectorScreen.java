@@ -461,14 +461,8 @@ public final class MRLSelectorScreen extends Screen {
         if (uri == null) return;
         final String name = uri.name();
         MRL mrl = this.ctx.groupMRLs.get(name);
-        // FORGOTTEN MRLS WERE EVICTED FROM THE CACHE — FETCH A FRESH INSTANCE INSTEAD
-        // OF RELOADING THE DISPOSED ONE.
-        if (mrl == null || mrl.status() == MRL.Status.FORGOTTEN) {
-            mrl = MediaAPI.mrl(uri.uri());
-            this.ctx.groupMRLs.put(name, mrl);
-        } else {
-            mrl.reload();
-        }
+        mrl = mrl == null ? MediaAPI.mrl(uri.uri()) : mrl.reload();
+        this.ctx.groupMRLs.put(name, mrl);
 
         final MediaPlayer thumbnail = this.thumbPlayers.remove(name);
         if (thumbnail != null) this.releaseAsync(List.of(thumbnail));

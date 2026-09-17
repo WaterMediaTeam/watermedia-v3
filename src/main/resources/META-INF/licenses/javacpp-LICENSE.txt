@@ -1,7 +1,8 @@
-JavaCPP and the JavaCPP Presets for FFmpeg (org.bytedeco:javacpp and org.bytedeco:ffmpeg:8.0.1-1.5.13,
+JavaCPP and the JavaCPP Presets for FFmpeg (org.bytedeco:javacpp and org.bytedeco:ffmpeg:8.1.2-1.5.14,
 https://github.com/bytedeco/javacpp) provide the Java bindings used to call FFmpeg. Only the Java
 bindings are bundled (shaded) inside this jar; the FFmpeg native libraries themselves are distributed
-separately by the WaterMedia: Binaries module under the GNU General Public License, version 3. JavaCPP
+separately by the WaterMedia: Binaries module under the GNU Lesser General Public License, version 3
+or later. Supporting native libraries carry their own notices in that module. JavaCPP
 is multi-licensed (Apache License 2.0, GPLv2, or GPLv2 with the Classpath exception); WaterMedia uses
 it under the Apache License, Version 2.0. Copyright (C) Samuel Audet and the JavaCPP contributors.
 

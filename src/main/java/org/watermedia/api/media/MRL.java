@@ -18,7 +18,10 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CancellationException;
 import java.util.function.Consumer;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -34,12 +37,57 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class MRL {
     private static final Marker IT = MarkerManager.getMarker(MRL.class.getSimpleName());
-    private static final Map<URI, MRL> LOADED = new ConcurrentHashMap<>(1024);
-    private static final Executor LOADER = ThreadTool.createRecommendedThreadPool("MRL-Loader", Thread.NORM_PRIORITY - 1);
-    private static volatile long NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(60.0); // NOT CONFIGURABLE, BY DEFAULT OBEY FIRST 60 MINUTES
+    private static volatile Session session;
+
+    private static final class Session {
+        final Map<URI, MRL> loaded = new ConcurrentHashMap<>(1024);
+        final ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()),
+                ThreadTool.workerFactory("MRL-Loader", Thread.NORM_PRIORITY - 1));
+        volatile boolean active = true;
+        volatile long nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
+
+        synchronized void submit(final MRL mrl) {
+            if (!this.active) {
+                synchronized (mrl.loadLock) { mrl.status = Status.FORGOTTEN; }
+                return;
+            }
+            this.executor.execute(mrl::load);
+        }
+    }
+
+    static synchronized void start() {
+        if (session != null) throw new IllegalStateException("The previous MRL session has not stopped");
+        session = new Session();
+    }
+
+    static void release() throws InterruptedException, IOException {
+        final Session previous = session;
+        if (previous == null) return;
+        synchronized (previous) {
+            previous.active = false;
+            for (final MRL mrl: previous.loaded.values()) {
+                synchronized (mrl.loadLock) {
+                    mrl.reloadPending = false;
+                    mrl.sources = null;
+                    mrl.expiresAt = null;
+                    mrl.exception = new CancellationException("WaterMedia stopped");
+                    mrl.status = Status.FORGOTTEN;
+                    mrl.listeners.clear();
+                }
+            }
+            previous.loaded.clear();
+            previous.executor.shutdownNow();
+        }
+        if (!previous.executor.awaitTermination(30, TimeUnit.SECONDS))
+            throw new IOException("MRL requests have not stopped; their network timeout must expire before restart");
+        synchronized (MRL.class) {
+            if (session == previous) session = null;
+        }
+    }
 
     // INSTANCE FIELDS
     public final URI uri;
+    private final Session owner;
     private volatile Source[] sources;
     private volatile Instant expiresAt;
     private final List<Consumer<MRL>> listeners = new CopyOnWriteArrayList<>();
@@ -52,39 +100,30 @@ public final class MRL {
     private boolean loading;
     private boolean reloadPending;
 
-    private MRL(final URI uri) { this.uri = Objects.requireNonNull(uri, "URI cannot be null"); }
-
-    /**
-     * Gets or creates an MRL for the given URI.
-     * If cached and not expired, returns immediately.
-     * Otherwise, starts async platform lookup.
-     *
-     * @see PlatformAPI
-     * @param uri the media URI
-     * @return the MRL instance (may still be loading)
-     */
-    static MRL get(final URI uri) {
-        Objects.requireNonNull(uri, "URI cannot be null");
-
-        // CREATE IF DOESN'T EXIST, AND RELOAD IF WAS EXPIRED
-        return LOADED.compute(uri, (key, existing) -> {
-            if (existing != null) {
-                if (existing.status() == Status.EXPIRED)
-                    existing.reload();
-                return existing;
-            }
-            // CREATE NEW AND START LOADING
-            final MRL mrl = new MRL(key);
-            LOADER.execute(mrl::load);
-            return mrl;
-        });
+    private MRL(final URI uri, final Session owner) {
+        this.uri = Objects.requireNonNull(uri, "URI cannot be null");
+        this.owner = owner;
     }
 
-    /**
-     * Preloads multiple URIs in parallel.
-     * Useful for prefetching playlists or a bunch of well known URLs.
-     * @return array of all MRL instances created/existing, in the same order as {@code uris}
-     */
+    // CACHE LOOKUPS RETURN IMMEDIATELY; NEW SOURCES START PLATFORM DISCOVERY ASYNCHRONOUSLY.
+    static MRL get(final URI uri) {
+        Objects.requireNonNull(uri, "URI cannot be null");
+        final Session current = session;
+        if (current == null) throw new IllegalStateException("The media module has not started");
+        synchronized (current) {
+            if (!current.active) throw new IllegalStateException("The media module is stopping");
+            return current.loaded.compute(uri, (key, existing) -> {
+                if (existing != null) {
+                    if (existing.status() == Status.EXPIRED) existing.reload();
+                    return existing;
+                }
+                final MRL mrl = new MRL(key, current);
+                current.submit(mrl);
+                return mrl;
+            });
+        }
+    }
+
     static MRL[] preload(final URI... uris) {
         final MRL[] result = new MRL[uris.length];
         for (int i = 0; i < uris.length; i++) {
@@ -100,7 +139,7 @@ public final class MRL {
         URI key;
         try { key = new URI("mrl-error", rawUri, null); }
         catch (final URISyntaxException e) { key = URI.create("mrl-error:unparseable"); }
-        final MRL mrl = new MRL(key);
+        final MRL mrl = new MRL(key, null);
         mrl.exception = cause;
         mrl.status = Status.ERROR;
         return mrl;
@@ -110,26 +149,35 @@ public final class MRL {
      * Restarts the async platform lookup for this MRL, clearing the previous sources and error
      * state. If a load is already in flight, the refresh is deferred until it finishes rather than
      * wiping state mid-fetch, so concurrent reloads never race or duplicate the lookup.
+     * @return the active resource handle; a forgotten handle is replaced rather than revived
      */
-    public void reload() {
-        synchronized (this.loadLock) {
-            if (this.loading) {
-                // A LOAD IS RUNNING — MARK FOR RE-FETCH; load()'S EXIT WILL RE-QUEUE ONCE
-                this.reloadPending = true;
-                return;
+    public MRL reload() {
+        if (this.owner == null) throw new IllegalStateException("This MRL belongs to an inactive session");
+        synchronized (this.owner) {
+            if (!this.owner.active) throw new IllegalStateException("This MRL belongs to an inactive session");
+            if (this.status == Status.FORGOTTEN) {
+                final MRL current = get(this.uri);
+                return current.status == Status.FETCHING ? current : current.reload();
             }
-            this.sources = null;
-            this.expiresAt = null;
-            this.status = Status.FETCHING;
-            this.exception = null;
+            synchronized (this.loadLock) {
+                if (this.loading) {
+                    this.reloadPending = true;
+                    return this;
+                }
+                this.sources = null;
+                this.expiresAt = null;
+                this.status = Status.FETCHING;
+                this.exception = null;
+            }
+            this.owner.submit(this);
+            return this;
         }
-        LOADER.execute(this::load);
     }
 
     private void load() {
         // CLAIM THE SINGLE IN-FLIGHT SLOT; LOSERS (STALE OR DUPLICATE QUEUED LOADS) BAIL OUT
         synchronized (this.loadLock) {
-            if (this.status != Status.FETCHING || this.loading) return;
+            if (!this.owner.active || this.status != Status.FETCHING || this.loading) return;
             this.loading = true;
         }
         try {
@@ -139,7 +187,7 @@ public final class MRL {
             synchronized (this.loadLock) {
                 this.loading = false;
                 // A reload() ARRIVED MID-FETCH — RESET STATE NOW AND RE-QUEUE EXACTLY ONE FRESH LOAD
-                if (this.reloadPending) {
+                if (this.reloadPending && this.owner.active) {
                     this.reloadPending = false;
                     this.sources = null;
                     this.expiresAt = null;
@@ -148,24 +196,29 @@ public final class MRL {
                     requeue = true;
                 }
             }
-            if (requeue) LOADER.execute(this::load);
+            if (requeue) this.owner.submit(this);
         }
     }
 
     private void doLoad() {
         try {
-            if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
-                synchronized (LOADED) {
+            if (this.owner.active && this.owner.nextClean <= System.currentTimeMillis()) {
+                synchronized (this.owner) {
                     // RE-CHECK UNDER LOCK: ONLY THE FIRST RACER RUNS CLEANUP, LOSERS STILL FALL THROUGH TO THE FETCH BELOW
-                    if (NEXT_CLEAN_TIME <= System.currentTimeMillis()) {
+                    if (this.owner.nextClean <= System.currentTimeMillis()) {
                         // ATOMIC PER-KEY CHECK-AND-REMOVE: computeIfPresent RUNS UNDER THE BIN LOCK, SO A
                         // CONCURRENT get()/reload() CAN'T RESURRECT AN ENTRY WE THEN CLOBBER TO FORGOTTEN.
-                        LOADED.forEach((uri, mrl) -> LOADED.computeIfPresent(uri, (key, cur) -> {
-                            if (!cur.status().disposable()) return cur;
-                            cur.status = Status.FORGOTTEN;
-                            return null; // REMOVES THE ENTRY
+                        this.owner.loaded.forEach((uri, mrl) -> this.owner.loaded.computeIfPresent(uri, (key, cur) -> {
+                            synchronized (cur.loadLock) {
+                                if (cur.loading || !cur.status().disposable()) return cur;
+                                cur.sources = null;
+                                cur.expiresAt = null;
+                                cur.listeners.clear();
+                                cur.status = Status.FORGOTTEN;
+                                return null;
+                            }
                         }));
-                        NEXT_CLEAN_TIME = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
+                        this.owner.nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
                     }
                 }
             }
@@ -273,9 +326,14 @@ public final class MRL {
                 }
 
 
-                this.sources = sources;
-                this.expiresAt = data.expires();
-                this.status = Status.LOADED;
+                synchronized (this.owner) {
+                    if (!this.owner.active) return;
+                    synchronized (this.loadLock) {
+                        this.sources = sources;
+                        this.expiresAt = data.expires();
+                        this.status = Status.LOADED;
+                    }
+                }
                 this.fireListeners();
                 LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.size(), this.uri);
             } else {
@@ -283,8 +341,13 @@ public final class MRL {
             }
         } catch (final Throwable t) {
             // STORE THE FAILURE VERBATIM SO exception() EXPOSES THE REAL MESSAGE, CAUSE AND STACK TO DEVS.
-            this.exception = t;
-            this.status = t instanceof MatureContentException ? Status.BLOCKED : Status.ERROR;
+            synchronized (this.owner) {
+                if (!this.owner.active) return;
+                synchronized (this.loadLock) {
+                    this.exception = t;
+                    this.status = t instanceof MatureContentException ? Status.BLOCKED : Status.ERROR;
+                }
+            }
 
             // EXPECTED FAILURES (BLOCK / PLATFORM / IO) ALREADY CARRY A SELF-DESCRIBING MESSAGE: LOG IT
             // WITHOUT THE STACK TRACE. ONLY GENUINELY UNEXPECTED ERRORS DUMP THE TRACE SO THEY STAND OUT.
@@ -313,6 +376,7 @@ public final class MRL {
     }
 
     private void fireListeners() {
+        if (this.owner != null && !this.owner.active) return;
         synchronized (this.listeners) {
             for (final Consumer<MRL> c: this.listeners) {
                 try { c.accept(this); }
@@ -331,12 +395,14 @@ public final class MRL {
      *         for the outcome — it may be a failure), {@code false} if it timed out while still fetching
      */
     public boolean await(final long timeoutMs) {
-        final long deadline = System.currentTimeMillis() + timeoutMs;
-        // IF IS STILL FETCHING AND THE DEADLINE IS NOT REACHED YET, WAIT FOR 50 MILLIS
-        while (this.status == Status.FETCHING && System.currentTimeMillis() < deadline) {
-            ThreadTool.sleep(50);
+        final long started = System.nanoTime();
+        final long budget = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        while (this.status == Status.FETCHING) {
+            final long remaining = budget - (System.nanoTime() - started);
+            if (remaining <= 0) return false;
+            if (!ThreadTool.sleep(Math.min(50L, Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining))))) return false;
         }
-        return this.status != Status.FETCHING; // FETCHING FINISHED, QUERY IS DONE, NEED TO HANDLE PROPER STATUS
+        return true;
     }
 
     /**
@@ -362,16 +428,14 @@ public final class MRL {
         }
     }
 
-    /**
-     * Provides the current status of the MRL
-     * Every call validates the sources has been expired.
-     * @return status instance, never null
-     */
+    /** Returns the current state, marking expired loaded sources as EXPIRED. */
     public Status status() {
-        if (this.expiresAt != null && this.expiresAt.isBefore(Instant.now())) {
-            this.status = Status.EXPIRED;
+        synchronized (this.loadLock) {
+            if (this.status == Status.LOADED && this.expiresAt != null && this.expiresAt.isBefore(Instant.now())) {
+                this.status = Status.EXPIRED;
+            }
+            return this.status;
         }
-        return this.status;
     }
 
     /**
@@ -386,7 +450,7 @@ public final class MRL {
     }
 
     /**
-     * Returns all {@link Source} instances, or empty array if not ready.
+     * Returns all {@link Source} instances, or an empty list when none are available.
      */
     public List<Source> sources() {
         final Source[] s = this.sources;

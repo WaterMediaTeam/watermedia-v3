@@ -20,6 +20,10 @@ test {
     useJUnitPlatform()
     maxHeapSize = test_max_heap
     jvmArgs "-XX:MaxDirectMemorySize=$test_max_direct_memory"
+    systemProperty 'watermedia.test.requireNatives', providers.gradleProperty('require_natives').getOrElse('false')
+    doFirst { task ->
+        task.systemProperty('watermedia.test.classpath', task.classpath.asPath)
+    }
     testLogging {
         events "passed", "skipped", "failed"
     }
@@ -27,22 +31,18 @@ test {
 
 java {
     withSourcesJar()
-    sourceCompatibility = targetCompatibility = JavaVersion.VERSION_17
-}
-
-sourcesJar {
-    exclude("org/watermedia/binaries/**") // COMPILED HERE FOR THE CODEPENDENCY; SHIPPED BY THE BINARIES JAR
+    sourceCompatibility = targetCompatibility = JavaVersion.toVersion(java_release)
 }
 
 println("Gradle Java: ${JavaVersion.current()}")
-println("Building project: ${properties.libname}")
+println("Building project: ${project.libname}")
 println("Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}, Encoding: ${System.getProperty "file.encoding"}")
 
 repositories {
     google()
     mavenCentral()
-    maven { url 'https://jitpack.io' }
-    maven { url "https://repo.spongepowered.org/maven" }
+    maven { url = 'https://jitpack.io' }
+    maven { url = "https://repo.spongepowered.org/maven" }
 }
 
 configurations {
@@ -50,17 +50,11 @@ configurations {
     include.extendsFrom(implementation)
     library
 
-    // WATERMEDIA IS THE PROVIDER FOR THE CODEPENDENT BINARIES BUILD: EXPOSE THE PROVIDED LIBS
-    // (log4j, gson, modloaders, ...) AS COMPILE-ONLY API SO BINARIES COMPILES AGAINST THEM
-    // TRANSITIVELY WITHOUT REDECLARING THEM, AND WITHOUT LEAKING THEM INTO THE PUBLISHED POM.
+    // EXPOSE HOST-PROVIDED LIBRARIES WITHOUT SHADING THEM INTO WATERMEDIA.
     compileOnlyApi.extendsFrom(library)
 }
 
 sourceSets {
-    // CODEPENDENT MODULES: BINARIES USES WATERMEDIA (NetRequest) AND WATERMEDIA USES BINARIES
-    // (WaterMediaBinaries), SO BOTH COMPILE TOGETHER HERE; THE CLASSES SHIP ONLY IN THE BINARIES JAR
-    main.java.srcDirs += "binaries/src/main/java"
-
     // SHADOW
     main.compileClasspath += configurations.include
     main.runtimeClasspath += configurations.include
@@ -73,11 +67,6 @@ sourceSets {
     test.compileClasspath += configurations.library
     test.runtimeClasspath += configurations.library
 
-    // BINARIES RESOURCES (FFMPEG ZIPS) SHIP ONLY IN THE BINARIES JAR; PUT THEM ON THE MAIN + TEST
-    // RUNTIME CLASSPATHS SO THE DEV APP RUN AND MediaBootstrap-GATED TESTS EXTRACT AND LOAD FFMPEG
-    // LIKE PRODUCTION DOES (main DOES NOT PROPAGATE TO test: THEY ARE INDEPENDENT FILE COLLECTIONS)
-    main.runtimeClasspath += files("binaries/src/main/resources")
-    test.runtimeClasspath += files("binaries/src/main/resources")
 }
 
 // HOST JAVAFX CLASSIFIER FOR THE COMPILE-ONLY JFXEngine (win/linux/mac + aarch64 variants)
@@ -87,15 +76,18 @@ def javafxPlatform = { ->
     return osdetector.arch == 'aarch_64' ? 'linux-aarch64' : 'linux'
 }()
 
-dependencies {
-    // BINARIES SOURCES DEPENDENCY (SHADED INTO THE BINARIES JAR, NOT THIS ONE)
-    library "org.tukaani:xz:$xz_version"
+def lwjglPlatform = ['windows': 'windows', 'linux': 'linux', 'osx': 'macos'][osdetector.os]
+def lwjglArch = ['x86_64': '', 'aarch_64': '-arm64'][osdetector.arch]
+if (lwjglPlatform == null || lwjglArch == null) throw new GradleException("Unsupported LWJGL test platform: $osdetector.classifier")
+def lwjglNatives = "natives-$lwjglPlatform$lwjglArch"
 
-    // DEPENDENCIES
+dependencies {
+    // SHADE
     include "org.bytedeco:ffmpeg:$ffmpeg_version"
-    include ("com.github.SrRapero720:waterconfig:$waterconfig_version") { // TODO: do not shade
-        transitive = false
-    }
+
+    // OWN DEPENDENCIES
+    library "org.watermedia:binaries"
+    library "com.github.SrRapero720:waterconfig:$waterconfig_version"
 
     // DEPENDENCIES INCLUDED IN MINECRAFT
     library "com.github.WaterMediaTeam:modloaders:$loaders_version"
@@ -125,25 +117,28 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
-    testRuntimeOnly "org.lwjgl:lwjgl:$opengl_version:natives-$osdetector.os"
-    testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:natives-$osdetector.os"
-    testRuntimeOnly "org.lwjgl:lwjgl-glfw:$opengl_version:natives-$osdetector.os"
-    testRuntimeOnly "org.lwjgl:lwjgl-openal:$openal_version:natives-$osdetector.os"
+    testRuntimeOnly "org.lwjgl:lwjgl:$opengl_version:$lwjglNatives"
+    testRuntimeOnly "org.lwjgl:lwjgl-opengl:$opengl_version:$lwjglNatives"
+    testRuntimeOnly "org.lwjgl:lwjgl-glfw:$opengl_version:$lwjglNatives"
+    testRuntimeOnly "org.lwjgl:lwjgl-openal:$openal_version:$lwjglNatives"
 
     // VULKAN: BINDINGS SHIP FOR EVERY PLATFORM, BUT NATIVES ONLY EXIST FOR MACOS (BUNDLED MOLTENVK).
     // ON WINDOWS/LINUX THE VULKAN LOADER COMES FROM THE GPU DRIVER, SO THERE IS NO NATIVES JAR TO PULL.
     if (osdetector.os == 'osx') {
-        testRuntimeOnly "org.lwjgl:lwjgl-vulkan:$vulkan_version:natives-macos${osdetector.arch == 'aarch_64' ? '-arm64' : ''}"
+        testRuntimeOnly "org.lwjgl:lwjgl-vulkan:$vulkan_version:$lwjglNatives"
     }
     // SHADERC COMPILES GLSL -> SPIR-V AT RUNTIME (VKEngine/Vulkan SHADERS); IT SHIPS NATIVES FOR EVERY PLATFORM
-    testRuntimeOnly "org.lwjgl:lwjgl-shaderc:$vulkan_version:natives-$osdetector.os"
+    testRuntimeOnly "org.lwjgl:lwjgl-shaderc:$vulkan_version:$lwjglNatives"
 }
 
-// Process target resources with mod info
+// SNAPSHOT RESOURCE VALUES DURING CONFIGURATION; TASK ACTIONS MUST NOT READ THE PROJECT.
+def resourceProperties = providers.gradlePropertiesPrefixedBy('').get()
 processResources {
     outputs.upToDateWhen { false }
-    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json']) {
-        expand(project.properties)
+    inputs.properties(resourceProperties)
+    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json',
+                   'org/watermedia/bootstrap/launcher.properties']) {
+        expand(resourceProperties)
     }
 }
 
@@ -166,7 +161,6 @@ jar {
         configurations.include.collect { it.isDirectory() ? it : zipTree(it) }
     }
     exclude('META-INF/versions/', 'META-INF/maven/')
-    exclude('org/watermedia/binaries/**') // COMPILED HERE FOR THE CODEPENDENCY; SHIPPED BY THE BINARIES JAR
 
     filesMatching('META-INF/*') {
         duplicatesStrategy = DuplicatesStrategy.INCLUDE // COMBINE FILES
@@ -180,6 +174,16 @@ def loaders = modloaders.split(',').collect { it.trim() }
 // INSIDE publishMods THE DELEGATE IS THE EXTENSION, SO A BARE `version` HITS ITS Property<String> AND
 // STRINGIFIES TO "extension 'publishMods' property 'version'"; READ THE PROJECT VERSION OUT HERE INSTEAD
 def publishVersion = project.version.toString()
+def releaseType = project.versiontype.toString()
+if (!(releaseType in ['ALPHA', 'BETA', 'STABLE'])) throw new GradleException('versiontype must be ALPHA, BETA or STABLE')
+if (!(publishVersion ==~ (releaseType == 'STABLE' ? /\d+\.\d+\.\d+/ : /\d+\.\d+\.\d+\.\d+/))) {
+    throw new GradleException('STABLE versions require three components; ALPHA and BETA require four')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = Integer.parseInt(java_release)
+}
 
 // PLATFORMS ARE CONFIGURED THROUGH THE TYPED Action OVERLOAD AND AN EXPLICIT RECEIVER: THE PLUGIN ALSO
 // EXPOSES KOTLIN Closure OVERLOADS THAT THE GROOVY IDE INSPECTION CANNOT RESOLVE, WHICH FLAGS THE WHOLE
@@ -187,7 +191,7 @@ def publishVersion = project.version.toString()
 publishMods {
     file = jar.archiveFile
     changelog = getChangelogText()
-    type = ["alpha": ALPHA, "beta": BETA, "release": STABLE].getOrDefault(project.versiontype.toString().toLowerCase(), ALPHA)
+    type = ['ALPHA': ALPHA, 'BETA': BETA, 'STABLE': STABLE][releaseType]
     displayName = publishVersion
     modLoaders.addAll(loaders)
 
@@ -220,18 +224,19 @@ publishMods {
     } as Action<Modrinth>)
 }
 
-// KEEP `build` ASSEMBLING BOTH CODEPENDENT JARS, AS IT DID WHEN BINARIES WAS A DIRECT DEPENDENCY
+// VERIFY THE INDEPENDENT BINARIES ARTIFACT AS PART OF A COMPLETE BUILD.
 build.dependsOn gradle.includedBuild("binaries").task(":build")
 
 // NORMALIZE ENHANCED-FOR COLONS IN JAVA SOURCES: "for (T x : xs)" -> "for (T x: xs)"
 // (GRADLE PORT OF THE OLD scripts/remove_semicolon_space.ps1)
+def javaSources = fileTree(dir: 'src', include: '**/*.java')
 tasks.register('removeSemicolonSpace') {
     group = 'formatting'
     description = 'Removes the space before the enhanced-for colon across src/**/*.java'
     doLast {
         // (?m) ANCHORS ^ PER LINE; [ \t] AND [^:\r\n] KEEP EACH MATCH INSIDE ONE LINE SO LINE ENDINGS SURVIVE
         def regex = ~/(?m)(^[ \t]*for[ \t]*\([^:\r\n]*\w)[ \t]+:/
-        fileTree(dir: 'src', include: '**/*.java').each { file ->
+        javaSources.each { file ->
             def text = file.getText('UTF-8')
             def updated = text.replaceAll(regex, '$1:')
             if (updated == text) return

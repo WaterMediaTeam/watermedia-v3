@@ -1,13 +1,16 @@
 package org.watermedia.test.platform;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.platform.IPlatform;
 import org.watermedia.api.platform.PlatformAPI;
+import org.watermedia.api.platform.PlatformData;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.platform.PlatformSearch;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.lang.reflect.Field;
 import java.net.URI;
@@ -33,6 +36,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("PlatformAPI search")
 public class PlatformSearchTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     private List<IPlatform> savedPlatforms;
 
@@ -136,7 +141,7 @@ public class PlatformSearchTest {
         }
 
         @Override public String name() { return "STUB"; }
-        @Override public org.watermedia.api.platform.PlatformData getData(final URI uri) { return null; }
+        @Override public PlatformData getData(final URI uri) { return null; }
 
         @Override
         public List<PlatformResult> search(final String query, final int limit) throws Exception {

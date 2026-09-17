@@ -8,6 +8,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.nio.file.Path;
 
@@ -24,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("MRL IPTV M3U expansion")
 public class MrlIptvM3uTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     private static final long TIMEOUT_MS = 5000L;
     private static final Path IPTV_FIXTURE = Fixtures.RESOURCES.resolve("m3u").resolve("iptv_sample.m3u8");

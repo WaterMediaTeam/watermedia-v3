@@ -1,9 +1,5 @@
 package org.watermedia.api.codecs;
 
-import org.apache.logging.log4j.Marker;
-import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.WaterMedia;
-import org.watermedia.WaterMediaModule;
 import org.watermedia.api.codecs.readers.GIFReader;
 import org.watermedia.api.codecs.readers.JPEGReader;
 import org.watermedia.api.codecs.readers.NETPBMReader;
@@ -14,15 +10,11 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
-import org.watermedia.api.codecs.common.bc.BCCodec;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
-
-import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * Image codec entry point.
@@ -31,8 +23,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * format headers, identifies the format, advances the buffer position past the matched header,
  * and returns the matching {@link ImageReader}. Readers parse only the format body.
  */
-public final class CodecsAPI extends WaterMediaModule {
-    private static final Marker IT = MarkerManager.getMarker(CodecsAPI.class.getSimpleName());
+public final class CodecsAPI {
+    private CodecsAPI() {}
 
     // ==========================================================================
     // CODEC IDENTIFIERS
@@ -44,9 +36,6 @@ public final class CodecsAPI extends WaterMediaModule {
     public static final String CODEC_WEBP = "WEBP";
     public static final String CODEC_NETPBM = "NETPBM";
     public static final String CODEC_SVG = "SVG";
-    // GPU BLOCK-COMPRESSION CODECS — AVAILABILITY IS PROBED FROM THE NATIVE LIBRARY AT start().
-    // "BC" IS THE FAMILY: available("BC") IS TRUE WHEN ANY VERSION (BC7/BC3/BC1) IS PRESENT.
-    public static final String CODEC_BC = "BC";
     /** BC1 (DXT1): RGB with optional 1-bit alpha, 8 bytes per 4x4 block (8:1 vs RGBA8). */
     public static final String CODEC_BC1 = "BC1";
     /** BC3 (DXT5): RGBA, 16 bytes per 4x4 block (4:1 vs RGBA8). */
@@ -413,54 +402,17 @@ public final class CodecsAPI extends WaterMediaModule {
     // CODEC AVAILABILITY
     // ==========================================================================
     /**
-     * Reports whether a codec is available in this runtime. Pure-Java image codecs
-     * ({@link #CODEC_PNG}, {@link #CODEC_JPEG}, {@link #CODEC_GIF}, {@link #CODEC_WEBP},
-     * {@link #CODEC_NETPBM}, {@link #CODEC_SVG}) are always present. GPU block-compression codecs depend on the native
-     * library probed at {@link #start(WaterMedia)}: pass {@link #CODEC_BC} to ask whether
-     * <i>any</i> BC version is available, or a specific id ({@link #CODEC_BC7}, {@link #CODEC_BC3},
-     * {@link #CODEC_BC1}) to test that exact version.
-     *
-     * @param codec a codec id (case-insensitive)
-     * @return {@code true} when the codec can be used
+     * Reports support for decoding pixels through this API. BC texture identifiers describe
+     * compressed GPU storage; use BCReader for their blocks and query the graphics engine separately.
+     * @param codec a pixel codec id, case-insensitive
+     * @return true when its pure Java pixel decoder is available
      */
     public static boolean available(final String codec) {
         if (codec == null) return false;
         return switch (codec.toUpperCase(Locale.ROOT)) {
             case CODEC_PNG, CODEC_JPEG, "JPG", CODEC_GIF, CODEC_WEBP,
                  CODEC_NETPBM, "PNM", "PBM", "PGM", "PPM", "PAM", CODEC_SVG -> true;
-            case CODEC_BC -> BCCodec.any();
-            case CODEC_BC7, CODEC_BC3, CODEC_BC1 -> BCCodec.available(codec.toUpperCase(Locale.ROOT));
             default -> false;
         };
-    }
-
-    @Override
-    public String name() {
-        return CodecsAPI.class.getSimpleName();
-    }
-
-    @Override
-    protected void load(final WaterMedia instance) {
-        super.load(instance);
-        this.steps = instance.clientSide ? 1 : 0; // BC PROBE
-    }
-
-    @Override
-    protected boolean start(final WaterMedia instance) {
-        if (!instance.clientSide) {
-            LOGGER.warn(IT, "Codecs API refuses to load on server-side");
-            return false;
-        }
-        // RIGIDLY PROBE THE NATIVE BLOCK-COMPRESSION LIBRARY ONCE, HERE — CODECS ARE NOT
-        // PLUGGABLE AT RUNTIME, SO available(...) REFLECTS ONLY WHAT THIS METHOD RESOLVES.
-        this.step++;
-        this.stepName = "BC";
-        BCCodec.init();
-        if (BCCodec.any()) {
-            LOGGER.info(IT, "Block-compression codecs available (best: {})", BCCodec.best());
-        } else {
-            LOGGER.info(IT, "No block-compression codecs available (native BC bindings absent)");
-        }
-        return true;
     }
 }

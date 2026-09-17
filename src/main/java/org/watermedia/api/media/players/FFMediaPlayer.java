@@ -16,6 +16,7 @@ import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.players.sync.Bridge;
 import org.watermedia.WaterMediaConfig;
@@ -38,6 +39,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.function.BiFunction;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
@@ -315,13 +317,16 @@ public final class FFMediaPlayer extends MediaPlayer {
         // LOOP KEEPS TOUCHING sfx/gfx AND NATIVE CONTEXTS UNTIL IT FINISHES.
         // ioAbortRequested (SET BY stop()) MAKES BLOCKING NATIVE I/O RETURN FAST.
         final Thread lifecycle = this.lifecycleThread;
-        if (lifecycle != null && lifecycle != Thread.currentThread()) {
+        final Thread caller = Thread.currentThread();
+        if (caller == lifecycle || caller == this.demuxThread || caller == this.videoDecodeThread || caller == this.audioDecodeThread)
+            throw new IllegalStateException("Release the player from its host thread after the playback callback returns");
+        if (lifecycle != null) {
             ThreadTool.join(lifecycle);
         }
-        super.release();
-        // FREE THE PAGE-ALIGNED PLANE POOL LAST: super.release() RELEASED gfx, WHICH (FOR VULKAN) DESTROYED
-        // THE MEMORY IMPORTED FROM THESE BUFFERS. THE DECODE THREADS ARE JOINED, SO NOTHING ELSE READS THEM.
+        // RETIRE EACH GPU IMPORT BEFORE FREEING ITS HOST BUFFER, WHILE THE GRAPHICS ENGINE IS LIVE.
+        // AUDIO ADAPTER CLEANUP MAY THROW, SO THE DECODED PLANE POOL MUST ALREADY BE RELEASED.
         this.freePlanePool();
+        super.release();
     }
 
     // FREES THE ROTATING PLANE POOL. PAGE-ALIGNED BUFFERS (memAlignedAlloc, FOR ZERO-COPY VULKAN IMPORT) ARE
@@ -332,7 +337,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (set == null) continue;
                 for (int i = 0; i < set.length; i++) {
                     if (set[i] != null) {
-                        this.gfx.release(set[i]); // DROPS A LIVE VULKAN IMPORT; NO-OP AFTER gfx.release()
+                        this.gfx.release(set[i]); // DRAINS GPU READS AND DROPS THE IMPORT BEFORE FREEING HOST MEMORY
                         MemoryUtil.memAlignedFree(set[i]);
                     }
                     set[i] = null;
@@ -2073,28 +2078,16 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final String path = uri.getPath();
         if (path == null) return true;
-        final String lower = path.toLowerCase(java.util.Locale.ROOT);
+        final String lower = path.toLowerCase(Locale.ROOT);
         return !lower.endsWith(".m3u8") && !lower.endsWith(".mpd");
     }
 
-    // APPLIES THE SHARED INPUT OPTIONS AND OPENS THE ALREADY-ALLOCATED this.formatContext.
-    // ON FAILURE LOGS THE DECODED ERROR AND DROPS THE CONTEXT (avformat_open_input FREES IT ON
-    // FAILURE) SO cleanup()/av_read_frame NEVER TOUCH FREED MEMORY. USED BY init() AND reopenFormat().
+    // OPENS THE ALREADY-ALLOCATED MAIN INPUT; FFMPEG FREES THE CONTEXT WHEN OPENING FAILS.
+    // CLEAR ITS JAVA REFERENCE SO CLEANUP AND READS CANNOT TOUCH FREED MEMORY.
     private boolean openInput(final String url) {
         final AVDictionary options = new AVDictionary();
         try {
-            av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
-            this.applyProbeOptions(options);
-            av_dict_set(options, "buffer_size", "33554432", 0);
-            av_dict_set(options, "rtbufsize", "15000000", 0);
-            av_dict_set(options, "http_persistent", "1", 0);
-            av_dict_set(options, "multiple_requests", "0", 0);
-            av_dict_set(options, "reconnect", "1", 0);
-            av_dict_set(options, "reconnect_streamed", "1", 0);
-            av_dict_set(options, "reconnect_delay_max", "5", 0);
-            av_dict_set(options, "timeout", "10000000", 0);
-            av_dict_set(options, "rtsp_transport", "tcp", 0);
-            av_dict_set(options, "max_delay", "5000000", 0);
+            this.applyInputOptions(options);
 
             final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
             if (ret < 0) {
@@ -2169,16 +2162,26 @@ public final class FFMediaPlayer extends MediaPlayer {
         return true;
     }
 
-    // APPLIES STREAM-PROBING OPTIONS BEFORE avformat_open_input. ANALYZEDURATION IS GIVEN
-    // IN MICROSECONDS AND PROBESIZE IN BYTES, SO WE CONVERT FROM THE CONFIG'S ms/MB UNITS.
-    // RAISING THESE LETS FFMPEG DETECT AUDIO/VIDEO PARAMS (sample_rate, channels) ON LIVE
-    // HLS STREAMS WHOSE HEADERS ARE SPARSE — OTHERWISE STREAMS PROBE AS 0Hz/0ch.
-    private void applyProbeOptions(final AVDictionary options) {
+    // MAIN AND SEPARATE AUDIO INPUTS SHARE TRANSPORT AND PROBING POLICY.
+    // FFMPEG EXPECTS MICROSECONDS/BYTES WHERE CONFIG USES MILLISECONDS/MEBIBYTES.
+    private void applyInputOptions(final AVDictionary options) {
+        MediaAPI.configureTLS(options);
+        av_dict_set(options, "headers", this.source.headers().toRawString(), 0);
         final long analyzeMs = WaterMediaConfig.media.ffmpeg.analyzeDuration;
         if (analyzeMs > 0) {
             av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1000L), 0);
         }
         av_dict_set(options, "probesize", String.valueOf((long) WaterMediaConfig.media.ffmpeg.probeSize * 1024L * 1024L), 0);
+        av_dict_set(options, "buffer_size", "33554432", 0);
+        av_dict_set(options, "rtbufsize", "15000000", 0);
+        av_dict_set(options, "http_persistent", "1", 0);
+        av_dict_set(options, "multiple_requests", "0", 0);
+        av_dict_set(options, "reconnect", "1", 0);
+        av_dict_set(options, "reconnect_streamed", "1", 0);
+        av_dict_set(options, "reconnect_delay_max", "5", 0);
+        av_dict_set(options, "timeout", "10000000", 0);
+        av_dict_set(options, "rtsp_transport", "tcp", 0);
+        av_dict_set(options, "max_delay", "5000000", 0);
     }
 
     // INIT
@@ -2336,11 +2339,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVDictionary slaveOptions = new AVDictionary();
 
         try {
-            av_dict_set(slaveOptions, "headers", this.source.headers().toRawString(), 0);
-            av_dict_set(slaveOptions, "reconnect", "1", 0);
-            av_dict_set(slaveOptions, "reconnect_streamed", "1", 0);
-            av_dict_set(slaveOptions, "reconnect_delay_max", "5", 0);
-            av_dict_set(slaveOptions, "timeout", "10000000", 0);
+            this.applyInputOptions(slaveOptions);
 
             if (avformat.avformat_open_input(this.slaveFormatContext, slaveUrl, null, slaveOptions) < 0) {
                 LOGGER.error(IT, "Failed to open audio slave input: {}", slaveUrl);

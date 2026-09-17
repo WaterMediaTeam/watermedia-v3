@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
+import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.Assets;
@@ -23,6 +24,10 @@ import java.util.Locale;
  * state is pulled from the {@link WaterMedia} metrics in the elements' {@code onUpdate} hooks every frame.
  */
 public final class LoadingScreen extends Screen {
+    private BootStatus boot = WaterMedia.status();
+
+    @Override
+    protected void onUpdate() { this.boot = WaterMedia.status(); }
 
     private static final int BANNER_MAX_W = 1000;
     private static final int BANNER_MAX_H = 170;
@@ -88,9 +93,9 @@ public final class LoadingScreen extends Screen {
     }
 
     // WORK FRACTION OF THE DEMANDING TASK IN FLIGHT — FULL WHEN NONE IS ACTIVE SO STEP RATIOS COMPLETE
-    private static float workFrac() {
-        final long total = WaterMedia.workTotal();
-        return total > 0 ? clamp01((float) WaterMedia.work() / total) : 1f;
+    private static float workFrac(final BootStatus.Progress progress) {
+        final long total = progress.workTotal();
+        return total > 0 ? clamp01((float) progress.work() / total) : 1f;
     }
 
     // HUMAN-READABLE BYTES FOR THE WORK CAPTION — ONE UNIT FOR BOTH VALUES PICKED FROM THE LARGEST;
@@ -285,64 +290,70 @@ public final class LoadingScreen extends Screen {
 
     // BAR 1 (MAIN) — OVERALL BOOT: MODULES DONE PLUS THE ACTIVE MODULE'S STEP FRACTION (ITSELF REFINED
     // BY THE LIVE WORK BYTES); OUTSIDE THE MODULE WALK IT IS THE APP ITSELF LOADING ITS OWN PIECES
-    private static final class ModuleBar extends Bar<ModuleBar> {
+    private final class ModuleBar extends Bar<ModuleBar> {
 
         @Override
         protected void onUpdate() {
-            final int steps = WaterMedia.steps();
-            final int step = WaterMedia.step();
+            final BootStatus status = LoadingScreen.this.boot;
+            final BootStatus.Progress progress = status.progress();
+            final int steps = status.steps();
+            final int step = status.step();
             if (!this.ctx.backendsLoading) {
                 this.goal(1f, true);
                 this.caption = "Starting: WaterMediaApp";
             } else if (step > 0 && steps > 0) {
-                final int taskSteps = WaterMedia.taskSteps();
-                final float taskFrac = taskSteps > 0 ? clamp01((WaterMedia.taskStep() - 1 + workFrac()) / taskSteps) : 0f;
+                final int taskSteps = progress.taskSteps();
+                final float taskFrac = taskSteps > 0 ? clamp01((progress.taskStep() - 1 + workFrac(progress)) / taskSteps) : 0f;
                 this.goal(clamp01((step - 1 + taskFrac) / steps), true);
-                this.caption = "Starting: " + clean(WaterMedia.stepName()) + " (" + step + "/" + steps + ")";
+                this.caption = "Starting: " + clean((status.current() == null ? "" : status.current().name())) + " (" + step + "/" + steps + ")";
             } else {
                 this.goal(0f, true);
                 this.caption = "Starting: WaterMediaApp";
             }
-            final int failed = WaterMedia.failures().size();
+            final int failed = status.failures().size();
             this.alert = failed > 0 ? " [" + failed + " step(s) failed]" : "";
         }
     }
 
     // BAR 2 — ACTIVE MODULE STEPS: VISIBLE ONLY WHILE THE BOOT PUBLISHES STEPS, GONE ONCE THE MODULES
     // FINISH AND ONLY THE APP KEEPS LOADING; THE RAMP REBASES WHEN THE ACTIVE MODULE CHANGES
-    private static final class StepBar extends Bar<StepBar> {
+    private final class StepBar extends Bar<StepBar> {
 
         private int tracked; // LAST MODULE INDEX SEEN — A CHANGE DROPS THE RAMP TO ZERO
 
         @Override
         protected void onUpdate() {
-            final int taskSteps = WaterMedia.taskSteps();
-            final int taskStep = WaterMedia.taskStep();
+            final BootStatus status = LoadingScreen.this.boot;
+            final BootStatus.Progress progress = status.progress();
+            final int taskSteps = progress.taskSteps();
+            final int taskStep = progress.taskStep();
             this.visible = this.ctx.backendsLoading && taskSteps > 0 && taskStep > 0;
             if (!this.visible) return;
-            final int module = WaterMedia.step();
+            final int module = status.step();
             if (module != this.tracked) {
                 this.tracked = module;
                 this.rebase();
             }
-            this.goal(clamp01((taskStep - 1 + workFrac()) / taskSteps), true);
-            final String step = clean(WaterMedia.taskName());
+            this.goal(clamp01((taskStep - 1 + workFrac(progress)) / taskSteps), true);
+            final String step = clean(progress.taskName());
             this.caption = (step.isEmpty() ? "Loading" : "Loading: " + step) + " (" + taskStep + "/" + taskSteps + ")";
         }
     }
 
     // BAR 3 — DEMANDING WORK (DOWNLOAD/EXTRACTION BYTES): ONLY VISIBLE WHILE ONE IS IN FLIGHT; AN
     // UNKNOWN TOTAL KEEPS THE TRACK EMPTY AND THE CAPTION COUNTING RAW BYTES
-    private static final class WorkBar extends Bar<WorkBar> {
+    private final class WorkBar extends Bar<WorkBar> {
 
         @Override
         protected void onUpdate() {
-            final long total = WaterMedia.workTotal();
-            this.visible = this.ctx.backendsLoading && (total > 0 || !clean(WaterMedia.workName()).isEmpty());
+            final BootStatus status = LoadingScreen.this.boot;
+            final BootStatus.Progress progress = status.progress();
+            final long total = progress.workTotal();
+            this.visible = this.ctx.backendsLoading && (total > 0 || !clean(progress.workName()).isEmpty());
             if (!this.visible) return;
-            final long done = WaterMedia.work();
+            final long done = progress.work();
             this.goal(total > 0 ? clamp01((float) done / total) : 0f, false);
-            this.caption = (WaterMedia.workRemote() ? "Downloading: " : "Extracting: ") + bytes(done, total);
+            this.caption = (progress.remote() ? "Downloading: " : "Extracting: ") + bytes(done, total);
         }
     }
 }

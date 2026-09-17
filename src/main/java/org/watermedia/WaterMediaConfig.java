@@ -1,6 +1,7 @@
 package org.watermedia;
 
 import me.srrapero720.waterconfig.WaterConfig;
+import me.srrapero720.waterconfig.ConfigSpec;
 import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.annotations.*;
 import me.srrapero720.waterconfig.impl.fields.StringField;
@@ -11,7 +12,8 @@ import java.nio.file.Path;
 import java.util.regex.Pattern;
 
 @Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
-public class WaterMediaConfig extends WaterMediaModule {
+public final class WaterMediaConfig {
+    private WaterMediaConfig() {}
     private static final int DEFAULT_NETWORK_SERVER_PORT = 25572;
 
     @Spec.Field
@@ -175,12 +177,6 @@ public class WaterMediaConfig extends WaterMediaModule {
             @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
             public boolean cache = true;
 
-            @Spec.Field
-            @Comment("Enables the on-disk BC7/DDS codec cache used by TxMediaPlayer")
-            @Comment("Decoded frames are recompressed to GPU block-compressed textures (DDS) so replays skip the decode and use a quarter of the VRAM")
-            @Comment("Requires GPU block-compression support; ignored when the BC codecs are unavailable")
-            public boolean codecCache = false;
-
             @Spec.Field(suffix = "MB", control = Control.SEEKBAR)
             @Comment("VRAM budget (in MB) for keeping an animated image as one GL texture per frame")
             @Comment("Animations whose decoded frames fit under this budget skip per-frame streaming entirely (best performance, like v2)")
@@ -221,6 +217,26 @@ public class WaterMediaConfig extends WaterMediaModule {
         @Comment("Force-Enable file storage server even on client-side")
         @Comment("NOTE: this doesn't mean that the server will be accessible from other devices, you need to open the port and set the remoteHost to your public IP or domain")
         public boolean forceEnableServer = false;
+
+        @Spec.Field
+        @Comment("Address used by the file server; use a LAN address or 0.0.0.0 to accept remote clients")
+        @Comment("Remote listeners require a non-default password")
+        public String serverBindAddress = "127.0.0.1";
+
+        @Spec.Field
+        @Comment("Maximum simultaneous file-server requests; excess connections are closed")
+        @NumberConditions(minInt = 1, maxInt = 256)
+        public int serverMaxRequests = 8;
+
+        @Spec.Field(suffix = "ms")
+        @Comment("Maximum total time for a file-server request, including headers and transfer")
+        @NumberConditions(minInt = 1000, maxInt = 600_000)
+        public int serverTimeout = 30_000;
+
+        @Spec.Field(suffix = "MB")
+        @Comment("Total file-server storage budget, including uploads in progress")
+        @NumberConditions(minInt = 1, math = true)
+        public int maxStorageSize = 1024;
 
         @Spec.Field(suffix = "MB")
         @Comment("Maximum upload file size in megabytes, files larger than this will be rejected by the server")
@@ -266,28 +282,23 @@ public class WaterMediaConfig extends WaterMediaModule {
         public int maxTextSize = (1024 * 1024) * 16;
     }
 
-    // ==========================================================================
-    // MODULE LIFECYCLE — THE CONFIG IS REGISTERED AS THE SECOND BOOT MODULE
-    // (RIGHT AFTER BINARIES) SO EVERY LATER MODULE READS REGISTERED VALUES.
-    // ==========================================================================
-
-    @Override
-    public String name() {
-        return WaterMediaConfig.class.getSimpleName();
-    }
-
-    @Override
-    protected void load(final WaterMedia instance) {
-        super.load(instance);
-        this.steps = 1; // TOML REGISTRATION
-    }
-
-    @Override
-    protected boolean start(final WaterMedia instance) {
-        this.step++;
-        this.stepName = "TOML";
-        WaterConfig.init();
-        WaterConfig.registerBlocking(WaterMediaConfig.class);
-        return true;
+    /** Internal bootstrap operation for the configuration facade. */
+    public static final class Module extends WaterMediaModule {
+        @Override
+        protected void start(final WaterMedia context) throws InterruptedException {
+            this.task(1, 1, "Configuration");
+            WaterConfig.init();
+            final ConfigSpec existing = WaterConfig.spec(WaterMedia.ID, false);
+            if (existing == null) {
+                WaterConfig.registerBlocking(WaterMediaConfig.class);
+            } else {
+                // THE HOST CONFIGURATION SERVICE IS PROCESS-SCOPED; NEVER REGISTER A SECOND WRITER.
+                synchronized (existing) {
+                    while (!existing.isLoaded() && existing.status() != ConfigSpec.Status.FAILED) existing.wait();
+                    if (!existing.isLoaded()) throw new IllegalStateException("WaterMedia configuration failed", existing.loadError());
+                    existing.refresh();
+                }
+            }
+        }
     }
 }

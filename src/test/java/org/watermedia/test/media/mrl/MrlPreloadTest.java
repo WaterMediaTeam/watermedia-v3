@@ -1,10 +1,12 @@
 package org.watermedia.test.media.mrl;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 
 import java.net.URI;
 
@@ -18,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
  */
 @DisplayName("MRL preload caching")
 public class MrlPreloadTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
 
     @Test
     @DisplayName("preload resolves the same instances as mrl")

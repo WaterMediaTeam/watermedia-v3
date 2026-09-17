@@ -31,6 +31,8 @@ import org.watermedia.api.platform.web.TwitterPlatform;
 import org.watermedia.api.platform.web.VidLiiPlatform;
 import org.watermedia.api.platform.web.YouTubePlatform;
 import org.watermedia.api.platform.web.YtDlpPlatform;
+import org.watermedia.test.platform.PlatformApiTest;
+import org.watermedia.test.platform.WaterPlatformTest;
 
 import java.net.URI;
 import java.util.stream.Stream;
@@ -48,8 +50,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * <p>
  * The other two outcomes of the contract are covered elsewhere offline:
  * the success (instance) and parse-failure (exception) states by
- * {@link org.watermedia.test.platform.WaterPlatformTest}, the registry-level
- * wiring by {@link org.watermedia.test.platform.PlatformApiTest}, and the
+ * {@link WaterPlatformTest}, the registry-level
+ * wiring by {@link PlatformApiTest}, and the
  * mature-content gate by {@link #testMatureContentDisabledThrowsBeforeFetch()}.
  */
 @DisplayName("Platform URI claim (offline)")

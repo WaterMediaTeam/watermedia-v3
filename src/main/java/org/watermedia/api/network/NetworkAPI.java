@@ -3,23 +3,36 @@ package org.watermedia.api.network;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
+import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.WaterMediaModule;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.ThreadTool;
+import org.watermedia.tools.IOTool;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.Executor;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class NetworkAPI extends WaterMediaModule {
+public final class NetworkAPI {
+    private NetworkAPI() {}
     static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
-    private static final Executor EXECUTOR = ThreadTool.createRecommendedThreadPool("NetworkAPI-Upload", 5);
+    private static volatile Uploads uploads;
+
+    private static final class Uploads {
+        final ExecutorService executor = Executors.newFixedThreadPool(4, ThreadTool.workerFactory("NetworkAPI-Upload", Thread.NORM_PRIORITY));
+        final Set<NetworkServer.UploadStatus> pending = ConcurrentHashMap.newKeySet();
+        volatile boolean active = true;
+    }
     private static final String STEP_MIME = "MIME registry";
     private static final String STEP_SERVER = "FileServer";
     public static final String PROTOCOL_WATER = "water";
@@ -46,7 +59,24 @@ public final class NetworkAPI extends WaterMediaModule {
      */
     public static NetworkServer.UploadStatus upload(final File file) {
         final NetworkServer.UploadStatus status = new NetworkServer.UploadStatus(file.length());
-        EXECUTOR.execute(() -> upload(file, status));
+        synchronized (NetworkAPI.class) {
+            final Uploads current = uploads;
+            final BootStatus.State state = WaterMedia.status().state();
+            if (current == null || !current.active || state == BootStatus.State.STOPPING || state == BootStatus.State.FAILED) {
+                status.fail("Network service is not running");
+                return status;
+            }
+            current.pending.add(status);
+            current.executor.execute(() -> {
+                try {
+                    if (current.active) upload(file, status, current);
+                    else status.fail("Network service stopped");
+                } finally {
+                    if (!status.completed() && !status.failed()) status.fail("Upload ended before completion");
+                    current.pending.remove(status);
+                }
+            });
+        }
         return status;
     }
 
@@ -62,7 +92,7 @@ public final class NetworkAPI extends WaterMediaModule {
         return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
-    private static void upload(final File file, final NetworkServer.UploadStatus status) {
+    private static void upload(final File file, final NetworkServer.UploadStatus status, final Uploads owner) {
         HttpURLConnection conn = null;
         try {
             // STREAMING UPLOADS WITH BYTE-LEVEL PROGRESS ARE OUT OF SCOPE FOR NetRequest,
@@ -70,6 +100,7 @@ public final class NetworkAPI extends WaterMediaModule {
             // DEPRECATED new URL(String) CONSTRUCTOR.
             final URL url = URI.create(remoteHost() + "/upload").toURL();
             conn = (HttpURLConnection) url.openConnection();
+            if (!owner.active) throw new IOException("Upload session stopped");
             conn.setConnectTimeout(WaterMediaConfig.network.timeout);
             conn.setReadTimeout(WaterMediaConfig.network.timeout);
             conn.setRequestMethod("POST");
@@ -92,6 +123,7 @@ public final class NetworkAPI extends WaterMediaModule {
                 int read;
 
                 while ((read = fis.read(buffer)) != -1) {
+                    if (!owner.active || Thread.currentThread().isInterrupted()) throw new IOException("Upload cancelled");
                     os.write(buffer, 0, read);
                     uploaded += read;
                     status.uploadedBytes(uploaded);
@@ -107,12 +139,15 @@ public final class NetworkAPI extends WaterMediaModule {
                 }
             }
 
+            if (!owner.active) throw new IOException("Upload session stopped");
             final int code = conn.getResponseCode();
             if (code == 200) {
                 final String id;
                 try (final var is = conn.getInputStream()) {
-                    id = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                    id = new String(is.readNBytes(9), StandardCharsets.US_ASCII);
                 }
+                if (!id.matches("[A-Za-z0-9]{8}")) throw new IOException("Server returned an invalid upload identifier");
+                if (!owner.active) throw new IOException("Upload session stopped");
                 status.complete(id);
             } else {
                 status.fail("Server returned HTTP " + code);
@@ -122,56 +157,66 @@ public final class NetworkAPI extends WaterMediaModule {
             LOGGER.error(IT, "Failed to upload '{}' to remote server", file.getName(), e);
             status.fail(e.toString());
         } finally {
-            if (conn != null) conn.disconnect(); // ALWAYS RELEASE THE CONNECTION, EVEN ON A MID-TRANSFER FAILURE
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
-    private boolean fileServerEnabled;
-
-    @Override
-    public String name() {
-        return NetworkAPI.class.getSimpleName();
-    }
-
-    @Override
-    protected void load(final WaterMedia instance) {
-        super.load(instance);
-        this.fileServerEnabled = WaterMediaConfig.network.forceEnableServer
-                || (!instance.clientSide && WaterMediaConfig.network.enableServer);
-        this.steps = 1 + (this.fileServerEnabled ? 1 : 0);
-    }
-
-    @Override
-    protected boolean start(final WaterMedia instance) {
-        // EXTEND THE PLATFORM FILE NAME MAP WITH MIME TYPES JAVA DOES NOT KNOW ABOUT
-        // (webp, apng, NETPBM VARIANTS, mkv, opus, ETC). JAVA'S content-types.properties
-        // SHIPS A TINY SET; WITHOUT THIS, URLConnection.guessContentTypeFromName() RETURNS
-        // null FOR MOST MODERN MEDIA AND PLATFORM CODE MIS-CLASSIFIES THE RESOURCE.
-        this.step++;
-        this.stepName = STEP_MIME;
-        NetRequest.installExtraMimeTypes();
-
-        // SERVER ONLY STARTS ON SERVER-SIDE WHEN ENABLED IN CONFIG
-        LOGGER.info(IT, "Network server is {}enabled on this environment", this.fileServerEnabled ? "" : "NOT ");
-        if (this.fileServerEnabled) {
-            this.step++;
-            this.stepName = STEP_SERVER;
-            try {
-                NetworkServer.start(WaterMediaConfig.network.serverPort, instance);
-            } catch (final Exception e) {
-                // A DEAD FILE SERVER MUST NOT MARK THE WHOLE NETWORK MODULE AS CRASHED — RECORD AND CARRY ON
-                LOGGER.error(IT, "Failed to start the network file server", e);
-                this.failures.add(STEP_SERVER);
+    /** Internal bootstrap operation for network services. */
+    public static final class Module extends WaterMediaModule {
+        @Override
+        protected void start(final WaterMedia context) {
+            this.task(1, 2, STEP_MIME);
+            NetRequest.installExtraMimeTypes();
+            synchronized (NetworkAPI.class) {
+                if (uploads != null) throw new IllegalStateException("Previous uploads have not stopped");
+                uploads = new Uploads();
+            }
+            this.task(2, 2, STEP_SERVER);
+            if (WaterMediaConfig.network.forceEnableServer || (!context.clientSide && WaterMediaConfig.network.enableServer)) {
+                try {
+                    NetworkServer.start(WaterMediaConfig.network.serverPort, context);
+                } catch (final Exception failure) {
+                    this.failure(STEP_SERVER, failure);
+                }
             }
         }
 
-        return true;
-    }
-
-    @Override
-    protected void release(final WaterMedia instance) {
-        NetworkServer.stop(); // STOP THE FILE SERVER AND ITS THREAD POOL SO A LATER start() CAN REBIND THE PORT
-        this.fileServerEnabled = false;
-        super.release(instance);
+        @Override
+        protected void release(final WaterMedia context) throws Exception {
+            final Uploads previous;
+            synchronized (NetworkAPI.class) {
+                previous = uploads;
+                if (previous != null) {
+                    previous.active = false;
+                    previous.executor.shutdownNow();
+                    for (final NetworkServer.UploadStatus pending: previous.pending) {
+                        if (!pending.completed()) pending.fail("WaterMedia stopped");
+                    }
+                }
+            }
+            Throwable failure = null;
+            try {
+                NetworkServer.stop();
+            } catch (final RuntimeException | Error problem) {
+                failure = problem;
+            }
+            try {
+                if (previous != null) {
+                    // HTTP STREAM CLOSE MAY BLOCK BEHIND A READ; ONLY ITS OWNER CLOSES THE CONNECTION.
+                    if (!previous.executor.awaitTermination(30, TimeUnit.SECONDS))
+                        throw new IOException("Uploads have not stopped; retry after their network timeout");
+                    synchronized (NetworkAPI.class) {
+                        if (uploads == previous) uploads = null;
+                    }
+                }
+            } catch (final Exception | Error problem) {
+                if (problem instanceof InterruptedException) Thread.currentThread().interrupt();
+                failure = IOTool.mergeFailure(failure, problem);
+            }
+            if (failure instanceof final Error error) throw error;
+            if (failure instanceof final Exception error) throw error;
+        }
     }
 }

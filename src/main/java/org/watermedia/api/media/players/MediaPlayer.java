@@ -2,6 +2,8 @@ package org.watermedia.api.media.players;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMedia.BootStatus;
+import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.players.sync.Bridge;
@@ -17,6 +19,7 @@ import org.watermedia.api.media.engines.GFXEngine;
 import org.watermedia.api.media.engines.SFXEngine;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.tools.ThreadTool;
+import org.watermedia.tools.IOTool;
 
 import java.nio.ByteBuffer;
 import java.util.Objects;
@@ -57,6 +60,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // EFFECTIVELY SINGLE-THREADED AND THE BRIDGE FLOW NEVER TOUCHES THE GAME THREAD.
     private static final long TICK_MS = 50;
     private static final Set<MediaPlayer> TICKING = ConcurrentHashMap.newKeySet();
+    private static final Set<MediaPlayer> OPEN = ConcurrentHashMap.newKeySet();
     private static final ScheduledExecutorService TICKER = Executors.newSingleThreadScheduledExecutor(
             ThreadTool.createFactory("MediaSync", Thread.NORM_PRIORITY - 2)
     );
@@ -68,7 +72,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private static void tickAll() {
         for (final MediaPlayer player: TICKING) {
             try {
-                player.tick50();
+                if (player.armed) player.tick50();
             } catch (final Throwable t) {
                 LOGGER.error(IT, "Sync tick failed", t);
             }
@@ -100,6 +104,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private final Role role;
     private final long watcherId;
     private volatile boolean armed;
+    private final Object bridgeLock = new Object();
+    private int sending;
+    private boolean pendingUnwatch;
+    private boolean unwatched;
     private volatile int caps;
     private volatile boolean configured;
     private volatile long aheadMs;    // HALF THE MEASURED ROUND TRIP — SNAPSHOT AGE IN FLIGHT
@@ -204,14 +212,27 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // NEVER CALLED FROM THIS BASE CLASS, WHERE SUBCLASS FIELDS WOULD STILL BE UNINITIALIZED
     // WHEN THE TICKER FIRES.
     protected final void arm() {
-        if (this.armed) return;
-        this.armed = true;
+        synchronized (MediaPlayer.class) {
+            if (this.armed) return;
+            final BootStatus.State state = WaterMedia.status().state();
+            if (state == BootStatus.State.STARTING || state == BootStatus.State.STOPPING || state == BootStatus.State.FAILED
+                    || (this.mrl != null && state != BootStatus.State.READY && state != BootStatus.State.DEGRADED))
+                throw new IllegalStateException("Cannot create a player while WaterMedia is starting, stopping or failed");
+            this.armed = true;
+            OPEN.add(this);
+        }
         if (this.role == Role.FOLLOWER) {
             // BACKDATE THE COOLDOWN SO THE FIRST CORRECTION IS NEVER BLOCKED (nanoTime ORIGIN IS ARBITRARY)
             this.lastSeekNanos = System.nanoTime() - SEEK_COOLDOWN_NANOS;
             this.watchNanos = System.nanoTime();
             TICKING.add(this);
-            this.send(new Watch(this.watcherId));
+            try {
+                this.send(new Watch(this.watcherId));
+            } catch (final RuntimeException | Error failure) {
+                TICKING.remove(this);
+                OPEN.remove(this);
+                throw failure;
+            }
         } else if (this.role == Role.AUTHORITY) {
             // TICKS PERMANENTLY FOR AUTO-BROADCAST, HEARTBEAT AND GATE SWEEPS
             TICKING.add(this);
@@ -221,8 +242,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // REGISTERS/DEREGISTERS A PLAYER ON THE SHARED TICKER. BRIDGED PLAYERS IGNORE DEREGISTRATION —
     // THEY TICK UNTIL release() — SO CLOCK STOP/START CYCLES NEVER SILENCE THE BRIDGE.
     protected static void ticking(final MediaPlayer player, final boolean on) {
-        if (on) TICKING.add(player);
-        else if (player.role == Role.SOLO) TICKING.remove(player);
+        synchronized (player.bridgeLock) {
+            if (on && player.armed) TICKING.add(player);
+            else if (player.role == Role.SOLO) TICKING.remove(player);
+        }
     }
 
     // SHARED-TICKER CALLBACK. THE BASE RUNS THE FOLLOWER ENGINE; ServerMediaPlayer LAYERS THE
@@ -242,8 +265,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Feeds a received bridge payload into this player — the single inbound entry of the
      * sync protocol. Safe to call from any thread (a packet handler, a socket reader): the
-     * payload is decoded and validated here, and its effects apply on the player's own
-     * cadence without touching the caller thread.
+     * payload is decoded and validated on the calling thread. Authorities handle it and may
+     * reply immediately; followers reconcile playback on their synchronization tick.
      * <p>
      * Followers accept {@link Sync} and {@link Config}; an authority accepts {@link Watch},
      * {@link Report}, {@link Control} and {@link Unwatch}. Packets for the opposite role
@@ -264,6 +287,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public final void sync(final Packet packet) {
         if (packet == null) throw new IllegalArgumentException("Packet cannot be null");
+        if (!this.armed) return;
         if (this.role != Role.FOLLOWER) {
             this.upstream(packet);
             return;
@@ -303,10 +327,34 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected final void send(final Packet packet) {
         final Bridge bridge = this.bridge;
         if (bridge == null) return;
+        final boolean unwatch = packet instanceof Unwatch;
+        synchronized (this.bridgeLock) {
+            if (unwatch) {
+                if (this.unwatched) return;
+                if (this.sending != 0) {
+                    this.pendingUnwatch = true;
+                    return;
+                }
+                this.pendingUnwatch = false;
+                this.unwatched = true;
+            } else {
+                if (!this.armed) return;
+                this.sending++;
+            }
+        }
+        // HOST CALLBACKS RUN WITHOUT OUR LOCKS; THE LAST ADMITTED SEND EMITS THE FINAL UNWATCH.
         try {
             bridge.send(packet.toBytes());
         } catch (final Throwable t) {
             LOGGER.error(IT, "Bridge send failed", t);
+        } finally {
+            if (!unwatch) {
+                final boolean finish;
+                synchronized (this.bridgeLock) {
+                    finish = --this.sending == 0 && this.pendingUnwatch;
+                }
+                if (finish) this.send(new Unwatch(this.watcherId));
+            }
         }
     }
 
@@ -398,6 +446,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             this.watchNanos = now;
             this.send(new Watch(this.watcherId));
         }
+        if (!this.armed) return;
 
         // VOLUME/MUTE MIRROR ONLY UNDER THE VOLUME CAPABILITY — OTHERWISE CLIENT-LOCAL, LIKE LOD
         if ((this.caps & Config.Capability.VOLUME.bit) != 0) {
@@ -481,6 +530,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // HANDSHAKE STILL GOES OUT: THE AUTHORITY IS THE REAL ENFORCEMENT POINT, AND SWALLOWING THE
     // USER'S FIRST CLICK BECAUSE THE CONFIG HASN'T LANDED IS WORSE THAN ASKING FOR TOO MUCH.
     private boolean request(final Control.Op op, final long value) {
+        if (!this.armed) return true;
         if (this.role != Role.FOLLOWER || this.applying) return false;
         if (this.configured && (this.caps & Config.Capability.CONTROLS.bit) == 0) {
             LOGGER.debug(IT, "Dropped {} — controls are locked on this bridged player", op);
@@ -645,17 +695,30 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * or LOD change, and using it earlier, from an unrelated render stage, or caching it across
      * frames can sample a stale, half-converted, or freshly allocated (undefined contents) texture.
      * @return the RGBA texture handle, or {@link MediaPlayer#NO_TEXTURE NO_TEXTURE} if no frame has been produced yet
-     * @see org.watermedia.api.media.engines.GFXEngine#texture()
+     * @see GFXEngine#texture()
      */
     public long texture() { return this.gfx == null ? NO_TEXTURE : this.gfx.texture(); }
 
     /**
      * Returns the audio source handle exposed by the backing {@link SFXEngine}.
      * The concrete handle type depends on the engine (an OpenAL source ID for OpenAL,
-     * an internal id for JavaSound).
+     * zero for Java Sound).
      * @return the audio source handle, or {@link MediaPlayer#NO_SOURCE NO_SOURCE} if audio is not supported.
      */
     public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_SOURCE; }
+
+    /** Whether the audio engine was created for mono spatial playback. */
+    public boolean spatialAudioSupported() { return this.sfx != null && this.sfx.spatial(); }
+
+    /** Last applied spatial state, or null when no spatial environment is active. */
+    public SFXEngine.SpatialAudio spatialAudio() { return this.sfx != null ? this.sfx.spatialAudio() : null; }
+
+    /**
+     * Applies position and effects on the host's sound executor with the source's OpenAL context current.
+     * Passing null restores dry listener-relative playback. Spatial controls are local to this listener.
+     * @return false if the engine does not support spatial audio or has been released
+     */
+    public boolean spatialAudio(final SFXEngine.SpatialAudio audio) { return this.sfx != null && this.sfx.spatialAudio(audio); }
 
     /**
      * Moves to the previous frame of the video. Refused on a follower — stepping frames
@@ -1028,18 +1091,33 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * finish. After calling this method, the media player should not be used again.
      */
     public void release() {
-        // LEAVE THE SESSION FIRST: SAY GOODBYE SO THE AUTHORITY DROPS US INSTEAD OF WAITING OUT THE TTL
-        if (this.role == Role.FOLLOWER) this.send(new Unwatch(this.watcherId));
-        TICKING.remove(this);
-        // SUBCLASSES STOP/JOIN THEIR DECODE THREADS BEFORE CALLING super.release(), SO NEITHER ENGINE
-        // IS STILL IN USE HERE. RELEASING gfx FREES ITS GPU TEXTURES (FOR VULKAN, VIA DEFERRED DESTRUCTION).
-        if (this.gfx != null) {
-            this.gfx.release();
+        synchronized (this.bridgeLock) {
+            this.armed = false;
+            TICKING.remove(this);
         }
-        if (this.sfx != null) {
-            this.sfx.release();
+        Throwable failure = null;
+        boolean closed = true;
+        // ATTEMPT EVERY OWNED RESOURCE EVEN WHEN A HOST CALLBACK OR ANOTHER ENGINE FAILS.
+        final Runnable[] cleanup = {
+                () -> { if (this.role == Role.FOLLOWER) this.send(new Unwatch(this.watcherId)); },
+                () -> { if (this.gfx != null) this.gfx.release(); },
+                () -> { if (this.sfx != null) this.sfx.release(); }
+        };
+        for (int i = 0; i < cleanup.length; i++) {
+            try {
+                cleanup[i].run();
+            } catch (final RuntimeException | Error problem) {
+                if (i > 0) closed = false;
+                failure = IOTool.mergeFailure(failure, problem);
+            }
         }
+        if (closed) OPEN.remove(this);
+        if (failure instanceof final Error error) throw error;
+        if (failure instanceof final RuntimeException error) throw error;
     }
+
+    /** Number of constructed players whose release lifecycle has not completed. */
+    public static int openPlayers() { return OPEN.size(); }
 
     /**
      * What a player is within a synchronized session. Not a client/server split: the axis is who

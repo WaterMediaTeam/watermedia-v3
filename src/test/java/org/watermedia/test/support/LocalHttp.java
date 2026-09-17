@@ -12,6 +12,7 @@ import java.net.URI;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.Executor;
 
 /**
  * Loopback HTTP server scaffolding for tests. One instance backs a single
@@ -30,9 +31,15 @@ public final class LocalHttp implements AutoCloseable {
 
     /** Boots an HTTP server on a random loopback port with the given handler. */
     public static LocalHttp start(final String path, final HttpHandler handler) {
+        return start(path, handler, null);
+    }
+
+    /** Uses a caller-owned executor when requests must run concurrently. */
+    public static LocalHttp start(final String path, final HttpHandler handler, final Executor executor) {
         try {
             final HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
             server.createContext(path, handler);
+            server.setExecutor(executor);
             server.start();
             return new LocalHttp(server);
         } catch (final IOException e) {

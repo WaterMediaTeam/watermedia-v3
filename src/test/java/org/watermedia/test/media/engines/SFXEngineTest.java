@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.lwjgl.openal.AL;
+import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALC10;
 import org.watermedia.api.media.MediaAPI;
@@ -18,12 +19,17 @@ import org.watermedia.test.support.MediaBootstrap;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
+import java.lang.reflect.Field;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Pure-Java verification of the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer
@@ -127,7 +133,9 @@ class SFXEngineTest {
             final ALEngine engine = MediaAPI.alEngine();
             try {
                 assertEquals(SFXEngine.SampleType.U8, engine.supportedTypes()[0]);
-                assertEquals(4, engine.supportedTypes().length);
+                final var capabilities = AL.getCapabilities();
+                assertEquals(2 + (capabilities.AL_EXT_FLOAT32 || capabilities.AL_EXT_MCFORMATS ? 1 : 0)
+                        + (capabilities.AL_EXT_DOUBLE ? 1 : 0), engine.supportedTypes().length);
                 assertTableConsistent(engine);
                 assertNotEquals(0, engine.source(), "a source handle is generated under a live context");
                 assertTrue(engine.speed(2.0f), "AL_PITCH applies speed natively");
@@ -146,13 +154,78 @@ class SFXEngineTest {
                 assertEquals(2, engine.channels());
                 assertEquals(SFXEngine.SampleType.S16, engine.sampleType());
 
-                assertTrue(engine.format(SFXEngine.SampleType.S16, 6, 48_000), "S16 5.1");
-                assertTrue(engine.format(SFXEngine.SampleType.DBL, 2, 48_000), "DBL stereo");
+                assertEquals(AL.getCapabilities().AL_EXT_MCFORMATS, engine.format(SFXEngine.SampleType.S16, 6, 48_000), "S16 5.1");
+                assertEquals(AL.getCapabilities().AL_EXT_DOUBLE, engine.format(SFXEngine.SampleType.DBL, 2, 48_000), "DBL stereo");
 
                 assertFalse(engine.format(SFXEngine.SampleType.DBL, 6, 48_000), "DBL multichannel unsupported");
                 assertFalse(engine.format(SFXEngine.SampleType.S32, 2, 48_000), "no native S32 PCM");
                 assertFalse(engine.format(null, 2, 48_000), "null type");
             } finally {
+                engine.release();
+            }
+        }
+
+        @Test
+        void nativeUploadErrorsPreserveQueueOwnership() throws Exception {
+            final ALEngine engine = MediaAPI.alEngine(2);
+            final ByteBuffer pcm = ByteBuffer.allocateDirect(64);
+            final Field nativeFormat = ALEngine.class.getDeclaredField("alFormat");
+            final Field free = ALEngine.class.getDeclaredField("freeCount");
+            nativeFormat.setAccessible(true);
+            free.setAccessible(true);
+            try {
+                assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
+                nativeFormat.setInt(engine, 0x7FFFFFFF);
+                assertThrows(IllegalStateException.class, () -> engine.upload(pcm));
+                assertEquals(2, free.getInt(engine));
+                assertEquals(0, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
+                assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
+                assertTrue(engine.upload(pcm));
+                assertTrue(engine.format(SFXEngine.SampleType.S16, 2, 48_000));
+                assertThrows(IllegalStateException.class, () -> engine.upload(pcm));
+                assertEquals(1, free.getInt(engine));
+                assertEquals(1, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
+                engine.flush();
+                assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
+                assertTrue(engine.upload(pcm));
+                assertTrue(engine.upload(pcm));
+                assertFalse(engine.upload(pcm));
+                assertFalse(engine.speed(Float.NaN));
+                assertFalse(engine.speed(0));
+                assertEquals(1, engine.speed());
+                assertEquals(AL10.AL_NO_ERROR, AL10.alGetError());
+            } finally {
+                engine.release();
+            }
+        }
+
+        @Test
+        void releaseWaitsForAHostCallbackUsingTheSource() throws Exception {
+            final ALEngine engine = MediaAPI.alEngine(true);
+            final CountDownLatch entered = new CountDownLatch(1);
+            final CountDownLatch resume = new CountDownLatch(1);
+            final CountDownLatch releasing = new CountDownLatch(1);
+            final var executor = Executors.newFixedThreadPool(2);
+            try {
+                final var update = executor.submit(() -> engine.spatialAudio(new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false,
+                        (source, state) -> {
+                            entered.countDown();
+                            try { if (!resume.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Test callback timed out"); }
+                            catch (final InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
+                            assertTrue(AL10.alIsSource(source));
+                        })));
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                final var release = executor.submit(() -> { releasing.countDown(); engine.release(); });
+                assertTrue(releasing.await(2, TimeUnit.SECONDS));
+                assertFalse(release.isDone());
+                resume.countDown();
+                assertTrue(update.get(2, TimeUnit.SECONDS));
+                release.get(2, TimeUnit.SECONDS);
+                assertEquals(0, engine.source());
+            } finally {
+                resume.countDown();
+                executor.shutdownNow();
+                assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
                 engine.release();
             }
         }
