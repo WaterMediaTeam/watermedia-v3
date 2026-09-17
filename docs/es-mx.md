@@ -1,170 +1,270 @@
-# MRL
-MRL es un wrapper de URI, actúa como una galería. MediaAPI captura y gestiona las instancias, asegurando una única instancia de MRL para cada URL igual.
-```java
-MRL mrl = MediaAPI.getMRL("https://imgur.com/gallery/abc123");
-// EN CASO DE QUE QUIERAS PRE-CARGAR MUCHAS URLs COMO UN PLAYLIST, PUEDES HACERLO USANDO
-MRL.preload(URI.create("https://example.com/video1.mp4"), URI.create("https://example.com/video2.mp4"));
-```
+# Guía de la API de WaterMedia
 
-## ESTADOS
-MRL tiene 3 estados diferentes
-- `mrl.busy()` - El MRL aún está cargando sources desde la plataforma. Aún no está listo y no ha ocurrido ningún error.
-- `mrl.ready()` - Los sources se han cargado exitosamente. Ahora puedes acceder a los sources y crear players.
-- `mrl.error()` - La carga falló. La plataforma no pudo resolver la URI, o una excepción ocurrió durante la carga.
+[English](en-us.md) · Español (México)
 
-En caso de que necesites una forma bloqueante de obtener el estado ready,
-puedes usar `mrl.await(timeout)`, retornará si el MRL está `busy` o no,
-depende de ti checar si tiene `error()` o no.
+WaterMedia resuelve direcciones de contenido multimedia, decodifica sus datos y entrega cuadros de video y muestras de audio a los motores de salida. Requiere Java 17 o posterior. Los puntos de entrada de los loaders de Minecraft realizan el arranque; una aplicación que integra la biblioteca directamente debe iniciarla después de preparar su entorno y sus dependencias.
 
-## Sources e Indexes
-Los MRLs pueden contener múltiples sources.
-Cada source representa una pieza individual de media (un video, una imagen o un audio track).
-Los sources se acceden por su index (posición base-cero en el array).
-```java
-// TODOS LOS SOURCES
-MRL.Source[] sources = mrl.sources();
-
-// CANTIDAD DE SOURCES
-int count = mrl.sourceCount();
-
-// OBTENER UN SOURCE ESPECÍFICO SI EXISTE (RETORNA NULL CUANDO NO HAY SOURCE)
-MRL.Source source = mrl.source(0);  // PRIMERO
-MRL.Source second = mrl.source(1);  // SEGUNDO
-
-// OBTENER EL PRIMER SOURCE POR TIPO
-MRL.Source video = mrl.videoSource(); // VIDEO
-MRL.Source image = mrl.imageSource(); // IMAGEN
-MRL.Source audio = mrl.audioSource(); // AUDIO
-MRL.Source[] videos = mrl.sourcesByType(MRL.MediaType.VIDEO);  // TODOS LOS VIDEO SOURCES
-```
-
-## MÚLTIPLES SOURCES
-Algunas plataformas soportadas por watermedia (como imgur) resuelven una sola URL en múltiples sources.
-Resultando en esto:
-```
-URL: https://imgur.com/gallery/abc123
-  -> Source[0]: IMAGEN (cat.png)       <- index 0
-  -> Source[1]: VIDEO (dog.mp4)        <- index 1
-  -> Source[2]: IMAGEN (bird.gif)      <- index 2
-```
-
-Para abrir un source específico, necesitas especificar el index del source
-```java
-MRL mrl = MediaAPI.getMRL("https://imgur.com/gallery/abc123");
-// CHECAR QUE ESTÉ LISTO Y SIN ERRORES
-
-// CREAR UNA INSTANCIA DE PLAYER PARA EL SEGUNDO SOURCE, EN ESTE CASO, UN VIDEO DE PERRO
-MediaPlayer player = mrl.createPlayer(1, renderThread, renderThreadEx, glEngine, alEngine, true, true);
-```
--# NOTA: el método error() siempre retorna true cuando no hay sources disponibles a pesar de ser válidos y resolubles
-
-
-# MEDIA PLAYERS
-Los MediaPlayers ahora solo pueden ser creados ÚNICA Y EXCLUSIVAMENTE por MRLs, así que siempre necesitas usar MRLs.
-El uso es simple
-```
-// EL INDEX SE PUEDE OMITIR PARA SIEMPRE ELEGIR EL PRIMER INDEX
-MediaPlayer player = mrl.createPlayer(renderThread, renderThreadEx, glEngine, alEngine, true, true);
-
-// INDEX ESPECIFICADO
-MediaPlayer player = mrl.createPlayer(2, renderThread, renderThreadEx, null, null, true, false);
-```
-El método puede retornar NULL si el source index no existe (el MRL solo tiene 2 sources) y si no hay un engine disponible para ese tipo de source (te falta el JAR de Binarios de WaterMedia o FFMPEG falló al cargar)
-
-Puede retornar 3 variantes de un media player
-- TxMediaPlayer: Un MediaPlayer basado en texturas (imágenes e imágenes animadas)
-- FFMediaPlayer: Usa FFmpeg como backend para playback completo de video/audio.
-- ServerMediaPlayer: un player headless de wall-clock que actúa como la autoridad de tiempo del lado del server para playback sincronizado (ver PLAYBACK SINCRONIZADO abajo)
-
-### ARGUMENTOS
-- sourceIndex (int) - el index del source a reproducir
-- renderThread (Thread) - la instancia del render thread (disponible en ``Minecraft.thread``)
-- renderThreadEx (Executor) - el executor que corre tasks en el render thread (``Minecraft.getInstance()``)
-- glEngine (GLEngine) - la instancia que creas con MediaAPI.glEngine(renderThread, renderExecutor). El engine es autocontenido: captura y restaura el estado GL del host alrededor de cada subida, así que GlStateManager (o el tracker de Sodium) nunca se desincroniza y no hace falta ningún proxy.
-- alEngine (ALEngine) - por ahora, esto no necesita ser creado y puedes pasarle un null
-- video (boolean) - habilita el output de video, útil para no desperdiciar recursos de GPU en un player de solo audio, esto solo desactiva el soporte, no fuerza al media a tener o encontrar el media
-- audio (boolean) - igual que video
-
-## GLEngine y ALEngine
-Estos engines abstraen las llamadas de OpenGL/OpenAL para que diferentes plataformas (versiones de Minecraft, custom renderers) puedan proveer sus propias implementaciones:
-
-## GLEngine se encarga de:
-Creación de texturas con filtering apropiado (LINEAR) y wrapping (CLAMP_TO_EDGE)
-Upload de texturas con double-buffer PBO (Pixel Buffer Object) para performance
-Eliminación de texturas
-
-## ALEngine se encarga de:
-Creación de audio sources y buffers
-Upload de audio en streaming con buffer queuing
-Control de volumen, velocidad, pausa/play
-Cleanup de recursos
-
-# Estado del MediaPlayer
-Un MediaPlayer pasa por estos estados durante su lifecycle:
-
-### Status
-- WAITING - Player creado, esperando recursos o condiciones para comenzar la carga.
-- LOADING - Cargando activamente datos de media desde la red o disco.
-- BUFFERING - Buffereando datos para asegurar un playback fluido.
-- PLAYING - El playback se está reproduciendo activamente.
-- PAUSED - El playback está pausado, se puede resumir.
-- STOPPED - Playback detenido, se puede reiniciar desde el inicio.
-- ENDED - El media llegó al final. Se puede reiniciar o va a loopear si el repeat está habilitado.
-- ERROR - Ocurrió un error. El playback no puede continuar.
-
-Puedes checar el status usando `player#status()` o los métodos de conveniencia
-
-# PLAYBACK SINCRONIZADO (BRIDGE)
-WaterMedia entrega el sistema de sync completo; tú entregas el carrier de bytes. Un **`Bridge`** es un solo método, `send(ByteBuffer)`, y todo lo que recibas del otro lado se lo pasas a `player.sync(payload)`. No hay loop que escribir, ni estado que pollear, ni matemática de corrección que implementar.
-
-Nada sobre quiénes son los pares llega a WaterMedia: tu bridge sabe a qué sesión sirve y rutea en consecuencia, por eso la forma natural es una clase pequeña que guarde esa llave en vez de un lambda.
+## Arranque y propiedad de los recursos
 
 ```java
-public final class MediaBridge implements Bridge {
-    private final ResourceLocation session;
-    public MediaBridge(ResourceLocation session) { this.session = session; }
-    public void send(ByteBuffer payload) { Network.send(this.session, payload); }
+import org.watermedia.WaterMedia;
+import org.watermedia.WaterMedia.BootStatus;
+
+WaterMedia.start("My application", temporaryDirectory, workingDirectory, true);
+BootStatus snapshot = WaterMedia.status();
+```
+
+El último argumento indica si el entorno es cliente. Lee `snapshot.state()` y `snapshot.failures()` en la misma instantánea:
+
+| Estado | Significado |
+| --- | --- |
+| `STOPPED` | No hay una sesión activa. |
+| `STARTING` | Los servicios todavía están iniciando. |
+| `READY` | El arranque terminó sin fallas registradas. |
+| `DEGRADED` | El arranque terminó, pero algún servicio u operación opcional falló. |
+| `FAILED` | Falló el arranque esencial o quedó una limpieza incompleta. |
+| `STOPPING` | La sesión está cerrando sus servicios. |
+
+`DEGRADED` no garantiza que todos los formatos puedan reproducirse: consulta la capacidad que necesitas, como `MediaAPI.ffmpegLoaded()`. Los servidores dedicados omiten los módulos de cliente y la extracción de sus binarios. La decodificación de imágenes en Java mediante `CodecsAPI` no requiere este arranque.
+
+Cada reproductor es dueño de los motores que recibe. Créalos mediante proveedores (`Supplier`) para que una fuente no disponible no deje recursos nativos reservados. No compartas un motor entre reproductores.
+
+La aplicación anfitriona es dueña de sus contextos OpenGL, Vulkan y OpenAL. Libera cada reproductor en los hilos y contextos correspondientes antes de llamar a `WaterMedia.stop()`: el cierre se rechaza mientras haya reproductores abiertos. Si una limpieza falla, conserva el contexto necesario y vuelve a intentar el cierre. Después de recargar un dispositivo o contexto debes crear motores nuevos. Reiniciar WaterMedia no descarga las bibliotecas JNI ni permite cambiar su versión dentro de la misma JVM.
+
+## MRL y resolución de direcciones
+
+Un MRL representa una dirección multimedia resuelta y almacenada en caché. Una misma dirección puede representar una galería con varias fuentes; cada fuente puede tener variantes de calidad y pistas de audio separadas.
+
+```java
+import org.watermedia.api.media.MRL;
+import org.watermedia.api.media.MediaAPI;
+import java.net.URI;
+
+MRL mrl = MediaAPI.mrl("https://imgur.com/gallery/abc123");
+MRL[] playlist = MediaAPI.preload(
+        URI.create("https://example.com/video1.mp4"),
+        URI.create("https://example.com/video2.mp4"));
+```
+
+La resolución es asíncrona. En un juego, consulta `mrl.status()` desde el tick:
+
+| Estado | Significado |
+| --- | --- |
+| `FETCHING` | La resolución sigue en curso. |
+| `LOADED` | La resolución terminó correctamente. |
+| `ERROR` | Falló la resolución; consulta `mrl.exception()`. |
+| `BLOCKED` | La configuración impidió resolver el contenido; consulta `mrl.exception()`. |
+| `EXPIRED` | Las fuentes resueltas caducaron. |
+| `FORGOTTEN` | El recurso fue descartado o su sesión terminó. |
+
+Para código de aplicación o tareas de fondo puedes usar `mrl.await(timeoutMillis)`. Devuelve `true` cuando la carga ya no está pendiente, incluso si terminó con un error; `false` cuando se agota la espera o se interrumpe el hilo mientras espera. No bloquees el hilo del juego para resolver una URL.
+
+### Fuentes e índices
+
+Los índices empiezan en cero. Las colecciones de fuentes son listas:
+
+```java
+import org.watermedia.api.util.MediaType;
+import java.util.List;
+
+if (mrl.status() == MRL.Status.LOADED) {
+    List<MRL.Source> sources = mrl.sources();
+    int count = mrl.sourceCount();
+    MRL.Source first = mrl.source(0);
+    MRL.Source second = mrl.source(1);
+    MRL.Source firstVideo = mrl.sourceByType(MediaType.VIDEO);
+    List<MRL.Source> videos = mrl.sourcesByType(MediaType.VIDEO);
 }
 ```
 
-Un player creado con bridge deja de ser independiente:
-- En el server, `ServerMediaPlayer` se vuelve la **autoridad**: registra espectadores, broadcastea su estado y aplica peticiones de control.
-- En el cliente, cualquier player se vuelve un **follower**: replica la autoridad y se mantiene alineado con ella. Sus llamadas de control (`start`, `pause`, `seek`, `speed`, `repeat`…) ya no se aplican localmente — viajan como petición hacia arriba y regresan como estado autoritativo.
+`source(index)` devuelve `null` cuando la fuente no está disponible o el índice es inválido. `sourceByType(...)` devuelve la primera coincidencia o `null`; `sources()` y `sourcesByType(...)` devuelven listas vacías cuando no hay resultados. `MediaType` se importa desde `org.watermedia.api.util`.
+
+Una galería puede resolverse así:
+
+```text
+URL: https://imgur.com/gallery/abc123
+  -> Source[0]: IMAGE (cat.png)
+  -> Source[1]: VIDEO (dog.mp4)
+  -> Source[2]: IMAGE (bird.gif)
+```
+
+Para actualizar un MRL, conserva el valor devuelto por `mrl = mrl.reload()`. Si su entrada ya fue descartada, obtienes el recurso vigente para esa dirección y el anterior permanece descartado. Si su sesión terminó, no puede reactivar trabajo dentro de una sesión nueva. Mientras una carga sigue en curso, la recarga se programa para después de que termine.
+
+## Creación y control de reproductores
+
+La fábrica está en `MediaAPI`. Usa el índice de la fuente y proveedores de motores:
 
 ```java
-// SERVER — TU BRIDGE BROADCASTEA LOS BYTES A TODOS LOS CLIENTES VIENDO ESTE MEDIA
-ServerMediaPlayer server = MediaAPI.createPlayer(new MediaBridge(session), Capability.LOCKSTEP);
-server.start();                 // ESO ES TODO — SNAPSHOTS Y HEARTBEATS SALEN SOLOS
+import org.watermedia.api.media.players.MediaPlayer;
 
-// HANDLER DE PACKETS DEL SERVER
-server.sync(payload);
-
-// CLIENTE — TU BRIDGE MANDA LOS BYTES AL SERVER
-MediaPlayer player = MediaAPI.createPlayer(mrl, gfx, sfx, new MediaBridge(session));
-
-// HANDLER DE PACKETS DEL CLIENTE
-player.sync(payload);
+MediaPlayer player = MediaAPI.createPlayer(mrl, 1,
+        () -> MediaAPI.glEngine(renderThread, renderExecutor),
+        MediaAPI::jsEngine);
+if (player == null) {
+    throw new IllegalStateException("Source is unavailable or its backend failed");
+}
+try {
+    if (!player.start()) throw new IllegalStateException("Player refused to start");
+} catch (RuntimeException | Error failure) {
+    player.release();
+    throw failure;
+}
 ```
-`sync(ByteBuffer)` es seguro desde tu network thread: ahí decodifica y valida (la frontera de confianza), y todo lo demás ocurre en el tick propio de 50ms de WaterMedia, nunca en el hilo del juego.
 
-### LA SECUENCIA
-1. Se crea el player del cliente y se anuncia con un saludo; entra a la sesión como espectador cargando. Un recién llegado nunca interrumpe el media que ya corre para los demás.
-2. La autoridad responde con el `Config` de la sesión (las capabilities otorgadas) más un snapshot fresco, así el que llega tarde aterriza de inmediato en el timestamp correcto.
-3. Cada follower reporta su propio estado hacia arriba en cada transición, más un keepalive. El primer cliente que conoce el media reporta su duración y su flag de live, y la autoridad los adopta (el primer reporte no-cero gana por sesión). Hasta ese primer reporte el reloj de la sesión se mantiene en cero: una línea de tiempo que la autoridad no puede envolver ni terminar no debe desbocarse mientras nadie puede verla.
-4. La autoridad broadcastea un snapshot cada vez que su estado cambia, más un heartbeat de ~5s. Los packets fuera de orden se rechazan por revision; los heartbeats se re-aplican.
-5. Al hacer release el follower se despide. El que desaparece sin decirlo lo barre un timeout de silencio (`watcherTimeout(ms)`, 15s por defecto), así un cliente que se cae nunca congela a la audiencia.
+El ejemplo selecciona la segunda fuente de la galería. Puedes omitir el índice para seleccionar la primera. `renderThread` es el hilo dueño del contexto OpenGL y `renderExecutor` debe ejecutar tareas en ese hilo; ambos los proporciona tu integración.
 
-### CAPABILITIES
-Las capabilities se declaran en la autoridad y se anuncian a todos los followers; el reloj y el espejo de estado siempre están activos. Los followers pueden leer qué se les otorgó con `player.granted(capability)` — útil para apagar un control que la audiencia no tiene permitido manejar.
+La fábrica devuelve `null` si la fuente todavía se está resolviendo, el índice no existe, falta el motor de reproducción necesario o la construcción lanza una `Exception`. Los `Error` se propagan. Consulta el estado del MRL para distinguir una espera normal de una falla. Los proveedores se invocan sólo cuando hacen falta; las imágenes no consumen el proveedor de audio. Para omitir una salida, pasa un proveedor que devuelva `null`, por ejemplo `() -> null` como salida gráfica de un reproductor de sólo audio.
 
-- `LOCKSTEP` — una sola experiencia para todos: mientras algún espectador ya listo esté cargando o bufereando, la autoridad presenta `BUFFERING` con el reloj congelado y toda la audiencia espera; se reanuda exactamente donde se congeló. Los clientes fallidos se ignoran, y el espectador que entra a mitad de playback solo empieza a contar cuando reporta estar listo.
-- `CONTROLS` — los followers pueden manejar la sesión: un `pause()` en cualquier cliente viaja a la autoridad, que decide y broadcastea el resultado a todos. Los permisos son tuyos: filtra antes de llamar `sync()`, o controla tu propia UI. Sin esta capability, las llamadas de control en un follower simplemente se descartan.
-- `VOLUME` — la autoridad también dicta volumen y mute. Sin ella ambos quedan locales del cliente, como el escalado y el LOD siempre lo están.
+| Reproductor | Función |
+| --- | --- |
+| `TxMediaPlayer` | Imágenes y animaciones compatibles. |
+| `FFMediaPlayer` | Video y audio mediante FFmpeg. |
+| `ServerMediaPlayer` | Reloj de sincronización sin decodificación ni motores nativos. |
 
-### AJUSTES
-Un solo umbral, una sola corrección: si el drift pasa la tolerancia (`tolerance(ms)`, 1s por defecto), la reproducción salta a donde está la sesión con un `seekQuick`. Nada más — sin recortar la velocidad para converger suavemente. Eso se probó y se descartó: se percibe como que el video a veces va lento, y de todos modos el cliente solo puede quedarse *atrás*, porque la autoridad es un reloj pelón sin decodificación ni buffers. El drift es circular en media con repeat para que la frontera del loop nunca finja un hueco enorme, las correcciones tienen rate-limit mientras el pipeline se reacomoda, y ninguna corre mientras el player local carga o buferea.
+```java
+player.pause(true);
+player.pause(false);
+player.seek(15_000);
+player.volume(50);
+player.mute(true);
+player.speed(1.25f);
+player.repeat(true);
+player.maxSize(1280, 720);
+```
 
-Corregir necesita dos posiciones: dónde **debería** estar la reproducción y dónde está realmente. `authorityTime()` es la primera — el último snapshot envejecido hasta una posición viva, porque los snapshots llegan con segundos de separación y un objetivo viejo jalaría cada corrección hacia atrás; `authority()` te entrega ese snapshot crudo. La segunda es el player mismo, con su propio estado (puede seguir en LOADING) y su propia posición de decodificación. El hueco se inspecciona con `drift()`, y qué es este player con `role()`.
+Los tiempos se expresan en milisegundos y el volumen del reproductor es un porcentaje de 0 a 100. Consulta `canSeek()` antes de ofrecer desplazamiento en transmisiones que no lo permiten. Para diagnóstico usa `status()`, `time()`, `duration()`, `buffered()` y `exception()`.
 
-### EL WIRE
-Los packets son records pequeños de tamaño fijo y big-endian en `org.watermedia.api.media.players.sync`, decodificados por `Packet.of(ByteBuffer)`: `Sync` (29 B, el snapshot autoritativo), `Config` (11 B), `Watch`/`Unwatch` (10 B), `Report` (20 B) y `Control` (19 B). El decode toma solo los bytes del propio packet y deja el resto en el buffer, así que puedes embeber un payload dentro de un frame más grande con tus propios campos de ruteo.
+### Estados del reproductor
+
+| Estado | Significado |
+| --- | --- |
+| `WAITING` | Creado, esperando condiciones para comenzar. |
+| `LOADING` | Cargando o preparando el contenido. |
+| `BUFFERING` | Esperando datos para continuar la reproducción. |
+| `PLAYING` | Reproduciendo. |
+| `PAUSED` | Pausado; puede reanudarse. |
+| `STOPPED` | Detenido; puede iniciarse desde el principio. |
+| `ENDED` | Alcanzó el final del contenido. |
+| `ERROR` | Ocurrió una falla de reproducción. |
+
+El escalado y el nivel de detalle afectan los formatos de píxeles compatibles; las texturas BC se entregan con las dimensiones codificadas. Llama a `player.release()` cuando elimines la superficie o cierres su sesión, incluso si la reproducción falló.
+
+## Selección de motores
+
+| Fábrica | Responsabilidad de la aplicación anfitriona |
+| --- | --- |
+| `MediaAPI.glEngine(renderThread, executor)` | Mantener el contexto OpenGL y procesar el executor en su hilo mientras la reproducción o la liberación puedan necesitarlo. |
+| `MediaAPI.vkEngine(context)` | Proporcionar un `VKContext` cuyos objetos y mecanismos de retiro sigan vivos hasta liberar el motor. |
+| `MediaAPI.awtEngine(onFrame)` | Dibujar la imagen publicada desde la interfaz AWT/Swing y enviar el callback al hilo de interfaz cuando corresponda. |
+| `MediaAPI.jfxEngine(onFrame)` | Proporcionar JavaFX y enlazar la imagen del motor con la interfaz. |
+| `MediaAPI.headlessEngine(preload)` | Recibir cuadros en memoria sin contexto gráfico; útil para procesamiento y pruebas. |
+| `MediaAPI.alEngine()` | Mantener el contexto OpenAL activo en los hilos que operan el motor. |
+| `MediaAPI.alEngine(true)` | Cumplir el mismo contrato OpenAL; negocia salida mono para sonido posicional. |
+| `MediaAPI.jsEngine()` | Disponer de una línea de salida Java Sound; no admite posicionamiento espacial. |
+
+Los motores administran sus propios recursos de reproducción, como texturas, fuentes de audio y buffers. Sus clases base son selladas: la integración proporciona contextos y ejecutores, no implementaciones arbitrarias de esos motores.
+
+El audio espacial se configura con `SpatialAudio` y un procesador opcional del entorno. La [guía de audio espacial y Sound Physics Remastered](SPATIAL_AUDIO.es-mx.md) incluye el adaptador, los requisitos de OpenAL, la frecuencia de actualización y las opciones del mod que pueden impedir que se apliquen efectos. La posición y los efectos pertenecen al oyente local y no viajan por el protocolo de sincronización.
+
+## HTTPS y certificados
+
+La reproducción HTTPS requiere los binarios parcheados de WaterMedia. FFmpeg verifica la cadena de certificados y la identidad DNS o IP con una copia de las autoridades de confianza de Java tomada durante el arranque. Para servidores privados, configura las propiedades estándar `javax.net.ssl.trustStore` antes de iniciar WaterMedia. Un almacén vacío o inválido impide inicializar FFmpeg; la verificación no se desactiva automáticamente.
+
+`MediaAPI` crea el archivo PEM temporal, comprueba que el binario tenga las opciones necesarias y las aplica tanto a la entrada principal como a la pista de audio separada. Las autoridades también se transmiten a las solicitudes internas de HLS y DASH. El módulo de medios elimina el archivo al cerrar, después de liberar todos los reproductores. Un `customPath` vacío no añade el directorio de trabajo a la búsqueda de bibliotecas nativas.
+
+Se comparten autoridades de confianza; el transporte sigue siendo OpenSSL. No se transfieren fábricas de sockets JSSE personalizadas, callbacks de validación de nombres ni políticas de revocación de Java. Tampoco se modifica la lista de protocolos permitidos.
+
+Las credenciales pertenecen al origen de la solicitud inicial: esquema, nombre de host y puerto efectivo. En redirecciones y solicitudes internas de HLS/DASH, `Authorization`, `Proxy-Authorization`, `Cookie`, `Cookie2` y `X-WaterMedia-Token` sólo se envían a ese origen. Al cambiar de origen se genera un encabezado `Host` nuevo; otros encabezados, como User-Agent, Accept, Referer y Origin, pueden acompañar las solicitudes a una CDN.
+
+Las cookies generadas siguen el mismo límite: las respuestas `Set-Cookie` de otro origen se ignoran, incluso si una redirección regresa después al servidor inicial. Una entrada de reproducción no establece sesiones de cookies independientes con los servidores de destino. Los registros HTTP nativos omiten solicitudes completas, encabezados y valores de cookies.
+
+## Imágenes y contenedores DDS
+
+```java
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.util.PixelFormat;
+import java.nio.ByteBuffer;
+
+try (ImageReader reader = CodecsAPI.decodeImage(encodedBuffer)) {
+    while (reader.hasNext()) {
+        reader.next();
+        PixelFormat format = reader.pixelFormat();
+        for (int plane = 0; plane < reader.planeCount(); plane++) {
+            ByteBuffer pixels = reader.plane(plane);
+            // CONSUME OR COPY BEFORE THE NEXT FRAME REUSES THE READER'S BUFFER.
+        }
+    }
+}
+```
+
+Consulta el formato y la cantidad de planos; no supongas que todos los lectores entregan BGRA. `readAll()` conserva copias de los cuadros y limita el total de bytes decodificados por imagen. Varios lectores simultáneos siguen consumiendo memoria por separado.
+
+`BCReader` lee bloques BC1, BC3 y BC7 ya comprimidos dentro de un arreglo de texturas DDS con extensión DX10. No necesita un codificador nativo; el motor gráfico receptor debe admitir el formato de bloques. El pie de animación de WaterMedia aporta los tiempos por cuadro cuando existe; las capas DDS ordinarias tienen duración cero. Se rechazan cadenas de mipmaps, volúmenes y mapas de cubo. No hay codificador BC ni opción de caché de texturas recodificadas. `CodecsAPI.available(...)` informa soporte de decodificación de píxeles, no soporte de formatos de textura en la GPU.
+
+## Reproducción sincronizada con Bridge
+
+WaterMedia implementa el protocolo de sincronización y la corrección de tiempo; tu integración proporciona el transporte. Implementa `Bridge.send(ByteBuffer)` para enviar los bytes y entrega cada mensaje entrante a `player.sync(payload)` en la sesión correspondiente.
+
+El bridge de la autoridad envía hacia todos sus seguidores; el bridge del seguidor envía hacia la autoridad. Tu transporte identifica y autentica a los participantes y decide qué controles permite. Si encolas el contenido para usarlo después de la llamada, copia los bytes. Las implementaciones de `Bridge` deben ser seguras entre hilos y no bloquear.
+
+```java
+import org.watermedia.api.media.players.ServerMediaPlayer;
+import org.watermedia.api.media.players.sync.Config;
+
+ServerMediaPlayer authority = MediaAPI.createPlayer(downstreamBridge,
+        Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
+authority.start();
+MediaPlayer follower = MediaAPI.createPlayer(mrl, gfxSupplier, sfxSupplier, upstreamBridge);
+if (follower == null) throw new IllegalStateException("Follower media is unavailable");
+```
+
+Los bridges y proveedores del ejemplo los construye la aplicación anfitriona. Usa `authority.sync(payload)` para lo recibido de un seguidor y `follower.sync(payload)` para lo recibido de la autoridad. Libera ambos reproductores cuando termine la sesión que representan.
+
+### Secuencia de sincronización
+
+1. El seguidor se anuncia y entra como espectador que todavía está cargando. Su llegada no pausa inmediatamente a los demás.
+2. La autoridad responde con los permisos de la sesión y una instantánea del estado actual.
+3. El seguidor reporta sus transiciones y mantiene su registro mediante mensajes periódicos. La autoridad adopta la duración o condición de transmisión en vivo informada por un seguidor que ya dispone de esos datos. Mientras no haya duración ni una transmisión en vivo identificada, su reloj permanece en cero.
+4. La autoridad difunde cambios y repite una instantánea aproximadamente cada cinco segundos. Los seguidores descartan revisiones anteriores; una revisión igual puede actualizar la referencia temporal.
+5. Al liberarse, el seguidor envía su despedida. La autoridad descarta a quienes dejan de reportarse según `watcherTimeout(ms)`, con 15 segundos por defecto.
+
+El tiempo de desconexión debe estar entre 1 y `Long.MAX_VALUE / 1_000_000` milisegundos. Los valores fuera de ese rango se rechazan sin cambiar el tiempo configurado.
+
+La autoridad conserva la primera duración positiva recibida durante su sesión. Cuando los reportes identifican una transmisión en vivo, un reporte posterior con `live=false` no elimina esa clasificación.
+
+`sync(...)` valida y consume el mensaje en el hilo que lo invoca. El seguidor aplica el estado recibido en su ciclo de sincronización de 50 ms. La autoridad puede procesar controles y enviar respuestas durante la llamada: no supongas que todo el trabajo se difiere a ese ciclo. Los callbacks del bridge también pueden ejecutarse desde el hilo de una llamada de control.
+
+### Permisos
+
+| Capacidad | Comportamiento |
+| --- | --- |
+| `LOCKSTEP` | La autoridad muestra `BUFFERING` y congela el reloj mientras un espectador que ya estaba listo necesita cargar o almacenar más datos. Reanuda desde la misma posición, ignora seguidores fallidos y no espera inmediatamente por quienes acaban de entrar. |
+| `CONTROLS` | Permite solicitar cambios compartidos de reproducción. Las llamadas del seguidor, como start, pause, seek, speed y repeat, viajan a la autoridad y no se aplican localmente. Una vez recibidos los permisos, las solicitudes sin esta capacidad se descartan. |
+| `VOLUME` | Sincroniza volumen y silencio; sin esta capacidad, ambos permanecen locales. |
+
+Consulta `player.granted(capability)` para adaptar la interfaz a los permisos recibidos. El transporte debe validar quién puede enviar cada mensaje. El escalado, el nivel de detalle y el audio espacial siempre permanecen locales. El avance manual por cuadros no se permite en seguidores.
+
+### Ajustes y diagnóstico
+
+`tolerance(ms)` define el desfase permitido; el valor predeterminado es un segundo. Cuando corresponde corregirlo, el seguidor usa `seekQuick` y limita la frecuencia de las correcciones mientras la reproducción se acomoda. No corrige durante carga o buffering. En contenido finito con repetición, el cálculo considera la vuelta del ciclo para no interpretar su frontera como un salto enorme.
+
+`authority()` devuelve la última instantánea recibida. `authorityTime()` estima la posición actual a partir de ella y del tiempo transcurrido. `drift()` muestra el desfase y `role()` identifica si el reproductor es independiente, autoridad o seguidor. La corrección no altera la velocidad para converger gradualmente.
+
+### Formato de los mensajes
+
+Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media.players.sync`. `Packet.of(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales.
+
+| Mensaje | Tamaño | Dirección |
+| --- | ---: | --- |
+| `Sync` | 29 bytes | Autoridad → seguidores |
+| `Config` | 11 bytes | Autoridad → seguidores |
+| `Watch` / `Unwatch` | 10 bytes | Seguidor → autoridad |
+| `Report` | 20 bytes | Seguidor → autoridad |
+| `Control` | 19 bytes | Seguidor → autoridad |
+
+## Ejemplos compilados y verificación
+
+[ApiGuideExample.java](../src/test/java/org/watermedia/test/docs/ApiGuideExample.java) contiene ejemplos compilados de las fábricas de motores y de ambos roles de sincronización. [ApiGuideExampleTest.java](../src/test/java/org/watermedia/test/docs/ApiGuideExampleTest.java) ejecuta el ejemplo de imagen sin contexto gráfico. Los ejemplos de esta guía usan variables del anfitrión; no son una aplicación completa para copiar y ejecutar sin esa integración.
+
+Las pruebas de reproducción y audio espacial usan FFmpeg y OpenAL reales cuando están disponibles; las ejecuciones con `require_natives=true` exigen los binarios de FFmpeg. La integración visual y acústica en Minecraft, los contextos gráficos y los dispositivos de audio todavía requieren comprobación en el entorno anfitrión. El [informe técnico en inglés](technical-review-2026-09-06.md) registra la validación de binarios y las limitaciones pendientes, incluido el empaquetado de dependencias.

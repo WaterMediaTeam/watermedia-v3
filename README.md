@@ -199,39 +199,32 @@ published as its own dependency (WaterMedia requires it on CurseForge/Modrinth).
 | Android  | x86_64       |   ⛔    |
 
 ## Binaries build
-FFmpeg binaries are pre-built by the JavaCPP project and mirrored here for easier access; migrating the
-build to GitHub Actions is on the board.
-
-## Other shared libraries
-- ISPCTextureCompressor (Samsung fork)
+FFmpeg binaries are rebuilt from the pinned JavaCPP preset on five native GitHub runners. The complete
+pipeline compiles the static dependencies, parses the FFmpeg headers, regenerates JNI and verifies each
+classifier before the five archives are repacked together.
 
 # ⚖️ License
 WATERMeDIA is under Polyform Strict License v1.0.0<br>
 Commercial usage is forbidden, you need to contact us in order to use WATERMeDIA for commercial purposes
 
-WATERCoNFIG dependency is shaded under All-Rights-Reserved<br>
-This is temporally until the dependency gets moved into a external (non-shadeable) library
+WATERCoNFIG is required at runtime and is licensed All-Rights-Reserved.
 
-JavaCPP bindigs for FFMPEG are shaded under Apache 2.0
+JavaCPP bindings for FFMPEG are shaded under Apache 2.0
 
 Full, verbatim license texts for shaded third-party dependencies are bundled under
 `src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`).
 
-The **binaries** jar ships third-party native binaries and libraries. Their full, verbatim license
-texts are bundled under `binaries/src/main/resources/META-INF/licenses/` (shipped in that jar
-as `META-INF/licenses/`), grouped by license:
+The **binaries** jar ships third-party native binaries and libraries. Their license texts and notices
+are bundled under `binaries/src/main/resources/META-INF/licenses/` and shipped as `META-INF/licenses/`:
 
-- **GPL-3.0** — FFmpeg (native, 8.0.1 "-gpl"; statically links additional GPL/LGPL codec libraries such as x264, x265 and xvid) and libatomic (macOS native, with the GCC Runtime Library Exception 3.1)
+- **LGPL-3.0-or-later** — FFmpeg 8.1.2, built without `--enable-gpl`, x264 or x265
+- **GPL-3.0-or-later WITH GCC-exception-3.1** — libatomic on macOS and eligible GCC runtime portions
 - **Apache-2.0** — JavaCPP JNI glue (native)
 - **MIT / X11** — libva, libva-drm and libdrm (Linux native); rustypipe-botguard (downloaded binary)
+- **MIT / BSD-3-Clause** — winpthreads (Windows native)
 - **0BSD** — XZ for Java (shaded)
 - **Unlicense** — yt-dlp (downloaded binary)
 
-**Why is this PolyForm Strict if it ships FFMPEG (GPL)?** Because the GPL itself explicitly allows
-*mere aggregation*: bundling separate, independent works on the same distribution medium does not
-extend the GPL to them. FFMPEG ships as such an aggregate, so its copyleft governs only the bundled
-GPL binaries and never relicenses WaterMedia's or the binaries module's own code.
-
-- **Indirect dependency (scope change)** — the chain is `WaterMedia → JavaCPP (Java API) ──scope change──▶ JNI glue → FFMPEG`. WaterMedia only talks to JavaCPP's Apache-2.0 Java API and never depends on or links FFMPEG directly; the GPL natives and their JNI glue live in a separate, **optional**, runtime-scoped jar.
-- **Distribution, not dependency** — the GPL is triggered by *distributing* the GPL work, not by depending on it.
-- **Replaceable binaries** — anyone may compile and supply their own FFMPEG build instead of using this jar, so nothing is bound to a particular GPL binary.
+Other statically linked codecs retain their permissive, LGPL, MPL or Apache licenses. Each component's
+terms apply independently; review the shipped notices and corresponding-source requirements before
+redistributing a modified native set. The native package remains replaceable at runtime.
