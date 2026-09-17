@@ -1,13 +1,14 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.bootstrap.app.element.Canvas;
+import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 /**
  * The CRT effect as a retained view: scanlines every 3px plus two time-animated neon bands travelling
  * down the box, clipped to it. It never consumes input. The on/off state is the global
- * {@link org.watermedia.bootstrap.app.AppContext#crt} flag driven by the {@code C} shortcut and the
+ * {@link AppContext#crt} flag driven by the {@code C} shortcut and the
  * Settings row.
  */
 public final class CrtOverlay extends Element<CrtOverlay> {

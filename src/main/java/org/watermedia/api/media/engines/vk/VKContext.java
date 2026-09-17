@@ -5,9 +5,10 @@ import org.lwjgl.vulkan.VkInstance;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties;
 import org.lwjgl.vulkan.VkQueue;
+import org.watermedia.api.media.engines.VKEngine;
 
 /**
- * Bridge a Vulkan consumer implements to lend {@link org.watermedia.api.media.engines.VKEngine}
+ * Bridge a Vulkan consumer implements to lend {@link VKEngine}
  * the device it renders with.
  * <p>
  * The engine never creates or owns a Vulkan device — it borrows the consumer's
@@ -17,7 +18,7 @@ import org.lwjgl.vulkan.VkQueue;
  * context.
  * <p>
  * Method names are chosen so a Minecraft mod can implement this interface directly on Mojang's
- * {@code com.mojang.blaze3d.vulkan.VulkanDevice} through a mixin and hand the cast device to
+ * Mojang's VulkanDevice through a mixin and hand the cast device to
  * {@code MediaAPI.vkEngine}. No accessor name clashes with an existing {@code VulkanDevice} member,
  * which keeps stack traces and crash reports unambiguous, and {@link #vkDevice()} matches that
  * class's own {@code vkDevice()} accessor verbatim.

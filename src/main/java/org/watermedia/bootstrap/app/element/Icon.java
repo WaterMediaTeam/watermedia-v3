@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app.element;
 
 import org.watermedia.bootstrap.app.ui.PixelIcon;
+import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
 
@@ -13,7 +14,7 @@ public final class Icon extends Element<Icon> {
 
     private String icon = "";
     private int iconSize = 24;
-    private Color color = org.watermedia.bootstrap.app.ui.AppTheme.NEON;
+    private Color color = AppTheme.NEON;
 
     public Icon() {
     }

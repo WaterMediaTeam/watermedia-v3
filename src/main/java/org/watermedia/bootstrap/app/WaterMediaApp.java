@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app;
 
 import com.google.gson.JsonObject;
+import com.sun.management.OperatingSystemMXBean;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.MarkerManager;
 import org.apache.logging.log4j.core.appender.ConsoleAppender;
@@ -52,6 +53,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -64,6 +66,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.management.ManagementFactory;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -74,6 +77,7 @@ import java.util.Locale;
 import java.util.ServiceLoader;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
+import java.util.concurrent.TimeUnit;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -1156,8 +1160,8 @@ public class WaterMediaApp {
 
     private static String buildGithubIssueUrl(final String body) {
         return "https://github.com/WaterMediaTeam/watermedia/issues/new"
-                + "?title=" + java.net.URLEncoder.encode("WATERMeDIA Generated Issue", StandardCharsets.UTF_8)
-                + "&body=" + java.net.URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
+                + "?title=" + URLEncoder.encode("WATERMeDIA Generated Issue", StandardCharsets.UTF_8)
+                + "&body=" + URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
     }
 
     private static Path uploadBaseDir() {
@@ -1268,8 +1272,8 @@ public class WaterMediaApp {
     private static String formatBytes(final long bytes) {
         if (bytes < 1024L) return bytes + " B";
         final double kb = bytes / 1024.0;
-        if (kb < 1024.0) return String.format(java.util.Locale.ROOT, "%.1f KB", kb);
-        return String.format(java.util.Locale.ROOT, "%.1f MB", kb / 1024.0);
+        if (kb < 1024.0) return String.format(Locale.ROOT, "%.1f KB", kb);
+        return String.format(Locale.ROOT, "%.1f MB", kb / 1024.0);
     }
 
     // RUNS ON A WORKER THREAD (SEE navigateAction) — THE FULL-CACHE WALK MUST NOT BLOCK THE RENDER LOOP
@@ -1382,7 +1386,7 @@ public class WaterMediaApp {
             final HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create("https://api.mclo.gs/1/log"))
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString("content=" + java.net.URLEncoder.encode(content, StandardCharsets.UTF_8)))
+                    .POST(HttpRequest.BodyPublishers.ofString("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)))
                     .build();
 
             final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -1642,7 +1646,7 @@ public class WaterMediaApp {
         Process p = null;
         try {
             p = new ProcessBuilder(command).redirectErrorStream(true).start();
-            if (!p.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
                 p.destroyForcibly();
                 return null;
             }
@@ -1679,8 +1683,8 @@ public class WaterMediaApp {
 
     private static String systemRam() {
         try {
-            final java.lang.management.OperatingSystemMXBean bean = java.lang.management.ManagementFactory.getOperatingSystemMXBean();
-            if (bean instanceof com.sun.management.OperatingSystemMXBean sun) {
+            final var bean = ManagementFactory.getOperatingSystemMXBean();
+            if (bean instanceof OperatingSystemMXBean sun) {
                 return sun.getTotalMemorySize() / 1024 / 1024 + " MB";
             }
         } catch (final Throwable ignored) {

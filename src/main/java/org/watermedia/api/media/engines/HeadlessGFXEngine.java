@@ -1,12 +1,14 @@
 package org.watermedia.api.media.engines;
 
+import org.watermedia.api.media.players.MediaPlayer;
+
 import java.nio.ByteBuffer;
 
 /**
  * Headless {@link GFXEngine} that records frames into memory instead of a GPU.
  * <p>
  * There is no OpenGL or Vulkan context: uploads are captured, not rendered. It lets a
- * {@link org.watermedia.api.media.players.MediaPlayer} run its full decode/upload pipeline where no
+ * {@link MediaPlayer} run its full decode/upload pipeline where no
  * display is available — server-side probing, CI, or headless validation — and lets callers
  * introspect what the pipeline pushed ({@link #uploadCount()}, {@link #lastUpload()},
  * {@link #format()}, {@link #activeFrame()}). It is the only engine allowed to be constructed on a

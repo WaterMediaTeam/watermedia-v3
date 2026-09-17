@@ -10,6 +10,7 @@ import javax.xml.stream.XMLStreamReader;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Locale;
@@ -300,9 +301,9 @@ final class SVGParser {
             } catch (final NumberFormatException e) {
                 continue; // DROP MALFORMED TOKEN WITHOUT CONSUMING A SLOT
             }
-            if (k == out.length) out = java.util.Arrays.copyOf(out, out.length * 2);
+            if (k == out.length) out = Arrays.copyOf(out, out.length * 2);
             out[k++] = finite(num);
         }
-        return k == out.length ? out : java.util.Arrays.copyOf(out, k);
+        return k == out.length ? out : Arrays.copyOf(out, k);
     }
 }

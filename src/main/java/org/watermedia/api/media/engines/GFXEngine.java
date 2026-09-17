@@ -1,6 +1,7 @@
 package org.watermedia.api.media.engines;
 
 import org.watermedia.WaterMedia;
+import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
@@ -11,7 +12,7 @@ import java.nio.ByteBuffer;
  * WATERMeDIA creates the texture, uploads pixel data, and exposes a handle.
  * The developer binds that handle in their rendering pipeline.
  * <p>
- * Engines are created through {@link org.watermedia.api.media.MediaAPI} factory methods and are
+ * Engines are created through {@link MediaAPI} factory methods and are
  * client-side only — construction throws on a server-side environment
  * ({@link HeadlessGFXEngine} is the sanctioned exception). Backends are OpenGL, Vulkan, software
  * surfaces and headless capture; thread-safety contracts depend on the backend — see each

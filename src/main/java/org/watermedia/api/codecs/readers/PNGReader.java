@@ -37,6 +37,7 @@ import org.watermedia.api.codecs.common.png.TRNS;
 import org.watermedia.api.codecs.common.png.ZTXT;
 import org.watermedia.api.util.PixelFormat;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -247,7 +248,7 @@ public final class PNGReader extends ImageReader {
         while (true) {
             try {
                 c = CHUNK.read(this.data);
-            } catch (final java.io.EOFException eof) {
+            } catch (final EOFException eof) {
                 this.done = true;
                 break;
             }
@@ -346,7 +347,7 @@ public final class PNGReader extends ImageReader {
             final CHUNK c;
             try {
                 c = CHUNK.read(this.data);
-            } catch (final java.io.EOFException eof) {
+            } catch (final EOFException eof) {
                 this.done = true;
                 return;
             }

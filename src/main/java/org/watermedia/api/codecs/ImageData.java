@@ -9,7 +9,7 @@ import java.util.Arrays;
 /**
  * Decoded image container, animated or static.
  *
- * @param frames   decoded frames in BGRA
+ * @param frames   decoded frames in the requested or reader-selected pixel layout
  * @param width    frame width; the widest frame when frames differ in size
  * @param height   frame height; the tallest frame when frames differ in size
  * @param delay    per-frame delay in milliseconds; {@code 0} advances to the next frame immediately

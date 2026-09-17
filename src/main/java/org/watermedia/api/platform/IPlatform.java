@@ -1,5 +1,7 @@
 package org.watermedia.api.platform;
 
+import org.watermedia.api.media.MRL;
+
 import java.net.URI;
 import java.util.List;
 
@@ -7,7 +9,7 @@ import java.util.List;
  * Contract for a platform handler. A single {@link #getData(URI)} call both
  * decides whether the URI belongs to this platform and resolves it to raw
  * {@link PlatformData} — direct links, dimensions, metadata. Source/MRL
- * construction lives in {@link org.watermedia.api.media.MRL}, not here.
+ * construction lives in {@link MRL}, not here.
  */
 public interface IPlatform {
 
@@ -19,7 +21,7 @@ public interface IPlatform {
     /**
      * Resolves the URI to one or more media entries with their variants and
      * metadata. The returned structure is platform-agnostic and intentionally
-     * decoupled from {@code MRL.Source}: callers (including {@link org.watermedia.api.media.MRL})
+     * decoupled from {@code MRL.Source}: callers (including {@link MRL})
      * decide how to consume it.
      * <p>
      * The contract has three outcomes:

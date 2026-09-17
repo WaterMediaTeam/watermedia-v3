@@ -28,6 +28,7 @@ import javax.swing.Timer;
 import javax.swing.WindowConstants;
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.Image;
 import java.awt.event.ActionEvent;
@@ -296,10 +297,10 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         this.frame.dispose();
     }
 
-    private static JPanel flow(final java.awt.Component... items) {
+    private static JPanel flow(final Component... items) {
         final JPanel p = new JPanel();
         p.setOpaque(false);
-        for (final java.awt.Component c: items) p.add(c);
+        for (final Component c: items) p.add(c);
         return p;
     }
 

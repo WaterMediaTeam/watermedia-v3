@@ -1,7 +1,9 @@
 package org.watermedia.api.codecs;
 
+import java.nio.ByteBuffer;
+
 /**
- * Thrown by {@link CodecsAPI#decodeImage(java.nio.ByteBuffer)} when the leading bytes
+ * Thrown by {@link CodecsAPI#decodeImage(ByteBuffer)} when the leading bytes
  * of the stream don't match any supported image format.
  */
 public final class UnsupportedFormatException extends XCodecException {

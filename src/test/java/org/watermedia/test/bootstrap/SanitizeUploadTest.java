@@ -1,6 +1,7 @@
 package org.watermedia.test.bootstrap;
 
 import org.junit.jupiter.api.Test;
+import org.watermedia.bootstrap.app.WaterMediaApp;
 
 import java.lang.reflect.Method;
 
@@ -15,8 +16,7 @@ class SanitizeUploadTest {
     // REFLECTION KEEPS sanitizeUpload() PRIVATE; INVOKING IT ONLY TRIGGERS WaterMediaApp's OWN CLASS INIT,
     // WHICH TOUCHES NO GL/NATIVE CODE (THE SECRET PATTERNS ARE PLAIN static final Pattern FIELDS).
     private static String sanitize(final String content) throws Exception {
-        final Method method = Class.forName("org.watermedia.bootstrap.app.WaterMediaApp")
-                .getDeclaredMethod("sanitizeUpload", String.class);
+        final Method method = WaterMediaApp.class.getDeclaredMethod("sanitizeUpload", String.class);
         method.setAccessible(true);
         return (String) method.invoke(null, content);
     }

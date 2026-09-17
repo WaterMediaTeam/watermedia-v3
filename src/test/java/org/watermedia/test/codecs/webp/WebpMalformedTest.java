@@ -11,6 +11,7 @@ import org.watermedia.test.support.Fixtures;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -56,7 +57,7 @@ public class WebpMalformedTest {
         assertThrows(XCodecException.class, reader::next, "Mismatched canvas must fail cleanly");
     }
 
-    // A NEGATIVE SUB-CHUNK SIZE INSIDE ANMF PREVIOUSLY LOOPED FOREVER (off NEVER ADVANCED)
+    // A NEGATIVE SUB-CHUNK SIZE INSIDE ANMF CAN STOP FORWARD PROGRESS.
     @Test
     @Timeout(10)
     @DisplayName("ANMF with negative sub-chunk size neither hangs nor crashes")
@@ -64,7 +65,7 @@ public class WebpMalformedTest {
         final ByteBuffer anmf = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
         anmf.put(anmfHeader(0, 0, 16, 16));
         anmf.putInt(RiffChunk.VP8);
-        anmf.putInt(-8); // NEGATIVE SIZE: body + paddedSize(-8) == off, THE OLD INFINITE LOOP
+        anmf.putInt(-8); // NEGATIVE SIZE: BODY + PADDEDSIZE(-8) == OFF.
         final byte[] forged = concat(
                 chunk(RiffChunk.VP8X, vp8xBody(0x02, 16, 16)),
                 chunk(RiffChunk.ANIM, new byte[6]),
@@ -96,8 +97,7 @@ public class WebpMalformedTest {
                 "Pixel bomb must fail before allocating");
     }
 
-    // AN ODD-SIZED VP8X TRUNCATED EXACTLY AT ITS END PREVIOUSLY BLEW UP scan() WITH AN
-    // IllegalArgumentException WHILE SEEKING ONE BYTE PAST THE BUFFER LIMIT
+    // AN ODD-SIZED VP8X TRUNCATED AT ITS END MUST NOT SEEK PAST THE BUFFER LIMIT.
     @Test
     @DisplayName("Truncated odd-sized VP8X does not crash the constructor")
     void truncatedOddVp8x() throws IOException {
@@ -114,7 +114,7 @@ public class WebpMalformedTest {
     // ----- FORGING HELPERS -----
 
     // CHUNK STREAM OF A REAL FIXTURE (EVERYTHING PAST THE 12-BYTE RIFF????WEBP PREAMBLE)
-    private static byte[] fixtureChunks(final java.nio.file.Path path) {
+    private static byte[] fixtureChunks(final Path path) {
         final byte[] file = Fixtures.readAll(path);
         return Arrays.copyOfRange(file, 12, file.length);
     }

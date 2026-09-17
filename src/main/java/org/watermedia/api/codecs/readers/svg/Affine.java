@@ -2,7 +2,7 @@ package org.watermedia.api.codecs.readers.svg;
 
 /**
  * Minimal 2x3 affine transform used by the SVG rasterizer, kept fully independent of
- * {@code java.awt.geom.AffineTransform} so the codec path never loads AWT.
+ * AWT's affine transform so the codec path never loads AWT.
  *
  * <p>The matrix maps a point {@code (x, y)} to
  * {@code (a*x + c*y + e, b*x + d*y + f)}, matching the column-vector convention of the SVG

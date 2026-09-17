@@ -3,6 +3,7 @@ package org.watermedia.tools;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonSyntaxException;
 
 import java.net.URI;
 
@@ -24,7 +25,7 @@ public final class JSONTool {
      * @param type the class to bind to
      * @param <T> the bound type
      * @return the bound instance, or {@code null} when {@code json} is {@code null}
-     * @throws com.google.gson.JsonSyntaxException when the tree does not match {@code type}
+     * @throws JsonSyntaxException when the tree does not match {@code type}
      */
     public static <T> T parse(final JsonElement json, final Class<T> type) {
         return json == null ? null : GSON.fromJson(json, type);
@@ -37,7 +38,7 @@ public final class JSONTool {
      * @param type the class to bind to
      * @param <T> the bound type
      * @return the bound instance, or {@code null} when {@code json} is {@code null} or holds only JSON {@code null}
-     * @throws com.google.gson.JsonSyntaxException when the text is not valid JSON or does not match {@code type}
+     * @throws JsonSyntaxException when the text is not valid JSON or does not match {@code type}
      */
     public static <T> T parse(final String json, final Class<T> type) {
         return json == null ? null : GSON.fromJson(json, type);

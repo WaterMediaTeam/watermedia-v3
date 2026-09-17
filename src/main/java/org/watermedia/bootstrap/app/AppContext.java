@@ -7,6 +7,7 @@ import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -150,7 +151,7 @@ public final class AppContext implements Executor {
 
     public static final class UploadFileEntry {
         public final String name;
-        public final java.nio.file.Path path;
+        public final Path path;
         public volatile String sizeLabel = "-";
         public volatile String state = "PENDING";
         public volatile String url = "";
@@ -159,7 +160,7 @@ public final class AppContext implements Executor {
         public volatile boolean valid;
         public volatile boolean uploaded;
 
-        public UploadFileEntry(final String name, final java.nio.file.Path path) {
+        public UploadFileEntry(final String name, final Path path) {
             this.name = name;
             this.path = path;
         }

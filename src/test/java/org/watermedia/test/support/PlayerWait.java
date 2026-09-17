@@ -3,6 +3,7 @@ package org.watermedia.test.support;
 import org.watermedia.api.media.players.MediaPlayer;
 import org.watermedia.api.media.players.MediaPlayer.Status;
 
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
@@ -22,7 +23,7 @@ public final class PlayerWait {
 
     /** Waits until {@code player.status()} matches one of {@code anyOf}, or {@code timeoutMs} elapses. */
     public static boolean awaitStatus(final MediaPlayer player, final long timeoutMs, final Status... anyOf) {
-        final Set<Status> targets = EnumSet.copyOf(java.util.Arrays.asList(anyOf));
+        final Set<Status> targets = EnumSet.copyOf(Arrays.asList(anyOf));
         return awaitCondition(() -> targets.contains(player.status()), timeoutMs);
     }
 

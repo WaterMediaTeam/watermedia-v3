@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.watermedia.tools.JSONTool;
 
 import java.net.URI;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -26,7 +27,7 @@ public class JSONToolTest {
     @DisplayName("parse(null) yields null; parse binds an object")
     void parseBinding() {
         assertNull(JSONTool.parse((String) null, JsonObject.class));
-        assertTrue(JSONTool.write(java.util.Map.of("a", 1)).contains("\"a\""));
+        assertTrue(JSONTool.write(Map.of("a", 1)).contains("\"a\""));
     }
 
     @Test

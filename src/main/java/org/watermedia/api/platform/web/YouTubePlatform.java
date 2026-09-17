@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.PlatformData;
+import org.watermedia.api.platform.DataSource;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.util.NetRequest;
@@ -26,7 +27,7 @@ import static org.watermedia.tools.JSONTool.uri;
 
 /**
  * YouTube platform backed by yt-dlp. Extends {@link YtDlpPlatform} to reuse its yt-dlp engine (binary
- * invocation + JSON→{@link org.watermedia.api.platform.DataSource} mapping) and adds the two things
+ * invocation + JSON→{@link DataSource} mapping) and adds the two things
  * YouTube alone needs: the BotGuard po_token retry for the "Sign in to confirm you're not a bot" gate,
  * and the InnerTube {@code visitorData} fetch the token must be bound to.
  *
