@@ -33,13 +33,13 @@ import org.watermedia.api.util.Slave;
 import org.watermedia.tools.*;
 import org.lwjgl.system.MemoryUtil;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.function.BiFunction;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
@@ -608,9 +608,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // COPIES AVFRAME PLANE DATA TO A POOLED BUFFER SET, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
-    private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int width, final int height) {
+    private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int height) {
         // QUERY THE ENGINE'S BUFFER ALIGNMENT ONCE — NON-ZERO ASKS FOR PAGE-ALIGNED POOLS SO A ZERO-COPY ENGINE CAN IMPORT THE HOST POINTER
-        if (this.planeAlign < 0) this.planeAlign = (this.gfx != null) ? this.gfx.alignment() : 0;
+        if (this.gfx == null) return;
+        if (this.planeAlign < 0) this.planeAlign = this.gfx.alignment();
 
         // GRAB THE NEXT BUFFER SET FROM THE ROTATING POOL (SEE planePool), ALLOCATING ON FIRST USE
         ByteBuffer[] planes = this.planePool[this.planePoolIdx];
@@ -1080,7 +1081,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                                     mapping.cs, uploadW, uploadH, mapping.bits, slot.width, slot.height);
                         }
 
-                        this.uploadNativePlanes(uploadFrame, mapping.cs, uploadW, uploadH);
+                        this.uploadNativePlanes(uploadFrame, mapping.cs, uploadH);
 
                         // TRACK RENDER DEBT (CONVERT+UPLOAD TIME VS FRAME BUDGET)
                         final double workSec = (System.nanoTime() - workStart) / 1_000_000_000.0;
@@ -2437,7 +2438,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 LOGGER.error(IT, "No software decoder available for codec id {}", codecId);
                 return false;
             }
-            if (decoder == null || !getString(swDecoder.name(), "").equals(getString(decoder.name(), "")))
+            if (decoder == null || !Objects.equals(getString(swDecoder.name(), ""), getString(decoder.name(), "")))
                 LOGGER.info(IT, "Software decode using {}", getString(swDecoder.name(), "?"));
 
             this.videoCodecContext = avcodec.avcodec_alloc_context3(swDecoder);

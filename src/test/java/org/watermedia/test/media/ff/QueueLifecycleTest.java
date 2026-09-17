@@ -90,6 +90,7 @@ class QueueLifecycleTest {
             final int[] serial = new int[1];
             final AVPacket current = queue.get(serial);
             try {
+                assertNotNull(current);
                 assertEquals(123, current.pts());
                 assertEquals(queue.serial(), serial[0]);
             } finally { avcodec.av_packet_free(current); }

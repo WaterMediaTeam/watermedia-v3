@@ -16,6 +16,7 @@ import org.watermedia.test.support.LocalHttp;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -78,7 +79,9 @@ class TxReleaseTest {
             exchange.getResponseHeaders().set("Content-Type", "image/x-portable-pixmap");
             exchange.sendResponseHeaders(200, image.length);
             entered.countDown();
-            try { resume.await(15, TimeUnit.SECONDS); }
+            try {
+                if (!resume.await(15, TimeUnit.SECONDS)) throw new IOException("Held image timed out");
+            }
             catch (final InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             try { exchange.getResponseBody().write(image); }
             finally { exchange.close(); }

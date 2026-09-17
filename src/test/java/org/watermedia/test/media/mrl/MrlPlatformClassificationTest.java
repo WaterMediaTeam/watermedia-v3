@@ -23,6 +23,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -63,7 +64,9 @@ public class MrlPlatformClassificationTest {
             final MRL mrl = MediaAPI.mrl(claimed);
             assertTrue(mrl.await(TIMEOUT_MS));
             assertEquals(1, mrl.sourceCount());
-            assertEquals(MediaType.IMAGE, mrl.source(0).type());
+            final MRL.Source source = mrl.source(0);
+            assertNotNull(source);
+            assertEquals(MediaType.IMAGE, source.type());
         } finally {
             PlatformAPI.unregister(platform);
         }
@@ -81,8 +84,12 @@ public class MrlPlatformClassificationTest {
             final MRL mrl = MediaAPI.mrl(claimed);
             assertTrue(mrl.await(TIMEOUT_MS));
             assertEquals(2, mrl.sourceCount());
-            assertEquals(MediaType.UNKNOWN, mrl.source(0).type());
-            assertEquals(MediaType.UNKNOWN, mrl.source(1).type());
+            final MRL.Source first = mrl.source(0);
+            final MRL.Source second = mrl.source(1);
+            assertNotNull(first);
+            assertNotNull(second);
+            assertEquals(MediaType.UNKNOWN, first.type());
+            assertEquals(MediaType.UNKNOWN, second.type());
         } finally {
             PlatformAPI.unregister(platform);
         }

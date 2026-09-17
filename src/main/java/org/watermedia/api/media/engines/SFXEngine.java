@@ -250,8 +250,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * @param auxOnly whether the environment should emit only reflected audio
      * @param environment optional processor for occlusion and reverb
      */
-    public static record SpatialAudio(double x, double y, double z, float referenceDistance, float maxDistance,
-                                      float rolloff, boolean auxOnly, Environment environment) {
+    public record SpatialAudio(double x, double y, double z, float referenceDistance, float maxDistance, float rolloff, boolean auxOnly, Environment environment) {
         public SpatialAudio {
             if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
                     || !Float.isFinite((float) x) || !Float.isFinite((float) y) || !Float.isFinite((float) z))

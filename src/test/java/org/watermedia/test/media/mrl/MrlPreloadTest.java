@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
- * Caching guarantees: {@link MRL#preload(URI...)} fans out into the same
+ * Caching guarantees: {@link MediaAPI#preload(URI...)} fans out into the same
  * underlying instances that {@link MediaAPI#mrl(URI)} returns, and repeated
  * lookups for the same URI yield the exact same object (reference identity).
  */

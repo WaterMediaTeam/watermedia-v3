@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,17 +36,16 @@ public class NetworkCacheTest {
     @TempDir
     Path tempDir;
 
-    // INCREMENTED BY THE LOOPBACK HANDLER ON EVERY HIT — VOLATILE BECAUSE THE
-    // HTTPSERVER WORKER THREAD WRITES AND THE TEST THREAD READS.
-    private volatile int hits;
+    // COUNT EVERY LOOPBACK HANDLER INVOCATION, INCLUDING CONCURRENT REQUESTS.
+    private final AtomicInteger hits = new AtomicInteger();
 
     @Test
     @DisplayName("Caches HTTP bytes and uses the index on the second read")
     void testCachesHttpBytesAndUsesIndexOnSecondRead() throws Exception {
         final byte[] body = new byte[] { 1, 2, 3, 4, 5 };
-        this.hits = 0;
+        this.hits.set(0);
         try (final LocalHttp server = LocalHttp.start("/image.png", exchange -> {
-            this.hits++;
+            this.hits.incrementAndGet();
             exchange.getResponseHeaders().set("Expires", LocalHttp.expiresIn(3600));
             LocalHttp.respond(exchange, "image/png", body, 0);
         })) {
@@ -62,7 +62,7 @@ public class NetworkCacheTest {
                 assertArrayEquals(body, first.bytes());
                 assertArrayEquals(body, second.bytes());
                 assertEquals("image/png", second.contentType());
-                assertEquals(1, this.hits);
+                assertEquals(1, this.hits.get());
                 assertTrue(Files.isRegularFile(cache.resolve("index.dat")));
 
                 // VERIFY ONE PAYLOAD FILE LANDED ALONGSIDE THE INDEX.
@@ -83,9 +83,9 @@ public class NetworkCacheTest {
     @DisplayName("Caches an HTTP response as a reusable file")
     void testCachesHttpResponseAsReusableFile() throws Exception {
         final byte[] body = new byte[] { 10, 20, 30, 40 };
-        this.hits = 0;
+        this.hits.set(0);
         try (final LocalHttp server = LocalHttp.start("/clip.mp4", exchange -> {
-            this.hits++;
+            this.hits.incrementAndGet();
             LocalHttp.respond(exchange, "video/mp4", body, 3600);
         })) {
             final Path cache = this.tempDir.resolve("cache-file");
@@ -103,7 +103,7 @@ public class NetworkCacheTest {
                 assertEquals(first.path(), second.path());
                 assertEquals("video/mp4", second.contentType());
                 assertArrayEquals(body, Files.readAllBytes(second.path()));
-                assertEquals(1, this.hits);
+                assertEquals(1, this.hits.get());
             } finally {
                 NetworkCache.release();
             }
@@ -144,9 +144,9 @@ public class NetworkCacheTest {
     void testSeparatesCacheEntriesByRequestHeaders() throws Exception {
         final byte[] firstBody = new byte[] { 1, 1, 1 };
         final byte[] secondBody = new byte[] { 2, 2, 2 };
-        this.hits = 0;
+        this.hits.set(0);
         try (final LocalHttp server = LocalHttp.start("/variant.png", exchange -> {
-            this.hits++;
+            this.hits.incrementAndGet();
             final boolean second = "second".equals(exchange.getRequestHeaders().getFirst("X-Variant"));
             final byte[] body = second ? secondBody : firstBody;
             LocalHttp.respond(exchange, "image/png", body, 3600);
@@ -168,7 +168,7 @@ public class NetworkCacheTest {
                 assertFalse(first.cached());
                 assertFalse(second.cached());
                 assertTrue(firstAgain.cached());
-                assertEquals(2, this.hits);
+                assertEquals(2, this.hits.get());
             } finally {
                 NetworkCache.release();
             }

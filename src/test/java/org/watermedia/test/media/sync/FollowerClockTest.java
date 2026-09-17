@@ -7,10 +7,6 @@ import org.watermedia.api.media.players.MediaPlayer.Status;
 import org.watermedia.api.media.players.ServerMediaPlayer;
 import org.watermedia.api.media.players.sync.Sync;
 
-import java.nio.ByteBuffer;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,7 +22,6 @@ public class FollowerClockTest {
     // WALLCLOCK ADVANCE BETWEEN CALLS IS NOT EXACT — TIMING IS TOLERANCE-ASSERTED
     private static final long SLACK_MS = 60L;
 
-    private final List<ByteBuffer> sent = new CopyOnWriteArrayList<>();
     private ServerMediaPlayer follower;
 
     @AfterEach
@@ -36,7 +31,7 @@ public class FollowerClockTest {
 
     // A FOLLOWER WHOSE BRIDGE GOES NOWHERE: THE TEST FEEDS IT SNAPSHOTS BY HAND
     private ServerMediaPlayer follower() {
-        this.follower = ServerMediaPlayer.follower(this.sent::add);
+        this.follower = ServerMediaPlayer.follower(ignored -> {});
         return this.follower;
     }
 
