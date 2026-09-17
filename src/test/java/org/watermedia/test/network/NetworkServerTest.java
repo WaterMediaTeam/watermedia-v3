@@ -91,6 +91,41 @@ public class NetworkServerTest {
     }
 
     @Test
+    void clipsRangesAtEofAndHandlesEmptyResources() throws IOException {
+        final HttpURLConnection upload = postUpload(TOKEN, "bounds.bin", "payload".getBytes(StandardCharsets.UTF_8));
+        assertEquals(200, upload.getResponseCode());
+        final String id = new String(upload.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        for (final String range: new String[] { "bytes=0-999", "bytes=-999", "bytes=0-", "bytes=0-999999999999999999999999999" }) {
+            final HttpURLConnection request = open("/" + id, "GET");
+            request.setRequestProperty("Range", range);
+            assertEquals(206, request.getResponseCode(), range);
+            assertEquals("bytes 0-6/7", request.getHeaderField("Content-Range"));
+            assertEquals("payload", new String(request.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        }
+        for (final String range: new String[] { "bytes=7-", "bytes=5-3", "bytes=-0", "bytes=-", "bytes=+1-2", "bytes=0-1,3-4" }) {
+            final HttpURLConnection request = open("/" + id, "GET");
+            request.setRequestProperty("Range", range);
+            assertEquals(416, request.getResponseCode(), range);
+            assertEquals("bytes */7", request.getHeaderField("Content-Range"));
+        }
+        final HttpURLConnection suffix = open("/" + id, "GET");
+        suffix.setRequestProperty("Range", "bytes=-3");
+        assertEquals(206, suffix.getResponseCode());
+        assertEquals("oad", new String(suffix.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+
+        final HttpURLConnection empty = postUpload(TOKEN, "empty.bin", new byte[0]);
+        assertEquals(200, empty.getResponseCode());
+        final String emptyId = new String(empty.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        final HttpURLConnection get = open("/" + emptyId, "GET");
+        assertEquals(200, get.getResponseCode());
+        assertEquals(0, get.getInputStream().readAllBytes().length);
+        assertEquals("0", get.getHeaderField("Content-Length"));
+        final HttpURLConnection range = open("/" + emptyId, "GET");
+        range.setRequestProperty("Range", "bytes=0-");
+        assertEquals(416, range.getResponseCode());
+    }
+
+    @Test
     @DisplayName("GET / reports server info and an unknown ID is 404")
     void infoAndMissing() throws IOException {
         final HttpURLConnection root = open("/", "GET");
