@@ -1,6 +1,5 @@
 package org.watermedia.bootstrap.app;
 
-import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.screen.Keybind;
 import org.watermedia.bootstrap.app.screen.RootScreen;
 import org.watermedia.bootstrap.app.screen.Screen;

@@ -299,7 +299,6 @@ public final class TextRenderer {
         private final int fontTop;
         private final int baseline;
         private final int glyphHeight;
-        private final int atlasTextureId;
 
         private FontAtlas(final Font font) {
             this.font = font;
@@ -334,7 +333,7 @@ public final class TextRenderer {
             }
             this.fontTop = top;
             this.glyphHeight = Math.max(1, bottom - top + 1);
-            this.atlasTextureId = this.buildAtlas();
+            this.buildAtlas();
         }
 
         // RASTERIZES PRINTABLE ASCII AND SHELF-PACKS IT INTO ONE TEXTURE, RECORDING EACH GLYPH'S UV RECT

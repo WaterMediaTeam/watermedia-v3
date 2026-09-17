@@ -1,6 +1,5 @@
 package org.watermedia.bootstrap.app.element;
 
-import org.watermedia.bootstrap.app.ui.Gravity;
 
 /**
  * Stacks its children in a single direction, like Android's {@code LinearLayout}. Non-weighted children

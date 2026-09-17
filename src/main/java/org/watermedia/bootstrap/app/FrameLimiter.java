@@ -42,7 +42,6 @@ final class FrameLimiter {
 
         if (now < this.nextFrameNanos) {
             LockSupport.parkNanos(this.nextFrameNanos - now);
-            now = System.nanoTime();
         } else if (now - this.nextFrameNanos > this.frameNanos) {
             this.nextFrameNanos = now;
         }

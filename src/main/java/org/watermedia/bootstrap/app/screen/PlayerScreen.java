@@ -600,7 +600,7 @@ public final class PlayerScreen extends Screen {
     private void loadQualitiesForSource(final int sourceIndex) {
         if (this.ctx.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.availableSources.length) return;
         final var qualities = this.ctx.availableSources[sourceIndex].qualities().keySet();
-        if (qualities == null || qualities.isEmpty()) return;
+        if (qualities.isEmpty()) return;
 
         this.ctx.availableQualities = qualities.toArray(new MediaQuality[0]);
         Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(q -> q.threshold));
