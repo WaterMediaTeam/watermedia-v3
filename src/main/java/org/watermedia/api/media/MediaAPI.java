@@ -49,6 +49,7 @@ import org.watermedia.api.util.MediaType;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
 import org.watermedia.WaterMedia;
+import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.WaterMediaModule;
 
@@ -379,6 +380,7 @@ public final class MediaAPI {
                 this.failure(STEP_CACHE, failure);
             }
             this.task(3, 3, STEP_FFMPEG);
+            if (!WaterMedia.status().ready(Id.BINARIES)) return;
             if (!startFFmpeg() && FFMPEG_FAILURE != null) this.failure(STEP_FFMPEG, FFMPEG_FAILURE);
         }
 
@@ -417,19 +419,21 @@ public final class MediaAPI {
         }
 
         try {
-            final String ffmpegPath = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID).toAbsolutePath().toString();
+            final Path installed = WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID);
             final var customPath = WaterMediaConfig.media.ffmpeg.customPath;
             final String configPath = customPath != null && !customPath.toString().isBlank() ? customPath.toAbsolutePath().toString() : null;
-            final String paths = configPath != null ? ffmpegPath + File.pathSeparator + configPath : ffmpegPath;
+            if (installed == null && configPath == null) throw new IllegalStateException("Verified FFmpeg binaries are unavailable");
+            final String paths = installed == null ? configPath : configPath == null
+                    ? installed.toString() : installed + File.pathSeparator + configPath;
 
             System.setProperty("org.bytedeco.javacpp.platform.preloadpath", paths);
             System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
 
             final String currentLibPath = System.getProperty("java.library.path");
             if (currentLibPath == null || currentLibPath.isEmpty()) {
-                System.setProperty("java.library.path", ffmpegPath);
-            } else if (!currentLibPath.contains(ffmpegPath)) {
-                System.setProperty("java.library.path", ffmpegPath + File.pathSeparator + currentLibPath);
+                System.setProperty("java.library.path", paths);
+            } else if (!currentLibPath.contains(paths)) {
+                System.setProperty("java.library.path", paths + File.pathSeparator + currentLibPath);
             }
 
             LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);

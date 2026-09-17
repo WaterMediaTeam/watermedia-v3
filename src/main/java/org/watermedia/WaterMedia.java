@@ -13,6 +13,7 @@ import org.watermedia.tools.ThreadTool;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMedia.BootStatus.State;
@@ -31,8 +32,8 @@ public final class WaterMedia {
     // FACTORY BODIES ARE RESOLVED ONLY AFTER SIDE AND DEPENDENCY GATES PASS.
     private static final List<Bootstrap.Definition> MODULES = List.of(
             new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), WaterMediaConfig.Module::new),
+            new Bootstrap.Definition(Id.BINARIES, true, true, List.of(Id.CONFIG), WaterMedia::binaries),
             new Bootstrap.Definition(Id.NETWORK, false, false, List.of(Id.CONFIG), NetworkAPI.Module::new),
-            new Bootstrap.Definition(Id.BINARIES, true, false, List.of(Id.CONFIG), BinariesModule::new),
             new Bootstrap.Definition(Id.PLATFORMS, true, false, List.of(Id.CONFIG, Id.NETWORK), PlatformAPI.Module::new),
             new Bootstrap.Definition(Id.MEDIA, true, false, List.of(Id.CONFIG, Id.NETWORK), MediaAPI.Module::new)
     );
@@ -63,7 +64,7 @@ public final class WaterMedia {
         synchronized (LIFECYCLE) {
             if (transitioning || instance != null) throw new IllegalStateException("WaterMedia already has a session or lifecycle transition");
             synchronized (MediaPlayer.class) {
-                session.starting();
+                session.state(State.STARTING);
                 bootstrap = session;
                 instance = context;
                 transitioning = true;
@@ -97,7 +98,7 @@ public final class WaterMedia {
             synchronized (MediaPlayer.class) {
                 if (MediaPlayer.openPlayers() != 0)
                     throw new IllegalStateException("Release all media players on their owning contexts before stopping WaterMedia");
-                session.stopping();
+                session.state(State.STOPPING);
                 transitioning = true;
             }
         }
@@ -141,23 +142,14 @@ public final class WaterMedia {
         if (!context.clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
     }
 
-    private static final class BinariesModule extends WaterMediaModule {
-        @Override
-        protected void start(final WaterMedia context) throws Exception {
-            WaterMediaBinaries.resolve(context.tmp);
-            if (WaterMediaConfig.media.ffmpeg.disable) return;
-            this.task(1, 1, "FFmpeg");
-            try {
-                WaterMediaBinaries.provision((name, done, total) -> this.work(name, done, total, false));
-            } finally {
-                this.work("", 0, 0, false);
-            }
-        }
+    // THE JVM VERIFIES MODULE SUBTYPES WHILE LINKING; KEEP THE CLIENT JAR BEHIND A LAZY HOLDER.
+    private static WaterMediaModule binaries() {
+        return WaterMedia.class.getResource("/org/watermedia/binaries/WaterMediaBinaries.class") == null
+                ? null : Client.BINARIES.get();
+    }
 
-        @Override
-        protected void release(final WaterMedia context) {
-            WaterMediaBinaries.release();
-        }
+    private static final class Client {
+        private static final Supplier<WaterMediaModule> BINARIES = WaterMediaBinaries::new;
     }
 
     /** A coherent snapshot of the current bootstrap session and its diagnostics. */
@@ -166,6 +158,11 @@ public final class WaterMedia {
         public BootStatus {
             modules = List.copyOf(modules);
             failures = List.copyOf(failures);
+        }
+
+        /** Whether this snapshot contains a successfully initialized module. */
+        public boolean ready(final Id id) {
+            return this.modules.stream().anyMatch(module -> module.id() == id && module.outcome() == Outcome.READY);
         }
 
         public enum State { STOPPED, STARTING, READY, DEGRADED, FAILED, STOPPING }

@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -65,7 +66,7 @@ public final class PlatformAPI {
     private static final Map<String, List<PlatformResult>> SEARCH_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<String, List<PlatformResult>> eldest) {
-            return size() > SEARCH_CACHE_LIMIT;
+            return this.size() > SEARCH_CACHE_LIMIT;
         }
     };
     private static long nextCacheClean;
@@ -303,6 +304,11 @@ public final class PlatformAPI {
         return List.copyOf(PLATFORMS);
     }
 
+    // THESE CONSTRUCTORS LINK EXECUTABLE WRAPPERS ONLY WHEN THE BINARIES MODULE IS READY.
+    private static final class NativePlatforms {
+        private static final List<Supplier<IPlatform>> FACTORIES = List.of(YtDlpPlatform::new, YouTubePlatform::new);
+    }
+
     /** Internal bootstrap operation for platform discovery and searches. */
     public static final class Module extends WaterMediaModule {
         @Override
@@ -316,7 +322,7 @@ public final class PlatformAPI {
                 searchActive = true;
                 searchGeneration++;
             }
-            final List<IPlatform> platforms = List.of(
+            final List<IPlatform> platforms = new ArrayList<>(List.of(
                     new WaterPlatform(),
                     new ImgurPlatform(),
                     new KickPlatform(),
@@ -335,10 +341,11 @@ public final class PlatformAPI {
                     new OdyseePlatform(),
                     new VidLiiPlatform(),
                     new TikTokPlatform(),
-                    new DTubePlatform(),
-                    new YtDlpPlatform(),
-                    new YouTubePlatform()
-            );
+                    new DTubePlatform()
+            ));
+            if (WaterMedia.status().ready(BootStatus.Id.BINARIES)) {
+                for (final Supplier<IPlatform> factory: NativePlatforms.FACTORIES) platforms.add(factory.get());
+            }
             for (int i = 0; i < platforms.size(); i++) {
                 final IPlatform platform = platforms.get(i);
                 this.task(i + 1, platforms.size(), platform.getClass().getSimpleName());

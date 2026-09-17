@@ -2,6 +2,7 @@ package org.watermedia;
 
 import org.watermedia.WaterMedia.BootStatus;
 import org.junit.jupiter.api.Test;
+import org.watermedia.tools.ThreadTool;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +17,44 @@ import org.watermedia.WaterMediaModule.Bootstrap;
 class BootstrapTest {
     private final WaterMedia client = new WaterMedia("TEST", null, null, true);
     private final WaterMedia server = new WaterMedia("TEST", null, null, false);
+
+    @Test
+    void presentBinariesFinishBeforeNetworkAndAbsentBinariesAreSkipped() throws Exception {
+        final CountDownLatch entered = new CountDownLatch(1), resume = new CountDownLatch(1);
+        final List<Id> started = new ArrayList<>();
+        final Bootstrap boot = new Bootstrap(List.of(
+                new Bootstrap.Definition(Id.BINARIES, true, true, List.of(), () -> new WaterMediaModule() {
+                    @Override protected void start(final WaterMedia context) throws InterruptedException {
+                        entered.countDown();
+                        if (!resume.await(5, TimeUnit.SECONDS)) throw new InterruptedException("Test timeout");
+                        started.add(Id.BINARIES);
+                    }
+                }),
+                new Bootstrap.Definition(Id.NETWORK, false, false, List.of(), () -> new WaterMediaModule() {
+                    @Override protected void start(final WaterMedia context) { started.add(Id.NETWORK); }
+                })
+        ));
+        final CompletableFuture<Void> loading = CompletableFuture.runAsync(() -> boot.start(this.client));
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertFalse(loading.isDone());
+            assertEquals(Outcome.PENDING, boot.status().modules().get(1).outcome());
+            resume.countDown();
+            loading.get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(Id.BINARIES, Id.NETWORK), started);
+            assertTrue(boot.status().ready(Id.BINARIES));
+        } finally {
+            resume.countDown();
+            loading.get(5, TimeUnit.SECONDS);
+            boot.stop(this.client);
+        }
+        final Bootstrap absent = new Bootstrap(List.of(new Bootstrap.Definition(Id.BINARIES, true, true, List.of(), () -> null)));
+        absent.start(this.client);
+        assertEquals(State.READY, absent.status().state());
+        assertEquals(Outcome.SKIPPED, absent.status().modules().get(0).outcome());
+        assertFalse(absent.status().ready(Id.BINARIES));
+        absent.stop(this.client);
+    }
 
     @Test
     void serverSkipsClientFactoryWithoutConstructingIt() {
@@ -107,6 +146,113 @@ class BootstrapTest {
     }
 
     @Test
+    void progressUpdatesDoNotDuplicateFailuresOrChangeOlderSnapshots() throws Exception {
+        final CountDownLatch entered = new CountDownLatch(1), resume = new CountDownLatch(1);
+        final RuntimeException failure = new IllegalStateException("Unavailable cache");
+        final Bootstrap boot = new Bootstrap(List.of(new Bootstrap.Definition(Id.MEDIA, true, false, List.of(), () -> new WaterMediaModule() {
+            @Override
+            protected void start(final WaterMedia context) throws InterruptedException {
+                this.task(1, 1, "Media");
+                this.failure("Cache", failure);
+                entered.countDown();
+                assertTrue(resume.await(5, TimeUnit.SECONDS));
+                for (int i = 1; i <= 8; i++) this.work("Media", i, 8, false);
+                this.failure("Decoder", new IllegalStateException("Unavailable decoder"));
+            }
+        })));
+        final CompletableFuture<Void> running = CompletableFuture.runAsync(() -> boot.start(this.client));
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            final BootStatus snapshot = boot.status();
+            assertEquals(1, snapshot.failures().size());
+            assertSame(failure, snapshot.failures().get(0).cause());
+            assertThrows(UnsupportedOperationException.class, () -> snapshot.failures().clear());
+            resume.countDown();
+            running.get(5, TimeUnit.SECONDS);
+            assertEquals(1, snapshot.failures().size());
+            assertEquals(0, snapshot.progress().work());
+            assertEquals(2, boot.status().failures().size());
+            assertSame(failure, boot.status().failures().get(0).cause());
+            assertEquals(8, boot.status().progress().work());
+            assertEquals(State.DEGRADED, boot.status().state());
+        } finally {
+            resume.countDown();
+            running.get(5, TimeUnit.SECONDS);
+            boot.stop(this.client);
+        }
+    }
+
+    @Test
+    void earlierAndReleasedModulesCannotPublishLateUpdates() {
+        final WaterMediaModule first = new WaterMediaModule() {
+            @Override protected void start(final WaterMedia context) { this.task(1, 1, "Configuration"); }
+        };
+        final Bootstrap boot = new Bootstrap(List.of(
+                new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), () -> first),
+                new Bootstrap.Definition(Id.NETWORK, false, false, List.of(Id.CONFIG), () -> new WaterMediaModule() {
+                    @Override protected void start(final WaterMedia context) {
+                        this.task(1, 1, "Network");
+                        first.task(2, 2, "Late configuration");
+                        first.work("Late work", 1, 2, false);
+                        first.failure("Late failure", new IllegalStateException("Stale callback"));
+                    }
+                })
+        ));
+        boot.start(this.client);
+        assertEquals(State.READY, boot.status().state());
+        assertEquals(Id.NETWORK, boot.status().current());
+        assertEquals("Network", boot.status().progress().taskName());
+        assertEquals(0, boot.status().progress().work());
+        assertTrue(boot.status().failures().isEmpty());
+        boot.stop(this.client);
+        final BootStatus stopped = boot.status();
+        first.task(3, 3, "Released configuration");
+        first.work("Released work", 2, 2, false);
+        first.failure("Released failure", new IllegalStateException("Released callback"));
+        assertSame(stopped, boot.status());
+    }
+
+    @Test
+    void optionalLinkageFailureAllowsIndependentModulesToStart() {
+        final LinkageError failure = new UnsatisfiedLinkError("Missing optional native");
+        final Bootstrap boot = new Bootstrap(List.of(
+                new Bootstrap.Definition(Id.NETWORK, false, false, List.of(), () -> { throw failure; }),
+                new Bootstrap.Definition(Id.MEDIA, true, false, List.of(), () -> new WaterMediaModule() {
+                    @Override protected void start(final WaterMedia context) {}
+                })
+        ));
+        boot.start(this.client);
+        assertEquals(State.DEGRADED, boot.status().state());
+        assertEquals(Outcome.FAILED, boot.status().modules().get(0).outcome());
+        assertTrue(boot.status().ready(Id.MEDIA));
+        assertSame(failure, boot.status().failures().get(0).cause());
+        boot.stop(this.client);
+        assertFalse(boot.ownsResources());
+    }
+
+    @Test
+    void interruptedStartupClearsInterruptDuringCleanupAndRestoresIt() {
+        final List<Boolean> interrupts = new ArrayList<>();
+        final Bootstrap boot = new Bootstrap(List.of(new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), () -> new WaterMediaModule() {
+            @Override protected void start(final WaterMedia context) throws InterruptedException {
+                ThreadTool.interrupt();
+                throw new InterruptedException("Cancelled startup");
+            }
+            @Override protected void release(final WaterMedia context) { interrupts.add(ThreadTool.isInterrupted()); }
+        })));
+        try {
+            assertThrows(IllegalStateException.class, () -> boot.start(this.client));
+            assertTrue(ThreadTool.isInterrupted());
+            assertEquals(List.of(false), interrupts);
+            assertEquals(State.FAILED, boot.status().state());
+            assertFalse(boot.ownsResources());
+            assertInstanceOf(InterruptedException.class, boot.status().failures().get(0).cause());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
     void essentialFailureUnwindsAndDoesNotPretendStartupSucceeded() {
         final List<String> closed = new ArrayList<>();
         final Bootstrap boot = new Bootstrap(List.of(new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), () -> new WaterMediaModule() {
@@ -127,6 +273,27 @@ class BootstrapTest {
         })));
         assertSame(failure, assertThrows(InternalError.class, () -> boot.start(this.client)));
         assertEquals(State.FAILED, boot.status().state());
+        assertFalse(boot.ownsResources());
+    }
+
+    @Test
+    void fatalCleanupKeepsStartupFailureAndRetainsResourcesForRetry() {
+        final AssertionError startup = new AssertionError("Startup failed");
+        final InternalError cleanup = new InternalError("Cleanup failed");
+        final Bootstrap boot = new Bootstrap(List.of(new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), () -> new WaterMediaModule() {
+            private boolean first = true;
+            @Override protected void start(final WaterMedia context) { throw startup; }
+            @Override protected void release(final WaterMedia context) {
+                if (this.first) { this.first = false; throw cleanup; }
+            }
+        })));
+        assertSame(cleanup, assertThrows(InternalError.class, () -> boot.start(this.client)));
+        assertArrayEquals(new Throwable[] { startup }, cleanup.getSuppressed());
+        assertEquals(State.FAILED, boot.status().state());
+        assertEquals(2, boot.status().failures().size());
+        assertTrue(boot.ownsResources());
+        boot.stop(this.client);
+        assertEquals(State.STOPPED, boot.status().state());
         assertFalse(boot.ownsResources());
     }
 

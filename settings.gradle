@@ -12,5 +12,5 @@ pluginManagement {
 
 rootProject.name = 'watermedia'
 
-// BINARIES IS INDEPENDENT; THE COMPOSITE SUBSTITUTES ITS LOCAL JAR FOR org.watermedia:binaries.
+// WATERMEDIA COMPILES THE SHARED SOURCES ONCE; EACH BUILD PACKAGES ITS OWN CLASSES.
 includeBuild("binaries")

@@ -14,8 +14,26 @@ import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class AppBootstrapDependenciesTest {
+    @Test
+    void optionalBinariesDoNotPreventLauncherReadiness() throws Exception {
+        final Class<?> scanType = Arrays.stream(AppBootstrap.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("BootstrapScan")).findFirst().orElseThrow();
+        final var constructor = scanType.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        final Object scan = constructor.newInstance();
+        final var ready = scanType.getDeclaredMethod("ready");
+        ready.setAccessible(true);
+        assertTrue((boolean) ready.invoke(scan));
+        final var downloads = scanType.getDeclaredField("toDownload");
+        downloads.setAccessible(true);
+        @SuppressWarnings("unchecked") final List<String[]> required = (List<String[]>) downloads.get(scan);
+        required.add(new String[] { "required.jar", "required.jar" });
+        assertFalse((boolean) ready.invoke(scan));
+    }
     @Test
     void processedLauncherVersionsMatchTheBuildPins() throws Exception {
         final Properties build = new Properties();

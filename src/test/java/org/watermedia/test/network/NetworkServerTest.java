@@ -44,9 +44,9 @@ public class NetworkServerTest {
     }
 
     @AfterAll
-    static void shutdown() {
+    static void shutdown() throws IOException {
         NetworkServer.stop();
-        IOTool.delete(cwd.toFile());
+        IOTool.deleteTree(cwd);
     }
 
     @Test

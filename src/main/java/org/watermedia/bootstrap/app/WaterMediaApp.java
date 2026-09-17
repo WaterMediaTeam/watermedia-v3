@@ -1330,7 +1330,7 @@ public class WaterMediaApp {
 
             final Path cache = cleanupCacheDir();
             if (Files.exists(cache)) {
-                IOTool.delete(cache.toFile());
+                IOTool.deleteTree(cache);
             }
             Files.createDirectories(cache);
 
@@ -1711,7 +1711,8 @@ public class WaterMediaApp {
         glfwFreeCallbacks(ctx.windowHandle);
         glfwDestroyWindow(ctx.windowHandle);
         glfwTerminate();
-        glfwSetErrorCallback(null).close();
+        final GLFWErrorCallback errorCallback = glfwSetErrorCallback(null);
+        if (errorCallback != null) errorCallback.close();
         // A RELAUNCH REQUEST EXITS WITH RELAUNCH_EXIT SO THE SUPERVISING BOOTSTRAP RE-PROVISIONS AND SPAWNS AGAIN
         System.exit(relaunchRequested ? AppBootstrap.RELAUNCH_EXIT : 0);
     }

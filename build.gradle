@@ -16,10 +16,14 @@ base {
     archivesName = id
 }
 
+// GRADLE RESTORES THE CLIENT'S FILE.ENCODING PROPERTY AFTER THE DAEMON STARTS.
+def forkEncoding = providers.gradleProperty('systemProp.file.encoding').get()
+System.setProperty('file.encoding', forkEncoding)
 test {
     useJUnitPlatform()
     maxHeapSize = test_max_heap
     jvmArgs "-XX:MaxDirectMemorySize=$test_max_direct_memory"
+    jvmArgs "-Dfile.encoding=$forkEncoding"
     systemProperty 'watermedia.test.requireNatives', providers.gradleProperty('require_natives').getOrElse('false')
     doFirst { task ->
         task.systemProperty('watermedia.test.classpath', task.classpath.asPath)
@@ -32,6 +36,14 @@ test {
 java {
     withSourcesJar()
     sourceCompatibility = targetCompatibility = JavaVersion.toVersion(java_release)
+}
+
+tasks.withType(JavaExec).configureEach {
+    jvmArgs "-Dfile.encoding=$forkEncoding"
+}
+
+sourcesJar {
+    exclude('org/watermedia/binaries/**')
 }
 
 println("Gradle Java: ${JavaVersion.current()}")
@@ -54,7 +66,11 @@ configurations {
     compileOnlyApi.extendsFrom(library)
 }
 
+def binariesResources = files('binaries/build/resources/main').builtBy(gradle.includedBuild('binaries').task(':processResources'))
 sourceSets {
+    main.java.srcDirs += 'binaries/src/main/java'
+    tools.java.srcDirs = ['src/test/tools']
+
     // SHADOW
     main.compileClasspath += configurations.include
     main.runtimeClasspath += configurations.include
@@ -67,6 +83,9 @@ sourceSets {
     test.compileClasspath += configurations.library
     test.runtimeClasspath += configurations.library
 
+    main.runtimeClasspath += binariesResources
+    test.runtimeClasspath += binariesResources
+
 }
 
 // HOST JAVAFX CLASSIFIER FOR THE COMPILE-ONLY JFXEngine (win/linux/mac + aarch64 variants)
@@ -74,7 +93,7 @@ def javafxPlatform = { ->
     if (osdetector.os == 'windows') return osdetector.arch == 'x86_32' ? 'win-x86' : 'win'
     if (osdetector.os == 'osx') return osdetector.arch == 'aarch_64' ? 'mac-aarch64' : 'mac'
     return osdetector.arch == 'aarch_64' ? 'linux-aarch64' : 'linux'
-}()
+}.call()
 
 def lwjglPlatform = ['windows': 'windows', 'linux': 'linux', 'osx': 'macos'][osdetector.os]
 def lwjglArch = ['x86_64': '', 'aarch_64': '-arm64'][osdetector.arch]
@@ -86,7 +105,7 @@ dependencies {
     include "org.bytedeco:ffmpeg:$ffmpeg_version"
 
     // OWN DEPENDENCIES
-    library "org.watermedia:binaries"
+    library "org.tukaani:xz:$xz_version"
     library "com.github.SrRapero720:waterconfig:$waterconfig_version"
 
     // DEPENDENCIES INCLUDED IN MINECRAFT
@@ -161,6 +180,7 @@ jar {
         configurations.include.collect { it.isDirectory() ? it : zipTree(it) }
     }
     exclude('META-INF/versions/', 'META-INF/maven/')
+    exclude('org/watermedia/binaries/**')
 
     filesMatching('META-INF/*') {
         duplicatesStrategy = DuplicatesStrategy.INCLUDE // COMBINE FILES
@@ -211,7 +231,7 @@ publishMods {
         cf.additionalFile(sourcesJar, { AdditionalFileOptions file ->
             file.name = "$publishVersion-sources"
         } as Action<AdditionalFileOptions>)
-        cf.requires("watermedia-binaries")
+        cf.optional("watermedia-binaries")
         // THE CURSEFORGE UPLOAD API HAS NO ENDPOINT TO EDIT THE PROJECT PAGE DESCRIPTION; SYNC IS MODRINTH-ONLY
     } as Action<Curseforge>)
 
@@ -219,13 +239,14 @@ publishMods {
         mr.accessToken = MT_TOKEN
         mr.projectId = modrinthid
         mr.minecraftVersions.addAll(mcVers)
-        mr.requires("watermedia-binaries")
+        mr.optional("watermedia-binaries")
         mr.projectDescription = providers.fileContents(layout.projectDirectory.file("README.md")).asText
     } as Action<Modrinth>)
 }
 
-// VERIFY THE INDEPENDENT BINARIES ARTIFACT AS PART OF A COMPLETE BUILD.
+// BUILD AND VERIFY BOTH DISTRIBUTION JARS TOGETHER.
 build.dependsOn gradle.includedBuild("binaries").task(":build")
+check.dependsOn tasks.named('compileToolsJava')
 
 // NORMALIZE ENHANCED-FOR COLONS IN JAVA SOURCES: "for (T x : xs)" -> "for (T x: xs)"
 // (GRADLE PORT OF THE OLD scripts/remove_semicolon_space.ps1)

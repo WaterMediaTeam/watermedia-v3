@@ -134,11 +134,10 @@ public class AppBootstrap {
         // VULKAN + SHADERC JARS/NATIVES — PROVISIONED UNCONDITIONALLY BUT BEST-EFFORT, SO A DOWNLOAD FAILURE
         // NEVER BLOCKS THE LAUNCH (THE APP STILL RUNS ON OPENGL; RUNTIME HOT-SWAP TO VULKAN IS JUST UNAVAILABLE).
         private final List<String[]> optionalDownload = new ArrayList<>();
-        private boolean binariesFound;
 
         // MANDATORY READINESS — VULKAN DEPS ARE BEST-EFFORT AND NEVER GATE THE LAUNCH.
         private boolean ready() {
-            return this.binariesFound && this.toDownload.isEmpty();
+            return this.toDownload.isEmpty();
         }
 
         // FULLY PROVISIONED, INCLUDING VULKAN — GATES THE FAST PATH SO A FIRST LAUNCH PULLS VULKAN ONCE.
@@ -150,7 +149,6 @@ public class AppBootstrap {
     // LOGGER — \r clears the GUI console line; ANSI codes color both GUI and terminal
     private static void info(final String msg) { System.out.println("\r" + ANSI_GREEN + msg + ANSI_RESET); }
     private static void warn(final String msg) { System.out.println("\r" + ANSI_YELLOW + msg + ANSI_RESET); }
-    private static void error(final String msg) { System.out.println("\r" + ANSI_RED + msg + ANSI_RESET); }
     private static void live(final String msg) { System.out.print("\r" + ANSI_BLUE + msg + ANSI_RESET); }
 
     public interface Extension {
@@ -225,10 +223,6 @@ public class AppBootstrap {
         info("Render engine: " + engine.toUpperCase());
 
         final BootstrapScan scan = scanBootstrap(true);
-        if (!scan.binariesFound) {
-            showError("WaterMedia Binaries JAR not found.\nDownload the latest version from CurseForge.");
-            return 1;
-        }
 
         // DOWNLOAD MANDATORY DEPS (BASE LWJGL + NATIVES) — A FAILURE HERE IS FATAL.
         for (final String[] dep: scan.toDownload) {
@@ -269,12 +263,11 @@ public class AppBootstrap {
 
         // FIND BINARIES
         final Path binaries = findLocalJar("watermedia_binaries");
-        final boolean classpath = hasBinariesOnClasspath();
-        scan.binariesFound = binaries != null || classpath;
+        final boolean found = binaries != null || AppBootstrap.class.getResource("/org/watermedia/binaries/WaterMediaBinaries.class") != null;
         if (binaries != null) scan.jars.add(binaries);
         if (log) {
-            if (scan.binariesFound) info("[OK] WaterMedia Binaries found");
-            else warn("[MISSING] WaterMedia Binaries JAR");
+            if (found) info("[OK] WaterMedia Binaries found");
+            else warn("[OPTIONAL] WaterMedia Binaries not found; video decoding is unavailable");
         }
 
         // COLLECT DEPS
@@ -331,15 +324,6 @@ public class AppBootstrap {
         }
 
         return scan;
-    }
-
-    private static boolean hasBinariesOnClasspath() {
-        try {
-            Class.forName("org.watermedia.binaries.WaterMediaBinaries", false, AppBootstrap.class.getClassLoader());
-            return true;
-        } catch (final ClassNotFoundException ignored) {
-            return false;
-        }
     }
 
     private static boolean contains(final String[] args, final String flag) {
@@ -818,7 +802,7 @@ public class AppBootstrap {
                 }
 
                 @Override
-                public void write(final byte[] b, final int off, final int len) throws IOException {
+                public void write(final byte[] b, final int off, final int len) {
                     BootstrapWindow.this.origOut.write(b, off, len);
                     boolean repaint = false;
                     synchronized (BootstrapWindow.this) {

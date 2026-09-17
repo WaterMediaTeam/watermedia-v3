@@ -3,7 +3,6 @@ package org.watermedia.tools;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
-import java.util.function.Function;
 
 public class ThreadTool {
     private static final ConcurrentHashMap<String, Integer> THREADS = new ConcurrentHashMap<>();

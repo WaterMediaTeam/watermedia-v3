@@ -7,44 +7,38 @@ import org.watermedia.WaterMedia.BootStatus.Outcome;
 import org.watermedia.WaterMedia.BootStatus.Progress;
 import org.watermedia.WaterMedia.BootStatus.State;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.ThreadTool;
 
-import java.util.EnumSet;
-import java.util.function.Supplier;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /** Internal module lifecycle contract; only WaterMedia coordinates module instances. */
 public abstract class WaterMediaModule {
     private Progress progress = Progress.NONE;
-    private final List<Problem> failures = new ArrayList<>();
-    private Consumer<Progress> observer = ignored -> {};
+    private Bootstrap bootstrap;
+    private int index;
 
     protected abstract void start(WaterMedia context) throws Exception;
     protected void release(final WaterMedia context) throws Exception {}
 
     protected final synchronized void task(final int step, final int total, final String name) {
         this.progress = new Progress(step, total, Objects.requireNonNull(name), 0, 0, "", false);
-        this.observer.accept(this.progress);
+        if (this.bootstrap != null) this.bootstrap.update(this.index, this.progress);
     }
 
     protected final synchronized void work(final String name, final long done, final long total, final boolean remote) {
         final Progress previous = this.progress;
         this.progress = new Progress(previous.taskStep(), previous.taskSteps(), previous.taskName(),
                 done, total, Objects.requireNonNull(name), remote);
-        this.observer.accept(this.progress);
+        if (this.bootstrap != null) this.bootstrap.update(this.index, this.progress);
     }
 
     protected final synchronized void failure(final String task, final Throwable cause) {
-        this.failures.add(new Problem(task, Objects.requireNonNull(cause)));
-        this.observer.accept(this.progress);
+        if (this.bootstrap != null) this.bootstrap.report(this.index, task, Objects.requireNonNull(cause), false);
     }
-
-    final synchronized void observe(final Consumer<Progress> observer) { this.observer = observer; }
-    final synchronized List<Problem> failures() { return List.copyOf(this.failures); }
-
-    record Problem(String task, Throwable cause) {}
 
     // EACH SESSION OWNS ITS MODULES AND PUBLISHES IMMUTABLE SNAPSHOTS TO OTHER THREADS.
     static final class Bootstrap {
@@ -60,8 +54,7 @@ public abstract class WaterMediaModule {
         private final List<Definition> definitions;
         private final WaterMediaModule[] instances;
         private final List<BootStatus.Module> modules = new ArrayList<>();
-        private final List<List<Failure>> problems = new ArrayList<>();
-        private final List<Failure> terminal = new ArrayList<>();
+        private final List<Failure> failures = new ArrayList<>();
         private volatile BootStatus status;
         private State state = State.STOPPED;
         private int current = -1;
@@ -76,25 +69,19 @@ public abstract class WaterMediaModule {
                     throw new IllegalArgumentException("Duplicate or unordered bootstrap dependency: " + definition.id());
                 seen.add(definition.id());
                 this.modules.add(new BootStatus.Module(definition.id(), Outcome.PENDING, null, ""));
-                this.problems.add(List.of());
             }
             this.publish();
         }
 
         BootStatus status() { return this.status; }
 
-        synchronized void starting() {
-            this.state = State.STARTING;
-            this.publish();
-        }
-
-        synchronized void stopping() {
-            this.state = State.STOPPING;
+        synchronized void state(final State state) {
+            this.state = state;
             this.publish();
         }
 
         void start(final WaterMedia context) {
-            this.starting();
+            this.state(State.STARTING);
             Id essentialFailure = null;
             boolean interrupted = false;
             Error fatal = null;
@@ -111,7 +98,7 @@ public abstract class WaterMediaModule {
                 }
                 Id missing = null;
                 for (final Id dependency: definition.required()) {
-                    if (this.modules.stream().noneMatch(module -> module.id() == dependency && module.outcome() == Outcome.READY)) {
+                    if (!this.status.ready(dependency)) {
                         missing = dependency;
                         break;
                     }
@@ -123,21 +110,24 @@ public abstract class WaterMediaModule {
                 }
                 this.outcome(i, Outcome.STARTING, null, "");
                 try {
-                    if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Bootstrap interrupted");
-                    final WaterMediaModule module = Objects.requireNonNull(definition.factory().get(), "module");
+                    if (ThreadTool.isInterrupted()) throw new InterruptedException("Bootstrap interrupted");
+                    final WaterMediaModule module = definition.factory().get();
+                    if (module == null) {
+                        this.outcome(i, Outcome.SKIPPED, null, "Optional module is not installed");
+                        continue;
+                    }
                     this.instances[i] = module;
-                    final int index = i;
-                    module.observe(value -> this.update(index, value, module.failures()));
+                    synchronized (module) {
+                        module.bootstrap = this;
+                        module.index = i;
+                    }
                     module.start(context);
                     this.outcome(i, Outcome.READY, null, "");
-                } catch (final Exception | LinkageError failure) {
-                    this.failed(i, this.status.progress().taskName(), failure);
-                    interrupted |= failure instanceof InterruptedException || Thread.currentThread().isInterrupted();
-                    if (definition.essential() || interrupted) essentialFailure = definition.id();
-                } catch (final Error failure) {
-                    this.failed(i, this.status.progress().taskName(), failure);
-                    essentialFailure = definition.id();
-                    fatal = failure;
+                } catch (final Exception | Error failure) {
+                    this.report(i, this.status.progress().taskName(), failure, true);
+                    interrupted |= failure instanceof InterruptedException || ThreadTool.isInterrupted();
+                    if (failure instanceof final Error error && !(error instanceof LinkageError)) fatal = error;
+                    if (definition.essential() || interrupted || fatal != null) essentialFailure = definition.id();
                 }
             }
             if (essentialFailure != null) {
@@ -148,31 +138,28 @@ public abstract class WaterMediaModule {
                     fatal = (Error) IOTool.mergeFailure(fatal, cleanup);
                 } finally {
                     synchronized (this) {
-                        this.state = State.FAILED;
                         this.select(-1);
-                        this.publish();
+                        this.state(State.FAILED);
                     }
-                    if (restoreInterrupt) Thread.currentThread().interrupt();
+                    if (restoreInterrupt) ThreadTool.interrupt();
                 }
                 if (fatal != null) throw fatal;
                 throw new IllegalStateException("Essential WaterMedia startup failed: " + essentialFailure,
                         this.status.failures().isEmpty() ? null : this.status.failures().get(0).cause());
             }
             synchronized (this) {
-                this.state = this.status.failures().isEmpty()
+                this.state(this.failures.isEmpty()
                         && this.modules.stream().noneMatch(module -> module.outcome() == Outcome.BLOCKED || module.outcome() == Outcome.FAILED)
-                        ? State.READY : State.DEGRADED;
-                this.publish();
+                        ? State.READY : State.DEGRADED);
             }
         }
 
         void stop(final WaterMedia context) {
-            this.stopping();
+            this.state(State.STOPPING);
             this.unwind(context);
             synchronized (this) {
                 this.select(-1);
-                this.state = this.ownsResources() ? State.FAILED : State.STOPPED;
-                this.publish();
+                this.state(this.ownsResources() ? State.FAILED : State.STOPPED);
             }
             if (this.ownsResources()) throw new IllegalStateException("WaterMedia shutdown has unfinished resources; retry stop after inspecting status()");
         }
@@ -197,40 +184,38 @@ public abstract class WaterMediaModule {
                 final BootStatus.Module previous = this.modules.get(i);
                 try {
                     module.release(context);
-                    module.observe(ignored -> {});
+                    synchronized (module) { module.bootstrap = null; }
                     this.instances[i] = null;
                     if (this.state == State.STOPPING || previous.outcome() == Outcome.READY)
                         this.outcome(i, Outcome.STOPPED, null, "");
-                } catch (final Exception | LinkageError failure) {
-                    this.failed(i, "Shutdown", failure);
-                    if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+                } catch (final Exception | Error failure) {
+                    this.report(i, "Shutdown", failure, true);
+                    if (failure instanceof InterruptedException) ThreadTool.interrupt();
                     waiting = previous.id();
-                } catch (final Error failure) {
-                    this.failed(i, "Shutdown", failure);
-                    waiting = previous.id();
-                    fatal = (Error) IOTool.mergeFailure(fatal, failure);
+                    if (failure instanceof final Error error && !(error instanceof LinkageError)) fatal = error;
                 }
             }
             if (fatal != null) {
-                synchronized (this) {
-                    this.state = State.FAILED;
-                    this.publish();
-                }
+                this.state(State.FAILED);
                 throw fatal;
             }
         }
 
-        private synchronized void update(final int index, final Progress progress, final List<WaterMediaModule.Problem> failures) {
-            if (this.current != index || (this.state != State.STARTING && this.state != State.STOPPING)) return;
+        private boolean active(final int index) {
+            return this.current == index && (this.state == State.STARTING || this.state == State.STOPPING);
+        }
+
+        private synchronized void update(final int index, final Progress progress) {
+            if (!this.active(index)) return;
             this.progress = progress;
-            this.problems.set(index, failures.stream()
-                    .map(failure -> new Failure(this.definitions.get(index).id(), failure.task(), failure.cause())).toList());
             this.publish();
         }
 
-        private synchronized void failed(final int index, final String task, final Throwable failure) {
-            this.terminal.add(new Failure(this.definitions.get(index).id(), task, failure));
-            this.outcome(index, Outcome.FAILED, null, failure.getClass().getSimpleName());
+        private synchronized void report(final int index, final String task, final Throwable failure, final boolean terminal) {
+            if (!this.active(index)) return;
+            this.failures.add(new Failure(this.definitions.get(index).id(), task, failure));
+            if (terminal) this.outcome(index, Outcome.FAILED, null, failure.getClass().getSimpleName());
+            else this.publish();
         }
 
         private synchronized void outcome(final int index, final Outcome outcome, final Id dependency, final String reason) {
@@ -239,11 +224,8 @@ public abstract class WaterMediaModule {
         }
 
         private synchronized void publish() {
-            final List<Failure> failures = new ArrayList<>();
-            for (final List<Failure> module: this.problems) failures.addAll(module);
-            failures.addAll(this.terminal);
             this.status = new BootStatus(this.state, this.current + 1, this.definitions.size(),
-                    this.current < 0 ? null : this.definitions.get(this.current).id(), this.progress, this.modules, failures);
+                    this.current < 0 ? null : this.definitions.get(this.current).id(), this.progress, this.modules, this.failures);
         }
 
         private synchronized void select(final int index) {
