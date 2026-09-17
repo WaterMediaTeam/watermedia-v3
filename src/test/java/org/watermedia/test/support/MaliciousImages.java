@@ -903,18 +903,21 @@ public final class MaliciousImages {
     // COMPRESS PAYLOADS FOR PNG BOMB AND TEXT FIXTURES.
     static byte[] deflate(final byte[] raw, final int level) {
         final Deflater d = new Deflater(level);
-        d.setInput(raw);
-        d.finish();
-        final byte[] buf = new byte[8192];
-        final Buf out = new Buf();
-        while (!d.finished()) {
-            final int k = d.deflate(buf);
-            final byte[] chunk = new byte[k];
-            System.arraycopy(buf, 0, chunk, 0, k);
-            out.raw(chunk);
+        try {
+            d.setInput(raw);
+            d.finish();
+            final byte[] buf = new byte[8192];
+            final Buf out = new Buf();
+            while (!d.finished()) {
+                final int k = d.deflate(buf);
+                final byte[] chunk = new byte[k];
+                System.arraycopy(buf, 0, chunk, 0, k);
+                out.raw(chunk);
+            }
+            return out.bytes();
+        } finally {
+            d.end();
         }
-        d.end();
-        return out.bytes();
     }
 
     // BUILD A PNG CHUNK WITH CRC OVER ITS TYPE AND PAYLOAD.

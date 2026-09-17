@@ -47,7 +47,7 @@ final class VP8BoolDecoder {
     // PROB: 0-255 WHERE PROB IS P(FALSE)*256
     // SPLIT = 1 + (((RANGE - 1) * PROB) >> 8)
     // COMPARE VALUE TO SPLIT << 8 TO DETERMINE BIT
-    boolean readBool(final int prob) throws XCodecException {
+    boolean readBool(final int prob) {
         // CALCULATE SPLIT POINT PER RFC6386 EQ 7.1
         final int split = 1 + (((this.range - 1) * prob) >> 8);
         final int bigSplit = split << 8;
@@ -96,7 +96,7 @@ final class VP8BoolDecoder {
     }
 
     // RFC6386 SECTION 7.3 - 50% PROBABILITY BOOL (FLAG)
-    boolean readBool() throws XCodecException {
+    boolean readBool() {
         return this.readBool(128);
     }
 

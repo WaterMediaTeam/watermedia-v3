@@ -403,7 +403,7 @@ public final class VP8LossyDecoder {
                         for (int i = 0; i < 4; i++) {
                             final int sOff = yOff + j * 4 * yStr + i * 4;
                             final boolean rightEdge = (i == 3) && (mbX == mbW - 1);
-                            if (mbY > 0 || j > 0) getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, j, i, yOff, subAbove);
+                            if (mbY > 0 || j > 0) getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, i, yOff, subAbove);
                             else System.arraycopy(TOP_BORDER_8, 0, subAbove, 0, 8);
                             if (mbX > 0 || i > 0) getLeft(yPln, sOff, yStr, 4, subLeft);
                             else System.arraycopy(LEFT_BORDER_4, 0, subLeft, 0, 4);
@@ -444,7 +444,7 @@ public final class VP8LossyDecoder {
 
                             if (isI4x4) {
                                 final boolean rightEdge = (i == 3) && (mbX == mbW - 1);
-                                if (mbY > 0 || j > 0) getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, j, i, yOff, subAbove);
+                                if (mbY > 0 || j > 0) getAbove8Sub(yPln, sOff, yStr, rightEdge, mbY, i, yOff, subAbove);
                                 else System.arraycopy(TOP_BORDER_8, 0, subAbove, 0, 8);
                                 if (mbX > 0 || i > 0) getLeft(yPln, sOff, yStr, 4, subLeft);
                                 else System.arraycopy(LEFT_BORDER_4, 0, subLeft, 0, 4);
@@ -676,7 +676,7 @@ public final class VP8LossyDecoder {
         System.arraycopy(pln, off - str, out, 0, sz);
     }
 
-    private static void getAbove8Sub(final byte[] pln, final int off, final int str, final boolean rightEdgeMB, final int mbY, final int sbRow, final int sbCol, final int yOff, final byte[] out) {
+    private static void getAbove8Sub(final byte[] pln, final int off, final int str, final boolean rightEdgeMB, final int mbY, final int sbCol, final int yOff, final byte[] out) {
         System.arraycopy(pln, off - str, out, 0, 4);
 
         if (sbCol == 3) {

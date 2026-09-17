@@ -866,7 +866,7 @@ public final class JPEGReader extends ImageReader {
         return true;
     }
 
-    private void writeNative() throws XCodecException {
+    private void writeNative() {
         if (this.outputFormat == PixelFormat.GRAY) {
             this.directOut = ByteBuffer.allocateDirect(this.width * this.height).order(ByteOrder.LITTLE_ENDIAN);
             this.planeOffsets = new int[] { 0 };

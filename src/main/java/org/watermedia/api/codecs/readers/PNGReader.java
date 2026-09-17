@@ -96,7 +96,6 @@ public final class PNGReader extends ImageReader {
     private PLTE plte;
     private TRNS trns;
     private BKGD bkgd;
-    private ACTL actl;
     private GAMA gamma;
     private SRGB srgb;
     private CICP cicp;
@@ -105,7 +104,7 @@ public final class PNGReader extends ImageReader {
     private final Map<String, List<String>> compressedTexts = new HashMap<>();
     private final Map<String, List<String>> internationalTexts = new HashMap<>();
     private final Map<String, List<byte[]>> ancillaryChunks = new HashMap<>();
-    private float[] gammaLUT;
+    private final float[] gammaLUT;
 
     // STREAMING STATE
     private CHUNK pendingChunk;     // NEXT CHUNK TO CONSUME AT START OF next()
@@ -119,13 +118,13 @@ public final class PNGReader extends ImageReader {
     private final boolean resetDone;
 
     // CANVAS / OUTPUT (1-D ARGB INT BUFFERS, STRIDE = canvasWidth)
-    private int canvasWidth;
-    private int canvasHeight;
-    private int[] outputBuffer;      // COMPOSITED CANVAS (ARGB)
+    private final int canvasWidth;
+    private final int canvasHeight;
+    private final int[] outputBuffer;      // COMPOSITED CANVAS (ARGB)
     private int[] previousBuffer;    // LAZILY SAVED CANVAS FOR DISPOSE_OP_PREVIOUS
     private int[] frameBuffer;       // REUSABLE APNG FRAME DECODE TARGET
-    private ByteBuffer directOut;    // BGRA result, reused
-    private IntBuffer directOutInts;
+    private final ByteBuffer directOut;    // BGRA RESULT, REUSED
+    private final IntBuffer directOutInts;
 
     // ROW SCRATCH
     private byte[] passCurrentRow = new byte[0];
@@ -137,9 +136,9 @@ public final class PNGReader extends ImageReader {
     private byte[] decompressed = new byte[0]; // REUSED ACROSS FRAMES
 
     // PRECOMPUTED HOT-PATH INVARIANTS (computed in constructor)
-    private ColorType colorType;
-    private int depth;
-    private int bytesPerPixel;
+    private final ColorType colorType;
+    private final int depth;
+    private final int bytesPerPixel;
     private int[] indexedARGB;       // 256-entry palette LUT (ARGB with tRNS alpha baked in)
     private int trnsR8 = -1, trnsG8 = -1, trnsB8 = -1, trnsGray8 = -1;
 
@@ -370,7 +369,7 @@ public final class PNGReader extends ImageReader {
                     this.bkgd = BKGD.convert(c, this.ihdr.colorType(), this.ihdr.depth());
                 }
             } else if (t == ACTL.SIGNATURE) {
-                this.actl = ACTL.convert(c, ByteOrder.BIG_ENDIAN);
+                ACTL.convert(c, ByteOrder.BIG_ENDIAN);
             } else if (t == FCTL.SIGNATURE || t == IDAT.SIGNATURE) {
                 this.pendingChunk = c;
                 return;

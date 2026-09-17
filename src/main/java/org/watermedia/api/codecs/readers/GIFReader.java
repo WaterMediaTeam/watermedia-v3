@@ -270,7 +270,7 @@ public final class GIFReader extends ImageReader {
         final int lzwDataLength = this.readSubBlocks();
 
         final int expectedIndices = id.width() * id.height();
-        final byte[] indices = this.decompress(id, lzwMinCodeSize, this.subBlockBuffer, lzwDataLength, expectedIndices);
+        final byte[] indices = this.decompress(lzwMinCodeSize, this.subBlockBuffer, lzwDataLength, expectedIndices);
 
         // FIRST FRAME: INITIALIZE CANVAS; SUBSEQUENT FRAMES: DISPOSE THEN COMPOSITE
         if (this.previousId == null) {
@@ -468,7 +468,7 @@ public final class GIFReader extends ImageReader {
         }
     }
 
-    private byte[] decompress(final ImageDescriptor id, final int lzwMinCodeSize, final byte[] data,
+    private byte[] decompress(final int lzwMinCodeSize, final byte[] data,
                              final int dataLength, final int expectedSize) throws XCodecException {
         final int clearCode = 1 << lzwMinCodeSize;
         final int endOfInfoCode = clearCode + 1;
@@ -638,8 +638,7 @@ public final class GIFReader extends ImageReader {
             if (dataLength >= 3 && (this.subBlockBuffer[0] & 0xFF) == 1) {
                 final int lo = this.subBlockBuffer[1] & 0xFF;
                 final int hi = this.subBlockBuffer[2] & 0xFF;
-                int lc = (hi << 8) | lo;
-                if (lc == 0) lc = ImageData.REPEAT_FOREVER;
+                final int lc = (hi << 8) | lo;
                 LOGGER.debug(IT, "Netscape 2.0 extension with loop count: {}", lc);
                 return lc;
             }
@@ -666,10 +665,10 @@ public final class GIFReader extends ImageReader {
     }
 
     private void ensureSubBlockCapacity(final int minCapacity) throws XCodecException {
-        if (this.subBlockBuffer.length >= minCapacity) return;
         if (minCapacity < 0 || minCapacity > MAX_SUBBLOCK) {
             throw new XCodecException("GIF sub-block data too large: " + minCapacity);
         }
+        if (this.subBlockBuffer.length >= minCapacity) return;
         int next = this.subBlockBuffer.length;
         // DOUBLING CAN OVERFLOW PAST Integer.MAX_VALUE INTO A NEGATIVE SIZE; FALL BACK TO THE EXACT NEED
         while (next < minCapacity) {

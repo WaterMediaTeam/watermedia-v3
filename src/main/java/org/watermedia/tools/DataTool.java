@@ -263,15 +263,12 @@ public class DataTool {
         return switch (cs) {
             case GRAY -> pixels;
             case YUYV, YUYV2 -> pixels * 2L;
-            case RGB -> pixels * 3L;
-            case BGRA, RGBA, GBRA -> pixels * 4L;
-            case NV12, NV21 -> pixels + 2L * chromaW * chromaH;
-            case YUV420P -> pixels + 2L * chromaW * chromaH;
+            case RGB, YUV444P -> pixels * 3L;
+            case BGRA, RGBA, GBRA, YUVA444P -> pixels * 4L;
+            case NV12, NV21, YUV420P -> pixels + 2L * chromaW * chromaH;
             case YUV422P -> pixels + 2L * chromaW * h;
-            case YUV444P -> pixels * 3L;
             case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
             case YUVA422P -> pixels * 2L + 2L * chromaW * h;
-            case YUVA444P -> pixels * 4L;
             // BCn: ONE PLANE OF 4x4 BLOCKS
             case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * cs.blockBytes();
         };
