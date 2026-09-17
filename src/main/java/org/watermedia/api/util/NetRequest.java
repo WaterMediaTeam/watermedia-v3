@@ -200,7 +200,7 @@ public final class NetRequest implements AutoCloseable {
      * (e.g. {@code BufferedInputStream::new}, {@code GZIPInputStream::new}) and recovers the
      * concrete type without an external cast.
      * <pre>{@code
-     * BufferedInputStream bis = req.getInputStream(BufferedInputStream::new);
+     * BufferedInputStream bis = req.inputStream(BufferedInputStream::new);
      * }</pre>
      */
     public <T extends InputStream> T inputStream(final Function<InputStream, T> wrapper) throws IOException {
@@ -418,9 +418,18 @@ public final class NetRequest implements AutoCloseable {
                 final String host = target.getHost();
                 if (host != null) out.set("Referer", target.getScheme() + "://" + host);
             }
-            // DO NOT LEAK THE CREDENTIALS ACROSS ORIGIN, I AM SEEING SCRIPTKIDS ABUSING THIS
-            if (!Objects.equals(this.uri.getHost(), target.getHost())) {
+            final int originPort = this.uri.getPort() != -1 ? this.uri.getPort()
+                    : ("https".equalsIgnoreCase(this.uri.getScheme()) ? 443 : 80);
+            final int targetPort = target.getPort() != -1 ? target.getPort()
+                    : ("https".equalsIgnoreCase(target.getScheme()) ? 443 : 80);
+            // CREDENTIALS BELONG TO AN ORIGIN: SCHEME, HOST AND EFFECTIVE PORT MUST ALL MATCH.
+            if (this.uri.getScheme() == null || !this.uri.getScheme().equalsIgnoreCase(target.getScheme())
+                    || this.uri.getHost() == null || !this.uri.getHost().equalsIgnoreCase(target.getHost())
+                    || originPort != targetPort) {
                 out.removeAll("Authorization");
+                out.removeAll("Proxy-Authorization");
+                out.removeAll("Cookie");
+                out.removeAll("Cookie2");
                 out.removeAll("X-WaterMedia-Token");
             }
             return out;

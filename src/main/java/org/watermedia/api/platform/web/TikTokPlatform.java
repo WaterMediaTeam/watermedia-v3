@@ -407,7 +407,6 @@ public final class TikTokPlatform implements IPlatform {
             sb.append(nameValue);
         }
         if (sb.isEmpty()) return null;
-        LOGGER.debug(IT, "Captured TikTok cookies: {}", sb);
         return sb.toString();
     }
 

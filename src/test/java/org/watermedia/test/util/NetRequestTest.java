@@ -3,14 +3,19 @@ package org.watermedia.test.util;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.api.util.RequestHeaders;
 import org.watermedia.test.support.LocalHttp;
 
 import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * Integration tests for {@link NetRequest} backed by a loopback HTTP server.
@@ -19,6 +24,68 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("NetRequest")
 public class NetRequestTest {
+
+    @Test
+    void crossPortRedirectRemovesCredentialsOnWire() throws IOException {
+        try (final LocalHttp target = LocalHttp.start("/final", ex -> {
+            final StringBuilder received = new StringBuilder();
+            for (final String name: List.of("Authorization", "X-WaterMedia-Token", "Cookie", "Cookie2")) {
+                received.append(ex.getRequestHeaders().getFirst(name)).append('\n');
+            }
+            LocalHttp.respond(ex, "text/plain", received.toString().getBytes(StandardCharsets.UTF_8), 0);
+        }); final LocalHttp redirector = LocalHttp.start("/start", ex -> {
+            ex.getResponseHeaders().set("Location", target.uri("/final").toString());
+            ex.sendResponseHeaders(302, -1);
+            ex.close();
+        }); final NetRequest req = NetRequest.create(redirector.uri("/start"))
+                .header("Authorization", "Bearer test")
+                .header("X-WaterMedia-Token", "test")
+                .header("Cookie", "session=test")
+                .header("Cookie2", "session=test")
+                .send()) {
+            assertEquals(200, req.statusCode());
+            assertEquals("null\nnull\nnull\nnull\n", req.readAllAsString());
+        }
+    }
+
+    @Test
+    void sameOriginRedirectPreservesCredentials() throws IOException {
+        try (final LocalHttp server = LocalHttp.start("/", ex -> {
+            if ("/start".equals(ex.getRequestURI().getPath())) {
+                ex.getResponseHeaders().set("Location", "/final");
+                ex.sendResponseHeaders(302, -1);
+                ex.close();
+            } else {
+                final String received = ex.getRequestHeaders().getFirst("Authorization") + "|"
+                        + ex.getRequestHeaders().getFirst("Cookie");
+                LocalHttp.respond(ex, "text/plain", received.getBytes(StandardCharsets.UTF_8), 0);
+            }
+        }); final NetRequest req = NetRequest.create(server.uri("/start"))
+                .header("Authorization", "Bearer test").header("Cookie", "session=test").send()) {
+            assertEquals("Bearer test|session=test", req.readAllAsString());
+        }
+    }
+
+    @Test
+    void originPolicyHandlesDowngradesDefaultPortsAndHostCase() throws Exception {
+        final var materialize = NetRequest.Builder.class.getDeclaredMethod("materializeHeaders", URI.class);
+        materialize.setAccessible(true);
+        final NetRequest.Builder builder = NetRequest.create("https://EXAMPLE.com/start")
+                .header("Authorization", "Bearer test").header("Proxy-Authorization", "proxy test")
+                .header("Cookie", "session=test").header("X-WaterMedia-Token", "test");
+        for (final String target: List.of("https://example.com:443/end", "https://EXAMPLE.com/end")) {
+            final RequestHeaders headers = (RequestHeaders) materialize.invoke(builder, URI.create(target));
+            assertEquals("Bearer test", headers.get("Authorization"));
+            assertEquals("session=test", headers.get("Cookie"));
+        }
+        for (final String target: List.of("http://example.com/end", "http://example.com:443/end",
+                "https://example.com:8443/end", "https://other.example/end")) {
+            final RequestHeaders headers = (RequestHeaders) materialize.invoke(builder, URI.create(target));
+            for (final String name: List.of("Authorization", "Proxy-Authorization", "Cookie", "X-WaterMedia-Token")) {
+                assertNull(headers.get(name), name + " leaked to " + target);
+            }
+        }
+    }
 
     @Test
     @DisplayName("plain GET returns 200 and the configured body")

@@ -27,6 +27,18 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
         public Entry {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(value, "value");
+            if (name.isEmpty()) throw new IllegalArgumentException("Header name cannot be empty");
+            for (int i = 0; i < name.length(); i++) {
+                final char c = name.charAt(i);
+                if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && "!#$%&'*+-.^_`|~".indexOf(c) < 0)
+                    throw new IllegalArgumentException("Header name must be an HTTP token");
+            }
+            // RAW NATIVE CONSUMERS REQUIRE THE SAME FIELD BOUNDARIES AS HTTP CONNECTIONS.
+            for (int i = 0; i < value.length(); i++) {
+                final char c = value.charAt(i);
+                if ((c < 0x20 && c != '\t') || c == 0x7f)
+                    throw new IllegalArgumentException("Header value contains a prohibited control character");
+            }
         }
     }
 
@@ -58,8 +70,9 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
      * Replaces all values for {@code name} with a single entry. Case-insensitive match.
      */
     public RequestHeaders set(final String name, final String value) {
+        final Entry entry = new Entry(name, value);
         this.removeAll(name);
-        this.entries.add(new Entry(name, value));
+        this.entries.add(entry);
         return this;
     }
 
@@ -131,11 +144,7 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
 
     public List<Entry> entries() { return List.copyOf(this.entries); }
 
-    /**
-     * Applies every entry to {@code conn} via {@link URLConnection#setRequestProperty(String, String)}
-     * for the first occurrence of each name and {@link URLConnection#addRequestProperty(String, String)}
-     * for subsequent ones, preserving multi-valued headers.
-     */
+    // REPEATED HEADER NAMES USE ADD AFTER THE FIRST VALUE SO NONE ARE LOST.
     void writeTo(final URLConnection conn) {
         final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (final Entry e: this.entries) {
@@ -144,17 +153,14 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
         }
     }
 
-    /**
-     * Snapshots all response headers exposed by {@code conn}. The pseudo-header at index 0
-     * (the HTTP status line) is dropped — only real {@code Name: Value} pairs are kept.
-     */
+    // THE STATUS LINE HAS NO HEADER NAME AND IS NOT PART OF THE SNAPSHOT.
     static RequestHeaders fromResponse(final URLConnection conn) {
         final RequestHeaders out = new RequestHeaders();
         final Map<String, List<String>> fields = conn.getHeaderFields();
         if (fields == null) return out;
         for (final var entry: fields.entrySet()) {
             final String name = entry.getKey();
-            if (name == null) continue; // status line — no header name
+            if (name == null) continue;
             for (final String value: entry.getValue()) {
                 if (value != null) out.add(name, value);
             }

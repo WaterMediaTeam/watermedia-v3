@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Verifies the multi-valued, case-insensitive contract of {@link RequestHeaders}
@@ -20,6 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("RequestHeaders")
 public class RequestHeadersTest {
+
+    @Test
+    void rejectsInjectedHeadersBeforeRawSerialization() {
+        for (final String name: List.of("", "Bad Name", "Bad:Name", "X\r\nInjected", "é")) {
+            assertThrows(IllegalArgumentException.class, () -> new RequestHeaders.Entry(name, "value"));
+        }
+        for (final String value: List.of("ok\r\nAuthorization: stolen", "ok\nInjected: yes", "a\u0000b", "a\u007fb")) {
+            assertThrows(IllegalArgumentException.class, () -> new RequestHeaders().add("X", value));
+        }
+        final RequestHeaders headers = new RequestHeaders().set("X", "original");
+        assertThrows(IllegalArgumentException.class, () -> headers.set("X", "bad\rvalue"));
+        assertEquals("original", headers.get("X"));
+        assertEquals("X: a\tb\r\n", new RequestHeaders().add("X", "a\tb").toRawString());
+    }
 
     @Nested
     @DisplayName("mutation operations")
