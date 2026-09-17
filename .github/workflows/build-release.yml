@@ -2,58 +2,59 @@ name: Build for Release
 
 on:
   push:
-    tags:
-      - "*"
+    tags: ["*"]
 
 permissions:
   contents: read
 
 jobs:
-  release:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      ALSOFT_DRIVERS: 'null'
     strategy:
       fail-fast: false
       matrix:
         platform: [curseforge, modrinth]
-    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
           submodules: recursive
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update submodules
-        run: git submodule update --init --recursive --remote
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'microsoft'
-
-      - name: Setup Gradle 9.3.0
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.0'
-
-      - name: Show Gradle & Java versions
+      - name: Read build versions
+        id: versions
+        shell: pwsh
         run: |
-          gradle --version
-          java -version
+          $gradleVersion = ((Get-Content gradle.properties | Select-String '^gradle_version=').Line -split '=', 2)[1]
+          Add-Content $env:GITHUB_OUTPUT "gradle=$gradleVersion"
 
-      - name: Build JAR
-        run: gradle build
+      - name: Set up patched Java
+        shell: pwsh
+        run: ./binaries/tools/SetupJava.ps1 -Platform linux-x86_64 -ProjectRoot .
+
+      - name: Install Linux media runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse0 libxcb1 libxcb-shm0 libudev1 libasound2 libva2 libva-drm2 libdrm2
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: ${{ steps.versions.outputs.gradle }}
+
+      - name: Build and test
+        run: gradle build --warning-mode fail
 
       - name: Publish to CurseForge
         if: ${{ matrix.platform == 'curseforge' }}
-        run: gradle publishCurseforge --parallel
+        run: gradle publishCurseforge --warning-mode fail
         env:
           CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
 
       - name: Publish to Modrinth
         if: ${{ matrix.platform == 'modrinth' }}
-        run: gradle publishModrinth --parallel
+        run: gradle publishModrinth --warning-mode fail
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
