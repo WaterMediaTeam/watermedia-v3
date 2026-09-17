@@ -44,23 +44,40 @@ public class AppBootstrap {
     private static final String ENGINE_PROP = "watermedia.engine";
     // THE APP EXITS WITH THIS CODE TO ASK THIS SUPERVISING LAUNCHER TO RE-PROVISION (E.G. PULL JAVAFX) AND SPAWN AGAIN
     public static final int RELAUNCH_EXIT = 42;
-    // JAVAFX MUST MATCH THE JAVA 21 RUNTIME — A NEWER JAVAFX WOULD FAIL WITH UnsupportedClassVersionError
-    private static final String JAVAFX_VERSION = "21";
+    private static final Properties VERSIONS = new Properties();
+    static {
+        try (final InputStream source = AppBootstrap.class.getResourceAsStream("launcher.properties")) {
+            if (source == null) throw new IllegalStateException("Launcher dependency versions are missing");
+            VERSIONS.load(source);
+        } catch (final IOException failure) {
+            throw new UncheckedIOException("Cannot read launcher dependency versions", failure);
+        }
+    }
+    private static final String LOG4J_VERSION = version("log4j_version");
+    private static final String GSON_VERSION = version("gson_version");
+    private static final String OPENGL_VERSION = version("opengl_version");
+    private static final String OPENAL_VERSION = version("openal_version");
+    private static final String VULKAN_VERSION = version("vulkan_version");
+    private static final String JOML_VERSION = version("joml_version");
+    private static final String JAVAFX_VERSION = version("javafx_version");
     private static final String OS = IOTool.platformClassifier();
 
     private static final String[][] DEPS = {
-            {"log4j-api-2.25.0.jar", "org/apache/logging/log4j/log4j-api/2.25.0/log4j-api-2.25.0.jar"},
-            {"log4j-core-2.25.0.jar", "org/apache/logging/log4j/log4j-core/2.25.0/log4j-core-2.25.0.jar"},
-            {"lwjgl-3.3.6.jar", "org/lwjgl/lwjgl/3.3.6/lwjgl-3.3.6.jar"},
-            {"lwjgl-glfw-3.3.6.jar", "org/lwjgl/lwjgl-glfw/3.3.6/lwjgl-glfw-3.3.6.jar"},
-            {"lwjgl-opengl-3.3.6.jar", "org/lwjgl/lwjgl-opengl/3.3.6/lwjgl-opengl-3.3.6.jar"},
-            {"lwjgl-stb-3.3.6.jar", "org/lwjgl/lwjgl-stb/3.3.6/lwjgl-stb-3.3.6.jar"},
-            {"lwjgl-openal-3.3.6.jar", "org/lwjgl/lwjgl-openal/3.3.6/lwjgl-openal-3.3.6.jar"},
-            {"gson-2.10.1.jar", "com/google/code/gson/gson/2.10.1/gson-2.10.1.jar"},
-            {"joml-1.10.8.jar", "org/joml/joml/1.10.8/joml-1.10.8.jar"},
-
+            dependency("org/apache/logging/log4j", "log4j-api", LOG4J_VERSION, null),
+            dependency("org/apache/logging/log4j", "log4j-core", LOG4J_VERSION, null),
+            dependency("org/lwjgl", "lwjgl", OPENGL_VERSION, null),
+            dependency("org/lwjgl", "lwjgl-glfw", OPENGL_VERSION, null),
+            dependency("org/lwjgl", "lwjgl-opengl", OPENGL_VERSION, null),
+            dependency("org/lwjgl", "lwjgl-stb", OPENGL_VERSION, null),
+            dependency("org/lwjgl", "lwjgl-openal", OPENAL_VERSION, null),
+            dependency("com/google/code/gson", "gson", GSON_VERSION, null),
+            dependency("org/joml", "joml", JOML_VERSION, null),
+            dependency("org/lwjgl", "lwjgl", OPENGL_VERSION, "natives-" + OS),
+            dependency("org/lwjgl", "lwjgl-glfw", OPENGL_VERSION, "natives-" + OS),
+            dependency("org/lwjgl", "lwjgl-opengl", OPENGL_VERSION, "natives-" + OS),
+            dependency("org/lwjgl", "lwjgl-stb", OPENGL_VERSION, "natives-" + OS),
+            dependency("org/lwjgl", "lwjgl-openal", OPENAL_VERSION, "natives-" + OS)
     };
-    private static final String[] NATIVES = {"lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal"};
 
     // ANSI ESCAPE CODES
     private static final String ANSI_RESET = "\033[0m";
@@ -98,6 +115,18 @@ public class AppBootstrap {
 
     private static BootstrapWindow window;
     private static String[] launchArgs = {};
+
+    private static String version(final String name) {
+        final String value = VERSIONS.getProperty(name);
+        if (value == null || !value.matches("[0-9][A-Za-z0-9_.-]*"))
+            throw new IllegalStateException("Invalid launcher dependency version: " + name);
+        return value;
+    }
+
+    private static String[] dependency(final String group, final String artifact, final String version, final String classifier) {
+        final String filename = artifact + "-" + version + (classifier == null ? "" : "-" + classifier) + ".jar";
+        return new String[] { filename, group + "/" + artifact + "/" + version + "/" + filename };
+    }
 
     private static class BootstrapScan {
         private final List<Path> jars = new ArrayList<>();
@@ -260,19 +289,6 @@ public class AppBootstrap {
             }
         }
 
-        // COLLECT NATIVES
-        for (final String mod: NATIVES) {
-            final String fn = mod + "-3.3.6-natives-" + OS + ".jar";
-            final Path p = LIBS_DIR.resolve(fn);
-            if (Files.isRegularFile(p)) {
-                scan.jars.add(p);
-                if (log) info("[FOUND] " + fn);
-            } else {
-                scan.toDownload.add(new String[]{fn, "org/lwjgl/" + mod + "/3.3.6/" + fn});
-                if (log) warn("[MISSING] " + fn);
-            }
-        }
-
         // COLLECT VULKAN DEPS UNCONDITIONALLY (VULKAN + SHADERC JARS/NATIVES) SO THE CHILD JVM CAN HOT-SWAP
         // TO VULKAN AT RUNTIME REGARDLESS OF THE ENGINE IT BOOTS WITH. THESE ARE OPTIONAL: A MISSING ONE GOES
         // TO optionalDownload (BEST-EFFORT) RATHER THAN toDownload, SO IT NEVER GATES THE LAUNCH.
@@ -385,8 +401,7 @@ public class AppBootstrap {
         final String clf = javafxClassifier();
         final List<String[]> deps = new ArrayList<>();
         for (final String mod: new String[]{"javafx-base", "javafx-graphics", "javafx-swing"}) {
-            final String fn = mod + "-" + JAVAFX_VERSION + "-" + clf + ".jar";
-            deps.add(new String[]{fn, "org/openjfx/" + mod + "/" + JAVAFX_VERSION + "/" + fn});
+            deps.add(dependency("org/openjfx", mod, JAVAFX_VERSION, clf));
         }
         return deps;
     }
@@ -396,13 +411,11 @@ public class AppBootstrap {
     // NATIVES, EVERY PLATFORM). RETURNED UNCONDITIONALLY — THE INITIAL ENGINE CHOICE NO LONGER DECIDES THESE.
     private static List<String[]> vulkanDeps() {
         final List<String[]> deps = new ArrayList<>();
-        deps.add(new String[]{"lwjgl-vulkan-3.3.6.jar", "org/lwjgl/lwjgl-vulkan/3.3.6/lwjgl-vulkan-3.3.6.jar"});
-        deps.add(new String[]{"lwjgl-shaderc-3.3.6.jar", "org/lwjgl/lwjgl-shaderc/3.3.6/lwjgl-shaderc-3.3.6.jar"});
-        final String shaderc = "lwjgl-shaderc-3.3.6-natives-" + OS + ".jar";
-        deps.add(new String[]{shaderc, "org/lwjgl/lwjgl-shaderc/3.3.6/" + shaderc});
+        deps.add(dependency("org/lwjgl", "lwjgl-vulkan", VULKAN_VERSION, null));
+        deps.add(dependency("org/lwjgl", "lwjgl-shaderc", VULKAN_VERSION, null));
+        deps.add(dependency("org/lwjgl", "lwjgl-shaderc", VULKAN_VERSION, "natives-" + OS));
         if (OS.startsWith("macos")) {
-            final String vk = "lwjgl-vulkan-3.3.6-natives-" + OS + ".jar";
-            deps.add(new String[]{vk, "org/lwjgl/lwjgl-vulkan/3.3.6/" + vk});
+            deps.add(dependency("org/lwjgl", "lwjgl-vulkan", VULKAN_VERSION, "natives-" + OS));
         }
         return deps;
     }

@@ -139,8 +139,7 @@ public class HomeScreen extends Screen {
         this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
         this.actions.add(new MenuEntry("Upload Logs", AppContext.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
         this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
-        // TODO: SETTINGS IS STILL WIP — KEEP IT DEBUG-ONLY UNTIL THE MENU IS PRODUCTION-READY
-        this.actions.add(new MenuEntry("Settings", WaterMedia.LOGGER.isDebugEnabled() ? "S" : "WIP", Action.SETTINGS, -1));
+        if (WaterMedia.LOGGER.isDebugEnabled()) this.actions.add(new MenuEntry("Settings", "S", Action.SETTINGS, -1));
         this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
 
         if (this.ctx.uriGroups != null) {
