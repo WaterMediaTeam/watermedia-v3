@@ -1,4 +1,5 @@
 # Project exclude paths
+/MEMORIES.md
 /.gradle/
 /.claude
 hs_err_pid*
