@@ -184,7 +184,9 @@ Two caveats verified against the 26.2 sources:
 FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
 With that jar you won't need to compile or install FFMPEG or any other native application — plug and
 play. Its sources live in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries) and it is
-published as its own dependency (WaterMedia requires it on CurseForge/Modrinth).
+published as an optional dependency. Without it, WaterMedia keeps image support but does not initialize
+video decoding or the executable-backed platform resolvers. When installed, binaries initialize before
+the other services; a failed binaries startup stops the session.
 
 ## Supported platforms
 | Platform | Architecture | Status |

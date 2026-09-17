@@ -29,7 +29,24 @@ El último argumento indica si el entorno es cliente. Lee `snapshot.state()` y `
 
 Cada reproductor es dueño de los motores que recibe. Créalos mediante proveedores (`Supplier`) para que una fuente no disponible no deje recursos nativos reservados. No compartas un motor entre reproductores.
 
+El módulo opcional de binarios requiere WaterMedia y comparte este ciclo de vida. Después de cargar la
+configuración, su arranque bloquea los demás servicios hasta terminar; si está instalado y falla, se
+detiene el arranque. Si falta, se omite: el cliente conserva imágenes y plataformas sin ejecutables,
+y el servidor no necesita binarios. Desactivar FFmpeg omite su extracción. `WaterMedia.stop()` limpia
+las rutas después de detener a sus consumidores. No existe una API separada para iniciar o detener los binarios.
+
+Las distribuciones personalizadas compatibles de FFmpeg pueden declarar GPL, LGPL u otra licencia y
+versión. El cargador comprueba integridad y capacidades nativas, sin una lista de versiones o licencias
+permitidas. El pegamento JNI debe seguir siendo compatible con la API Java que usa WaterMedia.
+
 La aplicación anfitriona es dueña de sus contextos OpenGL, Vulkan y OpenAL. Libera cada reproductor en los hilos y contextos correspondientes antes de llamar a `WaterMedia.stop()`: el cierre se rechaza mientras haya reproductores abiertos. Si una limpieza falla, conserva el contexto necesario y vuelve a intentar el cierre. Después de recargar un dispositivo o contexto debes crear motores nuevos. Reiniciar WaterMedia no descarga las bibliotecas JNI ni permite cambiar su versión dentro de la misma JVM.
+
+## Utilerías compartidas
+
+`IOTool` ofrece utilerías compartidas: `httpsText` y `downloadVerified` con límite de bytes,
+`verifySha256` sin borrar archivos, `makeExecutable`, `publishGeneration`/`currentGeneration` y `deleteTree`.
+Las descargas exigen HTTPS también en las redirecciones. Las generaciones admiten cualquier nombre
+seguro de un hijo directo. `JSONTool.parse` procesa el JSON descargado con el analizador compartido.
 
 ## MRL y resolución de direcciones
 
@@ -168,7 +185,7 @@ El audio espacial se configura con `SpatialAudio` y un procesador opcional del e
 
 ## HTTPS y certificados
 
-La reproducción HTTPS requiere los binarios parcheados de WaterMedia. FFmpeg verifica la cadena de certificados y la identidad DNS o IP con una copia de las autoridades de confianza de Java tomada durante el arranque. Para servidores privados, configura las propiedades estándar `javax.net.ssl.trustStore` antes de iniciar WaterMedia. Un almacén vacío o inválido impide inicializar FFmpeg; la verificación no se desactiva automáticamente.
+La reproducción HTTPS requiere las capacidades de verificación del paquete incluido o de una compilación personalizada compatible. FFmpeg verifica la cadena de certificados y la identidad DNS o IP con una copia de las autoridades de confianza de Java tomada durante el arranque. Para servidores privados, configura las propiedades estándar `javax.net.ssl.trustStore` antes de iniciar WaterMedia. Un almacén vacío o inválido impide inicializar FFmpeg; la verificación no se desactiva automáticamente.
 
 `MediaAPI` crea el archivo PEM temporal, comprueba que el binario tenga las opciones necesarias y las aplica tanto a la entrada principal como a la pista de audio separada. Las autoridades también se transmiten a las solicitudes internas de HLS y DASH. El módulo de medios elimina el archivo al cerrar, después de liberar todos los reproductores. Un `customPath` vacío no añade el directorio de trabajo a la búsqueda de bibliotecas nativas.
 
