@@ -74,10 +74,14 @@ public final class FrameQueue {
      * @param capacity number of slots. Typically 3 (video) or 9 (audio).
      */
     public FrameQueue(final int capacity) {
+        if (capacity <= 0) throw new IllegalArgumentException("Frame queue capacity must be positive");
         this.capacity = capacity;
         this.queue = new Slot[capacity];
-        for (int i = 0; i < capacity; i++) {
-            this.queue[i] = new Slot();
+        try {
+            for (int i = 0; i < capacity; i++) this.queue[i] = new Slot();
+        } catch (final RuntimeException | Error failure) {
+            for (final Slot slot: this.queue) if (slot != null) slot.destroy();
+            throw failure;
         }
     }
 

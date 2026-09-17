@@ -45,6 +45,7 @@ public final class PacketQueue {
      *                 Use Long.MAX_VALUE for no limit.
      */
     public PacketQueue(final long maxBytes) {
+        if (maxBytes <= 0) throw new IllegalArgumentException("Packet queue byte limit must be positive");
         this.maxBytes = maxBytes;
     }
 
@@ -58,7 +59,7 @@ public final class PacketQueue {
      */
     public boolean put(final AVPacket packet) {
         synchronized (this.lock) {
-            while (this.totalBytes >= this.maxBytes && !this.aborted) {
+            while (this.totalBytes >= this.maxBytes && !this.aborted && !this.finished) {
                 try {
                     this.lock.wait();
                 } catch (final InterruptedException e) {
@@ -66,7 +67,7 @@ public final class PacketQueue {
                     return false;
                 }
             }
-            if (this.aborted) return false;
+            if (this.aborted || this.finished) return false;
 
             // CLONE ONLY ONCE THE ENTRY WILL ACTUALLY BE ENQUEUED — NO NATIVE ALLOC ON REJECTION
             final AVPacket clone = avcodec.av_packet_clone(packet);
@@ -85,7 +86,7 @@ public final class PacketQueue {
     public boolean tryPut(final AVPacket packet) {
         synchronized (this.lock) {
             // A DEMUX THREAD POLLING A SATURATED QUEUE MUST NOT PAY A NATIVE CLONE+FREE PER ATTEMPT
-            if (this.totalBytes >= this.maxBytes || this.aborted) return false;
+            if (this.totalBytes >= this.maxBytes || this.aborted || this.finished) return false;
             final AVPacket clone = avcodec.av_packet_clone(packet);
             if (clone == null) return false;
             this.packets.addLast(new Entry(clone, this.serial));
@@ -188,7 +189,7 @@ public final class PacketQueue {
         }
     }
 
-    /** Abort — unblocks {@link #get(int[])} and {@link #put(AVPacket)} immediately, discards pending packets. */
+    /** Unblocks readers and writers. Pending native packets remain owned until clear, reset or free. */
     public void abort() {
         synchronized (this.lock) {
             this.aborted = true;
