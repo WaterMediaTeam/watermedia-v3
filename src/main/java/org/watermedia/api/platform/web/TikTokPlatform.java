@@ -310,8 +310,7 @@ public final class TikTokPlatform implements IPlatform {
                     if (u != null) return u;
                 }
             }
-            final URI src = uri(str(obj, "src"));
-            return src;
+            return uri(str(obj, "src"));
         }
 
         return null;
@@ -397,7 +396,7 @@ public final class TikTokPlatform implements IPlatform {
     // JOINS THE name=value PAIRS FROM EVERY Set-Cookie HEADER; RETURNS null WHEN THE RESPONSE SET NONE
     private static String captureCookies(final NetRequest req) {
         final List<String> setCookies = req.responseHeaders().getAll("Set-Cookie");
-        if (setCookies == null || setCookies.isEmpty()) return null;
+        if (setCookies.isEmpty()) return null;
 
         final StringBuilder sb = new StringBuilder();
         for (final String header: setCookies) {

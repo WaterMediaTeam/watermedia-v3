@@ -281,11 +281,14 @@ public final class ServiceLifecycleProbe {
         final AtomicBoolean immediate = new AtomicBoolean();
         final var handlers = Executors.newFixedThreadPool(4, ThreadTool.createFactory("Upload-Origin", Thread.NORM_PRIORITY));
         final Path file = Files.write(root.resolve("upload.bin"), new byte[8192]);
+        final boolean handlersStopped;
         try (final LocalHttp origin = LocalHttp.start("/upload", exchange -> {
             exchange.getRequestBody().readAllBytes();
             if (!immediate.get()) {
                 entered.countDown();
-                try { respond.await(5, TimeUnit.SECONDS); }
+                try {
+                    if (!respond.await(5, TimeUnit.SECONDS)) throw new IOException("Held upload timed out");
+                }
                 catch (final InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             }
             try { LocalHttp.respond(exchange, "text/plain", "stored12".getBytes(StandardCharsets.UTF_8), 0); }
@@ -313,7 +316,8 @@ public final class ServiceLifecycleProbe {
         } finally {
             respond.countDown();
             handlers.shutdownNow();
-            handlers.awaitTermination(5, TimeUnit.SECONDS);
+            handlersStopped = handlers.awaitTermination(5, TimeUnit.SECONDS);
         }
+        if (!handlersStopped) throw new AssertionError("Upload handlers did not stop");
     }
 }

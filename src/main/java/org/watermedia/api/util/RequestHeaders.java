@@ -103,10 +103,7 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
      * Removes every entry whose name matches (case-insensitive).
      */
     public RequestHeaders removeAll(final String name) {
-        final Iterator<Entry> it = this.entries.iterator();
-        while (it.hasNext()) {
-            if (eq(it.next().name, name)) it.remove();
-        }
+        this.entries.removeIf(entry -> eq(entry.name, name));
         return this;
     }
 

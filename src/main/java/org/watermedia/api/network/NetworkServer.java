@@ -228,7 +228,8 @@ public final class NetworkServer {
                 return;
             }
             try {
-                if (Path.of(filename).isAbsolute() || Path.of(filename).getNameCount() != 1) {
+                final Path name = Path.of(filename);
+                if (name.isAbsolute() || name.getNameCount() != 1) {
                     exchange.sendResponseHeaders(HttpURLConnection.HTTP_BAD_REQUEST, -1);
                     return;
                 }

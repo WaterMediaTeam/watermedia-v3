@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -104,12 +105,12 @@ public class PlatformSearchTest {
         final PlatformSearch first = PlatformAPI.search("dogs", 2);
         awaitDone(first, 3000);
         awaitCacheKey("2 dogs", 2000); // CACHING HAPPENS JUST AFTER completion — WAIT FOR IT TO LAND
-        final int probesAfterFirst = stub.probes;
+        final int probesAfterFirst = stub.probes.get();
 
         final PlatformSearch second = PlatformAPI.search("dogs", 2);
         assertTrue(second.done(), "A cache hit must return an already-done handle");
         assertEquals(1, second.results().size(), "The cached results must be replayed");
-        assertEquals(probesAfterFirst, stub.probes, "A cache hit must not re-probe the platform");
+        assertEquals(probesAfterFirst, stub.probes.get(), "A cache hit must not re-probe the platform");
     }
 
     @Test
@@ -133,7 +134,7 @@ public class PlatformSearchTest {
     private static final class StubPlatform implements IPlatform {
         private final int count;
         private final Integer blockMs;
-        private volatile int probes;
+        private final AtomicInteger probes = new AtomicInteger();
 
         StubPlatform(final int count, final Integer blockMs) {
             this.count = count;
@@ -145,7 +146,7 @@ public class PlatformSearchTest {
 
         @Override
         public List<PlatformResult> search(final String query, final int limit) throws Exception {
-            this.probes++;
+            this.probes.incrementAndGet();
             if (this.blockMs != null) Thread.sleep(this.blockMs);
             final List<PlatformResult> out = new ArrayList<>(this.count);
             for (int i = 0; i < this.count; i++) {

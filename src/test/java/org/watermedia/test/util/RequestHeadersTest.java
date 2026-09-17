@@ -128,8 +128,9 @@ public class RequestHeadersTest {
         void defaultsForHttpsUri() {
             final RequestHeaders h = RequestHeaders.defaults(URI.create("https://example.com/path"));
 
-            assertNotNull(h.get("User-Agent"));
-            assertFalse(h.get("User-Agent").isBlank());
+            final String userAgent = h.get("User-Agent");
+            assertNotNull(userAgent);
+            assertFalse(userAgent.isBlank());
 
             final String accept = h.get("Accept");
             assertNotNull(accept);

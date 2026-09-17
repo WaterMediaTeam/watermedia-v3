@@ -16,6 +16,7 @@ import java.io.InputStreamReader;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
@@ -121,7 +122,9 @@ public class NetworkServerLimitsTest {
             assertNotNull(released);
         }
         NetworkServer.start(0, this.instance);
-        assertTrue(NetworkServer.address().getAddress().isLoopbackAddress());
+        final InetSocketAddress address = NetworkServer.address();
+        assertNotNull(address);
+        assertTrue(address.getAddress().isLoopbackAddress());
     }
 
     @Test
@@ -268,7 +271,7 @@ public class NetworkServerLimitsTest {
             assertTrue(PlayerWait.awaitCondition(this::hasTemporary, 500));
             assertTrue(PlayerWait.awaitCondition(() -> !this.hasTemporary(), 3000));
         }
-        final int port = NetworkServer.address().getPort();
+        final int port = port();
         try (final Socket stalled = this.request(upload)) {
             assertTrue(PlayerWait.awaitCondition(this::hasTemporary, 500));
             NetworkServer.stop();
@@ -338,8 +341,14 @@ public class NetworkServerLimitsTest {
         }
     }
 
+    private static int port() {
+        final InetSocketAddress address = NetworkServer.address();
+        assertNotNull(address);
+        return address.getPort();
+    }
+
     private Socket request(final String request) throws IOException {
-        final Socket socket = new Socket("127.0.0.1", NetworkServer.address().getPort());
+        final Socket socket = new Socket("127.0.0.1", port());
         socket.setSoTimeout(4000);
         socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
@@ -347,14 +356,14 @@ public class NetworkServerLimitsTest {
     }
 
     private HttpURLConnection get() throws IOException {
-        final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + NetworkServer.address().getPort() + "/").toURL().openConnection();
+        final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + port() + "/").toURL().openConnection();
         connection.setConnectTimeout(2000);
         connection.setReadTimeout(4000);
         return connection;
     }
 
     private HttpURLConnection upload(final String token, final byte[] data) throws IOException {
-        final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + NetworkServer.address().getPort() + "/upload").toURL().openConnection();
+        final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + port() + "/upload").toURL().openConnection();
         connection.setConnectTimeout(2000);
         connection.setReadTimeout(4000);
         connection.setRequestMethod("POST");
