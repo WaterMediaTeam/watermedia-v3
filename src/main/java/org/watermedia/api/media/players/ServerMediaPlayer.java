@@ -250,10 +250,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
      * keepalive every 5 seconds, so the default (15s) tolerates three losses; raise it for slow
      * or bursty transports. A dropped spectator stops holding the lockstep gate — this is what
      * keeps one vanished client from freezing the whole audience forever.
-     * @param ms silence tolerance in milliseconds, {@code > 0}
+     * @param ms silence tolerance in milliseconds, from {@code 1} through
+     *           {@code Long.MAX_VALUE / 1_000_000} to fit the nanosecond clock
      */
     public void watcherTimeout(final long ms) {
-        if (ms <= 0) throw new IllegalArgumentException("Watcher timeout must be positive");
+        if (ms <= 0 || ms > Long.MAX_VALUE / 1_000_000L)
+            throw new IllegalArgumentException("Watcher timeout must fit a positive nanosecond duration");
         this.watcherTtlNanos = ms * 1_000_000L;
     }
 

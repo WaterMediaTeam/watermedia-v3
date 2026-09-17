@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -31,6 +32,23 @@ public class ServerMediaPlayerTest {
         private volatile Status from;
         private volatile Status to;
         void accept(final Status prev, final Status next) { this.from = prev; this.to = next; }
+    }
+
+    @Test
+    @DisplayName("watcher timeout rejects nanosecond overflow without changing the prior value")
+    void watcherTimeoutRejectsOverflow() {
+        final ServerMediaPlayer player = new ServerMediaPlayer(ignored -> {});
+        try {
+            final long maximum = Long.MAX_VALUE / 1_000_000L;
+            player.watcherTimeout(maximum);
+            assertEquals(maximum, player.watcherTimeout());
+            assertThrows(IllegalArgumentException.class, () -> player.watcherTimeout(maximum + 1));
+            assertEquals(maximum, player.watcherTimeout());
+            assertThrows(IllegalArgumentException.class, () -> player.watcherTimeout(Long.MAX_VALUE));
+            assertEquals(maximum, player.watcherTimeout());
+        } finally {
+            player.release();
+        }
     }
 
     @Test
