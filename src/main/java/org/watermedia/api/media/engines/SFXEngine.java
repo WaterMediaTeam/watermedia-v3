@@ -1,6 +1,7 @@
 package org.watermedia.api.media.engines;
 
 import org.watermedia.WaterMedia;
+import org.watermedia.api.media.MediaAPI;
 
 import java.nio.ByteBuffer;
 import java.util.Collections;
@@ -11,10 +12,10 @@ import java.util.Set;
 /**
  * Sound engine abstraction for uploading decoded audio data to playback systems.
  * <p>
- * WATERMeDIA decodes audio, uploads sample data, and exposes a source handle.
- * The developer controls playback through that handle.
+ * WATERMeDIA decodes audio, uploads sample data, and controls playback.
+ * A native source handle and optional spatial controls are available for host integrations.
  * <p>
- * Engines are created through {@link org.watermedia.api.media.MediaAPI} factory methods and are
+ * Engines are created through {@link MediaAPI} factory methods and are
  * client-side only — construction throws on a server-side environment. Implementations are
  * backend-specific (OpenAL, Java Sound).
  */
@@ -66,7 +67,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         }
     }
 
-    protected int source;
+    protected volatile int source;
     protected SampleType sampleType;
     protected int channels;
     protected int sampleRate;
@@ -137,6 +138,19 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
 
     /** Current source handle. */
     public int source() { return this.source; }
+
+    /** Whether this engine was created for mono spatial playback. */
+    public boolean spatial() { return false; }
+
+    /** Last applied spatial state, or {@code null} for a dry listener-relative source. */
+    public SpatialAudio spatialAudio() { return null; }
+
+    /**
+     * Applies a host sound-thread update, or clears spatial effects when {@code audio} is null.
+     * The source's OpenAL context must be current; processors are never called by decoder threads.
+     * @return false when spatial audio is unsupported or the engine has been released
+     */
+    public boolean spatialAudio(final SpatialAudio audio) { return false; }
 
     /** Current sample type, or {@code null} before {@link #format(SampleType, int, int)}. */
     public SampleType sampleType() { return this.sampleType; }
@@ -222,4 +236,44 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      * @return playback position in ms within the queued buffers, or {@code -1} if playback hasn't started
      */
     public abstract long playbackMs();
+
+    /**
+     * World position and attenuation for a mono sound source. Distances use the host's OpenAL distance model.
+     * The host submits updates on its sound executor while the source's OpenAL context is current.
+     *
+     * @param x world X coordinate
+     * @param y world Y coordinate
+     * @param z world Z coordinate
+     * @param referenceDistance distance at which attenuation starts
+     * @param maxDistance maximum distance used by the host's attenuation model
+     * @param rolloff attenuation multiplier; zero disables distance attenuation
+     * @param auxOnly whether the environment should emit only reflected audio
+     * @param environment optional processor for occlusion and reverb
+     */
+    public static record SpatialAudio(double x, double y, double z, float referenceDistance, float maxDistance,
+                                      float rolloff, boolean auxOnly, Environment environment) {
+        public SpatialAudio {
+            if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
+                    || !Float.isFinite((float) x) || !Float.isFinite((float) y) || !Float.isFinite((float) z))
+                throw new IllegalArgumentException("Position must fit finite OpenAL coordinates");
+            if (!Float.isFinite(referenceDistance) || referenceDistance <= 0
+                    || !Float.isFinite(maxDistance) || maxDistance <= referenceDistance
+                    || !Float.isFinite(rolloff) || rolloff < 0)
+                throw new IllegalArgumentException("Distances must be finite with 0 < reference < max, and rolloff >= 0");
+            if (auxOnly && environment == null)
+                throw new IllegalArgumentException("Reflected-only audio requires an environment processor");
+        }
+
+        /**
+         * Host adapter for effects such as Sound Physics Remastered. Calls are synchronous on the caller's
+         * sound thread; the adapter must not retain the source, delete it, or change the current context.
+         */
+        public interface Environment {
+            /** Applies the complete environment after the original world position and dry sound are restored. */
+            void process(int source, SpatialAudio audio);
+
+            /** Clears adapter state when detached. The engine always removes source filters afterward. */
+            default void reset(final int source) {}
+        }
+    }
 }
