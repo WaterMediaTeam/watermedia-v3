@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.jar.Manifest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -268,6 +269,20 @@ public class IOTool {
             } catch (final Exception ignored) {}
         }
         return "3.0.0-unknown";
+    }
+
+    /** Combines cleanup failures without hiding a fatal VM error behind an ordinary exception. */
+    public static Throwable mergeFailure(final Throwable previous, final Throwable next) {
+        Objects.requireNonNull(next, "next");
+        if (previous == null || previous == next) return next;
+        final boolean previousFatal = previous instanceof VirtualMachineError || previous instanceof ThreadDeath;
+        final boolean nextFatal = next instanceof VirtualMachineError || next instanceof ThreadDeath;
+        if ((nextFatal && !previousFatal) || (next instanceof Error && !(previous instanceof Error))) {
+            next.addSuppressed(previous);
+            return next;
+        }
+        previous.addSuppressed(next);
+        return previous;
     }
 
     public static String jarRead(final String path) {

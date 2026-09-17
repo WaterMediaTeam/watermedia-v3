@@ -7,6 +7,7 @@ import java.util.function.Function;
 
 public class ThreadTool {
     private static final ConcurrentHashMap<String, Integer> THREADS = new ConcurrentHashMap<>();
+    private static final ThreadLocal<Boolean> WORKER = new ThreadLocal<>();
 
     public static Thread createStarted(final String name, final Runnable runnable) {
         // AUTO-APPEND A PER-NAME COUNTER (name-0, name-1, ...) CONSISTENTLY WITH createStartedLoop.
@@ -39,12 +40,12 @@ public class ThreadTool {
     public static ThreadGroupFactory createThreadGroupFactory(final String name, final int priority) {
         final AtomicInteger count = new AtomicInteger(0);
         return () -> {
-            count.getAndIncrement();
+            final int group = count.incrementAndGet();
             return (childName, r) -> {
                 final Thread t = new Thread(r);
                 t.setDaemon(true);
                 t.setPriority(Math.min(Math.max(priority, Thread.MIN_PRIORITY), Thread.MAX_PRIORITY));
-                t.setName(name + "-" + count.get() + "-" + childName);
+                t.setName(name + "-" + group + "-" + childName);
                 return t;
             };
         };
@@ -60,6 +61,24 @@ public class ThreadTool {
             return t;
         };
     }
+
+    /** Creates owned service workers whose callbacks cannot initiate blocking lifecycle operations. */
+    public static ThreadFactory workerFactory(final String name, final int priority) {
+        final ThreadFactory factory = createFactory(name, priority);
+        return task -> factory.newThread(() -> {
+            final Boolean previous = WORKER.get();
+            WORKER.set(Boolean.TRUE);
+            try {
+                task.run();
+            } finally {
+                if (previous == null) WORKER.remove();
+                else WORKER.set(previous);
+            }
+        });
+    }
+
+    /** Whether this thread is executing an owned service worker. */
+    public static boolean workerThread() { return Boolean.TRUE.equals(WORKER.get()); }
 
     public static boolean join(final Thread target) {
         boolean interrupted = false;
