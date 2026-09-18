@@ -14,7 +14,8 @@ import java.util.function.BiFunction;
  * (wheel with momentum — notches accumulate and the motion decays smoothly after the last one), clipping,
  * the scrollbar, and the selection/hover highlight so row views only render content. Keyboard navigation
  * is available via {@link #moveSelection}, which auto-scrolls instantly to the selection only when it
- * actually changes (free wheel scrolling is never stolen back).
+ * actually changes (free wheel scrolling is never stolen back). Hover and keyboard navigation update
+ * the selection without activating a row; only a row click fires {@link #onSelect}.
  *
  * @param <D> the item data type
  */
@@ -57,6 +58,7 @@ public final class ListView<D> extends Group<ListView<D>> {
         return this;
     }
 
+    /** Registers the row-click action, including clicks on the already-selected row. */
     public ListView<D> onSelect(final BiConsumer<D, Integer> handler) {
         this.onSelect = handler;
         return this;
@@ -100,8 +102,7 @@ public final class ListView<D> extends Group<ListView<D>> {
         final int base = this.selectedIndex < 0 ? 0 : this.selectedIndex;
         final int next = Math.max(0, Math.min(base + delta, this.items.size() - 1));
         if (next != this.selectedIndex) {
-            // ROUTE THROUGH select() SO KEYBOARD NAV FIRES onSelect JUST LIKE A CLICK DOES
-            this.select(next);
+            this.selection(next).invalidate();
             this.ensureVisible(next);
         }
         return this;
@@ -116,14 +117,13 @@ public final class ListView<D> extends Group<ListView<D>> {
             if (row == null) continue;
             row.width(MAX_PARENT);
             if (this.rowHeight > 0) row.height(this.rowHeight);
-            row.onClick(v -> this.select(index));
+            row.onClick(v -> this.activate(index));
             this.add(row);
         }
     }
 
-    private void select(final int index) {
-        this.selectedIndex = index;
-        this.invalidate();
+    private void activate(final int index) {
+        this.selection(index).invalidate();
         if (this.onSelect != null && index >= 0 && index < this.items.size()) {
             this.onSelect.accept(this.items.get(index), index);
         }
@@ -221,17 +221,15 @@ public final class ListView<D> extends Group<ListView<D>> {
 
     @Override
     public boolean dispatchHover(final double mx, final double my) {
-        if (!this.contains(mx, my)) {
-            for (final Element<?> row: this.children) row.dispatchHover(-1, -1);
-            this.hovered = false;
+        if (!this.visible || !this.enabled || !this.contains(mx, my)) {
+            this.clearHover();
             return false;
         }
         final boolean result = super.dispatchHover(mx, my);
         if (this.selectOnHover) {
             for (int i = 0; i < this.children.size(); i++) {
                 if (this.children.get(i).hovered && i != this.selectedIndex) {
-                    // ROUTE THROUGH select() SO HOVER-SELECTION FIRES onSelect JUST LIKE A CLICK DOES
-                    this.select(i);
+                    this.selection(i).invalidate();
                     break;
                 }
             }
