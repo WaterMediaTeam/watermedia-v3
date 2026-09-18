@@ -1,109 +1,183 @@
 package org.watermedia.test.bootstrap;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.bootstrap.AppBootstrap;
-import org.watermedia.tools.IOTool;
+import org.watermedia.test.support.LocalHttp;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.URI;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.*;
 
 class AppBootstrapDependenciesTest {
     @Test
-    void optionalBinariesDoNotPreventLauncherReadiness() throws Exception {
-        final Class<?> scanType = Arrays.stream(AppBootstrap.class.getDeclaredClasses())
-                .filter(type -> type.getSimpleName().equals("BootstrapScan")).findFirst().orElseThrow();
-        final var constructor = scanType.getDeclaredConstructor();
-        constructor.setAccessible(true);
-        final Object scan = constructor.newInstance();
-        final var ready = scanType.getDeclaredMethod("ready");
-        ready.setAccessible(true);
-        assertTrue((boolean) ready.invoke(scan));
-        final var downloads = scanType.getDeclaredField("toDownload");
-        downloads.setAccessible(true);
-        @SuppressWarnings("unchecked") final List<String[]> required = (List<String[]>) downloads.get(scan);
-        required.add(new String[] { "required.jar", "required.jar" });
-        assertFalse((boolean) ready.invoke(scan));
-    }
-    @Test
-    void processedLauncherVersionsMatchTheBuildPins() throws Exception {
+    void processedBootstrapVersionsMatchTheBuildPins() throws Exception {
         final Properties build = new Properties();
         try (final InputStream source = Files.newInputStream(Path.of("gradle.properties"))) { build.load(source); }
-        final Properties launcher = new Properties();
-        try (final InputStream source = AppBootstrap.class.getResourceAsStream("launcher.properties")) {
-            assertNotNull(source, "The launcher must carry its processed version resource");
-            launcher.load(source);
+        final Properties bootstrap = new Properties();
+        try (final InputStream source = AppBootstrap.class.getResourceAsStream("/bootstrap.properties")) {
+            assertNotNull(source, "The bootstrap must carry its processed version resource");
+            bootstrap.load(source);
         }
         for (final String key: List.of("log4j_version", "gson_version", "opengl_version", "openal_version",
-                "vulkan_version", "joml_version", "javafx_version")) {
+                "vulkan_version", "joml_version", "javafx_version", "waterconfig_version")) {
             assertNotNull(build.getProperty(key), key);
-            assertEquals(build.getProperty(key), launcher.getProperty(key), key);
+            assertEquals(build.getProperty(key), bootstrap.getProperty(key), key);
+        }
+        assertNull(AppBootstrap.class.getResource("launcher.properties"));
+    }
+
+    @Test
+    void dependenciesResolveWithoutDownloadedLibrariesOnEverySupportedPlatform() throws Exception {
+        final String previousOs = System.getProperty("os.name");
+        final String previousArch = System.getProperty("os.arch");
+        final URL classes = AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation();
+        final URL resources = AppBootstrap.class.getResource("/bootstrap.properties").toURI().resolve(".").toURL();
+        final Properties versions = new Properties();
+        try (final InputStream source = resources.toURI().resolve("bootstrap.properties").toURL().openStream()) {
+            versions.load(source);
+        }
+        try (final URLClassLoader loader = new URLClassLoader(new URL[] { classes, resources }, ClassLoader.getPlatformClassLoader())) {
+            final Class<?> bootstrap = Class.forName(AppBootstrap.class.getName(), true, loader);
+            final Method catalog = bootstrap.getDeclaredMethod("dependencies");
+            catalog.setAccessible(true);
+            for (final String[] platform: List.of(
+                    new String[] { "Windows 10", "amd64", "windows", "win" },
+                    new String[] { "Linux", "amd64", "linux", "linux" },
+                    new String[] { "Linux", "aarch64", "linux-arm64", "linux-aarch64" },
+                    new String[] { "Mac OS X", "amd64", "macos", "mac" },
+                    new String[] { "Mac OS X", "aarch64", "macos-arm64", "mac-aarch64" })) {
+                System.setProperty("os.name", platform[0]);
+                System.setProperty("os.arch", platform[1]);
+                final List<?> dependencies = (List<?>) catalog.invoke(null);
+                assertEquals(platform[2].startsWith("macos") ? 22 : 21, dependencies.size());
+                expect(dependencies, versions, "log4j-api", "log4j", null, false);
+                expect(dependencies, versions, "log4j-core", "log4j", null, false);
+                expect(dependencies, versions, "gson", "gson", null, false);
+                expect(dependencies, versions, "joml", "joml", null, false);
+                final Object config = expect(dependencies, versions, "waterconfig", "waterconfig", null, false);
+                assertEquals("jitpack.io", ((URI) value(config, "source")).getHost());
+                for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
+                    final String key = artifact.equals("lwjgl-openal") ? "openal" : "opengl";
+                    expect(dependencies, versions, artifact, key, null, false);
+                    expect(dependencies, versions, artifact, key, "natives-" + platform[2], false);
+                }
+                expect(dependencies, versions, "lwjgl-vulkan", "vulkan", null, true);
+                expect(dependencies, versions, "lwjgl-shaderc", "vulkan", null, true);
+                expect(dependencies, versions, "lwjgl-shaderc", "vulkan", "natives-" + platform[2], true);
+                if (platform[2].startsWith("macos"))
+                    expect(dependencies, versions, "lwjgl-vulkan", "vulkan", "natives-" + platform[2], true);
+                for (final String artifact: List.of("javafx-base", "javafx-graphics", "javafx-swing"))
+                    expect(dependencies, versions, artifact, "javafx", platform[3], true);
+            }
+        } finally {
+            System.setProperty("os.name", previousOs);
+            System.setProperty("os.arch", previousArch);
         }
     }
 
     @Test
-    void launcherClasspathUsesTheProcessedVersionsForBindingsAndNatives() throws Exception {
-        final Properties versions = new Properties();
-        try (final InputStream source = AppBootstrap.class.getResourceAsStream("launcher.properties")) {
-            assertNotNull(source);
-            versions.load(source);
+    void missingVersionsFailInsideTheRecoverableLoadingStep() throws Exception {
+        final URL classes = AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation();
+        try (final URLClassLoader loader = new URLClassLoader(new URL[] { classes }, ClassLoader.getPlatformClassLoader())) {
+            final Class<?> bootstrap = Class.forName(AppBootstrap.class.getName(), true, loader);
+            final Method catalog = bootstrap.getDeclaredMethod("dependencies");
+            catalog.setAccessible(true);
+            final var failure = assertThrows(InvocationTargetException.class, () -> catalog.invoke(null));
+            assertInstanceOf(IOException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("bootstrap.properties"));
         }
-        final String os = IOTool.platformClassifier();
-        final var field = AppBootstrap.class.getDeclaredField("DEPS");
-        field.setAccessible(true);
-        final List<String[]> required = Arrays.asList((String[][]) field.get(null));
-        assertEquals(14, required.size());
-        expect(required, "org/apache/logging/log4j", "log4j-api", versions.getProperty("log4j_version"), null);
-        expect(required, "org/apache/logging/log4j", "log4j-core", versions.getProperty("log4j_version"), null);
-        expect(required, "com/google/code/gson", "gson", versions.getProperty("gson_version"), null);
-        expect(required, "org/joml", "joml", versions.getProperty("joml_version"), null);
-        for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb")) {
-            expect(required, "org/lwjgl", artifact, versions.getProperty("opengl_version"), null);
-            expect(required, "org/lwjgl", artifact, versions.getProperty("opengl_version"), "natives-" + os);
-        }
-        expect(required, "org/lwjgl", "lwjgl-openal", versions.getProperty("openal_version"), null);
-        expect(required, "org/lwjgl", "lwjgl-openal", versions.getProperty("openal_version"), "natives-" + os);
-
-        final var vulkanMethod = AppBootstrap.class.getDeclaredMethod("vulkanDeps");
-        vulkanMethod.setAccessible(true);
-        final List<?> vulkan = (List<?>) vulkanMethod.invoke(null);
-        assertEquals(os.startsWith("macos") ? 4 : 3, vulkan.size());
-        expect(vulkan, "org/lwjgl", "lwjgl-vulkan", versions.getProperty("vulkan_version"), null);
-        expect(vulkan, "org/lwjgl", "lwjgl-shaderc", versions.getProperty("vulkan_version"), null);
-        expect(vulkan, "org/lwjgl", "lwjgl-shaderc", versions.getProperty("vulkan_version"), "natives-" + os);
-        if (os.startsWith("macos"))
-            expect(vulkan, "org/lwjgl", "lwjgl-vulkan", versions.getProperty("vulkan_version"), "natives-" + os);
-
-        final var javafxMethod = AppBootstrap.class.getDeclaredMethod("javafxDeps");
-        javafxMethod.setAccessible(true);
-        final List<?> javafx = (List<?>) javafxMethod.invoke(null);
-        assertEquals(3, javafx.size());
-        final String classifier = switch (os) {
-            case "macos" -> "mac";
-            case "macos-arm64" -> "mac-aarch64";
-            case "linux-arm64" -> "linux-aarch64";
-            case "windows", "windows-arm64" -> "win";
-            default -> "linux";
-        };
-        for (final String artifact: List.of("javafx-base", "javafx-graphics", "javafx-swing"))
-            expect(javafx, "org/openjfx", artifact, versions.getProperty("javafx_version"), classifier);
     }
 
-    private static void expect(final List<?> dependencies, final String group, final String artifact,
-                               final String version, final String classifier) {
-        final String filename = artifact + "-" + version + (classifier == null ? "" : "-" + classifier) + ".jar";
-        final String[] actual = dependencies.stream().map(String[].class::cast)
-                .filter(item -> item[0].equals(filename)).findFirst().orElse(null);
-        assertNotNull(actual, filename);
-        assertArrayEquals(new String[] { filename, group + "/" + artifact + "/" + version + "/" + filename }, actual);
+    @Test
+    void completeDownloadsReplaceTheCacheWithOrWithoutContentLength(@TempDir final Path directory) throws Exception {
+        final byte[] payload = "complete dependency".getBytes(StandardCharsets.UTF_8);
+        for (final boolean chunked: List.of(false, true)) {
+            final Path destination = Files.writeString(directory.resolve("library.jar"), "previous");
+            try (final LocalHttp server = LocalHttp.start("/library.jar", exchange -> {
+                try (exchange) {
+                    exchange.sendResponseHeaders(200, chunked ? 0 : payload.length);
+                    exchange.getResponseBody().write(payload);
+                }
+            })) {
+                download(server.uri("/library.jar"), destination);
+            }
+            assertArrayEquals(payload, Files.readAllBytes(destination));
+            try (final var files = Files.list(directory)) { assertEquals(List.of(destination), files.toList()); }
+        }
+    }
+
+    @Test
+    void incompleteDownloadsPreserveTheCacheAndRemovePartialFiles(@TempDir final Path directory) throws Exception {
+        final Path destination = Files.writeString(directory.resolve("library.jar"), "previous");
+        try (final LocalHttp server = LocalHttp.start("/library.jar", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 100);
+                exchange.getResponseBody().write(new byte[] { 1, 2, 3 });
+            } finally {
+                exchange.close();
+            }
+        })) {
+            final var failure = assertThrows(InvocationTargetException.class, () -> download(server.uri("/library.jar"), destination));
+            assertInstanceOf(IOException.class, failure.getCause());
+        }
+        assertEquals("previous", Files.readString(destination));
+        try (final var files = Files.list(directory)) { assertEquals(List.of(destination), files.toList()); }
+    }
+
+    @Test
+    void rejectedDownloadsDoNotCreateCacheEntries(@TempDir final Path directory) throws Exception {
+        try (final LocalHttp server = LocalHttp.start("/missing.jar", exchange -> {
+            try (exchange) { exchange.sendResponseHeaders(404, -1); }
+        })) {
+            final var failure = assertThrows(InvocationTargetException.class,
+                    () -> download(server.uri("/missing.jar"), directory.resolve("missing.jar")));
+            assertInstanceOf(IOException.class, failure.getCause());
+        }
+        try (final var files = Files.list(directory)) { assertEquals(0, files.count()); }
+    }
+
+    private static Object expect(final List<?> dependencies, final Properties versions, final String artifact,
+                                 final String key, final String classifier, final boolean optional) throws Exception {
+        final String version = versions.getProperty(key + "_version");
+        final String name = artifact + "-" + version + (classifier == null ? "" : "-" + classifier) + ".jar";
+        for (final Object dependency: dependencies) {
+            if (!name.equals(value(dependency, "name"))) continue;
+            assertTrue(dependency.getClass().isRecord());
+            assertEquals(optional, value(dependency, "optional"));
+            final String group = artifact.startsWith("log4j") ? "org/apache/logging/log4j"
+                    : artifact.startsWith("lwjgl") ? "org/lwjgl" : artifact.startsWith("javafx") ? "org/openjfx"
+                    : artifact.equals("gson") ? "com/google/code/gson" : artifact.equals("joml") ? "org/joml" : "com/github/SrRapero720";
+            final String repository = artifact.equals("waterconfig") ? "https://jitpack.io/" : "https://repo1.maven.org/maven2/";
+            assertEquals(URI.create(repository + group + "/" + artifact + "/" + version + "/" + name), value(dependency, "source"));
+            return dependency;
+        }
+        fail("Missing dependency: " + name);
+        return null;
+    }
+
+    private static Object value(final Object dependency, final String name) throws Exception {
+        final Method method = dependency.getClass().getDeclaredMethod(name);
+        method.setAccessible(true);
+        return method.invoke(dependency);
+    }
+
+    private static void download(final URI source, final Path destination) throws Exception {
+        final Method download = Arrays.stream(AppBootstrap.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("download")).findFirst().orElseThrow();
+        download.setAccessible(true);
+        download.invoke(null, source, destination, null);
     }
 }

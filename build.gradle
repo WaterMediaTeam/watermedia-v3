@@ -156,7 +156,7 @@ processResources {
     outputs.upToDateWhen { false }
     inputs.properties(resourceProperties)
     filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json',
-                   'org/watermedia/bootstrap/launcher.properties']) {
+                   'bootstrap.properties']) {
         expand(resourceProperties)
     }
 }
