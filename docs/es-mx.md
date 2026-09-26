@@ -29,10 +29,11 @@ El último argumento indica si el entorno es cliente. Lee `snapshot.state()` y `
 
 Cada reproductor es dueño de los motores que recibe. Créalos mediante proveedores (`Supplier`) para que una fuente no disponible no deje recursos nativos reservados. No compartas un motor entre reproductores.
 
-El módulo opcional de binarios requiere WaterMedia y comparte este ciclo de vida. Después de cargar la
-configuración, su arranque bloquea los demás servicios hasta terminar; si está instalado y falla, se
-detiene el arranque. Si falta, se omite: el cliente conserva imágenes y plataformas sin ejecutables,
-y el servidor no necesita binarios. Desactivar FFmpeg omite su extracción. `WaterMedia.stop()` limpia
+El módulo de binarios requiere WaterMedia y comparte este ciclo de vida. Es obligatorio en clientes de
+Minecraft y opcional en servidores dedicados. Después de cargar la configuración, su arranque bloquea
+los demás servicios hasta terminar; si está instalado y falla, se
+detiene el arranque. Las aplicaciones que integran directamente la API Java pueden omitirlo y conservar
+imágenes y plataformas sin ejecutables. Desactivar FFmpeg omite su extracción. `WaterMedia.stop()` limpia
 las rutas después de detener a sus consumidores. No existe una API separada para iniciar o detener los binarios.
 
 Las distribuciones personalizadas compatibles de FFmpeg pueden declarar GPL, LGPL u otra licencia y

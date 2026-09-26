@@ -182,11 +182,14 @@ Two caveats verified against the 26.2 sources:
 
 # 📦 Binaries
 FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
-With that jar you won't need to compile or install FFMPEG or any other native application — plug and
-play. Its sources live in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries) and it is
-published as an optional dependency. Without it, WaterMedia keeps image support but does not initialize
-video decoding or the executable-backed platform resolvers. When installed, binaries initialize before
-the other services; a failed binaries startup stops the session.
+With that jar you won't need to compile or install FFMPEG or any other native application.
+Its sources live in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries).
+Minecraft clients require Binaries; dedicated servers can omit it. Applications embedding the Java API
+can run without it, keeping image support but skipping video decoding and executable-backed platform
+resolvers. When installed, binaries initialize before the other services; a failed binaries startup
+stops the session.
+CurseForge and Modrinth list Binaries as required because their dependency relationships do not support
+client/server conditions, so installers may also include it in server installations.
 
 ## Supported platforms
 | Platform | Architecture | Status |
