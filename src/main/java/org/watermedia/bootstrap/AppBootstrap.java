@@ -120,9 +120,7 @@ public final class AppBootstrap {
         final String platform = IOTool.platformClassifier();
         if (platform.equals("unsupported")) throw new IOException("Unsupported operating system or CPU architecture");
         final String natives = "natives-" + platform;
-        final String opengl = version(versions, "opengl");
-        final String openal = version(versions, "openal");
-        final String vulkan = version(versions, "vulkan");
+        final String lwjgl = version(versions, "lwjgl");
         final String javafx = version(versions, "javafx");
         final List<Dependency> dependencies = new ArrayList<>();
         for (final String artifact: List.of("log4j-api", "log4j-core"))
@@ -131,15 +129,14 @@ public final class AppBootstrap {
         dependencies.add(new Dependency(MAVEN, "org/joml", "joml", version(versions, "joml"), null, false));
         dependencies.add(new Dependency("https://jitpack.io/", "com/github/SrRapero720", "waterconfig", version(versions, "waterconfig"), null, false));
         for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
-            final String version = artifact.equals("lwjgl-openal") ? openal : opengl;
-            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, version, null, false));
-            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, version, natives, false));
+            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, null, false));
+            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, natives, false));
         }
         // KEEP VULKAN AVAILABLE FOR RUNTIME ENGINE SWITCHES, EVEN WHEN STARTING WITH OPENGL.
         for (final String artifact: List.of("lwjgl-vulkan", "lwjgl-shaderc")) {
-            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, vulkan, null, true));
+            dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, null, true));
             if (artifact.equals("lwjgl-shaderc") || platform.startsWith("macos"))
-                dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, vulkan, natives, true));
+                dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, natives, true));
         }
         final String classifier = switch (platform) {
             case "windows", "windows-arm64" -> "win";

@@ -1,0 +1,89 @@
+base {
+    archivesName = id
+}
+
+java {
+    sourceCompatibility = targetCompatibility = JavaVersion.toVersion(java_release)
+}
+
+// GRADLE RESTORES THE CLIENT'S FILE.ENCODING PROPERTY AFTER THE DAEMON STARTS.
+def encoding = providers.gradleProperty('systemProp.file.encoding').get()
+System.setProperty('file.encoding', encoding)
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = encoding
+    options.release = Integer.parseInt(java_release)
+}
+tasks.withType(JavaExec).configureEach {
+    jvmArgs "-Dfile.encoding=$encoding"
+}
+test {
+    useJUnitPlatform()
+    jvmArgs "-Dfile.encoding=$encoding"
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://jitpack.io' }
+}
+
+dependencies {
+    testImplementation platform("org.junit:junit-bom:$junit_version")
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// CAPTURE RESOURCE VALUES BEFORE TASK EXECUTION.
+def resourceProperties = providers.gradlePropertiesPrefixedBy('').get()
+processResources {
+    inputs.properties(resourceProperties)
+    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta',
+                   'fabric.mod.json', 'bootstrap.properties']) {
+        expand(resourceProperties)
+    }
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.WARN
+    manifest.attributes(
+            'id': id,
+            'version': version,
+            'Specification-Title': id,
+            'Specification-Vendor': authors,
+            'Specification-Version': version,
+            'Implementation-Title': id,
+            'Implementation-Version': version,
+            'Implementation-Vendor': authors)
+}
+
+def publishVersion = project.version.toString()
+def releaseType = project.versiontype.toString()
+if (!(releaseType in ['ALPHA', 'BETA', 'RELEASE'])) throw new GradleException('versiontype must be ALPHA, BETA or RELEASE')
+if (!(publishVersion ==~ (releaseType == 'RELEASE' ? /\d+\.\d+\.\d+/ : /\d+\.\d+\.\d+\.\d+/))) {
+    throw new GradleException('RELEASE versions require three components; ALPHA and BETA require four')
+}
+def changelogText = file('CHANGELOG.md').readLines('UTF-8').takeWhile { !it.isEmpty() }.join('\n')
+def mcVersions = minecraftversions.split(',').collect { it.trim() }
+def javaTargets = javaversions.split(',').collect { JavaVersion.toVersion(it.trim()) }
+def loaders = modloaders.split(',').collect { it.trim() }
+
+// EACH BUILD REGISTERS ITS PLATFORMS BEFORE APPLYING SHARED OPTIONS.
+publishMods {
+    changelog = changelogText
+    type = ['ALPHA': ALPHA, 'BETA': BETA, 'RELEASE': STABLE][releaseType]
+    displayName = publishVersion
+    modLoaders.addAll(loaders)
+    maxRetries = Integer.parseInt(publish_retries)
+    curseforge {
+        accessToken = providers.environmentVariable('CURSEFORGE_TOKEN')
+        projectId = curseforgeid
+        minecraftVersions.addAll(mcVersions)
+        javaVersions.addAll(javaTargets)
+        clientRequired = true
+    }
+    modrinth {
+        accessToken = providers.environmentVariable('MODRINTH_TOKEN')
+        projectId = modrinthid
+        minecraftVersions.addAll(mcVersions)
+        projectDescription = providers.fileContents(layout.projectDirectory.file('README.md')).asText
+    }
+}
