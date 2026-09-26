@@ -18,10 +18,11 @@ Read `snapshot.state()` and `snapshot.failures()` together. `STARTING` is not re
 
 `STOPPING` closes admission while services release their resources; `STOPPED` means there is no active session. An incomplete shutdown reports `FAILED` and requires a later stop attempt with the necessary host contexts still available. The last argument to `start` selects the client environment.
 
-The optional binaries module requires WaterMedia and shares this lifecycle. After configuration loads,
-its startup blocks the remaining services until it finishes; an installed module that fails stops startup.
-An absent module is skipped: clients retain image decoding and native-free platform resolvers, and
-servers need no native module. Disabling FFmpeg skips extraction. `WaterMedia.stop()` clears native paths
+The binaries module requires WaterMedia and shares this lifecycle. Minecraft clients require Binaries;
+dedicated servers can omit it. After configuration loads, its startup blocks the remaining services
+until it finishes; an installed module that fails stops startup.
+Applications embedding the Java API can omit the module and retain image decoding and native-free
+platform resolvers. Disabling FFmpeg skips extraction. `WaterMedia.stop()` clears native paths
 after their consumers stop. There is no separate binaries initialization or shutdown API.
 
 Compatible custom FFmpeg distributions may use GPL, LGPL or another declared license and build version.
