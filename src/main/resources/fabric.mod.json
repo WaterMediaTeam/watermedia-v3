@@ -21,6 +21,7 @@
     ]
   },
   "depends": {
+    "watermedia_binaries": "*",
     "java": "$javarange"
   }
 }

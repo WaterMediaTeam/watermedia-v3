@@ -31,8 +31,8 @@ class AppBootstrapDependenciesTest {
             assertNotNull(source, "The bootstrap must carry its processed version resource");
             bootstrap.load(source);
         }
-        for (final String key: List.of("log4j_version", "gson_version", "opengl_version", "openal_version",
-                "vulkan_version", "joml_version", "javafx_version", "waterconfig_version")) {
+        for (final String key: List.of("log4j_version", "gson_version", "lwjgl_version",
+                "joml_version", "javafx_version", "waterconfig_version")) {
             assertNotNull(build.getProperty(key), key);
             assertEquals(build.getProperty(key), bootstrap.getProperty(key), key);
         }
@@ -70,15 +70,14 @@ class AppBootstrapDependenciesTest {
                 final Object config = expect(dependencies, versions, "waterconfig", "waterconfig", null, false);
                 assertEquals("jitpack.io", ((URI) value(config, "source")).getHost());
                 for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
-                    final String key = artifact.equals("lwjgl-openal") ? "openal" : "opengl";
-                    expect(dependencies, versions, artifact, key, null, false);
-                    expect(dependencies, versions, artifact, key, "natives-" + platform[2], false);
+                    expect(dependencies, versions, artifact, "lwjgl", null, false);
+                    expect(dependencies, versions, artifact, "lwjgl", "natives-" + platform[2], false);
                 }
-                expect(dependencies, versions, "lwjgl-vulkan", "vulkan", null, true);
-                expect(dependencies, versions, "lwjgl-shaderc", "vulkan", null, true);
-                expect(dependencies, versions, "lwjgl-shaderc", "vulkan", "natives-" + platform[2], true);
+                expect(dependencies, versions, "lwjgl-vulkan", "lwjgl", null, true);
+                expect(dependencies, versions, "lwjgl-shaderc", "lwjgl", null, true);
+                expect(dependencies, versions, "lwjgl-shaderc", "lwjgl", "natives-" + platform[2], true);
                 if (platform[2].startsWith("macos"))
-                    expect(dependencies, versions, "lwjgl-vulkan", "vulkan", "natives-" + platform[2], true);
+                    expect(dependencies, versions, "lwjgl-vulkan", "lwjgl", "natives-" + platform[2], true);
                 for (final String artifact: List.of("javafx-base", "javafx-graphics", "javafx-swing"))
                     expect(dependencies, versions, artifact, "javafx", platform[3], true);
             }
