@@ -5,6 +5,8 @@ import javafx.scene.image.Image;
 import javafx.scene.image.PixelBuffer;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 
 import java.nio.ByteBuffer;
 
@@ -22,6 +24,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * ({@link PixelFormat#getByteBgraPreInstance()}); video frames are opaque, so this is exact.
  */
 public final class JFXEngine extends SWEngine {
+    private static final Marker IT = MarkerManager.getMarker(JFXEngine.class.getSimpleName());
     private volatile WritableImage image;
     private PixelBuffer<ByteBuffer> pixelBuffer;
     private volatile boolean loggedPresent;
@@ -41,7 +44,7 @@ public final class JFXEngine extends SWEngine {
             this.pixelBuffer = new PixelBuffer<>(width, height, bgra, PixelFormat.getByteBgraPreInstance());
             this.image = new WritableImage(this.pixelBuffer);
         } catch (final RuntimeException t) {
-            LOGGER.error("JFXEngine: failed to allocate the {}x{} surface", width, height, t);
+            LOGGER.error(IT, "Failed to allocate the {}x{} surface", width, height, t);
         }
     }
 
@@ -60,7 +63,7 @@ public final class JFXEngine extends SWEngine {
         if (pb == null) return;
         if (!this.loggedPresent) {
             this.loggedPresent = true;
-            LOGGER.info("JFXEngine: first frame presented ({}x{})", this.width, this.height);
+            LOGGER.debug(IT, "First frame presented ({}x{})", this.width, this.height);
         }
         // updateBuffer MUST RUN ON THE FX THREAD; null MARKS THE WHOLE BUFFER DIRTY. THE NEXT DECODE-THREAD
         // WRITE INTO bgra MAY RACE PRISM'S READ — ACCEPTED: OPAQUE VIDEO FRAMES TEAR AT WORST ONE PULSE.

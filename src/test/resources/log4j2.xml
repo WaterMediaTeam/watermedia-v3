@@ -6,7 +6,8 @@
         </Console>
     </Appenders>
     <Loggers>
-        <Logger name="org.watermedia" level="debug"/>
+        <Logger name="watermedia" level="debug"/>
+        <Logger name="watermedia_binaries" level="debug"/>
         <Root level="info">
             <AppenderRef ref="STDOUT"/>
         </Root>

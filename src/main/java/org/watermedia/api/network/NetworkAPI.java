@@ -25,7 +25,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 public final class NetworkAPI {
     private NetworkAPI() {}
-    static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
+    private static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
     private static volatile Uploads uploads;
 
     private static final class Uploads {

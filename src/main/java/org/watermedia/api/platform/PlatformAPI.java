@@ -186,7 +186,7 @@ public final class PlatformAPI {
                     probe.get();
                 } catch (final ExecutionException e) {
                     // AN ESCAPED PROBE FAILURE DOES NOT END THE OTHER PROBES OR COMPLETE THEIR HANDLE.
-                    LOGGER.warn(IT, "Search '{}' probe failed unexpectedly: {}", caption, String.valueOf(e.getCause()));
+                    LOGGER.warn(IT, "Search '{}' probe failed unexpectedly", caption, e.getCause());
                 }
             }
         } catch (final InterruptedException e) { // SUPERSEDED — CANCEL THE OUTSTANDING PROBES AND LEAVE THE HANDLE FROZEN
@@ -236,7 +236,7 @@ public final class PlatformAPI {
                 LOGGER.debug(IT, "Search '{}' interrupted on {}", caption, platform.name());
                 return;
             }
-            LOGGER.warn(IT, "Search '{}' failed on {}: {}", caption, platform.name(), e.toString());
+            LOGGER.warn(IT, "Search '{}' failed on {}", caption, platform.name(), e);
         }
     }
 

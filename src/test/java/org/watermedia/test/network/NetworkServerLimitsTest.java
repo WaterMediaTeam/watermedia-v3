@@ -8,6 +8,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.network.NetworkServer;
+import org.watermedia.test.support.LogCapture;
 import org.watermedia.test.support.PlayerWait;
 
 import java.io.BufferedReader;
@@ -132,6 +133,28 @@ public class NetworkServerLimitsTest {
         WaterMediaConfig.network.token = "replacement";
         assertEquals(401, this.upload("replacement", new byte[1]).getResponseCode());
         assertEquals(200, this.upload(TOKEN, new byte[1]).getResponseCode());
+    }
+
+    @Test
+    void aggregatesUnauthorizedWarningsAndReportsPendingRejectionsOnStop() throws Exception {
+        try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+            for (int request = 0; request < 12; request++) {
+                final HttpURLConnection connection = this.upload("untrusted-secret", new byte[1]);
+                try { assertEquals(401, connection.getResponseCode()); }
+                finally { connection.disconnect(); }
+            }
+            final var warnings = capture.events().stream()
+                    .filter(event -> event.getMessage().getFormattedMessage().contains("unauthorized uploads")).toList();
+            assertEquals(1, warnings.size());
+            assertEquals("NetworkServer", warnings.get(0).getMarker().getName());
+            assertTrue(warnings.get(0).getMessage().getFormattedMessage().contains("Rejected 1 unauthorized uploads"));
+            NetworkServer.stop();
+            final var finalWarnings = capture.events().stream()
+                    .map(event -> event.getMessage().getFormattedMessage()).filter(text -> text.contains("unauthorized uploads")).toList();
+            assertEquals(2, finalWarnings.size());
+            assertTrue(finalWarnings.get(1).contains("Rejected 11 additional unauthorized uploads"));
+            assertTrue(capture.events().stream().noneMatch(event -> event.getMessage().getFormattedMessage().contains("untrusted-secret")));
+        }
     }
 
     @Test

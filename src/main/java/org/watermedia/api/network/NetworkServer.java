@@ -2,6 +2,8 @@ package org.watermedia.api.network;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.MathUtil;
@@ -34,9 +36,12 @@ import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.network.NetworkAPI.*;
 
 public final class NetworkServer {
+    private static final Marker IT = MarkerManager.getMarker(NetworkServer.class.getSimpleName());
     private static final String ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private static final int ID_LENGTH = 8;
     private static final SecureRandom RANDOM = new SecureRandom();
+    // UNAUTHORIZED UPLOADS ARE AGGREGATED INTO ONE WARNING PER WINDOW
+    private static final long REJECT_REPORT_NS = TimeUnit.SECONDS.toNanos(10);
     private static volatile Running running;
     private static boolean shutdownHook;
 
@@ -201,6 +206,9 @@ public final class NetworkServer {
             throw new IllegalStateException("File server storage lock could not be released", failure);
         }
         running = null;
+        final long rejected;
+        synchronized (state) { rejected = state.rejectedUploads; }
+        if (rejected > 0) LOGGER.warn(IT, "Rejected {} additional unauthorized uploads before shutdown", rejected);
         LOGGER.info(IT, "Stopped file server");
     }
 
@@ -217,7 +225,17 @@ public final class NetworkServer {
             }
             final String token = exchange.getRequestHeaders().getFirst(X_WATERMEDIA_TOKEN);
             if (token == null || !MessageDigest.isEqual(state.token, token.getBytes(StandardCharsets.UTF_8))) {
-                LOGGER.warn(IT, "Rejected unauthorized upload");
+                long rejected = 0;
+                synchronized (state) {
+                    state.rejectedUploads++;
+                    final long now = System.nanoTime();
+                    if (state.rejectedAt == 0 || now - state.rejectedAt >= REJECT_REPORT_NS) {
+                        rejected = state.rejectedUploads;
+                        state.rejectedUploads = 0;
+                        state.rejectedAt = now;
+                    }
+                }
+                if (rejected > 0) LOGGER.warn(IT, "Rejected {} unauthorized uploads; further warnings are aggregated for 10 seconds", rejected);
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_UNAUTHORIZED, -1);
                 return;
             }
@@ -425,6 +443,8 @@ public final class NetworkServer {
         private final int timeout;
         private long used;
         private long reserved;
+        private long rejectedUploads;
+        private long rejectedAt;
         private volatile boolean stopping;
 
         private Running(final HttpServer server, final ThreadPoolExecutor executor, final ScheduledThreadPoolExecutor deadlines,

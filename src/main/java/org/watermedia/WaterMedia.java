@@ -1,6 +1,5 @@
 package org.watermedia;
 
-import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.players.MediaPlayer;
@@ -8,6 +7,7 @@ import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.nio.file.Path;
@@ -25,7 +25,7 @@ public final class WaterMedia {
     public static final String NAME = "WaterMedia";
     public static final String VERSION = IOTool.jarVersion();
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
-    public static final Logger LOGGER = LogManager.getLogger(ID);
+    public static final Logger LOGGER = LogTool.logger(ID);
     private static final Path DEFAULT_TEMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
     private static final Path DEFAULT_CWD = Path.of("").toAbsolutePath();
 

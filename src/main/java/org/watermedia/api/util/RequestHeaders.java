@@ -19,7 +19,7 @@ import java.util.TreeSet;
  * <p>
  * Used by {@link NetRequest} for both the headers we send and the headers we receive.
  * {@link #toRawString()} produces the {@code "Name: Value\r\n..."} form expected by raw
- * consumers like FFmpeg's {@code -headers} option.
+ * consumers like FFmpeg's {@code -headers} option; {@link #toString()} lists header names only.
  */
 public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
 
@@ -40,6 +40,10 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
                     throw new IllegalArgumentException("Header value contains a prohibited control character");
             }
         }
+
+        // NAME ONLY: LOGGED SOURCES MUST NEVER PRINT COOKIE OR AUTHORIZATION VALUES
+        @Override
+        public String toString() { return this.name; }
     }
 
     private final List<Entry> entries = new ArrayList<>();
@@ -182,7 +186,7 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
     public Iterator<Entry> iterator() { return Collections.unmodifiableList(this.entries).iterator(); }
 
     @Override
-    public String toString() { return this.toRawString(); }
+    public String toString() { return "RequestHeaders" + this.entries; }
 
     // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
     private static boolean eq(final String a, final String b) {

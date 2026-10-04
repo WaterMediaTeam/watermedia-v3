@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app;
 import com.google.gson.JsonObject;
 import com.sun.management.OperatingSystemMXBean;
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.apache.logging.log4j.core.appender.ConsoleAppender;
 import org.apache.logging.log4j.core.config.Configurator;
@@ -89,6 +90,7 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  * WATERMeDIA Test Application.
  */
 public class WaterMediaApp {
+    private static final Marker IT = MarkerManager.getMarker(WaterMediaApp.class.getSimpleName());
     private static final AppContext ctx = new AppContext();
     private static final ScreenManager screens = new ScreenManager();
 
@@ -243,12 +245,13 @@ public class WaterMediaApp {
     }
 
     public static void log(final String message) {
-        WaterMedia.LOGGER.info(MarkerManager.getMarker("ROOT"), message);
+        WaterMedia.LOGGER.info(IT, message);
     }
 
     // INITIALIZATION
     private static void initWindow() {
-        GLFWErrorCallback.createPrint(System.err).set();
+        GLFWErrorCallback.create((code, description) ->
+                WaterMedia.LOGGER.error(IT, "GLFW error 0x{}: {}", Integer.toHexString(code), GLFWErrorCallback.getDescription(description))).set();
         if (!glfwInit()) throw new IllegalStateException("Unable to initialize GLFW");
 
         // THE RENDER LAYER OWNS THE ENGINE CHOICE (FROM -Dwatermedia.engine) AND THE BACKEND LIFECYCLE.
@@ -969,7 +972,7 @@ public class WaterMediaApp {
             alSourcei(ctx.soundSource, AL_BUFFER, ctx.soundBuffer);
             alSourcef(ctx.soundSource, AL_GAIN, 0.2f);
         } catch (final Exception e) {
-            System.err.println("Failed to load sound effect: " + e.getMessage());
+            WaterMedia.LOGGER.warn(IT, "Failed to load sound effect", e);
         }
     }
 
@@ -1724,9 +1727,7 @@ public class WaterMediaApp {
         // FILESYSTEM-SAFE STAMP — new Date().toString() EMITS ':' AND SPACES, ILLEGAL IN WINDOWS FILENAMES,
         // SO renameTo() SILENTLY FAILED EVERY LAUNCH AND THE LOG NEVER ROTATED (GREW UNBOUNDED) (M-01).
         final String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
-        if (logfile.exists() && !logfile.renameTo(new File("logs/watermedia-app-" + stamp + ".log"))) {
-            System.err.println("Failed to rotate log file");
-        }
+        final boolean rotationFailed = logfile.exists() && !logfile.renameTo(new File("logs/watermedia-app-" + stamp + ".log"));
 
         final ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
         builder.setStatusLevel(Level.WARN);
@@ -1749,5 +1750,6 @@ public class WaterMediaApp {
                 .add(builder.newAppenderRef("File")));
 
         Configurator.initialize(builder.build());
+        if (rotationFailed) WaterMedia.LOGGER.warn(IT, "Could not rotate {}; continuing in append mode", filename);
     }
 }

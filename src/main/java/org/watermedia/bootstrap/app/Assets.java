@@ -1,7 +1,10 @@
 package org.watermedia.bootstrap.app;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.glfw.GLFWImage;
 import org.lwjgl.system.MemoryUtil;
+import org.watermedia.WaterMedia;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.tools.IOTool;
 
@@ -20,6 +23,7 @@ import static org.lwjgl.glfw.GLFW.glfwSetWindowIcon;
  * (the old context owns them) and recreated with {@link #load(AppContext)} against the fresh context.
  */
 public final class Assets {
+    private static final Marker IT = MarkerManager.getMarker(Assets.class.getSimpleName());
     public int bannerId = -1;
     public int bannerWidth;
     public int bannerHeight;
@@ -80,7 +84,7 @@ public final class Assets {
                 }
             }
         } catch (final Exception e) {
-            System.err.println("Failed to load window icon: " + e.getMessage());
+            WaterMedia.LOGGER.warn(IT, "Failed to load window icon", e);
         }
 
         // ON-SCREEN LOGO (TITLE BAR, LOADING SPLASH, HOME HERO) — RENDERED LARGE, SO USE THE HIGHER-RES pack.png
@@ -101,7 +105,7 @@ public final class Assets {
             this.iconGlowWidth = glow.width();
             this.iconGlowHeight = glow.height();
         } catch (final Exception e) {
-            System.err.println("Failed to load logo texture: " + e.getMessage());
+            WaterMedia.LOGGER.warn(IT, "Failed to load logo texture", e);
         }
     }
 
@@ -127,7 +131,7 @@ public final class Assets {
                 frames.add(RenderSystem.createTexture(img.getWidth(), img.getHeight(), buffer));
                 MemoryUtil.memFree(buffer);
             } catch (final Exception e) {
-                System.err.println("Failed to load duck frame " + resource + ": " + e.getMessage());
+                WaterMedia.LOGGER.warn(IT, "Failed to load duck frame {}", resource, e);
             }
         }
 
@@ -155,7 +159,7 @@ public final class Assets {
             this.bannerGlowWidth = glow.width();
             this.bannerGlowHeight = glow.height();
         } catch (final Exception e) {
-            System.err.println("Failed to load banner: " + e.getMessage());
+            WaterMedia.LOGGER.warn(IT, "Failed to load banner", e);
         }
     }
 

@@ -36,6 +36,7 @@ import org.lwjgl.system.MemoryUtil;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
@@ -96,6 +97,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     // PERFORMANCE MONITORING
     private static final long PERF_CHECK_INTERVAL_MS = 2000;
     private static final double PERF_RATE_WARN_THRESHOLD = 0.90;
+    // SLOW CONSUMPTION ITERATIONS ARE AGGREGATED INTO ONE WARNING PER WINDOW
+    private static final long SLOW_REPORT_NS = 10_000_000_000L;
+    private static final String SLOW_REPORT = "Slow consumption iterations: {} in {}ms (worst={}ms, audio={}ms, video={}ms, frame={}ms)";
 
     // STARVATION DETECTION
     private static final long STARVATION_THRESHOLD_MS = 500;
@@ -814,6 +818,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // LIFECYCLE (SUPERVISOR THREAD)
     private void lifecycle() {
+        long slowWindowStart = System.nanoTime();
+        long slowCount = 0;
+        long slowWorstMs = 0;
+        long slowAudioMs = 0;
+        long slowVideoMs = 0;
+        long slowFrameMs = 0;
         try {
             this.clock.reset();
             // APPLY startPaused() INTENT AFTER THE RESET (WHICH WIPES pauseIntent)
@@ -1109,14 +1119,27 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                 // AUDIO AGAIN AFTER VIDEO (REFILL WHAT THE ENGINE CONSUMED DURING VIDEO UPLOAD)
                 didWork |= this.drainAudio(current);
+                final long afterWork = System.nanoTime();
 
                 // PERFORMANCE MONITOR
-                final long audioMs = (afterAudio - iterStart) / 1_000_000;
+                final long audioMs = (afterAudio - iterStart + afterWork - afterVideo) / 1_000_000;
                 final long videoMs = (afterVideo - afterAudio) / 1_000_000;
-                final long totalMs = (afterVideo - iterStart) / 1_000_000;
+                final long totalMs = (afterWork - iterStart) / 1_000_000;
                 if (totalMs > this.clock.frameDurationMs() && didWork) {
-                    LOGGER.warn(IT, "SLOW ITERATION: total={}ms (audio={}ms, video={}ms), frameDur={}ms",
-                            totalMs, audioMs, videoMs, this.clock.frameDurationMs());
+                    slowCount++;
+                    if (totalMs > slowWorstMs) {
+                        slowWorstMs = totalMs;
+                        slowAudioMs = audioMs;
+                        slowVideoMs = videoMs;
+                        slowFrameMs = this.clock.frameDurationMs();
+                    }
+                }
+                if (afterWork - slowWindowStart >= SLOW_REPORT_NS) {
+                    if (slowCount > 0)
+                        LOGGER.warn(IT, SLOW_REPORT, slowCount, (afterWork - slowWindowStart) / 1_000_000, slowWorstMs, slowAudioMs, slowVideoMs, slowFrameMs);
+                    slowWindowStart = afterWork;
+                    slowCount = 0;
+                    slowWorstMs = 0;
                 }
 
                 // TRACK BUFFERING→PLAYING RECOVERY FOR STARVATION COOLDOWN
@@ -1206,6 +1229,8 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.stopThreads();
             this.publishTransition(Status.ERROR);
         } finally {
+            if (slowCount > 0)
+                LOGGER.warn(IT, SLOW_REPORT, slowCount, (System.nanoTime() - slowWindowStart) / 1_000_000, slowWorstMs, slowAudioMs, slowVideoMs, slowFrameMs);
             this.freeQueues();
             this.cleanup();
         }
@@ -1264,13 +1289,13 @@ public final class FFMediaPlayer extends MediaPlayer {
                     }
 
                     this.clock.setSerial(this.videoPacketQueue.serial());
-                    LOGGER.info(IT, "Seek serial sync: clockSerial={}, vQueueSerial={}, aQueueSerial={}",
+                    LOGGER.debug(IT, "Seek serial sync: clockSerial={}, vQueueSerial={}, aQueueSerial={}",
                             this.clock.serial(), this.videoPacketQueue.serial(), this.audioPacketQueue.serial());
                     mainEof = false;
                     slaveEof = false;
 
                     if (this.clock.hasSeekPending()) {
-                        LOGGER.info(IT, "Seek to {}ms superseded — skipping", targetMs);
+                        LOGGER.debug(IT, "Seek to {}ms superseded; skipping", targetMs);
                         this.ensureDecodeThreads();
                         continue;
                     }
@@ -1304,7 +1329,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                             this.publishTransition(Status.ERROR);
                             return;
                         }
-                        LOGGER.info(IT, "Seek to {}ms failed — reopened format from beginning", targetMs);
+                        LOGGER.warn(IT, "Seek to {}ms failed; reopened input from beginning", targetMs);
                         reopened = true;
                         seekResult = 0;
                         if (targetMs > 0) {
@@ -1313,13 +1338,13 @@ public final class FFMediaPlayer extends MediaPlayer {
                         }
                     }
                     if (seekResult < 0) {
-                        LOGGER.info(IT, "Seek to {}ms not honored by reopened input — resuming from the beginning", targetMs);
+                        LOGGER.warn(IT, "Seek to {}ms not honored by reopened input; resuming from beginning", targetMs);
                         this.ensureDecodeThreads();
                         continue;
                     }
 
                     if (this.clock.hasSeekPending()) {
-                        LOGGER.info(IT, "Seek to {}ms superseded after main seek — skipping drain", targetMs);
+                        LOGGER.debug(IT, "Seek to {}ms superseded after main seek; skipping drain", targetMs);
                         this.ensureDecodeThreads();
                         continue;
                     }
@@ -1334,7 +1359,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     this.ensureDecodeThreads();
 
-                    LOGGER.info(IT, "Seek completed to {}ms (precise={}, serial={}, clockMs={})",
+                    LOGGER.debug(IT, "Seek completed to {}ms (precise={}, serial={}, clockMs={})",
                             targetMs, precise, this.videoPacketQueue.serial(), this.clock.timeMs());
                     continue;
                 }
@@ -1361,7 +1386,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                             }
                         } else {
                             slaveEof = true;
-                            LOGGER.info(IT, "Slave audio reached EOF after {} packets", demuxAudioPackets);
+                            LOGGER.debug(IT, "Slave audio reached EOF after {} packets", demuxAudioPackets);
                             if (this.audioPacketQueue != null) this.audioPacketQueue.finish();
                             break;
                         }
@@ -1373,7 +1398,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     final int result = avformat.av_read_frame(this.formatContext, packet);
                     if (result < 0) {
                         mainEof = true;
-                        LOGGER.info(IT, "Main context EOF after {} video packets (R: {}, S: {})",
+                        LOGGER.debug(IT, "Main context EOF after {} video packets (R: {}, S: {})",
                                 demuxVideoPackets, this.totalRenderedFrames, this.totalSkippedFrames);
                         if (this.videoPacketQueue != null) this.videoPacketQueue.finish();
                         // FOR NON-SLAVE AUDIO, AUDIO PACKETS COME FROM THE SAME FORMAT
@@ -1389,17 +1414,17 @@ public final class FFMediaPlayer extends MediaPlayer {
                 // WHICH FLUSHED ALL UNPROCESSED PACKETS — CAUSING A RAPID
                 // EOF→SEEK→EOF LOOP WITH ALMOST NO FRAMES RENDERED.
                 if (mainEof && (slaveEof || !this.useAudioSlave)) {
-                    LOGGER.info(IT, "All contexts EOF (video: {}, audio: {})", demuxVideoPackets, demuxAudioPackets);
+                    LOGGER.debug(IT, "All contexts EOF (video: {}, audio: {})", demuxVideoPackets, demuxAudioPackets);
 
                     this.clock.signalDemuxFinished();
-                    LOGGER.info(IT, "Demux finished — consumption loop will handle ENDED/repeat after drain");
+                    LOGGER.debug(IT, "Demux finished; consumption loop will handle ENDED/repeat after drain");
 
                     while (!this.clock.hasSeekPending() && !Thread.currentThread().isInterrupted()) {
                         this.clock.awaitChange(0);
                     }
                     if (!this.clock.hasSeekPending()) break;
 
-                    LOGGER.info(IT, "Seek after EOF — restarting pipeline");
+                    LOGGER.debug(IT, "Seek after EOF; restarting pipeline");
                     mainEof = false;
                     slaveEof = false;
                     if (this.videoPacketQueue != null) this.videoPacketQueue.reset();
@@ -1459,10 +1484,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     private void videoDecodeLoop() {
         final AVFrame tempFrame = avutil.av_frame_alloc();
         final AVFrame hwTransfer = (this.hwDeviceCtx != null) ? avutil.av_frame_alloc() : null;
+        final int again = avutil.AVERROR_EAGAIN();
         final int[] serialOut = new int[1];
         int lastSerial = -1;
         long packetsProcessed = 0;
         long framesProduced = 0;
+        long sendFailures = 0;
+        long receiveFailures = 0;
 
         // HW DECODE HEALTH TRACKING (SEE HW_TRANSFER_* CONSTANTS)
         int hwFailStreak = 0;
@@ -1497,9 +1525,18 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
                     // SKIPS ONLY THAT PACKET.
-                    if (avcodec.avcodec_send_packet(this.videoCodecContext, packet) < 0 && !eof) continue;
+                    final int sent = avcodec.avcodec_send_packet(this.videoCodecContext, packet);
+                    if (sent < 0 && sent != again && sent != AVERROR_EOF && ++sendFailures == 1)
+                        logCodecError("video", "send packet", this.videoCodecContext, this.videoStreamIndex, sent);
+                    if (sent < 0 && !eof) continue;
 
-                    while (avcodec.avcodec_receive_frame(this.videoCodecContext, tempFrame) >= 0) {
+                    while (true) {
+                        final int received = avcodec.avcodec_receive_frame(this.videoCodecContext, tempFrame);
+                        if (received < 0) {
+                            if (received != again && received != AVERROR_EOF && ++receiveFailures == 1)
+                                logCodecError("video", "receive frame", this.videoCodecContext, this.videoStreamIndex, received);
+                            break;
+                        }
                         AVFrame frameToQueue = tempFrame;
 
                         if (!hwGaveUp && hwTransfer != null && tempFrame.format() == this.hwPixelFormat) {
@@ -1583,6 +1620,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
             }
         } finally {
+            if (sendFailures > 1 || receiveFailures > 1)
+                LOGGER.warn(IT, "Video decoder suppressed repeated errors: send={}, receive={}, stream={}",
+                        Math.max(0L, sendFailures - 1), Math.max(0L, receiveFailures - 1), this.videoStreamIndex);
             LOGGER.info(IT, "Video decode exiting — packets: {}, frames produced: {}, interrupted: {}",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
             // RESET THE CODEC FOR THE NEXT RUN. AT A CLEAN EOF THIS THREAD DRAINS THE DECODER
@@ -1599,10 +1639,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     // AUDIO DECODE THREAD
     private void audioDecodeLoop() {
         final AVFrame tempFrame = avutil.av_frame_alloc();
+        final int again = avutil.AVERROR_EAGAIN();
         final int[] serialOut = new int[1];
         int lastSerial = -1;
         long packetsProcessed = 0;
         long framesProduced = 0;
+        long sendFailures = 0;
+        long receiveFailures = 0;
 
         try {
             while (!Thread.currentThread().isInterrupted()) {
@@ -1636,9 +1679,18 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     // A null PACKET PUTS THE DECODER INTO DRAIN MODE; A REAL send FAILURE
                     // SKIPS ONLY THAT PACKET.
-                    if (avcodec.avcodec_send_packet(this.audioCodecContext, packet) < 0 && !eof) continue;
+                    final int sent = avcodec.avcodec_send_packet(this.audioCodecContext, packet);
+                    if (sent < 0 && sent != again && sent != AVERROR_EOF && ++sendFailures == 1)
+                        logCodecError("audio", "send packet", this.audioCodecContext, this.audioStreamIndex, sent);
+                    if (sent < 0 && !eof) continue;
 
-                    while (avcodec.avcodec_receive_frame(this.audioCodecContext, tempFrame) >= 0) {
+                    while (true) {
+                        final int received = avcodec.avcodec_receive_frame(this.audioCodecContext, tempFrame);
+                        if (received < 0) {
+                            if (received != again && received != AVERROR_EOF && ++receiveFailures == 1)
+                                logCodecError("audio", "receive frame", this.audioCodecContext, this.audioStreamIndex, received);
+                            break;
+                        }
                         // MID-STREAM PARAMETER CHANGES (CHAINED OGG / ICECAST) NEED A NEW
                         // RESAMPLER — FEEDING THE OLD ONE PLAYS AUDIO AT THE WRONG SPEED
                         if (!this.ensureAudioInputConfig(tempFrame)) continue;
@@ -1689,6 +1741,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                 if (eof) break; // DECODER FULLY DRAINED — NOTHING MORE TO PRODUCE
             }
         } finally {
+            if (sendFailures > 1 || receiveFailures > 1)
+                LOGGER.warn(IT, "Audio decoder suppressed repeated errors: send={}, receive={}, stream={}",
+                        Math.max(0L, sendFailures - 1), Math.max(0L, receiveFailures - 1), this.audioStreamIndex);
             LOGGER.info(IT, "Audio decode exiting — packets: {}, frames produced: {}, interrupted: {}",
                     packetsProcessed, framesProduced, Thread.currentThread().isInterrupted());
             // RESET THE CODEC FOR THE NEXT RUN (SEE THE VIDEO DECODER): AT A CLEAN EOF THIS THREAD
@@ -2092,9 +2147,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
             if (ret < 0) {
-                final byte[] buf = new byte[256];
-                av_strerror(ret, buf, buf.length);
-                final String reason = new String(buf).trim();
+                final String reason = error(ret);
                 LOGGER.error(IT, "Failed to open input ({}): {}", reason, url);
                 this.exception(new IOException("Failed to open input (" + reason + "): " + url));
                 this.formatContext = null;
@@ -2867,6 +2920,18 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // UTILITY
+    // LOGS THE FIRST UNEXPECTED send/receive FAILURE OF A DECODE LOOP WITH ITS CODEC AND NATIVE DETAIL
+    private static void logCodecError(final String media, final String operation, final AVCodecContext codec, final int stream, final int code) {
+        LOGGER.warn(IT, "{} decoder {} failed: codec={}, stream={}, code={} ({})",
+                media, operation, getString(avcodec_get_name(codec.codec_id()), "unknown"), stream, code, error(code));
+    }
+
+    // DECODES A NEGATIVE FFMPEG RETURN CODE INTO ITS NATIVE MESSAGE
+    private static String error(final int code) {
+        final byte[] detail = new byte[256];
+        return av_strerror(code, detail, detail.length) >= 0 ? new String(detail, StandardCharsets.UTF_8).trim() : "unknown native error";
+    }
+
     // CONVERTS A NATIVE STRING POINTER TO JAVA, OR RETURNS orElse (STRING-IFIED) WHEN THE POINTER IS NULL
     private static String getString(final BytePointer p, final Object orElse) { return !isNull(p) ? p.getString() : orElse != null ? String.valueOf(orElse) : null; }
     private static boolean isNull(final Pointer p) { return p == null || p.isNull(); }

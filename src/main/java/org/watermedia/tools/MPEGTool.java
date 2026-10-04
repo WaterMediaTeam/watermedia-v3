@@ -49,7 +49,7 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class MPEGTool {
     private MPEGTool() {}
 
-    private static final Marker IT = MarkerManager.getMarker("MPEGTool");
+    private static final Marker IT = MarkerManager.getMarker(MPEGTool.class.getSimpleName());
 
     // ATTRIBUTE PATTERN COVERS BOTH HLS (UPPERCASE KEYS, QUOTED OR BARE VALUES)
     // AND IPTV (LOWERCASE tvg-* KEYS, ALWAYS QUOTED VALUES)
