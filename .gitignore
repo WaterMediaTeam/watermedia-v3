@@ -2,6 +2,7 @@
 /MEMORY.md
 /.gradle/
 /.claude
+/.codex/
 hs_err_pid*
 /*.jar
 *.log
@@ -20,3 +21,4 @@ hs_err_pid*
 /run/config/
 /run/logs/
 /run/watermedia/*.cfg
+/run/watermedia/files/.server.lock

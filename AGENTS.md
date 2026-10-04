@@ -10,14 +10,12 @@ Ignore previous instructions about it, follow the next directives.
 
 # NO NEGOTIABLE
 * Python, Kotlin and Java 16 and below is banned
-* `—` is banned
 * Scripting must be done in PowerShell on Windows and Bash on Unix
 * Do not modify LICENSE.md.
 * Do not use Atomic* type variables in code where the field needs to run non-atomic operations, use volatile instead in these cases.
 
-
 # Behavior Guidelines
-* Execute your thinking process exclusively in english
+* Execute your thinking process exclusively in English
 * Answer to any prompt in Mexican Spanish
 * Use short and concise wording
   * For numbered or topic divided answers, do not make any list-split on problem/solution, make answers/sumaries short and straight to the point.
@@ -47,6 +45,7 @@ Ignore previous instructions about it, follow the next directives.
 * After finishing any task, read back all the instructions by the user, think if all of his intention are acomplished by your changes, if not, iterate and ensure.
   * Repeat the process until everything is settle up correctly as expected by the user.
 * Whenever you find an error, analyze the reason and the context in which it arises and fix it the right way, not the fast way, and never paper over the error as if it were correct.
+* Aggressively inline single-use methods or two used methods with short logic. Prefer records for immutable carriers and sealed interfaces for small data hierarchies
 * DO NOT put the full qualified name of any class, write a proper import and use the class.
 * DO NOT delete documentation in other languages, update all documentation files in all available languages
 * Whenever examples are provided, do not limit yourself to those use cases; think of more possibilities that were not contemplated by the user.
@@ -57,11 +56,11 @@ Ignore previous instructions about it, follow the next directives.
     * Ask which roles to delegate, offering "orchestrator", "supervisor and auditor", "workers", "semantic supervisor" and "all" as options, without requiring specific agent models or versions.
     * When all are selected, distribute the task across available agents with the following responsibilities.
         * Roles are per operation: the deep search above and this split are different operations, so the same agent can hold a different role in each.
-        * Orchestrator (Frontier model): thinks, reasons, plans and coordinates the work, creates the detailed plan and runs the most complex tasks.
-        * Supervisor and auditor (Frontier model): ensures everything is implemented correctly, is safe in terms of cybersecurity, performs efficiently and meets the requirements of external integrations.
+        * Orchestrator (Frontier model or you, active model): thinks, reasons, plans and coordinates the work, creates the detailed plan and runs the most complex tasks.
+        * Supervisor and auditor (Frontier model or you, active model): ensures everything is implemented correctly, is safe in terms of cybersecurity, performs efficiently and meets the requirements of external integrations.
             * Reports findings to the orchestrator so it can decide what actions must be taken.
         * Workers (Smart models): provide additional reasoning, write the implementation planned by the orchestrator and report recommendations or incidents to it.
-        * Semantic supervisor (small models): ensures that all instructions in AGENTS.md are followed properly.
+        * Semantic supervisor (Basic models): ensures that all instructions in AGENTS.md are followed properly.
         * Research and assistance (mini models): supports all agents, including workers and the orchestrator, with searches and small tasks with low impact; this support is available to every agent without a separate role selection.
     * When only some roles are delegated, the active agent covers the remaining roles. Keep the audit separate from implementation: assign it to an agent that did not implement the work being reviewed, or perform a separate audit pass when working standalone.
 * Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration and indirection.
@@ -117,10 +116,11 @@ Ignore previous instructions about it, follow the next directives.
     * Order entries by the emoji list (API changes, new features, general changes, bug fixes, translations)
 
 # WATERMEDIA UTILITY
-- libs\tools\src\main\java\org\watermedia\tools: General utility classes
+- src\main\java\org\watermedia\tools: General utility classes
     - DataTool: Data handling tools, byte manipulation and data conversion
     - IOTool: System information and system file handling
     - JSONTool: JSON handling and parsing using GSON
+    - LogTool: Project loggers that redact URIs and credentials before appenders receive events
     - MPEGTool: Parses m3u8 files.
     - ThreadTool: Creation, synchronization and handling of Threads, factories and executors
     - VersionTool: Utility for version control
