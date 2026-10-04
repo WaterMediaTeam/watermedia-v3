@@ -32,7 +32,7 @@ public final class AlphaDecoder {
     private AlphaDecoder() {
     }
 
-    // DECODE ALPHA CHUNK AND RETURN ALPHA PLANE (W*H BYTES)
+    /** Decodes a WebP ALPH payload into one unsigned alpha byte per pixel, including its inverse filter. */
     public static byte[] decode(ByteBuffer buffer, final int w, final int h) throws XCodecException {
         buffer = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
 
@@ -143,7 +143,7 @@ public final class AlphaDecoder {
         return Math.max(0, Math.min(255, pred));
     }
 
-    // APPLY ALPHA VALUES TO ARGB PIXEL ARRAY (USED FOR ANIMATION COMPOSITING)
+    /** Replaces alpha in the shared prefix of an ARGB array and an alpha plane, leaving RGB unchanged. */
     public static void applyAlpha(final int[] argb, final byte[] alpha) {
         final int len = Math.min(argb.length, alpha.length);
         for (int i = 0; i < len; i++) {
@@ -152,9 +152,7 @@ public final class AlphaDecoder {
         }
     }
 
-    // APPLY ALPHA VALUES IN-PLACE ON BGRA BYTEBUFFER
-    // WRITES ALPHA BYTE DIRECTLY AT OFFSET i*4+3 (THE A POSITION IN BGRA)
-    // NO ALLOCATION, NO CONVERSION - JUST OVERWRITES ALPHA BYTES
+    /** Replaces the alpha byte of each BGRA pixel up to the shorter buffer capacity or alpha plane. */
     public static void applyAlpha(final ByteBuffer bgra, final byte[] alpha) {
         final int pixelCount = Math.min(bgra.capacity() / 4, alpha.length);
         for (int i = 0; i < pixelCount; i++) {

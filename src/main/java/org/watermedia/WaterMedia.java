@@ -122,20 +122,24 @@ public final class WaterMedia {
     /** Returns one coherent lifecycle, progress and failure snapshot. */
     public static BootStatus status() { return bootstrap.status(); }
 
+    /** Prefixes a resource path with this library's identifier, as {@code watermedia:path}. */
     public static String toId(final String path) { return ID + ":" + path; }
 
+    /** Returns the session's absolute working directory; throws when WaterMedia is not initialized. */
     public static Path cwd() {
         final WaterMedia context = instance;
         if (context == null) throw new IllegalStateException(NAME + " was not initialized");
         return context.cwd;
     }
 
+    /** Returns the session's absolute temporary directory; throws when WaterMedia is not initialized. */
     public static Path tmp() {
         final WaterMedia context = instance;
         if (context == null) throw new IllegalStateException(NAME + " was not initialized");
         return context.tmp;
     }
 
+    /** Rejects a client-only operation requested by {@code type} when WaterMedia is uninitialized or server-side. */
     public static void checkIsClientSideOrThrow(final Class<?> type) {
         final WaterMedia context = instance;
         if (context == null) throw new IllegalStateException(NAME + " was not initialized");

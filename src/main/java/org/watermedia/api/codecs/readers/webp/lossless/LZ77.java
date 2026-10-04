@@ -28,7 +28,7 @@ public final class LZ77 {
     private LZ77() {
     }
 
-    // DECODE PREFIX CODE TO VALUE (LENGTH OR DISTANCE PREFIX)
+    /** Expands a WebP length or distance prefix, consuming its extra bits from the reader. */
     public static int prefixToValue(final int prefixCode, final BitReader reader) throws XCodecException {
         if (prefixCode < 4) {
             return prefixCode + 1;
@@ -38,7 +38,7 @@ public final class LZ77 {
         return offset + reader.read(extraBits) + 1;
     }
 
-    // CONVERT DISTANCE CODE TO PIXEL OFFSET
+    /** Maps a positive WebP distance code to a backward pixel offset for the given row width. */
     public static int distanceToOffset(final int distanceCode, final int width) {
         if (distanceCode > 120) {
             // LINEAR DISTANCE (OFFSET BY 120)

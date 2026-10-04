@@ -481,7 +481,10 @@ public final class NetworkServer {
             this.totalBytes = totalBytes;
         }
 
+        /** Expected upload size in bytes */
         public long totalBytes() { return this.totalBytes; }
+
+        /** Bytes written to the connection so far, confirmed by the server only once {@link #completed()} */
         public long uploadedBytes() { return this.uploadedBytes; }
 
         /** Current upload speed in bytes per second */
@@ -490,8 +493,13 @@ public final class NetworkServer {
         /** Server-assigned ID, null until upload completes */
         public String id() { return this.id; }
 
+        /** Whether the server accepted the upload and assigned its ID */
         public boolean completed() { return this.complete; }
+
+        /** Whether the upload ended without completing */
         public boolean failed() { return this.failed; }
+
+        /** Failure detail, null until the upload fails */
         public String error() { return this.error; }
 
         /** Upload progress from 0.0 to 100.0 */

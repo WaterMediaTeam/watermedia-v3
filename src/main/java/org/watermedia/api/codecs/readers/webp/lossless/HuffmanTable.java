@@ -44,6 +44,7 @@ public final class HuffmanTable {
         return this.isSingleSymbol ? this.singleSymbolValue : -1;
     }
 
+    /** Decodes the next symbol from the LSB-first bitstream, or returns the sole symbol without consuming bits. */
     public int read(final BitReader reader) throws XCodecException {
         // CHECK FOR SINGLE SYMBOL TABLE (NO BITS NEEDED)
         if (this.isSingleSymbol) {
@@ -98,7 +99,7 @@ public final class HuffmanTable {
         throw new XCodecException("Invalid huffman code (code=" + code + ")");
     }
 
-    // BUILD TABLE FROM CODE LENGTHS
+    /** Builds a canonical LSB-first table from symbol lengths; rejects over-subscribed codes. */
     public static HuffmanTable build(final int[] codeLengths, final int alphabetSize) throws XCodecException {
         if (codeLengths == null || codeLengths.length == 0) {
             // EMPTY TABLE - SINGLE SYMBOL 0
@@ -218,7 +219,7 @@ public final class HuffmanTable {
         return new HuffmanTable(lookup, longLens, longCodes, longSymbols, longStart, longMaxLen, false, 0);
     }
 
-    // BUILD SIMPLE TABLE (1-2 SYMBOLS)
+    /** Builds a one-symbol zero-bit table or a two-symbol one-bit table. */
     public static HuffmanTable simple(final int numSymbols, final int sym0, final int sym1) {
         if (numSymbols == 1) {
             return singleSymbolTable(sym0);
@@ -238,6 +239,7 @@ public final class HuffmanTable {
         return new HuffmanTable(null, NO_LONG, NO_LONG, NO_LONG, NO_LONG_START, 0, true, symbol);
     }
 
+    /** Returns a summary of the lookup coverage and distinct coded symbols for diagnostics. */
     public String debugInfo() {
         if (this.isSingleSymbol) return "HuffmanTable[singleSymbol=" + this.singleSymbolValue + "]";
 

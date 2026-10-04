@@ -43,7 +43,7 @@ public enum MathEases {
         this.easing = easing;
     }
 
-    // APPLIES THE EASING CURVE: INTERPOLATES BETWEEN start AND end AT NORMALISED TIME value (0.0-1.0)
+    /** Interpolates between start and end at an unclamped time {@code value} (0.0-1.0); elastic and back curves overshoot. */
     public double apply(final double start, final double end, final double value) {
         return this.easing.apply(start, end, value);
     }

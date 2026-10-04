@@ -99,6 +99,7 @@ public enum MediaType {
     /**
      * Parses a MIME type string into MediaType. Streaming manifests and containers hiding
      * behind {@code application/*} (HLS, DASH, RealMedia, SubRip) are classified too.
+     * @return the matching type, or {@link #UNKNOWN} for null, empty or unsupported input
      */
     public static MediaType of(final String mimeType) {
         if (mimeType == null || mimeType.isEmpty()) return UNKNOWN;

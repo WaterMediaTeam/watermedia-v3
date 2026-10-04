@@ -24,17 +24,18 @@ public final class ColorCache {
         this.hashMask = sz - 1;
     }
 
-    // INSERT COLOR INTO CACHE AT HASHED POSITION
+    /** Stores an ARGB color in its hash slot, replacing any earlier color in that slot. */
     public void insert(final int argb) {
         final int idx = (argb * HASH_MUL) >>> this.hashShift;
         this.colors[idx] = argb;
     }
 
-    // LOOKUP COLOR BY INDEX (MASKED TO VALID RANGE)
+    /** Reads a cache slot after wrapping the index to the power-of-two cache size. */
     public int lookup(final int idx) {
         return this.colors[idx & this.hashMask];
     }
 
+    /** Returns the number of cache slots, equal to {@code 1 << cacheBits}. */
     public int size() {
         return this.colors.length;
     }

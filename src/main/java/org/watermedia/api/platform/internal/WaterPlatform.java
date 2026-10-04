@@ -37,6 +37,13 @@ public final class WaterPlatform implements IPlatform {
         return new PlatformData(null, entry);
     }
 
+    /**
+     * Resolves a {@code water://local/}, {@code water://remote/}, or {@code water://global/}
+     * address to its file or HTTP URL. Local paths are resolved against {@link WaterMedia#cwd()}.
+     * @param u water address to resolve
+     * @return the resolved URL text
+     * @throws IOException if the address has no supported host or the remote base URL is invalid
+     */
     public static String toHttpURL(final URI u) throws IOException {
         final String host = u.getHost();
         String path = u.getPath();

@@ -30,19 +30,19 @@ public final class VP8LossyDecoder {
      */
     public record Yuv420P(byte[] y, byte[] u, byte[] v, int width, int height, int yStride, int uvStride) {}
 
+    /** Decodes an opaque VP8 key frame into packed ARGB pixels, requiring the declared dimensions to match. */
     public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
         final Yuv420P yuv = decodeToYuv(data, expW, expH);
         return DataTool.yuvToBgra(yuv.y(), yuv.u(), yuv.v(), yuv.width(), yuv.height(), yuv.yStride(), yuv.uvStride());
     }
 
-    // DECODE VP8 LOSSY DIRECTLY TO BGRA BYTEBUFFER (EFFICIENT PATH FOR PURE LOSSY WITHOUT ALPHA)
+    /** Converts an opaque VP8 key frame into a newly allocated direct BGRA buffer. */
     public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
         final Yuv420P yuv = decodeToYuv(data, expW, expH);
         return DataTool.yuvToBgraBuf(yuv.y(), yuv.u(), yuv.v(), yuv.width(), yuv.height(), yuv.yStride(), yuv.uvStride());
     }
 
-    // DECODE VP8 LOSSY TO RAW YUV 4:2:0 PLANES (NO COLOR CONVERSION). USED WHEN THE CONSUMER WANTS
-    // TO UPLOAD YUV DIRECTLY (E.G. AS GL TEXTURES) AND DO THE YUV-TO-RGB CONVERSION ON GPU.
+    /** Decodes a VP8 key frame to macroblock-padded YUV 4:2:0 planes without RGB conversion. */
     public static Yuv420P decodeToYuv(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
         final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
 

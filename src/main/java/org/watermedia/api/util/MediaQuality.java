@@ -25,6 +25,7 @@ public enum MediaQuality {
         this.threshold = threshold;
     }
 
+    /** Determines quality from a single dimension; see {@link #of(int, int)}. */
     public static MediaQuality of(final int resolution) {
         return of(resolution, resolution);
     }
@@ -38,7 +39,7 @@ public enum MediaQuality {
      *
      * @param width  video width (0 if unknown)
      * @param height video height (0 if unknown)
-     * @return the appropriate quality level
+     * @return the matching quality, or {@link #UNKNOWN} when no dimension reaches the first threshold
      */
     public static MediaQuality of(final int width, final int height) {
         final int size;

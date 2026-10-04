@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  * <p>
  * Bits are read LSB-first (the least significant bit first) within each byte.
  * Multi-bit reads accumulate bits in LSB-first order:
- * read(2) with bits [b0, b1] returns b0 | (b1 << 1)
+ * {@code read(2)} with bits {@code [b0, b1]} returns {@code b0 | (b1 << 1)}.
  */
 public final class BitReader {
     public static final int MAX_BURST_BITS = 24;
@@ -146,10 +146,12 @@ public final class BitReader {
         return this.ensureBits(bits);
     }
 
+    /** Returns unread bytes in the source buffer, excluding bits already held in the accumulator. */
     public int remaining() {
         return this.buf.remaining();
     }
 
+    /** Returns a diagnostic snapshot of unread bytes, buffered bits and the accumulator value. */
     public String bitPosition() {
         return "bytes=" + this.buf.remaining() + ",bitsAvail=" + this.bitsAvail + ",bitBuf=0x" + Long.toHexString(this.bitBuf);
     }

@@ -85,6 +85,7 @@ public final class NetRequest implements AutoCloseable {
 
         private final String value;
         UserAgent(final String value) { this.value = value; }
+        /** Returns the {@code User-Agent} header value of this preset. */
         public String value() { return this.value; }
     }
 
@@ -102,10 +103,12 @@ public final class NetRequest implements AutoCloseable {
         this.responseHeaders = RequestHeaders.fromResponse(connection);
     }
 
+    /** Creates a request builder with default headers and configured network limits. */
     public static Builder create(final URI uri) {
         return new Builder(uri);
     }
 
+    /** Creates a request builder for URI text; invalid syntax throws {@link IllegalArgumentException}. */
     public static Builder create(final String uri) {
         return new Builder(URI.create(uri));
     }
@@ -167,8 +170,10 @@ public final class NetRequest implements AutoCloseable {
      */
     public int statusCode() { return this.statusCode; }
 
+    /** Returns the reported content type, or null when unavailable. */
     public String contentType() { return this.connection.getContentType(); }
 
+    /** Returns the reported content length in bytes, or -1 when unknown. */
     public long contentLength() { return this.connection.getContentLengthLong(); }
 
     /**
@@ -312,12 +317,19 @@ public final class NetRequest implements AutoCloseable {
             this.headers.set("Accept", "*/*");
         }
 
+        /** Sets the HTTP method, uppercased; the connection validates it on {@link #send()}. */
         public Builder method(final String method) { this.method = method.toUpperCase(); return this; }
+        /** Replaces the {@code Content-Type} header. */
         public Builder contentType(final String contentType) { this.headers.set("Content-Type", contentType); return this; }
+        /** Replaces the {@code Accept} header. */
         public Builder accept(final String accept) { this.headers.set("Accept", accept); return this; }
+        /** Replaces the {@code Referer} header, overriding the derived default. */
         public Builder referer(final String referer) { this.headers.set("Referer", referer); return this; }
+        /** Selects the User-Agent preset. */
         public Builder userAgent(final UserAgent userAgent) { this.userAgent = Objects.requireNonNull(userAgent); return this; }
+        /** Replaces every value of a header; names must be HTTP tokens and values free of control characters. */
         public Builder header(final String name, final String value) { this.headers.set(name, value); return this; }
+        /** Appends a header value, keeping existing values; same validation as {@link #header}. */
         public Builder addHeader(final String name, final String value) { this.headers.add(name, value); return this; }
 
         /**
@@ -329,10 +341,16 @@ public final class NetRequest implements AutoCloseable {
             this.headers.merge(headers);
             return this;
         }
+
+        /** Sets the body without copying, or clears it with null; redirects resend it except on a 303. */
         public Builder body(final byte[] body) { this.body = body; return this; }
+        /** Sets the body as UTF-8 text, or clears it with null. */
         public Builder body(final String body) { this.body = body == null ? null : body.getBytes(StandardCharsets.UTF_8); return this; }
+        /** Sets the connect timeout in milliseconds; zero waits forever and negatives fail on {@link #send()}. */
         public Builder connectTimeout(final int ms) { this.connectTimeout = ms; return this; }
+        /** Sets the read timeout in milliseconds; zero waits forever and negatives fail on {@link #send()}. */
         public Builder readTimeout(final int ms) { this.readTimeout = ms; return this; }
+        /** Sets how many redirects {@link #send()} may follow; zero or less rejects the first one. */
         public Builder maxRedirects(final int n) { this.maxRedirects = n; return this; }
 
         /**
@@ -345,10 +363,9 @@ public final class NetRequest implements AutoCloseable {
         }
 
         /**
-         * Opens the connection, writes the body if any, and follows redirects manually —
+         * Opens the connection, writes the body if any, and follows redirects manually,
          * including cross-protocol switches that {@link HttpURLConnection} silently refuses.
-         * Throws {@link IOException} when the redirect chain exceeds {@link #maxRedirects},
-         * logging the full hop trace before giving up.
+         * @throws IOException when the transfer fails, the method is rejected or the redirect chain exceeds {@link #maxRedirects}
          */
         public NetRequest send() throws IOException {
             URI current = this.uri;

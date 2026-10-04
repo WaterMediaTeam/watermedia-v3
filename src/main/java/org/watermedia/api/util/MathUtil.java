@@ -7,6 +7,7 @@ public final class MathUtil {
 
     private MathUtil() {}
 
+    /** Parses a base-10 long, returning zero for null, malformed or out-of-range text. */
     public static long parseLong(final String s) {
         try {
             return Long.parseLong(s);
@@ -629,10 +630,18 @@ public final class MathUtil {
         }
     }
 
+    /**
+     * Limits a value to inclusive bounds.
+     * @param value value to limit
+     * @param min lower bound, no greater than {@code max}
+     * @param max upper bound
+     * @return the limited value
+     */
     public static int clamp(final int value, final int min, final int max) {
         return value >= max ? max : value <= min ? min : value;
     }
 
+    /** Limits a value to the unsigned-byte range, 0 to 255. */
     public static int clip255(final int value) {
         return clamp(value, 0, 255);
     }
@@ -677,8 +686,11 @@ public final class MathUtil {
         return SIN[(int)(pValue * 10430.378F + 16384.0F) & 0xFFFF];
     }
 
+    /** Converts bytes to kibibytes (1024 bytes per unit). */
     public static double bytesToKB(final long bytes) { return bytes / 1024.0; }
+    /** Converts bytes to mebibytes (1024^2 bytes per unit). */
     public static double bytesToMB(final long bytes) { return bytes / (1024.0 * 1024.0); }
+    /** Converts bytes to gibibytes (1024^3 bytes per unit). */
     public static double bytesToGB(final long bytes) { return bytes / (1024.0 * 1024.0 * 1024.0); }
 
     /**

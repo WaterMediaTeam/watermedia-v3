@@ -17,6 +17,7 @@ public final class RiffChunk {
     private RiffChunk() {
     }
 
+    /** Decodes the four little-endian ASCII bytes of a RIFF chunk identifier. */
     public static String fourCCString(final int fourCC) {
         return new String(new char[]{
                 (char) (fourCC & 0xFF),

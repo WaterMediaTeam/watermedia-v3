@@ -556,16 +556,21 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // ==========================================================================
 
     /**
-     * Changes the selected quality.
-     * The media player will detect this change in its playback loop
-     * and switch to the new quality while maintaining the current timestamp.
+     * Selects the quality to use for this player. An active backend may switch sources on its
+     * playback loop while preserving the current timestamp; if that quality is unavailable, the
+     * source resolves it to the closest available quality.
      * @param quality the new quality to use
+     * @throws IllegalArgumentException if {@code quality} is {@code null}
      */
     public void quality(final MediaQuality quality) {
         if (quality == null) throw new IllegalArgumentException("Quality cannot be null.");
         this.quality = quality;
     }
 
+    /**
+     * Returns the currently selected quality. It may be {@link MediaQuality#UNKNOWN} until source dimensions are known.
+     * @return the selected quality
+     */
     public MediaQuality quality() { return this.quality; }
 
     // RESOLVES A STILL-UNKNOWN QUALITY TO THE REAL ONE ONCE THE DECODED DIMENSIONS ARE KNOWN,

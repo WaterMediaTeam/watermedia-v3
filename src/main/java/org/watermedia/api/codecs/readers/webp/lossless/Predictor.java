@@ -10,7 +10,7 @@ public final class Predictor {
     private Predictor() {
     }
 
-    // APPLY INVERSE PREDICTOR TRANSFORM
+    /** Adds block-selected WebP predictors to residual ARGB pixels in row order, in place. */
     public static void inverse(final int[] pixels, final int width, final int height, final int[] modes, final int blockBits) {
         if (width == 0 || height == 0) return;
 

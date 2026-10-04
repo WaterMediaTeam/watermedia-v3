@@ -132,6 +132,9 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
         return out;
     }
 
+    /**
+     * Whether any value exists for {@code name} (case-insensitive).
+     */
     public boolean has(final String name) {
         for (final Entry e: this.entries) {
             if (eq(e.name, name)) return true;
@@ -139,10 +142,13 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
         return false;
     }
 
+    /** Whether the bag has no entries. */
     public boolean isEmpty() { return this.entries.isEmpty(); }
 
+    /** Number of stored values, counting repeated names. */
     public int size() { return this.entries.size(); }
 
+    /** Immutable snapshot of every entry, values included, in insertion order. */
     public List<Entry> entries() { return List.copyOf(this.entries); }
 
     // REPEATED HEADER NAMES USE ADD AFTER THE FIRST VALUE SO NONE ARE LOST.

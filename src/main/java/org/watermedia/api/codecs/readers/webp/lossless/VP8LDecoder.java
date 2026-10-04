@@ -36,7 +36,7 @@ public final class VP8LDecoder {
     private VP8LDecoder() {
     }
 
-    // DECODE VP8L BITSTREAM TO ARGB PIXELS
+    /** Decodes VP8L image data and inverse transforms into {@code width * height} packed ARGB pixels. */
     public static int[] decode(final BitReader reader, final int width, final int height) throws XCodecException {
         LOGGER.trace(IT, "Starting decode: {}x{}", width, height);
 
@@ -142,7 +142,7 @@ public final class VP8LDecoder {
         return pixels;
     }
 
-    // DECODE VP8L BITSTREAM DIRECTLY TO BGRA BYTEBUFFER (EFFICIENT - USES ZERO-COPY WRAP)
+    /** Decodes VP8L pixels into a newly allocated direct buffer containing little-endian BGRA bytes. */
     public static ByteBuffer decodeToBgra(final BitReader reader, final int width, final int height) throws XCodecException {
         final int[] bgra = decode(reader, width, height);
         return DataTool.bgraToBuffer(bgra);

@@ -5,7 +5,7 @@ public final class ColorTransform {
     private ColorTransform() {
     }
 
-    // APPLY INVERSE COLOR TRANSFORM
+    /** Restores red and blue channels in an ARGB image using one transform pixel per block. */
     public static void inverse(final int[] pixels, final int width, final int height, final int[] transforms, final int blockBits) {
         if (width == 0 || height == 0) return;
         final int blockSize = 1 << blockBits;
@@ -42,7 +42,7 @@ public final class ColorTransform {
         }
     }
 
-    // APPLY INVERSE SUBTRACT GREEN TRANSFORM
+    /** Adds each pixel's green channel back into red and blue, modulo 256, in place. */
     public static void addGreen(final int[] pixels) {
         for (int i = 0; i < pixels.length; i++) {
             final int pixel = pixels[i];
@@ -58,7 +58,7 @@ public final class ColorTransform {
         }
     }
 
-    // APPLY INVERSE COLOR INDEXING TRANSFORM
+    /** Expands green-channel palette indexes into ARGB pixels in place; packed input needs full output capacity. */
     public static void applyPalette(final int[] pixels, final int width, final int height, final int[] colorTable, final int widthBits) {
         if (widthBits == 0) {
             // NO BUNDLING, DIRECT INDEX LOOKUP
@@ -90,7 +90,7 @@ public final class ColorTransform {
         }
     }
 
-    // DECODE COLOR TABLE (SUBTRACT-CODED)
+    /** Reconstructs a nonempty delta-coded ARGB color table without modifying the input. */
     public static int[] decodeColorTable(final int[] rawTable) {
         final int[] table = new int[rawTable.length];
         table[0] = rawTable[0];
@@ -111,7 +111,7 @@ public final class ColorTransform {
         return table;
     }
 
-    // GET WIDTH BITS FOR PIXEL BUNDLING BASED ON COLOR TABLE SIZE
+    /** Returns WebP color-index packing bits: 3, 2 or 1 for at most 2, 4 or 16 colors; otherwise 0. */
     public static int widthBits(final int colorTableSize) {
         if (colorTableSize <= 2) return 3;      // 8 PIXELS PER BYTE
         if (colorTableSize <= 4) return 2;      // 4 PIXELS PER BYTE

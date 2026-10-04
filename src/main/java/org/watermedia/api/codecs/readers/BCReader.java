@@ -12,11 +12,11 @@ import java.nio.ByteOrder;
  * Reader for the BC (BC7/BC3/BC1) texture-compression codec stored in a {@link DDSHeader DDS}
  * container. Unlike the pixel-decoding {@link ImageReader} readers, BC is
  * sampled by the GPU, so this reader yields the <em>compressed</em> blocks of each frame (in the
- * file's own version) for direct upload — there is no software decode.
+ * file's own version) for a consumer's direct upload; there is no software decode.
  *
- * <p>Reading blocks requires no native encoder. The consumer must check that its graphics engine
- * supports the format reported by {@link #version()}. A WaterMedia animation footer is optional;
- * without one, texture array slices have zero display delay.
+ * <p>Reading blocks requires no native encoder. WaterMedia's built-in graphics engines currently
+ * decline BC textures; an external GPU consumer must support the layout named by {@link #version()}.
+ * A WaterMedia animation footer is optional; without one, texture array slices have zero display delay.
  */
 public final class BCReader implements Closeable {
 
@@ -80,8 +80,11 @@ public final class BCReader implements Closeable {
         }
     }
 
+    /** Returns the encoded frame width in pixels. */
     public int width() { return this.width; }
+    /** Returns the encoded frame height in pixels. */
     public int height() { return this.height; }
+    /** Returns the number of texture-array slices, including already consumed frames. */
     public int frameCount() { return this.frames.length; }
 
     /** The BC version of the stored texture ({@code BC7}/{@code BC3}/{@code BC1}) — needed for GPU upload. */
@@ -98,10 +101,12 @@ public final class BCReader implements Closeable {
 
     /**
      * The compressed block buffers for every frame, in order, for a one-shot array upload.
-     * The buffers are direct views over shared storage; callers must not free them individually.
+     * Only the array is copied: buffer contents, positions and limits are shared with {@link #next()}.
+     * Duplicate a buffer to change its position independently; do not free the shared storage.
      */
     public ByteBuffer[] blocks() { return this.frames.clone(); }
 
+    /** Returns whether next() can advance to another compressed frame; close() exhausts the cursor. */
     public boolean hasNext() { return this.cursor < this.frames.length; }
 
     /** The next frame's compressed blocks paired with its delay, or {@code null} at the end. */

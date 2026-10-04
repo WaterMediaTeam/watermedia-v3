@@ -514,9 +514,9 @@ public final class MRL {
      * Internal: rewires a quality bucket inside an existing {@link Source}.
      * Used by FFMediaPlayer when an HLS rendition turns out to map to a
      * different bucket than the platform reported. Public only because the
-     * caller lives in a sibling package — not part of the supported API.
+     * caller lives in a sibling package; not part of the supported API.
      *
-     * @apiNote do not call from application code.
+     * Do not call from application code.
      */
     public void moveQuality(final int sourceIndex, final MediaQuality from, final MediaQuality to) {
         final Source[] s = this.sources;
@@ -582,6 +582,9 @@ public final class MRL {
             return this.qualities.get(closest);
         }
 
+        /**
+         * Gets the first quality, in enum order, whose URI equals {@code uri}, or null when none does.
+         */
         public MediaQuality qualityOf(final URI uri) {
             if (uri == null) return null;
             for (final var q: this.qualities.entrySet()) {

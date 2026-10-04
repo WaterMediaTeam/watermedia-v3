@@ -8,7 +8,7 @@ import java.util.List;
  * when the source URI is a gallery, album or multi-stream resource.
  *
  * @param expires expiration instant for cached entries (null = never)
- * @param entries one or more media entries
+ * @param entries copied media entries; may be empty but never null or contain nulls
  */
 public record PlatformData(Instant expires, List<DataSource> entries) {
 
@@ -22,6 +22,7 @@ public record PlatformData(Instant expires, List<DataSource> entries) {
         this(expires, List.of(entry));
     }
 
+    /** Returns the number of media entries in this result. */
     public int size() {
         return this.entries.size();
     }

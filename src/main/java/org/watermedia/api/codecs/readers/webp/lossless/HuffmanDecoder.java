@@ -16,7 +16,7 @@ public final class HuffmanDecoder {
     private HuffmanDecoder() {
     }
 
-    // READ A SINGLE HUFFMAN TABLE FROM BITSTREAM
+    /** Reads one simple or length-coded WebP Huffman table for the declared alphabet size. */
     public static HuffmanTable readTable(final BitReader reader, final int alphabetSize) throws XCodecException {
         final boolean isSimple = reader.readBool();
         LOGGER.trace(IT, "readTable: alphabetSize={}, isSimple={}", alphabetSize, isSimple);
@@ -28,7 +28,7 @@ public final class HuffmanDecoder {
         }
     }
 
-    // READ HUFFMAN GROUP (5 TABLES)
+    /** Reads the five green, red, blue, alpha and distance tables in one WebP Huffman group. */
     public static HuffmanGroup readGroup(final BitReader reader, final int colorCacheSize) throws XCodecException {
         // ALPHABET SIZES:
         // GREEN: 256 LITERALS + 24 LENGTH CODES + COLOR_CACHE_SIZE
@@ -45,7 +45,7 @@ public final class HuffmanDecoder {
         return new HuffmanGroup(green, red, blue, alpha, dist);
     }
 
-    // READ MULTIPLE HUFFMAN GROUPS
+    /** Reads the declared number of Huffman groups sequentially from the bitstream. */
     public static HuffmanGroup[] readGroups(final BitReader reader, final int numGroups, final int colorCacheSize) throws XCodecException {
         final HuffmanGroup[] groups = new HuffmanGroup[numGroups];
         for (int i = 0; i < numGroups; i++) {

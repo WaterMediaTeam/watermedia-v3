@@ -132,6 +132,58 @@ tasks.named('build') {
 }
 check.dependsOn tasks.named('compileToolsJava')
 
+// LISTS PUBLIC METHODS WITHOUT JAVADOC, SKIPPING OVERRIDES AND THE INTERNAL PACKAGES OF gradle.properties.
+def inventorySources = sourceSets.main.java
+def inventoryRoot = layout.projectDirectory.asFile
+def inventoryPackages = javadoc_internal_packages.split(',').collect { it.trim() }
+tasks.register('javadocInventory') {
+    group = 'documentation'
+    description = 'Lists public methods without local Javadoc, excluding overrides and internal packages'
+    doLast {
+        def declaration = ~/^\s*public\s+(?:(?:static|final|synchronized|abstract|native|default)\s+)*(?!class\b|interface\b|enum\b|record\b)[\w<>?,.\[\] ]+\s+(\w+)\s*\(/
+        int included = 0
+        int excluded = 0
+        int missing = 0
+        inventorySources.files.sort { it.path }.each { file ->
+            def lines = file.readLines('UTF-8')
+            if (lines.any { line -> inventoryPackages.any { name ->
+                line.startsWith("package $name;") || line.startsWith("package $name.")
+            } }) {
+                excluded++
+                return
+            }
+            included++
+            for (int i = 0; i < lines.size(); i++) {
+                def match = lines[i] =~ declaration
+                if (!match.find()) continue
+                def method = match.group(1)
+                int previous = i - 1
+                boolean override = false
+                while (previous >= 0 && (lines[previous].trim().isEmpty() || lines[previous].trim().startsWith('@'))) {
+                    if (lines[previous].trim().startsWith('@Override')) override = true
+                    previous--
+                }
+                boolean documented = false
+                if (previous >= 0 && lines[previous].trim().endsWith('*/')) {
+                    // ONLY COMMENT OPENERS COUNT; MIME PATTERNS INSIDE JAVADOC ARE ORDINARY TEXT.
+                    while (previous >= 0) {
+                        def line = lines[previous].stripLeading()
+                        if (line.startsWith('/**')) { documented = true; break }
+                        if (line.startsWith('/*')) break
+                        previous--
+                    }
+                }
+                if (!documented && !override) {
+                    def path = inventoryRoot.toPath().relativize(file.toPath()).toString().replace('\\', '/')
+                    logger.lifecycle("$path:${i + 1}:$method")
+                    missing++
+                }
+            }
+        }
+        logger.lifecycle("Javadoc inventory: $missing candidates; $included included files; $excluded excluded files.")
+    }
+}
+
 // NORMALIZE ENHANCED-FOR COLONS IN JAVA SOURCES.
 def javaSources = fileTree(dir: 'src', include: '**/*.java')
 tasks.register('removeSemicolonSpace') {
