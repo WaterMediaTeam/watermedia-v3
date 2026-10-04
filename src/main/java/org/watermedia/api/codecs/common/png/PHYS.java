@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11pHYs">PNG Specification - pHYs</a>
  */
-public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) {
+public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) implements IChunk {
     public static final int SIGNATURE = 0x70_48_59_73; // "pHYs"
     public static final int LENGTH = 9;
 
@@ -92,6 +92,7 @@ public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) {
         return this.pixelsPerUnitY * 0.0254;
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt((int) this.pixelsPerUnitX);
@@ -100,6 +101,7 @@ public record PHYS(long pixelsPerUnitX, long pixelsPerUnitY, int unit) {
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

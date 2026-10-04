@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11cHRM">PNG Specification - cHRM</a>
  */
-public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int greenY, int blueX, int blueY) {
+public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int greenY, int blueX, int blueY) implements IChunk {
     public static final int SIGNATURE = 0x63_48_52_4D; // "cHRM"
     public static final int LENGTH = 32;
 
@@ -69,15 +69,24 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     }
 
     // VALUES ARE STORED AS UNSIGNED INTEGERS * 100000
+    /** Returns the white point CIE x chromaticity coordinate. */
     public float whitePointX() { return this.whiteX / 100000.0f; }
+    /** Returns the white point CIE y chromaticity coordinate. */
     public float whitePointY() { return this.whiteY / 100000.0f; }
+    /** Returns the red primary CIE x chromaticity coordinate. */
     public float redPrimaryX() { return this.redX / 100000.0f; }
+    /** Returns the red primary CIE y chromaticity coordinate. */
     public float redPrimaryY() { return this.redY / 100000.0f; }
+    /** Returns the green primary CIE x chromaticity coordinate. */
     public float greenPrimaryX() { return this.greenX / 100000.0f; }
+    /** Returns the green primary CIE y chromaticity coordinate. */
     public float greenPrimaryY() { return this.greenY / 100000.0f; }
+    /** Returns the blue primary CIE x chromaticity coordinate. */
     public float bluePrimaryX() { return this.blueX / 100000.0f; }
+    /** Returns the blue primary CIE y chromaticity coordinate. */
     public float bluePrimaryY() { return this.blueY / 100000.0f; }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.whiteX);
@@ -91,6 +100,7 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

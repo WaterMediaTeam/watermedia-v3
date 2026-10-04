@@ -15,7 +15,7 @@ import java.time.ZonedDateTime;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11tIME">PNG Specification - tIME</a>
  */
-public record TIME(int year, int month, int day, int hour, int minute, int second) {
+public record TIME(int year, int month, int day, int hour, int minute, int second) implements IChunk {
     public static final int SIGNATURE = 0x74_49_4D_45; // "tIME"
     public static final int LENGTH = 7;
 
@@ -95,6 +95,7 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
                 this.year, this.month, this.day, this.hour, this.minute, this.second);
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putShort((short) this.year);
@@ -106,6 +107,7 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

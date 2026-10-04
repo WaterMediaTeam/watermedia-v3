@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11IHDR">PNG Specification - IHDR</a>
  */
-public record IHDR(int width, int height, int depth, int colorType, int compression, int filter, int interlace) {
+public record IHDR(int width, int height, int depth, int colorType, int compression, int filter, int interlace) implements IChunk {
     public static final int SIGNATURE = 0x49_48_44_52; // "IHDR"
     public static final int LENGTH = 13;
 
@@ -65,6 +65,7 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
         );
     }
 
+    /** Returns the byte distance used by PNG filters, at least one for packed samples; reserved color types throw. */
     public int bytesPerPixel() throws XCodecException {
         final int samplesPerPixel = switch (ColorType.of(this.colorType)) {
             case GREYSCALE -> 1;
@@ -77,6 +78,7 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
         return Math.max(1, (samplesPerPixel * this.depth) / 8);
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.width);
@@ -89,6 +91,7 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

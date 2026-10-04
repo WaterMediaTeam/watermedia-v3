@@ -11,7 +11,7 @@ import java.nio.charset.StandardCharsets;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11tEXt">PNG Specification - tEXt</a>
  */
-public record TEXT(String keyword, String text) {
+public record TEXT(String keyword, String text) implements IChunk {
     public static final int SIGNATURE = 0x74_45_58_74; // "tEXt"
 
     // PREDEFINED KEYWORDS
@@ -94,6 +94,7 @@ public record TEXT(String keyword, String text) {
         return new TEXT(keyword, text);
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] keywordBytes = this.keyword.getBytes(StandardCharsets.ISO_8859_1);
         final byte[] textBytes = this.text.getBytes(StandardCharsets.ISO_8859_1);
@@ -104,6 +105,7 @@ public record TEXT(String keyword, String text) {
         return data;
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

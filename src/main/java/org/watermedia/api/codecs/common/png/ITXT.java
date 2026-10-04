@@ -15,7 +15,7 @@ import java.util.zip.Inflater;
  * @see <a href="https://www.w3.org/TR/png-3/#11iTXt">PNG Specification - iTXt</a>
  */
 public record ITXT(String keyword, boolean compressed, int compressionMethod,
-                   String languageTag, String translatedKeyword, byte[] textData) {
+                   String languageTag, String translatedKeyword, byte[] textData) implements IChunk {
     public static final int SIGNATURE = 0x69_54_58_74; // "iTXt"
     // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
     private static final int MAX_DECOMPRESSED = 2 * 1024 * 1024; // 2 MB
@@ -174,6 +174,7 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
         return output.toString(StandardCharsets.UTF_8);
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] keywordBytes = this.keyword.getBytes(StandardCharsets.ISO_8859_1);
         final byte[] langBytes = this.languageTag.getBytes(StandardCharsets.US_ASCII);
@@ -193,6 +194,7 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

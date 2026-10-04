@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11sBIT">PNG Specification - sBIT</a>
  */
-public record SBIT(int gray, int red, int green, int blue, int alpha) {
+public record SBIT(int gray, int red, int green, int blue, int alpha) implements IChunk {
     public static final int SIGNATURE = 0x73_42_49_54; // "sBIT"
 
     /**
@@ -138,6 +138,7 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
         };
     }
 
+    @Override
     public byte[] toBytes() {
         if (this.gray >= 0 && this.alpha >= 0) {
             return new byte[] { (byte) this.gray, (byte) this.alpha };
@@ -150,6 +151,7 @@ public record SBIT(int gray, int red, int green, int blue, int alpha) {
         }
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

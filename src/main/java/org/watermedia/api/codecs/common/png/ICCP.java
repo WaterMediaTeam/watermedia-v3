@@ -14,7 +14,7 @@ import java.util.zip.Inflater;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11iCCP">PNG Specification - iCCP</a>
  */
-public record ICCP(String profileName, int compressionMethod, byte[] compressedProfile) {
+public record ICCP(String profileName, int compressionMethod, byte[] compressedProfile) implements IChunk {
     public static final int SIGNATURE = 0x69_43_43_50; // "iCCP"
     // CAP DECOMPRESSED PROFILE: A TINY iCCP CHUNK CAN INFLATE TO GIGABYTES (ZLIB BOMB); LEGIT ICC PROFILES ARE WELL UNDER THIS
     private static final int MAX_DECOMPRESSED = 16 * 1024 * 1024; // 16 MB
@@ -139,6 +139,7 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         return output.toByteArray();
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] nameBytes = this.profileName.getBytes(StandardCharsets.ISO_8859_1);
         final byte[] data = new byte[nameBytes.length + 1 + 1 + this.compressedProfile.length];
@@ -149,6 +150,7 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         return data;
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

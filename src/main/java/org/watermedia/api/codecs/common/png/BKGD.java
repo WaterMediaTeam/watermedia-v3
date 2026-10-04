@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11bKGD">PNG Specification - bKGD</a>
  */
-public record BKGD(int gray, int red, int green, int blue, int paletteIndex) {
+public record BKGD(int gray, int red, int green, int blue, int paletteIndex) implements IChunk {
     public static final int SIGNATURE = 0x62_4B_47_44; // "bKGD"
 
     /**
@@ -150,6 +150,7 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) {
         return 0xFF000000; // DEFAULT BLACK FOR INDEXED
     }
 
+    /** Scales a 1, 2, 4, 8 or 16-bit PNG sample to eight bits; 16-bit samples keep their high byte. */
     public int scaleTo8Bit(final int value, final int depth) {
         if (depth == 8) return value;
         if (depth == 16) return value >> 8;
@@ -157,6 +158,7 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) {
         return value;
     }
 
+    @Override
     public byte[] toBytes() {
         if (this.isGreyscale()) {
             final ByteBuffer buf = ByteBuffer.allocate(2).order(ByteOrder.BIG_ENDIAN);
@@ -173,6 +175,7 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) {
         }
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

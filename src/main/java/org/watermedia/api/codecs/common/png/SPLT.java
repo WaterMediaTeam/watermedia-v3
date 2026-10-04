@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11sPLT">PNG Specification - sPLT</a>
  */
-public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) {
+public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) implements IChunk {
     public static final int SIGNATURE = 0x73_50_4C_54; // "sPLT"
 
     /**
@@ -180,6 +180,7 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) {
         return this.entries[index];
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] nameBytes = this.paletteName.getBytes(StandardCharsets.ISO_8859_1);
         final int entrySize = (this.sampleDepth == 8) ? 6 : 10;
@@ -204,6 +205,7 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) {
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

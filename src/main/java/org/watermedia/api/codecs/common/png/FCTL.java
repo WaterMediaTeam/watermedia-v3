@@ -12,7 +12,7 @@ import java.nio.ByteOrder;
  * @see <a href="https://www.w3.org/TR/png-3/#fcTL-chunk">PNG Specification - fcTL</a>
  */
 public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
-                   short delay, short delay_den, byte dispose, byte blend) {
+                   short delay, short delay_den, byte dispose, byte blend) implements IChunk {
 
     public static final int SIGNATURE = 0x66_63_54_4C; // "fcTL"
     public static final int LENGTH = 26;               // FIXED LENGTH OF fcTL DATA
@@ -108,6 +108,7 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
         }
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.seq);
@@ -122,6 +123,7 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

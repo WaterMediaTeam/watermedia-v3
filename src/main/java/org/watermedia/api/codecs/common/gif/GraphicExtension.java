@@ -15,15 +15,15 @@ public record GraphicExtension(
     boolean userInputFlag,
     boolean transparentColorFlag,
     int delayTime,
-    int transparentColorIndex) {
+    int transparentColorIndex) implements IChunk {
 
     public static final int GCE_LABEL = 0xF9;
     /** Full block body: block size + packed fields + delay + transparent index + terminator. */
     public static final int BODY_SIZE = 6;
 
-    // VALIDATION LIVES IN read(): A RECORD CANONICAL CONSTRUCTOR CANNOT DECLARE A throws CLAUSE, SO
-    // MALFORMED DATA IS REJECTED WITH XCodecException (THE READER-LAYER FAILURE TYPE) AT THE PARSE BOUNDARY
+    /** Reads the {@value #BODY_SIZE}-byte body that follows the extension introducer and label; delay is in centiseconds. */
     public static GraphicExtension read(final ByteBuffer buffer) throws XCodecException {
+        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
         if (buffer.remaining() < BODY_SIZE) {
             throw new XCodecException("Buffer does not contain enough data for Graphic Control Extension");
         }
@@ -47,6 +47,7 @@ public record GraphicExtension(
         return new GraphicExtension(disposalMethod, userInputFlag, transparentColorFlag, delayTime, transparentColorIndex);
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(BODY_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         buf.put((byte) 4);

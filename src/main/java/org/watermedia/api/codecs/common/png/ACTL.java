@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#acTL-chunk">PNG Specification - acTL</a>
  */
-public record ACTL(int frameCount, int loopCount) {
+public record ACTL(int frameCount, int loopCount) implements IChunk {
     public static final int SIGNATURE = 0x61_63_54_4C; // "acTL"
     public static final int LENGTH = 8;
 
@@ -71,6 +71,7 @@ public record ACTL(int frameCount, int loopCount) {
         return this.loopCount;
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.frameCount);
@@ -78,6 +79,7 @@ public record ACTL(int frameCount, int loopCount) {
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

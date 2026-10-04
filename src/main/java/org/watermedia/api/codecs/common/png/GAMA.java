@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11gAMA">PNG Specification - gAMA</a>
  */
-public record GAMA(int gamma) {
+public record GAMA(int gamma) implements IChunk {
     public static final int SIGNATURE = 0x67_41_4D_41; // "gAMA"
     public static final int LENGTH = 4;
     // GAMMA 100.0 — ORDERS OF MAGNITUDE ABOVE ANY REAL ENCODER (0.45455 AND 1.0 ARE THE COMMON ONES)
@@ -75,12 +75,14 @@ public record GAMA(int gamma) {
         return 100000.0f / this.gamma;
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.gamma);
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

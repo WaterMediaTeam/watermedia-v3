@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11PLTE">PNG Specification - PLTE</a>
  */
-public record PLTE(int[] colors) {
+public record PLTE(int[] colors) implements IChunk {
     public static final int SIGNATURE = 0x50_4C_54_45; // "PLTE"
     // THE SPEC CAPS THE PALETTE AT 256 ENTRIES; WITHOUT IT A HUGE PLTE INFLATES TO A 1.33x int[] COPY
     public static final int MAX_LENGTH = 256 * 3;
@@ -91,6 +91,7 @@ public record PLTE(int[] colors) {
         return this.colors[index];
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] data = new byte[this.colors.length * 3];
         for (int i = 0; i < this.colors.length; i++) {
@@ -102,6 +103,7 @@ public record PLTE(int[] colors) {
         return data;
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

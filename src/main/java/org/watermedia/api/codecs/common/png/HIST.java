@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11hIST">PNG Specification - hIST</a>
  */
-public record HIST(int[] frequencies) {
+public record HIST(int[] frequencies) implements IChunk {
     public static final int SIGNATURE = 0x68_49_53_54; // "hIST"
     // ONE FREQUENCY PER PALETTE ENTRY (2 BYTES EACH), AND THE SPEC CAPS THE PALETTE AT 256 ENTRIES
     public static final int MAX_LENGTH = 256 * 2;
@@ -75,6 +75,7 @@ public record HIST(int[] frequencies) {
         return this.frequencies.length;
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(this.frequencies.length * 2).order(ByteOrder.BIG_ENDIAN);
         for (final int freq: this.frequencies) {
@@ -83,6 +84,7 @@ public record HIST(int[] frequencies) {
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

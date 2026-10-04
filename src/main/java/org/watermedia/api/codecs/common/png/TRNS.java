@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11tRNS">PNG Specification - tRNS</a>
  */
-public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalette) {
+public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalette) implements IChunk {
     public static final int SIGNATURE = 0x74_52_4E_53; // "tRNS"
     // ONE ALPHA PER PALETTE ENTRY, AND THE SPEC CAPS THE PALETTE AT 256 ENTRIES
     public static final int MAX_PALETTE_ALPHAS = 256;
@@ -128,6 +128,7 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
         return this.alphaPerPalette[index] & 0xFF;
     }
 
+    @Override
     public byte[] toBytes() {
         if (this.gray >= 0) {
             final ByteBuffer buf = ByteBuffer.allocate(2).order(ByteOrder.BIG_ENDIAN);
@@ -144,6 +145,7 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
         }
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

@@ -18,7 +18,7 @@ public record MDCV(
         int whiteX, int whiteY,
         long maxLuminance,
         long minLuminance
-) {
+) implements IChunk {
     public static final int SIGNATURE = 0x6D_44_43_76; // "mDCv"
     public static final int LENGTH = 24;
 
@@ -80,19 +80,30 @@ public record MDCV(
     }
 
     // CHROMATICITY VALUES ARE STORED AS 0.00002 UNITS
+    /** Returns the red primary CIE x chromaticity coordinate. */
     public float redPrimaryX() { return this.redX * 0.00002f; }
+    /** Returns the red primary CIE y chromaticity coordinate. */
     public float redPrimaryY() { return this.redY * 0.00002f; }
+    /** Returns the green primary CIE x chromaticity coordinate. */
     public float greenPrimaryX() { return this.greenX * 0.00002f; }
+    /** Returns the green primary CIE y chromaticity coordinate. */
     public float greenPrimaryY() { return this.greenY * 0.00002f; }
+    /** Returns the blue primary CIE x chromaticity coordinate. */
     public float bluePrimaryX() { return this.blueX * 0.00002f; }
+    /** Returns the blue primary CIE y chromaticity coordinate. */
     public float bluePrimaryY() { return this.blueY * 0.00002f; }
+    /** Returns the white point CIE x chromaticity coordinate. */
     public float whitePointX() { return this.whiteX * 0.00002f; }
+    /** Returns the white point CIE y chromaticity coordinate. */
     public float whitePointY() { return this.whiteY * 0.00002f; }
 
     // LUMINANCE VALUES ARE STORED AS 0.0001 CD/M^2 UNITS
+    /** Returns the mastering display maximum luminance in cd/m^2. */
     public float maxLuminanceCdm2() { return this.maxLuminance * 0.0001f; }
+    /** Returns the mastering display minimum luminance in cd/m^2. */
     public float minLuminanceCdm2() { return this.minLuminance * 0.0001f; }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putShort((short) this.redX);
@@ -108,6 +119,7 @@ public record MDCV(
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#cICP-chunk">PNG Specification - cICP</a>
  */
-public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficients, int videoFullRangeFlag) {
+public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficients, int videoFullRangeFlag) implements IChunk {
     public static final int SIGNATURE = 0x63_49_43_50; // "cICP"
     public static final int LENGTH = 4;
 
@@ -90,6 +90,7 @@ public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficie
         return this.transferFunction == TRANSFER_SRGB;
     }
 
+    @Override
     public byte[] toBytes() {
         return new byte[] {
                 (byte) this.colorPrimaries,
@@ -99,6 +100,7 @@ public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficie
         };
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

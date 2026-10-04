@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#cLLi-chunk">PNG Specification - cLLi</a>
  */
-public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) {
+public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) implements IChunk {
     public static final int SIGNATURE = 0x63_4C_4C_69; // "cLLi"
     public static final int LENGTH = 8;
 
@@ -57,9 +57,12 @@ public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) {
     }
 
     // VALUES ARE STORED AS 0.0001 CD/M^2 UNITS
+    /** Returns the maximum content light level in cd/m^2. */
     public float maxCLLCdm2() { return this.maxContentLightLevel * 0.0001f; }
+    /** Returns the maximum frame-average light level in cd/m^2. */
     public float maxFALLCdm2() { return this.maxFrameAverageLightLevel * 0.0001f; }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt((int) this.maxContentLightLevel);
@@ -67,6 +70,7 @@ public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) {
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

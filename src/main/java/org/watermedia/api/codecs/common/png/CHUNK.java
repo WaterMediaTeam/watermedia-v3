@@ -171,11 +171,13 @@ public record CHUNK(int length, int type, byte[] data, int crc) {
         return ~crc;
     }
 
+    /** Creates a chunk with the CRC of its type and data; the data array is shared, not copied. */
     public static CHUNK create(final int type, final byte[] data) {
         final CHUNK temp = new CHUNK(data.length, type, data, 0);
         return new CHUNK(data.length, type, data, temp.calculateCRC());
     }
 
+    /** Writes length, type, data and CRC into a big-endian buffer with room for the data plus twelve bytes. */
     public void write(final ByteBuffer buffer) {
         buffer.putInt(this.length);
         buffer.putInt(this.type);

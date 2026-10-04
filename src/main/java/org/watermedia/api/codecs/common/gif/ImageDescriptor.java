@@ -5,33 +5,34 @@ import org.watermedia.api.codecs.XCodecException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
+/** A GIF image's position, dimensions and packed flags, without the image separator or palette. */
 public record ImageDescriptor(
     int left, int top, int width, int height,
     boolean localColorTableFlag, boolean interlacedFlag, boolean sortFlag,
-    int localColorTableSize) {
+    int localColorTableSize) implements IChunk {
 
     public static final int LOCAL_COLOR_TABLE_SIZE = 8;
 
-    // VALIDATION LIVES IN read()/validate(): A RECORD CANONICAL CONSTRUCTOR CANNOT DECLARE A throws
-    // CLAUSE, SO MALFORMED DATA IS REJECTED WITH XCodecException AT THE PARSE BOUNDARY (SEE ALSO
-    // GIFReader.readImageDescriptor, WHICH BUILDS THIS RECORD DIRECTLY AND CALLS validate())
+    /** Returns the local palette color count, {@code 2^(localColorTableSize + 1)}, even when no palette is present. */
     public int getLocalColorTableSize() {
-        // SIZE = 2^(N + 1)
         return 1 << (this.localColorTableSize + 1);
     }
 
-    // REJECT MALFORMED FIELD VALUES WITH THE READER-LAYER FAILURE TYPE
+    /** Rejects negative offsets, empty dimensions and palette-size codes outside the three-bit range. */
     public void validate() throws XCodecException {
+        // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException, SO read() AND
+        // GIFReader.readImageDescriptor CALL THIS AT THE PARSE BOUNDARY
         if (this.left < 0 || this.top < 0 || this.width <= 0 || this.height <= 0) {
             throw new XCodecException("Invalid dimensions for ImageDescriptor");
         }
-        if (this.localColorTableSize < 0 || this.localColorTableSize > LOCAL_COLOR_TABLE_SIZE) {
-            throw new XCodecException("Local color table size must be between 0 and " + LOCAL_COLOR_TABLE_SIZE);
+        if (this.localColorTableSize < 0 || this.localColorTableSize >= LOCAL_COLOR_TABLE_SIZE) {
+            throw new XCodecException("Local color table size must be between 0 and " + (LOCAL_COLOR_TABLE_SIZE - 1));
         }
     }
 
+    /** Reads and validates the nine-byte descriptor after the image separator, without its local palette. */
     public static ImageDescriptor read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 10) {
+        if (buffer.remaining() < 9) {
             throw new XCodecException("Buffer does not contain enough data for Image Descriptor");
         }
 
@@ -51,6 +52,7 @@ public record ImageDescriptor(
         return id;
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN);
         buf.putShort((short) this.left);

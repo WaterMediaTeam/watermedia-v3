@@ -5,16 +5,17 @@ import org.watermedia.api.codecs.XCodecException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
+/** The seven-byte GIF logical screen descriptor, excluding the file signature and global palette. */
 public record ScreenDescriptor(
     int width, int height,
     boolean globalColorTableFlag, int colorResolution, boolean sortFlag,
-    int globalColorTableSize, int backgroundColorIndex, int pixelAspectRatio) {
+    int globalColorTableSize, int backgroundColorIndex, int pixelAspectRatio) implements IChunk {
 
     public static final int SIGNATURE_SIZE = 7;
 
-    // VALIDATION LIVES IN read(): A RECORD CANONICAL CONSTRUCTOR CANNOT DECLARE A throws CLAUSE, SO
-    // MALFORMED DATA IS REJECTED WITH XCodecException (THE READER-LAYER FAILURE TYPE) AT THE PARSE BOUNDARY
+    /** Reads the {@value #SIGNATURE_SIZE}-byte logical screen descriptor that follows the GIF signature and version. */
     public static ScreenDescriptor read(final ByteBuffer buffer) throws XCodecException {
+        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
         if (buffer.remaining() < SIGNATURE_SIZE) {
             throw new XCodecException("Buffer does not contain enough data for Screen Descriptor");
         }
@@ -36,6 +37,7 @@ public record ScreenDescriptor(
                 globalColorTableSize, backgroundColorIndex, pixelAspectRatio);
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(SIGNATURE_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         buf.putShort((short) this.width);

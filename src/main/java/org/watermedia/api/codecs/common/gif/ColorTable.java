@@ -4,12 +4,13 @@ import org.watermedia.api.codecs.XCodecException;
 
 import java.nio.ByteBuffer;
 
-public record ColorTable(int size, int[] colors) {
+/** A GIF palette of ARGB values; reading supplies opaque alpha and serialization emits only RGB triples. */
+public record ColorTable(int size, int[] colors) implements IChunk {
     public static final int MAX_COLORS = 256;
 
-    // VALIDATION LIVES IN read(): A RECORD CANONICAL CONSTRUCTOR CANNOT DECLARE A throws CLAUSE, SO
-    // MALFORMED DATA IS REJECTED WITH XCodecException (THE READER-LAYER FAILURE TYPE) AT THE PARSE BOUNDARY
+    /** Reads {@code size} RGB triples (up to {@link #MAX_COLORS}) as opaque ARGB colors. */
     public static ColorTable read(int size, ByteBuffer buffer) throws XCodecException {
+        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
         if (size < 0 || size > MAX_COLORS) {
             throw new XCodecException("Color table size must be between 0 and " + MAX_COLORS);
         }
@@ -34,6 +35,7 @@ public record ColorTable(int size, int[] colors) {
         return new ColorTable(size, colorTable);
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] data = new byte[this.size * 3];
         for (int i = 0; i < this.size; i++) {

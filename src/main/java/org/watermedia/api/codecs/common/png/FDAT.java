@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#fdAT-chunk">PNG Specification - fdAT</a>
  */
-public record FDAT(int sequence, byte[] data) {
+public record FDAT(int sequence, byte[] data) implements IChunk {
     public static final int SIGNATURE = 0x66_64_41_54; // "fdAT"
 
     /**
@@ -38,6 +38,7 @@ public record FDAT(int sequence, byte[] data) {
         return new FDAT(sequence, frameData);
     }
 
+    @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(4 + this.data.length).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.sequence);
@@ -45,6 +46,7 @@ public record FDAT(int sequence, byte[] data) {
         return buf.array();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

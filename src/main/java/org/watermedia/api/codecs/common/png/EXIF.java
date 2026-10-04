@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11eXIf">PNG Specification - eXIf</a>
  */
-public record EXIF(byte[] data) {
+public record EXIF(byte[] data) implements IChunk {
     public static final int SIGNATURE = 0x65_58_49_66; // "eXIf"
 
     // TIFF/EXIF BYTE ORDER MARKERS
@@ -85,10 +85,12 @@ public record EXIF(byte[] data) {
         return this.data.length;
     }
 
+    @Override
     public byte[] toBytes() {
         return this.data.clone();
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.data);
     }

@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11sRGB">PNG Specification - sRGB</a>
  */
-public record SRGB(int renderingIntent) {
+public record SRGB(int renderingIntent) implements IChunk {
     public static final int SIGNATURE = 0x73_52_47_42; // "sRGB"
     public static final int LENGTH = 1;
 
@@ -74,10 +74,12 @@ public record SRGB(int renderingIntent) {
         };
     }
 
+    @Override
     public byte[] toBytes() {
         return new byte[] { (byte) this.renderingIntent };
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }

@@ -14,7 +14,7 @@ import java.util.zip.Inflater;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#11zTXt">PNG Specification - zTXt</a>
  */
-public record ZTXT(String keyword, int compressionMethod, byte[] compressedText) {
+public record ZTXT(String keyword, int compressionMethod, byte[] compressedText) implements IChunk {
     public static final int SIGNATURE = 0x7A_54_58_74; // "zTXt"
     // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
     private static final int MAX_DECOMPRESSED = 2 * 1024 * 1024; // 2 MB
@@ -139,6 +139,7 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
         return output.toString(StandardCharsets.ISO_8859_1);
     }
 
+    @Override
     public byte[] toBytes() {
         final byte[] keywordBytes = this.keyword.getBytes(StandardCharsets.ISO_8859_1);
         final byte[] data = new byte[keywordBytes.length + 1 + 1 + this.compressedText.length];
@@ -149,6 +150,7 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
         return data;
     }
 
+    @Override
     public CHUNK toChunk() {
         return CHUNK.create(SIGNATURE, this.toBytes());
     }
