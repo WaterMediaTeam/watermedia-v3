@@ -13,6 +13,10 @@ java {
 
 configurations {
     include
+    jarJar {
+        transitive = false
+    }
+    compileOnlyApi.extendsFrom(jarJar)
     compileOnly.extendsFrom(include)
     // LOCAL RUNS NEED HOST LIBRARIES WITHOUT EXPORTING THEM AS RUNTIME DEPENDENCIES.
     runtimeClasspath.extendsFrom(compileOnlyApi, include)
@@ -36,9 +40,9 @@ if (osdetector.arch == 'aarch_64' && osdetector.os != 'windows') javafxPlatform 
 
 dependencies {
     include "org.bytedeco:ffmpeg:$ffmpeg_version"
+    jarJar "com.github.SrRapero720:waterconfig:$waterconfig_version"
 
     compileOnlyApi "org.tukaani:xz:$xz_version"
-    compileOnlyApi "com.github.SrRapero720:waterconfig:$waterconfig_version"
     compileOnlyApi "com.github.WaterMediaTeam:modloaders:$loaders_version"
     compileOnlyApi "com.google.code.gson:gson:$gson_version"
     compileOnlyApi "org.joml:joml:$joml_version"
@@ -72,6 +76,26 @@ test {
 
 sourcesJar {
     exclude 'org/watermedia/binaries/**'
+}
+
+// ALL LOADERS SHARE ONE NESTED JAR; FABRIC REQUIRES ITS OWN MOD DESCRIPTOR INSIDE IT.
+def waterconfigJar = tasks.register('waterconfigJar', Jar) {
+    archiveFileName = "waterconfig-$waterconfig_version" + '.jar'
+    destinationDirectory = layout.buildDirectory.dir('jarjar')
+    manifest.attributes 'FMLModType': 'GAMELIBRARY', 'Automatic-Module-Name': 'waterconfig'
+    inputs.property('waterconfig_version', waterconfig_version)
+    from({ zipTree(configurations.jarJar.singleFile) }) {
+        exclude 'META-INF/MANIFEST.MF'
+    }
+    from('src/jarjar') {
+        expand(waterconfig_version: waterconfig_version)
+    }
+}
+
+processResources {
+    from(waterconfigJar) {
+        into 'META-INF/jarjar'
+    }
 }
 
 jar {

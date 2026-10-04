@@ -15,6 +15,9 @@
   "license": "$license",
   "icon": "pack.png",
   "environment": "client",
+  "jars": [
+    { "file": "META-INF/jarjar/waterconfig-${waterconfig_version + '.jar'}" }
+  ],
   "entrypoints": {
     "main": [
       "org.watermedia.bootstrap.FabricBootstrap"

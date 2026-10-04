@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "com_github_srrapero720_waterconfig",
+  "version": "$waterconfig_version",
+  "name": "WaterConfig",
+  "custom": {
+    "fabric-loom:generated": true
+  }
+}

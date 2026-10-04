@@ -36,7 +36,7 @@ dependencies {
 def resourceProperties = providers.gradlePropertiesPrefixedBy('').get()
 processResources {
     inputs.properties(resourceProperties)
-    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta',
+    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'META-INF/jarjar/metadata.json', 'pack.mcmeta',
                    'fabric.mod.json', 'bootstrap.properties']) {
         expand(resourceProperties)
     }

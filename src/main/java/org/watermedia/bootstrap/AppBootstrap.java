@@ -24,6 +24,7 @@ import java.net.URLClassLoader;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -111,12 +112,16 @@ public final class AppBootstrap {
         return name.equals("opengl") || name.equals("vulkan") ? name : null;
     }
 
-    private static List<Dependency> dependencies() throws IOException {
+    private static Properties versions() throws IOException {
         final Properties versions = new Properties();
         try (final InputStream source = AppBootstrap.class.getResourceAsStream("/bootstrap.properties")) {
             if (source == null) throw new IOException("Missing bootstrap.properties");
             versions.load(source);
         }
+        return versions;
+    }
+
+    private static List<Dependency> dependencies(final Properties versions) throws IOException {
         final String platform = IOTool.platformClassifier();
         if (platform.equals("unsupported")) throw new IOException("Unsupported operating system or CPU architecture");
         final String natives = "natives-" + platform;
@@ -127,7 +132,6 @@ public final class AppBootstrap {
             dependencies.add(new Dependency(MAVEN, "org/apache/logging/log4j", artifact, version(versions, "log4j"), null, false));
         dependencies.add(new Dependency(MAVEN, "com/google/code/gson", "gson", version(versions, "gson"), null, false));
         dependencies.add(new Dependency(MAVEN, "org/joml", "joml", version(versions, "joml"), null, false));
-        dependencies.add(new Dependency("https://jitpack.io/", "com/github/SrRapero720", "waterconfig", version(versions, "waterconfig"), null, false));
         for (final String artifact: List.of("lwjgl", "lwjgl-glfw", "lwjgl-opengl", "lwjgl-stb", "lwjgl-openal")) {
             dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, null, false));
             dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, natives, false));
@@ -172,9 +176,13 @@ public final class AppBootstrap {
         // OUR RESOURCES MUST WIN OVER IDENTICALLY NAMED RESOURCES IN EXTENSION JARS.
         jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
         Files.createDirectories(LIBS_DIR);
+        final Properties versions = versions();
+        final String config = "waterconfig-" + version(versions, "waterconfig") + ".jar";
+        this.log("Extracting " + config);
+        jars.add(extract("/META-INF/jarjar/" + config, LIBS_DIR));
         final String player = IOTool.read(PLAYER_MODE_FILE.toFile());
         final boolean javafx = player != null && player.trim().equalsIgnoreCase("JFX");
-        for (final Dependency dependency: dependencies()) {
+        for (final Dependency dependency: dependencies(versions)) {
             final Path jar = LIBS_DIR.resolve(dependency.name());
             if (!Files.isRegularFile(jar)) {
                 // CACHED JAVAFX IS ALWAYS INCLUDED; DOWNLOAD IT ONLY WHEN ITS PLAYER IS SELECTED.
@@ -206,6 +214,24 @@ public final class AppBootstrap {
         }
         if (!binaries) this.log("WaterMedia Binaries is not installed; video decoding is unavailable.");
         return jars;
+    }
+
+    private static Path extract(final String resource, final Path directory) throws IOException {
+        try (final InputStream input = AppBootstrap.class.getResourceAsStream(resource)) {
+            if (input == null) throw new IOException("Missing bundled library: " + resource);
+            // EACH LAUNCH OWNS ITS FILE UNTIL THE CHILD JVM EXITS, INCLUDING ON WINDOWS.
+            final String name = resource.substring(resource.lastIndexOf('/') + 1);
+            final Path jar = Files.createTempFile(directory, name + ".", ".jar");
+            jar.toFile().deleteOnExit();
+            try {
+                Files.copy(input, jar, StandardCopyOption.REPLACE_EXISTING);
+                return jar;
+            } catch (final IOException failure) {
+                try { Files.deleteIfExists(jar); }
+                catch (final IOException cleanup) { failure.addSuppressed(cleanup); }
+                throw failure;
+            }
+        }
     }
 
     private static void download(final URI source, final Path destination, final BootstrapWindow window) throws IOException {
@@ -356,7 +382,7 @@ public final class AppBootstrap {
             EventQueue.invokeLater(() -> {
                 this.progress.setIndeterminate(percent < 0);
                 this.progress.setValue(Math.max(0, percent));
-                this.progress.setString(message + (percent < 0 ? "" : " — " + percent + "%"));
+                this.progress.setString(message + (percent < 0 ? "" : " - " + percent + "%"));
             });
         }
 

@@ -1,0 +1,16 @@
+{
+  "jars": [
+    {
+      "identifier": {
+        "group": "com.github.SrRapero720",
+        "artifact": "waterconfig"
+      },
+      "version": {
+        "range": "[$waterconfig_version]",
+        "artifactVersion": "$waterconfig_version"
+      },
+      "path": "META-INF/jarjar/waterconfig-${waterconfig_version + '.jar'}",
+      "isObfuscated": false
+    }
+  ]
+}
