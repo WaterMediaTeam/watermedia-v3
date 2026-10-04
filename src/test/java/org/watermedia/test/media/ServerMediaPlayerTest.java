@@ -7,6 +7,8 @@ import org.watermedia.api.media.players.ServerMediaPlayer;
 import org.watermedia.api.media.players.sync.Sync;
 import org.watermedia.test.support.PlayerWait;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -24,7 +26,7 @@ public class ServerMediaPlayerTest {
 
     // TICK IS 50ms; GIVE THE SHARED TICKER A FEW CYCLES OF SLACK BEFORE ASSERTING A TRANSITION.
     private static final long ENDED_TIMEOUT_MS = 2000L;
-    // NANO-CLOCK TIMING IS TOLERANCE-ASSERTED — WALLCLOCK SLEEPS ARE NOT EXACT.
+    // ALLOW CLOCK RESOLUTION SLACK WHEN CHECKING MINIMUM LIVE PROGRESSION.
     private static final long TIMING_TOLERANCE_MS = 60L;
 
     // CAPTURES THE LAST publishStatus TRANSITION FROM THE SHARED TICKER THREAD; volatile FOR VISIBILITY.
@@ -55,15 +57,25 @@ public class ServerMediaPlayerTest {
     @DisplayName("start() plays and time advances with the wall clock")
     void testStartAdvancesTime() throws InterruptedException {
         final ServerMediaPlayer player = new ServerMediaPlayer();
-        player.syncDuration(100_000L);
-        player.start();
-        assertEquals(Status.PLAYING, player.status());
+        try {
+            player.syncDuration(100_000L);
+            // BRACKET BOTH CALLS SO SCHEDULER DELAYS COUNT AS ELAPSED TIME.
+            final long before = System.nanoTime();
+            assertTrue(player.start());
+            final long started = System.nanoTime();
+            assertEquals(Status.PLAYING, player.status());
 
-        Thread.sleep(100L);
-        final long t = player.time();
-        assertTrue(t >= 100L - TIMING_TOLERANCE_MS && t <= 100L + TIMING_TOLERANCE_MS,
-                "time() should track the wall clock, was " + t);
-        player.release();
+            Thread.sleep(100L);
+            final long reading = System.nanoTime();
+            final long t = player.time();
+            final long after = System.nanoTime();
+            final long minimum = TimeUnit.NANOSECONDS.toMillis(reading - started);
+            final long maximum = TimeUnit.NANOSECONDS.toMillis(after - before);
+            assertTrue(t >= minimum && t <= maximum,
+                    "time() must be within [" + minimum + ", " + maximum + "], was " + t);
+        } finally {
+            player.release();
+        }
     }
 
     @Test
@@ -102,16 +114,25 @@ public class ServerMediaPlayerTest {
     @DisplayName("speed(2x) roughly doubles the clock rate")
     void testSpeedScalesClock() throws InterruptedException {
         final ServerMediaPlayer player = new ServerMediaPlayer();
-        player.syncDuration(100_000L); // NON-LIVE SO canSpeed() ALLOWS THE CHANGE
-        player.start();
-        assertTrue(player.speed(2.0f));
+        try {
+            player.syncDuration(100_000L);
+            assertTrue(player.startPaused());
+            assertTrue(player.speed(2.0f));
+            final long before = System.nanoTime();
+            assertTrue(player.resume());
+            final long started = System.nanoTime();
 
-        Thread.sleep(100L);
-        final long t = player.time();
-        // ~200ms OF MEDIA TIME FOR ~100ms OF WALL TIME AT 2x.
-        assertTrue(t >= 200L - 2 * TIMING_TOLERANCE_MS && t <= 200L + 2 * TIMING_TOLERANCE_MS,
-                "time() at 2x should be ~2x wall, was " + t);
-        player.release();
+            Thread.sleep(100L);
+            final long reading = System.nanoTime();
+            final long t = player.time();
+            final long after = System.nanoTime();
+            final long minimum = 2 * TimeUnit.NANOSECONDS.toMillis(reading - started);
+            final long maximum = 2 * TimeUnit.NANOSECONDS.toMillis(after - before);
+            assertTrue(t >= minimum && t <= maximum,
+                    "time() at 2x must be within [" + minimum + ", " + maximum + "], was " + t);
+        } finally {
+            player.release();
+        }
     }
 
     @Test
@@ -234,48 +255,73 @@ public class ServerMediaPlayerTest {
 
     @Test
     @DisplayName("snapshot() captures the full authoritative state")
-    void testSnapshot() {
+    void testSnapshot() throws InterruptedException {
         final ServerMediaPlayer source = new ServerMediaPlayer();
-        source.syncDuration(60_000L);
-        source.repeat(true);
-        source.volume(40);
-        source.start();
-        assertTrue(source.speed(2.0f));
-        assertTrue(source.seek(30_000L));
+        try {
+            source.syncDuration(60_000L);
+            source.repeat(true);
+            source.volume(40);
+            source.mute(true);
+            assertTrue(source.startPaused());
+            assertTrue(source.speed(2.0f));
+            assertTrue(source.seek(30_000L));
 
-        final Sync snapshot = source.snapshot();
-        assertEquals(source.revision(), snapshot.revision());
-        assertEquals(Status.PLAYING, snapshot.status());
-        assertEquals(60_000L, snapshot.duration());
-        assertEquals(2.0f, snapshot.speed());
-        assertEquals(40, snapshot.volume());
-        assertTrue(snapshot.repeat());
-        assertFalse(snapshot.live());
-        assertTrue(Math.abs(snapshot.time() - 30_000L) <= TIMING_TOLERANCE_MS,
-                "the snapshot must carry the current position, was " + snapshot.time());
-        source.release();
+            final Sync snapshot = source.snapshot();
+            assertEquals(source.revision(), snapshot.revision());
+            assertEquals(Status.PAUSED, snapshot.status());
+            assertEquals(60_000L, snapshot.duration());
+            assertEquals(2.0f, snapshot.speed());
+            assertEquals(40, snapshot.volume());
+            assertTrue(snapshot.mute());
+            assertTrue(snapshot.repeat());
+            assertFalse(snapshot.live());
+            assertEquals(30_000L, snapshot.time());
+
+            // WITHOUT LOOP WRAPS, THE RUNNING SNAPSHOT MUST FALL BETWEEN THE SURROUNDING READS.
+            source.repeat(false);
+            assertTrue(source.resume());
+            Thread.sleep(50L);
+            final long before = source.time();
+            final Sync playing = source.snapshot();
+            final long after = source.time();
+            assertEquals(Status.PLAYING, playing.status());
+            assertFalse(playing.repeat());
+            assertTrue(playing.time() > snapshot.time(), "a running snapshot must advance after resume()");
+            assertTrue(playing.time() >= before && playing.time() <= after,
+                    "the snapshot must be within [" + before + ", " + after + "], was " + playing.time());
+            assertEquals(30_000L, snapshot.time(), "an earlier snapshot must remain immutable");
+        } finally {
+            source.release();
+        }
     }
 
     @Test
     @DisplayName("a clock without a timeline holds at zero and starts counting when the duration latches")
     void testHeldClockWithoutTimeline() throws InterruptedException {
         final ServerMediaPlayer player = new ServerMediaPlayer();
-        player.start(); // THE DOCUMENTED FLOW: THE AUTHORITY STARTS BEFORE ANY CLIENT KNOWS THE MEDIA
+        try {
+            assertTrue(player.start());
 
-        // NO DURATION AND NOT LIVE: THE CLOCK MUST NOT ACCUMULATE WALL TIME (A SESSION PLAYING
-        // UNWATCHED FOR HOURS SHOWED THOSE HOURS TO EVERY LATE JOINER)
-        Thread.sleep(200L);
-        assertEquals(Status.PLAYING, player.status());
-        assertEquals(0L, player.time(), "a clock without a timeline must hold still");
+            // AN UNKNOWN NON-LIVE TIMELINE MUST STAY FROZEN UNTIL ITS DURATION ARRIVES.
+            Thread.sleep(200L);
+            assertEquals(Status.PLAYING, player.status());
+            assertEquals(0L, player.time(), "a clock without a timeline must hold still");
 
-        // THE LATCH STARTS THE TIMELINE FROM THIS INSTANT — NO INSTA-ENDED, NO POSITION SNAP
-        player.syncDuration(100_000L);
-        Thread.sleep(100L);
-        assertEquals(Status.PLAYING, player.status());
-        final long t = player.time();
-        assertTrue(t >= 100L - TIMING_TOLERANCE_MS && t <= 100L + 2 * TIMING_TOLERANCE_MS,
-                "time must count from the latch instant, was " + t);
-        player.release();
+            final long before = System.nanoTime();
+            player.syncDuration(100_000L);
+            final long started = System.nanoTime();
+            Thread.sleep(100L);
+            assertEquals(Status.PLAYING, player.status());
+            final long reading = System.nanoTime();
+            final long t = player.time();
+            final long after = System.nanoTime();
+            final long minimum = TimeUnit.NANOSECONDS.toMillis(reading - started);
+            final long maximum = TimeUnit.NANOSECONDS.toMillis(after - before);
+            assertTrue(t >= minimum && t <= maximum,
+                    "time since the duration latch must be within [" + minimum + ", " + maximum + "], was " + t);
+        } finally {
+            player.release();
+        }
     }
 
     @Test

@@ -7,6 +7,8 @@ import org.watermedia.api.media.players.MediaPlayer.Status;
 import org.watermedia.api.media.players.ServerMediaPlayer;
 import org.watermedia.api.media.players.sync.Sync;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -18,9 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("Follower clock")
 public class FollowerClockTest {
-
-    // WALLCLOCK ADVANCE BETWEEN CALLS IS NOT EXACT — TIMING IS TOLERANCE-ASSERTED
-    private static final long SLACK_MS = 60L;
 
     private ServerMediaPlayer follower;
 
@@ -47,13 +46,19 @@ public class FollowerClockTest {
         assertNull(follower.authority(), "nothing heard from the session yet");
         assertEquals(0L, follower.authorityTime());
 
+        final long before = System.nanoTime();
         follower.sync(sync(7, Status.PLAYING, 30_000L, 60_000L, false, 2f));
+        final long received = System.nanoTime();
         assertEquals(7, follower.authority().revision());
 
         Thread.sleep(100L);
+        final long reading = System.nanoTime();
         final long t = follower.authorityTime();
-        assertTrue(t >= 30_000L + 100L && t <= 30_000L + 200L + 2 * SLACK_MS,
-                "a running session must be extrapolated at 2x, was " + t);
+        final long after = System.nanoTime();
+        final long minimum = 30_000L + 2 * TimeUnit.NANOSECONDS.toMillis(reading - received);
+        final long maximum = 30_000L + 2 * TimeUnit.NANOSECONDS.toMillis(after - before);
+        assertTrue(t >= minimum && t <= maximum,
+                "the session at 2x must be within [" + minimum + ", " + maximum + "], was " + t);
     }
 
     @Test
