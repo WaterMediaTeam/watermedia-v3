@@ -1,8 +1,9 @@
 # Project exclude paths
 /MEMORY.md
+/PENDING.md
 /.gradle/
 /.claude
-/.codex/
+/.mcp.json
 hs_err_pid*
 /*.jar
 *.log
