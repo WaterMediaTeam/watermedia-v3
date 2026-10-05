@@ -160,6 +160,10 @@ response are ignored, including when a redirect later returns to the original se
 single-origin credential policy; a redirected server cannot establish a separate cookie session
 inside that playback input. Native HTTP logs omit full requests, header dumps and cookie values.
 
+`NetRequest` applies the same boundary to request bodies. A redirect to another origin fails instead
+of resending the body unless the body is set with `body(body, true)`. A 303 response switches only
+that send to GET without a body; the builder keeps its method and body for later sends.
+
 ## Choosing engines
 
 Vulkan development takes priority; OpenGL remains supported as the secondary backend. Backend decisions belong in the rendering layer. This development preference does not change the standalone launcher's current initial OpenGL default or the user's saved engine selection.

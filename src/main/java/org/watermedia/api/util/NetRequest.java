@@ -33,7 +33,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Cross-protocol redirects (http ↔ https) ARE followed — Java's {@link HttpURLConnection}
  * refuses to follow them automatically (it returns 302 even when {@code followRedirects}
  * is enabled), so this implementation walks them by hand to keep that switch transparent
- * to callers.
+ * to callers. Credentials and request bodies stay with the original origin; a body is resent to
+ * another origin only when set with {@code crossOrigin}, otherwise that redirect fails.
  */
 public final class NetRequest implements AutoCloseable {
     private static final Marker IT = MarkerManager.getMarker(NetRequest.class.getSimpleName());
@@ -308,6 +309,7 @@ public final class NetRequest implements AutoCloseable {
         private UserAgent userAgent = UserAgent.WATERMEDIA;
         private final RequestHeaders headers = new RequestHeaders();
         private byte[] body;
+        private boolean crossOrigin;
         private int connectTimeout = WaterMediaConfig.network.timeout;
         private int readTimeout = WaterMediaConfig.network.timeout;
         private int maxRedirects = WaterMediaConfig.network.maxRedirects;
@@ -342,10 +344,14 @@ public final class NetRequest implements AutoCloseable {
             return this;
         }
 
-        /** Sets the body without copying, or clears it with null; redirects resend it except on a 303. */
-        public Builder body(final byte[] body) { this.body = body; return this; }
-        /** Sets the body as UTF-8 text, or clears it with null. */
-        public Builder body(final String body) { this.body = body == null ? null : body.getBytes(StandardCharsets.UTF_8); return this; }
+        /** Sets the body without copying, or clears it with null; redirects resend it only to the original origin. */
+        public Builder body(final byte[] body) { return this.body(body, false); }
+        /** Sets the body as UTF-8 text, or clears it with null; redirects resend it only to the original origin. */
+        public Builder body(final String body) { return this.body(body, false); }
+        /** Sets the body without copying, or clears it with null; {@code crossOrigin} lets redirects resend it to other origins. */
+        public Builder body(final byte[] body, final boolean crossOrigin) { this.body = body; this.crossOrigin = crossOrigin; return this; }
+        /** Sets the body as UTF-8 text, or clears it with null; {@code crossOrigin} lets redirects resend it to other origins. */
+        public Builder body(final String body, final boolean crossOrigin) { return this.body(body == null ? null : body.getBytes(StandardCharsets.UTF_8), crossOrigin); }
         /** Sets the connect timeout in milliseconds; zero waits forever and negatives fail on {@link #send()}. */
         public Builder connectTimeout(final int ms) { this.connectTimeout = ms; return this; }
         /** Sets the read timeout in milliseconds; zero waits forever and negatives fail on {@link #send()}. */
@@ -369,12 +375,15 @@ public final class NetRequest implements AutoCloseable {
          */
         public NetRequest send() throws IOException {
             URI current = this.uri;
+            // A 303 SWITCHES ONLY THIS SEND TO GET; THE BUILDER KEEPS ITS METHOD AND BODY FOR REUSE
+            String method = this.method;
+            byte[] body = this.body;
             final List<URI> trace = new ArrayList<>();
             trace.add(current);
 
             while (true) {
                 final RequestHeaders effective = this.materializeHeaders(current);
-                final URLConnection conn = this.openConnection(current, effective);
+                final URLConnection conn = this.openConnection(current, effective, method, body);
 
                 if (!(conn instanceof final HttpURLConnection http)) {
                     // FORCE A REAL CONNECT FOR FILE:// AND FTP:// SO MISSING RESOURCES FAIL FAST.
@@ -416,10 +425,11 @@ public final class NetRequest implements AutoCloseable {
                 http.disconnect();
 
                 // RFC 9110: A 303 SEE OTHER MUST BE RE-REQUESTED AS GET WITHOUT THE ORIGINAL BODY
-                // THIS IS STUPID
                 if (code == HttpURLConnection.HTTP_SEE_OTHER) {
-                    this.method = "GET";
-                    this.body = null;
+                    method = "GET";
+                    body = null;
+                } else if (body != null && body.length > 0 && !this.crossOrigin && !sameOrigin(this.uri, next)) {
+                    throw new IOException("Redirect to another origin would resend the request body: " + next);
                 }
 
                 current = next;
@@ -435,14 +445,7 @@ public final class NetRequest implements AutoCloseable {
                 final String host = target.getHost();
                 if (host != null) out.set("Referer", target.getScheme() + "://" + host);
             }
-            final int originPort = this.uri.getPort() != -1 ? this.uri.getPort()
-                    : ("https".equalsIgnoreCase(this.uri.getScheme()) ? 443 : 80);
-            final int targetPort = target.getPort() != -1 ? target.getPort()
-                    : ("https".equalsIgnoreCase(target.getScheme()) ? 443 : 80);
-            // CREDENTIALS BELONG TO AN ORIGIN: SCHEME, HOST AND EFFECTIVE PORT MUST ALL MATCH.
-            if (this.uri.getScheme() == null || !this.uri.getScheme().equalsIgnoreCase(target.getScheme())
-                    || this.uri.getHost() == null || !this.uri.getHost().equalsIgnoreCase(target.getHost())
-                    || originPort != targetPort) {
+            if (!sameOrigin(this.uri, target)) {
                 out.removeAll("Authorization");
                 out.removeAll("Proxy-Authorization");
                 out.removeAll("Cookie");
@@ -452,7 +455,7 @@ public final class NetRequest implements AutoCloseable {
             return out;
         }
 
-        private URLConnection openConnection(final URI target, final RequestHeaders effective) throws IOException {
+        private URLConnection openConnection(final URI target, final RequestHeaders effective, final String method, final byte[] body) throws IOException {
             final URL url = target.toURL();
             final URLConnection conn = url.openConnection();
             conn.setConnectTimeout(this.connectTimeout);
@@ -460,19 +463,27 @@ public final class NetRequest implements AutoCloseable {
 
             if (conn instanceof final HttpURLConnection http) {
                 http.setInstanceFollowRedirects(false); // MANUAL REDIRECTS ALLOW CROSS-PROTOCOL SWITCHES
-                http.setRequestMethod(this.method);
+                http.setRequestMethod(method);
                 effective.writeTo(http);
 
-                if (this.body != null && this.body.length > 0) {
+                if (body != null && body.length > 0) {
                     http.setDoOutput(true);
-                    http.setFixedLengthStreamingMode(this.body.length);
+                    http.setFixedLengthStreamingMode(body.length);
                     try (final OutputStream os = http.getOutputStream()) {
-                        os.write(this.body);
+                        os.write(body);
                     }
                 }
             }
             // FTP AND FILE URLS FALL THROUGH; HTTP-ONLY HEADERS AND METHOD DO NOT APPLY.
             return conn;
+        }
+
+        // CREDENTIALS AND BODIES BELONG TO AN ORIGIN: SCHEME, HOST AND EFFECTIVE PORT MUST ALL MATCH
+        private static boolean sameOrigin(final URI origin, final URI target) {
+            final int originPort = origin.getPort() != -1 ? origin.getPort() : ("https".equalsIgnoreCase(origin.getScheme()) ? 443 : 80);
+            final int targetPort = target.getPort() != -1 ? target.getPort() : ("https".equalsIgnoreCase(target.getScheme()) ? 443 : 80);
+            return origin.getScheme() != null && origin.getScheme().equalsIgnoreCase(target.getScheme())
+                    && origin.getHost() != null && origin.getHost().equalsIgnoreCase(target.getHost()) && originPort == targetPort;
         }
 
         private static boolean isRedirect(final int code) {

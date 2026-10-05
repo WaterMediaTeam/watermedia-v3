@@ -11,9 +11,11 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -139,6 +141,50 @@ public class NetRequestTest {
                     assertTrue(req.uri().getPath().endsWith("/final"));
                 }
             }
+        }
+    }
+
+    @Test
+    @DisplayName("Bodies follow redirects to another origin only when crossOrigin is set")
+    void crossOriginBodies() throws IOException {
+        try (final LocalHttp target = LocalHttp.start("/final", ex -> {
+            final String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            LocalHttp.respond(ex, "text/plain", (ex.getRequestMethod() + " " + body).getBytes(StandardCharsets.UTF_8), 0);
+        }); final LocalHttp redirector = LocalHttp.start("/start", ex -> {
+            ex.getRequestBody().readAllBytes();
+            ex.getResponseHeaders().set("Location", target.uri("/final").toString());
+            ex.sendResponseHeaders(307, -1);
+            ex.close();
+        })) {
+            final IOException failure = assertThrows(IOException.class,
+                    () -> NetRequest.create(redirector.uri("/start")).method("POST").body("payload").send());
+            assertTrue(failure.getMessage().contains("another origin"), failure.getMessage());
+            try (final NetRequest req = NetRequest.create(redirector.uri("/start")).method("POST").body("payload", true).send()) {
+                assertEquals("POST payload", req.readAllAsString());
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("A 303 switches only that send to GET, so a reused builder posts again")
+    void seeOtherKeepsTheBuilder() throws IOException {
+        final List<String> starts = new CopyOnWriteArrayList<>();
+        try (final LocalHttp target = LocalHttp.start("/final", ex -> {
+            final String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            LocalHttp.respond(ex, "text/plain", (ex.getRequestMethod() + " " + body).getBytes(StandardCharsets.UTF_8), 0);
+        }); final LocalHttp redirector = LocalHttp.start("/start", ex -> {
+            starts.add(ex.getRequestMethod() + " " + new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            ex.getResponseHeaders().set("Location", target.uri("/final").toString());
+            ex.sendResponseHeaders(303, -1);
+            ex.close();
+        })) {
+            final NetRequest.Builder builder = NetRequest.create(redirector.uri("/start")).method("POST").body("payload");
+            for (int i = 0; i < 2; i++) {
+                try (final NetRequest req = builder.send()) {
+                    assertEquals("GET ", req.readAllAsString());
+                }
+            }
+            assertEquals(List.of("POST payload", "POST payload"), starts);
         }
     }
 
