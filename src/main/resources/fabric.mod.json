@@ -5,8 +5,9 @@
   "name": "$libname",
   "description": "$description",
   "authors": $authors_list,
+  "contributors": $contributors_list,
   "contact": {
-    "homepage": "https://www.curseforge.com/minecraft/mc-mods/watermedia/",
+    "homepage": "https://www.curseforge.com/minecraft/mc-mods/$id",
     "sources": "https://github.com/$github",
     "issues": "https://github.com/$github/issues",
     "email": "SrRapero720@hotmail.com"
@@ -14,17 +15,19 @@
 
   "license": "$license",
   "icon": "pack.png",
-  "environment": "client",
-  "jars": [
-    { "file": "META-INF/jarjar/waterconfig-${waterconfig_version + '.jar'}" }
-  ],
+  "environment": "*",
+  "jars": $jars,
   "entrypoints": {
     "main": [
       "org.watermedia.bootstrap.FabricBootstrap"
     ]
   },
   "depends": {
-    "watermedia_binaries": "*",
+    "minecraft": $minecraftfabric,
+    "fabricloader": "$fabricrange",
     "java": "$javarange"
+  },
+  "breaks": {
+    "watermedia_binaries": $binariesbreaks
   }
 }

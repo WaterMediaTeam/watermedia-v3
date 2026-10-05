@@ -1,5 +1,12 @@
+import groovy.json.JsonOutput
 import me.modmuss50.mpp.platforms.curseforge.AdditionalFileOptions
 import org.gradle.api.tasks.testing.Test
+
+import java.security.MessageDigest
+import java.util.jar.JarEntry
+import java.util.jar.JarFile
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
 
 plugins {
     id 'java-library'
@@ -14,6 +21,9 @@ java {
 configurations {
     include
     jarJar {
+        transitive = false
+    }
+    launcher {
         transitive = false
     }
     compileOnlyApi.extendsFrom(jarJar)
@@ -37,28 +47,39 @@ if (lwjglPlatform == null || lwjglArch == null) throw new GradleException("Unsup
 def lwjglNatives = "natives-$lwjglPlatform$lwjglArch"
 def javafxPlatform = ['windows': 'win', 'linux': 'linux', 'osx': 'mac'][osdetector.os]
 if (osdetector.arch == 'aarch_64' && osdetector.os != 'windows') javafxPlatform += '-aarch64'
+def lwjglTargets = lwjgl_platforms.split(',').collect { it.trim() }
+def javafxTargets = javafx_platforms.split(',').collect { it.trim() }
 
 dependencies {
     include "org.bytedeco:ffmpeg:$ffmpeg_version"
-    jarJar "com.github.SrRapero720:waterconfig:$waterconfig_version"
+    // NESTED LIBRARIES DECLARE "range!!version": LOADERS ACCEPT THE RANGE AND THE JAR BUNDLES THE VERSION.
+    jarJar "com.github.SrRapero720:waterconfig:$waterconfig_range!!$waterconfig_version"
 
     compileOnlyApi "org.tukaani:xz:$xz_version"
     compileOnlyApi "com.github.WaterMediaTeam:modloaders:$loaders_version"
-    compileOnlyApi "com.google.code.gson:gson:$gson_version"
-    compileOnlyApi "org.joml:joml:$joml_version"
-
+    // THE STANDALONE LAUNCHER DOWNLOADS THE launcher LIBRARIES FOR EVERY TARGET PLATFORM.
+    ["com.google.code.gson:gson:$gson_version", "org.joml:joml:$joml_version"].each { library ->
+        compileOnlyApi library
+        launcher library
+    }
     ['api', 'core'].each { module ->
         compileOnlyApi "org.apache.logging.log4j:log4j-$module:$log4j_version"
+        launcher "org.apache.logging.log4j:log4j-$module:$log4j_version"
     }
     ['lwjgl', 'lwjgl-opengl', 'lwjgl-glfw', 'lwjgl-stb', 'lwjgl-openal', 'lwjgl-vulkan', 'lwjgl-shaderc'].each { module ->
         compileOnlyApi "org.lwjgl:$module:$lwjgl_version"
+        launcher "org.lwjgl:$module:$lwjgl_version"
         // VULKAN USES THE SYSTEM LOADER EXCEPT ON MACOS, WHICH SHIPS MOLTENVK.
         if (module != 'lwjgl-vulkan' || osdetector.os == 'osx') {
             testRuntimeOnly "org.lwjgl:$module:$lwjgl_version:$lwjglNatives"
         }
+        lwjglTargets.each { platform ->
+            if (module != 'lwjgl-vulkan' || platform.startsWith('macos')) launcher "org.lwjgl:$module:$lwjgl_version:natives-$platform"
+        }
     }
     ['base', 'graphics', 'swing'].each { module ->
         compileOnlyApi "org.openjfx:javafx-$module:$javafx_version:$javafxPlatform"
+        javafxTargets.each { platform -> launcher "org.openjfx:javafx-$module:$javafx_version:$platform" }
     }
 }
 
@@ -78,24 +99,84 @@ sourcesJar {
     exclude 'org/watermedia/binaries/**'
 }
 
-// ALL LOADERS SHARE ONE NESTED JAR; FABRIC REQUIRES ITS OWN MOD DESCRIPTOR INSIDE IT.
-def waterconfigJar = tasks.register('waterconfigJar', Jar) {
-    archiveFileName = "waterconfig-$waterconfig_version" + '.jar'
-    destinationDirectory = layout.buildDirectory.dir('jarjar')
-    manifest.attributes 'FMLModType': 'GAMELIBRARY', 'Automatic-Module-Name': 'waterconfig'
-    inputs.property('waterconfig_version', waterconfig_version)
-    from({ zipTree(configurations.jarJar.singleFile) }) {
-        exclude 'META-INF/MANIFEST.MF'
+// EVERY jarJar LIBRARY NESTS UNDER META-INF/jarjar FOR ALL LOADERS AND THE STANDALONE LAUNCHER.
+def nestedLibraries = configurations.jarJar.dependencies.collect { library ->
+    def version = library.versionConstraint.preferredVersion
+    [group: library.group, name: library.name, version: version, range: library.versionConstraint.strictVersion,
+     file: library.name + '-' + version + '.jar']
+}
+ext.resourceValues = [jars: JsonOutput.toJson(nestedLibraries.collect { [file: 'META-INF/jarjar/' + it.file] })]
+def nestedFiles = configurations.jarJar.incoming.artifacts.resolvedArtifacts
+def nestedJars = tasks.register('nestedJars') {
+    group = 'build'
+    description = 'Nests the jarJar libraries with FML library manifests, Fabric descriptors and the jarjar metadata'
+    def output = layout.buildDirectory.dir('jarjar')
+    inputs.property('libraries', nestedLibraries)
+    inputs.files(configurations.jarJar)
+    outputs.dir(output)
+    doLast {
+        def directory = output.get().asFile
+        directory.deleteDir()
+        directory.mkdirs()
+        // 1980-02-01 IN LOCAL TIME IS THE ENTRY TIME OF GRADLE'S REPRODUCIBLE ARCHIVES
+        def stamp = new GregorianCalendar(1980, Calendar.FEBRUARY, 1).timeInMillis
+        def sources = nestedFiles.get().collectEntries { [(it.id.componentIdentifier.moduleIdentifier.toString()): it.file] }
+        nestedLibraries.each { library ->
+            new JarFile(sources[library.group + ':' + library.name] as File).withCloseable { source ->
+                new JarOutputStream(new File(directory, library.file).newOutputStream()).withCloseable { jar ->
+                    def manifest = source.manifest ?: new Manifest()
+                    manifest.mainAttributes.putValue('Manifest-Version', '1.0')
+                    manifest.mainAttributes.putValue('FMLModType', 'GAMELIBRARY')
+                    if (!manifest.mainAttributes.getValue('Automatic-Module-Name')) manifest.mainAttributes.putValue('Automatic-Module-Name', library.name)
+                    jar.putNextEntry(new JarEntry(JarFile.MANIFEST_NAME).tap { time = stamp })
+                    manifest.write(jar)
+                    source.entries().each { entry ->
+                        // SIGNATURES NO LONGER MATCH THE REWRITTEN MANIFEST
+                        if (entry.name ==~ /(?i)META-INF\/(MANIFEST\.MF|[^\/]+\.(SF|RSA|DSA|EC))/) return
+                        jar.putNextEntry(new JarEntry(entry.name).tap { time = stamp })
+                        source.getInputStream(entry).withCloseable { it.transferTo(jar) }
+                    }
+                    // FABRIC NESTS ONLY MODS, SO PLAIN LIBRARIES GET THE DESCRIPTOR LOOM WOULD GENERATE
+                    if (source.getEntry('fabric.mod.json') != null) return
+                    jar.putNextEntry(new JarEntry('fabric.mod.json').tap { time = stamp })
+                    def id = (library.group + '_' + library.name).toLowerCase(Locale.ROOT).replaceAll(/[^a-z0-9_-]/, '_')
+                    jar.write(JsonOutput.toJson([schemaVersion: 1, id: id, version: library.version, name: library.name,
+                            custom: ['fabric-loom:generated': true]]).getBytes('UTF-8'))
+                }
+            }
+        }
+        new File(directory, 'metadata.json').write(JsonOutput.prettyPrint(JsonOutput.toJson([jars: nestedLibraries.collect { library ->
+            [identifier: [group: library.group, artifact: library.name], version: [range: library.range, artifactVersion: library.version],
+             path: 'META-INF/jarjar/' + library.file, isObfuscated: false]
+        }])), 'UTF-8')
     }
-    from('src/jarjar') {
-        expand(waterconfig_version: waterconfig_version)
+}
+
+// THE STANDALONE LAUNCHER READS ITS LIBRARY VERSIONS, NESTED JARS AND THE SHA-256 OF EVERY DOWNLOADABLE JAR HERE.
+def launcherFiles = configurations.launcher.incoming.files
+def launcherValues = [log4j_version: log4j_version, gson_version: gson_version, lwjgl_version: lwjgl_version,
+                      joml_version: joml_version, javafx_version: javafx_version, nested: nestedLibraries*.file.join(',')]
+def bootstrapProperties = tasks.register('bootstrapProperties') {
+    group = 'build'
+    description = 'Writes the standalone launcher catalog with versions, nested jars and SHA-256 pins'
+    def output = layout.buildDirectory.file('bootstrap/bootstrap.properties')
+    inputs.properties(launcherValues)
+    inputs.files(launcherFiles)
+    outputs.file(output)
+    doLast {
+        def lines = launcherValues.collect { key, value -> "$key=$value" }
+        launcherFiles.files.sort { it.name }.each { file ->
+            lines << file.name + '=' + HexFormat.of().formatHex(MessageDigest.getInstance('SHA-256').digest(file.bytes))
+        }
+        output.get().asFile.write(lines.join('\n') + '\n', 'UTF-8')
     }
 }
 
 processResources {
-    from(waterconfigJar) {
+    from(nestedJars) {
         into 'META-INF/jarjar'
     }
+    from(bootstrapProperties)
 }
 
 jar {

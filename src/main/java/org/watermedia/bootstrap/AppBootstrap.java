@@ -23,6 +23,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.net.URLConnection;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -177,20 +178,26 @@ public final class AppBootstrap {
         jars.add(Path.of(AppBootstrap.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
         Files.createDirectories(LIBS_DIR);
         final Properties versions = versions();
-        final String config = "waterconfig-" + version(versions, "waterconfig") + ".jar";
-        this.log("Extracting " + config);
-        jars.add(extract("/META-INF/jarjar/" + config, LIBS_DIR));
+        final String nested = versions.getProperty("nested");
+        if (nested == null) throw new IOException("Missing nested libraries in bootstrap.properties");
+        for (final String name: nested.split(",")) {
+            this.log("Extracting " + name);
+            jars.add(extract("/META-INF/jarjar/" + name, LIBS_DIR));
+        }
         final String player = IOTool.read(PLAYER_MODE_FILE.toFile());
         final boolean javafx = player != null && player.trim().equalsIgnoreCase("JFX");
         for (final Dependency dependency: dependencies(versions)) {
             final Path jar = LIBS_DIR.resolve(dependency.name());
-            if (!Files.isRegularFile(jar)) {
+            final String sha256 = versions.getProperty(dependency.name());
+            if (sha256 == null) throw new IOException("Missing SHA-256 pin for " + dependency.name());
+            // THE SHARED CACHE IS UNTRUSTED: A JAR JOINS THE CLASSPATH ONLY WHILE IT MATCHES ITS BUILD PIN.
+            if (!Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS) || !IOTool.sha256(jar).equals(sha256)) {
                 // CACHED JAVAFX IS ALWAYS INCLUDED; DOWNLOAD IT ONLY WHEN ITS PLAYER IS SELECTED.
                 if (dependency.group().equals("org/openjfx") && !javafx) continue;
                 if (!GraphicsEnvironment.isHeadless()) this.window();
-                this.log("Downloading " + dependency.name());
+                this.log((Files.exists(jar, LinkOption.NOFOLLOW_LINKS) ? "Replacing unverified " : "Downloading ") + dependency.name());
                 try {
-                    download(dependency.source(), jar, this.window);
+                    download(dependency.source(), jar, sha256, this.window);
                 } catch (final IOException failure) {
                     if (!dependency.optional()) throw failure;
                     this.log("Optional library unavailable: " + dependency.name() + " (" + failure.getMessage() + ")");
@@ -234,7 +241,7 @@ public final class AppBootstrap {
         }
     }
 
-    private static void download(final URI source, final Path destination, final BootstrapWindow window) throws IOException {
+    private static void download(final URI source, final Path destination, final String sha256, final BootstrapWindow window) throws IOException {
         final String name = destination.getFileName().toString();
         if (window != null) window.progress("Downloading " + name, -1);
         final URLConnection connection = source.toURL().openConnection();
@@ -263,6 +270,7 @@ public final class AppBootstrap {
             }
             if (total >= 0 && received != total)
                 throw new IOException("Incomplete download of " + name + ": " + received + " of " + total + " bytes");
+            IOTool.verifySha256(partial, sha256);
             IOTool.move(partial, destination);
         } catch (final IOException failure) {
             try { Files.deleteIfExists(partial); }

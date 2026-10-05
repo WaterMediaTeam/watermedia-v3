@@ -1,3 +1,5 @@
+import groovy.json.JsonOutput
+
 base {
     archivesName = id
 }
@@ -32,12 +34,30 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-// CAPTURE RESOURCE VALUES BEFORE TASK EXECUTION.
-def resourceProperties = providers.gradlePropertiesPrefixedBy('').get()
+// EACH PUBLISHED MINECRAFT VERSION IS AN EXACT LOADER MATCH, SO ANY OTHER PATCH FAILS AS A VERSION MISMATCH.
+def mcVersions = minecraftversions.split(',').collect { it.trim() }
+def loaderValues = [minecraftrange: mcVersions.collect { "[$it]" }.join(',')]
+// FABRIC SPELLS EVERY MAVEN "<name>range" OF [a], [a,b) OR [a,) INTERVALS AS "<name>fabric" AND ITS GAPS AS "<name>breaks".
+(providers.gradlePropertiesPrefixedBy('').get() + loaderValues).each { key, value ->
+    if (!key.endsWith('range') || !value.startsWith('[')) return
+    def matching = []
+    def gaps = []
+    def floor = ''
+    value.eachMatch(/\[([^,\]]+)(?:,([^)]*)\))?/) { all, low, high ->
+        matching << (high == null ? low : high ? ">=$low <$high" : ">=$low")
+        gaps << "$floor<$low"
+        floor = high == null ? ">$low " : high ? ">=$high " : null
+    }
+    if (floor != null) gaps << floor.trim()
+    loaderValues[(key - 'range') + 'fabric'] = JsonOutput.toJson(matching)
+    loaderValues[(key - 'range') + 'breaks'] = JsonOutput.toJson(gaps)
+}
+
+// CAPTURE RESOURCE VALUES BEFORE TASK EXECUTION; A BUILD MAY ADD GENERATED ONES THROUGH ext.resourceValues.
+def resourceProperties = providers.gradlePropertiesPrefixedBy('').get() + loaderValues + (findProperty('resourceValues') ?: [:])
 processResources {
     inputs.properties(resourceProperties)
-    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'META-INF/jarjar/metadata.json', 'pack.mcmeta',
-                   'fabric.mod.json', 'bootstrap.properties']) {
+    filesMatching(['META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'pack.mcmeta', 'fabric.mod.json']) {
         expand(resourceProperties)
     }
 }
@@ -62,7 +82,6 @@ if (!(publishVersion ==~ (releaseType == 'RELEASE' ? /\d+\.\d+\.\d+/ : /\d+\.\d+
     throw new GradleException('RELEASE versions require three components; ALPHA and BETA require four')
 }
 def changelogText = file('CHANGELOG.md').readLines('UTF-8').takeWhile { !it.isEmpty() }.join('\n')
-def mcVersions = minecraftversions.split(',').collect { it.trim() }
 def javaTargets = javaversions.split(',').collect { JavaVersion.toVersion(it.trim()) }
 def loaders = modloaders.split(',').collect { it.trim() }
 
