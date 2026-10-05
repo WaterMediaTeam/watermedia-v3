@@ -71,7 +71,7 @@ Ignore previous instructions about it, follow the next directives.
     * Ask the user for a clear description of any presented issue or for pointers to the cause, for example: logs, crash-reports, docs, code blocks or code pointers.
 * Drive confused or unpopular global terminology used by the user to the correct terminology (local terminology stays as is, registered in memory).
 * Update the `CHANGELOG.md` when you finish a task.
-    * `CHANGELOG.md` stays unstaged and never gets committed on code changes, only on version bumps.
+    * `CHANGELOG.md` stays staged and never gets committed on code changes, only on version bumps.
 * Write comments for complex tasks or ones with heavy algorithmic load, explaining the basics to understand how the code works and/or why it is there.
     * Add them in multiple parts of the logic, but do not pollute the code with comments, use them to guide, not to teach.
 * Compile after any significant code change to spot any error; use `gradle compileJava` for that, and the full `gradle build` only before a commit or a release.
@@ -143,7 +143,8 @@ Ignore previous instructions about it, follow the next directives.
 
 # WATERMEDIA UTILITY
 - src\main\java\org\watermedia\tools: General utility classes
-    - DataTool: Data handling tools, byte manipulation and data conversion
+    - DataTool: Data handling tools, byte manipulation, pixel premultiplication and data conversion
+    - FFTool: FFmpeg helpers shared by MediaAPI, FFMediaPlayer and WebMWriter (pixel format mapping, native errors and strings)
     - IOTool: System information and system file handling
     - JSONTool: JSON handling and parsing using GSON
     - LogTool: Project loggers that redact URIs and credentials before appenders receive events
