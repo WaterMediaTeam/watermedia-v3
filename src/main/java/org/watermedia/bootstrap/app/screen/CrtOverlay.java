@@ -11,7 +11,7 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
  * {@link AppContext#crt} flag driven by the {@code C} shortcut and the
  * Settings row.
  */
-public final class CrtOverlay extends Element<CrtOverlay> {
+final class CrtOverlay extends Element<CrtOverlay> {
 
     public CrtOverlay() {
         this.width = MAX_PARENT;

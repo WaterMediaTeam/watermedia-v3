@@ -10,7 +10,7 @@ import java.awt.Color;
  * accent with a faint fill, and future steps are muted; each connector takes the color of the step to its
  * left so the completed run reads as one continuous bar.
  */
-public final class Stepper extends Element<Stepper> {
+final class Stepper extends Element<Stepper> {
 
     private static final int DOT = 22;
     private static final int GAP = 24;

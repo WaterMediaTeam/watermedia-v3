@@ -3,7 +3,7 @@ package org.watermedia.bootstrap.app;
 /**
  * State for the global error dialog.
  */
-public final class ErrorState {
+final class ErrorState {
     // VOLATILE LIKE THE SIBLING UploadState/CleanupState: syncShell() POLLS has() EACH FRAME ON THE RENDER
     // THREAD, AND show() MAY BE CALLED FROM A BACKGROUND WORKER (E.G. AN UPLOAD/CLEANUP FAILURE).
     public volatile String title;

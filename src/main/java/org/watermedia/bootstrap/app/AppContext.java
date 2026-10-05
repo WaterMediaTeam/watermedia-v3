@@ -139,7 +139,7 @@ public final class AppContext implements Executor {
     public record URIGroup(String name, TestURI[] uris) {
     }
 
-    public record IptvCatalog(String generatedAt, IptvChannel[] channels) {
+    record IptvCatalog(String generatedAt, IptvChannel[] channels) {
     }
 
     public record SuspectMod(String id, String name, String slug, String url) {

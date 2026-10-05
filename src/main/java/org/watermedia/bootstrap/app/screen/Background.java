@@ -8,7 +8,7 @@ import org.watermedia.bootstrap.app.element.Element;
  * a deep vertical gradient, a soft glow band across the top, and 1px scanlines every 3px. Fills its
  * parent by default and never consumes input.
  */
-public final class Background extends Element<Background> {
+final class Background extends Element<Background> {
 
     public Background() {
         this.width = MAX_PARENT;

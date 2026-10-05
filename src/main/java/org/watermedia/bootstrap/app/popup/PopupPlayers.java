@@ -12,14 +12,14 @@ import java.util.function.Supplier;
  * Shared state and helpers for the popped-out player windows (AWT / JavaFX). Keeps a single popup
  * alive at a time — opening a new MRL closes the current window instead of stacking players.
  */
-public final class PopupPlayers {
+final class PopupPlayers {
     private PopupPlayers() {}
 
     // THE ONE LIVE POPUP; OPENING ANOTHER CLOSES IT
     private static volatile Closer current;
 
-    /** A popped-out player that can be torn down. */
-    public interface Closer {
+    // A POPPED-OUT PLAYER THAT CAN BE TORN DOWN
+    interface Closer {
         void close();
     }
 

@@ -14,7 +14,7 @@ import java.util.function.BiConsumer;
  * window shell's center slot; navigation runs the exit/enter lifecycle and mounts the target (optionally
  * stacked over the underlay a screen declares through {@link Screen#under()}).
  */
-public class ScreenManager {
+final class ScreenManager {
 
     private final Map<String, Screen> screens = new HashMap<>();
     private RootScreen root;

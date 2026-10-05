@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
-public final class Predictor {
+final class Predictor {
 
     // SWAR PER-BYTE MASKS FOR ARGB ARITHMETIC
     private static final int MASK_LO = 0x00FF00FF;

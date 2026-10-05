@@ -8,7 +8,7 @@ import java.awt.Color;
  * A thin horizontal rule used to separate sections. It fills the width it is given and is as tall as its
  * {@link #thickness}.
  */
-public final class Divider extends Element<Divider> {
+final class Divider extends Element<Divider> {
 
     private Color color = AppTheme.STROKE;
     private int thickness = 1;

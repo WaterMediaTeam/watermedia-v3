@@ -6,7 +6,7 @@ import org.watermedia.api.codecs.common.webp.BitReader;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.codecs.readers.webp.lossless.VP8LDecoder.IT;
 
-public final class HuffmanDecoder {
+final class HuffmanDecoder {
 
     // CODE LENGTH CODE ORDER (RFC 9649 SECTION 3.7.2.1.2)
     private static final int[] CODE_LENGTH_ORDER = {

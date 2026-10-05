@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
-public final class ColorTransform {
+final class ColorTransform {
 
     private ColorTransform() {
     }

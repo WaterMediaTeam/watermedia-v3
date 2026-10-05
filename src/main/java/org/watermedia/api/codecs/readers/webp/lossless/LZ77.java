@@ -3,7 +3,7 @@ package org.watermedia.api.codecs.readers.webp.lossless;
 import org.watermedia.api.codecs.XCodecException;
 import org.watermedia.api.codecs.common.webp.BitReader;
 
-public final class LZ77 {
+final class LZ77 {
 
     // DISTANCE CODE TO (xi, yi) OFFSET MAPPING FOR CODES 1-120
     // FROM THE WEBP SPEC: (xi, yi) PAIRS IN ORDER

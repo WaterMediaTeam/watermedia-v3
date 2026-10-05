@@ -24,7 +24,7 @@ import java.util.function.Supplier;
  * keybinds from the supplier given at construction on every {@code update()} pass and appends the
  * global {@code C: CRT ON/OFF} chip itself; an empty list (boot) renders just the chrome.
  */
-public final class KeybindsBar extends Group<KeybindsBar> {
+final class KeybindsBar extends Group<KeybindsBar> {
 
     /** Fixed footer height in pixels. */
     public static final int H = 44;

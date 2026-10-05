@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
-public record Transform(
+record Transform(
         Type type,
         int bits,          // BLOCK SIZE BITS FOR PREDICTOR/COLOR
         int[] data         // PREDICTOR MODES, COLOR TRANSFORM ELEMENTS, OR COLOR TABLE
