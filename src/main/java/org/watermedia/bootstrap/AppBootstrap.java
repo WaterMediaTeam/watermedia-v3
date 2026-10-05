@@ -42,6 +42,8 @@ public final class AppBootstrap {
     private static final String APP_FLAG = "watermedia.app";
     private static final String ENGINE_PROP = "watermedia.engine";
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
+    // SHARED BY EVERY USER ON LINUX (/tmp): PINS REJECT PLANTED JARS, BUT AN OWNER OF THIS FOLDER COULD STILL SWAP A
+    // VERIFIED JAR BEFORE THE CHILD JVM OPENS IT. KEPT FOR NOW; A PER-USER CACHE DIRECTORY WOULD CLOSE THAT WINDOW
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs");
     // THE RENDER SYSTEM READS AND WRITES THESE SAME PREFERENCES IN THE CHILD JVM.
     private static final Path ENGINE_FILE = Path.of("watermedia", "engine.cfg");
