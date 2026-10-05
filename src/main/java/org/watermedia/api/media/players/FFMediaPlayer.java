@@ -36,7 +36,6 @@ import org.lwjgl.system.MemoryUtil;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
@@ -212,10 +211,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int lastFrameHeight;
     private PixelFormat lastFormat;
     private int lastBitsPerComponent;
-    // PixFmtMapping CACHE (CONSUME THREAD ONLY): THE STREAM PIXEL FORMAT IS STABLE, SO MAP ONCE PER
+    // FFTool.Pixels CACHE (CONSUME THREAD ONLY): THE STREAM PIXEL FORMAT IS STABLE, SO MAP ONCE PER
     // FORMAT CHANGE INSTEAD OF ALLOCATING A MAPPING EVERY FRAME IN THE UPLOAD HOT PATH.
     private int cachedUploadFmt = Integer.MIN_VALUE;
-    private PixFmtMapping cachedUploadMapping;
+    private FFTool.Pixels cachedUploadMapping;
 
     // AUDIO FORMAT NEGOTIATION
     private boolean audioPassthrough;
@@ -503,71 +502,7 @@ public final class FFMediaPlayer extends MediaPlayer {
      * Reports whether the active video pipeline is decoding on the GPU.
      * @return {@code true} while a hardware decoder is in use, {@code false} for software decoding
      */
-    public boolean isHwAccel() { return !isNull(this.hwDeviceCtx); }
-
-    // FORMAT MAPPING — NATIVE GPU UPLOAD
-    private record PixFmtMapping(PixelFormat cs, int bits) {}
-    private static final PixFmtMapping BGRA_MAPPING = new PixFmtMapping(PixelFormat.BGRA, 8);
-
-    private static PixFmtMapping mapPixelFormat(final int avPixFmt) {
-        return switch (avPixFmt) {
-            // 8-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P -> new PixFmtMapping(PixelFormat.YUV420P, 8);
-            case AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P -> new PixFmtMapping(PixelFormat.YUV422P, 8);
-            case AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUVJ444P -> new PixFmtMapping(PixelFormat.YUV444P, 8);
-            // 8-BIT SEMI-PLANAR
-            case AV_PIX_FMT_NV12 -> new PixFmtMapping(PixelFormat.NV12, 8);
-            case AV_PIX_FMT_NV21 -> new PixFmtMapping(PixelFormat.NV21, 8);
-            // 8-BIT PACKED RGB
-            case AV_PIX_FMT_BGRA  -> new PixFmtMapping(PixelFormat.BGRA, 8);
-            case AV_PIX_FMT_RGBA  -> new PixFmtMapping(PixelFormat.RGBA, 8);
-            case AV_PIX_FMT_RGB24 -> new PixFmtMapping(PixelFormat.RGB, 8);
-            // 8-BIT GRAYSCALE
-            case AV_PIX_FMT_GRAY8 -> new PixFmtMapping(PixelFormat.GRAY, 8);
-            // 8-BIT PACKED YUV
-            case AV_PIX_FMT_YUYV422 -> new PixFmtMapping(PixelFormat.YUYV, 8);
-            case AV_PIX_FMT_UYVY422 -> new PixFmtMapping(PixelFormat.YUYV2, 8);
-            // 8-BIT YUVA (4-PLANE)
-            case AV_PIX_FMT_YUVA420P -> new PixFmtMapping(PixelFormat.YUVA420P, 8);
-            case AV_PIX_FMT_YUVA422P -> new PixFmtMapping(PixelFormat.YUVA422P, 8);
-            case AV_PIX_FMT_YUVA444P -> new PixFmtMapping(PixelFormat.YUVA444P, 8);
-            // 10-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P10LE -> new PixFmtMapping(PixelFormat.YUV420P, 10);
-            case AV_PIX_FMT_YUV422P10LE -> new PixFmtMapping(PixelFormat.YUV422P, 10);
-            case AV_PIX_FMT_YUV444P10LE -> new PixFmtMapping(PixelFormat.YUV444P, 10);
-            // 10-BIT YUVA
-            case AV_PIX_FMT_YUVA420P10LE -> new PixFmtMapping(PixelFormat.YUVA420P, 10);
-            case AV_PIX_FMT_YUVA422P10LE -> new PixFmtMapping(PixelFormat.YUVA422P, 10);
-            case AV_PIX_FMT_YUVA444P10LE -> new PixFmtMapping(PixelFormat.YUVA444P, 10);
-            // 12-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P12LE -> new PixFmtMapping(PixelFormat.YUV420P, 12);
-            case AV_PIX_FMT_YUV422P12LE -> new PixFmtMapping(PixelFormat.YUV422P, 12);
-            case AV_PIX_FMT_YUV444P12LE -> new PixFmtMapping(PixelFormat.YUV444P, 12);
-            // 12-BIT YUVA
-            case AV_PIX_FMT_YUVA422P12LE -> new PixFmtMapping(PixelFormat.YUVA422P, 12);
-            case AV_PIX_FMT_YUVA444P12LE -> new PixFmtMapping(PixelFormat.YUVA444P, 12);
-            // 16-BIT PLANAR YUV
-            case AV_PIX_FMT_YUV420P16LE -> new PixFmtMapping(PixelFormat.YUV420P, 16);
-            case AV_PIX_FMT_YUV422P16LE -> new PixFmtMapping(PixelFormat.YUV422P, 16);
-            case AV_PIX_FMT_YUV444P16LE -> new PixFmtMapping(PixelFormat.YUV444P, 16);
-            // 16-BIT YUVA
-            case AV_PIX_FMT_YUVA420P16LE -> new PixFmtMapping(PixelFormat.YUVA420P, 16);
-            case AV_PIX_FMT_YUVA422P16LE -> new PixFmtMapping(PixelFormat.YUVA422P, 16);
-            case AV_PIX_FMT_YUVA444P16LE -> new PixFmtMapping(PixelFormat.YUVA444P, 16);
-            // P010/P016 — LEFT-SHIFTED 10/16-BIT NV12, MAP AS 16-BIT (bitScale=1.0 IS CORRECT)
-            case AV_PIX_FMT_P010LE -> new PixFmtMapping(PixelFormat.NV12, 16);
-            case AV_PIX_FMT_P016LE -> new PixFmtMapping(PixelFormat.NV12, 16);
-            // HIGH-BIT GRAYSCALE
-            case AV_PIX_FMT_GRAY10LE  -> new PixFmtMapping(PixelFormat.GRAY, 10);
-            case AV_PIX_FMT_GRAY12LE  -> new PixFmtMapping(PixelFormat.GRAY, 12);
-            case AV_PIX_FMT_GRAY16LE  -> new PixFmtMapping(PixelFormat.GRAY, 16);
-            case AV_PIX_FMT_GRAYF32LE -> new PixFmtMapping(PixelFormat.GRAY, 32);
-            // 16-BIT PACKED RGB
-            case AV_PIX_FMT_RGB48LE  -> new PixFmtMapping(PixelFormat.RGB, 16);
-            case AV_PIX_FMT_RGBA64LE -> new PixFmtMapping(PixelFormat.RGBA, 16);
-            default -> null;
-        };
-    }
+    public boolean isHwAccel() { return !FFTool.isNull(this.hwDeviceCtx); }
 
     // MAPS AN FFMPEG SAMPLE FORMAT (PACKED OR PLANAR) TO THE CANONICAL SFXEngine.SampleType.
     // PLANARNESS IS HANDLED SEPARATELY — THE CALLER CHECKS av_sample_fmt_is_planar DIRECTLY.
@@ -1024,12 +959,12 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // TOUCHING THE DECODE PIPELINE OR THE CLOCK.
                         if (slot.format != this.cachedUploadFmt) {
                             this.cachedUploadFmt = slot.format;
-                            this.cachedUploadMapping = mapPixelFormat(slot.format);
+                            this.cachedUploadMapping = FFTool.pixels(slot.format);
                         }
-                        PixFmtMapping mapping = this.cachedUploadMapping;
+                        FFTool.Pixels mapping = this.cachedUploadMapping;
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
-                        if (mapping != null && !this.gfx.supports(mapping.cs)) mapping = null;
+                        if (mapping != null && !this.gfx.supports(mapping.format())) mapping = null;
                         final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
                         final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
 
@@ -1068,7 +1003,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                                 uploadFrame = this.scaledFrame;
                                 uploadW = targetW;
                                 uploadH = targetH;
-                                if (dstFormat == AV_PIX_FMT_BGRA) mapping = BGRA_MAPPING;
+                                if (dstFormat == AV_PIX_FMT_BGRA) mapping = FFTool.BGRA;
                             } else if (mapping == null) {
                                 // NO CONVERTER AND NO NATIVE UPLOAD — THE FRAME IS UNUSABLE.
                                 // COUNT AS SKIPPED SO THE ZERO-FRAME → ERROR CHECK STAYS ACCURATE.
@@ -1080,18 +1015,18 @@ public final class FFMediaPlayer extends MediaPlayer {
                         }
 
                         // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine
-                        if (mapping.cs != this.lastFormat || mapping.bits != this.lastBitsPerComponent
+                        if (mapping.format() != this.lastFormat || mapping.bits() != this.lastBitsPerComponent
                                 || uploadW != this.lastFrameWidth || uploadH != this.lastFrameHeight) {
-                            this.gfx.format(mapping.cs, uploadW, uploadH, mapping.bits);
-                            this.lastFormat = mapping.cs;
-                            this.lastBitsPerComponent = mapping.bits;
+                            this.gfx.format(mapping.format(), uploadW, uploadH, mapping.bits());
+                            this.lastFormat = mapping.format();
+                            this.lastBitsPerComponent = mapping.bits();
                             this.lastFrameWidth = uploadW;
                             this.lastFrameHeight = uploadH;
                             LOGGER.info(IT, "GFX format: {} {}x{} {}bit (source={}x{})",
-                                    mapping.cs, uploadW, uploadH, mapping.bits, slot.width, slot.height);
+                                    mapping.format(), uploadW, uploadH, mapping.bits(), slot.width, slot.height);
                         }
 
-                        this.uploadNativePlanes(uploadFrame, mapping.cs, uploadH);
+                        this.uploadNativePlanes(uploadFrame, mapping.format(), uploadH);
 
                         // TRACK RENDER DEBT (CONVERT+UPLOAD TIME VS FRAME BUDGET)
                         final double workSec = (System.nanoTime() - workStart) / 1_000_000_000.0;
@@ -2147,7 +2082,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
             if (ret < 0) {
-                final String reason = error(ret);
+                final String reason = FFTool.error(ret);
                 LOGGER.error(IT, "Failed to open input ({}): {}", reason, url);
                 this.exception(new IOException("Failed to open input (" + reason + "): " + url));
                 this.formatContext = null;
@@ -2456,9 +2391,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         final AVCodecParameters codecpar = videoStream.codecpar();
         final int codecId = codecpar.codec_id();
 
-        final String codecName = getString(avcodec_get_name(codecId), null);
+        final String codecName = FFTool.string(avcodec_get_name(codecId), null);
         final AVCodecDescriptor descriptor = avcodec_descriptor_get(codecId);
-        final String codecLongName = descriptor != null ? getString(descriptor.long_name(), "unknown") : "unknown";
+        final String codecLongName = descriptor != null ? FFTool.string(descriptor.long_name(), "unknown") : "unknown";
         final long bitrate = codecpar.bit_rate();
         final int profile = codecpar.profile();
         final int level = codecpar.level();
@@ -2475,8 +2410,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         // THE SAME CODEC ID RESOLVES TO DIFFERENT DECODERS PER PLATFORM BUILD, AND THEY DIFFER
         // IN REORDER DELAY AND STREAM SUPPORT — KEY CONTEXT WHEN A DECODE YIELDS NO FRAMES.
         LOGGER.info(IT, "Video codec: {} ({}) via {}, bitrate: {} kbps, profile: {}, level: {}, pixel format: {}",
-                codecName, codecLongName, decoder != null ? getString(decoder.name(), codecName) : "no decoder",
-                bitrate > 0 ? bitrate / 1000 : "N/A", getString(profilePointer, profile), level, getString(fmtNamePointer, pixFmt));
+                codecName, codecLongName, decoder != null ? FFTool.string(decoder.name(), codecName) : "no decoder",
+                bitrate > 0 ? bitrate / 1000 : "N/A", FFTool.string(profilePointer, profile), level, FFTool.string(fmtNamePointer, pixFmt));
 
         final boolean hwAllowed = WaterMediaConfig.media.ffmpeg.hardwareAccel;
         // THE DEFAULT DECODER IS KEPT FOR THE HARDWARE PATH (THE NATIVE av1 DECODER IS THE
@@ -2491,8 +2426,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 LOGGER.error(IT, "No software decoder available for codec id {}", codecId);
                 return false;
             }
-            if (decoder == null || !Objects.equals(getString(swDecoder.name(), ""), getString(decoder.name(), "")))
-                LOGGER.info(IT, "Software decode using {}", getString(swDecoder.name(), "?"));
+            if (decoder == null || !Objects.equals(FFTool.string(swDecoder.name(), ""), FFTool.string(decoder.name(), "")))
+                LOGGER.info(IT, "Software decode using {}", FFTool.string(swDecoder.name(), "?"));
 
             this.videoCodecContext = avcodec.avcodec_alloc_context3(swDecoder);
             if (avcodec_parameters_to_context(this.videoCodecContext, videoStream.codecpar()) < 0) {
@@ -2514,15 +2449,15 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.sourceHeight = h;
         this.resolveQuality(w, h);
 
-        final PixFmtMapping initialMapping = mapPixelFormat(this.videoCodecContext.pix_fmt());
+        final FFTool.Pixels initialMapping = FFTool.pixels(this.videoCodecContext.pix_fmt());
         if (initialMapping != null) {
             // PRE-CONFIGURE THE ENGINE WITH THE UPLOAD TARGET (maxSize/LOD APPLIED) SO
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
             final int targetW = MathUtil.scaled(w, this.scaleWidth, this.lod.percent());
             final int targetH = MathUtil.scaled(h, this.scaleHeight, this.lod.percent());
-            this.gfx.format(initialMapping.cs, targetW, targetH, initialMapping.bits);
-            this.lastFormat = initialMapping.cs;
-            this.lastBitsPerComponent = initialMapping.bits;
+            this.gfx.format(initialMapping.format(), targetW, targetH, initialMapping.bits());
+            this.lastFormat = initialMapping.format();
+            this.lastBitsPerComponent = initialMapping.bits();
             this.lastFrameWidth = targetW;
             this.lastFrameHeight = targetH;
         }
@@ -2550,7 +2485,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                     if (avcodec.avcodec_open2(this.videoCodecContext, decoder, (PointerPointer<?>) null) >= 0) {
                         final BytePointer hwName = av_hwdevice_get_type_name(hw);
-                        LOGGER.info(IT, "Hardware decoder initialized: {}", getString(hwName, "unknown (" + hw + ")"));
+                        LOGGER.info(IT, "Hardware decoder initialized: {}", FFTool.string(hwName, "unknown (" + hw + ")"));
                         IOTool.closeQuietly(hwName);
                         return true;
                     }
@@ -2678,12 +2613,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         final var audioCodecPointer = avcodec_get_name(codecId);
         final var sampleNamePointer = av_get_sample_fmt_name(codecParams.format());
-        final String audioCodecName = getString(audioCodecPointer, null);
+        final String audioCodecName = FFTool.string(audioCodecPointer, null);
         LOGGER.info(IT, "Audio codec: {} (id={}), channels: {}, sample_rate: {}, format: {}",
                 audioCodecName, codecId,
                 codecParams.ch_layout().nb_channels(),
                 codecParams.sample_rate(),
-                getString(sampleNamePointer, codecParams.format()));
+                FFTool.string(sampleNamePointer, codecParams.format()));
 
         this.audioCodecContext = avcodec.avcodec_alloc_context3(audioCodec);
         if (this.audioCodecContext == null) {
@@ -2761,7 +2696,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.audioOutputAvFormat = sampleTypeToAvFormat(outType);
 
         LOGGER.info(IT, "Audio resample ({}): {} {}ch {}Hz → {} {}ch {}Hz", srcPlanar ? "de-planarize only" : "format conversion",
-                getString(av_get_sample_fmt_name(srcFormat), srcFormat),
+                FFTool.string(av_get_sample_fmt_name(srcFormat), srcFormat),
                 srcChannels, this.audioOutputSampleRate,
                 outType, this.audioOutputChannels, this.audioOutputSampleRate);
 
@@ -2828,8 +2763,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                 flags, null, null, (double[]) null
         );
 
-        final String srcName = getString(av_get_pix_fmt_name(srcFormat), srcFormat);
-        final String dstName = getString(av_get_pix_fmt_name(dstFormat), dstFormat);
+        final String srcName = FFTool.string(av_get_pix_fmt_name(srcFormat), srcFormat);
+        final String dstName = FFTool.string(av_get_pix_fmt_name(dstFormat), dstFormat);
 
         if (this.swsContext == null) {
             LOGGER.error(IT, "Failed to create SwsContext: {} ({}x{}) -> {} ({}x{})",
@@ -2923,16 +2858,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // LOGS THE FIRST UNEXPECTED send/receive FAILURE OF A DECODE LOOP WITH ITS CODEC AND NATIVE DETAIL
     private static void logCodecError(final String media, final String operation, final AVCodecContext codec, final int stream, final int code) {
         LOGGER.warn(IT, "{} decoder {} failed: codec={}, stream={}, code={} ({})",
-                media, operation, getString(avcodec_get_name(codec.codec_id()), "unknown"), stream, code, error(code));
+                media, operation, FFTool.string(avcodec_get_name(codec.codec_id()), "unknown"), stream, code, FFTool.error(code));
     }
-
-    // DECODES A NEGATIVE FFMPEG RETURN CODE INTO ITS NATIVE MESSAGE
-    private static String error(final int code) {
-        final byte[] detail = new byte[256];
-        return av_strerror(code, detail, detail.length) >= 0 ? new String(detail, StandardCharsets.UTF_8).trim() : "unknown native error";
-    }
-
-    // CONVERTS A NATIVE STRING POINTER TO JAVA, OR RETURNS orElse (STRING-IFIED) WHEN THE POINTER IS NULL
-    private static String getString(final BytePointer p, final Object orElse) { return !isNull(p) ? p.getString() : orElse != null ? String.valueOf(orElse) : null; }
-    private static boolean isNull(final Pointer p) { return p == null || p.isNull(); }
 }

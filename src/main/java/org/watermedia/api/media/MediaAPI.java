@@ -47,6 +47,7 @@ import org.watermedia.api.media.players.TxMediaPlayer;
 import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.tools.FFTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMedia.BootStatus.Id;
@@ -447,7 +448,7 @@ public final class MediaAPI {
 
             try {
                 final BytePointer config = avformat.avformat_configuration();
-                LOGGER.info(IT, "Configuration: {}", text(config, "unavailable"));
+                LOGGER.info(IT, "Configuration: {}", FFTool.string(config, "unavailable"));
             } catch (final Exception e) {
                 LOGGER.warn(IT, "Configuration: unavailable");
             }
@@ -461,7 +462,7 @@ public final class MediaAPI {
                 if (hwType == avutil.AV_HWDEVICE_TYPE_NONE) break;
 
                 final BytePointer hwName = avutil.av_hwdevice_get_type_name(hwType);
-                final String hwNameStr = text(hwName, null);
+                final String hwNameStr = FFTool.string(hwName, null);
                 if (hwNameStr != null) {
                     LOGGER.info(IT, "• {}", hwNameStr);
                     if ("vulkan".equals(hwNameStr)) vulkanInBuild = true;
@@ -501,13 +502,13 @@ public final class MediaAPI {
                     type = avio_protocol_get_class(protocol);
                 } else {
                     final var format = av_find_input_format(protocol);
-                    type = format == null || format.isNull() ? null : format.priv_class();
+                    type = FFTool.isNull(format) ? null : format.priv_class();
                 }
-                if (type == null || type.isNull()) throw new IllegalStateException("Required native transport is unavailable: " + protocol);
+                if (FFTool.isNull(type)) throw new IllegalStateException("Required native transport is unavailable: " + protocol);
                 try (final var object = new PointerPointer<AVClass>(1).put(type)) {
                     for (final String option: http ? new String[] { "tls_verify", "ca_file", "header_origin" } : new String[] { "protocol_opts" }) {
                         final var definition = av_opt_find(object, option, null, 0, AV_OPT_SEARCH_FAKE_OBJ);
-                        if (definition == null || definition.isNull())
+                        if (FFTool.isNull(definition))
                             throw new IllegalStateException("FFmpeg lacks the required transport security patches; install the WaterMedia native build");
                     }
                 }
@@ -545,7 +546,7 @@ public final class MediaAPI {
                 av_dict_free(nested);
             }
             final BytePointer license = avformat.avformat_license();
-            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), text(license, "unknown"));
+            LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), FFTool.string(license, "unknown"));
             IOTool.closeQuietly(license);
             return FFMPEG_LOADED = true;
         } catch (final Exception | LinkageError t) {
@@ -554,10 +555,5 @@ public final class MediaAPI {
             FFMPEG_FAILURE = t;
             return false;
         }
-    }
-
-    // READ OPTIONAL NATIVE STRINGS FOR THE BOOT BANNER.
-    private static String text(final BytePointer p, final String orElse) {
-        return p == null || p.isNull() ? orElse : p.getString();
     }
 }

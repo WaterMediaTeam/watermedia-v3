@@ -20,6 +20,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.codecs.ImageWriter;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.FFTool;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -99,14 +100,14 @@ public final class WebMWriter extends ImageWriter {
         if (!MediaAPI.ffmpegLoaded()) throw new IOException("FFmpeg is not available");
         this.crf = crf;
         this.frameDurMs = 1000.0 / fps;
-        this.srcFormat = avPixelFormat(pixelFormat);
+        this.srcFormat = FFTool.avPixelFormat(pixelFormat);
         this.timeBase = new AVRational().num(1).den(1000);
 
         try {
             // VP9 ENCODER — PREFER libvpx-vp9, FALL BACK TO WHATEVER REGISTERED FOR THE CODEC ID
             AVCodec codec = avcodec.avcodec_find_encoder_by_name("libvpx-vp9");
-            if (codec == null || codec.isNull()) codec = avcodec.avcodec_find_encoder(avcodec.AV_CODEC_ID_VP9);
-            if (codec == null || codec.isNull()) throw new IOException("VP9 encoder unavailable");
+            if (FFTool.isNull(codec)) codec = avcodec.avcodec_find_encoder(avcodec.AV_CODEC_ID_VP9);
+            if (FFTool.isNull(codec)) throw new IOException("VP9 encoder unavailable");
 
             // OUTPUT CONTAINER (WEBM)
             this.muxer = new AVFormatContext(null);
@@ -115,7 +116,7 @@ public final class WebMWriter extends ImageWriter {
 
             // ENCODER CONFIG — YUV420P, MS TIMEBASE, CONSTANT-QUALITY VP9
             this.encoder = avcodec.avcodec_alloc_context3(codec);
-            if (this.encoder == null || this.encoder.isNull()) throw new IOException("Failed to allocate VP9 encoder");
+            if (FFTool.isNull(this.encoder)) throw new IOException("Failed to allocate VP9 encoder");
             this.encoder.width(width);
             this.encoder.height(height);
             this.encoder.pix_fmt(avutil.AV_PIX_FMT_YUV420P);
@@ -131,39 +132,39 @@ public final class WebMWriter extends ImageWriter {
             avutil.av_opt_set(opts, "cpu-used", "4", 0);
             avutil.av_opt_set(opts, "row-mt", "1", 0);
             final int opened = avcodec.avcodec_open2(this.encoder, codec, (PointerPointer<?>) null);
-            if (opened < 0) throw ffError("avcodec_open2", opened);
+            if (opened < 0) throw FFTool.failure("avcodec_open2", opened);
 
             // VIDEO STREAM CARRYING THE ENCODER PARAMETERS
             this.stream = avformat.avformat_new_stream(this.muxer, null);
-            if (this.stream == null || this.stream.isNull()) throw new IOException("Failed to create WebM stream");
+            if (FFTool.isNull(this.stream)) throw new IOException("Failed to create WebM stream");
             this.stream.time_base(this.timeBase);
             final int par = avcodec.avcodec_parameters_from_context(this.stream.codecpar(), this.encoder);
-            if (par < 0) throw ffError("avcodec_parameters_from_context", par);
+            if (par < 0) throw FFTool.failure("avcodec_parameters_from_context", par);
 
             // CONVERSION + FRAME SCRATCH (SAME SIZE IN/OUT — PURE FORMAT CONVERSION)
             this.scaler = swscale.sws_getContext(width, height, this.srcFormat, width, height,
                     avutil.AV_PIX_FMT_YUV420P, swscale.SWS_BILINEAR, null, null, (double[]) null);
-            if (this.scaler == null || this.scaler.isNull()) throw new IOException("Failed to create pixel converter");
+            if (FFTool.isNull(this.scaler)) throw new IOException("Failed to create pixel converter");
             this.srcFrame = avutil.av_frame_alloc();
             this.yuvFrame = avutil.av_frame_alloc();
-            if (this.srcFrame == null || this.srcFrame.isNull() || this.yuvFrame == null || this.yuvFrame.isNull())
+            if (FFTool.isNull(this.srcFrame) || FFTool.isNull(this.yuvFrame))
                 throw new IOException("Failed to allocate frames");
             this.yuvFrame.format(avutil.AV_PIX_FMT_YUV420P);
             this.yuvFrame.width(width);
             this.yuvFrame.height(height);
             if (avutil.av_frame_get_buffer(this.yuvFrame, 32) < 0) throw new IOException("Failed to allocate YUV frame buffer");
             this.packet = avcodec.av_packet_alloc();
-            if (this.packet == null || this.packet.isNull()) throw new IOException("Failed to allocate packet");
+            if (FFTool.isNull(this.packet)) throw new IOException("Failed to allocate packet");
 
             // SEEKABLE MUX TARGET — MATROSKA SEEKS BACK TO PATCH Duration + Cues, WHICH A FORWARD-ONLY
             // OutputStream CANNOT DO; THE FINISHED FILE IS STREAMED TO out ON close()
             this.tempFile = Files.createTempFile("wm-webm-", ".webm");
             final AVIOContext pb = new AVIOContext(null);
             final int io = avformat.avio_open(pb, this.tempFile.toString(), avformat.AVIO_FLAG_WRITE);
-            if (io < 0) throw ffError("avio_open", io);
+            if (io < 0) throw FFTool.failure("avio_open", io);
             this.muxer.pb(pb);
             final int header = avformat.avformat_write_header(this.muxer, (PointerPointer<?>) null);
-            if (header < 0) throw ffError("avformat_write_header", header);
+            if (header < 0) throw FFTool.failure("avformat_write_header", header);
         } catch (final IOException | RuntimeException e) {
             this.freeNative();
             throw e;
@@ -212,7 +213,7 @@ public final class WebMWriter extends ImageWriter {
         this.ptsMs += (delayMs > 0 ? delayMs : this.frameDurMs);
 
         final int sent = avcodec.avcodec_send_frame(this.encoder, this.yuvFrame);
-        if (sent < 0) throw ffError("avcodec_send_frame", sent);
+        if (sent < 0) throw FFTool.failure("avcodec_send_frame", sent);
         this.drain();
         this.frames++;
     }
@@ -233,12 +234,12 @@ public final class WebMWriter extends ImageWriter {
                 // FLUSH THE ENCODER LOOKAHEAD, THEN FINALIZE THE CONTAINER (PATCHES Duration + Cues)
                 if (avcodec.avcodec_send_frame(this.encoder, (AVFrame) null) >= 0) this.drain();
                 final int trailer = avformat.av_write_trailer(this.muxer);
-                if (trailer < 0) throw ffError("av_write_trailer", trailer);
+                if (trailer < 0) throw FFTool.failure("av_write_trailer", trailer);
             }
             // CLOSE THE MUXER FILE SO EVERY BYTE (INCLUDING THE PATCHED HEADER) IS FLUSHED, THEN
             // HAND THE FINISHED, SEEKABLE WEBM TO THE CALLER
             final AVIOContext pb = this.muxer != null ? this.muxer.pb() : null;
-            if (pb != null && !pb.isNull()) {
+            if (!FFTool.isNull(pb)) {
                 avformat.avio_close(pb);
                 this.muxer.pb((AVIOContext) null);
             }
@@ -256,7 +257,7 @@ public final class WebMWriter extends ImageWriter {
             this.packet.stream_index(0);
             avcodec.av_packet_rescale_ts(this.packet, this.timeBase, this.stream.time_base());
             final int wrote = avformat.av_interleaved_write_frame(this.muxer, this.packet); // TAKES + UNREFS THE PACKET
-            if (wrote < 0) throw ffError("av_interleaved_write_frame", wrote);
+            if (wrote < 0) throw FFTool.failure("av_interleaved_write_frame", wrote);
         }
     }
 
@@ -270,7 +271,7 @@ public final class WebMWriter extends ImageWriter {
         if (this.encoder != null) { avcodec.avcodec_free_context(this.encoder); this.encoder = null; }
         if (this.muxer != null) {
             final AVIOContext pb = this.muxer.pb();
-            if (pb != null && !pb.isNull()) { avformat.avio_close(pb); this.muxer.pb((AVIOContext) null); }
+            if (!FFTool.isNull(pb)) { avformat.avio_close(pb); this.muxer.pb((AVIOContext) null); }
             avformat.avformat_free_context(this.muxer);
             this.muxer = null;
         }
@@ -278,34 +279,5 @@ public final class WebMWriter extends ImageWriter {
             try { Files.deleteIfExists(this.tempFile); } catch (final IOException ignored) {}
             this.tempFile = null;
         }
-    }
-
-    // MAPS A RAW PIXEL LAYOUT TO ITS FFMPEG EQUIVALENT FOR THE sws INPUT. COMPRESSED (BCn) AND
-    // GBRA HAVE NO PACKED FFMPEG FORMAT, SO THEY CANNOT FEED THE ENCODER.
-    private static int avPixelFormat(final PixelFormat format) {
-        return switch (format) {
-            case GRAY -> avutil.AV_PIX_FMT_GRAY8;
-            case RGB -> avutil.AV_PIX_FMT_RGB24;
-            case RGBA -> avutil.AV_PIX_FMT_RGBA;
-            case BGRA -> avutil.AV_PIX_FMT_BGRA;
-            case YUYV -> avutil.AV_PIX_FMT_YUYV422;
-            case YUYV2 -> avutil.AV_PIX_FMT_UYVY422;
-            case NV12 -> avutil.AV_PIX_FMT_NV12;
-            case NV21 -> avutil.AV_PIX_FMT_NV21;
-            case YUV420P -> avutil.AV_PIX_FMT_YUV420P;
-            case YUV422P -> avutil.AV_PIX_FMT_YUV422P;
-            case YUV444P -> avutil.AV_PIX_FMT_YUV444P;
-            case YUVA420P -> avutil.AV_PIX_FMT_YUVA420P;
-            case YUVA422P -> avutil.AV_PIX_FMT_YUVA422P;
-            case YUVA444P -> avutil.AV_PIX_FMT_YUVA444P;
-            default -> throw new IllegalArgumentException("Unsupported input pixel format for VP9: " + format);
-        };
-    }
-
-    // WRAPS AN FFMPEG ERROR CODE WITH ITS DECODED MESSAGE
-    private static IOException ffError(final String op, final int ret) {
-        final byte[] buf = new byte[256];
-        avutil.av_strerror(ret, buf, buf.length);
-        return new IOException(op + " failed: " + new String(buf).trim() + " (" + ret + ")");
     }
 }
