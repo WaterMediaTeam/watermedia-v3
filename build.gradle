@@ -52,8 +52,9 @@ def javafxTargets = javafx_platforms.split(',').collect { it.trim() }
 
 dependencies {
     include "org.bytedeco:ffmpeg:$ffmpeg_version"
-    // NESTED LIBRARIES DECLARE "range!!version": LOADERS ACCEPT THE RANGE AND THE JAR BUNDLES THE VERSION.
-    jarJar "com.github.SrRapero720:waterconfig:$waterconfig_range!!$waterconfig_version"
+    // NESTED LIBRARIES RESOLVE AN EXACT VERSION; THE RANGE LOADERS ACCEPT IS "<artifact>_range" IN gradle.properties.
+    // A RESOLVED RANGE WOULD READ EVERY NEWER RELEASE'S METADATA AND BREAK DEPENDENCY VERIFICATION ON EACH UPSTREAM PUBLISH
+    jarJar "com.github.SrRapero720:waterconfig:$waterconfig_version"
 
     compileOnlyApi "org.tukaani:xz:$xz_version"
     compileOnlyApi "com.github.WaterMediaTeam:modloaders:$loaders_version"
@@ -101,9 +102,8 @@ sourcesJar {
 
 // EVERY jarJar LIBRARY NESTS UNDER META-INF/jarjar FOR ALL LOADERS AND THE STANDALONE LAUNCHER.
 def nestedLibraries = configurations.jarJar.dependencies.collect { library ->
-    def version = library.versionConstraint.preferredVersion
-    [group: library.group, name: library.name, version: version, range: library.versionConstraint.strictVersion,
-     file: library.name + '-' + version + '.jar']
+    [group: library.group, name: library.name, version: library.version, range: property(library.name + '_range').toString(),
+     file: library.name + '-' + library.version + '.jar']
 }
 ext.resourceValues = [jars: JsonOutput.toJson(nestedLibraries.collect { [file: 'META-INF/jarjar/' + it.file] })]
 def nestedFiles = configurations.jarJar.incoming.artifacts.resolvedArtifacts
