@@ -220,8 +220,9 @@ JavaCPP bindings for FFMPEG are shaded under Apache 2.0
 Full, verbatim license texts for shaded third-party dependencies are bundled under
 `src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`).
 
-The **binaries** jar ships third-party native binaries and libraries. Their license texts and notices
-are bundled under `binaries/src/main/resources/META-INF/licenses/` and shipped as `META-INF/licenses/`:
+The **binaries** module's own code is under the same DPS (NC) License v1.0.0. Its jar also ships
+third-party native binaries and libraries, whose license texts and notices are bundled under
+`binaries/src/main/resources/META-INF/licenses/` and shipped as `META-INF/licenses/`:
 
 - **LGPL-3.0-or-later** — FFmpeg 8.1.2, built without `--enable-gpl`, x264 or x265
 - **GPL-3.0-or-later WITH GCC-exception-3.1** — libatomic on macOS and eligible GCC runtime portions
