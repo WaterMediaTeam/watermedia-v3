@@ -1,11 +1,14 @@
 package org.watermedia.test.media.engines;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.AWTEngine;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.test.support.LogCapture;
 import org.watermedia.test.support.MediaBootstrap;
 
 import java.awt.image.BufferedImage;
@@ -14,6 +17,7 @@ import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -118,6 +122,22 @@ class AWTEngineTest {
         assertEquals(4, second.getWidth());
         assertEquals(3, second.getHeight());
         assertTrue(first != second);
+    }
+
+    @Test
+    @DisplayName("Sizes that cannot back one buffer warn, leave no surface and drop frames")
+    void invalidSizesDropFrames() {
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        for (final int[] size: new int[][] { { 0, 4 }, { 4, -1 }, { 50_000, 50_000 } }) {
+            try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+                engine.format(PixelFormat.BGRA, size[0], size[1], 8);
+                assertNull(engine.image());
+                assertEquals(Level.WARN, capture.events().get(0).getLevel());
+                assertTrue(capture.events().get(0).getMessage().getFormattedMessage().contains(size[0] + "x" + size[1]));
+            }
+            engine.upload(new ByteBuffer[] { direct(1, 2, 3, 4) }, new int[] { 0 });
+            assertEquals(0L, engine.texture());
+        }
     }
 
     @Test

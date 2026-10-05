@@ -48,10 +48,17 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     @Override
     public void format(final PixelFormat format, final int width, final int height, final int bits) {
         super.format(format, width, height, bits);
-        final int w = Math.max(1, width);
-        final int h = Math.max(1, height);
-        this.bgra = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
-        this.allocSurface(w, h, this.bgra);
+        // THE SURFACE KEEPS THE REQUESTED SIZE; ONE THAT CANNOT BACK A SINGLE BUFFER LEAVES NO SURFACE, SO UPLOADS DROP
+        final long bytes = (long) width * height * 4;
+        if (width <= 0 || height <= 0 || bytes > Integer.MAX_VALUE) {
+            LOGGER.warn(IT, "Surface {}x{} needs {} bytes, outside 1 to {}; frames are dropped until the next format",
+                    width, height, bytes, Integer.MAX_VALUE);
+            this.bgra = null;
+            this.disposeSurface();
+            return;
+        }
+        this.bgra = ByteBuffer.allocateDirect((int) bytes).order(ByteOrder.nativeOrder());
+        this.allocSurface(width, height, this.bgra);
     }
 
     @Override

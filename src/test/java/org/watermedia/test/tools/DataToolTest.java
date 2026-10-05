@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.tools.DataTool;
 
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
 
@@ -80,5 +81,32 @@ public class DataToolTest {
         assertEquals(1.5, DataTool.toDouble("1.5", 0.0));
         assertEquals(6L, DataTool.sumArray(1L, 2L, 3L));
         assertEquals(6, DataTool.sumArray(1, 2, 3));
+    }
+
+    @Test
+    @DisplayName("premultiply rounds every channel and alpha pair exactly within position and limit")
+    void premultiply() {
+        // EVERY (CHANNEL, ALPHA) PAIR: B AND R CARRY THE CHANNEL, G ITS COMPLEMENT, SO LANES CANNOT HIDE EACH OTHER
+        final ByteBuffer pixels = ByteBuffer.allocateDirect(256 * 256 * 4 + 8);
+        pixels.put(0, (byte) 0x7F).put(pixels.capacity() - 1, (byte) 0x7F).position(4);
+        for (int a = 0; a < 256; a++)
+            for (int c = 0; c < 256; c++)
+                pixels.put((byte) c).put((byte) (255 - c)).put((byte) c).put((byte) a);
+        pixels.position(4).limit(4 + 256 * 256 * 4);
+        DataTool.premultiply(pixels);
+        assertEquals(4, pixels.position());
+        assertEquals(4 + 256 * 256 * 4, pixels.limit());
+        pixels.limit(pixels.capacity());
+        for (int a = 0, i = 4; a < 256; a++) {
+            for (int c = 0; c < 256; c++, i += 4) {
+                final int expected = Math.round(c * a / 255f);
+                assertEquals(expected, pixels.get(i) & 0xFF, "B c=" + c + " a=" + a);
+                assertEquals(Math.round((255 - c) * a / 255f), pixels.get(i + 1) & 0xFF, "G c=" + c + " a=" + a);
+                assertEquals(expected, pixels.get(i + 2) & 0xFF, "R c=" + c + " a=" + a);
+                assertEquals(a, pixels.get(i + 3) & 0xFF, "A c=" + c + " a=" + a);
+            }
+        }
+        assertEquals(0x7F, pixels.get(0) & 0xFF);
+        assertEquals(0x7F, pixels.get(pixels.capacity() - 1) & 0xFF);
     }
 }

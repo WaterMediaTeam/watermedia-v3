@@ -215,6 +215,22 @@ public class DataTool {
         return buffer;
     }
 
+    // PREMULTIPLIES 8-BIT FOUR-CHANNEL PIXELS WITH ALPHA LAST (BGRA OR RGBA) IN PLACE, FROM position TO limit.
+    // EACH CHANNEL BECOMES round(c * a / 255); OPAQUE PIXELS ARE SKIPPED, SO OPAQUE VIDEO COSTS ONE READ PER PIXEL.
+    public static void premultiply(final ByteBuffer pixels) {
+        final ByteBuffer view = pixels.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = view.position(), end = view.limit() - 3; i < end; i += 4) {
+            final int p = view.getInt(i);
+            final int a = p >>> 24;
+            if (a == 0xFF) continue;
+            // TWO CHANNELS PER MULTIPLY; (y + (y >> 8)) >> 8 WITH y = c * a + 128 IS THE EXACT ROUNDED DIVISION BY 255
+            final int rb = (p & 0x00FF00FF) * a + 0x00800080;
+            final int g = (p & 0x0000FF00) * a + 0x00008000;
+            view.putInt(i, (p & 0xFF000000) | (((rb + ((rb >>> 8) & 0x00FF00FF)) >>> 8) & 0x00FF00FF)
+                    | (((g + ((g >>> 8) & 0x0000FF00)) >>> 8) & 0x0000FF00));
+        }
+    }
+
     public static int toInt(final String s, final int def) {
         if (s == null) return def;
         try { return Integer.parseInt(s.trim()); }
