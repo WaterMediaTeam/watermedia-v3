@@ -20,6 +20,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avutil.AVBufferRef;
 import org.bytedeco.ffmpeg.avutil.AVClass;
 import org.bytedeco.ffmpeg.avutil.AVDictionary;
+// import org.bytedeco.ffmpeg.avutil.LogCallback; // NATIVE LOG ROUTING, DISABLED IN startFFmpeg
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
@@ -73,6 +74,7 @@ public final class MediaAPI {
 
     private static volatile boolean FFMPEG_LOADED;
     private static volatile Throwable FFMPEG_FAILURE;
+    // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
     private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
 
     /**
@@ -445,6 +447,32 @@ public final class MediaAPI {
             LOGGER.info(IT, "• avutil:   {}", avutil.avutil_version());
             LOGGER.info(IT, "• swscale:  {}", swscale.swscale_version());
             LOGGER.info(IT, "• swresample: {}", swresample.swresample_version());
+
+            // NATIVE LOG ROUTING, DISABLED: JVM CRASHES WERE REPORTED ON MACOS AND LINUX DEPENDING ON THE CALLBACK
+            // SIGNATURE. VERIFIED ONLY ON WINDOWS; RE-ENABLE WITH FFmpegLogRoutingTest AFTER TESTING THOSE HOSTS
+            // ROUTES NATIVE FFMPEG LOGS THROUGH THE REDACTING PROJECT LOGGER. setLogCallback INSTALLS av_log_set_callback
+            // WITH JavaCPP'S C TRAMPOLINE, WHICH FORMATS THE va_list NATIVELY SO IT NEVER CROSSES INTO JAVA
+            // if (nativeLog == null) nativeLog = new LogCallback() {
+            //     // FFMPEG EMITS A LINE IN FRAGMENTS PER THREAD; IT IS LOGGED ONCE ITS NEWLINE ARRIVES
+            //     private final ThreadLocal<StringBuilder> lines = ThreadLocal.withInitial(StringBuilder::new);
+            //
+            //     @Override
+            //     public void call(final int level, final BytePointer message) {
+            //         // NOTHING MAY THROW BACK INTO THE NATIVE FFMPEG FRAMES THAT CALLED THIS
+            //         try {
+            //             final StringBuilder line = this.lines.get().append(message.getString(StandardCharsets.UTF_8));
+            //             if (line.isEmpty() || line.charAt(line.length() - 1) != '\n') return;
+            //             final String text = line.toString().strip();
+            //             line.setLength(0);
+            //             final int severity = level & 0xFF;
+            //             if (text.isEmpty()) return;
+            //             if (severity <= AV_LOG_ERROR) LOGGER.error(IT, "FFmpeg: {}", text);
+            //             else if (severity <= AV_LOG_WARNING) LOGGER.warn(IT, "FFmpeg: {}", text);
+            //             else LOGGER.debug(IT, "FFmpeg: {}", text);
+            //         } catch (final Throwable ignored) {}
+            //     }
+            // };
+            // setLogCallback(nativeLog);
 
             try {
                 final BytePointer config = avformat.avformat_configuration();

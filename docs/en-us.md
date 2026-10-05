@@ -347,7 +347,7 @@ Packets are fixed-size big-endian records in the synchronization package. `Packe
 
 ## Executable examples and diagnostics
 
-The project logger names are `watermedia` and `watermedia_binaries`; configure those names for DEBUG diagnostics. Project log messages reduce media URLs to their origin and hide header values. Exception traces with private URLs retain their type, stack, causes and suppressed failures as sanitized text. Repeated file-server rejections and slow playback iterations are summarized in ten-second windows, with pending counts reported on shutdown.
+The project logger names are `watermedia` and `watermedia_binaries`; configure those names for DEBUG diagnostics. Project log messages reduce media URLs to their origin and hide header values. Exception traces with private URLs retain their type, stack, causes and suppressed failures as sanitized text. Repeated file-server rejections and slow playback iterations are summarized in ten-second windows, with pending counts reported on shutdown. FFmpeg still writes its own native log lines to the process error output, outside the project loggers and their redaction; routing them through the project logger is prepared but disabled until macOS and Linux are validated.
 
 The source in `src/test/java/org/watermedia/test/docs/ApiGuideExample.java` compiles factory usage for every graphics/audio engine and both synchronization roles. Its headless image example runs in `ApiGuideExampleTest`; GUI, audio-device and Minecraft behavior requires the corresponding host integration. The normal playback and spatial test suites exercise actual FFmpeg/OpenAL behavior separately.
 
