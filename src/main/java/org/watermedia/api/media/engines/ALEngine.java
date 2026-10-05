@@ -181,6 +181,10 @@ public final class ALEngine extends SFXEngine {
         }
     }
 
+    // AL_PITCH IS CORE OPENAL; ONLY A RELEASED SOURCE CANNOT CHANGE SPEED. THE VOLATILE READ NEEDS NO CONTEXT
+    @Override
+    public boolean canSpeed() { return this.source != 0; }
+
     @Override
     public synchronized boolean speed(final float speed) {
         if (this.source == 0 || !Float.isFinite(speed) || speed <= 0) return false;

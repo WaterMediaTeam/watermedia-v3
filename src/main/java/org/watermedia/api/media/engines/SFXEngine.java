@@ -175,6 +175,12 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     public abstract void play();
 
     /**
+     * Returns whether {@link #speed(float)} can change the playback rate. A pure query: it makes no
+     * native calls and needs no audio context, so any thread can ask it every frame.
+     */
+    public abstract boolean canSpeed();
+
+    /**
      * Sets the playback speed (pitch) when the backend supports rate control.
      * A refusing backend (Java Sound) keeps playback at 1.0×; callers driving an A/V clock
      * must not scale their timeline against a refusing engine.

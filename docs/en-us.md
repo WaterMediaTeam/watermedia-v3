@@ -118,7 +118,7 @@ player.repeat(true);
 player.maxSize(1280, 720);
 ```
 
-`speed(value)` accepts finite values in `(0, 4]` and reports acceptance. Java Sound cannot change playback rate; check `canSpeed()` and the returned value on the owning audio context. In the current implementation, `canSpeed()` probes the audio setter, so it is not a context-free UI query. A synchronized follower returns `false` even when it sends a control request; that return does not confirm remote application. `spatialAudio(...)` also reports whether the engine accepted the update; use `spatialAudioSupported()` before presenting positional controls.
+`speed(value)` accepts finite values in `(0, 4]` and reports acceptance. Java Sound cannot change playback rate. `canSpeed()` is a pure query that any thread can call every frame; `speed(value)` must run on the owning audio context, and the player clock follows only a rate the audio engine accepted. A synchronized follower returns `false` even when it sends a control request; that return does not confirm remote application. `spatialAudio(...)` also reports whether the engine accepted the update; use `spatialAudioSupported()` before presenting positional controls.
 
 Time arguments use milliseconds; player volume uses a percentage from 0 to 100. Check `canSeek()` for streams that do not support seeking. Poll `status()`, `time()`, `duration()`, `buffered()` and `exception()` for playback diagnostics. Scaling and level of detail affect supported pixel layouts. Built-in graphics engines do not currently accept compressed BC textures. Release with `player.release()` when the host removes the playback surface, including when playback has failed.
 

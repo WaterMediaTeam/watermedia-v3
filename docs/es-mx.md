@@ -173,7 +173,7 @@ player.repeat(true);
 player.maxSize(1280, 720);
 ```
 
-`speed(value)` admite valores finitos en `(0, 4]` e informa si aceptó el cambio. Java Sound no puede cambiar la velocidad; consulta `canSpeed()` y el valor devuelto con el contexto de audio correspondiente activo. Actualmente `canSpeed()` prueba el setter de audio, así que no es una consulta de interfaz independiente del contexto. Un seguidor sincronizado devuelve `false` incluso si envía una solicitud de control; ese resultado no confirma su aplicación remota. `spatialAudio(...)` también informa si el motor aceptó la actualización; consulta `spatialAudioSupported()` antes de mostrar controles posicionales.
+`speed(value)` admite valores finitos en `(0, 4]` e informa si aceptó el cambio. Java Sound no puede cambiar la velocidad. `canSpeed()` es una consulta pura que cualquier hilo puede hacer en cada frame; `speed(value)` debe ejecutarse con el contexto de audio correspondiente activo, y el reloj del reproductor sólo sigue una velocidad que el motor de audio aceptó. Un seguidor sincronizado devuelve `false` incluso si envía una solicitud de control; ese resultado no confirma su aplicación remota. `spatialAudio(...)` también informa si el motor aceptó la actualización; consulta `spatialAudioSupported()` antes de mostrar controles posicionales.
 
 Los tiempos se expresan en milisegundos y el volumen del reproductor es un porcentaje de 0 a 100. Consulta `canSeek()` antes de ofrecer desplazamiento en transmisiones que no lo permiten. Para diagnóstico usa `status()`, `time()`, `duration()`, `buffered()` y `exception()`.
 

@@ -83,6 +83,9 @@ public final class JSEngine extends SFXEngine {
     }
 
     @Override
+    public boolean canSpeed() { return false; }
+
+    @Override
     public boolean speed(final float speed) {
         return false; // JAVA SOUND DOESN'T SUPPORT SPEED — REFUSED, PLAYBACK STAYS AT 1.0×
     }

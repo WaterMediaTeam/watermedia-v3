@@ -907,17 +907,18 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * while a speed less than 1.0f indicates slower playback.
      * The speed must be within the range (0.0f, 4.0f].
      * @param speed the desired playback speed.
-     * @return true if the operation was successful, false when the value is out of
-     *         range or the player cannot change speed ({@link #canSpeed()}).
+     * @return true if the speed applies, false when the value is out of range, the player cannot
+     *         change speed ({@link #canSpeed()}) or the audio engine refused the new rate.
      */
     public boolean speed(final float speed) {
         // NaN FAILS BOTH COMPARISONS, WHICH IS THE POINT — IT MUST NEVER REACH THE CLOCKS
         if (!(speed > 0f && speed <= 4.0f)) return false;
         if (this.request(Control.Op.SPEED, Float.floatToIntBits(speed) & 0xFFFFFFFFL)) return false;
         // RE-REQUESTING THE CURRENT SPEED IS A SUCCESSFUL NO-OP EVEN WHEN LOCKED (e.g. 1.0x ON SETUP)
-        if (speed != this.speed && !this.canSpeed()) return false;
+        if (speed == this.speed) return true;
+        // THE AUDIO ENGINE APPLIES THE RATE FIRST; THE CLOCKS FOLLOW ONLY A SPEED IT ACCEPTED
+        if (!this.canSpeed() || (this.sfx != null && !this.sfx.speed(speed))) return false;
         this.speed = speed;
-        if (this.sfx != null) this.sfx.speed(speed);
         return true;
     }
 
@@ -1077,15 +1078,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public abstract boolean canPlay();
 
     /**
-     * Indicates if the playback speed can be changed.
-     * Live streams cannot change speed, and neither can media whose audio engine
-     * refuses {@link SFXEngine#speed(float)} — scaling the timeline against audio
-     * stuck at 1.0× would desync the playback clock.
+     * Indicates if the playback speed can be changed. A pure query without native calls, safe on
+     * any thread and every frame. Live streams cannot change speed, and neither can media whose
+     * audio engine reports {@link SFXEngine#canSpeed()} false — scaling the timeline against
+     * audio stuck at 1.0× would desync the playback clock.
      * @return true if {@link #speed(float)} can take effect, false otherwise.
      */
     public boolean canSpeed() {
-        // RE-APPLYING THE ENGINE'S CURRENT SPEED IS A HARMLESS CAPABILITY PROBE (SUCCESS NO-OP)
-        return !this.liveSource() && (this.sfx == null || this.sfx.speed(this.sfx.speed()));
+        return !this.liveSource() && (this.sfx == null || this.sfx.canSpeed());
     }
 
 

@@ -11,11 +11,16 @@ import org.lwjgl.openal.AL;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.ALC;
 import org.lwjgl.openal.ALC10;
+import org.lwjgl.openal.EXTThreadLocalContext;
+import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.engines.ALEngine;
 import org.watermedia.api.media.engines.JSEngine;
 import org.watermedia.api.media.engines.SFXEngine;
+import org.watermedia.api.media.players.FFMediaPlayer;
+import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.test.support.PlayerWait;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -227,6 +232,60 @@ class SFXEngineTest {
                 executor.shutdownNow();
                 assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
                 engine.release();
+            }
+        }
+
+        @Test
+        @DisplayName("Speed capability needs no context while the setter still guards it")
+        void speedCapabilityNeedsNoContext() {
+            final ALEngine engine = MediaAPI.alEngine();
+            final long other = ALC10.alcCreateContext(this.device, (IntBuffer) null);
+            assertNotEquals(0, other);
+            try {
+                assertTrue(ALC10.alcMakeContextCurrent(other));
+                assertTrue(engine.canSpeed(), "the capability is a pure query");
+                assertThrows(IllegalStateException.class, () -> engine.speed(2));
+                assertTrue(ALC10.alcMakeContextCurrent(this.context));
+                assertEquals(1, engine.speed(), "a guarded call leaves the rate untouched");
+            } finally {
+                ALC10.alcMakeContextCurrent(this.context);
+                ALC10.alcDestroyContext(other);
+                engine.release();
+            }
+            assertFalse(engine.canSpeed(), "a released source cannot change speed");
+            assertFalse(MediaAPI.jsEngine().canSpeed(), "Java Sound has no rate control");
+        }
+
+        @Test
+        @DisplayName("Players query speed on any context and keep their rate when the engine refuses")
+        void playerSpeedFollowsTheEngine() {
+            Assumptions.assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
+            // A THREAD-LOCAL CONTEXT MOVES ONLY THIS THREAD, SO THE PLAYER'S AUDIO THREAD KEEPS ITS OWN
+            Assumptions.assumeTrue(ALC.getCapabilities().ALC_EXT_thread_local_context, "thread-local contexts unavailable");
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
+            assertTrue(mrl.await(3000));
+            final ALEngine engine = MediaAPI.alEngine();
+            final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, null, engine);
+            final long other = ALC10.alcCreateContext(this.device, (IntBuffer) null);
+            assertNotEquals(0, other);
+            try {
+                player.mute(true);
+                assertTrue(player.start());
+                assertTrue(PlayerWait.awaitCondition(player::canSpeed, 15_000), () -> "Player never became seekable: " + player.status());
+                assertTrue(EXTThreadLocalContext.alcSetThreadContext(other));
+                assertTrue(player.canSpeed(), "a query from another context must not throw");
+                assertTrue(EXTThreadLocalContext.alcSetThreadContext(0));
+                assertTrue(player.speed(2.0f));
+                assertEquals(2.0f, engine.speed());
+                player.pause(true);
+                engine.release();
+                assertFalse(player.canSpeed());
+                assertFalse(player.speed(3.0f), "a released engine refuses the new rate");
+                assertEquals(2.0f, player.speed(), "the player keeps the last accepted rate");
+            } finally {
+                EXTThreadLocalContext.alcSetThreadContext(0);
+                player.release();
+                ALC10.alcDestroyContext(other);
             }
         }
     }
