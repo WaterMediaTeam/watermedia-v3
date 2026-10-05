@@ -8,6 +8,7 @@ hs_err_pid*
 /*.jar
 *.log
 /build/
+/modloaders/build/
 /build/classes/java/main/
 /build/classes/java/test/
 /out/

@@ -57,7 +57,7 @@ dependencies {
     jarJar "com.github.SrRapero720:waterconfig:$waterconfig_version"
 
     compileOnlyApi "org.tukaani:xz:$xz_version"
-    compileOnlyApi "com.github.WaterMediaTeam:modloaders:$loaders_version"
+    compileOnlyApi project(':modloaders')
     // THE STANDALONE LAUNCHER DOWNLOADS THE launcher LIBRARIES FOR EVERY TARGET PLATFORM.
     ["com.google.code.gson:gson:$gson_version", "org.joml:joml:$joml_version"].each { library ->
         compileOnlyApi library
