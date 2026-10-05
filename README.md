@@ -209,7 +209,8 @@ pipeline compiles the static dependencies, parses the FFmpeg headers, regenerate
 classifier before the five archives are repacked together.
 
 # ⚖️ License
-WATERMeDIA is under Polyform Strict License v1.0.0<br>
+WATERMeDIA is under the [Defensive Public Source (Non-Commercial) License v1.0.0](LICENSE.md)<br>
+Copyright SrRapero720 (https://github.com/SrRapero720)<br>
 Commercial usage is forbidden, you need to contact us in order to use WATERMeDIA for commercial purposes
 
 WATERCoNFIG is required at runtime and is licensed All-Rights-Reserved.
