@@ -344,7 +344,7 @@ try (ImageReader reader = CodecsAPI.decodeImage(encodedBuffer)) {
 }
 ```
 
-Consulta el formato y la cantidad de planos; no supongas que todos los lectores entregan BGRA. `readAll()` conserva copias de los cuadros y limita el total de bytes decodificados por imagen. Varios lectores simultáneos siguen consumiendo memoria por separado.
+Consulta el formato y la cantidad de planos; no supongas que todos los lectores entregan BGRA. `readAll()` conserva copias de los cuadros y limita el total de bytes decodificados por imagen. Varios lectores simultáneos siguen consumiendo memoria por separado: los reproductores coordinan su decodificación y reutilizan las imágenes decodificadas mediante sus cachés, mientras que el código que usa los decodificadores directamente gestiona su propia concurrencia.
 
 `BCReader` lee bloques BC1, BC3 y BC7 ya comprimidos dentro de un arreglo de texturas DDS con extensión DX10. Crea un `BCReader` directamente para acceder a los bloques; `CodecsAPI.decodeImage` no abre archivos DDS. No necesita un codificador nativo, pero los motores integrados OpenGL, Vulkan y de software no aceptan texturas BC, así que leer bloques DDS no implica soporte completo de reproducción. El pie de animación de WaterMedia aporta los tiempos por cuadro cuando existe; las capas DDS ordinarias tienen duración cero. Se rechazan cadenas de mipmaps, volúmenes y mapas de cubo. No hay codificador BC ni opción de caché de texturas recodificadas. `CodecsAPI.available(...)` informa soporte de decodificación de píxeles, no soporte de formatos de textura en la GPU.
 

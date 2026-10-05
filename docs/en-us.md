@@ -297,7 +297,7 @@ try (ImageReader reader = CodecsAPI.decodeImage(encodedBuffer)) {
 }
 ```
 
-Consult the returned pixel format and plane count rather than assuming BGRA. `readAll()` retains copies and enforces an aggregate decoded-byte limit for one image. Concurrent readers still consume independent memory.
+Consult the returned pixel format and plane count rather than assuming BGRA. `readAll()` retains copies and enforces an aggregate decoded-byte limit for one image. Concurrent readers still consume independent memory: media players coordinate their decoding and reuse decoded images through their caches, while code that drives the decoders directly owns its concurrency.
 
 `BCReader` reads already compressed BC1/BC3/BC7 blocks in a DX10 DDS texture array. Instantiate `BCReader` directly for block access; `CodecsAPI.decodeImage` does not dispatch DDS files. No native encoder is needed, but built-in OpenGL, Vulkan and software engines do not accept BC textures, so DDS block reading does not establish end-to-end player support. A WaterMedia animation footer supplies delays when present, while ordinary DDS slices have zero delay. Mip chains, volumes and cube maps are rejected. There is no BC encoder or codec-cache option. `CodecsAPI.available(...)` reports software pixel-decoder support, not GPU texture-format support.
 
