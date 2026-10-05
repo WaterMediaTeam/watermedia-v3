@@ -28,7 +28,7 @@ public final class StreamablePlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws PlatformException {
+    public PlatformData data(final URI uri) throws PlatformException {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final String videoId = uri.getPath().substring(1);

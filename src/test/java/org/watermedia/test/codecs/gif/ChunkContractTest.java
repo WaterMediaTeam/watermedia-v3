@@ -50,7 +50,7 @@ public class ChunkContractTest {
     void rejectsInvalidDescriptors() throws XCodecException {
         final ImageDescriptor valid = new ImageDescriptor(0, 0, 1, 1, true, false, false, 7);
         valid.validate();
-        assertEquals(256, valid.getLocalColorTableSize());
+        assertEquals(256, valid.localColorCount());
         assertThrows(XCodecException.class, () -> ImageDescriptor.read(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)));
         assertThrows(XCodecException.class, () -> new ImageDescriptor(0, 0, 1, 1, true, false, false, 8).validate());
         assertThrows(XCodecException.class, () -> new ImageDescriptor(0, 0, 1, 1, true, false, false, -1).validate());

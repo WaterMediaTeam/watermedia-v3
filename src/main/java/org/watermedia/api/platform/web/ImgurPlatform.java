@@ -39,7 +39,7 @@ public final class ImgurPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         // i.imgur.com IS EXCLUDED, THOSE ARE ALREADY STATIC
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 

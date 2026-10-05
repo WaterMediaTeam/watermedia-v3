@@ -410,11 +410,11 @@ public final class PNGReader extends ImageReader {
         }
         else if (t == ZTXT.SIGNATURE) {
             final ZTXT text = ZTXT.convert(c);
-            this.storePngText(this.compressedTexts, CodecsAPI.PNG_METAKEY_COMPRESSED_TEXT, text.keyword(), text.getText());
+            this.storePngText(this.compressedTexts, CodecsAPI.PNG_METAKEY_COMPRESSED_TEXT, text.keyword(), text.text());
         }
         else if (t == ITXT.SIGNATURE) {
             final ITXT text = ITXT.convert(c);
-            this.storePngText(this.internationalTexts, CodecsAPI.PNG_METAKEY_INTERNATIONAL_TEXT, text.keyword(), text.getText());
+            this.storePngText(this.internationalTexts, CodecsAPI.PNG_METAKEY_INTERNATIONAL_TEXT, text.keyword(), text.text());
         }
         else if (t == PHYS.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_PHYSICAL_PIXEL_DIMENSIONS, PHYS.convert(c));
         else if (t == HIST.SIGNATURE) {
@@ -525,7 +525,7 @@ public final class PNGReader extends ImageReader {
     }
 
     private int bkgdToARGB(final BKGD bkgd, final int depth, final PLTE plte) {
-        if (bkgd.isIndexed() && plte != null) return 0xFF000000 | plte.getColor(bkgd.paletteIndex());
+        if (bkgd.isIndexed() && plte != null) return 0xFF000000 | plte.color(bkgd.paletteIndex());
         return bkgd.toRGB8(depth);
     }
 
@@ -548,7 +548,7 @@ public final class PNGReader extends ImageReader {
         this.indexedARGB = new int[256];
         for (int i = 0; i < 256; i++) {
             final int rgb = (i < palette.length) ? palette[i] : 0;
-            final int alpha = (this.trns != null) ? this.trns.getAlpha(i) : 255;
+            final int alpha = (this.trns != null) ? this.trns.alpha(i) : 255;
             this.indexedARGB[i] = (alpha << 24) | (rgb & 0x00FFFFFF);
         }
     }

@@ -33,7 +33,7 @@ public final class DrivePlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || uri.getPath() == null || !uri.getPath().startsWith("/file/d/"))
             return null;
 

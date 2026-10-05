@@ -262,7 +262,7 @@ public final class PlatformAPI {
         for (int i = platforms.length - 1; i >= 0; i--) {
             final IPlatform platform = platforms[i];
             try {
-                final PlatformData data = platform.getData(uri);
+                final PlatformData data = platform.data(uri);
                 if (data != null) {
                     LOGGER.debug(IT, "Fetched data from {} for {}", platform.name(), uri);
                     return data;

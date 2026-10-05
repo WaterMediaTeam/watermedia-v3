@@ -101,10 +101,8 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         return new ICCP(profileName, compressionMethod, compressedProfile);
     }
 
-    /**
-     * Decompresses and returns the ICC profile data
-     */
-    public byte[] getProfile() throws XCodecException {
+    /** Decompresses and returns the ICC profile data. */
+    public byte[] profile() throws XCodecException {
         final Inflater inflater = new Inflater();
         inflater.setInput(this.compressedProfile);
 

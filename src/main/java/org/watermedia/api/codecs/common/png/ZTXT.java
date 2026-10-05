@@ -101,10 +101,8 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
         return new ZTXT(keyword, compressionMethod, compressedText);
     }
 
-    /**
-     * Decompresses and returns the text
-     */
-    public String getText() throws XCodecException {
+    /** Decompresses and returns the text. */
+    public String text() throws XCodecException {
         final Inflater inflater = new Inflater();
         inflater.setInput(this.compressedText);
 

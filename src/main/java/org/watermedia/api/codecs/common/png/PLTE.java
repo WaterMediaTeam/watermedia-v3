@@ -82,12 +82,8 @@ public record PLTE(int[] colors) implements IChunk {
         return this.colors.length;
     }
 
-    /**
-     * Returns the packed RGB color at the given palette index (0xRRGGBB)
-     * @param index The palette index (0-255)
-     * @return Packed RGB value
-     */
-    public int getColor(final int index) {
+    /** Returns the packed {@code 0xRRGGBB} color at a palette index (0-255). */
+    public int color(final int index) {
         return this.colors[index];
     }
 

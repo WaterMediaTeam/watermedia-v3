@@ -46,7 +46,7 @@ public final class MedalPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         // MEDAL HAS MANY PAGE TYPES (PROFILES, GAME HUBS, THE HOME FEED); ONLY A CLIP URL CARRIES AN ID WE CAN RESOLVE

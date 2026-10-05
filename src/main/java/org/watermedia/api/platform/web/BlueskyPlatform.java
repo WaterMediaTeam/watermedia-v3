@@ -44,7 +44,7 @@ public final class BlueskyPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         final String uriStr = uri.toString();
         if (uriStr.startsWith("at://")) {
             if (!AT_PATTERN.matcher(uriStr).matches()) return null;

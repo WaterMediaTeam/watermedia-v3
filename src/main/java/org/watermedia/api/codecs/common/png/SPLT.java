@@ -173,10 +173,8 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
         return this.entries.length;
     }
 
-    /**
-     * Returns a specific entry
-     */
-    public SPLTEntry getEntry(final int index) {
+    /** Returns the suggested-palette entry at an index. */
+    public SPLTEntry entry(final int index) {
         return this.entries[index];
     }
 

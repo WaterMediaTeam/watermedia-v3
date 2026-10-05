@@ -28,7 +28,7 @@ public final class MediaFirePlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         final String path = uri.getPath();
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || path == null || !path.startsWith("/file/"))
             return null;

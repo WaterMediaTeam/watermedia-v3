@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>
  * {@code WaterPlatform} resolves {@code water://} URIs without any network
  * access, so it also serves as the offline witness for all three
- * {@link WaterPlatform#getData(URI)} outcomes: {@code null} (foreign URI),
+ * {@link WaterPlatform#data(URI)} outcomes: {@code null} (foreign URI),
  * a {@link PlatformData} instance (valid URI) and a thrown exception
  * (unknown host).
  */
@@ -80,27 +80,27 @@ public class WaterPlatformTest {
     }
 
     // ==========================================================================
-    // getData CONTRACT TESTS
+    // data()CONTRACT TESTS
     // ==========================================================================
 
     @Nested
-    @DisplayName("getData Contract")
+    @DisplayName("data()Contract")
     class GetDataTests {
 
         // STATE: NULL — A NON-water:// URI IS NOT CLAIMED BY THIS PLATFORM
         @Test
-        @DisplayName("getData returns null for a foreign URI")
+        @DisplayName("data()returns null for a foreign URI")
         void testGetDataReturnsNullForForeignUri() throws Exception {
-            assertNull(new WaterPlatform().getData(URI.create("https://example.com/x.png")),
-                    "getData must return null for a URI that is not a water:// scheme");
+            assertNull(new WaterPlatform().data(URI.create("https://example.com/x.png")),
+                    "data()must return null for a URI that is not a water:// scheme");
         }
 
         // STATE: INSTANCE — A VALID water:// URI RESOLVES TO PlatformData WITHOUT NETWORK
         @Test
-        @DisplayName("getData resolves a valid URI to a PlatformData instance")
+        @DisplayName("data()resolves a valid URI to a PlatformData instance")
         void testGetDataResolvesValidUriToInstance() throws Exception {
-            final PlatformData data = new WaterPlatform().getData(URI.create("water://global/x"));
-            assertNotNull(data, "getData must resolve a valid water:// URI to a PlatformData instance");
+            final PlatformData data = new WaterPlatform().data(URI.create("water://global/x"));
+            assertNotNull(data, "data()must resolve a valid water:// URI to a PlatformData instance");
             assertEquals(1, data.size(), "Resolved water:// URI must produce exactly one entry");
             assertEquals(WaterPlatform.GLOBAL_SERVER + "x",
                     data.entries().get(0).variants().get(0).uri().toString(),
@@ -109,11 +109,11 @@ public class WaterPlatformTest {
 
         // STATE: EXCEPTION — A CLAIMED BUT UNRESOLVABLE URI PROPAGATES THE FAILURE
         @Test
-        @DisplayName("getData throws for an unknown host")
+        @DisplayName("data()throws for an unknown host")
         void testGetDataThrowsForUnknownHost() {
             assertThrows(IOException.class,
-                    () -> new WaterPlatform().getData(URI.create("water://unknown/x")),
-                    "getData must throw for a water:// URI with an unknown host");
+                    () -> new WaterPlatform().data(URI.create("water://unknown/x")),
+                    "data()must throw for a water:// URI with an unknown host");
         }
     }
 }

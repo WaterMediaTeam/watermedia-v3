@@ -91,7 +91,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         // NONE OF OUR HOSTS → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
         if (!hostMatches(uri.getHost(), HOSTS)) {
             return null;

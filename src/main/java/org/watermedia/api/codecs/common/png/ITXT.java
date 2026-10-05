@@ -128,10 +128,8 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
         return data.length;
     }
 
-    /**
-     * Returns the text content, decompressing if necessary
-     */
-    public String getText() throws XCodecException {
+    /** Returns the text content, decompressing it when necessary. */
+    public String text() throws XCodecException {
         if (!this.compressed) {
             return new String(this.textData, StandardCharsets.UTF_8);
         }

@@ -67,7 +67,7 @@ public final class BiliBiliPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(URI uri) throws Exception {
+    public PlatformData data(URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         if ("b23.tv".equalsIgnoreCase(uri.getHost())) {

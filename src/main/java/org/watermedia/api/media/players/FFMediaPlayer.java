@@ -355,7 +355,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public boolean pause(final boolean paused) {
         if (!super.pause(paused)) return false;
-        final boolean changed = this.clock.setPaused(paused);
+        final boolean changed = this.clock.paused(paused);
         // ALSO PAUSE/RESUME THE AUDIO ENGINE — WITHOUT THIS, OPENAL KEEPS PLAYING
         // ITS QUEUED BUFFERS UNTIL IT UNDERRUNS AND STOPS, AND THE NEXT RESUME
         // STARTS FROM A STOPPED SOURCE (AUDIBLE GAP) INSTEAD OF A PAUSED ONE.
@@ -764,7 +764,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             // APPLY startPaused() INTENT AFTER THE RESET (WHICH WIPES pauseIntent)
             if (this.startPausedRequest) {
                 this.startPausedRequest = false;
-                this.clock.setPaused(true);
+                this.clock.paused(true);
             }
             this.clock.transition(Status.LOADING);
             this.totalSkippedFrames = 0;
@@ -1223,7 +1223,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         this.audioPacketQueue.reset();
                     }
 
-                    this.clock.setSerial(this.videoPacketQueue.serial());
+                    this.clock.serial(this.videoPacketQueue.serial());
                     LOGGER.debug(IT, "Seek serial sync: clockSerial={}, vQueueSerial={}, aQueueSerial={}",
                             this.clock.serial(), this.videoPacketQueue.serial(), this.audioPacketQueue.serial());
                     mainEof = false;
@@ -1255,7 +1255,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         final boolean reopenOk = this.reopenFormat();
                         this.videoPacketQueue.reset();
                         this.audioPacketQueue.reset();
-                        this.clock.setSerial(this.videoPacketQueue.serial());
+                        this.clock.serial(this.videoPacketQueue.serial());
                         if (!reopenOk) {
                             // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS
                             // NOTHING LEFT TO READ FROM, THE PIPELINE CANNOT RECOVER
@@ -2025,7 +2025,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         }
 
         if (wasPaused) {
-            this.clock.setPaused(true);
+            this.clock.paused(true);
         }
 
         LOGGER.info(IT, "Successfully switched quality to {}", this.quality);

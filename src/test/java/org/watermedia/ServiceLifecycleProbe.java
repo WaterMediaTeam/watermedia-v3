@@ -61,7 +61,7 @@ public final class ServiceLifecycleProbe {
         for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
         PlatformAPI.register(new IPlatform() {
             @Override public String name() { return "Reload fixture"; }
-            @Override public PlatformData getData(final URI uri) {
+            @Override public PlatformData data(final URI uri) {
                 return new PlatformData(null, new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
                         List.of(new DataQuality(uri, 0, 0)), null, null));
             }
@@ -101,7 +101,7 @@ public final class ServiceLifecycleProbe {
         final AtomicBoolean first = new AtomicBoolean(true);
         PlatformAPI.register(new IPlatform() {
             @Override public String name() { return "Expiring fixture"; }
-            @Override public PlatformData getData(final URI uri) {
+            @Override public PlatformData data(final URI uri) {
                 final var expires = key.equals(uri) && first.getAndSet(false) ? Instant.EPOCH : null;
                 return new PlatformData(expires, new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
                         List.of(new DataQuality(uri, 0, 0)), null, null));
@@ -151,7 +151,7 @@ public final class ServiceLifecycleProbe {
         for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
         PlatformAPI.register(new IPlatform() {
             @Override public String name() { return "Expiring status fixture"; }
-            @Override public PlatformData getData(final URI uri) {
+            @Override public PlatformData data(final URI uri) {
                 return new PlatformData(Instant.EPOCH,
                         new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
                                 List.of(new DataQuality(uri, 0, 0)), null, null));
@@ -192,7 +192,7 @@ public final class ServiceLifecycleProbe {
         try {
             PlatformAPI.register(new IPlatform() {
                 @Override public String name() { return "Controlled search"; }
-                @Override public PlatformData getData(final URI uri) {
+                @Override public PlatformData data(final URI uri) {
                     if (!"fixture".equals(uri.getScheme())) return null;
                     resolveEntered.countDown();
                     boolean done = false;
@@ -260,7 +260,7 @@ public final class ServiceLifecycleProbe {
             for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
             PlatformAPI.register(new IPlatform() {
                 @Override public String name() { return "Replacement search"; }
-                @Override public PlatformData getData(final URI uri) { return null; }
+                @Override public PlatformData data(final URI uri) { return null; }
                 @Override public List<PlatformResult> search(final String query, final int limit) {
                     return List.of(new PlatformResult("replacement", "second session", null, URI.create("https://fixture.invalid/new")));
                 }

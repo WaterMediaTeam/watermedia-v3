@@ -142,7 +142,7 @@ public class PlatformSearchTest {
         }
 
         @Override public String name() { return "STUB"; }
-        @Override public PlatformData getData(final URI uri) { return null; }
+        @Override public PlatformData data(final URI uri) { return null; }
 
         @Override
         public List<PlatformResult> search(final String query, final int limit) throws Exception {

@@ -22,7 +22,7 @@ final class PlatformSearchFailureProbe {
         final AtomicInteger successfulProbes = new AtomicInteger();
         PlatformAPI.register(new IPlatform() {
             @Override public String name() { return "Slow fixture"; }
-            @Override public PlatformData getData(final URI uri) { return null; }
+            @Override public PlatformData data(final URI uri) { return null; }
             @Override public List<PlatformResult> search(final String query, final int limit) throws Exception {
                 successfulProbes.incrementAndGet();
                 slowEntered.countDown();
@@ -36,7 +36,7 @@ final class PlatformSearchFailureProbe {
                 if (names.incrementAndGet() > 1) throw new IllegalStateException("Broken diagnostic name");
                 return "Failing fixture";
             }
-            @Override public PlatformData getData(final URI uri) { return null; }
+            @Override public PlatformData data(final URI uri) { return null; }
             @Override public List<PlatformResult> search(final String query, final int limit) throws Exception {
                 throw new IOException("Fixture probe failed");
             }

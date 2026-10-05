@@ -168,7 +168,7 @@ public class WebMWriterFractalTest {
             assertEquals((byte) 0x45, webm[1]);
             assertEquals((byte) 0xDF, webm[2]);
             assertEquals((byte) 0xA3, webm[3]);
-            assertEquals(MediaType.VIDEO, CodecsAPI.getMediaType(new ByteArrayInputStream(webm)));
+            assertEquals(MediaType.VIDEO, CodecsAPI.mediaType(new ByteArrayInputStream(webm)));
             System.out.println("[WebMWriterFractalTest] wrote " + webm.length + " bytes -> " + output.toAbsolutePath());
         } finally {
             if (readBuf != null) MemoryUtil.memFree(readBuf);

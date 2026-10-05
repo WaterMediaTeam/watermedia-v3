@@ -368,7 +368,7 @@ public final class MRL {
         MediaType type = MediaType.of(req.contentType());
         if (type != MediaType.UNKNOWN) return type;
         try (final InputStream in = req.inputStream()) {
-            type = CodecsAPI.getMediaType(in);
+            type = CodecsAPI.mediaType(in);
         } catch (final IOException e) {
             LOGGER.warn(IT, "Failed to sniff media type for {}", uri, e);
         }

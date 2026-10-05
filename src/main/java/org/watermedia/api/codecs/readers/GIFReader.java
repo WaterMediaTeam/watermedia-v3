@@ -251,7 +251,7 @@ public final class GIFReader extends ImageReader {
 
         ColorTable activeColorTable = this.globalColorTable;
         if (id.localColorTableFlag()) {
-            final int lctSize = id.getLocalColorTableSize();
+            final int lctSize = id.localColorCount();
             if (this.data.remaining() < lctSize * 3) {
                 throw new XCodecException("Unexpected EOF in local color table");
             }

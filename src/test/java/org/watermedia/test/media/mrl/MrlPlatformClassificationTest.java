@@ -109,7 +109,7 @@ public class MrlPlatformClassificationTest {
             }
 
             @Override
-            public PlatformData getData(final URI uri) {
+            public PlatformData data(final URI uri) {
                 return claimed.equals(uri) ? new PlatformData(null, List.of(entries)) : null;
             }
         };

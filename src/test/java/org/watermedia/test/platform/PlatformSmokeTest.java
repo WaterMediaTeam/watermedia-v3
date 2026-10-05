@@ -52,7 +52,7 @@ public final class PlatformSmokeTest {
         final long started = System.currentTimeMillis();
         try {
             for (final IPlatform platform: platforms) {
-                final PlatformData data = platform.getData(uri);
+                final PlatformData data = platform.data(uri);
                 if (data == null) continue; // NOT THIS PLATFORM'S HOST — KEEP PROBING
                 System.out.println("platform=" + platform.name() + " entries=" + data.size()
                         + " expires=" + data.expires() + " (" + (System.currentTimeMillis() - started) + "ms)");

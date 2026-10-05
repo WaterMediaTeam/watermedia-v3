@@ -61,10 +61,8 @@ public record HIST(int[] frequencies) implements IChunk {
         return new HIST(frequencies);
     }
 
-    /**
-     * Returns the frequency for a specific palette index
-     */
-    public int getFrequency(final int index) {
+    /** Returns the frequency for a specific palette index. */
+    public int frequency(final int index) {
         return this.frequencies[index];
     }
 

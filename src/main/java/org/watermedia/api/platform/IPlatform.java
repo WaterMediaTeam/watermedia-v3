@@ -6,7 +6,7 @@ import java.net.URI;
 import java.util.List;
 
 /**
- * Contract for a platform handler. A single {@link #getData(URI)} call both
+ * Contract for a platform handler. A single {@link #data(URI)} call both
  * decides whether the URI belongs to this platform and resolves it to raw
  * {@link PlatformData} — direct links, dimensions, metadata. Source/MRL
  * construction lives in {@link MRL}, not here.
@@ -39,7 +39,7 @@ public interface IPlatform {
      *         when the URI is not handled by this platform
      * @throws Exception if the URI belongs to this platform but the lookup fails
      */
-    PlatformData getData(URI uri) throws Exception;
+    PlatformData data(URI uri) throws Exception;
 
     /**
      * Searches this platform for {@code query} and returns up to {@code limit} raw results — a

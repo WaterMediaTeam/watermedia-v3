@@ -25,7 +25,7 @@ public final class WaterPlatform implements IPlatform {
     }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         if (!"water".equals(uri.getScheme())) return null;
 
         final String resolved = toHttpURL(uri);

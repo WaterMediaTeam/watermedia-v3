@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Verifies the {@link PlatformAPI} registry contract against the new
- * {@link IPlatform#getData(URI)} protocol, where a single call both claims and
+ * {@link IPlatform#data(URI)} protocol, where a single call both claims and
  * resolves a URI. {@link PlatformAPI#fetch(URI)} must:
  * <ul>
  *   <li>skip platforms that return {@code null} (the URI is not theirs);</li>
@@ -58,16 +58,16 @@ public class PlatformApiTest {
         this.registered.clear();
     }
 
-    // RESOLVER SUPPLIES getData; name() IS FIXED. KEEPS THE STUBS A ONE-LINER EACH.
+    // RESOLVER SUPPLIES data; name() IS FIXED. KEEPS THE STUBS A ONE-LINER EACH.
     @FunctionalInterface
     private interface Resolver {
-        PlatformData getData(URI uri) throws Exception;
+        PlatformData data(URI uri) throws Exception;
     }
 
     private void register(final Resolver resolver) {
         final IPlatform platform = new IPlatform() {
             @Override public String name() { return "stub"; }
-            @Override public PlatformData getData(final URI uri) throws Exception { return resolver.getData(uri); }
+            @Override public PlatformData data(final URI uri) throws Exception { return resolver.data(uri); }
         };
         PlatformAPI.register(platform);
         this.registered.add(platform);

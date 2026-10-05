@@ -268,7 +268,7 @@ public final class MasterClock {
      * @param paused true to pause, false to resume
      * @return true if the state changed
      */
-    public boolean setPaused(final boolean paused) {
+    public boolean paused(final boolean paused) {
         this.lock.lock();
         try {
             this.pauseIntent = paused;
@@ -439,7 +439,7 @@ public final class MasterClock {
      *
      * @param serial the serial value to set
      */
-    public void setSerial(final int serial) {
+    public void serial(final int serial) {
         this.lock.lock();
         try {
             this.serial = serial;

@@ -115,13 +115,8 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
         };
     }
 
-    /**
-     * Returns the alpha value for the given palette index
-     * Only valid for indexed-color images (color type 3)
-     * @param index The palette index
-     * @return Alpha value (0-255), or 255 if no entry exists for this index
-     */
-    public int getAlpha(final int index) {
+    /** Returns the indexed-color alpha (0-255) at a palette index, or 255 when the index has no entry. */
+    public int alpha(final int index) {
         if (this.alphaPerPalette == null || index >= this.alphaPerPalette.length) {
             return 255; // FULLY OPAQUE FOR UNDEFINED ENTRIES
         }

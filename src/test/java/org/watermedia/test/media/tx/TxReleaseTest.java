@@ -89,7 +89,7 @@ class TxReleaseTest {
             final URI key = URI.create("fixture:tx-release-" + System.nanoTime());
             final IPlatform platform = new IPlatform() {
                 @Override public String name() { return "Blocked image fixture"; }
-                @Override public PlatformData getData(final URI uri) {
+                @Override public PlatformData data(final URI uri) {
                     return !key.equals(uri) ? null : new PlatformData(null,
                             new DataSource(MediaType.IMAGE, null, null, new RequestHeaders(),
                                     List.of(new DataQuality(origin.uri("/held.pnm"), 0, 0)), null, null));

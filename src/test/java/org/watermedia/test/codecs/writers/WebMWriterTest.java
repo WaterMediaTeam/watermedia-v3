@@ -79,7 +79,7 @@ public class WebMWriterTest {
         assertEquals((byte) 0xDF, webm[2]);
         assertEquals((byte) 0xA3, webm[3]);
         // THE PROJECT'S OWN SNIFFER MUST CLASSIFY IT AS VIDEO
-        assertEquals(MediaType.VIDEO, CodecsAPI.getMediaType(new ByteArrayInputStream(webm)));
+        assertEquals(MediaType.VIDEO, CodecsAPI.mediaType(new ByteArrayInputStream(webm)));
     }
 
     @Test

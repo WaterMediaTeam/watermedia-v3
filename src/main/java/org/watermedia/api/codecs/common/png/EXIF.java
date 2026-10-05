@@ -72,13 +72,6 @@ public record EXIF(byte[] data) implements IChunk {
     }
 
     /**
-     * Returns the raw EXIF data for external parsing
-     */
-    public byte[] getRawData() {
-        return this.data.clone();
-    }
-
-    /**
      * Returns the size of the EXIF data
      */
     public int size() {

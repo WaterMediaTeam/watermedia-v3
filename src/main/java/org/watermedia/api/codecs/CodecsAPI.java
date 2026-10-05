@@ -76,7 +76,7 @@ public final class CodecsAPI {
     private static final byte[] RIFF_HEADER = { 'R', 'I', 'F', 'F' };
     private static final byte[] WEBP_HEADER = { 'W', 'E', 'B', 'P' };
 
-    // ADDITIONAL IMAGE SIGNATURES (USED ONLY BY getMediaType)
+    // ADDITIONAL IMAGE SIGNATURES (USED ONLY BY mediaType)
     private static final byte[] BMP_HEADER = { 'B', 'M' };
     private static final byte[] TIFF_LE_HEADER = { 0x49, 0x49, 0x2A, 0x00 };
     private static final byte[] TIFF_BE_HEADER = { 0x4D, 0x4D, 0x00, 0x2A };
@@ -140,7 +140,7 @@ public final class CodecsAPI {
     // BYTES SCANNED FOR THE SVG ROOT ELEMENT (PROLOG/COMMENTS/DOCTYPE MAY PRECEDE <svg>)
     private static final int SVG_SNIFF_WINDOW = 4096;
     // BYTES READ FROM THE STREAM FOR SNIFFING; COVERS THE MPEG-TS 188-BYTE SYNC CHECK AND MATCHES
-    // THE SVG SNIFF WINDOW SO getMediaType ACCEPTS THE SAME PROLOG-HEAVY SVGS AS decodeImage
+    // THE SVG SNIFF WINDOW SO mediaType ACCEPTS THE SAME PROLOG-HEAVY SVGS AS decodeImage
     private static final int PROBE_SIZE = SVG_SNIFF_WINDOW;
 
     /**
@@ -244,7 +244,7 @@ public final class CodecsAPI {
      * @return the detected type, or {@link MediaType#UNKNOWN} when nothing matches
      * @throws IOException if reading the stream fails
      */
-    public static MediaType getMediaType(final InputStream in) throws IOException {
+    public static MediaType mediaType(final InputStream in) throws IOException {
         if (in == null) throw new NullPointerException("in");
         final byte[] h = in.readNBytes(PROBE_SIZE);
         if (h.length < 2) return MediaType.UNKNOWN;

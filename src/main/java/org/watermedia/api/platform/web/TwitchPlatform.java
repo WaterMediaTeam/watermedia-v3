@@ -88,7 +88,7 @@ public final class TwitchPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         final String host = uri.getHost();
         if (!DataTool.equalsAnyIgnoreCase(host, HOSTS)) return null;
 

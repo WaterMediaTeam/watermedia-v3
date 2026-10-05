@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * Verifies {@link CodecsAPI#getMediaType} classifies streams from their leading bytes. Real
+ * Verifies {@link CodecsAPI#mediaType} classifies streams from their leading bytes. Real
  * on-disk fixtures cover the decodable image formats; synthetic minimal headers cover the
  * container/codec signatures (video, audio, subtitles) that have no fixture.
  */
@@ -95,7 +95,7 @@ public class MediaTypeSniffTest {
 
     private static MediaType sniff(final byte[] data) throws Exception {
         try (final ByteArrayInputStream in = new ByteArrayInputStream(data)) {
-            return CodecsAPI.getMediaType(in);
+            return CodecsAPI.mediaType(in);
         }
     }
 

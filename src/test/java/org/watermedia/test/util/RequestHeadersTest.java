@@ -52,7 +52,7 @@ public class RequestHeadersTest {
         @DisplayName("add appends additional values without clobbering")
         void addAppends() {
             final RequestHeaders h = new RequestHeaders().add("X", "1").add("X", "2");
-            assertEquals(List.of("1", "2"), h.getAll("X"));
+            assertEquals(List.of("1", "2"), h.values("X"));
         }
 
         @Test

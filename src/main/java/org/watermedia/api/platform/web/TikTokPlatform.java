@@ -44,7 +44,7 @@ public final class TikTokPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(URI uri) throws Exception {
+    public PlatformData data(URI uri) throws Exception {
         final String host = uri.getHost();
         if (!DataTool.equalsAnyIgnoreCase(host, HOSTS)) return null;
 
@@ -395,7 +395,7 @@ public final class TikTokPlatform implements IPlatform {
 
     // JOINS THE name=value PAIRS FROM EVERY Set-Cookie HEADER; RETURNS null WHEN THE RESPONSE SET NONE
     private static String captureCookies(final NetRequest req) {
-        final List<String> setCookies = req.responseHeaders().getAll("Set-Cookie");
+        final List<String> setCookies = req.responseHeaders().values("Set-Cookie");
         if (setCookies.isEmpty()) return null;
 
         final StringBuilder sb = new StringBuilder();

@@ -30,7 +30,7 @@ public final class PornHubPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         // VALIDATE THE HOST WITH A DOT BOUNDARY (pornhub.com OR *.pornhub.com) SO LOOKALIKES LIKE
         // "notpornhub.com" ARE REJECTED, AND REQUIRE A viewkey QUERY PARAM (e.g. ?viewkey=6a159015e4470).
         // A NULL HOST (e.g. file:// URIs) IS NOT OURS — GUARD IT INSTEAD OF NPEing THE RESOLUTION CHAIN.

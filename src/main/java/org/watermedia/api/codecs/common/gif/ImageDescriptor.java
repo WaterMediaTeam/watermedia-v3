@@ -14,7 +14,7 @@ public record ImageDescriptor(
     public static final int LOCAL_COLOR_TABLE_SIZE = 8;
 
     /** Returns the local palette color count, {@code 2^(localColorTableSize + 1)}, even when no palette is present. */
-    public int getLocalColorTableSize() {
+    public int localColorCount() {
         return 1 << (this.localColorTableSize + 1);
     }
 

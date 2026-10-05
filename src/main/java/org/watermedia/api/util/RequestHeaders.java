@@ -124,7 +124,7 @@ public final class RequestHeaders implements Iterable<RequestHeaders.Entry> {
     /**
      * All values for {@code name}, in insertion order.
      */
-    public List<String> getAll(final String name) {
+    public List<String> values(final String name) {
         final List<String> out = new ArrayList<>();
         for (final Entry e: this.entries) {
             if (eq(e.name, name)) out.add(e.value);

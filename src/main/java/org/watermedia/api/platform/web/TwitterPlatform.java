@@ -32,7 +32,7 @@ public final class TwitterPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData getData(final URI uri) throws Exception {
+    public PlatformData data(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
         if (uri.getPath() == null || !ID_PATTERN.matcher(uri.getPath()).find()) return null;
 

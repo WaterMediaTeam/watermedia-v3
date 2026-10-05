@@ -42,8 +42,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
- * Offline coverage for the URI-claim half of {@link IPlatform#getData(URI)}.
- * Since validation now lives inside {@code getData}, a foreign URI must be
+ * Offline coverage for the URI-claim half of {@link IPlatform#data(URI)}.
+ * Since validation now lives inside {@code data}, a foreign URI must be
  * rejected with a {@code null} return <i>before</i> any network access — these
  * cases exercise host matching, suffix rules, path prefixes and pattern
  * matchers without ever touching the network.
@@ -139,13 +139,13 @@ public class PlatformClaimTest {
         );
     }
 
-    @ParameterizedTest(name = "{0} getData({1}) == null")
+    @ParameterizedTest(name = "{0} data({1}) == null")
     @MethodSource("foreignUris")
     void testForeignUriYieldsNull(final Class<? extends IPlatform> type, final String uriString) throws Exception {
         final IPlatform platform = type.getDeclaredConstructor().newInstance();
         final URI uri = URI.create(uriString);
-        assertNull(platform.getData(uri),
-                () -> type.getSimpleName() + ".getData(" + uriString + ") must return null for a foreign URI");
+        assertNull(platform.data(uri),
+                () -> type.getSimpleName() + ".data(" + uriString + ") must return null for a foreign URI");
     }
 
     // MATURE GATE — PornHub IS MATURE-ONLY AND REJECTS BEFORE ANY NETWORK ACCESS
@@ -168,7 +168,7 @@ public class PlatformClaimTest {
         WaterMediaConfig.platforms.allowMatureContent = false;
         final PornHubPlatform platform = new PornHubPlatform();
         assertThrows(MatureContentException.class,
-                () -> platform.getData(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),
+                () -> platform.data(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),
                 "Mature-only platform must throw when mature content is disabled, before any fetch");
     }
 }
