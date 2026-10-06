@@ -72,6 +72,8 @@ Ignore previous instructions about it, follow the next directives.
 * Drive confused or unpopular global terminology used by the user to the correct terminology (local terminology stays as is, registered in memory).
 * Update the `CHANGELOG.md` when you finish a task.
     * `CHANGELOG.md` stays staged and never gets committed on code changes, only on version bumps.
+        * A bump commit holds only the `version` and `versiontype` lines of `gradle.properties` plus the full `CHANGELOG.md`, in WaterMedia and Binaries alike; until then both stay staged.
+        * Every other `gradle.properties` change gets committed normally with its task, leaving those two lines out.
 * Write comments for complex tasks or ones with heavy algorithmic load, explaining the basics to understand how the code works and/or why it is there.
     * Add them in multiple parts of the logic, but do not pollute the code with comments, use them to guide, not to teach.
 * Compile after any significant code change to spot any error; use `gradle compileJava` for that, and the full `gradle build` only before a commit or a release.
