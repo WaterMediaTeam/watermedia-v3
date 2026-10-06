@@ -17,6 +17,7 @@ import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -121,7 +122,7 @@ class AWTEngineTest {
 
         assertEquals(4, second.getWidth());
         assertEquals(3, second.getHeight());
-        assertTrue(first != second);
+        assertNotSame(first, second);
     }
 
     @Test

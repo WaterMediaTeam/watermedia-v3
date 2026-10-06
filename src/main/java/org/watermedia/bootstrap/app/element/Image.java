@@ -62,8 +62,8 @@ public final class Image extends Element<Image> {
         final float sourceAspect = (float) this.imageWidth / this.imageHeight;
         final float boxAspect = (float) bw / bh;
         if (this.fit == Fit.CONTAIN) {
-            int w;
-            int h;
+            final int w;
+            final int h;
             if (sourceAspect > boxAspect) {
                 w = bw;
                 h = Math.round(bw / sourceAspect);

@@ -841,7 +841,7 @@ public final class SettingsScreen extends Screen {
         }
         if (!home.settings.isEmpty()) spec.sections.add(home);
         for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof ConfigGroup child) this.collectGroup(child, 0, "", "", spec);
+            if (field instanceof final ConfigGroup child) this.collectGroup(child, 0, "", "", spec);
         }
     }
 
@@ -857,7 +857,7 @@ public final class SettingsScreen extends Screen {
         // THE NODE STAYS EVEN WITH NO DIRECT FIELDS — IT IS THE TREE PATH TO ITS CHILD GROUPS
         spec.sections.add(section);
         for (final IConfigField<?, ?> field: fields) {
-            if (field instanceof ConfigGroup child) this.collectGroup(child, depth + 1, key, path, spec);
+            if (field instanceof final ConfigGroup child) this.collectGroup(child, depth + 1, key, path, spec);
         }
     }
 
@@ -1056,7 +1056,7 @@ public final class SettingsScreen extends Screen {
                 if (!child.visible()) continue;
                 if (!first) x += this.spacing;
                 first = false;
-                if (child instanceof SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
+                if (child instanceof final SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
                     final int right = x + child.measuredWidth();
                     if (x < this.scrollX) return x;
                     if (right > this.scrollX + viewport) return right - viewport;
@@ -1125,7 +1125,7 @@ public final class SettingsScreen extends Screen {
             int gapL = -1;
             int gapR = -1;
             for (final Element<?> child: scroll.children()) {
-                if (child instanceof SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
+                if (child instanceof final SpecTab tab && tab.index == SettingsScreen.this.activeSpecIndex) {
                     gapL = Math.max(viewL, tab.left());
                     gapR = Math.min(viewR, tab.left() + tab.measuredWidth());
                     if (gapR <= gapL) { gapL = -1; gapR = -1; } // ACTIVE TAB FULLY SCROLLED OUT OF VIEW
@@ -1788,8 +1788,8 @@ public final class SettingsScreen extends Screen {
         String valueLabel() {
             final Object value = this.field.get();
             if (value == null) return "EMPTY";
-            if (value instanceof Boolean bool) return bool ? "ON" : "OFF";
-            if (value instanceof Path path) {
+            if (value instanceof final Boolean bool) return bool ? "ON" : "OFF";
+            if (value instanceof final Path path) {
                 final String raw = path.toString();
                 return raw.isBlank() ? "." : raw;
             }
@@ -1994,7 +1994,7 @@ public final class SettingsScreen extends Screen {
         @Override
         Color accent() {
             final Object value = this.field.get();
-            if (value instanceof Boolean bool) return bool ? AppTheme.GREEN : AppTheme.TEXT_FAINT;
+            if (value instanceof final Boolean bool) return bool ? AppTheme.GREEN : AppTheme.TEXT_FAINT;
             if (this.valueType.isEnum()) return AppTheme.CYAN;
             if (this.isNumber()) return AppTheme.AMBER;
             return AppTheme.NEON_LIGHT;
@@ -2046,7 +2046,7 @@ public final class SettingsScreen extends Screen {
         }
 
         private Object clampNumber(final Object value) {
-            if (!(value instanceof Number number)) return value;
+            if (!(value instanceof final Number number)) return value;
             double next = number.doubleValue();
             if (this.minValue != null) next = Math.max(next, this.minValue);
             if (this.maxValue != null) next = Math.min(next, this.maxValue);
@@ -2154,7 +2154,7 @@ public final class SettingsScreen extends Screen {
             final StringBuilder out = new StringBuilder();
             for (final String comment: comments) {
                 if (comment == null || comment.isBlank()) continue;
-                if (out.length() > 0) out.append(" ");
+                if (!out.isEmpty()) out.append(" ");
                 out.append(comment.trim());
                 if (out.length() > 180) break;
             }

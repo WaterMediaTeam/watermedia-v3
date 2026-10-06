@@ -49,13 +49,13 @@ public final class AWTPlayerWindow {
         // PAINTS THE CURRENT FRAME ASPECT-FIT ON BLACK, OR A STATUS LINE WHILE THERE IS NO FRAME
         private final class VideoPanel extends JComponent {
             VideoPanel() {
-                setOpaque(true); // FULLY PAINTS ITS BOUNDS SO repaint() RELIABLY REDRAWS THE FRAME
+                this.setOpaque(true); // FULLY PAINTS ITS BOUNDS SO repaint() RELIABLY REDRAWS THE FRAME
             }
 
             @Override
             protected void paintComponent(final Graphics g) {
-                final int pw = getWidth();
-                final int ph = getHeight();
+                final int pw = this.getWidth();
+                final int ph = this.getHeight();
                 g.setColor(Color.BLACK);
                 g.fillRect(0, 0, pw, ph);
 

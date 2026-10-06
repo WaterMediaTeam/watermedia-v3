@@ -876,7 +876,7 @@ public class OpenMultimediaScreen extends Screen {
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             this.scrim.measure(innerAvailWidth, innerAvailHeight);
-            final boolean search = searchMode();
+            final boolean search = OpenMultimediaScreen.this.searchMode();
             final int dialogH = Math.max(260, innerAvailHeight - 44);
             final int reserved = 56 + 20 + 28 + 18 + 42 + 12 + 26 + 20 + 38 + 18;
             final int targetPreviewH = Math.max(80, dialogH - reserved);
@@ -886,7 +886,7 @@ public class OpenMultimediaScreen extends Screen {
             // VERTICAL SPACE TO THE RESULTS DROPDOWN. animatePreviewH EASES BETWEEN THE TWO HEIGHTS SO THE
             // PREVIEW GROWS/SHRINKS SMOOTHLY INSTEAD OF SNAPPING WHEN THE MODE FLIPS.
             final int fullPreviewH = Math.round((dialogW - 40) * 9f / 16f);
-            preview.height(animatePreviewH(search ? Math.min(fullPreviewH, SEARCH_PREVIEW_H) : fullPreviewH));
+            OpenMultimediaScreen.this.preview.height(OpenMultimediaScreen.this.animatePreviewH(search ? Math.min(fullPreviewH, SEARCH_PREVIEW_H) : fullPreviewH));
             this.panel.measure(dialogW, dialogH);
             this.contentWidth = innerAvailWidth;
             this.contentHeight = innerAvailHeight;
@@ -932,7 +932,7 @@ public class OpenMultimediaScreen extends Screen {
         private final CloseBtn close = new CloseBtn();
 
         private TitleRow() {
-            this.add(this.close.onClick(b -> navigator.accept(HomeScreen.Action.BACK)));
+            this.add(this.close.onClick(b -> OpenMultimediaScreen.this.navigator.accept(HomeScreen.Action.BACK)));
         }
 
         @Override
@@ -980,19 +980,19 @@ public class OpenMultimediaScreen extends Screen {
 
         private final Button paste = new Button("PASTE").icon("copy")
                 .accent(AppTheme.NEON).textColor(AppTheme.NEON_LIGHT)
-                .size(104, 40).onClick(b -> pasteFromClipboard());
+                .size(104, 40).onClick(b -> OpenMultimediaScreen.this.pasteFromClipboard());
 
         private InputBlock() {
-            this.add(field);
+            this.add(OpenMultimediaScreen.this.field);
             this.add(this.paste);
-            this.add(reload);
+            this.add(OpenMultimediaScreen.this.reload);
         }
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            field.measure(Math.max(0, innerAvailWidth - 232), 40);
+            OpenMultimediaScreen.this.field.measure(Math.max(0, innerAvailWidth - 232), 40);
             this.paste.measure(104, 40);
-            reload.measure(112, 40);
+            OpenMultimediaScreen.this.reload.measure(112, 40);
             this.contentWidth = innerAvailWidth;
             this.contentHeight = innerAvailHeight;
         }
@@ -1000,14 +1000,14 @@ public class OpenMultimediaScreen extends Screen {
         @Override
         protected void onLayout() {
             final int y = this.top + 28; // LABEL ZONE ABOVE (LEGACY LABEL AT INPUT TOP - 20)
-            field.layout(this.left, y);
-            this.paste.layout(this.left + field.measuredWidth() + 8, y);
-            reload.layout(this.paste.left() + 104 + 8, y);
+            OpenMultimediaScreen.this.field.layout(this.left, y);
+            this.paste.layout(this.left + OpenMultimediaScreen.this.field.measuredWidth() + 8, y);
+            OpenMultimediaScreen.this.reload.layout(this.paste.left() + 104 + 8, y);
         }
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final boolean search = searchMode();
+            final boolean search = OpenMultimediaScreen.this.searchMode();
             canvas.text(search ? "SEARCH" : "URL OR PATH", this.left, this.top + 8,
                     search ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
             super.onDraw(canvas);
@@ -1020,22 +1020,22 @@ public class OpenMultimediaScreen extends Screen {
     private final class MiddleZone extends Group<MiddleZone> {
 
         private MiddleZone() {
-            this.add(chip);     // UNDER THE DROPDOWN, SAME PAINT ORDER AS THE LEGACY DRAW
-            this.add(dropdown);
+            this.add(OpenMultimediaScreen.this.chip);     // UNDER THE DROPDOWN, SAME PAINT ORDER AS THE LEGACY DRAW
+            this.add(OpenMultimediaScreen.this.dropdown);
         }
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            chip.measure(innerAvailWidth, 24);
-            dropdown.measure(Math.max(0, innerAvailWidth - 232), Math.max(0, innerAvailHeight - 12));
+            OpenMultimediaScreen.this.chip.measure(innerAvailWidth, 24);
+            OpenMultimediaScreen.this.dropdown.measure(Math.max(0, innerAvailWidth - 232), Math.max(0, innerAvailHeight - 12));
             this.contentWidth = innerAvailWidth;
             this.contentHeight = innerAvailHeight;
         }
 
         @Override
         protected void onLayout() {
-            chip.layout(this.left, this.top + 12);
-            dropdown.layout(this.left, this.top + 2);
+            OpenMultimediaScreen.this.chip.layout(this.left, this.top + 12);
+            OpenMultimediaScreen.this.dropdown.layout(this.left, this.top + 2);
         }
     }
 
@@ -1117,7 +1117,7 @@ public class OpenMultimediaScreen extends Screen {
             final int iy = y + 6;
             final int iw = w - 12;
             final int ih = h - 12;
-            final MRL mrl = previewMRL; // READ ONCE PER DRAW — THE FIELD FLIPS OFF-THREAD
+            final MRL mrl = OpenMultimediaScreen.this.previewMRL; // READ ONCE PER DRAW — THE FIELD FLIPS OFF-THREAD
             if (mrl == null) {
                 PixelIcon.draw("copy", ix + iw / 2 - 16, iy + ih / 2 - 32, 32, AppTheme.TEXT_FAINT);
                 canvas.text("NO MEDIA", ix + iw / 2 - canvas.textWidth("NO MEDIA", AppTheme.TEXT_BODY, false) / 2,
@@ -1126,21 +1126,21 @@ public class OpenMultimediaScreen extends Screen {
                 final MRL.Status status = mrl.status();
                 if (status == MRL.Status.FETCHING) {
                     canvas.text("LOADING", ix + 22, iy + ih - 48, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
-                    canvas.text(canvas.text().truncateToWidth(previewUrl, iw - 44, AppTheme.TEXT_SUBTITLE),
+                    canvas.text(canvas.text().truncateToWidth(OpenMultimediaScreen.this.previewUrl, iw - 44, AppTheme.TEXT_SUBTITLE),
                             ix + 22, iy + ih - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
                 } else if (status != MRL.Status.LOADED) {
                     // ERROR/BLOCKED/EXPIRED/FORGOTTEN — SHOW THE EXACT STATE.
-                    final Color color = statusColor();
-                    final String label = statusLabel();
+                    final Color color = OpenMultimediaScreen.this.statusColor();
+                    final String label = OpenMultimediaScreen.this.statusLabel();
                     PixelIcon.draw("warn", ix + iw / 2 - 16, iy + ih / 2 - 36, 32, color);
                     canvas.text(label, ix + iw / 2 - canvas.textWidth(label, AppTheme.TEXT_BUTTON, true) / 2,
                             iy + ih / 2 + 8, color, AppTheme.TEXT_BUTTON, true);
                 } else {
-                    final MRL.Source src = firstSource();
+                    final MRL.Source src = OpenMultimediaScreen.this.firstSource();
                     final Metadata meta = src != null ? src.metadata() : null;
-                    final String title = meta != null && meta.title() != null ? meta.title() : previewTitle();
-                    final String desc = meta != null && meta.desc() != null ? meta.desc() : previewUrl;
-                    final String duration = meta != null && meta.duration() > 0 ? ctx.formatTime(meta.duration()) : "--:--";
+                    final String title = meta != null && meta.title() != null ? meta.title() : OpenMultimediaScreen.this.previewTitle();
+                    final String desc = meta != null && meta.desc() != null ? meta.desc() : OpenMultimediaScreen.this.previewUrl;
+                    final String duration = meta != null && meta.duration() > 0 ? OpenMultimediaScreen.this.ctx.formatTime(meta.duration()) : "--:--";
                     canvas.gradientV(ix, iy + ih / 2f, iw, ih / 2f, GRADIENT_TOP, AppTheme.alpha(AppTheme.BG_1, 224));
                     canvas.text(canvas.text().truncateToWidth(title.toUpperCase(Locale.ROOT), iw - 44, AppTheme.TEXT_BUTTON, Font.BOLD),
                             ix + 22, iy + ih - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
@@ -1151,7 +1151,7 @@ public class OpenMultimediaScreen extends Screen {
             }
 
             // BEST-QUALITY CHIP OVER THE FRAME'S TOP-RIGHT CORNER
-            final String chipLabel = bestQuality();
+            final String chipLabel = OpenMultimediaScreen.this.bestQuality();
             if (chipLabel != null) {
                 final int chipW = canvas.textWidth(chipLabel, AppTheme.TEXT_BODY, false) + 18;
                 final int chipX = x + w - chipW - 8;
@@ -1182,8 +1182,8 @@ public class OpenMultimediaScreen extends Screen {
             final int y = this.top;
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
-            final boolean search = searchMode();
-            final String value = ctx.customUrlText != null ? ctx.customUrlText : "";
+            final boolean search = OpenMultimediaScreen.this.searchMode();
+            final String value = OpenMultimediaScreen.this.ctx.customUrlText != null ? OpenMultimediaScreen.this.ctx.customUrlText : "";
             if (this.focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.28f);
             canvas.fill(x, y, w, h, AppTheme.BG_2);
             canvas.stroke(x, y, w, h, this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
@@ -1219,12 +1219,12 @@ public class OpenMultimediaScreen extends Screen {
 
         @Override
         public boolean dispatchChar(final int codepoint) {
-            if (!this.focused || loading || ctx.ctrlDown) return false;
+            if (!this.focused || OpenMultimediaScreen.this.loading || OpenMultimediaScreen.this.ctx.ctrlDown) return false;
             if (codepoint < 32 || codepoint == 127) return false;
-            ctx.customUrlText = (ctx.customUrlText == null ? "" : ctx.customUrlText)
+            OpenMultimediaScreen.this.ctx.customUrlText = (OpenMultimediaScreen.this.ctx.customUrlText == null ? "" : OpenMultimediaScreen.this.ctx.customUrlText)
                     + new String(Character.toChars(codepoint));
-            lastEditMs = System.currentTimeMillis();
-            ensurePreviewMRL();
+            OpenMultimediaScreen.this.lastEditMs = System.currentTimeMillis();
+            OpenMultimediaScreen.this.ensurePreviewMRL();
             return true;
         }
 
@@ -1233,12 +1233,12 @@ public class OpenMultimediaScreen extends Screen {
             // BACKSPACE/DELETE ARE FIELD KEYS ONLY WHILE FOCUSED (EDIT ON PRESS+REPEAT, RELEASE SWALLOWED);
             // EVERYTHING ELSE FALLS THROUGH TO THE SCREEN SHORTCUTS
             if (!this.focused || (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE)) return false;
-            if (action != GLFW_RELEASE && ctx.customUrlText != null && !ctx.customUrlText.isEmpty()) {
-                ctx.customUrlText = ctx.ctrlDown
-                        ? deleteLastWord(ctx.customUrlText)
-                        : ctx.customUrlText.substring(0, ctx.customUrlText.length() - 1);
-                lastEditMs = System.currentTimeMillis();
-                ensurePreviewMRL();
+            if (action != GLFW_RELEASE && OpenMultimediaScreen.this.ctx.customUrlText != null && !OpenMultimediaScreen.this.ctx.customUrlText.isEmpty()) {
+                OpenMultimediaScreen.this.ctx.customUrlText = OpenMultimediaScreen.this.ctx.ctrlDown
+                        ? OpenMultimediaScreen.this.deleteLastWord(OpenMultimediaScreen.this.ctx.customUrlText)
+                        : OpenMultimediaScreen.this.ctx.customUrlText.substring(0, OpenMultimediaScreen.this.ctx.customUrlText.length() - 1);
+                OpenMultimediaScreen.this.lastEditMs = System.currentTimeMillis();
+                OpenMultimediaScreen.this.ensurePreviewMRL();
             }
             return true;
         }
@@ -1304,7 +1304,7 @@ public class OpenMultimediaScreen extends Screen {
             final int thumbX = x + 6;
             final int thumbY = y + 4;
             // MEDIA TEXTURE READ PER DRAW; ASPECT-FIT NEVER OVERFLOWS THE CELL, SO THE LIST CLIP SUFFICES
-            final MediaPlayer player = thumbPlayer(this.result.thumbnail());
+            final MediaPlayer player = OpenMultimediaScreen.this.thumbPlayer(this.result.thumbnail());
             if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
                 final float imgAspect = (float) player.width() / player.height();
                 final float boxAspect = (float) thumbW / thumbH;

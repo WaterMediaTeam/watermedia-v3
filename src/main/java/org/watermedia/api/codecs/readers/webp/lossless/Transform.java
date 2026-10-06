@@ -21,7 +21,7 @@ record Transform(
     }
 
     /** Maps a two-bit WebP transform code to its type; an out-of-range code throws. */
-    public static Type typeof(int i) {
+    public static Type typeof(final int i) {
         return Type.VALUES[i];
     }
 

@@ -42,7 +42,6 @@ public final class ParentFrame extends Group<ParentFrame> {
                 case TOP, FILL -> cy + child.margin.top();
                 case BOTTOM -> cy + ch - h - child.margin.bottom();
                 case LEFT, RIGHT, CENTER -> cy + (ch - h) / 2;
-                default -> cy + (ch - h) / 2;
             };
             child.layout(childX, childY);
         }

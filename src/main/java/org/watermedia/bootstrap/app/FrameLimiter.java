@@ -35,7 +35,7 @@ final class FrameLimiter {
     }
 
     void syncBeforeFrame() {
-        long now = System.nanoTime();
+        final long now = System.nanoTime();
         if (this.nextFrameNanos == 0L) {
             this.nextFrameNanos = now;
         }

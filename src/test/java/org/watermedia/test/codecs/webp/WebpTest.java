@@ -24,6 +24,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
@@ -156,7 +157,7 @@ public class WebpTest {
                 try (final ImageReader reader = CodecsAPI.decodeImage(source, PixelFormat.BGRA)) {
                     final long[] delays = reader.delays().clone();
                     final List<byte[]> first = decodeFrameHashes(reader);
-                    assertTrue(!first.isEmpty(), "No frames decoded for " + name);
+                    assertFalse(first.isEmpty(), "No frames decoded for " + name);
 
                     // FIRST RESET — REPLAY MUST BE BYTE-IDENTICAL AND METADATA MUST SURVIVE
                     assertTrue(reader.reset(), "reset() must be supported for " + name);
@@ -226,7 +227,7 @@ public class WebpTest {
                     .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".webp"))
                     .sorted()
                     .toList();
-            assertTrue(!images.isEmpty(), "Test folder is empty: " + dir);
+            assertFalse(images.isEmpty(), "Test folder is empty: " + dir);
             return images;
         } catch (final IOException e) {
             throw new UncheckedIOException("Failed to enumerate WebP fixtures in " + dir, e);

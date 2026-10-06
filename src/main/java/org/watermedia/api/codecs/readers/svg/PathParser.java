@@ -167,7 +167,7 @@ final class PathParser {
         }
 
         final double sign = (large != sweep) ? 1.0 : -1.0;
-        double num = rxSq * rySq - rxSq * y1p * y1p - rySq * x1p * x1p;
+        final double num = rxSq * rySq - rxSq * y1p * y1p - rySq * x1p * x1p;
         final double den = rxSq * y1p * y1p + rySq * x1p * x1p;
         final double co = den == 0 ? 0 : sign * Math.sqrt(Math.max(0, num / den));
         final double cxp = co * (rx * y1p / ry);
@@ -178,7 +178,7 @@ final class PathParser {
 
         final double ux = (x1p - cxp) / rx, uy = (y1p - cyp) / ry;
         final double vx = (-x1p - cxp) / rx, vy = (-y1p - cyp) / ry;
-        double theta1 = angle(1, 0, ux, uy);
+        final double theta1 = angle(1, 0, ux, uy);
         double dtheta = angle(ux, uy, vx, vy);
         if (!sweep && dtheta > 0) dtheta -= 2 * Math.PI;
         else if (sweep && dtheta < 0) dtheta += 2 * Math.PI;

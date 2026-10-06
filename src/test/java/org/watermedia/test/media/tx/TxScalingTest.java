@@ -188,7 +188,7 @@ public class TxScalingTest {
         @Test
         @DisplayName("Negative maxSize is rejected")
         void testNegativeMaxSizeRejected() {
-            final TxMediaPlayer player = newPlayer();
+            final TxMediaPlayer player = this.newPlayer();
             assertThrows(IllegalArgumentException.class, () -> player.maxSize(-1, 10));
             assertThrows(IllegalArgumentException.class, () -> player.maxSize(10, -1));
         }
@@ -196,7 +196,7 @@ public class TxScalingTest {
         @Test
         @DisplayName("Null LOD is rejected")
         void testNullLodRejected() {
-            final TxMediaPlayer player = newPlayer();
+            final TxMediaPlayer player = this.newPlayer();
             assertThrows(IllegalArgumentException.class, () -> player.lod(null));
         }
     }

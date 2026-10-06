@@ -169,7 +169,7 @@ final class Predictor {
 
     // CLAMP VALUE TO 0-255
     private static int clamp(final int v) {
-        return (v < 0) ? 0 : (v > 255) ? 255 : v;
+        return Math.max(0, Math.min(255, v));
     }
 
     // CLAMP_ADD_SUBTRACT_FULL

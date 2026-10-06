@@ -119,7 +119,7 @@ public class SvgTest {
             // LEGITIMATELY MONOCHROME (e.g. a black line-art silhouette), SO ONLY COVERAGE IS ASSERTED.
             final double coverage = (double) opaque / (w * h);
             assertTrue(coverage > 0.01, name + " rendered almost nothing (coverage=" + coverage + ")");
-            assertTrue(!colors.isEmpty(), name + " produced no opaque pixels");
+            assertFalse(colors.isEmpty(), name + " produced no opaque pixels");
         }
     }
 
@@ -144,11 +144,7 @@ public class SvgTest {
     @Test
     @DisplayName("Pathologically deep nesting fails with IOException, not StackOverflowError/hang")
     void deepNestingIsBounded() {
-        final StringBuilder b = new StringBuilder();
-        for (int i = 0; i < 4000; i++) b.append("<g>");
-        b.append("<rect width=\"10\" height=\"10\"/>");
-        for (int i = 0; i < 4000; i++) b.append("</g>");
-        final byte[] svg = svg("0 0 100 100", b.toString());
+        final byte[] svg = svg("0 0 100 100", "<g>".repeat(4000) + "<rect width=\"10\" height=\"10\"/>" + "</g>".repeat(4000));
         assertTimeoutPreemptively(Duration.ofSeconds(10), () ->
                 assertThrows(IOException.class, () -> CodecsAPI.decodeImage(svg)));
     }
@@ -391,7 +387,7 @@ public class SvgTest {
                     .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".svg"))
                     .sorted()
                     .toList();
-            assertTrue(!files.isEmpty(), "No SVG fixtures under " + Fixtures.SVG_DIR);
+            assertFalse(files.isEmpty(), "No SVG fixtures under " + Fixtures.SVG_DIR);
             return files;
         } catch (final IOException e) {
             throw new UncheckedIOException("Failed to list SVG fixtures", e);

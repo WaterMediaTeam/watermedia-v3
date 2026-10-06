@@ -1249,8 +1249,6 @@ public final class VP8LossyDecoder {
     enum SubMode {
         B_DC, B_TM, B_VE, B_HE, B_LD, B_RD, B_VR, B_VL, B_HD, B_HU;
 
-        static final SubMode[] VALUES = values();
-
         static SubMode fromMBMode(final MBMode mode) {
             return switch (mode) {
                 case DC -> B_DC;

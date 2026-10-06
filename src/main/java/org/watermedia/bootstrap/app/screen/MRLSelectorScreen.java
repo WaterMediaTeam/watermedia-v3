@@ -256,7 +256,7 @@ public final class MRLSelectorScreen extends Screen {
         this.filtered = next;
         this.list.items(next);
         final int idx = prev == null ? 0 : next.indexOf(prev);
-        this.list.selection(idx < 0 ? 0 : idx);
+        this.list.selection(Math.max(0, idx));
     }
 
     // THE ITEM DRIVING THE PREVIEW/ACTIONS: THE SELECTED ROW, OR THE FIRST ITEM WHEN THE FILTER HIDES EVERYTHING
@@ -558,7 +558,7 @@ public final class MRLSelectorScreen extends Screen {
         final int viewTop = this.list.top();
         final int viewBottom = viewTop + this.list.measuredHeight();
         for (final Element<?> child: this.list.children()) {
-            if (!(child instanceof MediaRow row) || row.measuredHeight() <= 0) continue;
+            if (!(child instanceof final MediaRow row) || row.measuredHeight() <= 0) continue;
             final int rowTop = row.top();
             if (rowTop + row.measuredHeight() > viewTop && rowTop < viewBottom) active.add(row.uri.name());
         }
@@ -728,7 +728,7 @@ public final class MRLSelectorScreen extends Screen {
         private SelectorPane(final Parent leftCol) {
             this.leftCol = leftCol;
             this.add(leftCol);
-            this.add(preview);
+            this.add(MRLSelectorScreen.this.preview);
         }
 
         @Override
@@ -736,8 +736,8 @@ public final class MRLSelectorScreen extends Screen {
             this.leftW = Math.min(380, Math.max(320, innerAvailWidth / 3));
             this.listH = Math.max(0, innerAvailHeight - 20);
             this.leftCol.measure(this.leftW, this.listH);
-            if (preview.visible()) {
-                preview.measure(Math.max(0, innerAvailWidth - this.leftW - 36), this.listH);
+            if (MRLSelectorScreen.this.preview.visible()) {
+                MRLSelectorScreen.this.preview.measure(Math.max(0, innerAvailWidth - this.leftW - 36), this.listH);
             }
             this.contentWidth = innerAvailWidth;
             this.contentHeight = innerAvailHeight;
@@ -746,13 +746,13 @@ public final class MRLSelectorScreen extends Screen {
         @Override
         protected void onLayout() {
             this.leftCol.layout(this.innerLeft(), this.innerTop() + 10);
-            if (preview.visible()) preview.layout(this.innerLeft() + this.leftW + 18, this.innerTop() + 10);
+            if (MRLSelectorScreen.this.preview.visible()) MRLSelectorScreen.this.preview.layout(this.innerLeft() + this.leftW + 18, this.innerTop() + 10);
         }
 
         @Override
         protected void onDraw(final Canvas canvas) {
             // LEFT COLUMN PLATE + DIVIDER — ONLY WHEN THE GROUP HAS ITEMS (LEGACY CHROME ORDER)
-            if (ctx.selectedGroup != null && ctx.selectedGroup.uris().length > 0) {
+            if (MRLSelectorScreen.this.ctx.selectedGroup != null && MRLSelectorScreen.this.ctx.selectedGroup.uris().length > 0) {
                 final int y = this.top + 10;
                 canvas.fill(this.left, y, this.leftW, this.listH, AppTheme.alpha(AppTheme.BG_1, 150));
                 canvas.line(this.left + this.leftW, y, this.left + this.leftW, y + this.listH, AppTheme.STROKE_BRIGHT, 1f);
@@ -780,21 +780,21 @@ public final class MRLSelectorScreen extends Screen {
                     .accent(AppTheme.NEON_LIGHT).textColor(AppTheme.NEON_LIGHT)
                     .size(154, 38)
                     .onClick(b -> {
-                        final AppContext.TestURI sel = selectedUri();
+                        final AppContext.TestURI sel = MRLSelectorScreen.this.selectedUri();
                         if (sel != null) {
                             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(sel.uri()), null);
-                            ctx.playSelectionSound();
+                            MRLSelectorScreen.this.ctx.playSelectionSound();
                         }
                     });
             this.playBtn = new Button("PLAY").icon("play").subText("ENTER")
                     .accent(AppTheme.GREEN).textColor(AppTheme.GREEN)
                     .size(130, 38)
                     .onClick(b -> {
-                        final AppContext.TestURI sel = selectedUri();
+                        final AppContext.TestURI sel = MRLSelectorScreen.this.selectedUri();
                         if (sel != null) {
-                            final MRL mrl = mrlFor(sel);
-                            if (regenerable(mrl)) reloadMRL(sel);
-                            else handleSelect(sel);
+                            final MRL mrl = MRLSelectorScreen.this.mrlFor(sel);
+                            if (regenerable(mrl)) MRLSelectorScreen.this.reloadMRL(sel);
+                            else MRLSelectorScreen.this.handleSelect(sel);
                         }
                     });
             this.add(this.crt);
@@ -804,11 +804,11 @@ public final class MRLSelectorScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final AppContext.URIGroup group = ctx == null ? null : ctx.selectedGroup;
-            final AppContext.TestURI sel = group != null && group.uris().length > 0 ? selectedUri() : null;
+            final AppContext.URIGroup group = MRLSelectorScreen.this.ctx == null ? null : MRLSelectorScreen.this.ctx.selectedGroup;
+            final AppContext.TestURI sel = group != null && group.uris().length > 0 ? MRLSelectorScreen.this.selectedUri() : null;
             this.visible = sel != null;
             if (sel == null) return;
-            final MRL mrl = mrlFor(sel);
+            final MRL mrl = MRLSelectorScreen.this.mrlFor(sel);
             final boolean regen = regenerable(mrl);
             final String playLabel = regen ? "RELOAD" : "PLAY";
             final String playIcon = regen ? "reload" : "play";
@@ -817,7 +817,7 @@ public final class MRLSelectorScreen extends Screen {
             this.playBtn.label(playLabel).icon(playIcon)
                     .accent(playColor).textColor(playColor)
                     .enabled(regen || loaded(mrl))
-                    .width(Math.max(130, Button.width(text, playLabel, "ENTER", playIcon, 12)));
+                    .width(Math.max(130, Button.width(MRLSelectorScreen.this.text, playLabel, "ENTER", playIcon, 12)));
         }
 
         @Override
@@ -845,12 +845,12 @@ public final class MRLSelectorScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final AppContext.TestURI sel = selectedUri();
+            final AppContext.TestURI sel = MRLSelectorScreen.this.selectedUri();
             if (sel == null) return;
             final int x = this.left;
             final int w = this.measuredWidth;
             tvFrame(canvas, x, this.tvY, w, this.tvH, true);
-            drawThumb(canvas, sel, x + 8, this.tvY + 8, w - 16, this.tvH - 16, false);
+            MRLSelectorScreen.this.drawThumb(canvas, sel, x + 8, this.tvY + 8, w - 16, this.tvH - 16, false);
 
             // METADATA PANEL PLATE + AMBER CORNER TRIANGLES (PORT OF THE LEGACY PANEL CHROME)
             canvas.gradientV(x, this.panelY, w, this.panelH,
@@ -859,8 +859,8 @@ public final class MRLSelectorScreen extends Screen {
             triangle(canvas, x - 1, this.panelY - 1, 10, true);
             triangle(canvas, x + w - 9, this.panelY + this.panelH - 9, 10, false);
 
-            final MRL mrl = mrlOf(sel);
-            final String title = text.truncateToWidth(sel.name().toUpperCase(Locale.ROOT), w - 410, AppTheme.TEXT_SECTION, Font.BOLD);
+            final MRL mrl = MRLSelectorScreen.this.mrlOf(sel);
+            final String title = MRLSelectorScreen.this.text.truncateToWidth(sel.name().toUpperCase(Locale.ROOT), w - 410, AppTheme.TEXT_SECTION, Font.BOLD);
             canvas.text(title, x + 16, this.panelY + 14, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION, true);
             final MediaType type = firstMediaType(mrl);
             if (type != null) {
@@ -869,24 +869,24 @@ public final class MRLSelectorScreen extends Screen {
                         : type == MediaType.VIDEO ? AppTheme.AMBER
                         : type == MediaType.AUDIO ? AppTheme.CYAN
                         : AppTheme.TEXT_FAINT;
-                final int tagX = x + 28 + text.widthBold(title, AppTheme.TEXT_SECTION);
+                final int tagX = x + 28 + MRLSelectorScreen.this.text.widthBold(title, AppTheme.TEXT_SECTION);
                 final int tagY = this.panelY + 12;
-                final int tagW = text.width(type.name(), AppTheme.TEXT_BODY) + 22;
+                final int tagW = MRLSelectorScreen.this.text.width(type.name(), AppTheme.TEXT_BODY) + 22;
                 canvas.fill(tagX, tagY, tagW, 22, AppTheme.alpha(AppTheme.BG_1, 188));
                 canvas.stroke(tagX, tagY, tagW, 22, tc, 1f);
                 canvas.glow(tagX, tagY, tagW, 22, 0f, tc, 0.16f);
                 canvas.text(type.name(), tagX + 11,
-                        tagY + Math.max(0, (22 - text.glyphHeight(AppTheme.TEXT_BODY)) / 2),
+                        tagY + Math.max(0, (22 - MRLSelectorScreen.this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2),
                         tc, AppTheme.TEXT_BODY, false);
             }
-            canvas.text(text.truncateToWidth(sel.uri(), w - 270, AppTheme.TEXT_BODY),
+            canvas.text(MRLSelectorScreen.this.text.truncateToWidth(sel.uri(), w - 270, AppTheme.TEXT_BODY),
                     x + 16, this.panelY + 42, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
 
             final Color sc = statusColor(mrl);
             final int pipY = this.panelY + 72;
             pip(canvas, x + 18, pipY, 10, sc, true);
             canvas.text(bestQuality(mrl) + " - " + statusLabel(mrl), x + 36,
-                    pipY + (10 - text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, sc, AppTheme.TEXT_BODY, false);
+                    pipY + (10 - MRLSelectorScreen.this.text.glyphHeight(AppTheme.TEXT_BODY)) / 2f, sc, AppTheme.TEXT_BODY, false);
             super.onDraw(canvas); // CRT OVER THE THUMBNAIL, THEN THE COPY/PLAY BUTTONS
         }
     }
@@ -922,7 +922,7 @@ public final class MRLSelectorScreen extends Screen {
             final int y = this.top;
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
-            final MRL mrl = mrlOf(this.uri);
+            final MRL mrl = MRLSelectorScreen.this.mrlOf(this.uri);
             final Color stateColor = statusColor(mrl);
             if (this.selected) {
                 canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON, 26));
@@ -930,13 +930,13 @@ public final class MRLSelectorScreen extends Screen {
                 canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.20f);
             }
             tvFrame(canvas, x + 6, y + 8, 70, 46, this.selected);
-            drawThumb(canvas, this.uri, x + 12, y + 14, 58, 34, true);
+            MRLSelectorScreen.this.drawThumb(canvas, this.uri, x + 12, y + 14, 58, 34, true);
             final int textX = x + 88;
             final int statusX = x + w - 19;
             final int maxTextW = Math.max(40, statusX - textX - 14);
-            canvas.text(text.truncateToWidth(this.uri.name().toUpperCase(Locale.ROOT), maxTextW, AppTheme.TEXT_BUTTON, Font.BOLD),
+            canvas.text(MRLSelectorScreen.this.text.truncateToWidth(this.uri.name().toUpperCase(Locale.ROOT), maxTextW, AppTheme.TEXT_BUTTON, Font.BOLD),
                     textX, y + 12, this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, AppTheme.TEXT_BUTTON, true);
-            canvas.text(text.truncateToWidth(this.uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
+            canvas.text(MRLSelectorScreen.this.text.truncateToWidth(this.uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
                     textX, y + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
             pip(canvas, statusX, y + 25, 8, stateColor, false);
             super.onDraw(canvas); // MINI CRT OVER THE THUMB WELL

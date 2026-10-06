@@ -770,17 +770,17 @@ public class HomeScreen extends Screen {
             this.actionElements.clear();
             this.mediaElements.clear();
             this.entElements.clear();
-            for (int i = 0; i < actions.size(); i++) {
+            for (int i = 0; i < HomeScreen.this.actions.size(); i++) {
                 final ActionTile tile = new ActionTile(i);
                 this.actionElements.add(tile);
                 this.add(tile);
             }
-            for (int i = 0; i < mediaTests.size(); i++) {
+            for (int i = 0; i < HomeScreen.this.mediaTests.size(); i++) {
                 final MediaTile tile = new MediaTile(i);
                 this.mediaElements.add(tile);
                 this.add(tile);
             }
-            for (int i = 0; i < entertainment.size(); i++) {
+            for (int i = 0; i < HomeScreen.this.entertainment.size(); i++) {
                 final EntertainmentTile tile = new EntertainmentTile(i);
                 this.entElements.add(tile);
                 this.add(tile);
@@ -862,7 +862,7 @@ public class HomeScreen extends Screen {
 
             // THE TOOLTIP HANGS 8px UNDER ITS ANCHOR TILE (THE ELEMENT BOX INCLUDES THE 10px NOTCH ON TOP)
             if (this.tip != null && this.tip.visible()) {
-                final int idx = actionIndex(Action.UPLOAD_LOGS);
+                final int idx = HomeScreen.this.actionIndex(Action.UPLOAD_LOGS);
                 if (idx >= 0 && idx < this.actionElements.size()) {
                     final ActionTile anchor = this.actionElements.get(idx);
                     this.tip.layout(anchor.left(), anchor.top() + anchor.measuredHeight() + 8 - UploadTip.NOTCH_H);
@@ -872,10 +872,10 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            this.head(canvas, "Actions", actions.size() + " available", this.innerLeft(), this.innerTop());
-            this.head(canvas, "Media tests", mediaTests.size() + " categories", this.rightXAbs, this.innerTop());
+            this.head(canvas, "Actions", HomeScreen.this.actions.size() + " available", this.innerLeft(), this.innerTop());
+            this.head(canvas, "Media tests", HomeScreen.this.mediaTests.size() + " categories", this.rightXAbs, this.innerTop());
             if (this.entHeadVisible) {
-                this.head(canvas, "Entertainment", entertainment.size() + " available", this.rightXAbs, this.entYAbs);
+                this.head(canvas, "Entertainment", HomeScreen.this.entertainment.size() + " available", this.rightXAbs, this.entYAbs);
             }
             super.onDraw(canvas); // TILES, THEN THE TOOLTIP ON TOP
         }
@@ -907,13 +907,13 @@ public class HomeScreen extends Screen {
         private ActionTile(final int index) {
             this.index = index;
             this.onHover(v -> {
-                if (selectedPanel != 0 || selectedAction != this.index) {
-                    selectedPanel = 0;
-                    selectedAction = this.index;
+                if (HomeScreen.this.selectedPanel != 0 || HomeScreen.this.selectedAction != this.index) {
+                    HomeScreen.this.selectedPanel = 0;
+                    HomeScreen.this.selectedAction = this.index;
                     HomeScreen.this.ctx.playSelectionSound();
                 }
             });
-            this.onClick(v -> handleSelect(actions.get(this.index)));
+            this.onClick(v -> HomeScreen.this.handleSelect(HomeScreen.this.actions.get(this.index)));
         }
 
         private Color accentColor(final MenuEntry entry, final boolean enabled) {
@@ -926,10 +926,10 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            if (this.index >= actions.size()) return;
-            final MenuEntry entry = actions.get(this.index);
-            final boolean selected = selectedPanel == 0 && selectedAction == this.index;
-            final boolean enabled = actionEnabled(entry);
+            if (this.index >= HomeScreen.this.actions.size()) return;
+            final MenuEntry entry = HomeScreen.this.actions.get(this.index);
+            final boolean selected = HomeScreen.this.selectedPanel == 0 && HomeScreen.this.selectedAction == this.index;
+            final boolean enabled = HomeScreen.this.actionEnabled(entry);
             final Color accent = this.accentColor(entry, enabled);
             this.background(!enabled
                     ? TILE_BG_DISABLED
@@ -947,9 +947,9 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final MenuEntry entry = actions.get(this.index);
-            final boolean selected = selectedPanel == 0 && selectedAction == this.index;
-            final boolean enabled = actionEnabled(entry);
+            final MenuEntry entry = HomeScreen.this.actions.get(this.index);
+            final boolean selected = HomeScreen.this.selectedPanel == 0 && HomeScreen.this.selectedAction == this.index;
+            final boolean enabled = HomeScreen.this.actionEnabled(entry);
             final Color accent = this.accentColor(entry, enabled);
             final Color textColor = !enabled
                     ? AppTheme.TEXT_FAINT
@@ -962,7 +962,7 @@ public class HomeScreen extends Screen {
             final int h = this.measuredHeight;
             // EXTRA SELECTION FLARE ON TOP OF THE DECOR GLOW (LEGACY STACKED BOTH)
             if (selected && enabled) canvas.glow(x, y, w, h, 0f, accent, 0.35f);
-            PixelIcon.draw(actionIcon(entry.action()), x + 14, y + 17, 18, accent);
+            PixelIcon.draw(HomeScreen.this.actionIcon(entry.action()), x + 14, y + 17, 18, accent);
             canvas.text(entry.label().toUpperCase(Locale.ROOT), x + 48,
                     y + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BUTTON, true)) / 2),
                     textColor, AppTheme.TEXT_BUTTON, true);
@@ -983,18 +983,18 @@ public class HomeScreen extends Screen {
         private MediaTile(final int index) {
             this.index = index;
             this.onHover(v -> {
-                if (selectedPanel != 1 || selectedMedia != this.index) {
-                    selectedPanel = 1;
-                    selectedMedia = this.index;
+                if (HomeScreen.this.selectedPanel != 1 || HomeScreen.this.selectedMedia != this.index) {
+                    HomeScreen.this.selectedPanel = 1;
+                    HomeScreen.this.selectedMedia = this.index;
                     HomeScreen.this.ctx.playSelectionSound();
                 }
             });
-            this.onClick(v -> handleSelect(mediaTests.get(this.index)));
+            this.onClick(v -> HomeScreen.this.handleSelect(HomeScreen.this.mediaTests.get(this.index)));
         }
 
         @Override
         protected void onUpdate() {
-            final boolean selected = selectedPanel == 1 && selectedMedia == this.index;
+            final boolean selected = HomeScreen.this.selectedPanel == 1 && HomeScreen.this.selectedMedia == this.index;
             this.background(selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
             this.border(selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, 2f);
             this.glow(selected ? AppTheme.NEON : null, selected ? 0.28f : 0f);
@@ -1002,7 +1002,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final MenuEntry entry = mediaTests.get(this.index);
+            final MenuEntry entry = HomeScreen.this.mediaTests.get(this.index);
             final Color folderColor = categoryColor(entry.groupIndex());
             final int x = this.left;
             final int y = this.top;
@@ -1025,18 +1025,18 @@ public class HomeScreen extends Screen {
         private EntertainmentTile(final int index) {
             this.index = index;
             this.onHover(v -> {
-                if (selectedPanel != 2 || selectedEntertainment != this.index) {
-                    selectedPanel = 2;
-                    selectedEntertainment = this.index;
+                if (HomeScreen.this.selectedPanel != 2 || HomeScreen.this.selectedEntertainment != this.index) {
+                    HomeScreen.this.selectedPanel = 2;
+                    HomeScreen.this.selectedEntertainment = this.index;
                     HomeScreen.this.ctx.playSelectionSound();
                 }
             });
-            this.onClick(v -> handleSelect(entertainment.get(this.index)));
+            this.onClick(v -> HomeScreen.this.handleSelect(HomeScreen.this.entertainment.get(this.index)));
         }
 
         @Override
         protected void onUpdate() {
-            final boolean selected = selectedPanel == 2 && selectedEntertainment == this.index;
+            final boolean selected = HomeScreen.this.selectedPanel == 2 && HomeScreen.this.selectedEntertainment == this.index;
             this.background(selected ? AppTheme.alpha(AppTheme.NEON_DARK, 78) : AppTheme.alpha(AppTheme.BG_2, 220));
             this.border(selected ? AppTheme.GREEN : AppTheme.STROKE_BRIGHT, 2f);
             this.glow(selected ? AppTheme.GREEN : null, selected ? 0.30f : 0f);
@@ -1044,8 +1044,8 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final MenuEntry entry = entertainment.get(this.index);
-            final boolean selected = selectedPanel == 2 && selectedEntertainment == this.index;
+            final MenuEntry entry = HomeScreen.this.entertainment.get(this.index);
+            final boolean selected = HomeScreen.this.selectedPanel == 2 && HomeScreen.this.selectedEntertainment == this.index;
             final Color accent = selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT;
             final String label = entry.label().toUpperCase(Locale.ROOT);
             final int iconSize = 34;
@@ -1070,8 +1070,8 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final int idx = actionIndex(Action.UPLOAD_LOGS);
-            this.visible = idx >= 0 && selectedPanel == 0 && selectedAction == idx && !HomeScreen.this.ctx.upload.visible;
+            final int idx = HomeScreen.this.actionIndex(Action.UPLOAD_LOGS);
+            this.visible = idx >= 0 && HomeScreen.this.selectedPanel == 0 && HomeScreen.this.selectedAction == idx && !HomeScreen.this.ctx.upload.visible;
         }
 
         @Override
@@ -1263,7 +1263,7 @@ public class HomeScreen extends Screen {
         public boolean dispatchKey(final int key, final int action) {
             if (!this.visible) return false;
             if (action == GLFW_RELEASE && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN)) {
-                moveRepoSelection(key == GLFW_KEY_UP ? -1 : 1);
+                HomeScreen.this.moveRepoSelection(key == GLFW_KEY_UP ? -1 : 1);
                 return true;
             }
             return super.dispatchKey(key, action);
@@ -1315,11 +1315,11 @@ public class HomeScreen extends Screen {
         @Override
         public boolean dispatchClick(final double mx, final double my) {
             if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
-            if (this.inSubmit(mx, my) && !repoTargets.isEmpty()) {
-                submitRepo(repoTargets.get(0), 0);
-            } else if (repoSelected != 0) {
+            if (this.inSubmit(mx, my) && !HomeScreen.this.repoTargets.isEmpty()) {
+                HomeScreen.this.submitRepo(HomeScreen.this.repoTargets.get(0), 0);
+            } else if (HomeScreen.this.repoSelected != 0) {
                 // THE BODY ONLY SELECTS; THE SUBMIT BUTTON OPENS THE ISSUE TRACKER
-                repoSelected = 0;
+                HomeScreen.this.repoSelected = 0;
                 HomeScreen.this.ctx.playSelectionSound();
                 this.invalidate();
             }
@@ -1342,9 +1342,9 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            if (repoTargets.isEmpty()) return;
-            final RepoTarget repo = repoTargets.get(0);
-            final boolean selected = repoSelected == 0;
+            if (HomeScreen.this.repoTargets.isEmpty()) return;
+            final RepoTarget repo = HomeScreen.this.repoTargets.get(0);
+            final boolean selected = HomeScreen.this.repoSelected == 0;
             final int x = this.left;
             final int y = this.top;
             final int w = this.measuredWidth;
@@ -1420,10 +1420,10 @@ public class HomeScreen extends Screen {
         public boolean dispatchClick(final double mx, final double my) {
             if (!this.visible || !this.enabled || !this.contains(mx, my)) return false;
             if (this.inSubmit(mx, my)) {
-                submitRepo(this.repo, this.targetIdx);
-            } else if (repoSelected != this.targetIdx) {
+                HomeScreen.this.submitRepo(this.repo, this.targetIdx);
+            } else if (HomeScreen.this.repoSelected != this.targetIdx) {
                 // CARD BODY ONLY SELECTS; THE SUBMIT BUTTON OPENS THE ISSUE TRACKER
-                repoSelected = this.targetIdx;
+                HomeScreen.this.repoSelected = this.targetIdx;
                 HomeScreen.this.ctx.playSelectionSound();
                 this.invalidate();
             }
@@ -1446,7 +1446,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final boolean sel = repoSelected == this.targetIdx;
+            final boolean sel = HomeScreen.this.repoSelected == this.targetIdx;
             final Color accent = this.repo.accent();
             final int x = this.left;
             final int y = this.top;

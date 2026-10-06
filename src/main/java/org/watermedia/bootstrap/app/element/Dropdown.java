@@ -244,7 +244,7 @@ public final class Dropdown extends Element<Dropdown> {
         ParentFrame top = null;
         Group<?> node = this.parent;
         while (node != null) {
-            if (node instanceof ParentFrame frame) top = frame;
+            if (node instanceof final ParentFrame frame) top = frame;
             node = node.parent;
         }
         return top != null ? top : this.parent;
@@ -289,8 +289,8 @@ public final class Dropdown extends Element<Dropdown> {
             final int availBelow = frameB - (anchorB + 4) - 4;
             final int availAbove = (anchorT - 4) - (frameT + 4);
             final int minH = ROW_H + PAD * 2;
-            int panelY;
-            int panelH;
+            final int panelY;
+            final int panelH;
             boolean flip = false;
             if (fullH <= availBelow || availBelow >= availAbove) {
                 panelY = anchorB + 4;

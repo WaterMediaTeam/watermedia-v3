@@ -225,8 +225,8 @@ public class WaterMediaApp {
 
         final Throwable t = failure[0];
         if (t != null) {
-            if (t instanceof RuntimeException re) throw re;
-            if (t instanceof Error err) throw err;
+            if (t instanceof final RuntimeException re) throw re;
+            if (t instanceof final Error err) throw err;
             throw new RuntimeException(t);
         }
     }
@@ -1487,11 +1487,11 @@ public class WaterMediaApp {
                 if (name == null) continue;
                 final String s = name.getString();
                 if (s != null && !s.isBlank()) {
-                    if (sb.length() > 0) sb.append(", ");
+                    if (!sb.isEmpty()) sb.append(", ");
                     sb.append(s);
                 }
             }
-            return sb.length() == 0 ? "none" : sb.toString();
+            return sb.isEmpty() ? "none" : sb.toString();
         } catch (final Throwable t) {
             return "unknown";
         }
@@ -1570,10 +1570,10 @@ public class WaterMediaApp {
         try {
             final StringBuilder sb = new StringBuilder();
             for (final var provider: ServiceLoader.load(AppBootstrap.Extension.class).stream().toList()) {
-                if (sb.length() > 0) sb.append(", ");
+                if (!sb.isEmpty()) sb.append(", ");
                 sb.append(provider.type().getSimpleName());
             }
-            return sb.length() == 0 ? "none" : sb.toString();
+            return sb.isEmpty() ? "none" : sb.toString();
         } catch (final Throwable t) {
             return "unknown";
         }
@@ -1687,7 +1687,7 @@ public class WaterMediaApp {
     private static String systemRam() {
         try {
             final var bean = ManagementFactory.getOperatingSystemMXBean();
-            if (bean instanceof OperatingSystemMXBean sun) {
+            if (bean instanceof final OperatingSystemMXBean sun) {
                 return sun.getTotalMemorySize() / 1024 / 1024 + " MB";
             }
         } catch (final Throwable ignored) {

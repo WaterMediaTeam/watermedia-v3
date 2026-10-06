@@ -256,7 +256,7 @@ public final class RegionSelectorScreen extends Screen {
             canvas.text("REGIONS", headX + 18,
                     headY + Math.max(0, (21 - text.glyphHeightBold(AppTheme.TEXT_SECTION)) / 2),
                     AppTheme.NEON, AppTheme.TEXT_SECTION, true);
-            canvas.text(optionCount() + " AVAILABLE",
+            canvas.text(RegionSelectorScreen.this.optionCount() + " AVAILABLE",
                     headX + 30 + text.widthBold("REGIONS", AppTheme.TEXT_SECTION),
                     headY + Math.max(0, (21 - text.glyphHeight(AppTheme.TEXT_BODY)) / 2),
                     AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);

@@ -1316,7 +1316,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public long duration() {
-        return this.knownDuration > 0L ? this.knownDuration : 0L;
+        return Math.max(0L, this.knownDuration);
     }
 
     @Override

@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -168,7 +169,7 @@ public class CodecsApiContractTest {
                 assertEquals(List.of(PNG_AUTHOR_VALUE), metadata.authors());
                 assertNull(metadata.description());
                 assertNotNull(metadata.values());
-                assertTrue(metadata.value(CodecsAPI.PNG_METAKEY_TEXT) instanceof Map<?, ?>);
+                assertInstanceOf(Map.class, metadata.value(CodecsAPI.PNG_METAKEY_TEXT));
             }
         }
 

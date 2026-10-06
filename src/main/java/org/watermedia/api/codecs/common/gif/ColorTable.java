@@ -9,7 +9,7 @@ public record ColorTable(int size, int[] colors) implements IChunk {
     public static final int MAX_COLORS = 256;
 
     /** Reads {@code size} RGB triples (up to {@link #MAX_COLORS}) as opaque ARGB colors. */
-    public static ColorTable read(int size, ByteBuffer buffer) throws XCodecException {
+    public static ColorTable read(final int size, final ByteBuffer buffer) throws XCodecException {
         // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
         if (size < 0 || size > MAX_COLORS) {
             throw new XCodecException("Color table size must be between 0 and " + MAX_COLORS);

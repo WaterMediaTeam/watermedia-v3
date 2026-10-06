@@ -110,7 +110,7 @@ public final class WEBPReader extends ImageReader {
             case RiffChunk.VP8 -> {
                 this.vp8Data = readPaddedChunkBody(this.data, first.size);
                 this.bitstreamFourCC = RiffChunk.VP8;
-                int[] dim = parseVP8Dims(this.vp8Data);
+                final int[] dim = parseVP8Dims(this.vp8Data);
                 this.canvasWidth = dim[0];
                 this.canvasHeight = dim[1];
                 this.animated = false;
@@ -119,7 +119,7 @@ public final class WEBPReader extends ImageReader {
             case RiffChunk.VP8L -> {
                 this.vp8Data = readPaddedChunkBody(this.data, first.size);
                 this.bitstreamFourCC = RiffChunk.VP8L;
-                int[] dim = parseVP8LDims(this.vp8Data, 0, this.vp8Data.length);
+                final int[] dim = parseVP8LDims(this.vp8Data, 0, this.vp8Data.length);
                 this.canvasWidth = dim[0];
                 this.canvasHeight = dim[1];
                 this.hasAlpha = dim[2] != 0;

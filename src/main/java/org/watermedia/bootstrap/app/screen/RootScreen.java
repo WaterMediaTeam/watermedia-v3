@@ -113,7 +113,7 @@ public final class RootScreen {
     public boolean continuous() {
         for (final Element<?> child: this.centerSlot.children()) {
             if (!child.visible()) continue;
-            if (child instanceof Screen screen && screen.continuous()) return true;
+            if (child instanceof final Screen screen && screen.continuous()) return true;
         }
         return false;
     }

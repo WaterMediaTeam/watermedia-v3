@@ -48,16 +48,13 @@ import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * MediaPlayer implementation using FFmpeg with multi-threaded architecture.
- *
- * 4 internal threads: a lifecycle/consumption thread plus demux, video decode and
+ * <p>4 internal threads: a lifecycle/consumption thread plus demux, video decode and
  * audio decode threads that produce decoded frames into thread-safe queues. The
  * lifecycle thread consumes those decoded frames itself.
- *
- * Video frames are uploaded to GFXEngine as native YUV planes whenever the pixel
+ * <p>Video frames are uploaded to GFXEngine as native YUV planes whenever the pixel
  * format is directly supported (YUV420P, NV12, etc.), avoiding CPU-side sws_scale.
  * For unsupported formats, sws_scale to BGRA is used as a fallback.
- *
- * When {@link #maxSize(int, int)} or a {@link LodLevel} below MAX is active, frames
+ * <p>When {@link #maxSize(int, int)} or a {@link LodLevel} below MAX is active, frames
  * are downscaled with sws_scale before upload — in the native pixel format when
  * supported as sws output, otherwise as BGRA. The target is resolved per frame, so
  * LOD changes apply on the fly without disturbing playback.

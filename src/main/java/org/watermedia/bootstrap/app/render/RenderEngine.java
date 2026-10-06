@@ -210,12 +210,12 @@ public final class RenderEngine {
 
     public void fill(final float x, final float y, final float w, final float h) {
         final Vector4f c = this.color;
-        put(0, x, y, 0f, 0f, c);
-        put(1, x + w, y, 0f, 0f, c);
-        put(2, x + w, y + h, 0f, 0f, c);
-        put(3, x, y, 0f, 0f, c);
-        put(4, x + w, y + h, 0f, 0f, c);
-        put(5, x, y + h, 0f, 0f, c);
+        this.put(0, x, y, 0f, 0f, c);
+        this.put(1, x + w, y, 0f, 0f, c);
+        this.put(2, x + w, y + h, 0f, 0f, c);
+        this.put(3, x, y, 0f, 0f, c);
+        this.put(4, x + w, y + h, 0f, 0f, c);
+        this.put(5, x, y + h, 0f, 0f, c);
         this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
@@ -233,24 +233,24 @@ public final class RenderEngine {
     public void fillGradientH(final float x, final float y, final float w, final float h,
                               final float r1, final float g1, final float b1, final float a1,
                               final float r2, final float g2, final float b2, final float a2) {
-        put(0, x, y, 0f, 0f, r1, g1, b1, a1);
-        put(1, x, y + h, 0f, 0f, r1, g1, b1, a1);
-        put(2, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
-        put(3, x, y, 0f, 0f, r1, g1, b1, a1);
-        put(4, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
-        put(5, x + w, y, 0f, 0f, r2, g2, b2, a2);
+        this.put(0, x, y, 0f, 0f, r1, g1, b1, a1);
+        this.put(1, x, y + h, 0f, 0f, r1, g1, b1, a1);
+        this.put(2, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
+        this.put(3, x, y, 0f, 0f, r1, g1, b1, a1);
+        this.put(4, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
+        this.put(5, x + w, y, 0f, 0f, r2, g2, b2, a2);
         this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
     public void fillGradientV(final float x, final float y, final float w, final float h,
                               final float r1, final float g1, final float b1, final float a1,
                               final float r2, final float g2, final float b2, final float a2) {
-        put(0, x, y, 0f, 0f, r1, g1, b1, a1);
-        put(1, x + w, y, 0f, 0f, r1, g1, b1, a1);
-        put(2, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
-        put(3, x, y, 0f, 0f, r1, g1, b1, a1);
-        put(4, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
-        put(5, x, y + h, 0f, 0f, r2, g2, b2, a2);
+        this.put(0, x, y, 0f, 0f, r1, g1, b1, a1);
+        this.put(1, x + w, y, 0f, 0f, r1, g1, b1, a1);
+        this.put(2, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
+        this.put(3, x, y, 0f, 0f, r1, g1, b1, a1);
+        this.put(4, x + w, y + h, 0f, 0f, r2, g2, b2, a2);
+        this.put(5, x, y + h, 0f, 0f, r2, g2, b2, a2);
         this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
@@ -259,9 +259,9 @@ public final class RenderEngine {
                              final float x3, final float y3,
                              final float r, final float g, final float b, final float a) {
         this.color(r, g, b, a);
-        put(0, x1, y1, 0f, 0f, this.color);
-        put(1, x2, y2, 0f, 0f, this.color);
-        put(2, x3, y3, 0f, 0f, this.color);
+        this.put(0, x1, y1, 0f, 0f, this.color);
+        this.put(1, x2, y2, 0f, 0f, this.color);
+        this.put(2, x3, y3, 0f, 0f, this.color);
         this.draw(DrawMode.TRIANGLES, 3, false);
     }
 
@@ -269,10 +269,10 @@ public final class RenderEngine {
                            final float r, final float g, final float b, final float a) {
         this.color(r, g, b, a);
         final int segments = 32;
-        put(0, cx, cy, 0f, 0f, this.color);
+        this.put(0, cx, cy, 0f, 0f, this.color);
         for (int i = 0; i <= segments; i++) {
             final float angle = (float) (i * 2 * Math.PI / segments);
-            put(1 + i, cx + (float) Math.cos(angle) * radius,
+            this.put(1 + i, cx + (float) Math.cos(angle) * radius,
                     cy + (float) Math.sin(angle) * radius,
                     0f, 0f, this.color);
         }
@@ -342,10 +342,10 @@ public final class RenderEngine {
         this.lineWidth(lineWidth);
         final int segments = 10;
         int idx = 0;
-        idx = putArc(idx, x + w - radius, y + radius, radius, (float) (-Math.PI / 2), 0f, segments);
-        idx = putArc(idx, x + w - radius, y + h - radius, radius, 0f, (float) (Math.PI / 2), segments);
-        idx = putArc(idx, x + radius, y + h - radius, radius, (float) (Math.PI / 2), (float) Math.PI, segments);
-        idx = putArc(idx, x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5), segments);
+        idx = this.putArc(idx, x + w - radius, y + radius, radius, (float) (-Math.PI / 2), 0f, segments);
+        idx = this.putArc(idx, x + w - radius, y + h - radius, radius, 0f, (float) (Math.PI / 2), segments);
+        idx = this.putArc(idx, x + radius, y + h - radius, radius, (float) (Math.PI / 2), (float) Math.PI, segments);
+        idx = this.putArc(idx, x + radius, y + radius, radius, (float) Math.PI, (float) (Math.PI * 1.5), segments);
         this.draw(DrawMode.LINE_LOOP, idx, false);
     }
 
@@ -389,40 +389,40 @@ public final class RenderEngine {
     }
 
     public void line(final float x1, final float y1, final float x2, final float y2) {
-        put(0, x1, y1, 0f, 0f, this.color);
-        put(1, x2, y2, 0f, 0f, this.color);
+        this.put(0, x1, y1, 0f, 0f, this.color);
+        this.put(1, x2, y2, 0f, 0f, this.color);
         this.draw(DrawMode.LINES, 2, false);
     }
 
     public void blit(final float x, final float y, final float w, final float h) {
-        put(0, x, y, 0f, 0f, this.color);
-        put(1, x + w, y, 1f, 0f, this.color);
-        put(2, x + w, y + h, 1f, 1f, this.color);
-        put(3, x, y, 0f, 0f, this.color);
-        put(4, x + w, y + h, 1f, 1f, this.color);
-        put(5, x, y + h, 0f, 1f, this.color);
+        this.put(0, x, y, 0f, 0f, this.color);
+        this.put(1, x + w, y, 1f, 0f, this.color);
+        this.put(2, x + w, y + h, 1f, 1f, this.color);
+        this.put(3, x, y, 0f, 0f, this.color);
+        this.put(4, x + w, y + h, 1f, 1f, this.color);
+        this.put(5, x, y + h, 0f, 1f, this.color);
         this.draw(DrawMode.TRIANGLES, 6, this.boundTextureId > 0);
     }
 
     public void blit(final float x, final float y, final float w, final float h,
                      final float u0, final float v0, final float u1, final float v1) {
-        put(0, x, y, u0, v0, this.color);
-        put(1, x + w, y, u1, v0, this.color);
-        put(2, x + w, y + h, u1, v1, this.color);
-        put(3, x, y, u0, v0, this.color);
-        put(4, x + w, y + h, u1, v1, this.color);
-        put(5, x, y + h, u0, v1, this.color);
+        this.put(0, x, y, u0, v0, this.color);
+        this.put(1, x + w, y, u1, v0, this.color);
+        this.put(2, x + w, y + h, u1, v1, this.color);
+        this.put(3, x, y, u0, v0, this.color);
+        this.put(4, x + w, y + h, u1, v1, this.color);
+        this.put(5, x, y + h, u0, v1, this.color);
         this.draw(DrawMode.TRIANGLES, 6, this.boundTextureId > 0);
     }
 
     public void fadeBottom(final float width, final float height, final float fadeHeight, final float alpha) {
         final float topY = height - fadeHeight;
-        put(0, 0, topY, 0f, 0f, 0f, 0f, 0f, 0f);
-        put(1, width, topY, 0f, 0f, 0f, 0f, 0f, 0f);
-        put(2, width, height, 0f, 0f, 0f, 0f, 0f, alpha);
-        put(3, 0, topY, 0f, 0f, 0f, 0f, 0f, 0f);
-        put(4, width, height, 0f, 0f, 0f, 0f, 0f, alpha);
-        put(5, 0, height, 0f, 0f, 0f, 0f, 0f, alpha);
+        this.put(0, 0, topY, 0f, 0f, 0f, 0f, 0f, 0f);
+        this.put(1, width, topY, 0f, 0f, 0f, 0f, 0f, 0f);
+        this.put(2, width, height, 0f, 0f, 0f, 0f, 0f, alpha);
+        this.put(3, 0, topY, 0f, 0f, 0f, 0f, 0f, 0f);
+        this.put(4, width, height, 0f, 0f, 0f, 0f, 0f, alpha);
+        this.put(5, 0, height, 0f, 0f, 0f, 0f, 0f, alpha);
         this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
@@ -480,10 +480,10 @@ public final class RenderEngine {
 
     private void fillArc(final float cx, final float cy, final float radius,
                          final float startAngle, final float endAngle, final int segments) {
-        put(0, cx, cy, 0f, 0f, this.color);
+        this.put(0, cx, cy, 0f, 0f, this.color);
         for (int i = 0; i <= segments; i++) {
             final float angle = startAngle + (endAngle - startAngle) * i / segments;
-            put(1 + i, cx + (float) Math.cos(angle) * radius,
+            this.put(1 + i, cx + (float) Math.cos(angle) * radius,
                     cy + (float) Math.sin(angle) * radius,
                     0f, 0f, this.color);
         }
@@ -495,7 +495,7 @@ public final class RenderEngine {
         int idx = startIdx;
         for (int i = 0; i <= segments; i++) {
             final float angle = startAngle + (endAngle - startAngle) * i / segments;
-            put(idx++, cx + (float) Math.cos(angle) * radius,
+            this.put(idx++, cx + (float) Math.cos(angle) * radius,
                     cy + (float) Math.sin(angle) * radius,
                     0f, 0f, this.color);
         }

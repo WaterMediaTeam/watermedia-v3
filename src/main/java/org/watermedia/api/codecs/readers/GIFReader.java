@@ -209,11 +209,8 @@ public final class GIFReader extends ImageReader {
                 this.nextReady = true;
                 return true;
             }
-            if (b == EXTENSION_INTRODUCER) {
-                this.processExtension();
-                continue;
-            }
-            // UNKNOWN BYTE: SKIP AND CONTINUE (MATCHES LEGACY BEHAVIOR)
+            // ANY OTHER UNKNOWN BYTE IS SKIPPED (MATCHES LEGACY BEHAVIOR)
+            if (b == EXTENSION_INTRODUCER) this.processExtension();
         }
     }
 

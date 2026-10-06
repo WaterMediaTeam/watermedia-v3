@@ -250,7 +250,7 @@ public final class VKEngine extends GFXEngine {
 
         // BUILD THE STATIC ENGINE OBJECTS (LIVE FOR THE WHOLE ENGINE LIFETIME).
         for (int i = 0; i < SLOTS; i++) this.slots[i] = new Slot();
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             // COMMAND POOL + PRIMARY COMMAND BUFFERS (RESETTABLE INDIVIDUALLY).
             final VkCommandPoolCreateInfo cpci = VkCommandPoolCreateInfo.calloc(stack).sType$Default()
                     .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(ctx.queueFamily());
@@ -604,7 +604,7 @@ public final class VKEngine extends GFXEngine {
         final int cur = (int) (this.head % SLOTS);
         final Slot slot = this.slots[cur];
 
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             // RETENTION: BLOCK UNTIL THE FRAME SUBMITTED TWO CALLS AGO HAS FINISHED READING THE
             // PRODUCER'S BUFFERS. (head + 1) % SLOTS IS THE SLOT OF FRAME head-2. WAITING IT HERE
             // GUARANTEES THAT BY THE TIME upload(N+2) RUNS, FRAME N IS COMPLETE — EXACTLY THE
@@ -807,7 +807,7 @@ public final class VKEngine extends GFXEngine {
             vkFreeMemory(this.device, cached.memory(), null);
             this.importCache.remove(ptr);
         }
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             // WHICH MEMORY TYPES MAY THIS HOST POINTER BE IMPORTED AS.
             final VkMemoryHostPointerPropertiesEXT props = VkMemoryHostPointerPropertiesEXT.calloc(stack).sType$Default();
             if (vkGetMemoryHostPointerPropertiesEXT(this.device,
@@ -867,7 +867,7 @@ public final class VKEngine extends GFXEngine {
                 vkDestroyBuffer(this.device, st.buffer(), null);
                 vkFreeMemory(this.device, st.memory(), null);
             }
-            try (MemoryStack stack = stackPush()) {
+            try (final MemoryStack stack = stackPush()) {
                 final VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(stack).sType$Default()
                         .size(needed).usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
                 final LongBuffer pBuf = stack.mallocLong(1);
@@ -906,7 +906,7 @@ public final class VKEngine extends GFXEngine {
     private void ensureSlot(final Slot slot) {
         if (slot.gen == this.formatGen) return;
         this.destroySlotFormatRes(slot);
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final Img out = this.image(stack, this.outFormat, this.width, this.height, this.outUsage, 0L);
             slot.outImg = out.image();
             slot.outMem = out.memory();
@@ -1088,7 +1088,7 @@ public final class VKEngine extends GFXEngine {
         }
         Integer feats = this.ycbcrFeats.get(fmt);
         if (feats == null) {
-            try (MemoryStack stack = stackPush()) {
+            try (final MemoryStack stack = stackPush()) {
                 final VkFormatProperties props = VkFormatProperties.malloc(stack);
                 vkGetPhysicalDeviceFormatProperties(this.ctx.physicalDevice(), fmt, props);
                 feats = props.optimalTilingFeatures();
@@ -1125,7 +1125,7 @@ public final class VKEngine extends GFXEngine {
     // EXTRA SYNC: ONLY THE PRODUCER THREAD CALLS THIS, AND A FORMAT CHANGE DRAINED EVERYTHING FIRST.
     private void ensureYcbcr() {
         if (this.ycbcrConv != 0L) return;
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             // CONVERSION: BT.709 NARROW RANGE, IDENTITY COMPONENTS (calloc), SITING/FILTER FROM THE
             // FORMAT QUERY. NO FORCED EXPLICIT RECONSTRUCTION — LET THE IMPLEMENTATION PICK.
             final VkSamplerYcbcrConversionCreateInfo cci = VkSamplerYcbcrConversionCreateInfo.calloc(stack).sType$Default()

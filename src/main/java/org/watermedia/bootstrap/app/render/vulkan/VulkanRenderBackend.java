@@ -234,7 +234,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // CONSTRUCTION
     // ==========================================================================
     private void createInstanceAndSurface() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             // OPPORTUNISTIC API BUMP TO min(LOADER, 1.4) BUT NEVER BELOW 1.1: A HIGHER apiVersion ONLY WIDENS
             // WHAT MAY BE USED (WE STAY 1.1-CORE), AND getInstanceVersionSupported IS NULL-SAFE ON OLD LOADERS.
             final int loaderVer = VK.getInstanceVersionSupported();
@@ -284,7 +284,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void pickPhysicalDevice() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final IntBuffer count = stack.mallocInt(1);
             check(vkEnumeratePhysicalDevices(this.instance, count, null), "count physical devices");
             if (count.get(0) == 0) throw new IllegalStateException("VulkanRenderBackend: no Vulkan physical devices");
@@ -298,7 +298,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             for (int i = 0; i < devices.capacity(); i++) {
                 final VkPhysicalDevice candidate = new VkPhysicalDevice(devices.get(i), this.instance);
                 if (!hasDeviceExtension(candidate, stack, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) continue;
-                final int family = findGraphicsPresentFamily(candidate, stack);
+                final int family = this.findGraphicsPresentFamily(candidate, stack);
                 if (family < 0) continue;
 
                 final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
@@ -328,7 +328,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void createDeviceAndQueue() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkDeviceQueueCreateInfo.Buffer q = VkDeviceQueueCreateInfo.calloc(1, stack);
             q.get(0).sType$Default().queueFamilyIndex(this.queueFamily).pQueuePriorities(stack.floats(1.0f));
 
@@ -431,7 +431,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private void ensureCore() {
         if (this.coreReady) return;
 
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             // SURFACE FORMAT: PREFER B8G8R8A8_UNORM (NON-SRGB) FOR PARITY WITH THE GL DEFAULT FRAMEBUFFER.
             final IntBuffer fmtCount = stack.mallocInt(1);
             vkGetPhysicalDeviceSurfaceFormatsKHR(this.physicalDevice, this.surface, fmtCount, null);
@@ -514,7 +514,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         // DUMMY 1x1 WHITE + ITS PERSISTENT DESCRIPTOR SET: BOUND FOR NON-TEXTURED DRAWS BECAUSE THE
         // FRAGMENT SHADER STATICALLY REFERENCES THE SAMPLER (DYNAMIC useTexture BRANCH), SO A VALID
         // DESCRIPTOR MUST ALWAYS BE BOUND EVEN WHEN THE TEXEL IS NEVER READ.
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final ByteBuffer white = stack.malloc(4);
             white.put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).flip();
             final TextureRecord dummy = this.uploadTexture(1, 1, white);
@@ -537,7 +537,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void createRenderPass() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkAttachmentDescription.Buffer color = VkAttachmentDescription.calloc(1, stack);
             color.get(0).format(this.surfaceFormat).samples(VK_SAMPLE_COUNT_1_BIT)
                     .loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR) // clear() DRIVES THE FRAME'S RENDER-PASS BEGIN
@@ -587,7 +587,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private long createPipeline(final int topology, final long vert, final long frag, final long layout) {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
             stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vert).pName(stack.UTF8("main"));
             stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(frag).pName(stack.UTF8("main"));
@@ -638,7 +638,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void createFrames() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkCommandBufferAllocateInfo cbai = VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
                     .commandPool(this.cmdPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(MAX_FRAMES_IN_FLIGHT);
             final PointerBuffer pCmd = stack.mallocPointer(MAX_FRAMES_IN_FLIGHT);
@@ -664,12 +664,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // BUILDS / REBUILDS THE SWAPCHAIN AND ITS PER-IMAGE RESOURCES. RETURNS false WHEN THE WINDOW HAS A
     // ZERO EXTENT (MINIMIZED): THE FRAME IS THEN SKIPPED UNTIL THE WINDOW IS RESTORED.
     private boolean buildSwapchain() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkSurfaceCapabilitiesKHR caps = VkSurfaceCapabilitiesKHR.malloc(stack);
             check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(this.physicalDevice, this.surface, caps), "query surface caps");
 
             // EXTENT: USE currentExtent WHEN FIXED, ELSE CLAMP THE GLFW FRAMEBUFFER SIZE TO THE ALLOWED RANGE.
-            int w, h;
+            final int w, h;
             if (caps.currentExtent().width() != 0xFFFFFFFF) {
                 w = caps.currentExtent().width();
                 h = caps.currentExtent().height();
@@ -775,7 +775,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.frameCounter++;
         this.runRetired();
 
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final IntBuffer pImg = stack.mallocInt(1);
             int acq = vkAcquireNextImageKHR(this.device, this.swapchain, BLOCK, f.imageAvailable, VK_NULL_HANDLE, pImg);
             if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -828,7 +828,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         if (!this.frameValid) return;
         if (this.renderPassActive) {
             // MID-FRAME CLEAR: THE RENDER PASS IS ALREADY OPEN, SO CLEAR INSIDE IT.
-            try (MemoryStack stack = stackPush()) {
+            try (final MemoryStack stack = stackPush()) {
                 final VkClearAttachment.Buffer at = VkClearAttachment.calloc(1, stack);
                 at.get(0).aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).colorAttachment(0);
                 at.get(0).clearValue().color(c -> c.float32(0, r).float32(1, g).float32(2, b).float32(3, a));
@@ -929,7 +929,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         f.vertexOffset += drawVerts;
 
         final VkCommandBuffer cmd = f.cmd;
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final long pipe = this.pipelineFor(mode);
             if (pipe != this.boundPipeline) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -1012,7 +1012,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         f.vertexOffset += drawVerts;
 
         final VkCommandBuffer cmd = f.cmd;
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             if (this.sdfPipe != this.boundPipeline) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this.sdfPipe);
                 this.boundPipeline = this.sdfPipe;
@@ -1087,8 +1087,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.renderPassActive = false;
         check(vkEndCommandBuffer(f.cmd), "end command buffer");
 
-        int pres;
-        try (MemoryStack stack = stackPush()) {
+        final int pres;
+        try (final MemoryStack stack = stackPush()) {
             final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
                     .waitSemaphoreCount(1) // NOT AUTO-DERIVED: SHARED WITH pWaitDstStageMask
                     .pWaitSemaphores(stack.longs(f.imageAvailable))
@@ -1122,7 +1122,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void beginRenderPass() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkClearValue.Buffer clear = VkClearValue.calloc(1, stack);
             clear.get(0).color(c -> c.float32(0, this.clearR).float32(1, this.clearG).float32(2, this.clearB).float32(3, this.clearA));
             final VkRenderPassBeginInfo rp = VkRenderPassBeginInfo.calloc(stack).sType$Default()
@@ -1171,7 +1171,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // PER-FRAME VERTEX BUFFER (GROWABLE)
     // ==========================================================================
     private void allocVbo(final Frame f, final int capVerts) {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final long size = (long) capVerts * VERTEX_BYTES;
             final VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(stack).sType$Default()
                     .size(size).usage(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
@@ -1230,7 +1230,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private long createDescPool() {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkDescriptorPoolSize.Buffer size = VkDescriptorPoolSize.calloc(1, stack);
             size.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(SETS_PER_POOL);
             final VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
@@ -1294,7 +1294,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final long size = (long) w * h * 4;
 
         long staging = 0L, stagingMem = 0L;
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(stack).sType$Default()
                     .size(size).usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
             final LongBuffer pBuf = stack.mallocLong(1);
@@ -1351,7 +1351,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private long[] createImage(final int w, final int h, final int format, final int usage) {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
                     .imageType(VK_IMAGE_TYPE_2D).format(format).mipLevels(1).arrayLayers(1)
                     .samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL).usage(usage)
@@ -1376,7 +1376,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private long createView(final long image, final int format) {
-        try (MemoryStack stack = stackPush()) {
+        try (final MemoryStack stack = stackPush()) {
             final VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
                     .image(image).viewType(VK_IMAGE_VIEW_TYPE_2D).format(format);
             vci.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
@@ -1418,7 +1418,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
             final ByteBuffer spv = shaderc_result_get_bytes(result);
             if (spv == null) throw new IllegalStateException("VulkanRenderBackend: shaderc produced no SPIR-V");
-            try (MemoryStack stack = stackPush()) {
+            try (final MemoryStack stack = stackPush()) {
                 final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(spv);
                 final LongBuffer p = stack.mallocLong(1);
                 check(vkCreateShaderModule(this.device, smci, null, p), "create shader module");

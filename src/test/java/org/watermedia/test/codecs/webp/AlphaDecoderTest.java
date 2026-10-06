@@ -10,6 +10,7 @@ import org.watermedia.api.codecs.common.webp.AlphaDecoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -39,7 +40,7 @@ public class AlphaDecoderTest {
             final int width = 4;
             final int height = 4;
             final byte[] alphaData = new byte[width * height];
-            for (int i = 0; i < alphaData.length; i++) alphaData[i] = (byte) 128;
+            Arrays.fill(alphaData, (byte) 128);
 
             final ByteBuffer buffer = ByteBuffer.allocate(1 + alphaData.length).order(ByteOrder.LITTLE_ENDIAN);
             buffer.put((byte) 0x00).put(alphaData).flip();

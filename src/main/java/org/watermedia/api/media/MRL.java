@@ -41,8 +41,7 @@ public final class MRL {
 
     private static final class Session {
         final Map<URI, MRL> loaded = new ConcurrentHashMap<>(1024);
-        final ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()),
-                ThreadTool.workerFactory("MRL-Loader", Thread.NORM_PRIORITY - 1));
+        final ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()), ThreadTool.workerFactory("MRL-Loader", Thread.NORM_PRIORITY - 1));
         volatile boolean active = true;
         volatile long nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
 
@@ -515,8 +514,7 @@ public final class MRL {
      * Used by FFMediaPlayer when an HLS rendition turns out to map to a
      * different bucket than the platform reported. Public only because the
      * caller lives in a sibling package; not part of the supported API.
-     *
-     * Do not call from application code.
+     * <p>Do not call from application code.
      */
     public void moveQuality(final int sourceIndex, final MediaQuality from, final MediaQuality to) {
         final Source[] s = this.sources;

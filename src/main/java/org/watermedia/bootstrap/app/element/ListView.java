@@ -99,7 +99,7 @@ public final class ListView<D> extends Group<ListView<D>> {
 
     public ListView<D> moveSelection(final int delta) {
         if (this.items.isEmpty()) return this;
-        final int base = this.selectedIndex < 0 ? 0 : this.selectedIndex;
+        final int base = Math.max(0, this.selectedIndex);
         final int next = Math.max(0, Math.min(base + delta, this.items.size() - 1));
         if (next != this.selectedIndex) {
             this.selection(next).invalidate();

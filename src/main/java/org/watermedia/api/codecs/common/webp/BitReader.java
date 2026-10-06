@@ -105,7 +105,7 @@ public final class BitReader {
         int v = this.read(bits);
         final int signBit = 1 << (bits - 1);
         if ((v & signBit) != 0) {
-            v |= ~((1 << bits) - 1);
+            v |= -(1 << bits);
         }
         return v;
     }

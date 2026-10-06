@@ -37,7 +37,7 @@ sealed interface SVGPaint permits SVGPaint.Solid, SVGPaint.Linear {
             if (this.offsets.length == 1) { final int c = this.colors[0]; return (px, py) -> c; }
 
             // BUILD gradient-space → user-space, THEN COMPOSE WITH THE DEVICE TRANSFORM AND INVERT
-            Affine gradToUser;
+            final Affine gradToUser;
             if (this.userSpace) {
                 gradToUser = this.gradientTransform;
             } else {

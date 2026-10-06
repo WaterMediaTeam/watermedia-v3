@@ -304,7 +304,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
     }
 
     private static Image loadIcon() {
-        try (var in = SwingPlayerWindow.class.getResourceAsStream("/icon.png")) {
+        try (final var in = SwingPlayerWindow.class.getResourceAsStream("/icon.png")) {
             return in == null ? null : ImageIO.read(in);
         } catch (final Exception e) {
             WaterMedia.LOGGER.warn("Popup player: failed to load window icon", e);

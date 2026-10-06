@@ -1474,7 +1474,7 @@ public final class PlayerScreen extends Screen {
             // KEEP THE DROPDOWN SELECTION MIRRORING THE LIVE PLAYER SPEED (SNAPPED TO THE NEAREST PRESET);
             // LOCK IT WHEN THE PLAYER CANNOT CHANGE SPEED (LIVE STREAM, OR AN ENGINE STUCK AT 1.0×)
             this.speedDrop.enabled(p.canSpeed());
-            this.speedDrop.selected(PlayerScreen.this.nearestSpeedIndex((float) p.speed()));
+            this.speedDrop.selected(PlayerScreen.this.nearestSpeedIndex(p.speed()));
         }
 
         @Override

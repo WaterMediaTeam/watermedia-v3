@@ -456,7 +456,7 @@ public final class PNGReader extends ImageReader {
     }
 
     private static float[] buildGammaLUT(final GAMA gamma, final SRGB srgb, final CICP cicp) {
-        float fileGamma;
+        final float fileGamma;
         if (srgb != null) {
             fileGamma = SRGB_GAMMA;
         } else if (cicp != null) {
