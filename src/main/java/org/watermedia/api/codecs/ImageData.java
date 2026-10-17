@@ -1,6 +1,5 @@
 package org.watermedia.api.codecs;
 
-import org.jetbrains.annotations.NotNull;
 import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
@@ -64,7 +63,6 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
         return this.duration * (loopAware ? Math.max(1, this.repeat) : 1);
     }
 
-    @NotNull
     @Override
     public String toString() {
         return "Image{" +

@@ -168,9 +168,29 @@ processResources {
 }
 
 // ==== PACKAGING ====
+// THE DESCRIPTOR COMPILES APART, AGAINST THE BUILT CLASSES, SO SOURCES AND TESTS STAY ON THE CLASSPATH.
+// THE OTHER MODULES UNDER src/main/module ONLY NAME HOST MODULES THAT ARE NOT COMPILE DEPENDENCIES
+def moduleSources = layout.projectDirectory.dir('src/main/module')
+def moduleClasses = sourceSets.main.java.classesDirectory
+def modulePath = configurations.compileClasspath
+def compileModuleInfo = tasks.register('compileModuleInfo', JavaCompile) {
+    group = 'build'
+    description = 'Compiles the module descriptor that keeps internal packages hidden on module-aware loaders'
+    source = moduleSources
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('module')
+    modularity.inferModulePath = false
+    inputs.files(moduleClasses, modulePath)
+    options.compilerArgumentProviders.add({
+        ['--module-source-path', moduleSources.asFile.path, '--module-path', modulePath.asPath,
+         '--patch-module', 'org.watermedia=' + moduleClasses.get().asFile.path]
+    } as CommandLineArgumentProvider)
+}
+
 // THE BINARIES CLASSES SHIP ONLY IN THE BINARIES JAR
 jar {
     manifest.attributes 'Main-Class': mainclass
+    from(compileModuleInfo.flatMap { it.destinationDirectory.dir('org.watermedia') })
     from { configurations.include.collect { zipTree(it) } }
     exclude 'META-INF/versions/', 'META-INF/maven/', 'org/watermedia/binaries/**'
     filesMatching('META-INF/*') { duplicatesStrategy = DuplicatesStrategy.INCLUDE }
@@ -199,55 +219,38 @@ tasks.named('build') { dependsOn gradle.includedBuild('binaries').task(':build')
 check.dependsOn tasks.named('compileToolsJava')
 
 // ==== MAINTENANCE ====
-// LISTS PUBLIC METHODS WITHOUT JAVADOC, SKIPPING OVERRIDES AND THE INTERNAL PACKAGES OF gradle.properties.
+// LISTS PUBLIC METHODS WITHOUT JAVADOC IN THE PACKAGES THE DESCRIPTOR EXPORTS TO EVERYONE, SKIPPING OVERRIDES.
 def inventorySources = sourceSets.main.java
-def inventoryRoot = layout.projectDirectory.asFile
-def inventoryPackages = javadoc_internal_packages.split(',').collect { it.trim() }
+def inventoryRoot = layout.projectDirectory.asFile.toPath()
+def inventoryDescriptor = moduleSources.file('org.watermedia/module-info.java')
 tasks.register('javadocInventory') {
     group = 'documentation'
-    description = 'Lists public methods without local Javadoc, excluding overrides and internal packages'
+    description = 'Lists public methods without local Javadoc in exported packages, excluding overrides'
     doLast {
+        def exported = (inventoryDescriptor.asFile.getText('UTF-8') =~ /(?m)^\s*exports\s+([\w.]+)\s*;/).collect { it[1] } as Set
         def declaration = ~/^\s*public\s+(?:(?:static|final|synchronized|abstract|native|default)\s+)*(?!class\b|interface\b|enum\b|record\b)[\w<>?,.\[\] ]+\s+(\w+)\s*\(/
-        int included = 0
-        int excluded = 0
+        def (included, excluded) = inventorySources.files.sort { it.path }.collect { [it, it.readLines('UTF-8')] }
+                .split { File file, List<String> lines -> lines.any { line -> exported.any { line.startsWith("package $it;") } } }
         int missing = 0
-        inventorySources.files.sort { it.path }.each { file ->
-            def lines = file.readLines('UTF-8')
-            if (lines.any { line -> inventoryPackages.any { name ->
-                line.startsWith("package $name;") || line.startsWith("package $name.")
-            } }) {
-                excluded++
-                return
-            }
-            included++
-            for (int i = 0; i < lines.size(); i++) {
-                def match = lines[i] =~ declaration
-                if (!match.find()) continue
-                def method = match.group(1)
+        included.each { File file, List<String> lines ->
+            lines.eachWithIndex { line, i ->
+                def match = line =~ declaration
+                if (!match.find()) return
+                // CLIMB OVER BLANK LINES AND ANNOTATIONS TO THE TEXT ABOVE THE DECLARATION
                 int previous = i - 1
                 boolean override = false
                 while (previous >= 0 && (lines[previous].trim().isEmpty() || lines[previous].trim().startsWith('@'))) {
-                    if (lines[previous].trim().startsWith('@Override')) override = true
-                    previous--
+                    override |= lines[previous--].trim().startsWith('@Override')
                 }
-                boolean documented = false
-                if (previous >= 0 && lines[previous].trim().endsWith('*/')) {
-                    // ONLY COMMENT OPENERS COUNT; MIME PATTERNS INSIDE JAVADOC ARE ORDINARY TEXT.
-                    while (previous >= 0) {
-                        def line = lines[previous].stripLeading()
-                        if (line.startsWith('/**')) { documented = true; break }
-                        if (line.startsWith('/*')) break
-                        previous--
-                    }
-                }
-                if (!documented && !override) {
-                    def path = inventoryRoot.toPath().relativize(file.toPath()).toString().replace('\\', '/')
-                    logger.lifecycle("$path:${i + 1}:$method")
-                    missing++
-                }
+                // A COMMENT ENDING THERE DOCUMENTS IT WHEN ITS OPENER IS /**; MIME PATTERNS INSIDE JAVADOC ARE ORDINARY TEXT.
+                boolean documented = previous >= 0 && lines[previous].trim().endsWith('*/') &&
+                        (previous..0).collect { lines[it].stripLeading() }.find { it.startsWith('/*') }?.startsWith('/**')
+                if (override || documented) return
+                logger.lifecycle(inventoryRoot.relativize(file.toPath()).toString().replace('\\', '/') + ":${i + 1}:${match.group(1)}")
+                missing++
             }
         }
-        logger.lifecycle("Javadoc inventory: $missing candidates; $included included files; $excluded excluded files.")
+        logger.lifecycle("Javadoc inventory: $missing candidates; ${included.size()} included files; ${excluded.size()} excluded files.")
     }
 }
 

@@ -145,8 +145,9 @@ public final class WaterMedia {
     }
 
     // THE JVM VERIFIES MODULE SUBTYPES WHILE LINKING; KEEP THE CLIENT JAR BEHIND A LAZY HOLDER.
+    // THE CLASS LOADER SEES OTHER MODULES; Class.getResource ONLY SEARCHES THIS ONE ON FORGE 1.21.1+
     private static WaterMediaModule binaries() {
-        return WaterMedia.class.getResource("/org/watermedia/binaries/WaterMediaBinaries.class") == null
+        return WaterMedia.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null
                 ? null : Client.BINARIES.get();
     }
 
