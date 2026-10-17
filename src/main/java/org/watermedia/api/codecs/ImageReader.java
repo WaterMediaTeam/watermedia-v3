@@ -1,6 +1,5 @@
 package org.watermedia.api.codecs;
 
-import org.watermedia.api.codecs.proxy.ReaderProxy;
 import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
@@ -19,7 +18,9 @@ import java.util.List;
  *
  * <p>The reader pulls from the underlying buffer only the bytes it needs to produce the next
  * frame. After {@link #next()} returns, the decoded frame is available as a direct
- * {@link ByteBuffer} laid out in {@link #pixelFormat()}.
+ * {@link ByteBuffer} laid out in {@link #pixelFormat()}; {@link ReaderFilter}s added through
+ * {@link #addFilter(ReaderFilter)} transform it first, so {@link #frameWidth()} and
+ * {@link #frameHeight()} carry the geometry of what {@code next()} actually returned.
  * The buffer is owned by the reader and reused across calls; if the caller needs to retain a
  * previous frame, it must copy the bytes out before the next {@code next()} call.
  */
@@ -36,9 +37,12 @@ public abstract class ImageReader implements Closeable {
     protected final ByteBuffer data;
     protected final PixelFormat requestedFormat;
     // ORDERED SO A POST-PROCESSOR CHAIN RUNS IN INSERTION ORDER (E.G. DOWNSCALE THEN RECOLOR)
-    protected final List<ReaderProxy> proxies = new ArrayList<>(2);
-    protected ByteBuffer currentFrame;
+    protected final List<ReaderFilter> filters = new ArrayList<>(2);
     protected long currentDelay;
+    // OUTPUT OF THE LATEST next() AFTER THE FILTER CHAIN; fresh MARKS A FILTER-ALLOCATED BUFFER THE CALLER MAY KEEP
+    private ByteBuffer frame;
+    private int frameWidth, frameHeight;
+    private boolean fresh;
 
     protected ImageReader(final ByteBuffer data) { this(data, null); }
 
@@ -60,6 +64,12 @@ public abstract class ImageReader implements Closeable {
 
     /** Image height in pixels. Available immediately after construction. */
     public abstract int height();
+
+    /** Width of the frame returned by the latest {@link #next()}, after filters; {@link #width()} before the first. */
+    public int frameWidth() { return this.frame == null ? this.width() : this.frameWidth; }
+
+    /** Height of the frame returned by the latest {@link #next()}, after filters; {@link #height()} before the first. */
+    public int frameHeight() { return this.frame == null ? this.height() : this.frameHeight; }
 
     /**
      * Pixel layout of the buffer(s) returned by {@link #next()} / {@link #plane(int)}. The reader
@@ -86,11 +96,12 @@ public abstract class ImageReader implements Closeable {
     /**
      * Returns the buffer for the requested plane. Plane {@code 0} is the same buffer returned
      * by the latest {@link #next()} call. Higher indices are valid only when
-     * {@link #planeCount()} is greater than 1.
+     * {@link #planeCount()} is greater than 1; multi-plane readers expose their native planes,
+     * while filters apply to the packed frame {@code next()} returns.
      */
     public ByteBuffer plane(final int index) {
         if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
-        return this.currentFrame;
+        return this.frame;
     }
 
     /**
@@ -150,46 +161,32 @@ public abstract class ImageReader implements Closeable {
         return ImageMetadata.EMPTY;
     }
 
-    /** Appends a post-processor to the chain applied to every frame by {@link #readAll()}. */
-    public void addProxy(final ReaderProxy proxy) {
-        this.proxies.add(proxy);
+    /** Appends a filter to the chain run on every frame produced by {@link #next()} and {@link #readAll()}. */
+    public void addFilter(final ReaderFilter filter) {
+        this.filters.add(filter);
     }
 
     /**
      * Decodes every available frame and returns a detached {@link ImageData} instance.
-     * Each returned frame is copied because concrete readers may reuse their internal buffer.
-     * When proxies are registered, each frame is run through the chain before being retained,
-     * so the resulting geometry comes from the last proxy's output.
+     * Frames the reader would reuse are copied, frames a filter allocated are retained as they are,
+     * and the resulting geometry is the last filter's output.
      */
     public ImageData readAll() throws IOException {
         final List<ByteBuffer> frames = new ArrayList<>();
         final List<Long> frameDelays = new ArrayList<>();
-        int outWidth = this.width();
-        int outHeight = this.height();
         long retained = 0L;
         while (this.hasNext()) {
             final ByteBuffer decoded = this.next();
-            final ByteBuffer frame;
-            if (this.proxies.isEmpty()) {
-                frame = detach(decoded);
-            } else {
-                // POST-PROCESS THE FRAME; EACH PROXY CONSUMES THE PREVIOUS OUTPUT'S PROPERTIES
-                ReaderProxy.Frame f = new ReaderProxy.Frame(decoded, this.width(), this.height(), this.pixelFormat());
-                for (final ReaderProxy proxy: this.proxies) f = proxy.compute(f);
-                outWidth = f.width();
-                outHeight = f.height();
-                // A NO-OP CHAIN HANDS BACK THE READER'S REUSED BUFFER; DETACH IT SO FRAMES DON'T ALIAS
-                frame = f.buffer() == decoded ? detach(f.buffer()) : f.buffer();
-            }
+            final ByteBuffer kept = this.fresh ? decoded : detach(decoded);
             // BACKSTOP AGAINST THE ANIMATION BOMB: FRAME COST IS FIXED AT CANVAS SIZE WHILE FRAME
             // COUNT COMES FROM THE CONTAINER, SO A FEW HUNDRED HEADER BYTES CAN DESCRIBE GIGABYTES.
             // READERS CAP THEIR OWN FRAME COUNTS; THIS BOUNDS WHAT SURVIVES ALL OF THEM COMBINED.
-            retained += frame.remaining();
+            retained += kept.remaining();
             if (retained > MAX_DECODED_BYTES) {
                 throw new XCodecException("Decoded animation exceeds budget: " + retained
                         + " bytes over " + frames.size() + " frames (max " + MAX_DECODED_BYTES + ")");
             }
-            frames.add(frame);
+            frames.add(kept);
             frameDelays.add(this.currentDelay);
         }
         if (frames.isEmpty()) {
@@ -201,7 +198,7 @@ public abstract class ImageReader implements Closeable {
             delayArray[i] = frameDelays.get(i);
             total += delayArray[i];
         }
-        return new ImageData(frames.toArray(ByteBuffer[]::new), outWidth, outHeight,
+        return new ImageData(frames.toArray(ByteBuffer[]::new), this.frameWidth(), this.frameHeight(),
                 delayArray, total, this.loopCount());
     }
 
@@ -238,15 +235,33 @@ public abstract class ImageReader implements Closeable {
     public abstract boolean hasNext() throws IOException;
 
     /**
-     * Decodes the next frame from the underlying buffer into the internal direct buffer.
+     * Decodes the next frame and runs it through the filter chain.
      *
-     * @return the decoded frame buffer
+     * @return the frame buffer, positioned at zero and ready to read
      * @throws IOException on I/O error or malformed bitstream
      */
-    public abstract ByteBuffer next() throws IOException;
+    public final ByteBuffer next() throws IOException {
+        final ByteBuffer decoded = this.decode();
+        ReaderFilter.Frame f = new ReaderFilter.Frame(decoded, this.width(), this.height(), this.pixelFormat());
+        // EACH FILTER CONSUMES THE PREVIOUS OUTPUT'S GEOMETRY; A NO-OP CHAIN HANDS BACK THE READER'S REUSED BUFFER
+        for (final ReaderFilter filter: this.filters) f = filter.compute(f);
+        this.fresh = f.buffer() != decoded;
+        this.frameWidth = f.width();
+        this.frameHeight = f.height();
+        return this.frame = f.buffer();
+    }
+
+    /**
+     * Decodes the next frame from the underlying buffer into the internal direct buffer.
+     *
+     * @return the decoded frame buffer, positioned at zero
+     * @throws IOException on I/O error or malformed bitstream
+     */
+    protected abstract ByteBuffer decode() throws IOException;
 
     @Override
-    public void close() throws IOException {
-        // BYTEBUFFER-BACKED READERS DO NOT OWN EXTERNAL RESOURCES.
+    public void close() {
+        // BYTEBUFFER-BACKED READERS OWN NO EXTERNAL RESOURCES; DROPPING THE LAST FRAME FREES ITS DIRECT MEMORY EARLY
+        this.frame = null;
     }
 }

@@ -72,6 +72,8 @@ public final class WEBPReader extends ImageReader {
     // ANIMATED PATH: canvas
     private int[] canvas;
     private ByteBuffer directOut;
+    // THE BUFFER THE LATEST decode() HANDED OUT: THE BGRA DECODER RESULT, THE CANVAS OR yuvOut
+    private ByteBuffer currentFrame;
     private IntBuffer directOutInts;
     private byte[] anmfScratch = new byte[0];
     private ChunkHdr pendingChunk;
@@ -230,10 +232,7 @@ public final class WEBPReader extends ImageReader {
 
     @Override
     public ByteBuffer plane(final int index) {
-        if (this.outputFormat != PixelFormat.YUV420P) {
-            if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
-            return this.currentFrame;
-        }
+        if (this.outputFormat != PixelFormat.YUV420P) return super.plane(index);
         final int offset;
         final int size;
         switch (index) {
@@ -249,10 +248,7 @@ public final class WEBPReader extends ImageReader {
 
     @Override
     public int planeStride(final int index) {
-        if (this.outputFormat != PixelFormat.YUV420P) {
-            if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
-            return 0;
-        }
+        if (this.outputFormat != PixelFormat.YUV420P) return super.planeStride(index);
         return switch (index) {
             case 0 -> this.canvasWidth;
             case 1, 2 -> this.chromaWidth;
@@ -282,7 +278,7 @@ public final class WEBPReader extends ImageReader {
     }
 
     @Override
-    public ByteBuffer next() throws IOException {
+    protected ByteBuffer decode() throws IOException {
         if (!this.hasNext()) throw new XCodecException("No more WEBP frames");
 
         if (!this.animated) {

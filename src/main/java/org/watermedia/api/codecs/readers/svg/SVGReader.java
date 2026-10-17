@@ -71,13 +71,12 @@ public final class SVGReader extends ImageReader {
     }
 
     @Override
-    public ByteBuffer next() throws IOException {
+    protected ByteBuffer decode() throws IOException {
         if (this.consumed) throw new XCodecException("SVG has a single frame");
         if (this.rendered == null) this.rendered = this.rasterize();
         this.rendered.rewind(); // RE-ARM POSITION 0 SO A SECOND PASS (AFTER reset()) READS THE FULL FRAME
         this.consumed = true;
         this.currentDelay = 0L;
-        this.currentFrame = this.rendered;
         return this.rendered;
     }
 

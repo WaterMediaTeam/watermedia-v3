@@ -268,7 +268,7 @@ public class DataTool {
     }
 
     // ============================================================
-    // PIXEL-PLANE AREA SCALING — SHARED BY TxMediaPlayer AND ReaderProxy DOWNSCALING
+    // PIXEL-PLANE AREA SCALING — SHARED BY TxMediaPlayer AND DownscaleFilter
     // ============================================================
 
     // TIGHTLY-PACKED BYTE SIZE OF ONE FRAME IN THE GIVEN FORMAT AT w x h.

@@ -150,6 +150,8 @@ public final class JPEGReader extends ImageReader {
 
     @Override
     public ByteBuffer plane(final int index) {
+        // A SINGLE-PLANE OUTPUT IS THE FILTERED FRAME next() RETURNED; PLANAR YUV EXPOSES ITS NATIVE PLANES
+        if (this.planeCount() == 1) return super.plane(index);
         if (index < 0 || index >= this.planeCount()) throw new IndexOutOfBoundsException("plane " + index);
         final ByteBuffer view = this.directOut.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         view.position(this.planeOffsets[index]).limit(this.planeOffsets[index] + this.planeSizes[index]);
@@ -158,6 +160,11 @@ public final class JPEGReader extends ImageReader {
 
     @Override
     public int planeStride(final int index) {
+        // A SINGLE-PLANE FRAME IS TIGHT AT THE FILTERED WIDTH; PLANAR YUV REPORTS ITS NATIVE STRIDES
+        if (this.planeCount() == 1) {
+            if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
+            return this.frameWidth() * (this.outputFormat == PixelFormat.GRAY ? 1 : 4);
+        }
         if (index < 0 || index >= this.planeCount()) throw new IndexOutOfBoundsException("plane " + index);
         return this.planeStrides[index];
     }
@@ -181,17 +188,16 @@ public final class JPEGReader extends ImageReader {
         // THE DECODED FRAME LIVES OFF-HEAP (UP TO width*height*4 BYTES) AND ONLY THE Cleaner CAN FREE IT.
         // DROPPING THE REFERENCE HERE RELEASES IT AS SOON AS THE CALLER IS DONE INSTEAD OF WHEN THE WHOLE
         // READER BECOMES UNREACHABLE, WHICH MAY BE MUCH LATER.
+        super.close();
         this.directOut = null;
-        this.currentFrame = null;
         this.delivered = true;
     }
 
     @Override
-    public ByteBuffer next() throws IOException {
+    protected ByteBuffer decode() throws IOException {
         if (this.delivered) throw new XCodecException("No more JPEG frames");
         this.delivered = true;
         this.currentDelay = 0L;
-        this.currentFrame = this.directOut;
         this.directOut.position(0).limit(this.directOut.capacity());
         return this.directOut;
     }

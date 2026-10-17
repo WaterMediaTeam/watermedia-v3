@@ -215,12 +215,11 @@ public final class GIFReader extends ImageReader {
     }
 
     @Override
-    public ByteBuffer next() throws XCodecException {
+    protected ByteBuffer decode() throws XCodecException {
         if (!this.hasNext()) throw new XCodecException("No more GIF frames");
         this.pendingIntroducer = -1;
         this.nextReady = false;
         this.decodeFrame();
-        this.currentFrame = this.directOut;
         return this.directOut;
     }
 

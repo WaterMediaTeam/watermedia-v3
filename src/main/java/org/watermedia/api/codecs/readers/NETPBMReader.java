@@ -89,7 +89,7 @@ public final class NETPBMReader extends ImageReader {
     }
 
     @Override
-    public ByteBuffer next() throws IOException {
+    protected ByteBuffer decode() throws IOException {
         if (this.delivered) throw new XCodecException("No more Netpbm frames");
         this.delivered = true;
 
@@ -102,7 +102,6 @@ public final class NETPBMReader extends ImageReader {
         }
         this.directOut.flip();
         this.currentDelay = 0L;
-        this.currentFrame = this.directOut;
         return this.directOut;
     }
 

@@ -196,6 +196,7 @@ public final class PNGReader extends ImageReader {
 
     @Override
     public void close() {
+        super.close();
         if (this.inflaterClosed) return;
         this.inflater.end();
         this.inflaterClosed = true;
@@ -224,7 +225,7 @@ public final class PNGReader extends ImageReader {
     }
 
     @Override
-    public ByteBuffer next() throws IOException {
+    protected ByteBuffer decode() throws IOException {
         if (!this.hasNext()) throw new XCodecException("No more PNG frames");
 
         FCTL fctl = null;
@@ -336,7 +337,6 @@ public final class PNGReader extends ImageReader {
             this.writeBGRA(this.outputBuffer);
         }
 
-        this.currentFrame = this.directOut;
         return this.directOut;
     }
 
