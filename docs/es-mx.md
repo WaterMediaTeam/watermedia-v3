@@ -65,12 +65,11 @@ El servidor opcional de archivos arranca si `network.forceEnableServer` está ac
 
 Los valores iniciales permiten ocho solicitudes simultáneas, 30 segundos por solicitud del servidor, 8 MiB por carga y 1,024 MiB de almacenamiento total. `maxUploadSize = 0` sólo elimina el límite individual de carga: siguen aplicando la cuota total, la concurrencia y el plazo. Las solicitudes Java tienen aparte 15 segundos de espera, diez redirecciones y un límite de 16 MiB para texto. Las entradas nativas de reproducción tienen su propia política de espera.
 
-## Utilerías compartidas
+## Paquetes públicos e internos
 
-`IOTool` ofrece utilerías compartidas: `httpsText` y `downloadVerified` con límite de bytes,
-`verifySha256` sin borrar archivos, `makeExecutable`, `publishGeneration`/`currentGeneration` y `deleteTree`.
-Las descargas exigen HTTPS también en las redirecciones. Las generaciones admiten cualquier nombre
-seguro de un hijo directo. `JSONTool.parse` procesa el JSON descargado con el analizador compartido.
+El JAR es el módulo explícito `org.watermedia`. Su API pública son los paquetes exportados: `org.watermedia`, `api.codecs`, `api.media`, `api.network`, `api.platform` y `api.util`. Todo lo demás es interno: lectores, escritores y estructuras de chunks de los códecs, colas y cachés de los reproductores, las plataformas integradas, el arranque y los bindings de FFmpeg incluidos. `org.watermedia.tools` y `org.watermedia.bootstrap` sólo se exportan al módulo Binaries: `tools` comparte sus utilerías de descarga, digestos y JSON, y `bootstrap` contiene el ciclo de vida de módulos que Binaries implementa.
+
+Forge 1.21.1 y posteriores aplican el descriptor, así que el código fuera del módulo falla con `IllegalAccessError` o `IllegalAccessException` al tocar un paquete interno. NeoForge, Fabric, las versiones anteriores de Forge y las compilaciones en classpath lo ignoran; trata esa misma frontera como el contrato también ahí. Usa las funciones internas mediante sus puntos de entrada, como `CodecsAPI.decodeImage`, `CodecsAPI.encodeWebM` y `PlatformAPI.fetch`. `gradle javadocInventory` revisa sólo los paquetes exportados, que lee de `src/main/module/org.watermedia/module-info.java`.
 
 ## MRL y resolución de direcciones
 
@@ -136,7 +135,7 @@ Para actualizar un MRL, conserva el valor devuelto por `mrl = mrl.reload()`. Si 
 La fábrica está en `MediaAPI`. Usa el índice de la fuente y proveedores de motores:
 
 ```java
-import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.MediaPlayer;
 
 MediaPlayer player = MediaAPI.createPlayer(mrl, 1,
         () -> MediaAPI.glEngine(renderThread, renderExecutor),
@@ -202,7 +201,7 @@ El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundar
 | `MediaAPI.vkEngine(context)` | Proporcionar un `VKContext` cuyos objetos y mecanismos de retiro sigan vivos hasta liberar el motor. |
 | `MediaAPI.awtEngine(onFrame)` | Dibujar la imagen publicada desde la interfaz AWT/Swing y enviar el callback al hilo de interfaz cuando corresponda. |
 | `MediaAPI.jfxEngine(onFrame)` | Proporcionar JavaFX y enlazar la imagen del motor con la interfaz. |
-| `MediaAPI.headlessEngine(preload)` | Recibir cuadros en memoria sin contexto gráfico; útil para procesamiento y pruebas. |
+| `MediaAPI.headlessEngine()` / `headlessEngine(preload)` | Recibir cuadros en memoria sin contexto gráfico; útil para procesamiento y pruebas. Como todo motor y reproductor multimedia sólo existe en una sesión cliente; un servidor dedicado sólo puede crear relojes `ServerMediaPlayer`. |
 | `MediaAPI.alEngine()` | Mantener el contexto OpenAL activo en los hilos que operan el motor. |
 | `MediaAPI.alEngine(true)` | Cumplir el mismo contrato OpenAL; negocia salida mono para sonido posicional. |
 | `MediaAPI.jsEngine()` | Disponer de una línea de salida Java Sound; no admite posicionamiento espacial. |
@@ -218,7 +217,7 @@ Crea un motor OpenAL con `MediaAPI.alEngine(true)` antes de construir el reprodu
 El motor comienza con audio mono seco y relativo al oyente. Proporciona un estado `SpatialAudio` para ubicar la fuente en el mundo. Pasar `null` restaura la reproducción seca y relativa al oyente, pero conserva la decodificación mono. El volumen, el silencio, la velocidad, la pausa y la sincronización son independientes de la configuración espacial.
 
 ```java
-import org.watermedia.api.media.engines.SFXEngine.SpatialAudio;
+import org.watermedia.api.media.SFXEngine.SpatialAudio;
 
 final ALEngine audio = MediaAPI.alEngine(true);
 final SpatialAudio position = new SpatialAudio(
@@ -312,7 +311,7 @@ Todavía hace falta una prueba dentro del juego para comprobar que la oclusión 
 
 La reproducción HTTPS requiere las capacidades de verificación del paquete incluido o de una compilación personalizada compatible. FFmpeg verifica la cadena de certificados y la identidad DNS o IP con una copia de las autoridades de confianza de Java tomada durante el arranque. Para servidores privados, configura las propiedades estándar `javax.net.ssl.trustStore` antes de iniciar WaterMedia. Un almacén vacío o inválido impide inicializar FFmpeg; la verificación no se desactiva automáticamente.
 
-`MediaAPI` crea el archivo PEM temporal, comprueba que el binario tenga las opciones necesarias y las aplica tanto a la entrada principal como a la pista de audio separada. Las autoridades también se transmiten a las solicitudes internas de HLS y DASH. El módulo de medios elimina el archivo al cerrar, después de liberar todos los reproductores. Un `customPath` vacío no añade el directorio de trabajo a la búsqueda de bibliotecas nativas.
+`FFMediaPlayer` crea el archivo PEM temporal al arrancar FFmpeg, comprueba que el binario tenga las opciones necesarias y las aplica tanto a la entrada principal como a la pista de audio separada de cada reproductor que abre; nada de la API pública toca esa configuración. Las autoridades también se transmiten a las solicitudes internas de HLS y DASH. El módulo de medios elimina el archivo al cerrar, después de liberar todos los reproductores. Un `customPath` vacío no añade el directorio de trabajo a la búsqueda de bibliotecas nativas.
 
 Se comparten autoridades de confianza; el transporte sigue siendo OpenSSL. No se transfieren fábricas de sockets JSSE personalizadas, callbacks de validación de nombres ni políticas de revocación de Java. Tampoco se modifica la lista de protocolos permitidos.
 
@@ -324,7 +323,7 @@ Las cookies generadas siguen el mismo límite: las respuestas `Set-Cookie` de ot
 
 ## Imágenes y contenedores DDS
 
-Las representaciones de chunks PNG implementan `IChunk`: `toBytes()` serializa los datos sin longitud, tipo ni CRC; `toChunk()` devuelve un contenedor `CHUNK` con su tipo y CRC calculado. La interfaz común documenta ambas operaciones heredadas. Las cuatro estructuras GIF implementan su propio `common.gif.IChunk` con `toBytes()`: las paletas emiten ternas RGB, los descriptores emiten su cuerpo y las extensiones gráficas incluyen tamaño y terminador. GIF no tiene un contenedor con CRC como PNG. Sus lectores de descriptores requieren búferes little-endian; la escritura de contenedores PNG requiere big-endian. Se conservan ambos grupos de serializadores para futuros escritores de animación. Los paquetes bajo `org.watermedia.bootstrap` y `org.watermedia.tools` son internos y quedan fuera del inventario de documentación de API pública. Los métodos restantes de la lista revisada ya documentan sus contratos en Javadoc. Ejecuta `gradle javadocInventory` desde el raíz del proyecto para listar la documentación faltante de métodos públicos con archivo y número de línea; la tarea sólo reporta los hallazgos.
+`CodecsAPI.decodeImage` elige un lector interno según los primeros bytes y lo devuelve como `ImageReader`. Las estructuras de chunks PNG y GIF de `api.codecs.common` son internas y conservan sus serializadores para futuros escritores de animación. Ejecuta `gradle javadocInventory` desde el raíz del proyecto para listar la documentación faltante de métodos públicos con archivo y número de línea; la tarea sólo reporta los hallazgos.
 
 ```java
 import org.watermedia.api.codecs.CodecsAPI;
@@ -346,7 +345,9 @@ try (ImageReader reader = CodecsAPI.decodeImage(encodedBuffer)) {
 
 Consulta el formato y la cantidad de planos; no supongas que todos los lectores entregan BGRA. `readAll()` conserva copias de los cuadros y limita el total de bytes decodificados por imagen. Varios lectores simultáneos siguen consumiendo memoria por separado: los reproductores coordinan su decodificación y reutilizan las imágenes decodificadas mediante sus cachés, mientras que el código que usa los decodificadores directamente gestiona su propia concurrencia.
 
-`BCReader` lee bloques BC1, BC3 y BC7 ya comprimidos dentro de un arreglo de texturas DDS con extensión DX10. Crea un `BCReader` directamente para acceder a los bloques; `CodecsAPI.decodeImage` no abre archivos DDS. No necesita un codificador nativo, pero los motores integrados OpenGL, Vulkan y de software no aceptan texturas BC, así que leer bloques DDS no implica soporte completo de reproducción. El pie de animación de WaterMedia aporta los tiempos por cuadro cuando existe; las capas DDS ordinarias tienen duración cero. Se rechazan cadenas de mipmaps, volúmenes y mapas de cubo. No hay codificador BC ni opción de caché de texturas recodificadas. `CodecsAPI.available(...)` informa soporte de decodificación de píxeles, no soporte de formatos de textura en la GPU.
+`CodecsAPI.encodeWebM(...)` devuelve un `ImageWriter` experimental que codifica VP9 dentro de WebM; requiere FFmpeg y aplana el canal alfa.
+
+`BCReader` lee bloques BC1, BC3 y BC7 ya comprimidos dentro de un arreglo de texturas DDS con extensión DX10. Crea un `org.watermedia.api.codecs.BCReader` directamente para acceder a los bloques; `CodecsAPI.decodeImage` no abre archivos DDS. No necesita un codificador nativo, pero los motores integrados OpenGL, Vulkan y de software no aceptan texturas BC, así que leer bloques DDS no implica soporte completo de reproducción. El pie de animación de WaterMedia aporta los tiempos por cuadro cuando existe; las capas DDS ordinarias tienen duración cero. Se rechazan cadenas de mipmaps, volúmenes y mapas de cubo. No hay codificador BC ni opción de caché de texturas recodificadas. `CodecsAPI.available(...)` informa soporte de decodificación de píxeles, no soporte de formatos de textura en la GPU.
 
 ## Reproducción sincronizada con Bridge
 
@@ -355,8 +356,8 @@ WaterMedia implementa el protocolo de sincronización y la corrección de tiempo
 El bridge de la autoridad envía hacia todos sus seguidores; el bridge del seguidor envía hacia la autoridad. Tu transporte identifica y autentica a los participantes y decide qué controles permite. Si encolas el contenido para usarlo después de la llamada, copia los bytes. Las implementaciones de `Bridge` deben ser seguras entre hilos y no bloquear.
 
 ```java
-import org.watermedia.api.media.players.ServerMediaPlayer;
-import org.watermedia.api.media.players.sync.Config;
+import org.watermedia.api.media.ServerMediaPlayer;
+import org.watermedia.api.media.Config;
 
 ServerMediaPlayer authority = MediaAPI.createPlayer(downstreamBridge,
         Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
@@ -365,7 +366,7 @@ MediaPlayer follower = MediaAPI.createPlayer(mrl, gfxSupplier, sfxSupplier, upst
 if (follower == null) throw new IllegalStateException("Follower media is unavailable");
 ```
 
-Los bridges y proveedores del ejemplo los construye la aplicación anfitriona. Usa `authority.sync(payload)` para lo recibido de un seguidor y `follower.sync(payload)` para lo recibido de la autoridad. Libera ambos reproductores cuando termine la sesión que representan.
+Los bridges y proveedores del ejemplo los construye la aplicación anfitriona. Usa `authority.sync(payload)` para lo recibido de un seguidor y `follower.sync(payload)` para lo recibido de la autoridad. Libera ambos reproductores cuando termine la sesión que representan. `MediaAPI.createFollower(upstreamBridge)` construye un seguidor sin medios (un reloj) para HUDs, réplicas de lógica y pruebas del protocolo; `MediaAPI.createPlayer()` construye un reloj simple sin bridge. Los motores y reproductores no tienen constructores públicos: toda instancia sale de `MediaAPI`.
 
 ### Secuencia de sincronización
 
@@ -399,7 +400,7 @@ Consulta `player.granted(capability)` para adaptar la interfaz a los permisos re
 
 ### Formato de los mensajes
 
-Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media.players.sync`. `Packet.of(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales.
+Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media`. `Packet.of(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales.
 
 | Mensaje | Tamaño | Dirección |
 | --- | ---: | --- |
@@ -413,6 +414,6 @@ Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.w
 
 Los loggers del proyecto se llaman `watermedia` y `watermedia_binaries`; configura esos nombres para obtener diagnósticos DEBUG. Los mensajes reducen las URLs multimedia a su origen y ocultan los valores de encabezados. Las trazas con URLs privadas conservan el tipo, la pila, las causas y las excepciones suprimidas como texto censurado. Los rechazos repetidos del servidor y las iteraciones lentas de reproducción se resumen en ventanas de diez segundos; los conteos pendientes se reportan al cerrar. FFmpeg todavía escribe sus propios mensajes nativos en la salida de error del proceso, fuera de los loggers del proyecto y de su censura; el enrutamiento por el logger del proyecto está preparado pero desactivado hasta validarlo en macOS y Linux.
 
-[ApiGuideExample.java](../src/test/java/org/watermedia/test/docs/ApiGuideExample.java) contiene ejemplos compilados de las fábricas de motores y de ambos roles de sincronización. [ApiGuideExampleTest.java](../src/test/java/org/watermedia/test/docs/ApiGuideExampleTest.java) ejecuta el ejemplo de imagen sin contexto gráfico. Los ejemplos de esta guía usan variables del anfitrión; no son una aplicación completa para copiar y ejecutar sin esa integración.
+[ApiGuideExample.java](../src/test/java/org/watermedia/ApiGuideExample.java) contiene ejemplos compilados de las fábricas de motores y de ambos roles de sincronización. [ApiGuideExampleTest.java](../src/test/java/org/watermedia/ApiGuideExampleTest.java) ejecuta el ejemplo de decodificación de imágenes, que filtra cada cuadro con un `DownscaleFilter`. Los ejemplos de esta guía usan variables del anfitrión; no son una aplicación completa para copiar y ejecutar sin esa integración.
 
 Las pruebas de reproducción y audio espacial usan FFmpeg y OpenAL reales cuando están disponibles; las ejecuciones con `require_natives=true` exigen los binarios de FFmpeg. La integración visual y acústica en Minecraft, los contextos gráficos y los dispositivos de audio todavía requieren comprobación en el entorno anfitrión.
