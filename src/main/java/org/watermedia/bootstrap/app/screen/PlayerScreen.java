@@ -2,7 +2,7 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;

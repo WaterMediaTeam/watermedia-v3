@@ -1,9 +1,9 @@
 package org.watermedia.bootstrap.app;
 
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.ALEngine;
-import org.watermedia.api.media.engines.JSEngine;
-import org.watermedia.api.media.engines.SFXEngine;
+import org.watermedia.api.media.ALEngine;
+import org.watermedia.api.media.JSEngine;
+import org.watermedia.api.media.SFXEngine;
 
 import java.util.function.Supplier;
 

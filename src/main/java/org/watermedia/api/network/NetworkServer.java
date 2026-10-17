@@ -45,8 +45,8 @@ public final class NetworkServer {
     private static volatile Running running;
     private static boolean shutdownHook;
 
-    /** Starts the configured listener; invalid configuration and bind failures propagate to the caller. */
-    public static synchronized void start(final int port, final WaterMedia instance) throws IOException {
+    // STARTS THE CONFIGURED LISTENER UNDER cwd; INVALID CONFIGURATION AND BIND FAILURES PROPAGATE TO THE CALLER
+    static synchronized void start(final int port, final Path cwd) throws IOException {
         if (running != null) throw new IllegalStateException("The file server is already running");
         final var config = WaterMediaConfig.network;
         if (config.serverBindAddress == null || config.serverBindAddress.isBlank())
@@ -58,7 +58,7 @@ public final class NetworkServer {
             throw new IllegalArgumentException("A non-loopback file server requires a custom upload token");
         if (config.serverMaxRequests < 1 || config.serverTimeout < 1 || config.maxStorageSize < 1 || config.maxUploadSize < 0)
             throw new IllegalArgumentException("File server concurrency, deadline and storage limits must be positive");
-        final Path storage = instance.cwd.resolve("watermedia").resolve("files").toAbsolutePath().normalize();
+        final Path storage = cwd.resolve("watermedia").resolve("files").toAbsolutePath().normalize();
         Files.createDirectories(storage);
         // OWN THE STORAGE BEFORE CLEANUP, AND KEEP THE LOCK UNTIL ALL WORKERS EXIT.
         final FileChannel storageChannel = FileChannel.open(storage.resolve(".server.lock"),
@@ -180,14 +180,14 @@ public final class NetworkServer {
         }
     }
 
-    /** Current listener address, including an assigned ephemeral port, or null when stopped. */
-    public static InetSocketAddress address() {
+    // CURRENT LISTENER ADDRESS, INCLUDING AN ASSIGNED EPHEMERAL PORT, OR NULL WHEN STOPPED
+    static InetSocketAddress address() {
         final Running state = running;
         return state == null || state.stopping ? null : state.server.getAddress();
     }
 
-    /** Stops admission and active transfers; completed files remain on disk. Safe to repeat. */
-    public static synchronized void stop() {
+    // STOPS ADMISSION AND ACTIVE TRANSFERS; COMPLETED FILES REMAIN ON DISK. SAFE TO REPEAT
+    static synchronized void stop() {
         final Running state = running;
         if (state == null) return;
         state.stopping = true;

@@ -8,8 +8,8 @@ import javafx.scene.image.ImageView;
 import javafx.scene.layout.StackPane;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.api.media.engines.JFXEngine;
+import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.media.JFXEngine;
 import org.watermedia.bootstrap.app.AppContext;
 
 import javax.swing.JComponent;

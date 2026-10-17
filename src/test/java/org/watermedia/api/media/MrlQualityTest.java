@@ -1,0 +1,77 @@
+package org.watermedia.api.media;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.watermedia.api.util.MediaQuality;
+import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
+
+import java.net.URI;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Quality bucket semantics on {@link MRL.Source}: closest-fallback resolution
+ * via {@link MRL.Source#uri(MediaQuality)}, in-place quality remap via
+ * {@link MRL#moveQuality}, and bidirectional URI/quality lookup via
+ * {@link MRL.Source#qualityOf(URI)}.
+ */
+@DisplayName("MRL quality buckets")
+public class MrlQualityTest {
+    @BeforeAll
+    static void clientBootstrap() { MediaBootstrap.client(); }
+
+    private static final long TIMEOUT_MS = 2000L;
+
+    @Test
+    @DisplayName("Source resolves a URI through the closest fallback")
+    void testSourceResolvesUriThroughClosestFallback() {
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("3.png")));
+        assertTrue(mrl.await(TIMEOUT_MS));
+
+        final MRL.Source source = mrl.source(0);
+        assertNotNull(source);
+        assertFalse(source.qualities().isEmpty());
+
+        final URI resolved = source.uri(MediaQuality.HIGHER);
+        assertNotNull(resolved);
+    }
+
+    @Test
+    @DisplayName("moveQuality rewrites the quality key in place")
+    void testMoveQualityRewritesQualityKey() {
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
+        assertTrue(mrl.await(TIMEOUT_MS));
+
+        final MRL.Source before = mrl.source(0);
+        assertNotNull(before);
+        final MediaQuality oldKey = before.qualities().keySet().iterator().next();
+
+        // SKIP THE NO-OP CASE WHERE HIGH IS ALREADY THE KEY — TEST REMAINS MEANINGFUL.
+        final MediaQuality target = oldKey == MediaQuality.HIGH ? MediaQuality.MEDIUM : MediaQuality.HIGH;
+        mrl.moveQuality(0, oldKey, target);
+
+        final MRL.Source after = mrl.source(0);
+        assertNotNull(after);
+        assertTrue(after.qualities().containsKey(target));
+        assertFalse(after.qualities().containsKey(oldKey));
+    }
+
+    @Test
+    @DisplayName("qualityOf round-trips a known URI")
+    void testQualityOfRoundTripsKnownUri() {
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_DIR.resolve("3.gif")));
+        assertTrue(mrl.await(TIMEOUT_MS));
+
+        final MRL.Source source = mrl.source(0);
+        assertNotNull(source);
+        final MediaQuality known = source.qualities().keySet().iterator().next();
+        final URI uri = source.uri(known);
+
+        assertEquals(known, source.qualityOf(uri));
+    }
+}

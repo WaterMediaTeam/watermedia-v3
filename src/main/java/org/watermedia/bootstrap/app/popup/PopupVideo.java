@@ -1,6 +1,6 @@
 package org.watermedia.bootstrap.app.popup;
 
-import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.GFXEngine;
 
 import javax.swing.JComponent;
 

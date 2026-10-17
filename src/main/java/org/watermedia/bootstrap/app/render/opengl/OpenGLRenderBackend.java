@@ -11,7 +11,7 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.GFXEngine;
 import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.RenderSystem;

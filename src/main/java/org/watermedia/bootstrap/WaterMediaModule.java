@@ -1,0 +1,242 @@
+package org.watermedia.bootstrap;
+
+import org.watermedia.WaterMedia.BootStatus;
+import org.watermedia.WaterMedia.BootStatus.Failure;
+import org.watermedia.WaterMedia.BootStatus.Id;
+import org.watermedia.WaterMedia.BootStatus.Outcome;
+import org.watermedia.WaterMedia.BootStatus.Progress;
+import org.watermedia.WaterMedia.BootStatus.State;
+import org.watermedia.tools.IOTool;
+import org.watermedia.tools.ThreadTool;
+
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
+
+/** Internal module lifecycle contract; only WaterMedia coordinates module instances. */
+public abstract class WaterMediaModule {
+    private Progress progress = Progress.NONE;
+    private Bootstrap bootstrap;
+    private int index;
+
+    protected abstract void start() throws Exception;
+    protected void release() throws Exception {}
+
+    protected final synchronized void task(final int step, final int total, final String name) {
+        this.progress = new Progress(step, total, Objects.requireNonNull(name), 0, 0, "", false);
+        if (this.bootstrap != null) this.bootstrap.update(this.index, this.progress);
+    }
+
+    protected final synchronized void work(final String name, final long done, final long total, final boolean remote) {
+        final Progress previous = this.progress;
+        this.progress = new Progress(previous.taskStep(), previous.taskSteps(), previous.taskName(),
+                done, total, Objects.requireNonNull(name), remote);
+        if (this.bootstrap != null) this.bootstrap.update(this.index, this.progress);
+    }
+
+    protected final synchronized void failure(final String task, final Throwable cause) {
+        if (this.bootstrap != null) this.bootstrap.report(this.index, task, Objects.requireNonNull(cause), false);
+    }
+
+    /** One bootstrap session: owns its module instances and publishes immutable snapshots to other threads. */
+    public static final class Bootstrap {
+        /** Declares a module, its side, whether startup depends on it and the modules it requires. */
+        public record Definition(Id id, boolean client, boolean essential, List<Id> required,
+                                 Supplier<WaterMediaModule> factory) {
+            public Definition {
+                Objects.requireNonNull(id);
+                Objects.requireNonNull(factory);
+                required = List.copyOf(required);
+            }
+        }
+
+        private final List<Definition> definitions;
+        private final WaterMediaModule[] instances;
+        private final List<BootStatus.Module> modules = new ArrayList<>();
+        private final List<Failure> failures = new ArrayList<>();
+        private volatile BootStatus status;
+        private State state = State.STOPPED;
+        private int current = -1;
+        private Progress progress = Progress.NONE;
+
+        public Bootstrap(final List<Definition> definitions) {
+            this.definitions = List.copyOf(definitions);
+            this.instances = new WaterMediaModule[definitions.size()];
+            final EnumSet<Id> seen = EnumSet.noneOf(Id.class);
+            for (final Definition definition: definitions) {
+                if (seen.contains(definition.id()) || !seen.containsAll(definition.required()))
+                    throw new IllegalArgumentException("Duplicate or unordered bootstrap dependency: " + definition.id());
+                seen.add(definition.id());
+                this.modules.add(new BootStatus.Module(definition.id(), Outcome.PENDING, null, ""));
+            }
+            this.publish();
+        }
+
+        /** Returns the latest published snapshot. */
+        public BootStatus status() { return this.status; }
+
+        /** Publishes a lifecycle state change. */
+        public synchronized void state(final State state) {
+            this.state = state;
+            this.publish();
+        }
+
+        /** Starts every module in order; client modules are skipped on a server. */
+        public void start(final boolean clientSide) {
+            this.state(State.STARTING);
+            Id essentialFailure = null;
+            boolean interrupted = false;
+            Error fatal = null;
+            for (int i = 0; i < this.definitions.size(); i++) {
+                final Definition definition = this.definitions.get(i);
+                this.select(i);
+                if (essentialFailure != null) {
+                    this.outcome(i, Outcome.BLOCKED, essentialFailure, "Essential startup failed");
+                    continue;
+                }
+                if (definition.client() && !clientSide) {
+                    this.outcome(i, Outcome.SKIPPED, null, "Client service");
+                    continue;
+                }
+                Id missing = null;
+                for (final Id dependency: definition.required()) {
+                    if (!this.status.ready(dependency)) {
+                        missing = dependency;
+                        break;
+                    }
+                }
+                if (missing != null) {
+                    this.outcome(i, Outcome.BLOCKED, missing, "Required service is unavailable");
+                    if (definition.essential()) essentialFailure = definition.id();
+                    continue;
+                }
+                this.outcome(i, Outcome.STARTING, null, "");
+                try {
+                    if (ThreadTool.isInterrupted()) throw new InterruptedException("Bootstrap interrupted");
+                    final WaterMediaModule module = definition.factory().get();
+                    if (module == null) {
+                        this.outcome(i, Outcome.SKIPPED, null, "Optional module is not installed");
+                        continue;
+                    }
+                    this.instances[i] = module;
+                    synchronized (module) {
+                        module.bootstrap = this;
+                        module.index = i;
+                    }
+                    module.start();
+                    this.outcome(i, Outcome.READY, null, "");
+                } catch (final Exception | Error failure) {
+                    this.report(i, this.status.progress().taskName(), failure, true);
+                    interrupted |= failure instanceof InterruptedException || ThreadTool.isInterrupted();
+                    if (failure instanceof final Error error && !(error instanceof LinkageError)) fatal = error;
+                    if (definition.essential() || interrupted || fatal != null) essentialFailure = definition.id();
+                }
+            }
+            if (essentialFailure != null) {
+                final boolean restoreInterrupt = Thread.interrupted() || interrupted;
+                try {
+                    this.unwind();
+                } catch (final Error cleanup) {
+                    fatal = (Error) IOTool.mergeFailure(fatal, cleanup);
+                } finally {
+                    synchronized (this) {
+                        this.select(-1);
+                        this.state(State.FAILED);
+                    }
+                    if (restoreInterrupt) ThreadTool.interrupt();
+                }
+                if (fatal != null) throw fatal;
+                throw new IllegalStateException("Essential WaterMedia startup failed: " + essentialFailure,
+                        this.status.failures().isEmpty() ? null : this.status.failures().get(0).cause());
+            }
+            synchronized (this) {
+                this.state(this.failures.isEmpty()
+                        && this.modules.stream().noneMatch(module -> module.outcome() == Outcome.BLOCKED || module.outcome() == Outcome.FAILED)
+                        ? State.READY : State.DEGRADED);
+            }
+        }
+
+        /** Releases every started module in reverse order; unfinished resources keep the session failed. */
+        public void stop() {
+            this.state(State.STOPPING);
+            this.unwind();
+            synchronized (this) {
+                this.select(-1);
+                this.state(this.ownsResources() ? State.FAILED : State.STOPPED);
+            }
+            if (this.ownsResources()) throw new IllegalStateException("WaterMedia shutdown has unfinished resources; retry stop after inspecting status()");
+        }
+
+        /** Whether any module instance is still retained by this session. */
+        public boolean ownsResources() {
+            for (final WaterMediaModule module: this.instances) if (module != null) return true;
+            return false;
+        }
+
+        private void unwind() {
+            Error fatal = null;
+            Id waiting = null;
+            // A MODULE THAT CANNOT CLOSE RETAINS ITS PREREQUISITES UNTIL A LATER STOP RETRIES IT.
+            for (int i = this.instances.length - 1; i >= 0; i--) {
+                final WaterMediaModule module = this.instances[i];
+                if (module == null) continue;
+                if (waiting != null) {
+                    this.outcome(i, Outcome.BLOCKED, waiting, "Shutdown deferred until later resources close");
+                    continue;
+                }
+                this.select(i);
+                final BootStatus.Module previous = this.modules.get(i);
+                try {
+                    module.release();
+                    synchronized (module) { module.bootstrap = null; }
+                    this.instances[i] = null;
+                    if (this.state == State.STOPPING || previous.outcome() == Outcome.READY)
+                        this.outcome(i, Outcome.STOPPED, null, "");
+                } catch (final Exception | Error failure) {
+                    this.report(i, "Shutdown", failure, true);
+                    if (failure instanceof InterruptedException) ThreadTool.interrupt();
+                    waiting = previous.id();
+                    if (failure instanceof final Error error && !(error instanceof LinkageError)) fatal = error;
+                }
+            }
+            if (fatal != null) {
+                this.state(State.FAILED);
+                throw fatal;
+            }
+        }
+
+        private boolean active(final int index) {
+            return this.current == index && (this.state == State.STARTING || this.state == State.STOPPING);
+        }
+
+        private synchronized void update(final int index, final Progress progress) {
+            if (!this.active(index)) return;
+            this.progress = progress;
+            this.publish();
+        }
+
+        private synchronized void report(final int index, final String task, final Throwable failure, final boolean terminal) {
+            if (!this.active(index)) return;
+            this.failures.add(new Failure(this.definitions.get(index).id(), task, failure));
+            if (terminal) this.outcome(index, Outcome.FAILED, null, failure.getClass().getSimpleName());
+            else this.publish();
+        }
+
+        private synchronized void outcome(final int index, final Outcome outcome, final Id dependency, final String reason) {
+            this.modules.set(index, new BootStatus.Module(this.definitions.get(index).id(), outcome, dependency, reason));
+            this.publish();
+        }
+
+        private synchronized void publish() {
+            this.status = new BootStatus(this.state, this.current + 1, this.definitions.size(),
+                    this.current < 0 ? null : this.definitions.get(this.current).id(), this.progress, this.modules, this.failures);
+        }
+
+        private synchronized void select(final int index) {
+            this.current = index;
+            this.progress = Progress.NONE;
+        }
+    }
+}

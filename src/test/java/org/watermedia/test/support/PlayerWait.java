@@ -1,7 +1,7 @@
 package org.watermedia.test.support;
 
-import org.watermedia.api.media.players.MediaPlayer;
-import org.watermedia.api.media.players.MediaPlayer.Status;
+import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.media.MediaPlayer.Status;
 
 import java.util.Arrays;
 import java.util.EnumSet;

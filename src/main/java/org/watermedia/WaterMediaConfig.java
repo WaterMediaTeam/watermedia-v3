@@ -6,6 +6,7 @@ import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.annotations.*;
 import me.srrapero720.waterconfig.impl.fields.StringField;
 import org.watermedia.api.util.MediaQuality;
+import org.watermedia.bootstrap.WaterMediaModule;
 
 import java.io.File;
 import java.nio.file.Path;
@@ -285,7 +286,7 @@ public final class WaterMediaConfig {
     /** Internal bootstrap operation for the configuration facade. */
     public static final class Module extends WaterMediaModule {
         @Override
-        protected void start(final WaterMedia context) throws InterruptedException {
+        protected void start() throws InterruptedException {
             this.task(1, 1, "Configuration");
             WaterConfig.init();
             final ConfigSpec existing = WaterConfig.spec(WaterMedia.ID, false);

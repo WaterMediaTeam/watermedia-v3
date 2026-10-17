@@ -3,23 +3,12 @@ package org.watermedia.api.media;
 import java.io.File;
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.cert.CertificateException;
-import java.security.KeyStore;
-import java.util.Base64;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
-import java.util.Objects;
-import java.util.TreeSet;
-import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avutil.AVBufferRef;
-import org.bytedeco.ffmpeg.avutil.AVClass;
-import org.bytedeco.ffmpeg.avutil.AVDictionary;
 // import org.bytedeco.ffmpeg.avutil.LogCallback; // NATIVE LOG ROUTING, DISABLED IN startFFmpeg
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avformat;
@@ -27,25 +16,6 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
-import org.bytedeco.javacpp.Pointer;
-import org.bytedeco.javacpp.PointerPointer;
-import org.watermedia.api.media.engines.ALEngine;
-import org.watermedia.api.media.engines.AWTEngine;
-import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.api.media.engines.GLEngine;
-import org.watermedia.api.media.engines.HeadlessGFXEngine;
-import org.watermedia.api.media.engines.JFXEngine;
-import org.watermedia.api.media.engines.JSEngine;
-import org.watermedia.api.media.engines.SFXEngine;
-import org.watermedia.api.media.engines.vk.VKContext;
-import org.watermedia.api.media.engines.VKEngine;
-import org.watermedia.api.media.players.FFMediaPlayer;
-import org.watermedia.api.media.players.MediaPlayer;
-import org.watermedia.api.media.players.ServerMediaPlayer;
-import org.watermedia.api.media.players.sync.Bridge;
-import org.watermedia.api.media.players.sync.Config;
-import org.watermedia.api.media.players.TxMediaPlayer;
-import org.watermedia.api.media.players.util.NetworkCache;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.FFTool;
@@ -53,11 +23,8 @@ import org.watermedia.tools.IOTool;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.WaterMediaModule;
+import org.watermedia.bootstrap.WaterMediaModule;
 
-import static org.bytedeco.ffmpeg.global.avformat.av_find_input_format;
-import static org.bytedeco.ffmpeg.global.avformat.avio_protocol_get_class;
-import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.watermedia.WaterMedia.LOGGER;
 
 public final class MediaAPI {
@@ -67,11 +34,6 @@ public final class MediaAPI {
     private static final String STEP_FFMPEG = "FFMPEG";
 
     // NATIVE STATE IS PUBLISHED AT STARTUP AND CLEARED DURING MODULE SHUTDOWN.
-    private static Path certificateFile;
-    private static volatile Certificates certificates;
-
-    private record Certificates(String file, String protocols) {}
-
     private static volatile boolean FFMPEG_LOADED;
     private static volatile Throwable FFMPEG_FAILURE;
     // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
@@ -125,13 +87,7 @@ public final class MediaAPI {
         return MRL.preload(uri);
     }
 
-    /**
-     * Creates a {@link ServerMediaPlayer} instance to run time accountability and manage synchronization on server-side
-     * <p>
-     * This player doesn't load any media, synchronization needs to be handled by your own methods.
-     * </p>
-     * @return {@link ServerMediaPlayer} instance with no status
-     */
+    /** Creates a plain {@link ServerMediaPlayer}: a clock without media or engines, on either side; broadcasting, if any, stays manual. */
     public static ServerMediaPlayer createPlayer() {
         return new ServerMediaPlayer();
     }
@@ -146,6 +102,18 @@ public final class MediaAPI {
      */
     public static ServerMediaPlayer createPlayer(final Bridge bridge, final Config.Capability... capabilities) {
         return new ServerMediaPlayer(bridge, capabilities);
+    }
+
+    /**
+     * Creates a headless {@link ServerMediaPlayer} follower: a wall clock driven by a remote authority
+     * through the given carrier, useful as a media-less mirror (HUDs, logic-side replicas) and for
+     * exercising the protocol without a media backend. Feed received payloads through
+     * {@link ServerMediaPlayer#sync(ByteBuffer)}.
+     * @param bridge upstream byte carrier towards the authority
+     * @return the follower instance
+     */
+    public static ServerMediaPlayer createFollower(final Bridge bridge) {
+        return ServerMediaPlayer.follower(bridge);
     }
 
     /**
@@ -252,7 +220,7 @@ public final class MediaAPI {
         }
     }
 
-    // ENGINE BASE CONSTRUCTORS ENFORCE CLIENT ACCESS; HEADLESS OUTPUT IS ALSO AVAILABLE ON SERVERS.
+    // ENGINE AND MEDIA PLAYER CONSTRUCTORS ENFORCE CLIENT ACCESS; ONLY ServerMediaPlayer EXISTS ON A DEDICATED SERVER.
 
     /**
      * Creates an OpenGL video engine bound to a render thread and the executor dispatching onto it.
@@ -292,10 +260,12 @@ public final class MediaAPI {
         return new AWTEngine(onFrame);
     }
 
-    /**
-     * Creates a headless capture engine — the only engine allowed on a server-side environment.
-     * @param preload whether the engine reports frame-texture preloading support
-     */
+    /** Creates a headless capture engine that records uploads in memory, for tests and image processing without a GPU. */
+    public static HeadlessGFXEngine headlessEngine() {
+        return new HeadlessGFXEngine();
+    }
+
+    /** Creates a headless capture engine; {@code preload} makes it report frame-texture preloading support. */
     public static HeadlessGFXEngine headlessEngine(final boolean preload) {
         return new HeadlessGFXEngine(preload);
     }
@@ -355,22 +325,10 @@ public final class MediaAPI {
         return VULKAN_DECODE;
     }
 
-    /** Requires certificate and peer-name verification for the input and its nested connections. */
-    public static void configureTLS(final AVDictionary options) {
-        Objects.requireNonNull(options, "options");
-        final Certificates current = certificates;
-        if (current == null) throw new IllegalStateException("Native HTTPS verification has not initialized");
-        if (av_dict_set(options, "verify", null, 0) < 0 || av_dict_set(options, "cafile", null, 0) < 0
-                || av_dict_set(options, "verifyhost", null, 0) < 0
-                || av_dict_set(options, "tls_verify", "1", 0) < 0 || av_dict_set(options, "ca_file", current.file(), 0) < 0
-                || av_dict_set(options, "protocol_opts", current.protocols(), 0) < 0)
-            throw new IllegalStateException("Cannot configure native HTTPS verification");
-    }
-
     /** Internal bootstrap operation for media resolution and native playback. */
     public static final class Module extends WaterMediaModule {
         @Override
-        protected void start(final WaterMedia context) {
+        protected void start() {
             FFMPEG_LOADED = false;
             FFMPEG_FAILURE = null;
             VULKAN_DECODE = false;
@@ -378,7 +336,7 @@ public final class MediaAPI {
             MRL.start();
             this.task(2, 3, STEP_CACHE);
             try {
-                NetworkCache.start(context.tmp.resolve("cache"));
+                NetworkCache.start(WaterMedia.tmp().resolve("cache"));
             } catch (final Exception failure) {
                 this.failure(STEP_CACHE, failure);
             }
@@ -388,18 +346,12 @@ public final class MediaAPI {
         }
 
         @Override
-        protected void release(final WaterMedia context) throws Exception {
+        protected void release() throws Exception {
             FFMPEG_LOADED = false;
             FFMPEG_FAILURE = null;
             VULKAN_DECODE = false;
             Throwable failure = null;
-            for (final AutoCloseable resource: new AutoCloseable[] { MRL::release, NetworkCache::release, () -> {
-                certificates = null;
-                if (certificateFile != null) {
-                    Files.deleteIfExists(certificateFile);
-                    certificateFile = null;
-                }
-            } }) {
+            for (final AutoCloseable resource: new AutoCloseable[] { MRL::release, NetworkCache::release, FFMediaPlayer::stopTLS }) {
                 try {
                     resource.close();
                 } catch (final Exception | Error problem) {
@@ -441,7 +393,7 @@ public final class MediaAPI {
 
             LOGGER.info(IT, "Configured JavaCPP bindings with: {}", paths);
 
-            LOGGER.info(IT, "=== FFMPEG Build Info ===");
+            LOGGER.info(IT, "=== FFMPEG Build Info ==="); // TODO: parse this
             LOGGER.info(IT, "• avformat: {}", avformat.avformat_version());
             LOGGER.info(IT, "• avcodec:  {}", avcodec.avcodec_version());
             LOGGER.info(IT, "• avutil:   {}", avutil.avutil_version());
@@ -521,58 +473,7 @@ public final class MediaAPI {
                     ? "available (zero-copy GPU import needs AVVkFrame JNI, absent here — software decode + host-import is used)"
                     : "unavailable");
 
-            if (certificateFile != null) throw new IllegalStateException("The previous TLS session has not stopped");
-            // HTTP MUST RETAIN TLS OPTIONS AND CREDENTIAL ORIGINS FOR NESTED MEDIA REQUESTS.
-            for (final String protocol: new String[] { "http", "https", "hls", "dash" }) {
-                final boolean http = protocol.equals("http") || protocol.equals("https");
-                final AVClass type;
-                if (http) {
-                    type = avio_protocol_get_class(protocol);
-                } else {
-                    final var format = av_find_input_format(protocol);
-                    type = FFTool.isNull(format) ? null : format.priv_class();
-                }
-                if (FFTool.isNull(type)) throw new IllegalStateException("Required native transport is unavailable: " + protocol);
-                try (final var object = new PointerPointer<AVClass>(1).put(type)) {
-                    for (final String option: http ? new String[] { "tls_verify", "ca_file", "header_origin" } : new String[] { "protocol_opts" }) {
-                        final var definition = av_opt_find(object, option, null, 0, AV_OPT_SEARCH_FAKE_OBJ);
-                        if (FFTool.isNull(definition))
-                            throw new IllegalStateException("FFmpeg lacks the required transport security patches; install the WaterMedia native build");
-                    }
-                }
-            }
-
-            final TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            factory.init((KeyStore) null);
-            final var anchors = new TreeSet<String>();
-            final var encoder = Base64.getMimeEncoder(64, new byte[] { '\n' });
-            for (final var manager: factory.getTrustManagers()) {
-                if (manager instanceof final X509TrustManager trust) {
-                    for (final var certificate: trust.getAcceptedIssuers())
-                        anchors.add(encoder.encodeToString(certificate.getEncoded()));
-                }
-            }
-            if (anchors.isEmpty()) throw new CertificateException("The JVM truststore exposes no certificate authorities");
-            final var pem = new StringBuilder();
-            for (final String certificate: anchors)
-                pem.append("-----BEGIN CERTIFICATE-----\n").append(certificate).append("\n-----END CERTIFICATE-----\n");
-
-            // TRACK PARTIAL WRITES FOR MODULE CLEANUP; ONLY A COMPLETE BUNDLE BECOMES AVAILABLE TO PLAYERS.
-            certificateFile = Files.createTempFile("watermedia-ca-", ".pem");
-            Files.writeString(certificateFile, pem, StandardCharsets.US_ASCII);
-            final String file = certificateFile.toString();
-            final var nested = new AVDictionary(null);
-            final var serialized = new BytePointer((Pointer) null);
-            try {
-                // NATIVE ESCAPING PRESERVES WINDOWS DRIVE LETTERS AND SPECIAL CHARACTERS IN THE CA PATH.
-                if (av_dict_set(nested, "tls_verify", "1", 0) < 0 || av_dict_set(nested, "ca_file", file, 0) < 0
-                        || av_dict_get_string(nested, serialized, (byte) '=', (byte) ':') < 0)
-                    throw new IllegalStateException("Cannot configure nested HTTPS verification");
-                certificates = new Certificates(file, serialized.getString(StandardCharsets.UTF_8));
-            } finally {
-                av_free(serialized);
-                av_dict_free(nested);
-            }
+            FFMediaPlayer.startTLS();
             final BytePointer license = avformat.avformat_license();
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), FFTool.string(license, "unknown"));
             IOTool.closeQuietly(license);

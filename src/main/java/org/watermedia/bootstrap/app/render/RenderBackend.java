@@ -1,7 +1,7 @@
 package org.watermedia.bootstrap.app.render;
 
 import org.joml.Matrix4f;
-import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.GFXEngine;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;

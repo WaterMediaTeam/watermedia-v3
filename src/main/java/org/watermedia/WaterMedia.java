@@ -2,10 +2,12 @@ package org.watermedia;
 
 import org.apache.logging.log4j.Logger;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
+import org.watermedia.bootstrap.WaterMediaModule;
+import org.watermedia.bootstrap.WaterMediaModule.Bootstrap;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
@@ -17,7 +19,6 @@ import java.util.function.Supplier;
 
 import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMedia.BootStatus.State;
-import org.watermedia.WaterMediaModule.Bootstrap;
 
 /** Coordinates WaterMedia services and exposes immutable bootstrap diagnostics. */
 public final class WaterMedia {
@@ -29,6 +30,9 @@ public final class WaterMedia {
     private static final Path DEFAULT_TEMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
     private static final Path DEFAULT_CWD = Path.of("").toAbsolutePath();
 
+    // THE ENVIRONMENT OF ONE SESSION; PUBLISHED BEFORE ANY MODULE STARTS AND RETAINED UNTIL EVERY MODULE STOPS.
+    private record Context(Path tmp, Path cwd, boolean clientSide) {}
+
     // FACTORY BODIES ARE RESOLVED ONLY AFTER SIDE AND DEPENDENCY GATES PASS.
     private static final List<Bootstrap.Definition> MODULES = List.of(
             new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), WaterMediaConfig.Module::new),
@@ -39,19 +43,10 @@ public final class WaterMedia {
     );
     private static final Object LIFECYCLE = new Object();
     private static boolean transitioning;
-    private static volatile WaterMedia instance;
+    private static volatile Context instance;
     private static volatile Bootstrap bootstrap = new Bootstrap(MODULES);
-    public final String name;
-    public final Path tmp, cwd;
-    public final boolean clientSide;
 
-    WaterMedia(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
-        this.name = Objects.requireNonNull(name);
-        if (name.isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
-        this.tmp = (tmp == null ? DEFAULT_TEMP : tmp).toAbsolutePath().normalize();
-        this.cwd = (cwd == null ? DEFAULT_CWD : cwd).toAbsolutePath().normalize();
-        this.clientSide = clientSide;
-    }
+    private WaterMedia() {}
 
     /**
      * Starts configured services. Client-only factories are never invoked on a server.
@@ -59,7 +54,9 @@ public final class WaterMedia {
      */
     public static void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
         if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host lifecycle thread, not a managed worker");
-        final WaterMedia context = new WaterMedia(name, tmp, cwd, clientSide);
+        if (Objects.requireNonNull(name).isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
+        final Context context = new Context((tmp == null ? DEFAULT_TEMP : tmp).toAbsolutePath().normalize(),
+                (cwd == null ? DEFAULT_CWD : cwd).toAbsolutePath().normalize(), clientSide);
         final Bootstrap session = new Bootstrap(MODULES);
         synchronized (LIFECYCLE) {
             if (transitioning || instance != null) throw new IllegalStateException("WaterMedia already has a session or lifecycle transition");
@@ -72,7 +69,7 @@ public final class WaterMedia {
         }
         LOGGER.info("Starting {} {} for {} ({})", NAME, VERSION, name, clientSide ? "client" : "server");
         try {
-            session.start(context);
+            session.start(clientSide);
             LOGGER.info("{} startup completed: {}", NAME, session.status().state());
         } finally {
             synchronized (LIFECYCLE) { transitioning = false; }
@@ -87,12 +84,10 @@ public final class WaterMedia {
      */
     public static void stop() {
         if (ThreadTool.workerThread()) throw new IllegalStateException("Stop WaterMedia from a host lifecycle thread, not a managed worker");
-        final WaterMedia context;
         final Bootstrap session;
         synchronized (LIFECYCLE) {
             if (transitioning) throw new IllegalStateException("WaterMedia is already changing lifecycle state");
-            context = instance;
-            if (context == null) return;
+            if (instance == null) return;
             session = bootstrap;
             // PLAYER ADMISSION AND CLOSING THE SESSION SHARE THIS SHORT GATE; NO CALLBACK RUNS HERE.
             synchronized (MediaPlayer.class) {
@@ -103,7 +98,7 @@ public final class WaterMedia {
             }
         }
         try {
-            session.stop(context);
+            session.stop();
             LOGGER.info("{} stopped", NAME);
         } finally {
             synchronized (LIFECYCLE) {
@@ -126,24 +121,27 @@ public final class WaterMedia {
     public static String toId(final String path) { return ID + ":" + path; }
 
     /** Returns the session's absolute working directory; throws when WaterMedia is not initialized. */
-    public static Path cwd() {
-        final WaterMedia context = instance;
-        if (context == null) throw new IllegalStateException(NAME + " was not initialized");
-        return context.cwd;
-    }
+    public static Path cwd() { return context().cwd; }
 
     /** Returns the session's absolute temporary directory; throws when WaterMedia is not initialized. */
-    public static Path tmp() {
-        final WaterMedia context = instance;
-        if (context == null) throw new IllegalStateException(NAME + " was not initialized");
-        return context.tmp;
+    public static Path tmp() { return context().tmp; }
+
+    /** Whether the session runs on a client; throws when WaterMedia is not initialized. */
+    public static boolean clientSide() { return context().clientSide; }
+
+    /**
+     * Rejects a client-only operation requested by {@code type} when WaterMedia is uninitialized or server-side.
+     * Engines, media players and any client-only tool call it from their constructors, so a dedicated server
+     * cannot reach rendering, audio or decoding code even where the host does not hide those classes.
+     */
+    public static void checkIsClientSideOrThrow(final Class<?> type) {
+        if (!context().clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
     }
 
-    /** Rejects a client-only operation requested by {@code type} when WaterMedia is uninitialized or server-side. */
-    public static void checkIsClientSideOrThrow(final Class<?> type) {
-        final WaterMedia context = instance;
+    private static Context context() {
+        final Context context = instance;
         if (context == null) throw new IllegalStateException(NAME + " was not initialized");
-        if (!context.clientSide) throw new IllegalStateException("Called " + type.getSimpleName() + " in a server environment");
+        return context;
     }
 
     // THE JVM VERIFIES MODULE SUBTYPES WHILE LINKING; KEEP THE CLIENT JAR BEHIND A LAZY HOLDER.

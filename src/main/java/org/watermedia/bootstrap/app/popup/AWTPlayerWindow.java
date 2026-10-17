@@ -1,8 +1,8 @@
 package org.watermedia.bootstrap.app.popup;
 
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.AWTEngine;
-import org.watermedia.api.media.engines.GFXEngine;
+import org.watermedia.api.media.AWTEngine;
+import org.watermedia.api.media.GFXEngine;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 

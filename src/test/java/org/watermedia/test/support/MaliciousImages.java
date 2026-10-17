@@ -1,6 +1,6 @@
 package org.watermedia.test.support;
 
-import org.watermedia.test.codecs.Pentesting;
+import org.watermedia.api.codecs.Pentesting;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

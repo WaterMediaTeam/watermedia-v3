@@ -4,7 +4,8 @@ import org.watermedia.WaterMedia.BootStatus;
 import me.srrapero720.waterconfig.WaterConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.players.ServerMediaPlayer;
+import org.watermedia.api.media.ServerMediaPlayer;
+import org.watermedia.api.media.TLSLifecycleProbe;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.test.support.LocalHttp;
 
@@ -64,7 +65,7 @@ public final class BootstrapProbe {
                 }
             }
             if (Files.exists(root.resolve("first/ffmpeg"))) throw new AssertionError("Server extracted client natives");
-            final ServerMediaPlayer player = new ServerMediaPlayer();
+            final ServerMediaPlayer player = MediaAPI.createPlayer();
             try {
                 WaterMedia.stop();
                 throw new AssertionError("Shutdown accepted an open player");

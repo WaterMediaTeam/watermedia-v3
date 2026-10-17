@@ -2,8 +2,8 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.players.MediaPlayer;
-import org.watermedia.api.media.players.TxMediaPlayer;
+import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.media.TxMediaPlayer;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.platform.PlatformSearch;

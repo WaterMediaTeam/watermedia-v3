@@ -6,12 +6,14 @@ import org.watermedia.api.codecs.readers.NETPBMReader;
 import org.watermedia.api.codecs.readers.PNGReader;
 import org.watermedia.api.codecs.readers.WEBPReader;
 import org.watermedia.api.codecs.readers.svg.SVGReader;
+import org.watermedia.api.codecs.writers.WebMWriter;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -229,6 +231,25 @@ public final class CodecsAPI {
         }
     }
 
+    /** Opens an experimental VP9 WebM {@link ImageWriter} at 30 fps and CRF 31. */
+    public static ImageWriter encodeWebM(final OutputStream out, final int width, final int height, final PixelFormat format) throws IOException {
+        return new WebMWriter(out, width, height, format);
+    }
+
+    /**
+     * Opens an experimental {@link ImageWriter} that encodes frames as VP9 inside a seekable WebM
+     * container through FFmpeg. Alpha is flattened; block-compressed and {@code GBRA} formats are rejected.
+     *
+     * @param fps frame rate used when a frame carries no explicit delay
+     * @param crf VP9 constant-quality factor (0-63, lower is better)
+     * @throws IllegalArgumentException when {@code fps <= 0}, {@code crf} is out of range or the format cannot feed VP9
+     * @throws IOException              when FFmpeg or a VP9 encoder is unavailable, or setup fails
+     */
+    public static ImageWriter encodeWebM(final OutputStream out, final int width, final int height, final PixelFormat format,
+                                         final int fps, final int crf) throws IOException {
+        return new WebMWriter(out, width, height, format, fps, crf);
+    }
+
     /**
      * Sniffs the {@link MediaType} of a stream by matching its leading bytes against the known
      * container, codec and raw-format signatures across images, video and audio. This is the
@@ -403,7 +424,7 @@ public final class CodecsAPI {
     // ==========================================================================
     /**
      * Reports support for decoding pixels through this API. BC texture identifiers describe
-     * compressed GPU storage; use BCReader for their blocks and query the graphics engine separately.
+     * compressed GPU storage; use {@link BCReader} for their blocks and query the graphics engine separately.
      * @param codec a pixel codec id, case-insensitive
      * @return true when its pure Java pixel decoder is available
      */

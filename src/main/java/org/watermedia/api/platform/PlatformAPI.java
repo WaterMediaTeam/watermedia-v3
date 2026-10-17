@@ -5,11 +5,11 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.WaterMediaModule;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.platform.internal.WaterPlatform;
 import org.watermedia.api.platform.web.*;
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -312,7 +312,7 @@ public final class PlatformAPI {
     /** Internal bootstrap operation for platform discovery and searches. */
     public static final class Module extends WaterMediaModule {
         @Override
-        protected void start(final WaterMedia context) {
+        protected void start() {
             synchronized (SEARCH_LOCK) {
                 if (searchPool != null) throw new IllegalStateException("Previous platform searches have not stopped");
                 searchPool = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
@@ -354,7 +354,7 @@ public final class PlatformAPI {
         }
 
         @Override
-        protected void release(final WaterMedia context) throws Exception {
+        protected void release() throws Exception {
             final ExecutorService previous, previousCoordinator;
             synchronized (SEARCH_LOCK) {
                 searchActive = false;

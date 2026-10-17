@@ -1,7 +1,7 @@
 package org.watermedia.bootstrap.app;
 
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.media.players.MediaPlayer;
+import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.tools.ThreadTool;

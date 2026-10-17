@@ -10,8 +10,8 @@ import org.watermedia.bootstrap.app.render.DrawMode;
 import org.watermedia.bootstrap.app.render.RenderBackend;
 import org.watermedia.bootstrap.app.render.TextureHandle;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.engines.GFXEngine;
-import org.watermedia.api.media.engines.vk.VKContext;
+import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.media.VKContext;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;

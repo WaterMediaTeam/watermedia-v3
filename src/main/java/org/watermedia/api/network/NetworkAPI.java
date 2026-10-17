@@ -5,8 +5,8 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.WaterMediaModule;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
 import org.watermedia.tools.IOTool;
 
@@ -166,7 +166,7 @@ public final class NetworkAPI {
     /** Internal bootstrap operation for network services. */
     public static final class Module extends WaterMediaModule {
         @Override
-        protected void start(final WaterMedia context) {
+        protected void start() {
             this.task(1, 2, STEP_MIME);
             NetRequest.installExtraMimeTypes();
             synchronized (NetworkAPI.class) {
@@ -174,9 +174,9 @@ public final class NetworkAPI {
                 uploads = new Uploads();
             }
             this.task(2, 2, STEP_SERVER);
-            if (WaterMediaConfig.network.forceEnableServer || (!context.clientSide && WaterMediaConfig.network.enableServer)) {
+            if (WaterMediaConfig.network.forceEnableServer || (!WaterMedia.clientSide() && WaterMediaConfig.network.enableServer)) {
                 try {
-                    NetworkServer.start(WaterMediaConfig.network.serverPort, context);
+                    NetworkServer.start(WaterMediaConfig.network.serverPort, WaterMedia.cwd());
                 } catch (final Exception failure) {
                     this.failure(STEP_SERVER, failure);
                 }
@@ -184,7 +184,7 @@ public final class NetworkAPI {
         }
 
         @Override
-        protected void release(final WaterMedia context) throws Exception {
+        protected void release() throws Exception {
             final Uploads previous;
             synchronized (NetworkAPI.class) {
                 previous = uploads;
