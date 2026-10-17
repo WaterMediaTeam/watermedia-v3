@@ -6,6 +6,7 @@ module org.watermedia {
     requires static transitive javafx.graphics;
     requires static transitive org.apache.logging.log4j;
     requires static transitive org.lwjgl.vulkan;
+    requires static java.management; // LAUNCHER CHECK READS THE JVM OPTIONS
     requires static java.xml;
     requires static javafx.base;
     requires static jdk.httpserver;

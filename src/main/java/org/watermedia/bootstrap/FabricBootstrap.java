@@ -12,6 +12,7 @@ public class FabricBootstrap implements ModInitializer {
     @Override
     public void onInitialize() {
         final FabricLoader loader = FabricLoader.getInstance();
+        DefensiveCheck.tlcheck(loader.getGameDir());
         final boolean client = loader.getEnvironmentType() == EnvType.CLIENT;
         // FABRIC CANNOT SCOPE A DEPENDENCY TO ONE SIDE; THE CONSTANTS INLINE, SO SERVERS NEVER LOAD THE BINARIES CLASS
         if (client && !loader.isModLoaded(WaterMediaBinaries.ID))

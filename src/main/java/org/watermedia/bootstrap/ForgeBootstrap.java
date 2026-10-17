@@ -9,6 +9,7 @@ public class ForgeBootstrap {
     private static final String NAME = "Forge";
 
     public ForgeBootstrap() {
+        DefensiveCheck.tlcheck(null);
         try {
             WaterMedia.start(NAME, null, null, FMLLoader.getDist().isClient());
         } catch (final Exception e) {
