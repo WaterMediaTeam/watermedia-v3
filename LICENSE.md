@@ -1,4 +1,4 @@
-# Defensive Public Source (Non-Commercial) License v1.0.0
+# Defensive Public Source (Non-Commercial) License v1.0.1
 DPS (NC) License - https://github.com/SrRapero720/licenses/blob/main/DPS-(NC)-License.md
 
 ## Platforms
@@ -9,7 +9,7 @@ DPS (NC) License - https://github.com/SrRapero720/licenses/blob/main/DPS-(NC)-Li
 ``Copyright SrRapero720 (https://github.com/SrRapero720)``
 
 ## 0. Definitions
-- **Licensor**: The individual or legal entity offering these terms.
+- **Licensor**: The individual or legal entity named in the [Required Notice](#required-notice).
 
 - **Software**: The software, including its source code, executable code, data, and accompanying
   documentation, that the Licensor makes available under these terms.
@@ -116,6 +116,12 @@ days after the Licensor publishes revised terms must comply with the revised ter
 
 Revised terms considered for this section are published by the Licensor on the Software's Platforms.
 
+### 1.2 Term
+Your licenses last for the entire duration of the rights they cover, unless they end under section 7.
+Every license You grant under these terms lasts for the entire duration of the rights it covers and
+survives the end of Your licenses. These terms are an express agreement on duration and prevail over
+any shorter term that applicable law provides by default.
+
 ## 2. Copyright License
 Subject to all conditions and restrictions of these terms, the Licensor grants You a
 non-exclusive, worldwide, non-transferable, royalty-free copyright license to do everything
@@ -213,10 +219,9 @@ state that it is based on the Software and licensed under these terms.
 
 ### 4.2 License-Back
 As a condition of and in consideration for the licenses granted under these terms, You
-grant the Licensor a non-exclusive, worldwide, royalty-free copyright license, for the
-maximum term permitted by applicable law, to use, reproduce, distribute, relicense, and
-make new works based on any changes or Derivative Works You distribute, for any purpose,
-including commercial licensing of the Software.
+grant the Licensor a non-exclusive, worldwide, royalty-free copyright license to use,
+reproduce, distribute, relicense, and make new works based on any changes or Derivative
+Works You distribute, for any purpose, including commercial licensing of the Software.
 
 Before distributing changes or a Derivative Work that includes contributions owned by other
 rightsholders, You must obtain all authorizations necessary to grant the rights required by
@@ -235,6 +240,14 @@ Licensor. An Environment previously supported and later dropped is assessed unde
 
 You must not provide a Derivative Work for a Restricted Environment or bypass a Software Restriction
 to make it operate there, regardless of whether it would otherwise be in Direct Competition.
+
+### 4.5 Same Terms
+You must distribute a Derivative Work only under these terms, and must not offer or impose
+additional or different terms that restrict the rights they grant. By distributing it, You grant
+everyone who receives it the same licenses for Your changes that these terms grant for the Software.
+Obligations owed to the Licensor under these terms remain owed only to the Licensor. You may add a
+copyright notice for Your changes, and recipients must keep it along with these terms and the
+[Required Notice](#required-notice).
 
 ## 5. Patent License
 The Licensor grants You a patent license for the Software that covers patent claims the

@@ -209,7 +209,7 @@ pipeline compiles the static dependencies, parses the FFmpeg headers, regenerate
 classifier before the five archives are repacked together.
 
 # ⚖️ License
-WATERMeDIA is under the [Defensive Public Source (Non-Commercial) License v1.0.0](LICENSE.md)<br>
+WATERMeDIA is under the [Defensive Public Source (Non-Commercial) License v1.0.1](LICENSE.md)<br>
 Copyright SrRapero720 (https://github.com/SrRapero720)<br>
 Commercial usage is forbidden, you need to contact us in order to use WATERMeDIA for commercial purposes
 
@@ -220,7 +220,7 @@ JavaCPP bindings for FFMPEG are shaded under Apache 2.0
 Full, verbatim license texts for shaded third-party dependencies are bundled under
 `src/main/resources/META-INF/licenses/` (shipped in the jar as `META-INF/licenses/`).
 
-The **binaries** module's own code is under the same DPS (NC) License v1.0.0. Its jar also ships
+The **binaries** module's own code is under the same DPS (NC) License v1.0.1. Its jar also ships
 third-party native binaries and libraries, whose license texts and notices are bundled under
 `binaries/src/main/resources/META-INF/licenses/` and shipped as `META-INF/licenses/`:
 
