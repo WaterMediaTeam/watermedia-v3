@@ -23,9 +23,9 @@
     ]
   },
   "depends": {
-    "minecraft": $minecraftfabric,
-    "fabricloader": "$fabricrange",
-    "java": "$javarange"
+    "minecraft": $minecraftdepends,
+    "fabricloader": $fabricdepends,
+    "java": $javadepends
   },
   "breaks": {
     "watermedia_binaries": $binariesbreaks
