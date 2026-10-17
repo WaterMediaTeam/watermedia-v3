@@ -45,8 +45,8 @@ public final class VideoSurface extends Element<VideoSurface> {
             // SET. maxSize KEEPS THE TEXTURE AT THE SOURCE ASPECT, SO WE ONLY NARROW THE SAMPLED
             // UV REGION — NO DISTORTION, JUST TRIMMED EDGES — AND DISPLAY IT AT THE CAP ASPECT.
             float dispAspect = srcAspect;
-            final int capW = player.maxWidth();
-            final int capH = player.maxHeight();
+            final int capW = player.scaleWidth();
+            final int capH = player.scaleHeight();
             if (capW > 0 && capH > 0) {
                 dispAspect = (float) capW / capH;
                 if (dispAspect > srcAspect) {

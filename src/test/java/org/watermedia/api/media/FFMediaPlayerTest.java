@@ -90,7 +90,7 @@ public class FFMediaPlayerTest {
     @DisplayName("maxSize caps the upload below the native size")
     void testMaxSizeCapsUploadDimensions() {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> p.maxSize(160, 90));
+        final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> p.scale(160, 90));
         try {
             assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, PLAY_OBSERVE_MS));
 

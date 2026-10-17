@@ -237,7 +237,7 @@ public final class ALEngine extends SFXEngine {
         if (type == null) return false;
         if (this.source == 0 || (this.spatial && channels != 1)) return false;
         if (channels < 1 || channels > 8) return false;
-        if (sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) return false;
+        if (sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
         final ChannelSupport support = this.channelSupport(channels);
         if (support == null || !support.supports(type)) return false;
         final int al = alFormatFor(type, channels);

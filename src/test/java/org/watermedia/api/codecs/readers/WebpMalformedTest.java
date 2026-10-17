@@ -3,8 +3,8 @@ package org.watermedia.api.codecs.readers;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.watermedia.api.codecs.XCodecException;
-import org.watermedia.api.codecs.readers.webp.riff.RiffChunk;
+import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.readers.webp.riff.FourCC;
 import org.watermedia.test.support.Fixtures;
 
 import java.io.IOException;
@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Regression tests for crafted/corrupted WebP files. Every malformed input must surface as a
- * clean {@link XCodecException} (or complete harmlessly) — never as an unchecked exception,
+ * clean {@link CodecException} (or complete harmlessly) — never as an unchecked exception,
  * an {@link OutOfMemoryError} or a hang.
  */
 @DisplayName("WebP malformed inputs")
@@ -34,10 +34,10 @@ public class WebpMalformedTest {
         // REAL DIMS LIVE IN THE VP8 KEY FRAME HEADER: BODY BYTES 6..9 (14-BIT EACH)
         final int w = ((stream[8 + 6] & 0xFF) | ((stream[8 + 7] & 0xFF) << 8)) & 0x3FFF;
         final int h = ((stream[8 + 8] & 0xFF) | ((stream[8 + 9] & 0xFF) << 8)) & 0x3FFF;
-        final byte[] forged = concat(chunk(RiffChunk.VP8X, vp8xBody(0x00, w + 1, h + 1)), stream);
+        final byte[] forged = concat(chunk(FourCC.VP8X, vp8xBody(0x00, w + 1, h + 1)), stream);
 
-        final WEBPReader reader = assertDoesNotThrow(() -> new WEBPReader(ByteBuffer.wrap(forged)));
-        assertThrows(XCodecException.class, reader::next, "Mismatched canvas must fail cleanly");
+        final WebPReader reader = assertDoesNotThrow(() -> new WebPReader(ByteBuffer.wrap(forged)));
+        assertThrows(CodecException.class, reader::next, "Mismatched canvas must fail cleanly");
     }
 
     // SAME MISMATCH ON THE LOSSLESS PATH: THE VP8L HEADER DIMS MUST MATCH THE CONTAINER
@@ -50,10 +50,10 @@ public class WebpMalformedTest {
                 | ((stream[8 + 3] & 0xFF) << 16) | ((stream[8 + 4] & 0xFF) << 24);
         final int w = (bits & 0x3FFF) + 1;
         final int h = ((bits >> 14) & 0x3FFF) + 1;
-        final byte[] forged = concat(chunk(RiffChunk.VP8X, vp8xBody(0x00, w + 1, h + 1)), stream);
+        final byte[] forged = concat(chunk(FourCC.VP8X, vp8xBody(0x00, w + 1, h + 1)), stream);
 
-        final WEBPReader reader = assertDoesNotThrow(() -> new WEBPReader(ByteBuffer.wrap(forged)));
-        assertThrows(XCodecException.class, reader::next, "Mismatched canvas must fail cleanly");
+        final WebPReader reader = assertDoesNotThrow(() -> new WebPReader(ByteBuffer.wrap(forged)));
+        assertThrows(CodecException.class, reader::next, "Mismatched canvas must fail cleanly");
     }
 
     // A NEGATIVE SUB-CHUNK SIZE INSIDE ANMF CAN STOP FORWARD PROGRESS.
@@ -63,15 +63,15 @@ public class WebpMalformedTest {
     void anmfNegativeSubChunkSize() {
         final ByteBuffer anmf = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
         anmf.put(anmfHeader(0, 0, 16, 16));
-        anmf.putInt(RiffChunk.VP8);
+        anmf.putInt(FourCC.VP8);
         anmf.putInt(-8); // NEGATIVE SIZE: BODY + PADDEDSIZE(-8) == OFF.
         final byte[] forged = concat(
-                chunk(RiffChunk.VP8X, vp8xBody(0x02, 16, 16)),
-                chunk(RiffChunk.ANIM, new byte[6]),
-                chunk(RiffChunk.ANMF, anmf.array()));
+                chunk(FourCC.VP8X, vp8xBody(0x02, 16, 16)),
+                chunk(FourCC.ANIM, new byte[6]),
+                chunk(FourCC.ANMF, anmf.array()));
 
-        final WEBPReader reader = assertDoesNotThrow(() -> new WEBPReader(ByteBuffer.wrap(forged)));
-        assertThrows(XCodecException.class, reader::next, "Negative sub-chunk size must fail cleanly");
+        final WebPReader reader = assertDoesNotThrow(() -> new WebPReader(ByteBuffer.wrap(forged)));
+        assertThrows(CodecException.class, reader::next, "Negative sub-chunk size must fail cleanly");
     }
 
     // ANMF FRAMES EXTENDING PAST THE CANVAS PREVIOUSLY DECODED A FULL OFF-CANVAS FRAME BUFFER
@@ -79,20 +79,20 @@ public class WebpMalformedTest {
     @DisplayName("ANMF frame outside the canvas is rejected")
     void anmfFrameOutsideCanvas() {
         final byte[] forged = concat(
-                chunk(RiffChunk.VP8X, vp8xBody(0x02, 16, 16)),
-                chunk(RiffChunk.ANIM, new byte[6]),
-                chunk(RiffChunk.ANMF, anmfHeader(0, 0, 32, 32)));
+                chunk(FourCC.VP8X, vp8xBody(0x02, 16, 16)),
+                chunk(FourCC.ANIM, new byte[6]),
+                chunk(FourCC.ANMF, anmfHeader(0, 0, 32, 32)));
 
-        final WEBPReader reader = assertDoesNotThrow(() -> new WEBPReader(ByteBuffer.wrap(forged)));
-        assertThrows(XCodecException.class, reader::next, "Out-of-canvas frame must fail cleanly");
+        final WebPReader reader = assertDoesNotThrow(() -> new WebPReader(ByteBuffer.wrap(forged)));
+        assertThrows(CodecException.class, reader::next, "Out-of-canvas frame must fail cleanly");
     }
 
     // 16Kx16K PASSES THE PER-AXIS CAP BUT WOULD FORCE ~2 GiB OF CANVAS + OUTPUT ALLOCATIONS
     @Test
     @DisplayName("Canvas above the total-pixel cap is rejected at construction")
     void canvasPixelBomb() {
-        final byte[] forged = chunk(RiffChunk.VP8X, vp8xBody(0x02, 16384, 16384));
-        assertThrows(XCodecException.class, () -> new WEBPReader(ByteBuffer.wrap(forged)),
+        final byte[] forged = chunk(FourCC.VP8X, vp8xBody(0x02, 16384, 16384));
+        assertThrows(CodecException.class, () -> new WebPReader(ByteBuffer.wrap(forged)),
                 "Pixel bomb must fail before allocating");
     }
 
@@ -103,10 +103,10 @@ public class WebpMalformedTest {
         final ByteBuffer body = ByteBuffer.allocate(11).order(ByteOrder.LITTLE_ENDIAN);
         body.put(vp8xBody(0x02, 1, 1)).put((byte) 0); // 11 BYTES: ODD SIZE, NO PADDING FOLLOWS
         final ByteBuffer forged = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN);
-        forged.putInt(RiffChunk.VP8X).putInt(11).put(body.array());
+        forged.putInt(FourCC.VP8X).putInt(11).put(body.array());
         forged.flip();
 
-        final WEBPReader reader = assertDoesNotThrow(() -> new WEBPReader(forged));
+        final WebPReader reader = assertDoesNotThrow(() -> new WebPReader(forged));
         assertFalse(reader.hasNext(), "Nothing to decode in a header-only file");
     }
 

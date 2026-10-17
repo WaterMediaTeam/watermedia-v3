@@ -29,6 +29,7 @@ import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
@@ -897,7 +898,7 @@ public class WaterMediaApp {
         ctx.upload.issueOpened = false;
         ctx.upload.stage = 1;
         ctx.upload.status = "SCAN";
-        ctx.upload.issueUrl = "github.com/watermedia/issues/new";
+        ctx.upload.issueUrl = null;
         ctx.upload.repoUrl = null;
         ctx.upload.files.clear();
     }
@@ -1162,7 +1163,7 @@ public class WaterMediaApp {
     }
 
     private static String buildGithubIssueUrl(final String body) {
-        return "https://github.com/WaterMediaTeam/watermedia/issues/new"
+        return "https://github.com/" + AppContext.REPO + "/issues/new"
                 + "?title=" + URLEncoder.encode("WATERMeDIA Generated Issue", StandardCharsets.UTF_8)
                 + "&body=" + URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
     }
@@ -1388,7 +1389,7 @@ public class WaterMediaApp {
             final HttpClient client = HttpClient.newHttpClient();
             final HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create("https://api.mclo.gs/1/log"))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .header("Content-Type", NetRequest.MIMETYPE_FORM)
                     .POST(HttpRequest.BodyPublishers.ofString("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)))
                     .build();
 

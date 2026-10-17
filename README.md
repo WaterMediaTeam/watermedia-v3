@@ -2,8 +2,7 @@
 [![CurseForge](https://img.shields.io/curseforge/v/869524?style=for-the-badge&label=curseforge&labelColor=%232d2d2d&color=%23e04e14&link=https%3A%2F%2Fwww.curseforge.com%2Fminecraft%2Fmc-mods%2Fwatermedia%2Ffiles)](https://www.curseforge.com/minecraft/mc-mods/watermedia/files)
 [![Minecraft versions supported](https://cf.way2muchnoise.eu/versions/Supports_watermedia_all.svg?badge_style=for_the_badge)](https://www.curseforge.com/minecraft/mc-mods/watermedia/files)
 [![JitPack](https://img.shields.io/jitpack/version/com.github.SrRapero720/watermedia?style=for-the-badge&label=JITPACK&color=34495e&link=https%3A%2F%2Fjitpack.io%2F%23SrRapero720%2Fwatermedia)](https://jitpack.io/#SrRapero720/watermedia)
-[![Build status](https://img.shields.io/github/actions/workflow/status/WaterMediaTeam/watermedia/gradle.yml?style=for-the-badge
-)](https://github.com/WaterMediaTeam/watermedia/actions/workflows/gradle.yml)
+[![Build status](https://img.shields.io/github/actions/workflow/status/SrRapero720/watermedia/build-test.yml?branch=main&style=for-the-badge)](https://github.com/SrRapero720/watermedia/actions/workflows/build-test.yml)
 
 ![Discord](https://img.shields.io/discord/486853064284831744?style=for-the-badge&logo=discord&logoColor=white&label=DISCORD&color=7289DA)
 
@@ -14,7 +13,7 @@ uses Java 17 and upper. Superseding the old rusty FancyVideo-API mod, using FFMP
 
 FFMPEG binaries comes in a companion library jar called **WATERMeDIA: Binaries**, with that JAR you won't need
 to compile or install FFMPEG or any other native application, plug and play as you deserve. Its sources now live
-in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries) — see [📦 Binaries](#-binaries).
+in this repository under [`binaries/`](https://github.com/SrRapero720/watermedia/tree/main/binaries) — see [📦 Binaries](#-binaries).
 
 # 🧩 Projects using WATERMeDIA
 - 🖼️ [WATERFrAMES](https://www.curseforge.com/minecraft/mc-mods/waterframes) - By SrRapero720
@@ -41,11 +40,11 @@ in this repository under [`binaries/`](https://github.com/WaterMediaTeam/waterme
 # 💻 BASIC USAGE
 ## CREATE AN MRL AND A PLAYER
 ```java
-MRL mrl = MediaAPI.getMrl(URI.create("https://imgur.com/gallery/snow-ducks-YcDd9x"));
+MRL mrl = MediaAPI.mrl(URI.create("https://imgur.com/gallery/snow-ducks-YcDd9x"));
 
 // IN A TICK-LOOP METHOD
-if (mrl.status == MRL.Status.LOADED) {
-    MediaPlayer player = MediaAPI.createPlayer(mrl,
+if (mrl.status() == MRL.Status.LOADED) {
+    MediaPlayer player = MediaAPI.player(mrl,
             () -> MediaAPI.glEngine(renderThread, renderExecutor),
             () -> MediaAPI.alEngine());
 }
@@ -92,7 +91,7 @@ public final class MyVKContext implements VKContext {
 ```
 
 ```java
-MediaPlayer player = MediaAPI.createPlayer(mrl,
+MediaPlayer player = MediaAPI.player(mrl,
         () -> MediaAPI.vkEngine(myContext),
         () -> null);
 
@@ -160,7 +159,7 @@ cast it in the factory call:
 
 ```java
 GpuDeviceBackend backend = ((GpuDeviceAccessor) RenderSystem.getDevice()).wm$backend();
-MediaPlayer player = MediaAPI.createPlayer(mrl,
+MediaPlayer player = MediaAPI.player(mrl,
         () -> MediaAPI.vkEngine((VKContext) backend),
         () -> null);
 ```
@@ -183,7 +182,7 @@ Two caveats verified against the 26.2 sources:
 # 📦 Binaries
 FFmpeg natives and a few extra shared libraries ship in a companion jar, **WATERMeDIA: Binaries**.
 With that jar you won't need to compile or install FFMPEG or any other native application.
-Its sources live in this repository under [`binaries/`](https://github.com/WaterMediaTeam/watermedia/tree/main/binaries).
+Its sources live in this repository under [`binaries/`](https://github.com/SrRapero720/watermedia/tree/main/binaries).
 Minecraft clients require Binaries; dedicated servers can omit it. Applications embedding the Java API
 can run without it, keeping image support but skipping video decoding and executable-backed platform
 resolvers. When installed, binaries initialize before the other services; a failed binaries startup

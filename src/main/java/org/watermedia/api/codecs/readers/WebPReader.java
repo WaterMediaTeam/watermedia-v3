@@ -1,0 +1,572 @@
+package org.watermedia.api.codecs.readers;
+
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.codecs.ImageMetadata;
+import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.common.Tiff;
+import org.watermedia.api.codecs.common.Xmp;
+import org.watermedia.api.codecs.common.webp.AlphaDecoder;
+import org.watermedia.api.codecs.common.webp.BitReader;
+import org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder;
+import org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder;
+import org.watermedia.api.codecs.readers.webp.riff.FourCC;
+import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.DataTool;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.watermedia.WaterMedia.LOGGER;
+
+/**
+ * Streaming WebP reader.
+ *
+ * <p>Receives a {@link ByteBuffer} positioned past the 12-byte {@code RIFF????WEBP} preamble.
+ * The constructor reads the first chunk to identify the file shape:
+ * <ul>
+ *   <li><b>Simple lossy</b> ({@code VP8 }): the chunk contains the whole bitstream — single frame.</li>
+ *   <li><b>Simple lossless</b> ({@code VP8L}): single frame.</li>
+ *   <li><b>Extended</b> ({@code VP8X}): reads the 10-byte VP8X data, then reads chunks until enough
+ *       has been collected for the first frame (or {@code ANIM} for animated WebPs).</li>
+ * </ul>
+ *
+ * <p>For animated WebPs, each {@link #next()} reads one {@code ANMF} chunk, decodes its
+ * sub-chunks (optional {@code ALPH} + {@code VP8 } / {@code VP8L}), and composites onto the canvas.
+ * Every frame is delivered as {@link PixelFormat#BGRA}: lossless, alpha and compositing are
+ * BGRA-native, and lossy VP8 is converted on the CPU with its BT.601 limited-range matrix.
+ */
+public final class WebPReader extends ImageReader {
+    private static final Marker IT = MarkerManager.getMarker(WebPReader.class.getSimpleName());
+    private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
+    // HARD CAP FOR CANVAS AND FRAME DIMENSIONS (16K). VP8X AND ANMF STORE 24-BIT SIZES; UNCAPPED
+    // THEY OVERFLOW width*height*4 INT MATH AND ALLOW MULTI-GB ALLOCATIONS FROM A FEW-BYTE FILE
+    private static final int MAX_DIM = 16_384;
+    // TOTAL-PIXEL CAP (64 MPX, E.G. 8192x8192). MAX_DIM ALONE STILL ALLOWS 16K x 16K = 1 GiB PER
+    // int[] BUFFER, AND THE ANIMATED PATH HOLDS CANVAS + OUTPUT AT ONCE — A FEW-BYTE HEADER MUST
+    // NOT BE ABLE TO FORCE MULTI-HUNDRED-MB ALLOCATIONS
+    private static final int MAX_PIXELS = 1 << 26;
+
+    private final int canvasWidth;
+    private final int canvasHeight;
+    private final int orientation;
+    private final boolean animated;
+    private final ImageData.Scan scan;
+    private final ImageMetadata metadata = new ImageMetadata();
+
+    // STATIC PATH: buffered bitstream chunks for one frame
+    private byte[] vp8Data;       // VP8 or VP8L body
+    private int bitstreamFourCC;
+    private byte[] alphData;      // ALPH body, or null
+    private boolean staticDelivered;
+
+    // ANIMATED PATH: canvas
+    private int[] canvas;
+    private ByteBuffer directOut;
+    private IntBuffer directOutInts;
+    private byte[] anmfScratch = new byte[0];
+    private ChunkHdr pendingChunk;
+    private ByteBuffer oriented; // EXIF-REMAPPED DELIVERY TARGET, ALLOCATED ON THE FIRST FRAME WHEN THE TAG IS NOT 1
+
+    private boolean done;
+
+    // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
+    private final int resetPos;
+    private final boolean resetDone;
+
+    public WebPReader(final ByteBuffer data) throws IOException {
+        super(data);
+        this.data.order(LE);
+        this.scan = scan(this.data.duplicate().order(LE));
+
+        // FIRST CHUNK: VP8 / VP8L / VP8X
+        final ChunkHdr first = readChunkHdr(this.data);
+        final boolean hasAlpha;
+        switch (first.fourCC) {
+            case FourCC.VP8 -> {
+                this.vp8Data = readPaddedChunkBody(this.data, first.size);
+                this.bitstreamFourCC = FourCC.VP8;
+                final int[] dim = parseVP8Dims(this.vp8Data);
+                this.canvasWidth = dim[0];
+                this.canvasHeight = dim[1];
+                this.animated = false;
+                hasAlpha = false;
+            }
+            case FourCC.VP8L -> {
+                this.vp8Data = readPaddedChunkBody(this.data, first.size);
+                this.bitstreamFourCC = FourCC.VP8L;
+                final int[] dim = parseVP8LDims(this.vp8Data, 0, this.vp8Data.length);
+                this.canvasWidth = dim[0];
+                this.canvasHeight = dim[1];
+                hasAlpha = dim[2] != 0;
+                this.animated = false;
+            }
+            case FourCC.VP8X -> {
+                if (first.size < 10) throw new CodecException("VP8X chunk too small: " + first.size);
+                final byte[] vp8xBody = readPaddedChunkBody(this.data, first.size);
+                final int flags = vp8xBody[0] & 0xFF;
+                hasAlpha = (flags & 0x10) != 0;
+                this.animated = (flags & 0x02) != 0;
+                final int w0 = vp8xBody[4] & 0xFF, w1 = vp8xBody[5] & 0xFF, w2 = vp8xBody[6] & 0xFF;
+                final int h0 = vp8xBody[7] & 0xFF, h1 = vp8xBody[8] & 0xFF, h2 = vp8xBody[9] & 0xFF;
+                this.canvasWidth = (w0 | (w1 << 8) | (w2 << 16)) + 1;
+                this.canvasHeight = (h0 | (h1 << 8) | (h2 << 16)) + 1;
+                if (this.canvasWidth > MAX_DIM || this.canvasHeight > MAX_DIM)
+                    throw new CodecException("WEBP canvas too big: " + this.canvasWidth + "x" + this.canvasHeight + " (max " + MAX_DIM + ")");
+
+                if (this.animated) {
+                    // READ CHUNKS UNTIL ANIM; ANMFs ARE THEN READ LAZILY IN next()
+                    while (true) {
+                        final ChunkHdr c = readChunkHdrOrEnd(this.data);
+                        if (c == null) { this.done = true; break; }
+                        if (c.fourCC == FourCC.ANIM) {
+                            readPaddedChunkBody(this.data, c.size); // CONSUME; LOOP COUNT ALREADY CAPTURED BY scan()
+                            break;
+                        }
+                        if (!this.readMetadataChunk(this.data, c)) skipBytes(this.data, paddedSize(c.size));
+                    }
+                } else {
+                    // STATIC EXTENDED: READ CHUNKS UNTIL WE HAVE VP8/VP8L (AND OPTIONAL ALPH)
+                    while (true) {
+                        final ChunkHdr c = readChunkHdrOrEnd(this.data);
+                        if (c == null) break;
+                        if (c.fourCC == FourCC.VP8 || c.fourCC == FourCC.VP8L) {
+                            this.bitstreamFourCC = c.fourCC;
+                            this.vp8Data = readPaddedChunkBody(this.data, c.size);
+                        } else if (c.fourCC == FourCC.ALPH) {
+                            this.alphData = readPaddedChunkBody(this.data, c.size);
+                        } else if (!this.readMetadataChunk(this.data, c)) {
+                            skipBytes(this.data, paddedSize(c.size));
+                        }
+                    }
+                    if (this.vp8Data == null) {
+                        throw new CodecException("Truncated extended WEBP (no bitstream chunk)");
+                    }
+                }
+            }
+            default -> throw new CodecException("Unknown WebP first chunk: " + FourCC.fourCCString(first.fourCC));
+        }
+
+        // CENTRAL SIZE GATE: SIMPLE VP8 CAN DECLARE 0, AND EVEN MAX_DIM-CAPPED AXES CAN MULTIPLY
+        // INTO GB-SCALE BUFFERS; EVERY ALLOCATION BELOW DEPENDS ON THIS CHECK
+        if (this.canvasWidth <= 0 || this.canvasHeight <= 0 || (long) this.canvasWidth * this.canvasHeight > MAX_PIXELS)
+            throw new CodecException("Invalid WEBP dimensions: " + this.canvasWidth + "x" + this.canvasHeight + " (max " + MAX_PIXELS + " pixels)");
+
+        // THE ORIENTATION DECIDES width()/height() BEFORE ANY FRAME IS DELIVERED. STATIC FILES ALREADY READ THEIR
+        // EXIF CHUNK ABOVE; ANIMATED ONES CARRY IT AFTER THE FRAMES PER THE CONTAINER SPEC, SO THEIR CHUNK LIST IS
+        // PRE-SCANNED ON A DUPLICATE AND A TRUNCATION THERE IS LEFT FOR THE LAZY FRAME WALK TO REPORT
+        if (this.animated && this.metadata.value(CodecsAPI.WEBP_METAKEY_EXIF) == null) {
+            final ByteBuffer ahead = this.data.duplicate().order(LE);
+            try {
+                while (true) {
+                    final ChunkHdr c = readChunkHdrOrEnd(ahead);
+                    if (c == null) break;
+                    if (c.fourCC == FourCC.EXIF) {
+                        this.readMetadataChunk(ahead, c);
+                        break;
+                    }
+                    skipBytes(ahead, paddedSize(c.size));
+                }
+            } catch (final CodecException truncated) {
+                // THE FRAMES BEFORE THE DAMAGE STILL PLAY, UNROTATED
+            }
+        }
+        this.orientation = this.metadata.value(CodecsAPI.WEBP_METAKEY_ORIENTATION) instanceof final Integer tag ? tag : 1;
+
+        // canvas AND directOut ARE THE ANIMATED COMPOSITING TARGETS AND ARE ALLOCATED LAZILY BY
+        // decodeAnimFrame: STATIC DECODERS RETURN THEIR OWN BUFFER, AND A VP8X THAT DECLARES A
+        // CANVAS BUT CARRIES NO FRAME MUST COST NOTHING (AT THE PIXEL CAP THE PAIR IS 256 MB OF
+        // HEAP PLUS 256 MB DIRECT)
+
+        // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
+        this.resetPos = this.data.position();
+        this.resetDone = this.done;
+
+        LOGGER.debug(IT, "WEBP opened: {}x{} codec={} animated={} alpha={} frames={} orientation={}",
+                this.canvasWidth, this.canvasHeight, FourCC.fourCCString(this.bitstreamFourCC),
+                this.animated, hasAlpha, this.scan.frameCount(), this.orientation);
+    }
+
+    @Override public int width() { return this.orientation >= 5 ? this.canvasHeight : this.canvasWidth; }
+    @Override public int height() { return this.orientation >= 5 ? this.canvasWidth : this.canvasHeight; }
+    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
+    @Override public ImageData.Scan scan() { return this.scan; }
+    @Override public boolean variableFrameRate() { return this.animated; }
+    @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
+
+    @Override
+    public boolean hasNext() throws IOException {
+        if (this.done) return false;
+
+        if (!this.animated) {
+            return !this.staticDelivered;
+        }
+
+        // ANIMATED: LOCATE THE NEXT ANMF, SKIPPING UNRELATED CHUNKS (EXIF/XMP/ETC.)
+        if (this.pendingChunk != null) return true;
+        while (true) {
+            final ChunkHdr c = readChunkHdrOrEnd(this.data);
+            if (c == null) { this.done = true; return false; }
+            if (c.fourCC == FourCC.ANMF) {
+                this.pendingChunk = c;
+                return true;
+            }
+            if (!this.readMetadataChunk(this.data, c)) skipBytes(this.data, paddedSize(c.size));
+        }
+    }
+
+    @Override
+    protected ByteBuffer decode() throws IOException {
+        if (!this.hasNext()) throw new CodecException("No more WEBP frames");
+
+        if (!this.animated) {
+            this.staticDelivered = true;
+            LOGGER.debug(IT, "Decoding static {} frame {}x{} (alpha chunk={})",
+                    FourCC.fourCCString(this.bitstreamFourCC), this.canvasWidth, this.canvasHeight, this.alphData != null);
+            final ByteBuffer frame = decodeBitstreamToBgra(this.vp8Data, this.bitstreamFourCC, this.alphData, this.canvasWidth, this.canvasHeight);
+            frame.position(0).limit(this.canvasWidth * this.canvasHeight * 4);
+            this.delayMs = 0L;
+            return this.orient(frame);
+        }
+
+        final ChunkHdr c = this.pendingChunk;
+        this.pendingChunk = null;
+        final byte[] anmf = this.readPaddedChunkBodyIntoScratch(this.data, c.size);
+        this.decodeAnimFrame(anmf, c.size);
+        return this.orient(this.directOut);
+    }
+
+    // DELIVERS THE FRAME REMAPPED INTO ITS EXIF ORIENTATION; THE TARGET IS ALLOCATED ONCE AND REUSED PER FRAME
+    private ByteBuffer orient(final ByteBuffer frame) {
+        if (this.orientation == 1) return frame;
+        if (this.oriented == null) this.oriented = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
+        DataTool.orient(frame, this.oriented, this.canvasWidth, this.canvasHeight, 4, this.orientation);
+        return this.oriented;
+    }
+
+    @Override
+    public boolean reset() {
+        // STATIC PATHS KEEP THE WHOLE BITSTREAM BUFFERED, SO ONLY THE DELIVERY FLAG MATTERS;
+        // THE ANIMATED CANVAS STARTS FULLY TRANSPARENT (ANIM BACKGROUND IS NEVER APPLIED HERE)
+        this.data.position(this.resetPos);
+        this.done = this.resetDone;
+        this.staticDelivered = false;
+        this.pendingChunk = null;
+        this.delayMs = 0L;
+        if (this.canvas != null) Arrays.fill(this.canvas, 0);
+        return true;
+    }
+
+    // ----- DECODE -----
+
+    private void decodeAnimFrame(final byte[] anmf, final int anmfLength) throws IOException {
+        if (anmfLength < 16) throw new CodecException("Truncated ANMF chunk");
+
+        // 16-BYTE ANMF HEADER
+        final int frameX = (anmf[0] & 0xFF) | ((anmf[1] & 0xFF) << 8) | ((anmf[2] & 0xFF) << 16);
+        final int frameY = (anmf[3] & 0xFF) | ((anmf[4] & 0xFF) << 8) | ((anmf[5] & 0xFF) << 16);
+        final int frameW = ((anmf[6] & 0xFF) | ((anmf[7] & 0xFF) << 8) | ((anmf[8] & 0xFF) << 16)) + 1;
+        final int frameH = ((anmf[9] & 0xFF) | ((anmf[10] & 0xFF) << 8) | ((anmf[11] & 0xFF) << 16)) + 1;
+        // SPEC: THE FRAME RECTANGLE MUST LIE FULLY INSIDE THE CANVAS. THIS ALSO BOUNDS THE
+        // PER-FRAME PIXEL ALLOCATION BY THE ALREADY-VALIDATED CANVAS SIZE
+        if (frameX * 2 + frameW > this.canvasWidth || frameY * 2 + frameH > this.canvasHeight)
+            throw new CodecException("ANMF frame outside canvas: " + frameW + "x" + frameH + " at ("
+                    + (frameX * 2) + "," + (frameY * 2) + ") on " + this.canvasWidth + "x" + this.canvasHeight);
+        final int duration = (anmf[12] & 0xFF) | ((anmf[13] & 0xFF) << 8) | ((anmf[14] & 0xFF) << 16);
+        final int flags = anmf[15] & 0xFF;
+        final boolean blend = (flags & 0x02) == 0;
+        final boolean dispose = (flags & 0x01) == 1;
+
+        // PARSE SUB-CHUNKS INSIDE THE ANMF BODY
+        int subVp8Off = -1;
+        int subVp8Len = 0;
+        int subVp8FourCC = 0;
+        int subAlphOff = -1;
+        int subAlphLen = 0;
+        int off = 16;
+        while (off + 8 <= anmfLength) {
+            final int fcc = (anmf[off] & 0xFF) | ((anmf[off + 1] & 0xFF) << 8) | ((anmf[off + 2] & 0xFF) << 16) | ((anmf[off + 3] & 0xFF) << 24);
+            final int sz = (anmf[off + 4] & 0xFF) | ((anmf[off + 5] & 0xFF) << 8) | ((anmf[off + 6] & 0xFF) << 16) | ((anmf[off + 7] & 0xFF) << 24);
+            final int body = off + 8;
+            // sz IS ATTACKER-CONTROLLED: NEGATIVE OR HUGE VALUES WOULD WRAP body+sz AND WALK off
+            // BACKWARDS INTO NEGATIVE INDICES; anmfLength-body IS OVERFLOW-FREE (body <= anmfLength)
+            if (sz < 0 || sz > anmfLength - body) break;
+            if (fcc == FourCC.VP8 || fcc == FourCC.VP8L) {
+                subVp8FourCC = fcc;
+                subVp8Off = body;
+                subVp8Len = sz;
+            } else if (fcc == FourCC.ALPH) {
+                subAlphOff = body;
+                subAlphLen = sz;
+            }
+            off = body + paddedSize(sz);
+        }
+        if (subVp8Off < 0 || subVp8Len <= 0) throw new CodecException("ANMF without VP8/VP8L sub-chunk");
+
+        // ALLOCATE THE COMPOSITING TARGETS ONLY NOW THAT A REAL FRAME IS ABOUT TO BE DECODED INTO
+        // THEM; THE CANVAS SIZE WAS ALREADY GATED AGAINST MAX_PIXELS IN THE CONSTRUCTOR
+        if (this.canvas == null) {
+            this.canvas = new int[this.canvasWidth * this.canvasHeight];
+            this.directOut = ByteBuffer.allocateDirect(this.canvasWidth * this.canvasHeight * 4).order(LE);
+            this.directOutInts = this.directOut.asIntBuffer();
+        }
+
+        LOGGER.debug(IT, "Decoding ANMF: codec={} pos=({},{}) size={}x{} duration={}ms blend={} dispose={} alpha={}",
+                FourCC.fourCCString(subVp8FourCC), frameX * 2, frameY * 2, frameW, frameH,
+                duration, blend, dispose, subAlphOff >= 0);
+
+        final int[] framePixels = this.decodeBitstreamToArgb(
+                anmf, subVp8Off, subVp8Len, subVp8FourCC,
+                anmf, subAlphOff, subAlphLen,
+                frameW, frameH
+        );
+
+        // COMPOSITE ONTO CANVAS (frameX/Y ARE STORED HALVED PER WEBP SPEC, HENCE THE x2)
+        this.composite(this.canvas, this.canvasWidth, this.canvasHeight, framePixels, frameX * 2, frameY * 2, frameW, frameH, blend);
+
+        // CONVERT CANVAS TO BGRA IN directOut
+        this.directOut.clear();
+        this.directOutInts.clear();
+        this.directOutInts.put(this.canvas);
+        this.directOut.position(0).limit(this.canvas.length * 4);
+
+        this.delayMs = duration;
+
+        // DISPOSE FOR THE NEXT FRAME
+        if (dispose) {
+            this.clearRegion(this.canvas, this.canvasWidth, frameX * 2, frameY * 2, frameW, frameH);
+        }
+    }
+
+    // STATIC FRAMES: THE WHOLE BITSTREAM CHUNK (AND ALPH CHUNK) WERE BUFFERED BY THE CONSTRUCTOR
+    private static ByteBuffer decodeBitstreamToBgra(final byte[] vp8Data, final int vp8FourCC, final byte[] alphData,
+                                                    final int w, final int h) throws CodecException {
+        if (vp8FourCC == FourCC.VP8L) {
+            return VP8LosslessDecoder.decodeToBgra(vp8lReader(vp8Data, 0, vp8Data.length, w, h), w, h);
+        }
+        final ByteBuffer result = VP8LossyDecoder.decodeToBgra(wrapSlice(vp8Data, 0, vp8Data.length), w, h);
+        if (alphData != null && alphData.length > 0)
+            AlphaDecoder.applyAlpha(result, AlphaDecoder.decode(wrapSlice(alphData, 0, alphData.length), w, h));
+        return result;
+    }
+
+    private int[] decodeBitstreamToArgb(final byte[] vp8Data, final int vp8Off, final int vp8Len, final int vp8FourCC,
+                                         final byte[] alphData, final int alphOff, final int alphLen,
+                                         final int w, final int h) throws CodecException {
+        if (vp8FourCC == FourCC.VP8L) {
+            return VP8LosslessDecoder.decode(vp8lReader(vp8Data, vp8Off, vp8Len, w, h), w, h);
+        }
+        final ByteBuffer vp8Body = wrapSlice(vp8Data, vp8Off, vp8Len);
+        final int[] argb = VP8LossyDecoder.decode(vp8Body, w, h);
+        if (alphData != null && alphLen > 0) {
+            final byte[] alpha = AlphaDecoder.decode(wrapSlice(alphData, alphOff, alphLen), w, h);
+            AlphaDecoder.applyAlpha(argb, alpha);
+        }
+        return argb;
+    }
+
+    // VALIDATE THE 5-BYTE VP8L HEADER AND HAND BACK A BIT READER POSITIONED PAST IT. EXTENDED AND
+    // ANMF BODIES CARRY THEIR OWN DIMENSIONS; OUTPUT BUFFERS ARE SIZED FROM THE CONTAINER, SO A
+    // MISMATCH WOULD OVER/UNDERRUN THEM — THE SPEC REQUIRES BOTH TO AGREE, REJECT OTHERWISE
+    private static BitReader vp8lReader(final byte[] data, final int off, final int len, final int w, final int h) throws CodecException {
+        final int[] dim = parseVP8LDims(data, off, len);
+        if (dim[0] != w || dim[1] != h)
+            throw new CodecException("VP8L bitstream is " + dim[0] + "x" + dim[1] + ", container declares " + w + "x" + h);
+        final ByteBuffer body = wrapSlice(data, off, len);
+        body.position(5); // SKIP 1-BYTE SIGNATURE + 4-BYTE SIZE/VERSION HEADER
+        return new BitReader(body);
+    }
+
+    private static ByteBuffer wrapSlice(final byte[] data, final int offset, final int len) {
+        return ByteBuffer.wrap(data, offset, len).slice().order(LE);
+    }
+
+    private void composite(final int[] canvas, final int cw, final int ch,
+                           final int[] frame, final int x, final int y, final int fw, final int fh, final boolean blend) {
+        final int x0 = Math.max(0, x);
+        final int y0 = Math.max(0, y);
+        final int x1 = Math.min(cw, x + fw);
+        final int y1 = Math.min(ch, y + fh);
+        for (int cy = y0; cy < y1; cy++) {
+            final int srcRow = (cy - y) * fw;
+            final int dstRow = cy * cw;
+            for (int cx = x0; cx < x1; cx++) {
+                final int src = frame[srcRow + (cx - x)];
+                final int idx = dstRow + cx;
+                canvas[idx] = blend ? DataTool.blendOver(src, canvas[idx]) : src;
+            }
+        }
+    }
+
+    private void clearRegion(final int[] canvas, final int cw, final int x, final int y, final int w, final int h) {
+        final int x0 = Math.max(0, x);
+        final int y0 = Math.max(0, y);
+        final int x1 = Math.min(cw, x + w);
+        final int y1 = Math.min(this.canvasHeight, y + h);
+        for (int cy = y0; cy < y1; cy++) {
+            Arrays.fill(canvas, cy * cw + x0, cy * cw + x1, 0);
+        }
+    }
+
+    private static ImageData.Scan scan(final ByteBuffer source) {
+        final ByteBuffer buffer = source.slice().order(LE);
+        if (buffer.remaining() < 8) return ImageData.Scan.EMPTY;
+
+        final int firstFourCC = buffer.getInt();
+        final int firstSize = buffer.getInt();
+        if (firstFourCC != FourCC.VP8X) return ImageData.Scan.EMPTY;
+        if (firstSize < 10 || buffer.remaining() < firstSize) return ImageData.Scan.EMPTY;
+
+        final int vp8xPos = buffer.position();
+        final boolean animated = (buffer.get(vp8xPos) & 0x02) != 0;
+        // AN ODD-SIZED VP8X TRUNCATED EXACTLY AT ITS END MAKES paddedSize LAND ONE PAST limit
+        buffer.position(Math.min(vp8xPos + paddedSize(firstSize), buffer.limit()));
+        if (!animated) return ImageData.Scan.EMPTY;
+
+        final List<Long> delays = new ArrayList<>();
+        int repeat = ImageData.NO_REPEAT;
+        while (buffer.remaining() >= 8) {
+            final int fourCC = buffer.getInt();
+            final int size = buffer.getInt();
+            if (size < 0 || buffer.remaining() < size) break;
+            final int dataPos = buffer.position();
+            if (fourCC == FourCC.ANIM && size >= 6) {
+                final int lc = (buffer.get(dataPos + 4) & 0xFF) | ((buffer.get(dataPos + 5) & 0xFF) << 8);
+                repeat = lc == 0 ? ImageData.REPEAT_FOREVER : lc;
+            } else if (fourCC == FourCC.ANMF && size >= 16) {
+                final int duration = (buffer.get(dataPos + 12) & 0xFF)
+                        | ((buffer.get(dataPos + 13) & 0xFF) << 8)
+                        | ((buffer.get(dataPos + 14) & 0xFF) << 16);
+                delays.add((long) duration);
+            }
+            final int next = dataPos + paddedSize(size);
+            buffer.position(Math.min(next, buffer.limit()));
+        }
+
+        if (delays.size() <= 1) return ImageData.Scan.EMPTY;
+        final long[] delayArray = new long[delays.size()];
+        long total = 0L;
+        for (int i = 0; i < delayArray.length; i++) {
+            delayArray[i] = delays.get(i);
+            total += delayArray[i];
+        }
+        return new ImageData.Scan(delayArray.length, delayArray, total, repeat);
+    }
+
+    // ----- DIMENSION PARSERS -----
+
+    private static int[] parseVP8Dims(final byte[] data) throws CodecException {
+        if (data.length < 10) throw new CodecException("VP8 chunk too small");
+        final int b0 = data[0] & 0xFF, b1 = data[1] & 0xFF, b2 = data[2] & 0xFF;
+        final int frameTag = b0 | (b1 << 8) | (b2 << 16);
+        if ((frameTag & 1) != 0) throw new CodecException("VP8 must start with key frame");
+        final int sync0 = data[3] & 0xFF, sync1 = data[4] & 0xFF, sync2 = data[5] & 0xFF;
+        if (sync0 != 0x9D || sync1 != 0x01 || sync2 != 0x2A) throw new CodecException("Invalid VP8 start code");
+        final int widthScale = (data[6] & 0xFF) | ((data[7] & 0xFF) << 8);
+        final int heightScale = (data[8] & 0xFF) | ((data[9] & 0xFF) << 8);
+        return new int[] { widthScale & 0x3FFF, heightScale & 0x3FFF };
+    }
+
+    private static int[] parseVP8LDims(final byte[] data, final int off, final int len) throws CodecException {
+        if (len < 5) throw new CodecException("VP8L bitstream too small: " + len);
+        if ((data[off] & 0xFF) != 0x2F) throw new CodecException("Invalid VP8L signature");
+        final int bits = (data[off + 1] & 0xFF) | ((data[off + 2] & 0xFF) << 8) | ((data[off + 3] & 0xFF) << 16) | ((data[off + 4] & 0xFF) << 24);
+        final int w = (bits & 0x3FFF) + 1;
+        final int h = ((bits >> 14) & 0x3FFF) + 1;
+        final int alphaUsed = (bits >> 28) & 1;
+        final int version = (bits >> 29) & 7;
+        if (version != 0) throw new CodecException("Unsupported VP8L version: " + version);
+        return new int[] { w, h, alphaUsed };
+    }
+
+    // ----- CHUNK / STREAM HELPERS -----
+
+    private record ChunkHdr(int fourCC, int size) {}
+
+    private static ChunkHdr readChunkHdr(final ByteBuffer in) throws CodecException {
+        final int fcc = readIntLE(in);
+        final int sz = readIntLE(in);
+        return new ChunkHdr(fcc, sz);
+    }
+
+    private static ChunkHdr readChunkHdrOrEnd(final ByteBuffer in) throws CodecException {
+        if (!in.hasRemaining()) return null;
+        if (in.remaining() < 8) throw new CodecException("Truncated WEBP chunk header: " + in.remaining() + " of 8 bytes");
+        final int fcc = in.getInt();
+        final int sz = in.getInt();
+        return new ChunkHdr(fcc, sz);
+    }
+
+    private static int readIntLE(final ByteBuffer in) throws CodecException {
+        if (in.remaining() < 4) throw new CodecException("Truncated WEBP int: " + in.remaining() + " of 4 bytes");
+        return in.getInt();
+    }
+
+    private static byte[] readPaddedChunkBody(final ByteBuffer in, final int size) throws CodecException {
+        if (size < 0) throw new CodecException("Negative WEBP chunk size: " + size);
+        if (in.remaining() < size)
+            throw new CodecException("Truncated WEBP chunk body: declared " + size + " bytes, " + in.remaining() + " available");
+        final byte[] body = new byte[size];
+        in.get(body);
+        if ((size & 1) == 1) {
+            if (!in.hasRemaining()) LOGGER.debug(IT, "WEBP padding byte missing at EOF");
+            else in.get();
+        }
+        return body;
+    }
+
+    private byte[] readPaddedChunkBodyIntoScratch(final ByteBuffer in, final int size) throws CodecException {
+        if (size < 0) throw new CodecException("Negative WEBP chunk size: " + size);
+        if (in.remaining() < size)
+            throw new CodecException("Truncated WEBP chunk body: declared " + size + " bytes, " + in.remaining() + " available");
+        if (this.anmfScratch.length < size) this.anmfScratch = new byte[size];
+        in.get(this.anmfScratch, 0, size);
+        if ((size & 1) == 1) {
+            if (!in.hasRemaining()) LOGGER.debug(IT, "WEBP padding byte missing at EOF");
+            else in.get();
+        }
+        return this.anmfScratch;
+    }
+
+    private static int paddedSize(final int size) {
+        return (size + 1) & ~1;
+    }
+
+    private boolean readMetadataChunk(final ByteBuffer in, final ChunkHdr c) throws CodecException {
+        if (c.fourCC == FourCC.ICCP) {
+            this.metadata.put(CodecsAPI.WEBP_METAKEY_ICC_PROFILE, readPaddedChunkBody(in, c.size));
+            return true;
+        }
+        if (c.fourCC == FourCC.EXIF) {
+            final byte[] exif = readPaddedChunkBody(in, c.size);
+            this.metadata.put(CodecsAPI.WEBP_METAKEY_EXIF, exif);
+            this.metadata.put(CodecsAPI.WEBP_METAKEY_ORIENTATION, Tiff.orientation(exif));
+            return true;
+        }
+        if (c.fourCC == FourCC.XMP) {
+            final byte[] xmp = readPaddedChunkBody(in, c.size);
+            this.metadata.put(CodecsAPI.WEBP_METAKEY_XMP, xmp);
+            Xmp.read(this.metadata, xmp);
+            return true;
+        }
+        return false;
+    }
+
+    // SKIP THE BODY OF AN UNINTERESTING CHUNK. paddedSize(-8) IS -8, SO A NEGATIVE DECLARED SIZE
+    // WOULD WALK THE CURSOR BACKWARDS AND RE-PARSE THE SAME BYTES INSTEAD OF ADVANCING
+    private static void skipBytes(final ByteBuffer in, final int n) throws CodecException {
+        if (n < 0) throw new CodecException("Negative WEBP chunk size: " + n);
+        if (in.remaining() < n)
+            throw new CodecException("Truncated WEBP chunk: skipping " + n + " bytes, " + in.remaining() + " available");
+        in.position(in.position() + n);
+    }
+
+}

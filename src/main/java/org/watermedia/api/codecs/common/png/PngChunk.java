@@ -1,0 +1,187 @@
+package org.watermedia.api.codecs.common.png;
+
+import org.watermedia.api.codecs.CodecException;
+
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
+
+/**
+ * Generic PNG Chunk
+ * All PNG chunks follow the same structure: length, type, data, CRC
+ *
+ * @see <a href="https://www.w3.org/TR/png-3/#5Chunk-layout">PNG Specification - Chunk Layout</a>
+ */
+public record PngChunk(int length, int type, byte[] data, int crc) {
+
+    // HARD SANITY CAP FOR A SINGLE CHUNK READ FROM A STREAM (WHERE REMAINING LENGTH IS UNKNOWN)
+    private static final int MAX_CHUNK_BYTES = 256 * 1024 * 1024;
+
+    // PRECALCULATED CRC TABLE (POLYNOMIAL: 0xEDB88320)
+    private static final int[] CRC_TABLE = new int[256];
+
+    static {
+        // PRECALCULATE CRC TABLE (IDENTICAL TO GZIP/ZIP)
+        for (int n = 0; n < 256; n++) {
+            int c = n;
+            for (int k = 0; k < 8; k++) {
+                if ((c & 1) != 0) {
+                    c = 0xEDB88320 ^ (c >>> 1);
+                } else {
+                    c = c >>> 1;
+                }
+            }
+            CRC_TABLE[n] = c;
+        }
+    }
+
+    /**
+     * Reads a complete chunk from the buffer
+     */
+    public static PngChunk read(final ByteBuffer buffer) throws IOException {
+        try {
+            if (buffer.remaining() < 8) throw new EOFException("Unexpected EOF while reading chunk header");
+            final int length = buffer.getInt();
+            // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE — REPORT THE RAW VALUE
+            if (length < 0) throw new CodecException("Invalid chunk length: " + Integer.toUnsignedString(length));
+            // LONG MATH: length+4 OVERFLOWS int FOR length >= 0x7FFFFFFC, BYPASSING THE EOF CHECK INTO A ~2GB ALLOC
+            if (buffer.remaining() < (long) length + 4) {
+                throw new EOFException("Unexpected EOF while reading chunk data");
+            }
+            final int type = buffer.getInt();
+            final byte[] data = new byte[length];
+            buffer.get(data, 0, length);
+            final int crc = buffer.getInt();
+            return new PngChunk(length, type, data, crc);
+        } catch (final BufferUnderflowException e) {
+            throw new EOFException("Unexpected EOF while reading chunk");
+        }
+    }
+
+    /**
+     * Reads a complete chunk from a stream (length + type + data + crc), big-endian.
+     * Pulls only the bytes required by this chunk; the stream is left positioned at the next chunk.
+     */
+    public static PngChunk read(final InputStream in) throws IOException {
+        final int length = readIntBE(in);
+        // THE PNG LENGTH FIELD IS UNSIGNED, SO 0x80000000 READS BACK NEGATIVE — REPORT THE RAW VALUE
+        if (length < 0) {
+            throw new CodecException("Invalid chunk length: " + Integer.toUnsignedString(length));
+        }
+        // NO STREAM-LENGTH IS KNOWN HERE, SO A HARD SANITY CAP STOPS A ~2GB ALLOC FROM 4 ATTACKER BYTES
+        if (length > MAX_CHUNK_BYTES) {
+            throw new CodecException("PNG chunk too large: " + length + " bytes (max " + MAX_CHUNK_BYTES + ")");
+        }
+        final int type = readIntBE(in);
+        final byte[] data = new byte[length];
+        readFully(in, data, 0, length);
+        final int crc = readIntBE(in);
+        return new PngChunk(length, type, data, crc);
+    }
+
+    private static int readIntBE(final InputStream in) throws IOException {
+        final int b1 = in.read();
+        final int b2 = in.read();
+        final int b3 = in.read();
+        final int b4 = in.read();
+        if ((b1 | b2 | b3 | b4) < 0) throw new EOFException("Unexpected EOF while reading chunk header");
+        return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
+    }
+
+    private static void readFully(final InputStream in, final byte[] dst, final int off, final int len) throws IOException {
+        int read = 0;
+        while (read < len) {
+            final int n = in.read(dst, off + read, len - read);
+            if (n < 0) throw new EOFException("Unexpected EOF while reading chunk data (" + read + "/" + len + ")");
+            read += n;
+        }
+    }
+
+    /**
+     * Checks if the chunk data is corrupted by verifying CRC
+     */
+    public boolean corrupted() {
+        return this.crc != this.calculateCRC();
+    }
+
+    /**
+     * Calculates the CRC-32 of the chunk type and data
+     */
+    public int calculateCRC() {
+        int crcCalc = 0xFFFFFFFF;
+
+        // CRC OVER TYPE (4 BYTES)
+        for (int i = 0; i < 4; i++) {
+            final int b = (this.type >> (24 - i * 8)) & 0xFF;
+            crcCalc = CRC_TABLE[(crcCalc ^ b) & 0xFF] ^ (crcCalc >>> 8);
+        }
+
+        // CRC OVER DATA
+        for (final byte b: this.data) {
+            crcCalc = CRC_TABLE[(crcCalc ^ b) & 0xFF] ^ (crcCalc >>> 8);
+        }
+
+        // FINAL XOR
+        return ~crcCalc;
+    }
+
+    /**
+     * Returns the chunk type as a 4-character string
+     */
+    public String typeName() {
+        return String.valueOf(new char[]{
+                (char) ((this.type >> 24) & 0xFF),
+                (char) ((this.type >> 16) & 0xFF),
+                (char) ((this.type >> 8) & 0xFF),
+                (char) (this.type & 0xFF)
+        });
+    }
+
+    /**
+     * Returns whether this is a critical chunk (first byte uppercase)
+     */
+    public boolean isCritical() {
+        return ((this.type >> 24) & 0x20) == 0;
+    }
+
+    /**
+     * Returns whether this is a public chunk (second byte uppercase)
+     */
+    public boolean isPublic() {
+        return ((this.type >> 16) & 0x20) == 0;
+    }
+
+    /**
+     * Returns whether this chunk is safe to copy (fourth byte lowercase)
+     */
+    public boolean isSafeToCopy() {
+        return (this.type & 0x20) != 0;
+    }
+
+    /**
+     * Calculates CRC-32 for arbitrary data (static utility method)
+     */
+    public static int crc32(final byte[] data, final int offset, final int length) {
+        int crc = 0xFFFFFFFF;
+        for (int i = offset; i < offset + length; i++) {
+            crc = CRC_TABLE[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+        }
+        return ~crc;
+    }
+
+    /** Creates a chunk with the CRC of its type and data; the data array is shared, not copied. */
+    public static PngChunk create(final int type, final byte[] data) {
+        final PngChunk temp = new PngChunk(data.length, type, data, 0);
+        return new PngChunk(data.length, type, data, temp.calculateCRC());
+    }
+
+    /** Writes length, type, data and CRC into a big-endian buffer with room for the data plus twelve bytes. */
+    public void write(final ByteBuffer buffer) {
+        buffer.putInt(this.length);
+        buffer.putInt(this.type);
+        buffer.put(this.data);
+        buffer.putInt(this.crc);
+    }
+}

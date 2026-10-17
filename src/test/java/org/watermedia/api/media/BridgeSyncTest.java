@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * End-to-end tests of the bridge sync protocol over a real byte transport: a
  * {@link ServerMediaPlayer} authority and its followers exchange encoded packets through
  * in-memory carriers, exactly as a dev's packet channel or socket would deliver them.
- * Covers spectator registration, lockstep gating, late joiners, control requests and the
+ * Covers follower registration, lockstep gating, late joiners, control requests and the
  * follower clock mirror.
  */
 @DisplayName("Bridge sync")
@@ -71,7 +71,7 @@ public class BridgeSyncTest {
         ServerMediaPlayer authority(final Capability... capabilities) {
             this.server = new ServerMediaPlayer(buf -> {
                 final ByteBuffer frame = copy(buf);
-                this.received.add(Packet.of(frame.duplicate()));
+                this.received.add(Packet.read(frame.duplicate()));
                 this.net.execute(() -> {
                     synchronized (this) {
                         for (final ServerMediaPlayer follower: this.followers) follower.sync(frame.duplicate());
@@ -85,14 +85,14 @@ public class BridgeSyncTest {
         // COULD ANSWER THE HELLO BEFORE THE NEW FOLLOWER IS REACHABLE.
         ServerMediaPlayer follower() {
             synchronized (this) {
-                final ServerMediaPlayer follower = MediaAPI.createFollower(this.upstream());
+                final ServerMediaPlayer follower = MediaAPI.follower(this.upstream());
                 follower.tolerance(TOLERANCE_MS);
                 this.followers.add(follower);
                 return follower;
             }
         }
 
-        // RAW UPSTREAM CARRIER — ALSO USED TO INJECT SYNTHETIC SPECTATORS WITHOUT A REAL PLAYER
+        // RAW UPSTREAM CARRIER — ALSO USED TO INJECT SYNTHETIC FOLLOWERS WITHOUT A REAL PLAYER
         Bridge upstream() {
             return buf -> {
                 final ByteBuffer frame = copy(buf);
@@ -119,14 +119,14 @@ public class BridgeSyncTest {
     }
 
     @Test
-    @DisplayName("a spectator registers with a hello and receives config plus a snapshot")
+    @DisplayName("a follower registers with a hello and receives config plus a snapshot")
     void testWatchRegisters() {
         this.hub = new Hub();
         final ServerMediaPlayer server = this.hub.authority(Capability.LOCKSTEP);
         server.syncDuration(60_000L);
         this.hub.send(new Watch(4242L));
 
-        await("the watcher to register", () -> server.watchers() == 1);
+        await("the follower to register", () -> server.followers() == 1);
         await("a config answering the hello", () -> this.hub.received.stream().anyMatch(p ->
                 p instanceof final Config c && c.watcherId() == 4242L && c.has(Capability.LOCKSTEP)
                         && !c.has(Capability.CONTROLS)));
@@ -135,19 +135,19 @@ public class BridgeSyncTest {
     }
 
     @Test
-    @DisplayName("lockstep holds the audience until every spectator is ready")
+    @DisplayName("lockstep holds the pool until every follower is ready")
     void testLockstepGatesStart() {
         this.hub = new Hub();
         final ServerMediaPlayer server = this.hub.authority(Capability.LOCKSTEP);
         server.syncDuration(60_000L);
 
-        // 3 SPECTATORS ANNOUNCE THEMSELVES BEFORE PLAYBACK — ALL STILL LOADING
+        // 3 FOLLOWERS ANNOUNCE THEMSELVES BEFORE PLAYBACK — ALL STILL LOADING
         final long[] ids = {11L, 22L, 33L};
         for (final long id: ids) {
             this.hub.send(new Watch(id));
             this.hub.send(new Report(id, Status.LOADING, 60_000L, false));
         }
-        await("all three watchers", () -> server.watchers() == 3);
+        await("all three followers", () -> server.followers() == 3);
 
         server.start();
         // THE SESSION IS PLAYING UNDERNEATH, BUT PRESENTED AS BUFFERING WITH A FROZEN CLOCK
@@ -161,7 +161,7 @@ public class BridgeSyncTest {
         this.hub.send(new Report(ids[0], Status.PLAYING, 60_000L, false));
         this.hub.send(new Report(ids[1], Status.PLAYING, 60_000L, false));
         settle();
-        assertEquals(Status.BUFFERING, server.status(), "one loading spectator still holds the gate");
+        assertEquals(Status.BUFFERING, server.status(), "one loading follower still holds the gate");
 
         this.hub.send(new Report(ids[2], Status.PLAYING, 60_000L, false));
         await("the gate to lift", () -> server.status() == Status.PLAYING);
@@ -170,14 +170,14 @@ public class BridgeSyncTest {
     }
 
     @Test
-    @DisplayName("a rebuffering spectator freezes everyone and resumes in place")
-    void testBufferingGatesTheAudience() {
+    @DisplayName("a rebuffering follower freezes everyone and resumes in place")
+    void testBufferingGatesThePool() {
         this.hub = new Hub();
         final ServerMediaPlayer server = this.hub.authority(Capability.LOCKSTEP);
         server.syncDuration(60_000L);
         this.hub.send(new Watch(1L));
         this.hub.send(new Report(1L, Status.PLAYING, 60_000L, false));
-        await("the watcher to be pooled", () -> server.watchers() == 1);
+        await("the follower to be pooled", () -> server.followers() == 1);
 
         server.start();
         await("playback to run", () -> server.status() == Status.PLAYING && server.time() > 100L);
@@ -187,7 +187,7 @@ public class BridgeSyncTest {
         settle();
         final long frozen = server.time();
         settle();
-        assertEquals(frozen, server.time(), "the audience clock must hold while one client rebuffers");
+        assertEquals(frozen, server.time(), "the pool clock must hold while one client rebuffers");
 
         this.hub.send(new Report(1L, Status.PLAYING, 60_000L, false));
         await("the gate to lift", () -> server.status() == Status.PLAYING);
@@ -210,9 +210,9 @@ public class BridgeSyncTest {
         // SOMEONE LOADS THE CHUNK MID-PLAYBACK: STILL LOADING, BUT THE SHOW GOES ON
         this.hub.send(new Watch(2L));
         this.hub.send(new Report(2L, Status.LOADING, 60_000L, false));
-        await("the joiner to register", () -> server.watchers() == 2);
+        await("the joiner to register", () -> server.followers() == 2);
         settle();
-        assertEquals(Status.PLAYING, server.status(), "a late joiner must not gate the audience");
+        assertEquals(Status.PLAYING, server.status(), "a late joiner must not gate the pool");
 
         // ONCE IT REPORTS READY IT BECOMES A FULL MEMBER — AND CAN GATE FROM THEN ON
         this.hub.send(new Report(2L, Status.PLAYING, 60_000L, false));
@@ -222,30 +222,30 @@ public class BridgeSyncTest {
     }
 
     @Test
-    @DisplayName("failed and vanished spectators never hold the gate")
-    void testFailedAndStaleWatchersIgnored() {
+    @DisplayName("failed and vanished followers never hold the gate")
+    void testFailedAndStaleFollowersIgnored() {
         this.hub = new Hub();
         final ServerMediaPlayer server = this.hub.authority(Capability.LOCKSTEP);
-        server.watcherTimeout(1000L); // A SHORT SILENCE TOLERANCE KEEPS THE TTL TEST FAST
+        server.followerTimeout(1000L); // A SHORT SILENCE TOLERANCE KEEPS THE TTL TEST FAST
         server.syncDuration(60_000L);
 
         this.hub.send(new Watch(1L));
         this.hub.send(new Report(1L, Status.PLAYING, 60_000L, false));
         this.hub.send(new Watch(2L));
         this.hub.send(new Report(2L, Status.ERROR, 0L, false));
-        await("both watchers", () -> server.watchers() == 2);
+        await("both followers", () -> server.followers() == 2);
 
         // A BROKEN CLIENT IS IGNORED INSTEAD OF FREEZING THE SHOW
         server.start();
         settle();
-        assertEquals(Status.PLAYING, server.status(), "an errored spectator must not gate");
+        assertEquals(Status.PLAYING, server.status(), "an errored follower must not gate");
 
         // A POOLED CLIENT THAT REBUFFERS AND THEN VANISHES WITHOUT SAYING GOODBYE MUST NOT
-        // FREEZE THE AUDIENCE FOREVER — THE TTL SWEEP DROPS IT AND THE GATE LIFTS
+        // FREEZE THE POOL FOREVER — THE TTL SWEEP DROPS IT AND THE GATE LIFTS
         this.hub.send(new Report(1L, Status.BUFFERING, 60_000L, false));
-        await("the vanishing spectator to gate", () -> server.status() == Status.BUFFERING);
+        await("the vanishing follower to gate", () -> server.status() == Status.BUFFERING);
         await("the TTL sweep to release the gate", () -> server.status() == Status.PLAYING);
-        assertEquals(0, server.watchers(), "silent spectators must be swept");
+        assertEquals(0, server.followers(), "silent followers must be swept");
     }
 
     @Test
@@ -256,7 +256,7 @@ public class BridgeSyncTest {
         server.syncDuration(60_000L);
         final ServerMediaPlayer a = this.hub.follower();
         final ServerMediaPlayer b = this.hub.follower();
-        await("both followers to register", () -> server.watchers() == 2);
+        await("both followers to register", () -> server.followers() == 2);
 
         server.start();
         await("both to play", () -> a.playing() && b.playing());
@@ -290,7 +290,7 @@ public class BridgeSyncTest {
     }
 
     @Test
-    @DisplayName("control requests drive the whole audience when granted")
+    @DisplayName("control requests drive the whole pool when granted")
     void testControlRequestsAreSymmetric() {
         this.hub = new Hub();
         final ServerMediaPlayer server = this.hub.authority(Capability.CONTROLS);
@@ -298,7 +298,7 @@ public class BridgeSyncTest {
         final ServerMediaPlayer a = this.hub.follower();
         final ServerMediaPlayer b = this.hub.follower();
         await("the handshake to grant controls", () -> a.granted(Capability.CONTROLS)
-                && b.granted(Capability.CONTROLS) && server.watchers() == 2);
+                && b.granted(Capability.CONTROLS) && server.followers() == 2);
 
         // A CLIENT ASKS FOR PLAYBACK — THE AUTHORITY DECIDES AND EVERYONE FOLLOWS
         a.start();
@@ -322,7 +322,7 @@ public class BridgeSyncTest {
         final ServerMediaPlayer server = this.hub.authority();
         server.syncDuration(60_000L);
         final ServerMediaPlayer follower = this.hub.follower();
-        await("the follower to register", () -> server.watchers() == 1);
+        await("the follower to register", () -> server.followers() == 1);
 
         server.start();
         await("the follower to play", follower::playing);
@@ -353,7 +353,7 @@ public class BridgeSyncTest {
         this.hub = new Hub();
         final ServerMediaPlayer local = this.hub.authority();
         final ServerMediaPlayer localFollower = this.hub.follower();
-        await("the follower to register", () -> local.watchers() == 1);
+        await("the follower to register", () -> local.followers() == 1);
         localFollower.volume(10);
         local.volume(70);
         settle();
@@ -366,7 +366,7 @@ public class BridgeSyncTest {
         this.hub = new Hub();
         final ServerMediaPlayer server = this.hub.authority();
         final ServerMediaPlayer follower = this.hub.follower();
-        await("the follower to register", () -> server.watchers() == 1);
+        await("the follower to register", () -> server.followers() == 1);
         // REPORTS FLOW WHILE NEITHER SIDE KNOWS THE MEDIA: AN UNKNOWN DURATION READS AS "LIVE",
         // AND LATCHING IT WOULD KILL SPEED CONTROL AND EVERY TIME CORRECTION FOR THE SESSION
         settle();
@@ -375,7 +375,7 @@ public class BridgeSyncTest {
         server.start();
         await("the follower to play", follower::playing);
         settle();
-        assertFalse(server.liveSource(), "an unopened client must not mark the session live");
+        assertFalse(server.live(), "an unopened client must not mark the session live");
         assertTrue(server.canSpeed(), "speed control must survive the handshake");
     }
 
@@ -386,10 +386,10 @@ public class BridgeSyncTest {
         final ServerMediaPlayer server = this.hub.authority();
         final List<ServerMediaPlayer> followers = new ArrayList<>();
         for (int i = 0; i < 3; i++) followers.add(this.hub.follower());
-        await("all followers to register", () -> server.watchers() == 3);
+        await("all followers to register", () -> server.followers() == 3);
 
         followers.get(0).release();
-        await("the released follower to be dropped", () -> server.watchers() == 2);
+        await("the released follower to be dropped", () -> server.followers() == 2);
     }
 
     @Test
@@ -400,8 +400,8 @@ public class BridgeSyncTest {
         final CountDownLatch resume = new CountDownLatch(1);
         final CountDownLatch unwatched = new CountDownLatch(1);
         final List<Packet> delivered = new CopyOnWriteArrayList<>();
-        final ServerMediaPlayer follower = MediaAPI.createFollower(payload -> {
-            final Packet packet = Packet.of(payload);
+        final ServerMediaPlayer follower = MediaAPI.follower(payload -> {
+            final Packet packet = Packet.read(payload);
             if (packet instanceof Report) {
                 reporting.countDown();
                 try {
@@ -416,7 +416,7 @@ public class BridgeSyncTest {
             if (packet instanceof Unwatch) unwatched.countDown();
         });
         try {
-            assertEquals(1, authority.watchers());
+            assertEquals(1, authority.followers());
             follower.sync(authority.snapshot());
             assertTrue(reporting.await(AWAIT_MS, TimeUnit.MILLISECONDS), "the real sync ticker must enter the carrier");
 
@@ -426,14 +426,14 @@ public class BridgeSyncTest {
             resume.countDown();
 
             assertTrue(unwatched.await(AWAIT_MS, TimeUnit.MILLISECONDS), "the last send must finish deregistration");
-            assertEquals(0, authority.watchers());
+            assertEquals(0, authority.followers());
             assertEquals(List.of(Watch.class, Report.class, Unwatch.class),
                     delivered.stream().map(Object::getClass).toList());
             authority.start();
             follower.sync(authority.snapshot());
             assertFalse(follower.start(), "released players cannot resume sending or ticking");
             settle();
-            assertEquals(0, authority.watchers(), "late snapshots must not register a released follower again");
+            assertEquals(0, authority.followers(), "late snapshots must not register a released follower again");
             assertEquals(3, delivered.size());
         } finally {
             resume.countDown();

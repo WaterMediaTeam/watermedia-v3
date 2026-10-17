@@ -112,7 +112,7 @@ public class PerformanceTest {
         final ByteBuffer input = ByteBuffer.wrap(source);
         final long start = System.nanoTime();
 
-        try (final ImageReader reader = CodecsAPI.decodeImage(input)) {
+        try (final ImageReader reader = CodecsAPI.reader(input)) {
             final long afterOpen = System.nanoTime();
             final int bytesAfterOpen = input.position();
 

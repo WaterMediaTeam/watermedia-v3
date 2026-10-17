@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -11,8 +11,8 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#fcTL-chunk">PNG Specification - fcTL</a>
  */
-public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
-                   short delay, short delay_den, byte dispose, byte blend) implements IChunk {
+public record FCTL(int sequence, int width, int height, int xOffset, int yOffset,
+                   short delayNum, short delayDen, byte dispose, byte blend) implements IChunk {
 
     public static final int SIGNATURE = 0x66_63_54_4C; // "fcTL"
     public static final int LENGTH = 26;               // FIXED LENGTH OF fcTL DATA
@@ -29,20 +29,20 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
     /**
      * Reads fcTL chunk from buffer (legacy method, reads length/type from buffer)
      */
-    public static FCTL read(final ByteBuffer buffer) throws XCodecException {
+    public static FCTL read(final ByteBuffer buffer) throws CodecException {
         // CHUNK HEADER: LENGTH (4 BYTES), TYPE (4 BYTES)
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated fcTL chunk header");
+        if (buffer.remaining() < 8) throw new CodecException("Truncated fcTL chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new XCodecException("fcTL chunk length must be 26, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated fcTL chunk");
+            throw new CodecException("fcTL chunk length must be 26, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated fcTL chunk");
 
-        return new FCTL(
+        final FCTL fctl = new FCTL(
                 buffer.getInt(),     // SEQUENCE NUMBER
                 buffer.getInt(),     // WIDTH
                 buffer.getInt(),     // HEIGHT
@@ -53,23 +53,25 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
                 buffer.get(),        // DISPOSE OP
                 buffer.get()         // BLEND OP
         );
+        fctl.validate();
+        return fctl;
     }
 
     /**
-     * Converts a generic CHUNK to FCTL
+     * Converts a generic PngChunk to FCTL
      */
-    public static FCTL convert(final CHUNK chunk, final ByteOrder order) throws XCodecException {
+    public static FCTL convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new XCodecException("fcTL data must be 26 bytes, got " + data.length);
+            throw new CodecException("fcTL data must be 26 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
-        return new FCTL(
+        final FCTL fctl = new FCTL(
                 buffer.getInt(),     // SEQUENCE NUMBER (4 BYTES)
                 buffer.getInt(),     // WIDTH (4 BYTES)
                 buffer.getInt(),     // HEIGHT (4 BYTES)
@@ -80,14 +82,25 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
                 buffer.get(),        // DISPOSE OP (1 BYTE)
                 buffer.get()         // BLEND OP (1 BYTE)
         );
+        fctl.validate();
+        return fctl;
+    }
+
+    /**
+     * Rejects dispose and blend operations outside the APNG specification
+     */
+    public void validate() throws CodecException {
+        // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException, SO read() AND convert() CALL THIS
+        if ((this.dispose & 0xFF) > DISPOSE_OP_PREVIOUS || (this.blend & 0xFF) > BLEND_OP_OVER)
+            throw new CodecException("Invalid fcTL operations: dispose " + (this.dispose & 0xFF) + ", blend " + (this.blend & 0xFF));
     }
 
     /**
      * Returns the frame delay in milliseconds
      */
-    public int delayMillis() {
-        final int num = this.delay & 0xFFFF;
-        int den = this.delay_den & 0xFFFF;
+    public int delayMs() {
+        final int num = this.delayNum & 0xFFFF;
+        int den = this.delayDen & 0xFFFF;
         if (den == 0) den = 100; // DEFAULT TO 100 IF 0
         return (num * 1000) / den;
     }
@@ -95,36 +108,36 @@ public record FCTL(int seq, int width, int height, int xOffset, int yOffset,
     /**
      * Validates frame bounds against canvas dimensions
      */
-    public void validate(final int canvasWidth, final int canvasHeight) throws XCodecException {
+    public void validate(final int canvasWidth, final int canvasHeight) throws CodecException {
         if (this.width <= 0 || this.height <= 0) {
-            throw new XCodecException("Invalid frame dimensions: " + this.width + "x" + this.height);
+            throw new CodecException("Invalid frame dimensions: " + this.width + "x" + this.height);
         }
         if (this.xOffset < 0 || this.yOffset < 0) {
-            throw new XCodecException("Invalid frame offset: " + this.xOffset + "," + this.yOffset);
+            throw new CodecException("Invalid frame offset: " + this.xOffset + "," + this.yOffset);
         }
         // LONG MATH: RAW int FIELDS CAN SUM PAST Integer.MAX_VALUE AND WRAP NEGATIVE, FALSELY PASSING
         if ((long) this.xOffset + this.width > canvasWidth || (long) this.yOffset + this.height > canvasHeight) {
-            throw new XCodecException("Frame extends beyond canvas bounds");
+            throw new CodecException("Frame extends beyond canvas bounds");
         }
     }
 
     @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
-        buf.putInt(this.seq);
+        buf.putInt(this.sequence);
         buf.putInt(this.width);
         buf.putInt(this.height);
         buf.putInt(this.xOffset);
         buf.putInt(this.yOffset);
-        buf.putShort(this.delay);
-        buf.putShort(this.delay_den);
+        buf.putShort(this.delayNum);
+        buf.putShort(this.delayDen);
         buf.put(this.dispose);
         buf.put(this.blend);
         return buf.array();
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

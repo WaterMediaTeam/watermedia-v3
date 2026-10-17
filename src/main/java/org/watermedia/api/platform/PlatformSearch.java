@@ -7,7 +7,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Live handle to an asynchronous {@link PlatformAPI#search(String) search}.
  * <p>
- * The {@link #results() results} list fills in off-thread as each registered {@link IPlatform}
+ * The {@link #results() results} list fills in off-thread as each registered {@link Platform}
  * answers — a caller (typically a client UI) can poll it every frame and draw hits as they land,
  * without ever blocking. Platforms are probed concurrently on a shared daemon pool, and a newer
  * search supersedes this one: when that happens this handle is simply abandoned and its list stops

@@ -18,7 +18,7 @@ public final class UploadState {
     public volatile boolean issueOpened;
     public volatile int stage = 1;
     public volatile String status = "READY";
-    public volatile String issueUrl = "github.com/watermedia/issues/new";
+    public volatile String issueUrl;
     // REPOSITORY THE STAGE-3 SUBMIT ACTION WILL OPEN (WATERMEDIA BY DEFAULT, OR A SUSPECTED MOD)
     public volatile String repoUrl;
     public final List<AppContext.UploadFileEntry> files = new CopyOnWriteArrayList<>();

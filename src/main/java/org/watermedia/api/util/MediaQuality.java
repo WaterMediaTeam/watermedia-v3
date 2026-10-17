@@ -7,23 +7,26 @@ import java.util.Set;
  */
 public enum MediaQuality {
     UNKNOWN(0),
-    Q144P(144),
-    LOWEST(240),
-    LOWER(360),
-    LOW(480),
-    MEDIUM(720),
-    HIGH(1080),
-    HIGHER(1440),
-    HIGHEST(2160),
-    Q8K(4320);
+    LOWEST(144),
+    LOWER(240),
+    LOW(360),
+    MEDIUM(480),
+    HIGH(720),
+    HIGHER(1080),
+    HIGHEST(1440),
+    ULTRA(2160),
+    ULTRA_8K(4320);
 
     private static final MediaQuality[] VALUES = values();
 
-    public final int threshold;
+    private final int height;
 
-    MediaQuality(final int threshold) {
-        this.threshold = threshold;
+    MediaQuality(final int height) {
+        this.height = height;
     }
+
+    /** Returns the vertical resolution this level names, in pixels; zero for {@link #UNKNOWN}. */
+    public int height() { return this.height; }
 
     /** Determines quality from a single dimension; see {@link #of(int, int)}. */
     public static MediaQuality of(final int resolution) {
@@ -33,7 +36,7 @@ public enum MediaQuality {
     /**
      * Determines quality from video dimensions.
      * It picks the smallest non-zero one — landscape videos (1920x1080)
-     * will use 1080 to determine quality (HIGH). When a single dimension
+     * will use 1080 to determine quality (HIGHER). When a single dimension
      * is reported (HLS rendition tags often give height only), the
      * non-zero value is used directly.
      *
@@ -49,27 +52,11 @@ public enum MediaQuality {
         else size = Math.min(width, height);
 
         for (int i = VALUES.length - 1; i >= 0; i--) {
-            if (size >= VALUES[i].threshold) {
+            if (size >= VALUES[i].height) {
                 return VALUES[i];
             }
         }
-        return Q144P;
-    }
-
-    /**
-     * Gets the next higher quality level.
-     */
-    public MediaQuality higher() {
-        final int next = this.ordinal() + 1;
-        return next < VALUES.length ? VALUES[next] : this;
-    }
-
-    /**
-     * Gets the next lower quality level.
-     */
-    public MediaQuality lower() {
-        final int prev = this.ordinal() - 1;
-        return prev >= 0 ? VALUES[prev] : this;
+        return LOWEST;
     }
 
     /**

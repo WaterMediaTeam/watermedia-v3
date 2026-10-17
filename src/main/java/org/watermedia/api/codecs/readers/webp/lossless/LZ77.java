@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.common.webp.BitReader;
 
 final class LZ77 {
@@ -29,7 +29,7 @@ final class LZ77 {
     }
 
     /** Expands a WebP length or distance prefix, consuming its extra bits from the reader. */
-    public static int prefixToValue(final int prefixCode, final BitReader reader) throws XCodecException {
+    public static int prefixToValue(final int prefixCode, final BitReader reader) throws CodecException {
         if (prefixCode < 4) {
             return prefixCode + 1;
         }

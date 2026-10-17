@@ -34,10 +34,10 @@ public final class MediaAPI {
     private static final String STEP_FFMPEG = "FFMPEG";
 
     // NATIVE STATE IS PUBLISHED AT STARTUP AND CLEARED DURING MODULE SHUTDOWN.
-    private static volatile boolean FFMPEG_LOADED;
-    private static volatile Throwable FFMPEG_FAILURE;
+    private static volatile boolean ffmpegLoaded;
+    private static volatile Throwable ffmpegFailure;
     // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
-    private static volatile boolean VULKAN_DECODE; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
+    private static volatile boolean vulkanHwDecode; // BUILD+DRIVER CAN CREATE A VULKAN HW-DECODE DEVICE (PROBED AT BOOT)
 
     /**
      * Gets or creates an MRL for the given URI string.
@@ -88,7 +88,7 @@ public final class MediaAPI {
     }
 
     /** Creates a plain {@link ServerMediaPlayer}: a clock without media or engines, on either side; broadcasting, if any, stays manual. */
-    public static ServerMediaPlayer createPlayer() {
+    public static ServerMediaPlayer serverPlayer() {
         return new ServerMediaPlayer();
     }
 
@@ -100,7 +100,7 @@ public final class MediaAPI {
      * @param capabilities capabilities granted to the followers
      * @return the authority instance
      */
-    public static ServerMediaPlayer createPlayer(final Bridge bridge, final Config.Capability... capabilities) {
+    public static ServerMediaPlayer serverPlayer(final Bridge bridge, final Config.Capability... capabilities) {
         return new ServerMediaPlayer(bridge, capabilities);
     }
 
@@ -112,7 +112,7 @@ public final class MediaAPI {
      * @param bridge upstream byte carrier towards the authority
      * @return the follower instance
      */
-    public static ServerMediaPlayer createFollower(final Bridge bridge) {
+    public static ServerMediaPlayer follower(final Bridge bridge) {
         return ServerMediaPlayer.follower(bridge);
     }
 
@@ -129,22 +129,22 @@ public final class MediaAPI {
      * @param sfx supplier of the audio sink, invoked at most once
      * @return the player, or {@code null} when not ready or on failure
      */
-    public static MediaPlayer createPlayer(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
-        return createPlayer(mrl, 0, gfx, sfx, null);
+    public static MediaPlayer player(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
+        return player(mrl, 0, gfx, sfx, null);
     }
 
     /**
-     * Creates a media player for the FIRST MRL source that follows a server-side authority
+     * Creates a media player for the FIRST MRL source that follows a {@link ServerMediaPlayer} authority
      * through the given bridge, or {@code null} when no player can be built.
      * @param mrl the resolved MRL
      * @param gfx supplier of the video sink, invoked at most once
      * @param sfx supplier of the audio sink, invoked at most once
      * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
      * @return the player, or {@code null} when not ready or on failure
-     * @see #createPlayer(MRL, int, Supplier, Supplier)
+     * @see #player(MRL, int, Supplier, Supplier)
      */
-    public static MediaPlayer createPlayer(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
-        return createPlayer(mrl, 0, gfx, sfx, bridge);
+    public static MediaPlayer player(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
+        return player(mrl, 0, gfx, sfx, bridge);
     }
 
     /**
@@ -161,12 +161,12 @@ public final class MediaAPI {
      * @param sfx supplier of the audio sink, invoked at most once
      * @return the player, or {@code null} when not ready or on failure
      */
-    public static MediaPlayer createPlayer(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
-        return createPlayer(mrl, sourceIndex, gfx, sfx, null);
+    public static MediaPlayer player(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
+        return player(mrl, sourceIndex, gfx, sfx, null);
     }
 
     /**
-     * Creates a media player for the given MRL source that follows a server-side authority
+     * Creates a media player for the given MRL source that follows a {@link ServerMediaPlayer} authority
      * through the given bridge, or {@code null} when no player can be built.
      * @param mrl the resolved MRL
      * @param sourceIndex index of the source to play
@@ -174,17 +174,17 @@ public final class MediaAPI {
      * @param sfx supplier of the audio sink, invoked at most once
      * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
      * @return the player, or {@code null} when not ready or on failure
-     * @see #createPlayer(MRL, int, Supplier, Supplier)
+     * @see #player(MRL, int, Supplier, Supplier)
      */
-    public static MediaPlayer createPlayer(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
+    public static MediaPlayer player(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
         final MRL.Source source = mrl.source(sourceIndex);
         if (source == null) {
             // STILL FETCHING IS A NORMAL TRANSIENT STATE — DON'T SPAM WARNINGS FOR IT
             final MRL.Status status = mrl.status();
             if (status == MRL.Status.FETCHING) {
-                LOGGER.debug(IT, "Source {} not ready yet (still fetching): {}", sourceIndex, mrl.uri);
+                LOGGER.debug(IT, "Source {} not ready yet (still fetching): {}", sourceIndex, mrl.uri());
             } else {
-                LOGGER.warn(IT, "Cannot create player: source {} unavailable (status {}) for {}", sourceIndex, status, mrl.uri);
+                LOGGER.warn(IT, "Cannot create player: source {} unavailable (status {}) for {}", sourceIndex, status, mrl.uri());
             }
             return null;
         }
@@ -203,19 +203,19 @@ public final class MediaAPI {
                 return new TxMediaPlayer(mrl, sourceIndex, gfxEngine, bridge);
             }
 
-            if (FFMPEG_LOADED) {
+            if (ffmpegLoaded) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
                 gfxEngine = gfx.get();
                 sfxEngine = sfx.get();
                 return new FFMediaPlayer(mrl, sourceIndex, gfxEngine, sfxEngine, bridge);
             }
 
-            LOGGER.error(IT, "No media backend available for: {}", mrl.uri);
+            LOGGER.error(IT, "No media backend available for: {}", mrl.uri());
             return null;
         } catch (final Exception e) { // VM AND LINKAGE ERRORS MUST PROPAGATE.
             try { if (gfxEngine != null) gfxEngine.release(); } catch (final Exception cleanup) { LOGGER.warn(IT, "Failed to release GFX engine after construction failure", cleanup); }
             try { if (sfxEngine != null) sfxEngine.release(); } catch (final Exception cleanup) { LOGGER.warn(IT, "Failed to release SFX engine after construction failure", cleanup); }
-            LOGGER.error(IT, "Player construction failed for: {}", mrl.uri, e);
+            LOGGER.error(IT, "Player construction failed for: {}", mrl.uri(), e);
             return null;
         }
     }
@@ -304,14 +304,14 @@ public final class MediaAPI {
     // FFMPEG ENGINE STATE
     // ==========================================================================
 
-    /** @return {@code true} once the FFmpeg engine initialized successfully at boot */
+    /** Returns whether the FFmpeg engine initialized successfully at boot. */
     public static boolean ffmpegLoaded() {
-        return FFMPEG_LOADED;
+        return ffmpegLoaded;
     }
 
-    /** @return {@code true} if the FFmpeg engine failed to initialize at boot */
+    /** Returns whether the FFmpeg engine failed to initialize at boot. */
     public static boolean ffmpegError() {
-        return FFMPEG_FAILURE != null;
+        return ffmpegFailure != null;
     }
 
     /**
@@ -322,16 +322,16 @@ public final class MediaAPI {
      * @return {@code true} when Vulkan hardware decode is supported and available on this system
      */
     public static boolean vulkanDecode() {
-        return VULKAN_DECODE;
+        return vulkanHwDecode;
     }
 
     /** Internal bootstrap operation for media resolution and native playback. */
     public static final class Module extends WaterMediaModule {
         @Override
         protected void start() {
-            FFMPEG_LOADED = false;
-            FFMPEG_FAILURE = null;
-            VULKAN_DECODE = false;
+            ffmpegLoaded = false;
+            ffmpegFailure = null;
+            vulkanHwDecode = false;
             this.task(1, 3, "Media resolution");
             MRL.start();
             this.task(2, 3, STEP_CACHE);
@@ -342,14 +342,14 @@ public final class MediaAPI {
             }
             this.task(3, 3, STEP_FFMPEG);
             if (!WaterMedia.status().ready(Id.BINARIES)) return;
-            if (!startFFmpeg() && FFMPEG_FAILURE != null) this.failure(STEP_FFMPEG, FFMPEG_FAILURE);
+            if (!startFFmpeg() && ffmpegFailure != null) this.failure(STEP_FFMPEG, ffmpegFailure);
         }
 
         @Override
         protected void release() throws Exception {
-            FFMPEG_LOADED = false;
-            FFMPEG_FAILURE = null;
-            VULKAN_DECODE = false;
+            ffmpegLoaded = false;
+            ffmpegFailure = null;
+            vulkanHwDecode = false;
             Throwable failure = null;
             for (final AutoCloseable resource: new AutoCloseable[] { MRL::release, NetworkCache::release, FFMediaPlayer::stopTLS }) {
                 try {
@@ -468,7 +468,7 @@ public final class MediaAPI {
                     // NO VULKAN DEVICE — LEAVE THE PROBE NEGATIVE
                 }
             }
-            VULKAN_DECODE = vulkanDecode;
+            vulkanHwDecode = vulkanDecode;
             LOGGER.info(IT, "Vulkan hardware decode: {}", vulkanDecode
                     ? "available (zero-copy GPU import needs AVVkFrame JNI, absent here — software decode + host-import is used)"
                     : "unavailable");
@@ -477,11 +477,11 @@ public final class MediaAPI {
             final BytePointer license = avformat.avformat_license();
             LOGGER.info(IT, "FFMPEG started, running version {} under {}", avformat.avformat_version(), FFTool.string(license, "unknown"));
             IOTool.closeQuietly(license);
-            return FFMPEG_LOADED = true;
+            return ffmpegLoaded = true;
         } catch (final Exception | LinkageError t) {
             LOGGER.error(IT, "Failed to load FFMPEG", t);
-            VULKAN_DECODE = false;
-            FFMPEG_FAILURE = t;
+            vulkanHwDecode = false;
+            ffmpegFailure = t;
             return false;
         }
     }

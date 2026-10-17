@@ -926,7 +926,7 @@ public final class GLEngine extends GFXEngine {
             GL20.glUniform1i(locs[i], i);
         }
         GL20.glUniform1f(locs[4], this.bitScale);
-        GL20.glUniform1f(locs[5], this.format == PixelFormat.NV21 || this.format == PixelFormat.YUYV2 ? 1.0f : 0.0f);
+        GL20.glUniform1f(locs[5], this.format == PixelFormat.NV21 || this.format == PixelFormat.UYVY ? 1.0f : 0.0f);
         GL20.glUniform1f(locs[6], (float) this.width);
 
         GL30.glBindVertexArray(this.quadVAO);
@@ -949,7 +949,7 @@ public final class GLEngine extends GFXEngine {
             case NV12, NV21 -> CONV_NV;
             case YUV420P, YUV422P, YUV444P -> CONV_YUV3;
             case YUVA420P, YUVA422P, YUVA444P -> CONV_YUVA;
-            case YUYV, YUYV2 -> CONV_YUYV;
+            case YUYV, UYVY -> CONV_YUYV;
             default -> CONV_NONE; // BGRA, RGBA, GBRA, RGB — DIRECT UPLOAD, NO SHADER PASS
         };
         this.planes = switch (this.format) {
@@ -960,7 +960,7 @@ public final class GLEngine extends GFXEngine {
                     : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGB, GL11.GL_UNSIGNED_BYTE, 3)};
             case GRAY -> new Plane[]{
                     new Plane(w, h, this.glInternalR, GL11.GL_RED, this.glType, bps)};
-            case YUYV, YUYV2 -> new Plane[]{
+            case YUYV, UYVY -> new Plane[]{
                     // CEIL: ODD WIDTHS NEED THE LAST PACKED TEXEL (w/2) — MATCHES VKEngine
                     new Plane((w + 1) / 2, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 4)};
             case NV12, NV21 -> new Plane[]{

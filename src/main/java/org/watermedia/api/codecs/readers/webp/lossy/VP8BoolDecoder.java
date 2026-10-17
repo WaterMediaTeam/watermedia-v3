@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossy;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -27,11 +27,11 @@ final class VP8BoolDecoder {
 
     // RFC6386 SECTION 7.3 - DECODER INITIALIZATION
     // READS FIRST TWO BYTES TO INITIALIZE VALUE, SETS RANGE = 255
-    VP8BoolDecoder(final ByteBuffer buffer) throws XCodecException {
+    VP8BoolDecoder(final ByteBuffer buffer) throws CodecException {
         this.buf = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
 
         if (this.buf.remaining() < 2) {
-            throw new XCodecException("VP8 bool decoder buffer too small");
+            throw new CodecException("VP8 bool decoder buffer too small");
         }
 
         // INIT: VALUE = FIRST 2 INPUT BYTES (BIG-ENDIAN ORDER)
@@ -102,7 +102,7 @@ final class VP8BoolDecoder {
 
     // RFC6386 SECTION 8 - READ N-BIT UNSIGNED LITERAL (MSB FIRST)
     // L(N) IN RFC NOTATION
-    int readLit(final int n) throws XCodecException {
+    int readLit(final int n) {
         int r = 0;
         for (int i = 0; i < n; i++) {
             r = (r << 1) | (this.readBool() ? 1 : 0);
@@ -112,7 +112,7 @@ final class VP8BoolDecoder {
 
     // RFC6386 SECTION 8 - READ SIGNED LITERAL
     // MAGNITUDE FIRST, THEN SIGN BIT (1 = NEGATIVE)
-    int readSigned(final int n) throws XCodecException {
+    int readSigned(final int n) {
         final int mag = this.readLit(n);
         return this.readBool() ? -mag : mag;
     }

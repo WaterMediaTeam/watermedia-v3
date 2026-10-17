@@ -20,8 +20,7 @@ public final class BootstrapProbe {
         final String scenario = arguments[0];
         final Path root = Path.of("").toAbsolutePath();
         WaterConfig.setPath(root.resolve("config"));
-        WaterMediaConfig.network.enableServer = false;
-        WaterMediaConfig.network.forceEnableServer = false;
+        WaterMediaConfig.network.server = WaterMediaConfig.Network.Server.OFF;
         WaterMediaConfig.network.timeout = 1000;
         WaterMediaConfig.media.ffmpeg.disable = !scenario.equals("native") && !scenario.equals("native-failure") && !scenario.equals("tls");
         if (scenario.equals("tls")) {
@@ -39,9 +38,9 @@ public final class BootstrapProbe {
             } catch (final IllegalStateException expected) {
                 if (WaterMedia.started() || WaterMedia.status().state() != BootStatus.State.FAILED)
                     throw new AssertionError(WaterMedia.status());
-                for (final BootStatus.Module module: WaterMedia.status().modules()) {
-                    if (module.id() == BootStatus.Id.NETWORK || module.id() == BootStatus.Id.PLATFORMS || module.id() == BootStatus.Id.MEDIA) {
-                        if (module.outcome() != BootStatus.Outcome.BLOCKED) throw new AssertionError(module);
+                for (final BootStatus.Service service: WaterMedia.status().services()) {
+                    if (service.id() == BootStatus.Id.NETWORK || service.id() == BootStatus.Id.PLATFORMS || service.id() == BootStatus.Id.MEDIA) {
+                        if (service.outcome() != BootStatus.Outcome.BLOCKED) throw new AssertionError(service);
                     }
                 }
                 if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null)
@@ -59,13 +58,13 @@ public final class BootstrapProbe {
         if (!client) {
             if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null)
                 throw new AssertionError("Server initialized native paths");
-            for (final BootStatus.Module module: WaterMedia.status().modules()) {
-                if (module.id() == BootStatus.Id.MEDIA || module.id() == BootStatus.Id.PLATFORMS || module.id() == BootStatus.Id.BINARIES) {
-                    if (module.outcome() != BootStatus.Outcome.SKIPPED) throw new AssertionError(module);
+            for (final BootStatus.Service service: WaterMedia.status().services()) {
+                if (service.id() == BootStatus.Id.MEDIA || service.id() == BootStatus.Id.PLATFORMS || service.id() == BootStatus.Id.BINARIES) {
+                    if (service.outcome() != BootStatus.Outcome.SKIPPED) throw new AssertionError(service);
                 }
             }
             if (Files.exists(root.resolve("first/ffmpeg"))) throw new AssertionError("Server extracted client natives");
-            final ServerMediaPlayer player = MediaAPI.createPlayer();
+            final ServerMediaPlayer player = MediaAPI.serverPlayer();
             try {
                 WaterMedia.stop();
                 throw new AssertionError("Shutdown accepted an open player");

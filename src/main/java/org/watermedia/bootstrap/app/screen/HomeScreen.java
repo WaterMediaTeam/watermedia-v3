@@ -611,11 +611,9 @@ public class HomeScreen extends Screen {
     }
 
     private List<RepoTarget> uploadRepoTargets() {
-        final String wmUrl = this.ctx.upload.issueUrl != null && this.ctx.upload.issueUrl.startsWith("http")
-                ? this.ctx.upload.issueUrl
-                : "https://github.com/WaterMediaTeam/watermedia/issues/new";
+        final String wmUrl = this.ctx.upload.issueUrl != null ? this.ctx.upload.issueUrl : "https://github.com/" + AppContext.REPO + "/issues/new";
         final List<RepoTarget> repos = new ArrayList<>();
-        repos.add(new RepoTarget("WaterMedia", "WaterMediaTeam/watermedia", wmUrl, AppTheme.GREEN));
+        repos.add(new RepoTarget("WaterMedia", AppContext.REPO, wmUrl, AppTheme.GREEN));
         // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE WaterMediaApp.scanSuspectMods)
         int idx = 0;
         for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {

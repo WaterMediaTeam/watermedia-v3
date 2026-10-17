@@ -3,13 +3,13 @@ package org.watermedia.api.media;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.watermedia.api.platform.DataQuality;
-import org.watermedia.api.platform.DataSource;
-import org.watermedia.api.platform.IPlatform;
+import org.watermedia.api.platform.Platform.Quality;
+import org.watermedia.api.platform.Platform.Source;
+import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
-import org.watermedia.api.platform.PlatformData;
+import org.watermedia.api.platform.Platform.Resolution;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
 
@@ -56,7 +56,7 @@ public class MrlPlatformClassificationTest {
     @DisplayName("Single UNKNOWN platform source is byte-sniffed to IMAGE")
     void testSingleUnknownSourceSniffedToImage() {
         final URI claimed = URI.create("watertest://remote/8DuZ3dat");
-        final IPlatform platform = platform(claimed, source(MediaType.UNKNOWN, opaque.toUri()));
+        final Platform platform = platform(claimed, source(MediaType.UNKNOWN, opaque.toUri()));
         PlatformAPI.register(platform);
         try {
             final MRL mrl = MediaAPI.mrl(claimed);
@@ -76,7 +76,7 @@ public class MrlPlatformClassificationTest {
         // THE TARGET IS A REAL SNIFFABLE IMAGE: IF A PROBE EVER RAN, THE TYPE WOULD FLIP TO IMAGE
         final URI claimed = URI.create("watertest://iptv/list");
         final URI target = opaque.toUri();
-        final IPlatform platform = platform(claimed, source(MediaType.UNKNOWN, target), source(MediaType.UNKNOWN, target));
+        final Platform platform = platform(claimed, source(MediaType.UNKNOWN, target), source(MediaType.UNKNOWN, target));
         PlatformAPI.register(platform);
         try {
             final MRL mrl = MediaAPI.mrl(claimed);
@@ -93,22 +93,22 @@ public class MrlPlatformClassificationTest {
         }
     }
 
-    private static DataSource source(final MediaType type, final URI target) {
-        return new DataSource(type, null, null, RequestHeaders.defaults(target),
-                List.of(new DataQuality(target, 0, 0)), null, null);
+    private static Source source(final MediaType type, final URI target) {
+        return new Source(type, null, null, HttpHeaders.defaults(target),
+                List.of(new Quality(target, 0, 0)), null, null);
     }
 
     // MINIMAL HANDLER CLAIMING EXACTLY ONE URI, LIKE WaterPlatform DOES FOR water://
-    private static IPlatform platform(final URI claimed, final DataSource... entries) {
-        return new IPlatform() {
+    private static Platform platform(final URI claimed, final Source... entries) {
+        return new Platform() {
             @Override
             public String name() {
                 return "UnknownType Test";
             }
 
             @Override
-            public PlatformData data(final URI uri) {
-                return claimed.equals(uri) ? new PlatformData(null, List.of(entries)) : null;
+            public Resolution resolve(final URI uri) {
+                return claimed.equals(uri) ? new Resolution(null, List.of(entries)) : null;
             }
         };
     }

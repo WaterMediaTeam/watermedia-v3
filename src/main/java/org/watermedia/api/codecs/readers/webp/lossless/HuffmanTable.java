@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.common.webp.BitReader;
 
 public final class HuffmanTable {
@@ -45,7 +45,7 @@ public final class HuffmanTable {
     }
 
     /** Decodes the next symbol from the LSB-first bitstream, or returns the sole symbol without consuming bits. */
-    public int read(final BitReader reader) throws XCodecException {
+    public int read(final BitReader reader) throws CodecException {
         // CHECK FOR SINGLE SYMBOL TABLE (NO BITS NEEDED)
         if (this.isSingleSymbol) {
             return this.singleSymbolValue;
@@ -74,7 +74,7 @@ public final class HuffmanTable {
                     }
                 }
             }
-            throw new XCodecException("Invalid huffman code (code=" + code + ")");
+            throw new CodecException("Invalid huffman code (code=" + code + ")");
         }
 
         // SLOW SAFE PATH: NEAR EOF, READ BIT-BY-BIT WHILE PROPAGATING EOF EXCEPTIONS.
@@ -96,11 +96,11 @@ public final class HuffmanTable {
                 }
             }
         }
-        throw new XCodecException("Invalid huffman code (code=" + code + ")");
+        throw new CodecException("Invalid huffman code (code=" + code + ")");
     }
 
     /** Builds a canonical LSB-first table from symbol lengths; rejects over-subscribed codes. */
-    public static HuffmanTable build(final int[] codeLengths, final int alphabetSize) throws XCodecException {
+    public static HuffmanTable build(final int[] codeLengths, final int alphabetSize) throws CodecException {
         if (codeLengths == null || codeLengths.length == 0) {
             // EMPTY TABLE - SINGLE SYMBOL 0
             return singleSymbolTable(0);
@@ -132,7 +132,7 @@ public final class HuffmanTable {
         for (int len = 1; len <= maxLen; len++) {
             left <<= 1;
             left -= lengthCount[len];
-            if (left < 0) throw new XCodecException("Over-subscribed huffman code at length " + len);
+            if (left < 0) throw new CodecException("Over-subscribed huffman code at length " + len);
         }
 
         // COMPUTE FIRST CODE FOR EACH LENGTH

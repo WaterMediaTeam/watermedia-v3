@@ -58,7 +58,7 @@ public class SvgTest {
                 final byte[] bytes = Fixtures.readAll(svg);
 
                 final ByteBuffer bb = ByteBuffer.wrap(bytes);
-                try (final ImageReader reader = CodecsAPI.decodeImage(bb)) {
+                try (final ImageReader reader = CodecsAPI.reader(bb)) {
                     assertEquals("SVG", reader.name());
                     assertEquals(0, bb.position(), "SVG is its own body — position must not advance");
                     assertTrue(reader.width() > 0 && reader.height() > 0, "positive dimensions");
@@ -76,7 +76,7 @@ public class SvgTest {
                     assertTrue(reader.hasNext(), "reset re-arms the frame");
                 }
 
-                final ImageData img = CodecsAPI.decodeImage(bytes);
+                final ImageData img = CodecsAPI.decode(bytes);
                 assertNotNull(img);
                 assertEquals(1, img.frames().length, "single frame");
                 assertTrue(img.width() > 0 && img.height() > 0);
@@ -93,7 +93,7 @@ public class SvgTest {
 
         for (final Path svg: svgFiles()) {
             final String name = svg.getFileName().toString();
-            final ImageData img = CodecsAPI.decodeImage(Fixtures.readAll(svg));
+            final ImageData img = CodecsAPI.decode(Fixtures.readAll(svg));
             final int w = img.width(), h = img.height();
             final ByteBuffer bgra = img.frames()[0].duplicate();
 
@@ -127,7 +127,7 @@ public class SvgTest {
     @DisplayName("Non-SVG XML is not accepted as an image")
     void rejectsNonSvgXml() {
         final byte[] html = "<?xml version=\"1.0\"?>\n<html><body>hi</body></html>".getBytes(StandardCharsets.UTF_8);
-        assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.decodeImage(html));
+        assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.decode(html));
     }
 
     @Test
@@ -136,7 +136,7 @@ public class SvgTest {
         // d="...z5": Z CONSUMES NO INPUT — THE PARSER MUST STILL ADVANCE AND FINISH (NO INFINITE LOOP)
         final byte[] svg = svg("0 0 100 100", "<path d=\"M10,10 L90,90 L10,90 z5\" fill=\"#ff0000\"/>");
         assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-            final ImageData img = CodecsAPI.decodeImage(svg);
+            final ImageData img = CodecsAPI.decode(svg);
             assertNotNull(img);
         });
     }
@@ -146,14 +146,14 @@ public class SvgTest {
     void deepNestingIsBounded() {
         final byte[] svg = svg("0 0 100 100", "<g>".repeat(4000) + "<rect width=\"10\" height=\"10\"/>" + "</g>".repeat(4000));
         assertTimeoutPreemptively(Duration.ofSeconds(10), () ->
-                assertThrows(IOException.class, () -> CodecsAPI.decodeImage(svg)));
+                assertThrows(IOException.class, () -> CodecsAPI.decode(svg)));
     }
 
     @Test
     @DisplayName("rgb() with surrounding spaces parses to the right colour")
     void rgbWithSpacesParses() throws IOException {
         final byte[] svg = svg("0 0 10 10", "<rect width=\"10\" height=\"10\" fill=\"rgb( 200, 10, 10 )\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         final ByteBuffer bgra = img.frames()[0].duplicate();
         final int centre = (img.height() / 2 * img.width() + img.width() / 2) * 4;
         final int b = bgra.get(centre) & 0xFF, g = bgra.get(centre + 1) & 0xFF, r = bgra.get(centre + 2) & 0xFF;
@@ -164,7 +164,7 @@ public class SvgTest {
     @Test
     @DisplayName("reset() then next() returns a fully-readable frame")
     void resetRewindsFrame() throws IOException {
-        try (final ImageReader reader = CodecsAPI.decodeImage(
+        try (final ImageReader reader = CodecsAPI.reader(
                 ByteBuffer.wrap(svg("0 0 10 10", "<rect width=\"10\" height=\"10\" fill=\"#00ff00\"/>")))) {
             final ByteBuffer first = reader.next();
             final int cap = first.capacity();
@@ -184,7 +184,7 @@ public class SvgTest {
                 + "<stop offset=\"0\" stop-color=\"#ff0000\"/>"
                 + "<stop offset=\"1\" stop-color=\"#0000ff\"/></linearGradient></defs>"
                 + "<rect width=\"100\" height=\"100\" fill=\"url(#g)\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         final int[] left = rgba(img, 5, 50), right = rgba(img, 94, 50);
         assertTrue(left[0] > 150 && left[2] < 100, "left edge should be red, got " + Arrays.toString(left));
         assertTrue(right[2] > 150 && right[0] < 100, "right edge should be blue, got " + Arrays.toString(right));
@@ -202,7 +202,7 @@ public class SvgTest {
                 + "<linearGradient id=\"a\" href=\"#b\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\"/>"
                 + "</defs>"
                 + "<rect width=\"100\" height=\"100\" fill=\"url(#a)\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         final int[] left = rgba(img, 5, 50), right = rgba(img, 94, 50);
         assertTrue(left[0] > 150 && left[2] < 100, "chained gradient must resolve stops (left red), got " + Arrays.toString(left));
         assertTrue(right[2] > 150 && right[0] < 100, "chained gradient must resolve stops (right blue), got " + Arrays.toString(right));
@@ -214,7 +214,7 @@ public class SvgTest {
         // ROTATE 90° ABOUT (50,50) MAPS A RECT AT x∈[70,90],y∈[10,30] TO x∈[70,90],y∈[70,90]
         final byte[] svg = svg("0 0 100 100",
                 "<rect x=\"70\" y=\"10\" width=\"20\" height=\"20\" fill=\"#00ff00\" transform=\"rotate(90 50 50)\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         assertTrue(rgba(img, 80, 80)[1] > 150, "rotated rect should cover (80,80)");
         assertTrue(rgba(img, 80, 20)[3] < 16, "original rect location must be empty after rotation");
     }
@@ -224,7 +224,7 @@ public class SvgTest {
     void transformMatrix() throws IOException {
         final byte[] svg = svg("0 0 100 100",
                 "<rect x=\"0\" y=\"40\" width=\"20\" height=\"20\" fill=\"#00ff00\" transform=\"matrix(1 0 0 1 40 0)\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         assertTrue(rgba(img, 50, 50)[1] > 150, "rect should move to x∈[40,60]");
         assertTrue(rgba(img, 10, 50)[3] < 16, "original x∈[0,20] must be empty");
     }
@@ -235,7 +235,7 @@ public class SvgTest {
         // skewX(45): x' = x + y. AT y≈80 A STRIP AT x∈[0,10] SHIFTS TO x≈[80,90]
         final byte[] svg = svg("0 0 100 100",
                 "<rect x=\"0\" y=\"0\" width=\"10\" height=\"100\" fill=\"#00ff00\" transform=\"skewX(45)\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         assertTrue(rgba(img, 84, 80)[1] > 120, "skewed strip should reach x≈84 at y=80");
         assertTrue(rgba(img, 5, 80)[3] < 16, "strip has moved away from x≈5 at y=80");
     }
@@ -245,7 +245,7 @@ public class SvgTest {
     void arcCommand() throws IOException {
         // SEMICIRCLE FROM (50,10) TO (50,90), sweep=1 → RIGHT HALF-DISC CLOSED BY THE VERTICAL CHORD
         final byte[] svg = svg("0 0 100 100", "<path d=\"M50,10 A40,40 0 0 1 50,90 Z\" fill=\"#ff0000\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         assertTrue(rgba(img, 75, 50)[0] > 150, "right half-disc should be filled at (75,50)");
         assertTrue(rgba(img, 25, 50)[3] < 16, "left half must be empty at (25,50)");
     }
@@ -254,8 +254,8 @@ public class SvgTest {
     @DisplayName("fill-rule evenodd punches a hole that nonzero fills")
     void evenOddFillRule() throws IOException {
         final String d = "d=\"M10,10 H90 V90 H10 Z M30,30 H70 V70 H30 Z\"";
-        final ImageData eo = CodecsAPI.decodeImage(svg("0 0 100 100", "<path fill-rule=\"evenodd\" fill=\"#ff0000\" " + d + "/>"));
-        final ImageData nz = CodecsAPI.decodeImage(svg("0 0 100 100", "<path fill=\"#ff0000\" " + d + "/>"));
+        final ImageData eo = CodecsAPI.decode(svg("0 0 100 100", "<path fill-rule=\"evenodd\" fill=\"#ff0000\" " + d + "/>"));
+        final ImageData nz = CodecsAPI.decode(svg("0 0 100 100", "<path fill=\"#ff0000\" " + d + "/>"));
         assertTrue(rgba(eo, 50, 50)[3] < 16, "evenodd: the inner square is a hole");
         assertTrue(rgba(eo, 20, 20)[0] > 150, "evenodd: the outer ring is filled");
         assertTrue(rgba(nz, 50, 50)[0] > 150, "nonzero: the inner square is filled (no hole)");
@@ -266,7 +266,7 @@ public class SvgTest {
     void strokeWidthAndCaps() throws IOException {
         final byte[] svg = svg("0 0 100 100",
                 "<line x1=\"10\" y1=\"50\" x2=\"90\" y2=\"50\" stroke=\"#ff0000\" stroke-width=\"10\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         assertTrue(rgba(img, 50, 50)[0] > 150, "on the stroke centre");
         assertTrue(rgba(img, 50, 80)[3] < 16, "far from the stroke is empty");
         assertTrue(rgba(img, 92, 50)[0] > 120, "round cap extends past the endpoint");
@@ -276,7 +276,7 @@ public class SvgTest {
     @Test
     @DisplayName("hsl() parses to the expected colour")
     void hslColor() throws IOException {
-        final ImageData img = CodecsAPI.decodeImage(svg("0 0 10 10", "<rect width=\"10\" height=\"10\" fill=\"hsl(120, 100%, 50%)\"/>"));
+        final ImageData img = CodecsAPI.decode(svg("0 0 10 10", "<rect width=\"10\" height=\"10\" fill=\"hsl(120, 100%, 50%)\"/>"));
         final int[] c = rgba(img, 5, 5);
         assertTrue(c[1] > 200 && c[0] < 60 && c[2] < 60, "hsl(120,100%,50%) is green, got " + Arrays.toString(c));
     }
@@ -284,7 +284,7 @@ public class SvgTest {
     @Test
     @DisplayName("Percentage lengths resolve against the viewport")
     void percentageLengths() throws IOException {
-        final ImageData img = CodecsAPI.decodeImage(svg("0 0 100 100",
+        final ImageData img = CodecsAPI.decode(svg("0 0 100 100",
                 "<rect x=\"25%\" y=\"25%\" width=\"50%\" height=\"50%\" fill=\"#ff0000\"/>"));
         assertTrue(rgba(img, 50, 50)[0] > 150, "centre of the 25%..75% rect is filled");
         assertTrue(rgba(img, 10, 10)[3] < 16, "outside the rect is empty");
@@ -293,13 +293,13 @@ public class SvgTest {
     @Test
     @DisplayName("Absolute width/height take precedence over viewBox for intrinsic size")
     void sizingPrecedence() throws IOException {
-        final ImageData sized = CodecsAPI.decodeImage(rawSvg(
+        final ImageData sized = CodecsAPI.decode(rawSvg(
                 "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"32\" viewBox=\"0 0 100 100\">"
                 + "<rect width=\"100\" height=\"100\" fill=\"#ff0000\"/></svg>"));
         assertEquals(64, sized.width(), "absolute width wins over viewBox");
         assertEquals(32, sized.height(), "absolute height wins over viewBox");
 
-        final ImageData viewBoxOnly = CodecsAPI.decodeImage(svg("0 0 40 20", "<rect width=\"40\" height=\"20\" fill=\"#ff0000\"/>"));
+        final ImageData viewBoxOnly = CodecsAPI.decode(svg("0 0 40 20", "<rect width=\"40\" height=\"20\" fill=\"#ff0000\"/>"));
         assertEquals(40, viewBoxOnly.width(), "viewBox provides intrinsic size when width/height are absent");
         assertEquals(20, viewBoxOnly.height());
     }
@@ -308,7 +308,7 @@ public class SvgTest {
     @DisplayName("display:none subtrees are not painted")
     void displayNoneHidesSubtree() throws IOException {
         // A display:none RED RECT OVER THE WHOLE CANVAS MUST NOT PAINT; THE GREEN BASE SHOWS THROUGH
-        final ImageData img = CodecsAPI.decodeImage(svg("0 0 100 100",
+        final ImageData img = CodecsAPI.decode(svg("0 0 100 100",
                 "<rect width=\"100\" height=\"100\" fill=\"#00ff00\"/>"
                 + "<rect width=\"100\" height=\"100\" fill=\"#ff0000\" style=\"display:none\"/>"));
         final int[] c = rgba(img, 50, 50);
@@ -318,10 +318,23 @@ public class SvgTest {
     @Test
     @DisplayName("visibility:hidden shapes are laid out but not painted")
     void visibilityHiddenNotPainted() throws IOException {
-        final ImageData img = CodecsAPI.decodeImage(svg("0 0 100 100",
+        final ImageData img = CodecsAPI.decode(svg("0 0 100 100",
                 "<rect width=\"100\" height=\"100\" fill=\"#00ff00\"/>"
                 + "<rect width=\"100\" height=\"100\" fill=\"#ff0000\" visibility=\"hidden\"/>"));
         assertTrue(rgba(img, 50, 50)[1] > 150, "hidden red rect must not paint over green");
+    }
+
+    @Test
+    @DisplayName("<switch> renders only its first eligible child")
+    void switchRendersFirstEligibleChild() throws IOException {
+        // THE foreignObject NEEDS AN EXTENSION WE LACK, SO THE RED RECT IS THE FIRST ELIGIBLE CHILD; THE GREEN ONE NEVER PAINTS
+        final ImageData img = CodecsAPI.decode(svg("0 0 10 10",
+                "<switch><title>choice</title>"
+                + "<foreignObject requiredExtensions=\"http://example.com/x\"><rect width=\"10\" height=\"10\" fill=\"#0000ff\"/></foreignObject>"
+                + "<rect width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+                + "<rect width=\"10\" height=\"10\" fill=\"#00ff00\"/></switch>"));
+        final int[] c = rgba(img, 5, 5);
+        assertTrue(c[0] > 200 && c[1] < 60 && c[2] < 60, "the first eligible child (red) must paint, got " + Arrays.toString(c));
     }
 
     @Test
@@ -329,7 +342,7 @@ public class SvgTest {
     void missingOperandDoesNotEatNextCommand() throws IOException {
         // C HAS ONLY 5 OF 6 OPERANDS THEN z: THE MALFORMED CUBIC IS DROPPED AND z STILL CLOSES M..L..L
         final byte[] svg = svg("0 0 100 100", "<path d=\"M10,10 L90,10 L90,90 C1 2 3 4 5z\" fill=\"#ff0000\"/>");
-        final ImageData img = CodecsAPI.decodeImage(svg);
+        final ImageData img = CodecsAPI.decode(svg);
         assertTrue(rgba(img, 80, 40)[0] > 150, "close after the malformed C must still fill the triangle interior");
         assertTrue(rgba(img, 10, 5)[3] < 16, "no bogus cubic to (5,0) should leak fill above the triangle");
     }
@@ -338,7 +351,7 @@ public class SvgTest {
     @DisplayName("A RGBA request is honoured with a channel swizzle")
     void requestedRgbaIsHonoured() throws IOException {
         final byte[] svg = svg("0 0 10 10", "<rect width=\"10\" height=\"10\" fill=\"#ff0000\"/>");
-        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(svg), PixelFormat.RGBA)) {
+        try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(svg), PixelFormat.RGBA)) {
             assertEquals(PixelFormat.RGBA, reader.pixelFormat(), "reader must report the honoured format");
             final ByteBuffer f = reader.next();
             final int i = (reader.height() / 2 * reader.width() + reader.width() / 2) * 4;
@@ -357,7 +370,7 @@ public class SvgTest {
                 + "<rect width=\"10\" height=\"10\" fill=\"#ff0000\"/></svg>").getBytes(StandardCharsets.UTF_8);
         // IF THE EXTERNAL DTD WERE RESOLVED, THE UNROUTABLE HOST WOULD HANG (TIMEOUT) OR THROW (DECODE FAIL)
         assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
-            final ImageData img = CodecsAPI.decodeImage(svg);
+            final ImageData img = CodecsAPI.decode(svg);
             assertNotNull(img);
             assertTrue(rgba(img, 5, 5)[0] > 150, "the red rect still renders");
         });

@@ -2,7 +2,7 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMedia.BootStatus;
-import org.watermedia.api.util.MathUtil;
+import org.watermedia.api.util.MathEases;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.Assets;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -249,7 +249,7 @@ public final class LoadingScreen extends Screen {
                 this.startMs = now;
             }
             final double t = clamp01((now - this.startMs) / (double) PROGRESS_ANIM_MS);
-            this.shown = t >= 1.0 ? this.target : clamp01((float) MathUtil.easeInOutQuad(this.from, this.target, t));
+            this.shown = t >= 1.0 ? this.target : clamp01((float) MathEases.EASE_IN_OUT_QUAD.apply(this.from, this.target, t));
         }
 
         // DROPS THE RAMP STATE TO ZERO — USED WHEN THE TRACKED SCOPE CHANGES (NEW MODULE)

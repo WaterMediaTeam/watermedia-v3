@@ -28,7 +28,7 @@ public class FollowerClockTest {
 
     // A FOLLOWER WHOSE BRIDGE GOES NOWHERE: THE TEST FEEDS IT SNAPSHOTS BY HAND
     private ServerMediaPlayer follower() {
-        this.follower = MediaAPI.createFollower(ignored -> {});
+        this.follower = MediaAPI.follower(ignored -> {});
         return this.follower;
     }
 
@@ -78,7 +78,7 @@ public class FollowerClockTest {
         follower.sync(new Sync(1, Status.PLAYING, 0L, 0L, 1f, 100, false, false, true));
         Thread.sleep(400L);
         assertTrue(follower.playing(), "the mirror must start with the session");
-        assertTrue(follower.liveSource(), "the mirror must know the session is live");
+        assertTrue(follower.live(), "the mirror must know the session is live");
         assertTrue(follower.time() >= 250L, "a live mirror clock must advance, was " + follower.time());
     }
 

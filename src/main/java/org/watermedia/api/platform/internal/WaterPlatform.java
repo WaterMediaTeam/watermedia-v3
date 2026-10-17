@@ -4,14 +4,14 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.List;
 
-public final class WaterPlatform implements IPlatform {
+public final class WaterPlatform implements Platform {
     public static final String NAME = "WaterMedia Internal";
     public static final String HOST_LOCAL = "local";
     public static final String HOST_REMOTE = "remote";
@@ -25,16 +25,16 @@ public final class WaterPlatform implements IPlatform {
     }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
-        if (!"water".equals(uri.getScheme())) return null;
+    public Resolution resolve(final URI uri) throws Exception {
+        if (!NetworkAPI.PROTOCOL_WATER.equals(uri.getScheme())) return null;
 
-        final String resolved = toHttpURL(uri);
+        final String resolved = location(uri);
         final URI resolvedUri = new URI(resolved);
-        final var entry = new DataSource(MediaType.UNKNOWN, null, null,
-                RequestHeaders.defaults(uri),
-                List.of(new DataQuality(resolvedUri, 0, 0)),
+        final var entry = new Source(MediaType.UNKNOWN, null, null,
+                HttpHeaders.defaults(uri),
+                List.of(new Quality(resolvedUri, 0, 0)),
                 null, null);
-        return new PlatformData(null, entry);
+        return new Resolution(null, entry);
     }
 
     /**
@@ -44,11 +44,11 @@ public final class WaterPlatform implements IPlatform {
      * @return the resolved URL text
      * @throws IOException if the address has no supported host or the remote base URL is invalid
      */
-    public static String toHttpURL(final URI u) throws IOException {
+    public static String location(final URI u) throws IOException {
         final String host = u.getHost();
         String path = u.getPath();
 
-        if (host == null) throw new PlatformException(WaterPlatform.class, "water:// URL requires a host (local, remote, global)");
+        if (host == null) throw new PlatformException(NAME, "water:// URL requires a host (local, remote, global)");
 
         return switch (host) {
             case HOST_LOCAL -> {
@@ -56,13 +56,13 @@ public final class WaterPlatform implements IPlatform {
                 final Path file = WaterMedia.cwd().resolve(path);
                 yield file.toUri().toString();
             }
-            // NetworkAPI.remoteHost() VALIDATES THE CONFIG UP FRONT AND STRIPS THE TRAILING SLASH
-            case HOST_REMOTE -> NetworkAPI.remoteHost() + path;
+            // NetworkAPI.remoteUrl() VALIDATES THE CONFIG UP FRONT AND STRIPS THE TRAILING SLASH
+            case HOST_REMOTE -> NetworkAPI.remoteUrl() + path;
             case HOST_GLOBAL -> {
                 if (path.startsWith("/")) path = path.substring(1);
                 yield GLOBAL_SERVER + path;
             }
-            default -> throw new PlatformException(WaterPlatform.class, "Unknown water:// host: " + host + " (expected: local, remote, global)");
+            default -> throw new PlatformException(NAME, "Unknown water:// host: " + host + " (expected: local, remote, global)");
         };
     }
 }

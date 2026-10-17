@@ -6,10 +6,10 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JSONTool;
-import org.watermedia.tools.MPEGTool;
+import org.watermedia.tools.M3UTool;
 
 import java.net.URI;
 import java.time.Instant;
@@ -34,7 +34,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * marker), so they are duplicates rather than genuine qualities — the HLS master is Medal's only
  * trustworthy quality ladder.
  */
-public final class MedalPlatform implements IPlatform {
+public final class MedalPlatform implements Platform {
     public static final String NAME = "Medal";
     private static final Marker IT = MarkerManager.getMarker(MedalPlatform.class.getSimpleName());
     private static final String API_URL = "https://medal.tv/api/content/%s";
@@ -46,7 +46,7 @@ public final class MedalPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         // MEDAL HAS MANY PAGE TYPES (PROFILES, GAME HUBS, THE HOME FEED); ONLY A CLIP URL CARRIES AN ID WE CAN RESOLVE
@@ -55,37 +55,37 @@ public final class MedalPlatform implements IPlatform {
 
         LOGGER.debug(IT, "Medal resolving clip '{}' from {}", clipId, uri);
         // A REMOVED, PRIVATE OR MALFORMED ID ANSWERS 4xx (BAD IDS COME BACK AS 400, NOT 404)
-        final Content content = NetRequest.fetchJson(MedalPlatform.class, String.format(API_URL, clipId), Content.class);
+        final Content content = NetRequest.fetchJson(NAME, String.format(API_URL, clipId), Content.class);
 
         // GATE ON AVAILABILITY BEFORE TOUCHING URLS — A TAKEN-DOWN OR LOGIN-WALLED CLIP ONLY EXPOSES PLACEHOLDERS
         if (content.dmcaTakedown)
-            throw new PlatformException(MedalPlatform.class, "Clip '" + clipId + "' was removed by a DMCA takedown");
+            throw new PlatformException(NAME, "Clip '" + clipId + "' was removed by a DMCA takedown");
         if (content.requireLogin)
-            throw new PlatformException(MedalPlatform.class, "Clip '" + clipId + "' requires login (private or restricted)");
+            throw new PlatformException(NAME, "Clip '" + clipId + "' requires login (private or restricted)");
 
-        // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p). MPEGTool NEVER THROWS —
+        // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p). M3UTool NEVER THROWS —
         // ON A FETCH/PARSE HICCUP IT FALLS BACK TO THE MASTER URL ITSELF SO FFmpeg CAN STILL PROBE IT.
-        final List<DataQuality> variants = new ArrayList<>();
+        final List<Quality> variants = new ArrayList<>();
         final URI hls = JSONTool.uri(content.contentUrlHls);
         if (hls != null) {
-            for (final MPEGTool.Variant v: MPEGTool.qualities(hls)) {
-                if (!privacyProtected(v.uri())) variants.add(new DataQuality(v.uri(), v.width(), v.height()));
+            for (final M3UTool.Variant v: M3UTool.qualities(hls)) {
+                if (!privacyProtected(v.uri())) variants.add(new Quality(v.uri(), v.width(), v.height()));
             }
         }
         // FALLBACK: A PROGRESSIVE SOURCE MP4 FOR CLIPS MEDAL NEVER PACKAGED AS HLS (CARRIES REAL SOURCE DIMENSIONS)
         if (variants.isEmpty()) {
             final URI progressive = JSONTool.uri(content.contentUrl);
             if (progressive != null && !privacyProtected(progressive))
-                variants.add(new DataQuality(progressive, content.sourceWidth, content.sourceHeight));
+                variants.add(new Quality(progressive, content.sourceWidth, content.sourceHeight));
         }
         // LAST RESORT: THE PRE-RENDERED SOCIAL-SHARE MP4 (NO RELIABLE DIMENSIONS — LET FFMediaPlayer PROBE)
         if (variants.isEmpty()) {
             final URI social = JSONTool.uri(content.socialMediaVideo);
             if (social != null && !privacyProtected(social))
-                variants.add(new DataQuality(social, 0, 0));
+                variants.add(new Quality(social, 0, 0));
         }
         if (variants.isEmpty())
-            throw new PlatformException(MedalPlatform.class, "Clip '" + clipId + "' exposes no playable source (login-walled, region-locked, or still processing)");
+            throw new PlatformException(NAME, "Clip '" + clipId + "' exposes no playable source (login-walled, region-locked, or still processing)");
 
         final String title = content.contentTitle != null && !content.contentTitle.isBlank() ? content.contentTitle : null;
         final String desc = content.contentDescription != null && !content.contentDescription.isBlank() ? content.contentDescription : null;
@@ -103,11 +103,11 @@ public final class MedalPlatform implements IPlatform {
         final Instant expires = content.urlsExpireAt > 0 ? Instant.ofEpochMilli(content.urlsExpireAt) : null;
 
         LOGGER.info(IT, "Medal resolved clip '{}' with {} variant(s)", clipId, variants.size());
-        final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
-                RequestHeaders.defaults(uri),
+        final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
+                HttpHeaders.defaults(uri),
                 variants,
                 null, null);
-        return new PlatformData(expires, entry);
+        return new Resolution(expires, entry);
     }
 
     // RESOLVES THE CLIP ID FROM EVERY KNOWN MEDAL SHAPE: /games/<slug>/clips/<id>, /<locale>/games/<slug>/clips/<id>,

@@ -7,6 +7,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.MathUtil;
+import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.BufferedInputStream;
@@ -35,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.network.NetworkAPI.*;
 
+/** Local HTTP file server: token-gated uploads into a bounded storage folder and range-capable downloads. */
 public final class NetworkServer {
     private static final Marker IT = MarkerManager.getMarker(NetworkServer.class.getSimpleName());
     private static final String ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -54,9 +56,9 @@ public final class NetworkServer {
         final InetAddress bind = InetAddress.getByName(config.serverBindAddress);
         final String token = config.token;
         if (token == null || token.isBlank()) throw new IllegalArgumentException("The file server requires an upload token");
-        if (!bind.isLoopbackAddress() && "watermedia_default_token_change_it".equals(token.trim()))
+        if (!bind.isLoopbackAddress() && WaterMediaConfig.DEFAULT_NETWORK_TOKEN.equals(token.trim()))
             throw new IllegalArgumentException("A non-loopback file server requires a custom upload token");
-        if (config.serverMaxRequests < 1 || config.serverTimeout < 1 || config.maxStorageSize < 1 || config.maxUploadSize < 0)
+        if (config.maxServerRequests < 1 || config.serverTimeout < 1 || config.maxStorageSize < 1 || config.maxUploadSize < 0)
             throw new IllegalArgumentException("File server concurrency, deadline and storage limits must be positive");
         final Path storage = cwd.resolve("watermedia").resolve("files").toAbsolutePath().normalize();
         Files.createDirectories(storage);
@@ -110,11 +112,11 @@ public final class NetworkServer {
                     if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) used = Math.addExact(used, Files.size(file));
                 }
             }
-            final HttpServer server = HttpServer.create(new InetSocketAddress(bind, port), config.serverMaxRequests);
+            final HttpServer server = HttpServer.create(new InetSocketAddress(bind, port), config.maxServerRequests);
             ThreadPoolExecutor executor = null;
             ScheduledThreadPoolExecutor deadlines = null;
             try {
-                executor = new ThreadPoolExecutor(config.serverMaxRequests, config.serverMaxRequests,
+                executor = new ThreadPoolExecutor(config.maxServerRequests, config.maxServerRequests,
                         0, TimeUnit.MILLISECONDS, new SynchronousQueue<>(), ThreadTool.createFactory("NetworkServer", Thread.NORM_PRIORITY));
                 deadlines = new ScheduledThreadPoolExecutor(1,
                         ThreadTool.createFactory("NetworkServer-Deadline", Thread.NORM_PRIORITY));
@@ -150,7 +152,7 @@ public final class NetworkServer {
                 running = state;
                 retained = true;
                 LOGGER.info(IT, "Started file server at {} with {} request slots and {} bytes of storage capacity",
-                        server.getAddress(), config.serverMaxRequests, state.maxStorage);
+                        server.getAddress(), config.maxServerRequests, state.maxStorage);
             } catch (final RuntimeException | Error failure) {
                 running = null;
                 retained = false;
@@ -371,7 +373,7 @@ public final class NetworkServer {
             final String filename = file.getFileName().toString();
             final String contentType = URLConnection.guessContentTypeFromName(filename);
             final long size = Files.size(file);
-            exchange.getResponseHeaders().set("Content-Type", contentType == null ? "application/octet-stream" : contentType);
+            exchange.getResponseHeaders().set("Content-Type", contentType == null ? NetRequest.MIMETYPE_OCTET_STREAM : contentType);
             exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
             if (head) {
                 exchange.getResponseHeaders().set("Content-Length", String.valueOf(size));
@@ -468,7 +470,7 @@ public final class NetworkServer {
      * Returned by {@link NetworkAPI#upload(File)} methods.
      * All accessors are thread-safe and can be polled from any thread.
      */
-    public static class UploadStatus {
+    public static final class UploadStatus {
         private final long totalBytes;
         private volatile long uploadedBytes;
         private volatile long speed;

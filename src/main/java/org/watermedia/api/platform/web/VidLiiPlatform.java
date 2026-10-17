@@ -4,7 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class VidLiiPlatform implements IPlatform {
+public final class VidLiiPlatform implements Platform {
     public static final String NAME = "VidLii";
     private static final Marker IT = MarkerManager.getMarker(VidLiiPlatform.class.getSimpleName());
     private static final String ORIGIN = "https://www.vidlii.com";
@@ -26,27 +26,27 @@ public final class VidLiiPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(VidLiiPlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());
-            final String html = req.readAllAsString();
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
+            final String html = req.text();
 
             final Matcher matcher = VIDEO_SRC_PATTERN.matcher(html);
             if (!matcher.find())
-                throw new PlatformException(VidLiiPlatform.class, "<video> source not found in page (removed, private, or markup changed): " + uri);
+                throw new PlatformException(NAME, "<video> source not found in page (removed, private, or markup changed): " + uri);
 
             // VIDLII EMITS A ROOT-RELATIVE PATH, BUT TOLERATE AN ABSOLUTE URL IN CASE THE MARKUP CHANGES
             final String videoPath = matcher.group(1);
             final URI videoUri = videoPath.startsWith("http") ? new URI(videoPath) : new URI(ORIGIN + videoPath);
             LOGGER.debug(IT, "VidLii resolved video source {} for {}", videoUri, uri);
 
-            final var entry = new DataSource(MediaType.VIDEO, null, null,
-                    RequestHeaders.defaults(uri),
-                    List.of(new DataQuality(videoUri, 0, 0)),
+            final var entry = new Source(MediaType.VIDEO, null, null,
+                    HttpHeaders.defaults(uri),
+                    List.of(new Quality(videoUri, 0, 0)),
                     null, null);
-            return new PlatformData(null, entry);
+            return new Resolution(null, entry);
         }
     }
 }

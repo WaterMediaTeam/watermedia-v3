@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.readers.svg;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 /**
  * Parses the SVG {@code <path d="...">} grammar into a {@link Path}. Supports every command
@@ -24,12 +24,12 @@ final class PathParser {
         this.len = d.length();
     }
 
-    static void parse(final String d, final Path path) throws XCodecException {
+    static void parse(final String d, final Path path) throws CodecException {
         if (d == null || d.isBlank()) return;
         new PathParser(d).run(path);
     }
 
-    private void run(final Path path) throws XCodecException {
+    private void run(final Path path) throws CodecException {
         char cmd = 0;
         while (true) {
             this.skipSep();
@@ -147,7 +147,7 @@ final class PathParser {
 
     // ELLIPTICAL ARC → ONE OR MORE CUBICS (SVG IMPLEMENTATION NOTES, ENDPOINT→CENTER)
     private void arc(final Path path, double rx, double ry, final double rotDeg,
-                     final boolean large, final boolean sweep, final double x, final double y) throws XCodecException {
+                     final boolean large, final boolean sweep, final double x, final double y) throws CodecException {
         final double x0 = this.cx, y0 = this.cy;
         if ((x0 == x && y0 == y)) return;
         if (rx == 0 || ry == 0) { path.lineTo(x, y); return; }
@@ -224,7 +224,7 @@ final class PathParser {
         }
     }
 
-    private boolean flag() throws XCodecException {
+    private boolean flag() throws CodecException {
         this.skipSep();
         if (this.pos < this.len) {
             final char ch = this.d.charAt(this.pos);
@@ -235,7 +235,7 @@ final class PathParser {
         return this.num() != 0;
     }
 
-    private double num() throws XCodecException {
+    private double num() throws CodecException {
         this.skipSep();
         final int start = this.pos;
         if (this.pos < this.len && (this.d.charAt(this.pos) == '+' || this.d.charAt(this.pos) == '-')) this.pos++;
@@ -272,7 +272,7 @@ final class PathParser {
         }
         // NaN IS THE "COMMAND RAN OUT OF OPERANDS" SENTINEL ABOVE AND THE SCANNER CANNOT SPELL IT HERE.
         // AN INFINITY ("1e999") CAN BE SPELLED, AND IT POISONS FLATNESS AND SCANLINE MATH ALIKE
-        if (Double.isInfinite(v)) throw new XCodecException("Non-finite path coordinate");
+        if (Double.isInfinite(v)) throw new CodecException("Non-finite path coordinate");
         return v;
     }
 

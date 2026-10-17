@@ -20,7 +20,7 @@ public class ChunkContractTest {
     @Test
     @DisplayName("Serializes an empty IEND chunk")
     void serializesEmptyChunk() throws IOException {
-        final CHUNK chunk = assertContract(new IEND(), IEND.SIGNATURE);
+        final PngChunk chunk = assertContract(new IEND(), IEND.SIGNATURE);
         assertEquals(0, chunk.length());
         assertEquals(0xAE426082, chunk.crc());
     }
@@ -30,7 +30,7 @@ public class ChunkContractTest {
     void serializesStructuredChunks() throws IOException {
         assertContract(new IHDR(16, 9, 8, 6, 0, 0, 0), IHDR.SIGNATURE);
         assertContract(new ACTL(3, 0), ACTL.SIGNATURE);
-        final CHUNK frameData = assertContract(new FDAT(7, new byte[] { 9, 10 }), FDAT.SIGNATURE);
+        final PngChunk frameData = assertContract(new FDAT(7, new byte[] { 9, 10 }), FDAT.SIGNATURE);
         assertArrayEquals(new byte[] { 0, 0, 0, 7, 9, 10 }, frameData.data());
     }
 
@@ -46,9 +46,9 @@ public class ChunkContractTest {
         assertArrayEquals(data, assertContract(idat, IDAT.SIGNATURE).data());
     }
 
-    private static CHUNK assertContract(final IChunk value, final int type) throws IOException {
+    private static PngChunk assertContract(final IChunk value, final int type) throws IOException {
         final byte[] data = value.toBytes();
-        final CHUNK chunk = value.toChunk();
+        final PngChunk chunk = value.toChunk();
         assertEquals(type, chunk.type());
         assertEquals(data.length, chunk.length());
         assertArrayEquals(data, chunk.data());
@@ -57,7 +57,7 @@ public class ChunkContractTest {
         final ByteBuffer envelope = ByteBuffer.allocate(data.length + 12);
         chunk.write(envelope);
         envelope.flip();
-        final CHUNK decoded = CHUNK.read(envelope);
+        final PngChunk decoded = PngChunk.read(envelope);
         assertEquals(chunk.length(), decoded.length());
         assertEquals(chunk.type(), decoded.type());
         assertArrayEquals(chunk.data(), decoded.data());

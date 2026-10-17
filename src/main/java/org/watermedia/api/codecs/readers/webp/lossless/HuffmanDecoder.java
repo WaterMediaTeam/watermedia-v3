@@ -1,10 +1,10 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.common.webp.BitReader;
 
 import static org.watermedia.WaterMedia.LOGGER;
-import static org.watermedia.api.codecs.readers.webp.lossless.VP8LDecoder.IT;
+import static org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder.IT;
 
 final class HuffmanDecoder {
 
@@ -17,7 +17,7 @@ final class HuffmanDecoder {
     }
 
     /** Reads one simple or length-coded WebP Huffman table for the declared alphabet size. */
-    public static HuffmanTable readTable(final BitReader reader, final int alphabetSize) throws XCodecException {
+    public static HuffmanTable readTable(final BitReader reader, final int alphabetSize) throws CodecException {
         final boolean isSimple = reader.readBool();
         LOGGER.trace(IT, "readTable: alphabetSize={}, isSimple={}", alphabetSize, isSimple);
 
@@ -29,7 +29,7 @@ final class HuffmanDecoder {
     }
 
     /** Reads the five green, red, blue, alpha and distance tables in one WebP Huffman group. */
-    public static HuffmanGroup readGroup(final BitReader reader, final int colorCacheSize) throws XCodecException {
+    public static HuffmanGroup readGroup(final BitReader reader, final int colorCacheSize) throws CodecException {
         // ALPHABET SIZES:
         // GREEN: 256 LITERALS + 24 LENGTH CODES + COLOR_CACHE_SIZE
         // RED, BLUE, ALPHA: 256
@@ -46,7 +46,7 @@ final class HuffmanDecoder {
     }
 
     /** Reads the declared number of Huffman groups sequentially from the bitstream. */
-    public static HuffmanGroup[] readGroups(final BitReader reader, final int numGroups, final int colorCacheSize) throws XCodecException {
+    public static HuffmanGroup[] readGroups(final BitReader reader, final int numGroups, final int colorCacheSize) throws CodecException {
         final HuffmanGroup[] groups = new HuffmanGroup[numGroups];
         for (int i = 0; i < numGroups; i++) {
             groups[i] = readGroup(reader, colorCacheSize);
@@ -54,20 +54,20 @@ final class HuffmanDecoder {
         return groups;
     }
 
-    private static HuffmanTable readSimpleCode(final BitReader reader, final int alphabetSize) throws XCodecException {
+    private static HuffmanTable readSimpleCode(final BitReader reader, final int alphabetSize) throws CodecException {
         final int numSymbols = reader.read(1) + 1;
         final int is8Bits = reader.read(1);
 
         final int sym0 = reader.read(1 + 7 * is8Bits);
         if (sym0 >= alphabetSize) {
-            throw new XCodecException("Simple code symbol out of range: " + sym0);
+            throw new CodecException("Simple code symbol out of range: " + sym0);
         }
 
         int sym1 = 0;
         if (numSymbols == 2) {
             sym1 = reader.read(8);
             if (sym1 >= alphabetSize) {
-                throw new XCodecException("Simple code symbol out of range: " + sym1);
+                throw new CodecException("Simple code symbol out of range: " + sym1);
             }
         }
 
@@ -77,7 +77,7 @@ final class HuffmanDecoder {
         return HuffmanTable.simple(numSymbols, sym0, sym1);
     }
 
-    private static HuffmanTable readNormalCode(final BitReader reader, final int alphabetSize) throws XCodecException {
+    private static HuffmanTable readNormalCode(final BitReader reader, final int alphabetSize) throws CodecException {
         LOGGER.trace(IT, "readNormalCode: alphabetSize={}, remaining={}", alphabetSize, reader.remaining());
 
         // READ NUMBER OF CODE LENGTH CODES
@@ -103,7 +103,7 @@ final class HuffmanDecoder {
             LOGGER.trace(IT, "  lengthNBits={}, lengthBits={}, maxSymbol={}", lengthNBits, lengthBits, maxSymbol);
             if (maxSymbol > alphabetSize) {
                 LOGGER.trace(IT, "  ERROR: maxSymbol={} > alphabetSize={}", maxSymbol, alphabetSize);
-                throw new XCodecException("Max symbol exceeds alphabet size");
+                throw new CodecException("Max symbol exceeds alphabet size");
             }
         } else {
             maxSymbol = alphabetSize;
@@ -134,7 +134,7 @@ final class HuffmanDecoder {
                 final int extraBits = reader.read(2);
                 final int repeat = 3 + extraBits;
                 if (symbol + repeat > alphabetSize) {
-                    throw new XCodecException("Repeat code overflow: symbol=" + symbol + ", repeat=" + repeat + ", alphabetSize=" + alphabetSize);
+                    throw new CodecException("Repeat code overflow: symbol=" + symbol + ", repeat=" + repeat + ", alphabetSize=" + alphabetSize);
                 }
                 for (int i = 0; i < repeat; i++) {
                     codeLengths[symbol++] = prevCodeLen;
@@ -144,7 +144,7 @@ final class HuffmanDecoder {
                 final int extraBits = reader.read(3);
                 final int repeat = 3 + extraBits;
                 if (symbol + repeat > alphabetSize) {
-                    throw new XCodecException("Repeat zero overflow: symbol=" + symbol + ", repeat=" + repeat + ", alphabetSize=" + alphabetSize);
+                    throw new CodecException("Repeat zero overflow: symbol=" + symbol + ", repeat=" + repeat + ", alphabetSize=" + alphabetSize);
                 }
                 symbol += repeat;
             } else if (code == 18) {
@@ -152,7 +152,7 @@ final class HuffmanDecoder {
                 final int extraBits = reader.read(7);
                 final int repeat = 11 + extraBits;
                 if (symbol + repeat > alphabetSize) {
-                    throw new XCodecException("Repeat zero overflow: symbol=" + symbol + ", repeat=" + repeat + ", alphabetSize=" + alphabetSize);
+                    throw new CodecException("Repeat zero overflow: symbol=" + symbol + ", repeat=" + repeat + ", alphabetSize=" + alphabetSize);
                 }
                 symbol += repeat;
             }

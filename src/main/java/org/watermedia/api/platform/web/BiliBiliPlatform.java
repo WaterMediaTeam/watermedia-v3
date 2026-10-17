@@ -9,9 +9,9 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.api.util.Slave;
+import org.watermedia.api.util.Track;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JSONTool;
 
@@ -27,23 +27,10 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
-public final class BiliBiliPlatform implements IPlatform {
+public final class BiliBiliPlatform implements Platform {
     public static final String NAME = "BiliBili";
     private static final Marker IT = MarkerManager.getMarker(BiliBiliPlatform.class.getSimpleName());
     private static final String REFERER = "https://www.bilibili.com/";
-
-    // BILIBILI REJECTS NON-BROWSER UAS AND REQUIRES A bilibili.com REFERER; CDN URLS
-    // ADDITIONALLY NEED THE USER'S SESSION COOKIE WHEN FETCHING PREMIUM QUALITIES
-    private static RequestHeaders headers() {
-        final RequestHeaders h = new RequestHeaders()
-                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
-                .set("Accept", "*/*")
-                .set("Referer", REFERER);
-        final String c = WaterMediaConfig.platforms.biliBiliCookie;
-        if (c != null && !c.isEmpty()) h.set("Cookie", c);
-        return h;
-    }
-
     private static final String VIDEO_VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid=%s";
     private static final String VIDEO_PLAYURL_API = "https://api.bilibili.com/x/player/playurl?bvid=%s&cid=%d&fnval=4048";
 
@@ -63,16 +50,27 @@ public final class BiliBiliPlatform implements IPlatform {
     private static final Pattern LIVE_ROOM_PATTERN = Pattern.compile("live\\.bilibili\\.com/(\\d+)");
     private static final String[] HOSTS = { "www.bilibili.com", "bilibili.com", "live.bilibili.com", "b23.tv" };
 
+    // BILIBILI REJECTS NON-BROWSER UAS AND REQUIRES A bilibili.com REFERER; CDN URLS
+    // ADDITIONALLY NEED THE USER'S SESSION COOKIE WHEN FETCHING PREMIUM QUALITIES
+    private static HttpHeaders headers() {
+        final HttpHeaders h = new HttpHeaders()
+                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                .set("Accept", NetRequest.ACCEPT_ANY)
+                .set("Referer", REFERER);
+        final String c = WaterMediaConfig.platforms.biliBiliCookie;
+        if (c != null && !c.isEmpty()) h.set("Cookie", c);
+        return h;
+    }
+
     @Override
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(URI uri) throws Exception {
-        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+    public Resolution resolve(final URI link) throws Exception {
+        if (!DataTool.equalsAnyIgnoreCase(link.getHost(), HOSTS)) return null;
 
-        if ("b23.tv".equalsIgnoreCase(uri.getHost())) {
-            uri = resolveRedirect(uri);
-        }
+        // SHORT LINKS REDIRECT TO THE CANONICAL VIDEO PAGE
+        final URI uri = "b23.tv".equalsIgnoreCase(link.getHost()) ? resolveRedirect(link) : link;
 
         final String host = uri.getHost();
         if ("live.bilibili.com".equals(host)) {
@@ -88,11 +86,11 @@ public final class BiliBiliPlatform implements IPlatform {
     }
 
     // VIDEO
-    private PlatformData resolveVideo(final URI uri) throws Exception {
+    private Resolution resolveVideo(final URI uri) throws Exception {
         final String url = uri.toString();
 
         final Matcher bvidMatcher = BVID_PATTERN.matcher(url);
-        if (!bvidMatcher.find()) throw new PlatformException(BiliBiliPlatform.class, "No BVID found in URL: " + uri);
+        if (!bvidMatcher.find()) throw new PlatformException(NAME, "No BVID found in URL: " + uri);
         final String bvid = bvidMatcher.group(1);
 
         int page = 1;
@@ -132,7 +130,7 @@ public final class BiliBiliPlatform implements IPlatform {
     }
 
     // BANGUMI
-    private PlatformData resolveBangumi(final URI uri) throws Exception {
+    private Resolution resolveBangumi(final URI uri) throws Exception {
         final String url = uri.toString();
 
         String epId = null;
@@ -144,7 +142,7 @@ public final class BiliBiliPlatform implements IPlatform {
         final Matcher ssMatcher = SS_PATTERN.matcher(url);
         if (ssMatcher.find()) ssId = ssMatcher.group(1);
 
-        if (epId == null && ssId == null) throw new PlatformException(BiliBiliPlatform.class, "No ep/ss ID found in bangumi URL: " + uri);
+        if (epId == null && ssId == null) throw new PlatformException(NAME, "No ep/ss ID found in bangumi URL: " + uri);
         LOGGER.debug(IT, "BiliBili resolving bangumi epId={} ssId={}", epId, ssId);
 
         final String seasonApi = epId != null
@@ -156,7 +154,7 @@ public final class BiliBiliPlatform implements IPlatform {
 
         if (epId == null) {
             final JsonArray episodes = result.getAsJsonArray("episodes");
-            if (episodes == null || episodes.isEmpty()) throw new PlatformException(BiliBiliPlatform.class, "No episodes found for season " + ssId);
+            if (episodes == null || episodes.isEmpty()) throw new PlatformException(NAME, "No episodes found for season " + ssId);
 
             int page = 0;
             final Matcher pageMatcher = PAGE_PATTERN.matcher(url);
@@ -183,12 +181,12 @@ public final class BiliBiliPlatform implements IPlatform {
                 }
             }
         }
-        if (cid == null) throw new PlatformException(BiliBiliPlatform.class, "Episode ep" + epId + " not found in season");
+        if (cid == null) throw new PlatformException(NAME, "Episode ep" + epId + " not found in season");
 
         final JsonObject playResult = fetchJson(URI.create(String.format(BANGUMI_PLAYURL_API, epId, cid)), "result");
 
         if (playResult.has("is_preview") && playResult.get("is_preview").getAsInt() == 1) {
-            throw new PlatformException(BiliBiliPlatform.class, "Content requires premium membership (VIP)");
+            throw new PlatformException(NAME, "Content requires premium membership (VIP)");
         }
 
         final String fullTitle = epTitle != null ? seasonTitle + " - " + epTitle : seasonTitle;
@@ -200,14 +198,14 @@ public final class BiliBiliPlatform implements IPlatform {
     }
 
     // LIVE
-    private PlatformData resolveLive(final URI uri) throws Exception {
+    private Resolution resolveLive(final URI uri) throws Exception {
         final Matcher roomMatcher = LIVE_ROOM_PATTERN.matcher(uri.toString());
-        if (!roomMatcher.find()) throw new PlatformException(BiliBiliPlatform.class, "No room ID found in live URL: " + uri);
+        if (!roomMatcher.find()) throw new PlatformException(NAME, "No room ID found in live URL: " + uri);
         final String roomId = roomMatcher.group(1);
         LOGGER.debug(IT, "BiliBili resolving live room {}", roomId);
 
         final JsonObject playInfo = fetchJson(URI.create(String.format(LIVE_PLAY_INFO_API, roomId)), "data");
-        if (playInfo.get("live_status").getAsInt() != 1) throw new PlatformException(BiliBiliPlatform.class, "Live room " + roomId + " is offline");
+        if (playInfo.get("live_status").getAsInt() != 1) throw new PlatformException(NAME, "Live room " + roomId + " is offline");
         final String realRoomId = String.valueOf(playInfo.get("room_id").getAsInt());
         final long uid = playInfo.has("uid") ? playInfo.get("uid").getAsLong() : 0;
 
@@ -246,20 +244,20 @@ public final class BiliBiliPlatform implements IPlatform {
 
         final JsonObject streamData = fetchJson(URI.create(String.format(LIVE_PLAYURL_API, realRoomId, bestQn)), "data");
         final JsonArray durl = streamData.getAsJsonArray("durl");
-        if (durl == null || durl.isEmpty()) throw new PlatformException(BiliBiliPlatform.class, "Live room " + realRoomId + " returned no stream URL (qn=" + bestQn + ")");
+        if (durl == null || durl.isEmpty()) throw new PlatformException(NAME, "Live room " + realRoomId + " returned no stream URL (qn=" + bestQn + ")");
 
         final String streamUrl = durl.get(0).getAsJsonObject().get("url").getAsString();
         final Metadata metadata = new Metadata(title, null, null, 0, author);
-        final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
-                List.of(new DataQuality(URI.create(streamUrl), 0, 0)),
+        final var entry = new Source(MediaType.VIDEO, thumbnail, metadata, headers(),
+                List.of(new Quality(URI.create(streamUrl), 0, 0)),
                 null, null);
 
         LOGGER.info(IT, "BiliBili resolved live room {} (qn={}, author='{}')", realRoomId, bestQn, author);
-        return new PlatformData(Instant.now().plus(10, ChronoUnit.MINUTES), entry);
+        return new Resolution(Instant.now().plus(10, ChronoUnit.MINUTES), entry);
     }
 
     // DASH / DURL PARSING
-    private PlatformData buildResult(final JsonObject data, final Metadata metadata, final URI thumbnail) throws PlatformException {
+    private Resolution buildResult(final JsonObject data, final Metadata metadata, final URI thumbnail) throws PlatformException {
         if (data.has("dash") && !data.get("dash").isJsonNull()) {
             final JsonObject dash = data.getAsJsonObject("dash");
             final JsonArray videoStreams = dash.has("video") ? dash.getAsJsonArray("video") : null;
@@ -267,45 +265,45 @@ public final class BiliBiliPlatform implements IPlatform {
 
             if (videoStreams != null && !videoStreams.isEmpty()) {
                 final JsonArray supportFormats = data.getAsJsonArray("support_formats");
-                final List<DataQuality> variants = parseDashVideo(videoStreams, supportFormats);
+                final List<Quality> variants = parseDashVideo(videoStreams, supportFormats);
                 LOGGER.debug(IT, "BiliBili DASH: {} raw video stream(s), {} audio stream(s) -> {} variant(s)",
                         videoStreams.size(), audioStreams != null ? audioStreams.size() : 0, variants.size());
 
-                List<Slave> audioSlaves = null;
+                List<Track> audioTracks = null;
                 if (audioStreams != null && !audioStreams.isEmpty()) {
-                    audioSlaves = List.of(new Slave(null, null, URI.create(audioStreams.get(0).getAsJsonObject().get("baseUrl").getAsString())));
+                    audioTracks = List.of(new Track(null, null, URI.create(audioStreams.get(0).getAsJsonObject().get("baseUrl").getAsString())));
                 } else {
                     LOGGER.warn(IT, "BiliBili DASH '{}' has no audio stream; video will play muted", metadata.title());
                 }
 
                 LOGGER.info(IT, "BiliBili resolved '{}' with {} variant(s) (DASH)", metadata.title(), variants.size());
-                return new PlatformData(Instant.now().plus(90, ChronoUnit.MINUTES),
-                        new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
-                                variants, audioSlaves, null));
+                return new Resolution(Instant.now().plus(90, ChronoUnit.MINUTES),
+                        new Source(MediaType.VIDEO, thumbnail, metadata, headers(),
+                                variants, audioTracks, null));
             }
         }
 
         if (data.has("durl")) {
             final JsonArray durl = data.getAsJsonArray("durl");
             if (durl != null && !durl.isEmpty()) {
-                // FLV/MP4 fallback: no per-rendition dimensions, let FFMediaPlayer probe.
-                final DataQuality flat = new DataQuality(
+                // FLV/MP4 FALLBACK CARRIES NO PER-RENDITION DIMENSIONS, FFMediaPlayer PROBES THEM
+                final Quality flat = new Quality(
                         URI.create(durl.get(0).getAsJsonObject().get("url").getAsString()), 0, 0);
                 LOGGER.info(IT, "BiliBili resolved '{}' with a single muxed stream (DURL fallback)", metadata.title());
-                return new PlatformData(Instant.now().plus(90, ChronoUnit.MINUTES),
-                        new DataSource(MediaType.VIDEO, thumbnail, metadata, headers(),
+                return new Resolution(Instant.now().plus(90, ChronoUnit.MINUTES),
+                        new Source(MediaType.VIDEO, thumbnail, metadata, headers(),
                                 List.of(flat), null, null));
             }
         }
 
-        throw new PlatformException(BiliBiliPlatform.class, "API response carries no playable streams (neither DASH nor DURL) for '" + metadata.title() + "'");
+        throw new PlatformException(NAME, "API response carries no playable streams (neither DASH nor DURL) for '" + metadata.title() + "'");
     }
 
     // BUILDS THE VARIANT LIST FROM THE DASH RESPONSE. WITH support_formats (THE BUCKET INDEX) WE WALK IT
     // ONCE AND PICK THE BEST CODEC STREAM PER BUCKET — NO DUPLICATES BY CONSTRUCTION. WITHOUT IT, EVERY
     // STREAM IS EMITTED AS-IS AND MRL COLLAPSES OVERLAPS. STREAM WIDTH/HEIGHT WIN, ELSE biliHeight FALLBACK.
-    private static List<DataQuality> parseDashVideo(final JsonArray videoStreams, final JsonArray supportFormats) {
-        final List<DataQuality> out = new ArrayList<>();
+    private static List<Quality> parseDashVideo(final JsonArray videoStreams, final JsonArray supportFormats) {
+        final List<Quality> out = new ArrayList<>();
 
         if (supportFormats != null && !supportFormats.isEmpty()) {
             for (int i = 0; i < supportFormats.size(); i++) {
@@ -323,11 +321,11 @@ public final class BiliBiliPlatform implements IPlatform {
         return out;
     }
 
-    private static DataQuality toVariant(final JsonObject stream, final int qualityId) {
+    private static Quality toVariant(final JsonObject stream, final int qualityId) {
         final int w = stream.has("width") && !stream.get("width").isJsonNull() ? stream.get("width").getAsInt() : 0;
         int h = stream.has("height") && !stream.get("height").isJsonNull() ? stream.get("height").getAsInt() : 0;
         if (h <= 0) h = biliHeight(qualityId);
-        return new DataQuality(URI.create(stream.get("baseUrl").getAsString()), w, h);
+        return new Quality(URI.create(stream.get("baseUrl").getAsString()), w, h);
     }
 
     // AVC (H.264) > HEVC (H.265) > AV1
@@ -371,23 +369,23 @@ public final class BiliBiliPlatform implements IPlatform {
 
     // FETCH
     private static JsonObject fetchJson(final URI uri, final String dataKey) throws IOException {
-        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").accept("application/json")
+        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").accept(NetRequest.ACCEPT_JSON)
                 .userAgent(NetRequest.UserAgent.GENERIC)
                 .referer(REFERER);
         final String c = WaterMediaConfig.platforms.biliBiliCookie;
         if (c != null && !c.isEmpty()) builder.header("Cookie", c);
 
         try (final NetRequest req = builder.send()) {
-            if (req.statusCode() != 200) throw new PlatformException(BiliBiliPlatform.class, "HTTP " + req.statusCode() + " for " + uri);
-            final JsonObject json = JsonParser.parseString(req.readAllAsString()).getAsJsonObject();
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "HTTP " + req.statusCode() + " for " + uri);
+            final JsonObject json = JsonParser.parseString(req.text()).getAsJsonObject();
 
             if (json.has("code") && json.get("code").getAsInt() != 0) {
                 final String msg = json.has("message") ? json.get("message").getAsString() : "code " + json.get("code").getAsInt();
-                throw new PlatformException(BiliBiliPlatform.class, "API error: " + msg);
+                throw new PlatformException(NAME, "API error: " + msg);
             }
 
             if (!json.has(dataKey) || json.get(dataKey).isJsonNull()) {
-                throw new PlatformException(BiliBiliPlatform.class, "API returned no '" + dataKey + "' field");
+                throw new PlatformException(NAME, "API returned no '" + dataKey + "' field");
             }
 
             return json.getAsJsonObject(dataKey);
@@ -395,7 +393,7 @@ public final class BiliBiliPlatform implements IPlatform {
     }
 
     private static URI resolveRedirect(final URI shortUri) throws IOException {
-        try (final NetRequest req = NetRequest.create(shortUri).method("GET").accept("*/*").maxRedirects(0).send()) {
+        try (final NetRequest req = NetRequest.create(shortUri).method("GET").accept(NetRequest.ACCEPT_ANY).maxRedirects(0).send()) {
             final String location = req.header("Location");
             // RFC 7231 ALLOWS A RELATIVE Location; RESOLVE IT AGAINST THE ORIGINAL SO THE HOST SURVIVES
             return location != null ? shortUri.resolve(location) : shortUri;

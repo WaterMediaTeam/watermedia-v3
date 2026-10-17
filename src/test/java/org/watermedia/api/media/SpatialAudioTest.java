@@ -278,7 +278,7 @@ class SpatialAudioTest {
             final ALEngine engine = MediaAPI.alEngine(true);
             final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, null, engine);
             try {
-                assertTrue(player.spatialAudioSupported());
+                assertTrue(player.spatial());
                 player.mute(true);
                 assertTrue(player.start());
                 assertTrue(PlayerWait.awaitCondition(() -> AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED) > 0, 15_000),

@@ -6,7 +6,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class SendvidPlatform implements IPlatform {
+public final class SendvidPlatform implements Platform {
     public static final String NAME = "Sendvid";
     private static final Marker IT = MarkerManager.getMarker(SendvidPlatform.class.getSimpleName());
     private static final String STATUS_API = "https://sendvid.com/api/v1/videos/%s/status.json";
@@ -27,41 +27,44 @@ public final class SendvidPlatform implements IPlatform {
     private static final Pattern PATTERN_DURATION = Pattern.compile("var\\s+video_duration\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern PATTERN_VALIDTO = Pattern.compile("[?&]validto=(\\d+)");
     private static final int MAX_QUEUE = 2;
+    // A QUEUED UPLOAD IS POLLED UNTIL IT IS READY OR THE ATTEMPTS RUN OUT
+    private static final int MAX_POLLS = 30;
+    private static final long POLL_DELAY_MS = 2_000L;
     private static final String[] HOSTS = { "sendvid.com", "www.sendvid.com" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final String path = uri.getPath();
         if (path == null || path.length() < 2) {
-            throw new PlatformException(SendvidPlatform.class, "Invalid URL: " + uri);
+            throw new PlatformException(NAME, "Invalid URL: " + uri);
         }
 
         final String videoId = path.substring(1).split("[/#?]")[0];
         final URI statusUri = new URI(String.format(STATUS_API, videoId));
         LOGGER.debug(IT, "Sendvid resolving video '{}'", videoId);
 
-        final StatusResponse status = NetRequest.fetchJson(SendvidPlatform.class, statusUri, StatusResponse.class);
+        final StatusResponse status = NetRequest.fetchJson(NAME, statusUri, StatusResponse.class);
         if (!"done".equals(status.state())) {
             LOGGER.debug(IT, "Sendvid video '{}' not ready yet (state={}, queue={})", videoId, status.state(), status.placeInQueue());
             if (status.placeInQueue() > MAX_QUEUE) {
-                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' is in queue position " + status.placeInQueue() + " (> " + MAX_QUEUE + "), too far to wait");
+                throw new PlatformException(NAME, "Video '" + videoId + "' is in queue position " + status.placeInQueue() + " (> " + MAX_QUEUE + "), too far to wait");
             }
             this.waitForReady(statusUri, videoId);
         }
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(SendvidPlatform.class, "Page request for video '" + videoId + "' returned HTTP " + req.statusCode());
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for video '" + videoId + "' returned HTTP " + req.statusCode());
 
-            final String html = req.readAllAsString();
+            final String html = req.text();
 
             final Matcher sourceMatcher = PATTERN_SOURCE.matcher(html);
             if (!sourceMatcher.find()) {
-                throw new PlatformException(SendvidPlatform.class, "video_source not found in page for video '" + videoId + "' (removed or markup changed): " + uri);
+                throw new PlatformException(NAME, "video_source not found in page for video '" + videoId + "' (removed or markup changed): " + uri);
             }
 
             final URI videoUri = new URI(sourceMatcher.group(1));
@@ -91,25 +94,25 @@ public final class SendvidPlatform implements IPlatform {
             }
 
             LOGGER.info(IT, "Sendvid resolved video '{}' (durationMs={}, expires={})", videoId, durationMs, expires);
-            final var entry = new DataSource(MediaType.VIDEO, thumbnailUri, metadata,
-                    RequestHeaders.defaults(uri),
-                    List.of(new DataQuality(videoUri, 0, 0)),
+            final var entry = new Source(MediaType.VIDEO, thumbnailUri, metadata,
+                    HttpHeaders.defaults(uri),
+                    List.of(new Quality(videoUri, 0, 0)),
                     null, null);
-            return new PlatformData(expires, entry);
+            return new Resolution(expires, entry);
         }
     }
 
     private void waitForReady(final URI statusUri, final String videoId) throws Exception {
-        for (int i = 0; i < 30; i++) {
-            Thread.sleep(2000);
-            final StatusResponse status = NetRequest.fetchJson(SendvidPlatform.class, statusUri, StatusResponse.class);
+        for (int i = 0; i < MAX_POLLS; i++) {
+            Thread.sleep(POLL_DELAY_MS);
+            final StatusResponse status = NetRequest.fetchJson(NAME, statusUri, StatusResponse.class);
             LOGGER.debug(IT, "Sendvid {} status: {} ({}%)", videoId, status.state(), status.progress());
             if ("done".equals(status.state())) return;
             if (status.placeInQueue() > MAX_QUEUE) {
-                throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' queue position grew to " + status.placeInQueue());
+                throw new PlatformException(NAME, "Video '" + videoId + "' queue position grew to " + status.placeInQueue());
             }
         }
-        throw new PlatformException(SendvidPlatform.class, "Video '" + videoId + "' did not become ready after 60 seconds");
+        throw new PlatformException(NAME, "Video '" + videoId + "' did not become ready after 60 seconds");
     }
 
     private record StatusResponse(int progress, @SerializedName("place_in_queue") int placeInQueue, String state, double duration) {

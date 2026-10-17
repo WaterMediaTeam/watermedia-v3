@@ -54,7 +54,7 @@ public abstract class WaterMediaModule {
 
         private final List<Definition> definitions;
         private final WaterMediaModule[] instances;
-        private final List<BootStatus.Module> modules = new ArrayList<>();
+        private final List<BootStatus.Service> services = new ArrayList<>();
         private final List<Failure> failures = new ArrayList<>();
         private volatile BootStatus status;
         private State state = State.STOPPED;
@@ -69,7 +69,7 @@ public abstract class WaterMediaModule {
                 if (seen.contains(definition.id()) || !seen.containsAll(definition.required()))
                     throw new IllegalArgumentException("Duplicate or unordered bootstrap dependency: " + definition.id());
                 seen.add(definition.id());
-                this.modules.add(new BootStatus.Module(definition.id(), Outcome.PENDING, null, ""));
+                this.services.add(new BootStatus.Service(definition.id(), Outcome.PENDING, null, ""));
             }
             this.publish();
         }
@@ -153,7 +153,7 @@ public abstract class WaterMediaModule {
             }
             synchronized (this) {
                 this.state(this.failures.isEmpty()
-                        && this.modules.stream().noneMatch(module -> module.outcome() == Outcome.BLOCKED || module.outcome() == Outcome.FAILED)
+                        && this.services.stream().noneMatch(module -> module.outcome() == Outcome.BLOCKED || module.outcome() == Outcome.FAILED)
                         ? State.READY : State.DEGRADED);
             }
         }
@@ -187,7 +187,7 @@ public abstract class WaterMediaModule {
                     continue;
                 }
                 this.select(i);
-                final BootStatus.Module previous = this.modules.get(i);
+                final BootStatus.Service previous = this.services.get(i);
                 try {
                     module.release();
                     synchronized (module) { module.bootstrap = null; }
@@ -225,13 +225,13 @@ public abstract class WaterMediaModule {
         }
 
         private synchronized void outcome(final int index, final Outcome outcome, final Id dependency, final String reason) {
-            this.modules.set(index, new BootStatus.Module(this.definitions.get(index).id(), outcome, dependency, reason));
+            this.services.set(index, new BootStatus.Service(this.definitions.get(index).id(), outcome, dependency, reason));
             this.publish();
         }
 
         private synchronized void publish() {
             this.status = new BootStatus(this.state, this.current + 1, this.definitions.size(),
-                    this.current < 0 ? null : this.definitions.get(this.current).id(), this.progress, this.modules, this.failures);
+                    this.current < 0 ? null : this.definitions.get(this.current).id(), this.progress, this.services, this.failures);
         }
 
         private synchronized void select(final int index) {

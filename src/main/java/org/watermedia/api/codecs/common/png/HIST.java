@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -19,16 +19,16 @@ public record HIST(int[] frequencies) implements IChunk {
     /**
      * Reads hIST chunk from buffer (reads length/type header first)
      */
-    public static HIST read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated hIST chunk header");
+    public static HIST read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated hIST chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for hIST: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for hIST: 0x" + Integer.toHexString(type));
         if (length < 0 || length > MAX_LENGTH || buffer.remaining() < length)
-            throw new XCodecException("Invalid hIST chunk length: " + Integer.toUnsignedString(length));
+            throw new CodecException("Invalid hIST chunk length: " + Integer.toUnsignedString(length));
 
         // LENGTH IS 2 BYTES PER PALETTE ENTRY
         final int paletteSize = length / 2;
@@ -40,16 +40,16 @@ public record HIST(int[] frequencies) implements IChunk {
     }
 
     /**
-     * Converts a generic CHUNK to HIST
+     * Converts a generic PngChunk to HIST
      */
-    public static HIST convert(final CHUNK chunk, final int paletteSize) throws XCodecException {
+    public static HIST convert(final PngChunk chunk, final int paletteSize) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for hIST: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != paletteSize * 2) {
-            throw new XCodecException("hIST data must have " + paletteSize + " entries (" +
+            throw new CodecException("hIST data must have " + paletteSize + " entries (" +
                     (paletteSize * 2) + " bytes), got " + data.length + " bytes");
         }
 
@@ -83,7 +83,7 @@ public record HIST(int[] frequencies) implements IChunk {
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

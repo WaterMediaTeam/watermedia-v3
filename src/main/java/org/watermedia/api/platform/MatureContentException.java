@@ -1,11 +1,14 @@
 package org.watermedia.api.platform;
 
+/** Rejection of mature content while {@code platforms.allowMatureContent} is off; thrown before any fetch. */
 public class MatureContentException extends PlatformException {
-    public MatureContentException(final Class<? extends IPlatform> platform, final String message) {
+    /** Creates a rejection by the platform called {@code platform} described by {@code message}. */
+    public MatureContentException(final String platform, final String message) {
         super(platform, message);
     }
 
-    public MatureContentException(final Class<? extends IPlatform> platform, final String message, final Throwable cause) {
+    /** Creates a rejection by the platform called {@code platform} described by {@code message} and caused by {@code cause}. */
+    public MatureContentException(final String platform, final String message, final Throwable cause) {
         super(platform, message, cause);
     }
 }

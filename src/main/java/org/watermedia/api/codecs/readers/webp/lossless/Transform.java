@@ -1,25 +1,13 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
+// width IS THE IMAGE WIDTH WHEN THE TRANSFORM WAS READ (libwebp xsize_): COLOR INDEXING PACKS SEVERAL
+// INDEXES PER PIXEL, SO EVERY TRANSFORM READ AFTER IT, AND ITS OWN INVERSE INPUT, USE THE PACKED WIDTH
 record Transform(
         Type type,
-        int bits,          // BLOCK SIZE BITS FOR PREDICTOR/COLOR
+        int width,         // WIDTH THE INVERSE OPERATES ON
+        int bits,          // BLOCK SIZE BITS FOR PREDICTOR/COLOR, PIXEL PACKING BITS FOR COLOR_INDEXING
         int[] data         // PREDICTOR MODES, COLOR TRANSFORM ELEMENTS, OR COLOR TABLE
 ) {
-    /** Stores a transform type, its block-size bits and its decoded transform data. */
-    public static Transform block(final Type type, final int bits, final int[] data) {
-        return new Transform(type, bits, data);
-    }
-
-    /** Creates the subtract-green transform, which carries no block data. */
-    public static Transform subtractGreen() {
-        return new Transform(Type.SUBTRACT_GREEN, 0, null);
-    }
-
-    /** Creates a color-indexing transform backed by the supplied ARGB table. */
-    public static Transform colorTable(final int[] table) {
-        return new Transform(Type.COLOR_INDEXING, 0, table);
-    }
-
     /** Maps a two-bit WebP transform code to its type; an out-of-range code throws. */
     public static Type typeof(final int i) {
         return Type.VALUES[i];

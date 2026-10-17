@@ -1,5 +1,6 @@
 package org.watermedia.api.media;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia.BootStatus;
@@ -9,6 +10,7 @@ import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.tools.ThreadTool;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.Objects;
@@ -54,6 +56,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             ThreadTool.createFactory("MediaSync", Thread.NORM_PRIORITY - 2)
     );
 
+    // A PLAYER WHOSE TICK KEEPS FAILING WOULD OTHERWISE LOG AN ERROR EVERY 50 MS
+    private static final long TICK_REPORT_NS = 10_000_000_000L;
+    private static final LogTool.Throttle TICK_REPORTS = new LogTool.Throttle(TICK_REPORT_NS);
+
     static {
         TICKER.scheduleAtFixedRate(MediaPlayer::tickAll, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
     }
@@ -61,16 +67,19 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private static void tickAll() {
         for (final MediaPlayer player: TICKING) {
             try {
-                if (player.armed) player.tick50();
+                if (player.armed) player.tick();
             } catch (final Throwable t) {
-                LOGGER.error(IT, "Sync tick failed", t);
+                // SERVER PLAYERS AND FOLLOWER CLOCKS CARRY NO MRL
+                final Object subject = player.mrl != null ? player.mrl.uri() : player.getClass().getSimpleName();
+                LogTool.throttled(LOGGER, Level.ERROR, IT, TICK_REPORTS, "Sync tick failed for {}", subject, t);
             }
         }
     }
 
     // FOLLOWER CORRECTION CONSTANTS
-    private static final long SEEK_COOLDOWN_NANOS = 1_000_000_000L; // 1s BETWEEN SEEKS WHILE THE PIPELINE RESETTLES
-    private static final long REPORT_NANOS = 5_000_000_000L;        // UPSTREAM KEEPALIVE SO THE AUTHORITY TTL HOLDS
+    private static final long SEEK_COOLDOWN_NS = 1_000_000_000L; // 1s BETWEEN SEEKS WHILE THE PIPELINE RESETTLES
+    private static final long REPORT_NS = 5_000_000_000L;        // UPSTREAM KEEPALIVE SO THE AUTHORITY TTL HOLDS
+    private static final long SKIP_STEP_MS = 5_000L;             // forward()/rewind() DISTANCE FOR VIDEO AND MUSIC
 
     // BASIC PROPERTIES
     protected final MRL mrl;
@@ -105,7 +114,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private volatile long targetNanos;// WHEN IT ARRIVED, SO IT CAN BE AGED INTO A CURRENT POSITION
 
     // FOLLOWER TUNABLE — HOW FAR PLAYBACK MAY DRIFT BEFORE IT IS PULLED BACK
-    private volatile long toleranceMs = 1000;
+    private volatile long toleranceMs = 1_000;
 
     // FOLLOWER CORRECTION STATE — TOUCHED ONLY FROM THE SINGLE TICKER THREAD
     private boolean startIssued;
@@ -204,7 +213,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         }
         if (this.role == Role.FOLLOWER) {
             // BACKDATE THE COOLDOWN SO THE FIRST CORRECTION IS NEVER BLOCKED (nanoTime ORIGIN IS ARBITRARY)
-            this.lastSeekNanos = System.nanoTime() - SEEK_COOLDOWN_NANOS;
+            this.lastSeekNanos = System.nanoTime() - SEEK_COOLDOWN_NS;
             this.watchNanos = System.nanoTime();
             TICKING.add(this);
             try {
@@ -222,16 +231,16 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // REGISTERS/DEREGISTERS A PLAYER ON THE SHARED TICKER. BRIDGED PLAYERS IGNORE DEREGISTRATION —
     // THEY TICK UNTIL release() — SO CLOCK STOP/START CYCLES NEVER SILENCE THE BRIDGE.
-    protected static void ticking(final MediaPlayer player, final boolean on) {
-        synchronized (player.bridgeLock) {
-            if (on && player.armed) TICKING.add(player);
-            else if (player.role == Role.SOLO) TICKING.remove(player);
+    protected void ticking(final boolean on) {
+        synchronized (this.bridgeLock) {
+            if (on && this.armed) TICKING.add(this);
+            else if (this.role == Role.SOLO) TICKING.remove(this);
         }
     }
 
     // SHARED-TICKER CALLBACK. THE BASE RUNS THE FOLLOWER ENGINE; ServerMediaPlayer LAYERS THE
     // AUTHORITY CLOCK AND BROADCAST ON TOP.
-    protected void tick50() {
+    protected void tick() {
         if (!this.armed || this.role != Role.FOLLOWER) return;
         this.applying = true;
         try {
@@ -253,15 +262,15 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * {@link Report}, {@link Control} and {@link Unwatch}. Packets for the opposite role
      * are ignored.
      * @param payload the packet bytes, consumed
-     * @throws IllegalArgumentException if the payload is malformed (see {@link Packet#of(ByteBuffer)})
+     * @throws IllegalArgumentException if the payload is malformed (see {@link Packet#read(ByteBuffer)})
      */
     public final void sync(final ByteBuffer payload) {
-        this.sync(Packet.of(payload));
+        this.sync(Packet.read(payload));
     }
 
     /**
      * Feeds an already decoded packet into this player. Use it to inspect traffic before it
-     * takes effect — decode with {@link Packet#of(ByteBuffer)}, apply your own rules (say,
+     * takes effect — decode with {@link Packet#read(ByteBuffer)}, apply your own rules (say,
      * dropping a {@link Control} from a player without permission) and forward what survives.
      * Safe to call from any thread.
      * @param packet the decoded packet
@@ -299,7 +308,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     // AUTHORITY-SIDE PACKET HANDLING — OVERRIDDEN BY ServerMediaPlayer; EVERY OTHER PLAYER
-    // HAS NO AUDIENCE TO SERVE AND JUST DROPS IT.
+    // HAS NO FOLLOWERS TO SERVE AND JUST DROPS IT.
     protected void upstream(final Packet packet) {
         LOGGER.debug(IT, "Ignored packet on a non-authority player: {}", packet);
     }
@@ -415,15 +424,15 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
         // UPSTREAM REPORT: EVERY LOCAL TRANSITION, PLUS A KEEPALIVE SO THE AUTHORITY TTL HOLDS.
         // 50ms POLLING NATURALLY DEBOUNCES SUB-TICK STATUS BLIPS THAT WOULD FLAP A LOCKSTEP GATE.
-        if (current != this.lastReport || now - this.lastReportNanos >= REPORT_NANOS) {
+        if (current != this.lastReport || now - this.lastReportNanos >= REPORT_NS) {
             this.lastReport = current;
             this.lastReportNanos = now;
-            this.send(new Report(this.watcherId, current, this.duration(), this.liveSource()));
+            this.send(new Report(this.watcherId, current, this.duration(), this.live()));
         }
 
         // RE-SEND THE HELLO UNTIL A CONFIG ANSWERS IT — LOSSY OR LATE-WIRED TRANSPORTS MAY DROP THE FIRST
         final long watch = this.watchNanos;
-        if (watch != 0 && now - watch >= REPORT_NANOS) {
+        if (watch != 0 && now - watch >= REPORT_NS) {
             this.watchNanos = now;
             this.send(new Watch(this.watcherId));
         }
@@ -500,7 +509,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         // RANDOMLY RUNNING SLOW, AND THE CLIENT ONLY EVER FALLS BEHIND ANYWAY (THE AUTHORITY IS A
         // BARE CLOCK: NO DECODING, NO BUFFERS), SO SMOOTHING THE OTHER DIRECTION BOUGHT NOTHING.
         // RATE-LIMITED SO A RESETTLING PIPELINE ISN'T SEEKED AGAIN BEFORE IT REPORTS ITS POSITION.
-        if (Math.abs(this.drift()) > this.toleranceMs && now - this.lastSeekNanos >= SEEK_COOLDOWN_NANOS) {
+        if (Math.abs(this.drift()) > this.toleranceMs && now - this.lastSeekNanos >= SEEK_COOLDOWN_NS) {
             this.seekQuick(this.authorityTime());
             this.lastSeekNanos = now;
         }
@@ -524,7 +533,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Whether the sync authority granted the given capability to this follower. Always false
      * on non-followers and until the authority answers the initial hello — useful to reflect
-     * the session rules in a UI (e.g. disabling controls the audience is not allowed to drive).
+     * the session rules in a UI (e.g. disabling controls followers are not allowed to drive).
      * @param capability the capability to check
      * @return true when granted
      */
@@ -537,9 +546,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // ==========================================================================
 
     /**
-     * Selects the quality to use for this player. An active backend may switch sources on its
-     * playback loop while preserving the current timestamp; if that quality is unavailable, the
-     * source resolves it to the closest available quality.
+     * Selects the quality to use for this player; if that quality is unavailable, the source
+     * resolves it to the closest available one. A playing video or music backend switches its
+     * source on the playback loop while preserving the current timestamp; a picture player keeps
+     * showing the frames it decoded and applies the selection on its next {@link #start()}.
      * @param quality the new quality to use
      * @throws IllegalArgumentException if {@code quality} is {@code null}
      */
@@ -577,38 +587,38 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Indicates if the media player has video support enabled.
      * @return true if video support is enabled, false otherwise.
      */
-    public boolean withVideo() { return this.gfx != null; }
+    public boolean video() { return this.gfx != null; }
 
     /**
      * Indicates if the media player has audio support enabled.
      * @return true if audio support is enabled, false otherwise.
      */
-    public boolean withAudio() { return this.sfx != null; }
+    public boolean audio() { return this.sfx != null; }
 
     /**
      * Returns the width of the video in pixels, as uploaded to the GPU
-     * (after any {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale).
+     * (after any {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale).
      * @return the width of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
     public final int width() { return this.gfx == null ? NO_SIZE : this.gfx.width(); }
 
     /**
      * Returns the height of the video in pixels, as uploaded to the GPU
-     * (after any {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale).
+     * (after any {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale).
      * @return the height of the video, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not available.
      */
     public final int height() { return this.gfx == null ? NO_SIZE : this.gfx.height(); }
 
     /**
      * Returns the native width of the source video in pixels, before any
-     * {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale is applied.
+     * {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale is applied.
      * @return the source width, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not yet known.
      */
     public final int sourceWidth() { return this.sourceWidth; }
 
     /**
      * Returns the native height of the source video in pixels, before any
-     * {@link #maxSize(int, int)} / {@link #lod(LodLevel)} downscale is applied.
+     * {@link #scale(int, int)} / {@link #lod(LodLevel)} downscale is applied.
      * @return the source height, or {@link MediaPlayer#NO_SIZE NO_SIZE} if not yet known.
      */
     public final int sourceHeight() { return this.sourceHeight; }
@@ -628,23 +638,23 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @param height maximum upload height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} for no limit
      * @throws IllegalArgumentException if width or height is negative
      */
-    public void maxSize(final int width, final int height) {
+    public void scale(final int width, final int height) {
         if (width < 0 || height < 0) throw new IllegalArgumentException("Dimensions cannot be negative.");
         this.scaleWidth = width;
         this.scaleHeight = height;
     }
 
     /**
-     * Returns the maximum upload width set by {@link #maxSize(int, int)}.
+     * Returns the maximum upload width set by {@link #scale(int, int)}.
      * @return the maximum width in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
      */
-    public int maxWidth() { return this.scaleWidth; }
+    public int scaleWidth() { return this.scaleWidth; }
 
     /**
-     * Returns the maximum upload height set by {@link #maxSize(int, int)}.
+     * Returns the maximum upload height set by {@link #scale(int, int)}.
      * @return the maximum height in pixels, or {@link MediaPlayer#NO_SIZE NO_SIZE} when unlimited.
      */
-    public int maxHeight() { return this.scaleHeight; }
+    public int scaleHeight() { return this.scaleHeight; }
 
     /**
      * Sets the level of detail for video uploads.
@@ -654,7 +664,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * without interrupting playback.
      * @param lod the new level of detail
      * @throws IllegalArgumentException if lod is null
-     * @see #maxSize(int, int)
+     * @see #scale(int, int)
      */
     public void lod(final LodLevel lod) {
         if (lod == null) throw new IllegalArgumentException("LOD level cannot be null.");
@@ -694,7 +704,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public int audioSource() { return this.sfx != null ? this.sfx.source() : NO_SOURCE; }
 
     /** Whether the audio engine was created for mono spatial playback. */
-    public boolean spatialAudioSupported() { return this.sfx != null && this.sfx.spatial(); }
+    public boolean spatial() { return this.sfx != null && this.sfx.spatial(); }
 
     /** Last applied spatial state, or null when no spatial environment is active. */
     public SFXEngine.SpatialAudio spatialAudio() { return this.sfx != null ? this.sfx.spatialAudio() : null; }
@@ -855,14 +865,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * (e.g. animated images) may override the distance.
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean forward() { return this.skipTime(5000); }
+    public boolean forward() { return this.skipTime(SKIP_STEP_MS); }
 
     /**
      * Skips backward 5 seconds in the media. Players with a finer natural step
      * (e.g. animated images) may override the distance.
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean rewind() { return this.skipTime(-5000); }
+    public boolean rewind() { return this.skipTime(-SKIP_STEP_MS); }
 
     /**
      * Provides the Frames per Second
@@ -1043,7 +1053,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Live streams typically do not support seeking and have an indefinite duration.
      * @return true if the media uri is a live stream, false otherwise.
      */
-    public abstract boolean liveSource();
+    public abstract boolean live();
 
     /**
      * Indicates if the media player supports seeking operations.
@@ -1066,7 +1076,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if {@link #speed(float)} can take effect, false otherwise.
      */
     public boolean canSpeed() {
-        return !this.liveSource() && (this.sfx == null || this.sfx.canSpeed());
+        return !this.live() && (this.sfx == null || this.sfx.canSpeed());
     }
 
 
@@ -1166,15 +1176,18 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
          * Returns the Status corresponding to the given ordinal value (0 to {@code values().length - 1}).
          * @param value the ordinal of the status (0-7)
          * @return the corresponding Status enum value
-         * @throws ArrayIndexOutOfBoundsException if the value is out of range
+         * @throws IllegalArgumentException if the value is out of range
          */
-        public static Status of(final int value) { return VALUES[value]; }
+        public static Status of(final int value) {
+            if (value < 0 || value >= VALUES.length) throw new IllegalArgumentException("Invalid status ordinal: " + value);
+            return VALUES[value];
+        }
     }
 
     /**
      * Level of detail applied to video uploads.
      * Each level keeps a percentage of the effective maximum video dimensions
-     * ({@link #maxSize(int, int)} when set, otherwise the source size), reducing the
+     * ({@link #scale(int, int)} when set, otherwise the source size), reducing the
      * amount of pixel data scaled and uploaded to the GPU. Useful to tie media
      * resolution to the viewer distance. Playback always starts at {@link #MAX}.
      * @see MediaPlayer#lod(LodLevel)

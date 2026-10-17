@@ -48,7 +48,7 @@ La API Java requiere Java 17. Proporciona WaterConfig, Log4j, Gson, JOML y las d
 
 Los arranques de Minecraft se niegan a iniciar cuando TLauncher lanzó el juego. Lo detectan por su mod de skins inyectado, sus clases, sus archivos en el classpath, sus opciones de JVM, sus hilos y sus procesos padre, y fallan con un mensaje que nombra la evidencia; los restos de una instalación anterior en la carpeta del juego sólo dejan una advertencia en el log. Las aplicaciones que integran la API omiten esta comprobación.
 
-La configuración se carga antes de preparar los binarios. Revisa el archivo generado y el classpath real del host antes de diagnosticar un motor no disponible. Estas rutas corresponden a campos de `WaterMediaConfig`; los tamaños usan MiB (1,048,576 bytes), aunque la configuración los identifique como MB.
+La configuración se carga antes de preparar los binarios. Revisa el archivo generado y el classpath real del host antes de diagnosticar un motor no disponible. Estas rutas son las llaves del `watermedia.toml` generado; los tamaños usan MiB (1,048,576 bytes), aunque la configuración los identifique como MB.
 
 | Ajuste | Valor predeterminado y límites relacionados |
 | --- | --- |
@@ -57,13 +57,13 @@ La configuración se carga antes de preparar los binarios. Revisa el archivo gen
 | `media.ffmpeg.hardwareAccel` | `true`; su uso depende también del binario, controlador, códec y motor de salida. Sigue disponible la decodificación por software. |
 | `media.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; se aplican a la entrada principal y al audio separado. Una duración de análisis de cero conserva el valor de FFmpeg. Aumentarlos puede retrasar el inicio. |
 | `decoders.maxImageSourceSize` | 128 MiB de imagen codificada. Es independiente del límite de 512 MiB de datos decodificados del lector. |
-| `media.tx.texturesBudget` | 32 MiB; la precarga exige además un motor compatible, una cantidad válida de cuadros y que tanto los cuadros originales decodificados como las texturas de salida quepan en el presupuesto. Cero fuerza la reproducción de animaciones cuadro por cuadro. |
-| `media.ffmpeg.cache` / `cacheMaxSize` | Activada / 10 MiB por respuesta elegible; no almacena todas las transmisiones ni todas las entradas HLS/DASH. |
-| `media.tx.cache` / `media.cacheMaxSize` | Caché de imágenes activada / 8,192 MiB de disco compartido; después de escribir se eliminan entradas viejas si hace falta. Los límites de disco, imagen codificada, imagen decodificada y texturas son independientes. |
+| `media.watertx.texturesBudget` | 32 MiB; la precarga exige además un motor compatible, una cantidad válida de cuadros y que tanto los cuadros originales decodificados como las texturas de salida quepan en el presupuesto. Cero fuerza la reproducción de animaciones cuadro por cuadro. |
+| `media.ffmpeg.cache` / `cacheMaxResponse` | Activada / 10 MiB por respuesta elegible; no almacena todas las transmisiones ni todas las entradas HLS/DASH. |
+| `media.watertx.cache` / `media.cacheBudget` | Caché de imágenes activada / 8,192 MiB de disco compartido; después de escribir se eliminan entradas viejas si hace falta. Los límites de disco, imagen codificada, imagen decodificada y texturas son independientes. |
 | `platforms.allowMatureContent` | `false`; los adaptadores compatibles pueden dejar el recurso en `BLOCKED` sin enviarlo a reproducción. |
-| `platforms.searchCacheCleanup` | 15 minutos; cero limpia la caché de búsquedas en cada consulta. |
+| `platforms.searchCleanupInterval` | 15 minutos; cero limpia la caché de búsquedas en cada consulta. |
 
-El servidor opcional de archivos arranca si `network.forceEnableServer` está activo, o en un entorno de servidor con `network.enableServer` activo. Ambos están desactivados por defecto. Escucha en `127.0.0.1:25572`; aceptar conexiones remotas exige una dirección explícita y un `network.token` personalizado no vacío. `network.remoteHost` es la URL HTTP(S) completa que usa el cliente y no cambia la dirección donde escucha el servidor. El servidor integrado usa HTTP; para HTTPS remoto, el host debe proporcionar la terminación TLS.
+El servidor opcional de archivos arranca según `network.server`: `OFF` (el valor por defecto) nunca, `DEDICATED` en cualquier host iniciado sin cliente (servidores dedicados), `ALWAYS` también en los clientes. Escucha en `127.0.0.1:25572`; aceptar conexiones remotas exige una dirección explícita y un `network.token` personalizado no vacío. `network.remoteUrl` es la URL HTTP(S) completa que usa el cliente y no cambia la dirección donde escucha el servidor. El servidor integrado usa HTTP; para HTTPS remoto, el host debe proporcionar la terminación TLS.
 
 Los valores iniciales permiten ocho solicitudes simultáneas, 30 segundos por solicitud del servidor, 8 MiB por carga y 1,024 MiB de almacenamiento total. `maxUploadSize = 0` sólo elimina el límite individual de carga: siguen aplicando la cuota total, la concurrencia y el plazo. Las solicitudes Java tienen aparte 15 segundos de espera, diez redirecciones y un límite de 16 MiB para texto. Las entradas nativas de reproducción tienen su propia política de espera.
 
@@ -71,7 +71,7 @@ Los valores iniciales permiten ocho solicitudes simultáneas, 30 segundos por so
 
 El JAR es el módulo explícito `org.watermedia`. Su API pública son los paquetes exportados: `org.watermedia`, `api.codecs`, `api.media`, `api.network`, `api.platform` y `api.util`. Todo lo demás es interno: lectores, escritores y estructuras de chunks de los códecs, colas y cachés de los reproductores, las plataformas integradas, el arranque y los bindings de FFmpeg incluidos. `org.watermedia.tools` y `org.watermedia.bootstrap` sólo se exportan al módulo Binaries: `tools` comparte sus utilerías de descarga, digestos y JSON, y `bootstrap` contiene el ciclo de vida de módulos que Binaries implementa.
 
-Forge 1.21.1 y posteriores aplican el descriptor, así que el código fuera del módulo falla con `IllegalAccessError` o `IllegalAccessException` al tocar un paquete interno. NeoForge, Fabric, las versiones anteriores de Forge y las compilaciones en classpath lo ignoran; trata esa misma frontera como el contrato también ahí. Usa las funciones internas mediante sus puntos de entrada, como `CodecsAPI.decodeImage`, `CodecsAPI.encodeWebM` y `PlatformAPI.fetch`. `gradle javadocInventory` revisa sólo los paquetes exportados, que lee de `src/main/module/org.watermedia/module-info.java`.
+Forge 1.21.1 y posteriores aplican el descriptor, así que el código fuera del módulo falla con `IllegalAccessError` o `IllegalAccessException` al tocar un paquete interno. NeoForge, Fabric, las versiones anteriores de Forge y las compilaciones en classpath lo ignoran; trata esa misma frontera como el contrato también ahí. Usa las funciones internas mediante sus puntos de entrada, como `CodecsAPI.reader`, `CodecsAPI.writer` y `PlatformAPI.fetch`. `gradle javadocInventory` revisa sólo los paquetes exportados, que lee de `src/main/module/org.watermedia/module-info.java`.
 
 ## MRL y resolución de direcciones
 
@@ -139,7 +139,7 @@ La fábrica está en `MediaAPI`. Usa el índice de la fuente y proveedores de mo
 ```java
 import org.watermedia.api.media.MediaPlayer;
 
-MediaPlayer player = MediaAPI.createPlayer(mrl, 1,
+MediaPlayer player = MediaAPI.player(mrl, 1,
         () -> MediaAPI.glEngine(renderThread, renderExecutor),
         MediaAPI::jsEngine);
 if (player == null) {
@@ -171,10 +171,10 @@ player.volume(50);
 player.mute(true);
 player.speed(1.25f);
 player.repeat(true);
-player.maxSize(1280, 720);
+player.scale(1280, 720);
 ```
 
-`speed(value)` admite valores finitos en `(0, 4]` e informa si aceptó el cambio. Java Sound no puede cambiar la velocidad. `canSpeed()` es una consulta pura que cualquier hilo puede hacer en cada frame; `speed(value)` debe ejecutarse con el contexto de audio correspondiente activo, y el reloj del reproductor sólo sigue una velocidad que el motor de audio aceptó. Un seguidor sincronizado devuelve `false` incluso si envía una solicitud de control; ese resultado no confirma su aplicación remota. `spatialAudio(...)` también informa si el motor aceptó la actualización; consulta `spatialAudioSupported()` antes de mostrar controles posicionales.
+`speed(value)` admite valores finitos en `(0, 4]` e informa si aceptó el cambio. Java Sound no puede cambiar la velocidad. `canSpeed()` es una consulta pura que cualquier hilo puede hacer en cada frame; `speed(value)` debe ejecutarse con el contexto de audio correspondiente activo, y el reloj del reproductor sólo sigue una velocidad que el motor de audio aceptó. Un seguidor sincronizado devuelve `false` incluso si envía una solicitud de control; ese resultado no confirma su aplicación remota. `spatialAudio(...)` también informa si el motor aceptó la actualización; consulta `spatial()` antes de mostrar controles posicionales.
 
 Los tiempos se expresan en milisegundos y el volumen del reproductor es un porcentaje de 0 a 100. Consulta `canSeek()` antes de ofrecer desplazamiento en transmisiones que no lo permiten. Para diagnóstico usa `status()`, `time()`, `duration()`, `buffered()` y `exception()`.
 
@@ -263,7 +263,7 @@ final MRL.Source media = mrl.source(0);
 if (media == null || (media.type() != MediaType.AUDIO && media.type() != MediaType.VIDEO)) {
     throw new IllegalStateException("A resolved audio or video source is required");
 }
-final MediaPlayer player = MediaAPI.createPlayer(mrl, () -> null, () -> MediaAPI.alEngine(true));
+final MediaPlayer player = MediaAPI.player(mrl, () -> null, () -> MediaAPI.alEngine(true));
 if (player == null) throw new IllegalStateException("The media backend could not create a player");
 try {
     player.spatialAudio(new SpatialAudio(sourceX, sourceY, sourceZ, 8.0f, 64.0f, 1.0f, false, environment));
@@ -325,7 +325,7 @@ Las cookies generadas siguen el mismo límite: las respuestas `Set-Cookie` de ot
 
 ## Imágenes y contenedores DDS
 
-`CodecsAPI.decodeImage` elige un lector interno según los primeros bytes y lo devuelve como `ImageReader`. Las estructuras de chunks PNG y GIF de `api.codecs.common` son internas y conservan sus serializadores para futuros escritores de animación. Ejecuta `gradle javadocInventory` desde el raíz del proyecto para listar la documentación faltante de métodos públicos con archivo y número de línea; la tarea sólo reporta los hallazgos.
+`CodecsAPI.reader` elige un lector interno según los primeros bytes y lo devuelve como `ImageReader`. Las estructuras de chunks PNG y GIF de `api.codecs.common` son internas y conservan sus serializadores para futuros escritores de animación. Ejecuta `gradle javadocInventory` desde el raíz del proyecto para listar la documentación faltante de métodos públicos con archivo y número de línea; la tarea sólo reporta los hallazgos.
 
 ```java
 import org.watermedia.api.codecs.CodecsAPI;
@@ -333,23 +333,20 @@ import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.util.PixelFormat;
 import java.nio.ByteBuffer;
 
-try (ImageReader reader = CodecsAPI.decodeImage(encodedBuffer)) {
+try (ImageReader reader = CodecsAPI.reader(encodedBuffer)) {
+    PixelFormat format = reader.pixelFormat();
     while (reader.hasNext()) {
-        reader.next();
-        PixelFormat format = reader.pixelFormat();
-        for (int plane = 0; plane < reader.planeCount(); plane++) {
-            ByteBuffer pixels = reader.plane(plane);
-            // CONSUME OR COPY BEFORE THE NEXT FRAME REUSES THE READER'S BUFFER.
-        }
+        ByteBuffer pixels = reader.next();
+        // CONSUME OR COPY BEFORE THE NEXT FRAME REUSES THE READER'S BUFFER.
     }
 }
 ```
 
-Consulta el formato y la cantidad de planos; no supongas que todos los lectores entregan BGRA. `readAll()` conserva copias de los cuadros y limita el total de bytes decodificados por imagen. Varios lectores simultáneos siguen consumiendo memoria por separado: los reproductores coordinan su decodificación y reutilizan las imágenes decodificadas mediante sus cachés, mientras que el código que usa los decodificadores directamente gestiona su propia concurrencia.
+Consulta el formato de píxel en lugar de suponer BGRA: todos los decodificadores entregan un solo búfer BGRA compacto por cuadro, salvo los JPEG en escala de grises, que entregan un byte de luma por píxel (`GRAY`) a menos que se pida `PixelFormat.BGRA`, y los SVG, que respetan una petición `RGBA`. Los cuadros JPEG y WebP salen ya rotados según su orientación EXIF, con `width()` y `height()` intercambiados cuando corresponde; `ImageReader.metadata()` expone los comentarios y los segmentos EXIF, XMP e ICC mediante las claves `CodecsAPI.JPEG_METAKEY_*` y `WEBP_METAKEY_*`, y `JPEG_METAKEY_ORIENTATION` / `WEBP_METAKEY_ORIENTATION` reportan el valor aplicado. Netpbm cubre las variantes de texto `P1`..`P3` y las binarias `P4`..`P7`. `readAll()` conserva copias de los cuadros y limita el total de bytes decodificados por imagen. Varios lectores simultáneos siguen consumiendo memoria por separado: los reproductores coordinan su decodificación y reutilizan las imágenes decodificadas mediante sus cachés, mientras que el código que usa los decodificadores directamente gestiona su propia concurrencia.
 
-`CodecsAPI.encodeWebM(...)` devuelve un `ImageWriter` experimental que codifica VP9 dentro de WebM; requiere FFmpeg y aplana el canal alfa.
+`CodecsAPI.writer(...)` devuelve un `ImageWriter` experimental que codifica VP9 dentro de WebM; requiere FFmpeg y aplana el canal alfa.
 
-`BCReader` lee bloques BC1, BC3 y BC7 ya comprimidos dentro de un arreglo de texturas DDS con extensión DX10. Crea un `org.watermedia.api.codecs.BCReader` directamente para acceder a los bloques; `CodecsAPI.decodeImage` no abre archivos DDS. No necesita un codificador nativo, pero los motores integrados OpenGL, Vulkan y de software no aceptan texturas BC, así que leer bloques DDS no implica soporte completo de reproducción. El pie de animación de WaterMedia aporta los tiempos por cuadro cuando existe; las capas DDS ordinarias tienen duración cero. Se rechazan cadenas de mipmaps, volúmenes y mapas de cubo. No hay codificador BC ni opción de caché de texturas recodificadas. `CodecsAPI.available(...)` informa soporte de decodificación de píxeles, no soporte de formatos de textura en la GPU.
+`BcReader` lee bloques BC1, BC3 y BC7 ya comprimidos dentro de un arreglo de texturas DDS con extensión DX10. Crea un `org.watermedia.api.codecs.BcReader` directamente para acceder a los bloques; `CodecsAPI.reader` no abre archivos DDS. No necesita un codificador nativo, pero los motores integrados OpenGL, Vulkan y de software no aceptan texturas BC, así que leer bloques DDS no implica soporte completo de reproducción. El pie de animación de WaterMedia aporta los tiempos por cuadro cuando existe; las capas DDS ordinarias tienen duración cero. Se rechazan cadenas de mipmaps, volúmenes y mapas de cubo. No hay codificador BC ni opción de caché de texturas recodificadas. `CodecsAPI.available(...)` informa soporte de decodificación de píxeles, no soporte de formatos de textura en la GPU.
 
 ## Reproducción sincronizada con Bridge
 
@@ -361,22 +358,22 @@ El bridge de la autoridad envía hacia todos sus seguidores; el bridge del segui
 import org.watermedia.api.media.ServerMediaPlayer;
 import org.watermedia.api.media.Config;
 
-ServerMediaPlayer authority = MediaAPI.createPlayer(downstreamBridge,
+ServerMediaPlayer authority = MediaAPI.serverPlayer(downstreamBridge,
         Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
 authority.start();
-MediaPlayer follower = MediaAPI.createPlayer(mrl, gfxSupplier, sfxSupplier, upstreamBridge);
+MediaPlayer follower = MediaAPI.player(mrl, gfxSupplier, sfxSupplier, upstreamBridge);
 if (follower == null) throw new IllegalStateException("Follower media is unavailable");
 ```
 
-Los bridges y proveedores del ejemplo los construye la aplicación anfitriona. Usa `authority.sync(payload)` para lo recibido de un seguidor y `follower.sync(payload)` para lo recibido de la autoridad. Libera ambos reproductores cuando termine la sesión que representan. `MediaAPI.createFollower(upstreamBridge)` construye un seguidor sin medios (un reloj) para HUDs, réplicas de lógica y pruebas del protocolo; `MediaAPI.createPlayer()` construye un reloj simple sin bridge. Los motores y reproductores no tienen constructores públicos: toda instancia sale de `MediaAPI`.
+Los bridges y proveedores del ejemplo los construye la aplicación anfitriona. Usa `authority.sync(payload)` para lo recibido de un seguidor y `follower.sync(payload)` para lo recibido de la autoridad. Libera ambos reproductores cuando termine la sesión que representan. `MediaAPI.follower(upstreamBridge)` construye un seguidor sin medios (un reloj) para HUDs, réplicas de lógica y pruebas del protocolo; `MediaAPI.serverPlayer()` construye un reloj simple sin bridge. Los motores y reproductores no tienen constructores públicos: toda instancia sale de `MediaAPI`.
 
 ### Secuencia de sincronización
 
-1. El seguidor se anuncia y entra como espectador que todavía está cargando. Su llegada no pausa inmediatamente a los demás.
+1. El seguidor se anuncia y entra como un miembro que todavía está cargando. Su llegada no pausa inmediatamente a los demás.
 2. La autoridad responde con los permisos de la sesión y una instantánea del estado actual.
 3. El seguidor reporta sus transiciones y mantiene su registro mediante mensajes periódicos. La autoridad adopta la duración o condición de transmisión en vivo informada por un seguidor que ya dispone de esos datos. Mientras no haya duración ni una transmisión en vivo identificada, su reloj permanece en cero.
 4. La autoridad difunde cambios y repite una instantánea aproximadamente cada cinco segundos. Los seguidores descartan revisiones anteriores; una revisión igual puede actualizar la referencia temporal.
-5. Al liberarse, el seguidor envía su despedida. La autoridad descarta a quienes dejan de reportarse según `watcherTimeout(ms)`, con 15 segundos por defecto.
+5. Al liberarse, el seguidor envía su despedida. La autoridad descarta a quienes dejan de reportarse según `followerTimeout(ms)`, con 15 segundos por defecto.
 
 El tiempo de desconexión debe estar entre 1 y `Long.MAX_VALUE / 1_000_000` milisegundos. Los valores fuera de ese rango se rechazan sin cambiar el tiempo configurado.
 
@@ -388,7 +385,7 @@ La autoridad conserva la primera duración positiva recibida durante su sesión.
 
 | Capacidad | Comportamiento |
 | --- | --- |
-| `LOCKSTEP` | La autoridad muestra `BUFFERING` y congela el reloj mientras un espectador que ya estaba listo necesita cargar o almacenar más datos. Reanuda desde la misma posición, ignora seguidores fallidos y no espera inmediatamente por quienes acaban de entrar. |
+| `LOCKSTEP` | La autoridad muestra `BUFFERING` y congela el reloj mientras un seguidor que ya estaba listo necesita cargar o almacenar más datos. Reanuda desde la misma posición, ignora seguidores fallidos y no espera inmediatamente por quienes acaban de entrar. |
 | `CONTROLS` | Permite solicitar cambios compartidos de reproducción. Las llamadas del seguidor, como start, pause, seek, speed y repeat, viajan a la autoridad y no se aplican localmente. Una vez recibidos los permisos, las solicitudes sin esta capacidad se descartan. |
 | `VOLUME` | Sincroniza volumen y silencio; sin esta capacidad, ambos permanecen locales. |
 
@@ -402,7 +399,7 @@ Consulta `player.granted(capability)` para adaptar la interfaz a los permisos re
 
 ### Formato de los mensajes
 
-Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media`. `Packet.of(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales.
+Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media`. `Packet.read(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales.
 
 | Mensaje | Tamaño | Dirección |
 | --- | ---: | --- |

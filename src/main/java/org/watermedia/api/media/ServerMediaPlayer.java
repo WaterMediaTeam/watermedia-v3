@@ -20,13 +20,13 @@ import static org.watermedia.WaterMedia.LOGGER;
  * position against a single authoritative instance. Every successful mutation bumps
  * {@link #revision()}.
  * <p>
- * Built with a bridge through {@link MediaAPI#createPlayer(Bridge, Config.Capability...)}, it runs
+ * Built with a bridge through {@link MediaAPI#serverPlayer(Bridge, Config.Capability...)}, it runs
  * the whole server side of the sync protocol by itself: it answers {@link Watch} hellos
- * with its {@link Config}, tracks the spectator pool from {@link Report}s (with a TTL for
+ * with its {@link Config}, tracks the follower pool from {@link Report}s (with a TTL for
  * vanished clients), applies {@link Control} requests under the
  * {@link Config.Capability#CONTROLS} capability, re-broadcasts {@link #snapshot()} when
  * the revision moves plus a periodic heartbeat, and under
- * {@link Config.Capability#LOCKSTEP} gates the whole audience while a pooled spectator is
+ * {@link Config.Capability#LOCKSTEP} gates the whole pool while a pooled follower is
  * still loading or buffering — presenting {@code BUFFERING} with a frozen clock. Feed
  * received upstream payloads through {@link #sync(ByteBuffer)}; everything else is
  * automatic.
@@ -38,8 +38,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(ServerMediaPlayer.class.getSimpleName());
     // CLIENT DURATION REPORTS DIVERGING BEYOND THIS GAP GET LOGGED — LIKELY A BROKEN SOURCE VARIANT
     private static final long DURATION_DIVERGENCE_MS = 500;
-    private static final long HEARTBEAT_NANOS = 5_000_000_000L;     // PERIODIC SNAPSHOT RESEND
-    private static final long WATCHER_TTL_NANOS = 15_000_000_000L;  // 3 MISSED FOLLOWER KEEPALIVES
+    private static final long HEARTBEAT_NS = 5_000_000_000L;     // PERIODIC SNAPSHOT RESEND
+    private static final long FOLLOWER_TTL_NS = 15_000_000_000L;  // 3 MISSED FOLLOWER KEEPALIVES
 
     // TIME TRACKING — MUTATORS ARE synchronized (CALLER THREAD vs SHARED TICKER), READS STAY VOLATILE
     // LOCK-FREE. time() MAY PAIR accumulatedMs/segmentStartNanos ACROSS A CONCURRENT REBASE: THE GLITCH
@@ -53,12 +53,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
     // AtomicInteger BY APPROVED EXCEPTION: ++ ON volatile ISN'T ATOMIC AND repeat() BUMPS UNLOCKED
     private final AtomicInteger revision = new AtomicInteger();
 
-    // AUTHORITY BRIDGE STATE — watchers IS THE SPECTATOR REGISTRY; gated IS THE LOCKSTEP OVERLAY:
+    // AUTHORITY BRIDGE STATE — registry HOLDS THE FOLLOWERS; gated IS THE LOCKSTEP OVERLAY:
     // WHILE SET, THE UNDERLYING STATUS STAYS PLAYING BUT THE CLOCK FREEZES AND BUFFERING IS PRESENTED.
     private final int capabilities;
-    private final Map<Long, Watcher> watchers = new ConcurrentHashMap<>();
+    private final Map<Long, Follower> registry = new ConcurrentHashMap<>();
     private volatile boolean gated;
-    private volatile long watcherTtlNanos = WATCHER_TTL_NANOS;
+    private volatile long followerTtlNanos = FOLLOWER_TTL_NS;
     // BROADCAST STATE — TOUCHED ONLY FROM THE SHARED TICKER THREAD
     private int lastCastRevision = -1;
     private long lastCastNanos;
@@ -130,7 +130,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
      * A live source locks speed changes and tells followers to never correct time.
      * @param live whether the media source is a live stream
      */
-    public synchronized void syncLive(final boolean live) {
+    public synchronized void live(final boolean live) {
         if (this.live == live) return;
         // SAME TIMELINE-BECAME-KNOWN REBASE AS syncDuration — A HELD CLOCK STARTS COUNTING NOW
         if (live && this.duration <= 0 && this.status == Status.PLAYING && !this.gated)
@@ -166,30 +166,30 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     protected void upstream(final Packet packet) {
         if (packet instanceof final Watch watch) {
-            final Watcher w = this.watchers.computeIfAbsent(watch.watcherId(), id -> this.watcher());
-            w.lastSeenNanos = System.nanoTime();
+            final Follower f =this.registry.computeIfAbsent(watch.watcherId(), id -> this.enroll());
+            f.lastSeenNanos = System.nanoTime();
             // ANSWER WITH THE SESSION CONFIG (ECHOING THE ID FOR RTT) AND A FRESH SNAPSHOT,
             // SO LATE JOINERS SYNC IMMEDIATELY INSTEAD OF WAITING FOR THE NEXT HEARTBEAT
             this.send(new Config(watch.watcherId(), this.capabilities));
             this.send(this.snapshot());
         } else if (packet instanceof final Report report) {
             // A REPORT FROM AN UNSEEN ID REGISTERS IMPLICITLY — Watch MAY BE LOST ON UNORDERED TRANSPORTS
-            final Watcher w = this.watchers.computeIfAbsent(report.watcherId(), id -> this.watcher());
-            w.lastSeenNanos = System.nanoTime();
-            w.status = report.status();
+            final Follower f =this.registry.computeIfAbsent(report.watcherId(), id -> this.enroll());
+            f.lastSeenNanos = System.nanoTime();
+            f.status = report.status();
             // FIRST READY REPORT POOLS A MID-PLAYBACK JOINER INTO THE LOCKSTEP GATE
-            if (report.status() == Status.PAUSED || report.status() == Status.PLAYING) w.pooled = true;
+            if (report.status() == Status.PAUSED || report.status() == Status.PLAYING) f.pooled = true;
             // MEDIA FACTS COUNT ONLY ONCE A CLIENT ACTUALLY OPENED THE SOURCE: A PLAYER THAT HASN'T
             // REPORTS AN UNKNOWN DURATION, WHICH READS AS "LIVE" AND WOULD LATCH THE WHOLE SESSION
             // INTO A LIVE ONE — KILLING SPEED CONTROL AND EVERY TIME CORRECTION.
             if (report.status() != Status.WAITING && report.status() != Status.LOADING) {
                 this.syncDuration(report.duration());
                 // LIVE IS A ONE-WAY LATCH FROM REPORTS — MIXED CLIENTS MUST NOT FLAP IT
-                if (report.live()) this.syncLive(true);
+                if (report.live()) this.live(true);
             }
         } else if (packet instanceof final Control control) {
-            final Watcher w = this.watchers.get(control.watcherId());
-            if (w != null) w.lastSeenNanos = System.nanoTime();
+            final Follower f =this.registry.get(control.watcherId());
+            if (f != null) f.lastSeenNanos = System.nanoTime();
             if ((this.capabilities & Config.Capability.CONTROLS.bit) == 0) {
                 LOGGER.debug(IT, "Dropped control request {} — CONTROLS capability is off", control.op());
                 return;
@@ -206,56 +206,56 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 case REPEAT -> this.repeat(control.value() != 0);
             }
         } else if (packet instanceof final Unwatch unwatch) {
-            this.watchers.remove(unwatch.watcherId());
+            this.registry.remove(unwatch.watcherId());
         } else {
             LOGGER.debug(IT, "Ignored downstream packet on the authority: {}", packet);
         }
     }
 
-    // A SPECTATOR JOINING A RUNNING SESSION NEVER GATES UNTIL ITS FIRST READY REPORT;
-    // BEFORE THE SESSION RUNS, EVERY WATCHER GATES THE INITIAL LOCKSTEP START.
-    private Watcher watcher() {
-        final Watcher w = new Watcher();
-        if (this.status != Status.PLAYING) w.pooled = true;
-        return w;
+    // A FOLLOWER JOINING A RUNNING SESSION NEVER GATES UNTIL ITS FIRST READY REPORT;
+    // BEFORE THE SESSION RUNS, EVERY FOLLOWER GATES THE INITIAL LOCKSTEP START.
+    private Follower enroll() {
+        final Follower f = new Follower();
+        if (this.status != Status.PLAYING) f.pooled = true;
+        return f;
     }
 
-    /** Number of spectators currently registered on this authority. */
-    public int watchers() {
-        return this.watchers.size();
+    /** Number of followers currently registered on this authority. */
+    public int followers() {
+        return this.registry.size();
     }
 
     /**
-     * Sets how long a spectator may go silent before the authority drops it. Followers send a
+     * Sets how long a follower may go silent before the authority drops it. Followers send a
      * keepalive every 5 seconds, so the default (15s) tolerates three losses; raise it for slow
-     * or bursty transports. A dropped spectator stops holding the lockstep gate — this is what
-     * keeps one vanished client from freezing the whole audience forever.
+     * or bursty transports. A dropped follower stops holding the lockstep gate — this is what
+     * keeps one vanished client from freezing the whole pool forever.
      * @param ms silence tolerance in milliseconds, from {@code 1} through
      *           {@code Long.MAX_VALUE / 1_000_000} to fit the nanosecond clock
      */
-    public void watcherTimeout(final long ms) {
+    public void followerTimeout(final long ms) {
         if (ms <= 0 || ms > Long.MAX_VALUE / 1_000_000L)
-            throw new IllegalArgumentException("Watcher timeout must fit a positive nanosecond duration");
-        this.watcherTtlNanos = ms * 1_000_000L;
+            throw new IllegalArgumentException("Follower timeout must fit a positive nanosecond duration");
+        this.followerTtlNanos = ms * 1_000_000L;
     }
 
-    /** Returns the spectator silence tolerance in milliseconds. */
-    public long watcherTimeout() {
-        return this.watcherTtlNanos / 1_000_000L;
+    /** Returns the follower silence tolerance in milliseconds. */
+    public long followerTimeout() {
+        return this.followerTtlNanos / 1_000_000L;
     }
 
     @Override
-    protected void tick50() {
+    protected void tick() {
         // A HEADLESS FOLLOWER HAS NO MEDIA TO LEARN THE TIMELINE FROM — ADOPT THE SESSION'S
         // DURATION AND LIVE FLAG SO ITS OWN CLOCK RUNS, WRAPS AND ENDS ON THE REAL TIMELINE
         if (this.role() == Role.FOLLOWER && this.duration <= 0 && !this.live) {
             final Sync session = this.authority(); // NULL UNTIL THE FIRST SNAPSHOT LANDS
             if (session != null) {
                 this.syncDuration(session.duration());
-                if (session.live()) this.syncLive(true);
+                if (session.live()) this.live(true);
             }
         }
-        super.tick50();
+        super.tick();
         this.update();
         // TTL SWEEP, LOCKSTEP GATE AND REVISION/HEARTBEAT BROADCAST
         if (this.role() == Role.AUTHORITY) this.broadcast();
@@ -265,20 +265,20 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private void broadcast() {
         final long now = System.nanoTime();
         boolean hold = false;
-        for (final Map.Entry<Long, Watcher> e: this.watchers.entrySet()) {
-            final Watcher w = e.getValue();
-            if (now - w.lastSeenNanos >= this.watcherTtlNanos) {
-                // A VANISHED SPECTATOR IS TREATED LIKE A FAILED ONE — IT NEVER HOLDS THE GATE
-                this.watchers.remove(e.getKey());
+        for (final Map.Entry<Long, Follower> e: this.registry.entrySet()) {
+            final Follower f =e.getValue();
+            if (now - f.lastSeenNanos >= this.followerTtlNanos) {
+                // A VANISHED FOLLOWER IS TREATED LIKE A FAILED ONE — IT NEVER HOLDS THE GATE
+                this.registry.remove(e.getKey());
                 continue;
             }
-            // ONLY POOLED SPECTATORS STILL WAITING/LOADING/BUFFERING HOLD THE GATE; ERROR NEVER DOES
-            hold |= w.pooled && (w.status == Status.WAITING || w.status == Status.LOADING || w.status == Status.BUFFERING);
+            // ONLY POOLED FOLLOWERS STILL WAITING/LOADING/BUFFERING HOLD THE GATE; ERROR NEVER DOES
+            hold |= f.pooled && (f.status == Status.WAITING || f.status == Status.LOADING || f.status == Status.BUFFERING);
         }
         if ((this.capabilities & Config.Capability.LOCKSTEP.bit) != 0) this.gate(hold);
         // THE GATE FLIP BUMPS THE REVISION, SO IT TRAVELS IN THIS VERY BROADCAST
         final int rev = this.revision.get();
-        if (rev != this.lastCastRevision || now - this.lastCastNanos >= HEARTBEAT_NANOS) {
+        if (rev != this.lastCastRevision || now - this.lastCastNanos >= HEARTBEAT_NS) {
             this.lastCastRevision = rev;
             this.lastCastNanos = now;
             this.send(this.snapshot());
@@ -311,7 +311,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.gated = false;
             this.status = Status.PLAYING;
             this.revision.incrementAndGet();
-            ticking(this, true);
+            this.ticking(true);
         }
         return true;
     }
@@ -324,7 +324,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.gated = false;
             this.status = Status.PAUSED;
             this.revision.incrementAndGet();
-            ticking(this, true);
+            this.ticking(true);
         }
         return true;
     }
@@ -345,7 +345,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 this.status = Status.PLAYING;
                 // A SOLO CLOCK DEREGISTERS ON ENDED/STOP; RESUMING AFTER A SEEK MUST TICK AGAIN
                 // OR IT NEVER WRAPS NOR ENDS FOR THE REST OF ITS LIFE
-                ticking(this, true);
+                this.ticking(true);
             }
             this.revision.incrementAndGet();
         }
@@ -361,7 +361,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.gated = false;
             this.status = Status.STOPPED;
             this.revision.incrementAndGet();
-            ticking(this, false);
+            this.ticking(false);
         }
         return true;
     }
@@ -462,14 +462,14 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean liveSource() {
+    public boolean live() {
         // EXPLICIT CLIENT-REPORTED FLAG, PLUS THE ORIGINAL INFERENCE: UNKNOWN DURATION BEHAVES AS LIVE
         return this.live || this.duration <= 0;
     }
 
     @Override
     public boolean canSeek() {
-        return !this.liveSource();
+        return !this.live();
     }
 
     @Override
@@ -492,7 +492,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         synchronized (this) {
             this.gated = false;
             this.status = Status.STOPPED;
-            this.watchers.clear();
+            this.registry.clear();
         }
         // OUTSIDE THE LOCK — A FOLLOWER'S super SENDS Unwatch THROUGH THE DEV'S BRIDGE
         super.release();
@@ -532,17 +532,17 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.accumulatedMs = d;
             this.status = Status.ENDED;
             this.revision.incrementAndGet();
-            ticking(this, false);
+            this.ticking(false);
             this.invokeStatus(Status.PLAYING, Status.ENDED);
         }
     }
 
-    // PER-SPECTATOR REGISTRY ENTRY. pooled MARKS LOCKSTEP GATE MEMBERSHIP — IMMEDIATE WHEN THE
+    // PER-FOLLOWER REGISTRY ENTRY. pooled MARKS LOCKSTEP GATE MEMBERSHIP — IMMEDIATE WHEN THE
     // SESSION IS NOT RUNNING, DEFERRED TO THE FIRST READY REPORT FOR MID-PLAYBACK JOINERS.
-    private static final class Watcher {
+    private static final class Follower {
         volatile Status status = Status.LOADING;
         // STAMPED AT BIRTH — THE TTL SWEEP RUNS CONCURRENTLY WITH REGISTRATION AND WOULD READ
-        // A ZERO STAMP AS A SPECTATOR SILENT SINCE FOREVER, DROPPING IT ON THE SPOT
+        // A ZERO STAMP AS A FOLLOWER SILENT SINCE FOREVER, DROPPING IT ON THE SPOT
         volatile long lastSeenNanos = System.nanoTime();
         volatile boolean pooled;
     }

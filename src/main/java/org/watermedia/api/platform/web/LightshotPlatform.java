@@ -4,7 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class LightshotPlatform implements IPlatform {
+public final class LightshotPlatform implements Platform {
     public static final String NAME = "Lightshot";
     private static final Marker IT = MarkerManager.getMarker(LightshotPlatform.class.getSimpleName());
     private static final Pattern IMG_PATTERN = Pattern.compile("<img[^>]*class=\"no-click screenshot-image\"[^>]*src=\"(https://[^\"]+)\"");
@@ -25,25 +25,25 @@ public final class LightshotPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(LightshotPlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
 
-            final String html = req.readAllAsString();
+            final String html = req.text();
             final Matcher matcher = IMG_PATTERN.matcher(html);
             if (!matcher.find())
-                throw new PlatformException(LightshotPlatform.class, "Screenshot image not found in page (expired, removed, or markup changed): " + uri);
+                throw new PlatformException(NAME, "Screenshot image not found in page (expired, removed, or markup changed): " + uri);
 
             final String imageUrl = matcher.group(1);
             LOGGER.debug(IT, "Lightshot resolved screenshot image {} for {}", imageUrl, uri);
 
-            final var entry = new DataSource(MediaType.IMAGE, null, null,
-                    RequestHeaders.defaults(uri),
-                    List.of(new DataQuality(new URI(imageUrl), 0, 0)),
+            final var entry = new Source(MediaType.IMAGE, null, null,
+                    HttpHeaders.defaults(uri),
+                    List.of(new Quality(new URI(imageUrl), 0, 0)),
                     null, null);
-            return new PlatformData(null, entry);
+            return new Resolution(null, entry);
         }
     }
 }

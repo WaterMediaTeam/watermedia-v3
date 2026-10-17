@@ -4,7 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -149,14 +149,14 @@ public class AlphaDecoderTest {
         // HEADER ONLY — DECODER MUST REJECT MISSING PAYLOAD
         final ByteBuffer buffer = ByteBuffer.allocate(1).order(ByteOrder.LITTLE_ENDIAN);
         buffer.put((byte) 0x00).flip();
-        assertThrows(XCodecException.class, () -> AlphaDecoder.decode(buffer, 4, 4),
+        assertThrows(CodecException.class, () -> AlphaDecoder.decode(buffer, 4, 4),
                 "Should throw exception for truncated data");
     }
 
     @Test
     @DisplayName("Empty buffer throws")
     void testEmptyBufferThrows() {
-        assertThrows(XCodecException.class,
+        assertThrows(CodecException.class,
                 () -> AlphaDecoder.decode(ByteBuffer.allocate(0).order(ByteOrder.LITTLE_ENDIAN), 4, 4),
                 "Should throw exception for empty buffer");
     }
@@ -169,7 +169,7 @@ public class AlphaDecoderTest {
         buffer.put((byte) 0x02);
         for (int i = 0; i < 99; i++) buffer.put((byte) 0);
         buffer.flip();
-        assertThrows(XCodecException.class, () -> AlphaDecoder.decode(buffer, 4, 4),
+        assertThrows(CodecException.class, () -> AlphaDecoder.decode(buffer, 4, 4),
                 "Should throw exception for unknown compression method");
     }
 

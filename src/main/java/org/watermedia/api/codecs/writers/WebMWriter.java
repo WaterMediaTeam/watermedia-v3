@@ -15,8 +15,9 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
 import org.bytedeco.javacpp.Pointer;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.javacpp.PointerPointer;
-import org.watermedia.WaterMedia;
 import org.watermedia.api.codecs.ImageWriter;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.PixelFormat;
@@ -27,6 +28,8 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+
+import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * {@link ImageWriter} that encodes frames as VP9 video inside a WebM (Matroska) container using
@@ -50,12 +53,15 @@ import java.nio.file.Path;
  * length nor seek until they had read the whole file.
  */
 public final class WebMWriter extends ImageWriter {
+    private static final Marker IT = MarkerManager.getMarker(WebMWriter.class.getSimpleName());
     // DEFAULTS — 30 FPS AND A MID VP9 CRF (CONSTANT-QUALITY SWEET SPOT)
     private static final int DEFAULT_FPS = 30;
     private static final int DEFAULT_CRF = 31;
     private static final int MAX_CRF = 63;
 
-    private final int crf;
+    // THE EXPERIMENTAL NOTICE IS WORTH ONE LINE PER PROCESS, NOT ONE PER EXPORT
+    private static volatile boolean warned;
+
     private final int srcFormat;      // SOURCE AV_PIX_FMT MAPPED FROM pixelFormat
     private final double frameDurMs;  // DEFAULT PER-FRAME ADVANCE = 1000 / fps
     private final AVRational timeBase; // 1/1000 (MS) — CODEC UNITS, KEPT FOR PACKET RESCALE
@@ -94,11 +100,13 @@ public final class WebMWriter extends ImageWriter {
     public WebMWriter(final OutputStream out, final int width, final int height,
                       final PixelFormat pixelFormat, final int fps, final int crf) throws IOException {
         super(out, width, height, pixelFormat);
-        WaterMedia.LOGGER.warn("WebMWriter (encoder) is experimental and runs on a unadapted API, usage might cause issues.");
+        if (!warned) {
+            warned = true;
+            LOGGER.warn(IT, "WebM export is experimental: the encoder API is not final and may change");
+        }
         if (fps <= 0) throw new IllegalArgumentException("fps must be positive: " + fps);
         if (crf < 0 || crf > MAX_CRF) throw new IllegalArgumentException("crf out of range [0," + MAX_CRF + "]: " + crf);
         if (!MediaAPI.ffmpegLoaded()) throw new IOException("FFmpeg is not available");
-        this.crf = crf;
         this.frameDurMs = 1000.0 / fps;
         this.srcFormat = FFTool.avPixelFormat(pixelFormat);
         this.timeBase = new AVRational().num(1).den(1000);
@@ -218,11 +226,8 @@ public final class WebMWriter extends ImageWriter {
         this.frames++;
     }
 
-    /** VP9 constant-quality factor this writer encodes with (0-63, lower is better). */
-    public int crf() { return this.crf; }
-
-    /** Number of frames written so far. */
-    public int frameCount() { return this.frames; }
+    // FRAMES WRITTEN SO FAR; A TEST HOOK OUTSIDE THE ImageWriter CONTRACT
+    int frameCount() { return this.frames; }
 
     @Override
     public void close() throws IOException {

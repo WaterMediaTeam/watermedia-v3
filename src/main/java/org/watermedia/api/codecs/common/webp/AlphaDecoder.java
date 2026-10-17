@@ -2,8 +2,8 @@ package org.watermedia.api.codecs.common.webp;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.api.codecs.XCodecException;
-import org.watermedia.api.codecs.readers.webp.lossless.VP8LDecoder;
+import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -33,18 +33,17 @@ public final class AlphaDecoder {
     }
 
     /** Decodes a WebP ALPH payload into one unsigned alpha byte per pixel, including its inverse filter. */
-    public static byte[] decode(ByteBuffer buffer, final int w, final int h) throws XCodecException {
-        buffer = buffer.slice().order(ByteOrder.LITTLE_ENDIAN);
+    public static byte[] decode(final ByteBuffer data, final int w, final int h) throws CodecException {
+        final ByteBuffer buffer = data.slice().order(ByteOrder.LITTLE_ENDIAN);
 
         if (buffer.remaining() < 1) {
-            throw new XCodecException("Alpha chunk too small");
+            throw new CodecException("Alpha chunk too small");
         }
 
-        // READ HEADER BYTE: [FILTER:2][PREPROC:2][COMPRESSION:2][RESERVED:2]
+        // READ HEADER BYTE: [FILTER:2][PREPROC:2][COMPRESSION:2][RESERVED:2]; PREPROCESSING IS A HINT WITHOUT EFFECT
         final int hdr = buffer.get() & 0xFF;
         final int filterMeth = (hdr >> 4) & 0x03;
         final int compMeth = hdr & 0x03;
-        // int preProc = (hdr >> 2) & 0x03; // UNUSED
 
         LOGGER.debug(IT, "Alpha: filter={}, compression={}", filterMeth, compMeth);
 
@@ -55,21 +54,21 @@ public final class AlphaDecoder {
             // BUY A FULL-CANVAS PLANE BEFORE FAILING
             final int size = w * h;
             if (buffer.remaining() < size) {
-                throw new XCodecException("Alpha data truncated: declared " + size + " bytes, " + buffer.remaining() + " available");
+                throw new CodecException("Alpha data truncated: declared " + size + " bytes, " + buffer.remaining() + " available");
             }
             alpha = new byte[size];
             buffer.get(alpha);
         } else if (compMeth == COMPRESS_LOSSLESS) {
             // VP8L COMPRESSED - EXTRACT GREEN CHANNEL AS ALPHA
             final BitReader rd = new BitReader(buffer);
-            final int[] argb = VP8LDecoder.decode(rd, w, h);
+            final int[] argb = VP8LosslessDecoder.decode(rd, w, h);
 
             alpha = new byte[w * h];
             for (int i = 0; i < argb.length; i++) {
                 alpha[i] = (byte) ((argb[i] >> 8) & 0xFF);
             }
         } else {
-            throw new XCodecException("Unknown alpha compression: " + compMeth);
+            throw new CodecException("Unknown alpha compression: " + compMeth);
         }
 
         // APPLY INVERSE FILTER TO RECONSTRUCT ORIGINAL VALUES

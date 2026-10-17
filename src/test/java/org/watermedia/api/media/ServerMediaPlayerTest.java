@@ -35,17 +35,17 @@ public class ServerMediaPlayerTest {
     }
 
     @Test
-    @DisplayName("watcher timeout rejects nanosecond overflow without changing the prior value")
-    void watcherTimeoutRejectsOverflow() {
+    @DisplayName("follower timeout rejects nanosecond overflow without changing the prior value")
+    void followerTimeoutRejectsOverflow() {
         final ServerMediaPlayer player = new ServerMediaPlayer(ignored -> {});
         try {
             final long maximum = Long.MAX_VALUE / 1_000_000L;
-            player.watcherTimeout(maximum);
-            assertEquals(maximum, player.watcherTimeout());
-            assertThrows(IllegalArgumentException.class, () -> player.watcherTimeout(maximum + 1));
-            assertEquals(maximum, player.watcherTimeout());
-            assertThrows(IllegalArgumentException.class, () -> player.watcherTimeout(Long.MAX_VALUE));
-            assertEquals(maximum, player.watcherTimeout());
+            player.followerTimeout(maximum);
+            assertEquals(maximum, player.followerTimeout());
+            assertThrows(IllegalArgumentException.class, () -> player.followerTimeout(maximum + 1));
+            assertEquals(maximum, player.followerTimeout());
+            assertThrows(IllegalArgumentException.class, () -> player.followerTimeout(Long.MAX_VALUE));
+            assertEquals(maximum, player.followerTimeout());
         } finally {
             player.release();
         }
@@ -215,19 +215,19 @@ public class ServerMediaPlayerTest {
     }
 
     @Test
-    @DisplayName("syncLive flags the source as live and locks speed")
-    void testSyncLive() {
+    @DisplayName("live(true) flags the source as live and locks speed")
+    void testLive() {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         player.syncDuration(10_000L);
-        assertFalse(player.liveSource());
+        assertFalse(player.live());
         assertTrue(player.canSpeed());
 
-        player.syncLive(true);
-        assertTrue(player.liveSource());
+        player.live(true);
+        assertTrue(player.live());
         assertFalse(player.canSpeed());
 
-        player.syncLive(false);
-        assertFalse(player.liveSource());
+        player.live(false);
+        assertFalse(player.live());
         player.release();
     }
 
@@ -327,7 +327,7 @@ public class ServerMediaPlayerTest {
     void testLiveClockRuns() throws InterruptedException {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         player.start();
-        player.syncLive(true); // A LIVE TIMELINE IS OPEN-ENDED BUT REAL — SESSION TIME COUNTS UP
+        player.live(true); // A LIVE TIMELINE IS OPEN-ENDED BUT REAL — SESSION TIME COUNTS UP
         Thread.sleep(120L);
         assertTrue(player.time() >= 120L - TIMING_TOLERANCE_MS,
                 "a live session clock must advance, was " + player.time());
@@ -340,7 +340,7 @@ public class ServerMediaPlayerTest {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         // MIXED-VARIANT SESSION: A VOD CLIENT LATCHED A DURATION, A STREAM CLIENT LATCHED LIVE
         player.syncDuration(150L);
-        player.syncLive(true);
+        player.live(true);
         player.start();
 
         Thread.sleep(400L);

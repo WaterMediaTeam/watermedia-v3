@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.gif;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -22,16 +22,16 @@ public record GraphicExtension(
     public static final int BODY_SIZE = 6;
 
     /** Reads the {@value #BODY_SIZE}-byte body that follows the extension introducer and label; delay is in centiseconds. */
-    public static GraphicExtension read(final ByteBuffer buffer) throws XCodecException {
-        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
+    public static GraphicExtension read(final ByteBuffer buffer) throws CodecException {
+        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
         if (buffer.remaining() < BODY_SIZE) {
-            throw new XCodecException("Buffer does not contain enough data for Graphic Control Extension");
+            throw new CodecException("Buffer does not contain enough data for Graphic Control Extension");
         }
 
         // BLOCK SIZE AND TERMINATOR ARE FIXED BY THE SPEC. SKIPPING THEM MAKES THIS PARSER ACCEPT FILES
         // A STRICTER ONE REJECTS, AND TWO PARSERS DISAGREEING OVER ONE FILE IS A VALIDATION BYPASS
         final int blockSize = Byte.toUnsignedInt(buffer.get());
-        if (blockSize != 4) throw new XCodecException("Invalid GCE block size: " + blockSize + " (must be 4)");
+        if (blockSize != 4) throw new CodecException("Invalid GCE block size: " + blockSize + " (must be 4)");
 
         final int packedFields = Byte.toUnsignedInt(buffer.get());
         final int disposalMethod = (packedFields & 0b00011100) >> 2;
@@ -42,7 +42,7 @@ public record GraphicExtension(
         final int transparentColorIndex = Byte.toUnsignedInt(buffer.get());
 
         final int terminator = Byte.toUnsignedInt(buffer.get());
-        if (terminator != 0) throw new XCodecException("Invalid GCE block terminator: " + terminator + " (must be 0)");
+        if (terminator != 0) throw new CodecException("Invalid GCE block terminator: " + terminator + " (must be 0)");
 
         return new GraphicExtension(disposalMethod, userInputFlag, transparentColorFlag, delayTime, transparentColorIndex);
     }

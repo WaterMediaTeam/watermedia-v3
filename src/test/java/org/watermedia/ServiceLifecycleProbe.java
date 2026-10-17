@@ -6,17 +6,17 @@ import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.network.NetworkServer;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
-import org.watermedia.api.platform.DataQuality;
-import org.watermedia.api.platform.DataSource;
-import org.watermedia.api.platform.IPlatform;
+import org.watermedia.api.platform.Platform.Quality;
+import org.watermedia.api.platform.Platform.Source;
+import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
-import org.watermedia.api.platform.PlatformData;
+import org.watermedia.api.platform.Platform.Resolution;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.test.support.LocalHttp;
 import org.watermedia.test.support.PlayerWait;
 import org.watermedia.tools.ThreadTool;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 
 import java.io.IOException;
 import java.net.URI;
@@ -36,8 +36,7 @@ public final class ServiceLifecycleProbe {
         final Path root = Path.of("").toAbsolutePath();
         WaterConfig.setPath(root.resolve("config"));
         WaterMediaConfig.media.ffmpeg.disable = true;
-        WaterMediaConfig.network.enableServer = false;
-        WaterMediaConfig.network.forceEnableServer = false;
+        WaterMediaConfig.network.server = WaterMediaConfig.Network.Server.OFF;
         WaterMediaConfig.network.timeout = 2000;
         final boolean client = !arguments[0].equals("uploads");
         WaterMedia.start("SERVICE_TEST", root.resolve("first"), root, client);
@@ -58,12 +57,12 @@ public final class ServiceLifecycleProbe {
     }
 
     private static void reload() throws Exception {
-        for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
-        PlatformAPI.register(new IPlatform() {
+        for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+        PlatformAPI.register(new Platform() {
             @Override public String name() { return "Reload fixture"; }
-            @Override public PlatformData data(final URI uri) {
-                return new PlatformData(null, new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
-                        List.of(new DataQuality(uri, 0, 0)), null, null));
+            @Override public Resolution resolve(final URI uri) {
+                return new Resolution(null, new Source(MediaType.VIDEO, null, null, new HttpHeaders(),
+                        List.of(new Quality(uri, 0, 0)), null, null));
             }
         });
         final MRL mrl = MediaAPI.mrl(URI.create("fixture:reload"));
@@ -96,15 +95,15 @@ public final class ServiceLifecycleProbe {
     }
 
     private static void evicted() throws Exception {
-        for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+        for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
         final URI key = URI.create("fixture:expired");
         final AtomicBoolean first = new AtomicBoolean(true);
-        PlatformAPI.register(new IPlatform() {
+        PlatformAPI.register(new Platform() {
             @Override public String name() { return "Expiring fixture"; }
-            @Override public PlatformData data(final URI uri) {
+            @Override public Resolution resolve(final URI uri) {
                 final var expires = key.equals(uri) && first.getAndSet(false) ? Instant.EPOCH : null;
-                return new PlatformData(expires, new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
-                        List.of(new DataQuality(uri, 0, 0)), null, null));
+                return new Resolution(expires, new Source(MediaType.VIDEO, null, null, new HttpHeaders(),
+                        List.of(new Quality(uri, 0, 0)), null, null));
             }
         });
         final MRL old = MediaAPI.mrl(key);
@@ -148,13 +147,13 @@ public final class ServiceLifecycleProbe {
     }
 
     private static void status() throws Exception {
-        for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
-        PlatformAPI.register(new IPlatform() {
+        for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+        PlatformAPI.register(new Platform() {
             @Override public String name() { return "Expiring status fixture"; }
-            @Override public PlatformData data(final URI uri) {
-                return new PlatformData(Instant.EPOCH,
-                        new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
-                                List.of(new DataQuality(uri, 0, 0)), null, null));
+            @Override public Resolution resolve(final URI uri) {
+                return new Resolution(Instant.EPOCH,
+                        new Source(MediaType.VIDEO, null, null, new HttpHeaders(),
+                                List.of(new Quality(uri, 0, 0)), null, null));
             }
         });
         final MRL mrl = MediaAPI.mrl(URI.create("fixture:status"));
@@ -183,16 +182,16 @@ public final class ServiceLifecycleProbe {
     }
 
     private static void platforms(final Path root) throws Exception {
-        for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+        for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
         final CountDownLatch entered = new CountDownLatch(1);
         final CountDownLatch resume = new CountDownLatch(1);
         final CountDownLatch resolveEntered = new CountDownLatch(1);
         final CountDownLatch resolveResume = new CountDownLatch(1);
         final AtomicBoolean callbackGuard = new AtomicBoolean();
         try {
-            PlatformAPI.register(new IPlatform() {
+            PlatformAPI.register(new Platform() {
                 @Override public String name() { return "Controlled search"; }
-                @Override public PlatformData data(final URI uri) {
+                @Override public Resolution resolve(final URI uri) {
                     if (!"fixture".equals(uri.getScheme())) return null;
                     resolveEntered.countDown();
                     boolean done = false;
@@ -200,8 +199,8 @@ public final class ServiceLifecycleProbe {
                         try { done = resolveResume.await(10, TimeUnit.SECONDS); }
                         catch (final InterruptedException ignored) {}
                     }
-                    return new PlatformData(null, new DataSource(MediaType.VIDEO, null, null, new RequestHeaders(),
-                            List.of(new DataQuality(uri, 0, 0)), null, null));
+                    return new Resolution(null, new Source(MediaType.VIDEO, null, null, new HttpHeaders(),
+                            List.of(new Quality(uri, 0, 0)), null, null));
                 }
                 @Override public List<PlatformResult> search(final String query, final int limit) {
                     if (!ThreadTool.workerThread()) throw new AssertionError("Search callback is not marked as an owned worker");
@@ -218,7 +217,7 @@ public final class ServiceLifecycleProbe {
                             throw new AssertionError("Worker initiated a blocking shutdown");
                         } catch (final IllegalStateException expected) { callbackGuard.set(true); }
                     }
-                    return List.of(new PlatformResult("fixture", query, null, URI.create("https://fixture.invalid/" + query)));
+                    return List.of(new PlatformResult(this, query, null, URI.create("https://fixture.invalid/" + query)));
                 }
             });
             final var old = PlatformAPI.search("old");
@@ -257,12 +256,12 @@ public final class ServiceLifecycleProbe {
             }
             if (!old.results().isEmpty() || old.done()) throw new AssertionError("Late old results escaped their generation");
             WaterMedia.start("SERVICE_TEST", root.resolve("second"), root, true);
-            for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
-            PlatformAPI.register(new IPlatform() {
+            for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+            PlatformAPI.register(new Platform() {
                 @Override public String name() { return "Replacement search"; }
-                @Override public PlatformData data(final URI uri) { return null; }
+                @Override public Resolution resolve(final URI uri) { return null; }
                 @Override public List<PlatformResult> search(final String query, final int limit) {
-                    return List.of(new PlatformResult("replacement", "second session", null, URI.create("https://fixture.invalid/new")));
+                    return List.of(new PlatformResult(this, "second session", null, URI.create("https://fixture.invalid/new")));
                 }
             });
             final var restarted = PlatformAPI.search("fresh");
@@ -294,7 +293,7 @@ public final class ServiceLifecycleProbe {
             try { LocalHttp.respond(exchange, "text/plain", "stored12".getBytes(StandardCharsets.UTF_8), 0); }
             catch (final IOException closed) { exchange.close(); }
         }, handlers)) {
-            WaterMediaConfig.network.remoteHost = origin.uri("").toString();
+            WaterMediaConfig.network.remoteUrl = origin.uri("").toString();
             final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[12];
             for (int i = 0; i < statuses.length; i++) statuses[i] = NetworkAPI.upload(file.toFile());
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Upload workers did not start");
@@ -306,7 +305,7 @@ public final class ServiceLifecycleProbe {
             respond.countDown();
             immediate.set(true);
             WaterMedia.start("SERVICE_TEST", root.resolve("second"), root, false);
-            WaterMediaConfig.network.remoteHost = origin.uri("").toString();
+            WaterMediaConfig.network.remoteUrl = origin.uri("").toString();
             final var next = NetworkAPI.upload(file.toFile());
             if (!PlayerWait.awaitCondition(() -> next.completed() || next.failed(), 5000) || !next.completed() || !"stored12".equals(next.id()))
                 throw new AssertionError("Restarted upload service failed: " + next.error());

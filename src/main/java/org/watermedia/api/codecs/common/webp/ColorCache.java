@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.webp;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 // WEBP LOSSLESS COLOR CACHE
 // STORES RECENTLY USED COLORS FOR EFFICIENT ENCODING/DECODING
@@ -14,9 +14,9 @@ public final class ColorCache {
     private final int hashMask;    // MASK FOR INDEX BOUNDS
 
     // CACHE_BITS: 1-11, CREATES 2^CACHE_BITS ENTRIES
-    public ColorCache(final int cacheBits) throws XCodecException {
+    public ColorCache(final int cacheBits) throws CodecException {
         if (cacheBits < 1 || cacheBits > 11) {
-            throw new XCodecException("Invalid color cache bits: " + cacheBits);
+            throw new CodecException("Invalid color cache bits: " + cacheBits);
         }
         final int sz = 1 << cacheBits;
         this.colors = new int[sz];

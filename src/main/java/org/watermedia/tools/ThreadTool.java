@@ -9,8 +9,8 @@ public class ThreadTool {
     private static final ThreadLocal<Boolean> WORKER = new ThreadLocal<>();
 
     public static Thread createStarted(final String name, final Runnable runnable) {
-        // AUTO-APPEND A PER-NAME COUNTER (name-0, name-1, ...) CONSISTENTLY WITH createStartedLoop.
-        // merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO SUBTRACT 1 FOR THE SUFFIX
+        // AUTO-APPENDS A PER-NAME COUNTER (name-0, name-1, ...); merge IS ATOMIC AND RETURNS THE POST-INCREMENT
+        // VALUE, SO SUBTRACT 1 FOR THE SUFFIX
         final int c = THREADS.merge(name, 1, Integer::sum) - 1;
         final Thread t = new Thread(runnable, name + "-" + c);
         t.setDaemon(true);
@@ -19,21 +19,13 @@ public class ThreadTool {
         return t;
     }
 
-    public static boolean tryAcquireLock(final Semaphore semaphore, final long timeout, final TimeUnit unit) {
+    public static boolean tryAcquire(final Semaphore semaphore, final long timeout, final TimeUnit unit) {
         try {
             return semaphore.tryAcquire(timeout, unit);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt(); // RESTORE INTERRUPTED STATUS
         }
         return false;
-    }
-
-    public static Executor createRecommendedThreadPool(final String name, final int priority) {
-        return Executors.newFixedThreadPool(halfLeastThreads(2), createFactory(name, priority));
-    }
-
-    public static Executor createScheduledThreadPool(final String name, final int threadCount, final int priority) {
-        return Executors.newScheduledThreadPool(threadCount, createFactory(name, priority));
     }
 
     public static ThreadGroupFactory createThreadGroupFactory(final String name, final int priority) {
@@ -92,16 +84,6 @@ public class ThreadTool {
         return !interrupted;
     }
 
-    public static boolean wait(final Object obj) {
-        try {
-            obj.wait();
-            return true;
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt(); // RESTORE INTERRUPTED STATUS
-            return false;
-        }
-    }
-
     // RETURNS TRUE IF THE SLEEP COMPLETED, FALSE IF IT WAS INTERRUPTED
     public static boolean sleep(final long timeoutMillis) {
         try {
@@ -113,46 +95,11 @@ public class ThreadTool {
         }
     }
 
-    // SAME AS sleep BUT YIELDS THE CPU AFTERWARDS
-    public static boolean sleepYield(final long timeoutMillis) {
-        try {
-            Thread.sleep(timeoutMillis);
-            return true;
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt(); // RESTORE INTERRUPTED STATUS
-            return false;
-        } finally {
-            Thread.yield();
-        }
-    }
-
-    /**
-     * Creates and starts a daemon thread that runs {@code runnable} in a loop until interrupted.
-     * The loop checks the interrupted status on each iteration, so interrupting the thread stops it.
-     *
-     * @param name     base thread name; a per-name counter is appended ({@code name-0}, {@code name-1}, ...)
-     * @param runnable the body executed on every loop iteration
-     * @return the started thread
-     */
-    public static Thread createStartedLoop(final String name, final Runnable runnable) {
-        // merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO SUBTRACT 1 FOR THE SUFFIX
-        final int c = THREADS.merge(name, 1, Integer::sum) - 1;
-        final Thread t = new Thread(() -> {
-            while (!Thread.currentThread().isInterrupted()) {
-                runnable.run();
-            }
-        }, name + "-" + c);
-        t.setDaemon(true); // DIE ALONGSIDE THE MAIN THREAD
-        t.setPriority(Thread.NORM_PRIORITY);
-        t.start();
-        return t;
-    }
-
-    public static int maxThreads() { return Runtime.getRuntime().availableProcessors(); }
-    public static int halfLeastThreads(final int count) { return Math.max(count, halfThreads()); }
-    public static int halfThreads() { return maxThreads() / 2; }
-    public static int minThreads() {
-        final int count = maxThreads();
+    public static int processors() { return Runtime.getRuntime().availableProcessors(); }
+    public static int halfProcessors() { return processors() / 2; }
+    // A SMALL WORKER COUNT THAT GROWS SLOWLY WITH THE MACHINE, FOR POOLS THAT MUST LEAVE THE HOST ITS OWN CORES
+    public static int baseThreads() {
+        final int count = processors();
         if (count <= 2) return 1;
         if (count <= 8) return 2;
         if (count <= 16) return 3;

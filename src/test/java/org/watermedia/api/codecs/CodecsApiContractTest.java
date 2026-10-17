@@ -42,17 +42,17 @@ public class CodecsApiContractTest {
     class FormatDetectionTests {
 
         @Test
-        @DisplayName("decodeImage(byte[]) throws UnsupportedFormatException for unknown bytes")
+        @DisplayName("decode(byte[]) throws UnsupportedFormatException for unknown bytes")
         void testDecodeImageByteArrayThrowsUnsupportedFormat() {
             final byte[] invalid = {0x00, 0x11, 0x22, 0x33, 0x44};
-            assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.decodeImage(invalid));
+            assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.decode(invalid));
         }
 
         @Test
-        @DisplayName("decodeImage(ByteBuffer) throws UnsupportedFormatException for unknown bytes")
+        @DisplayName("reader(ByteBuffer) throws UnsupportedFormatException for unknown bytes")
         void testDecodeImageByteBufferThrowsUnsupportedFormat() {
             final ByteBuffer invalid = ByteBuffer.wrap(new byte[] {0x01, 0x02, 0x03, 0x04});
-            assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.decodeImage(invalid));
+            assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.reader(invalid));
         }
 
         @Test
@@ -69,7 +69,7 @@ public class CodecsApiContractTest {
             )) {
                 final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(fixture.path()));
 
-                try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
+                try (final ImageReader reader = CodecsAPI.reader(data)) {
                     assertEquals(fixture.name(), reader.name());
                     assertEquals(fixture.headerBytes(), data.position(),
                             fixture.name() + " should leave caller buffer after the format header");
@@ -88,11 +88,11 @@ public class CodecsApiContractTest {
     class ReaderInvariantTests {
 
         @Test
-        @DisplayName("decodeImage(ByteBuffer) returns a reader and skips the header")
+        @DisplayName("reader(ByteBuffer) returns a reader and skips the header")
         void testDecodeImageByteBufferReturnsReaderAndSkipsHeader() throws Exception {
             final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.PNG_ANIMATED));
 
-            try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
+            try (final ImageReader reader = CodecsAPI.reader(data)) {
                 assertEquals(8, data.position(), "PNG header should be consumed by CodecsAPI");
                 assertTrue(reader.width() > 0);
                 assertTrue(reader.height() > 0);
@@ -108,7 +108,7 @@ public class CodecsApiContractTest {
         void testReaderReadAllReturnsImageData() throws Exception {
             final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.PNG_ANIMATED));
 
-            try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
+            try (final ImageReader reader = CodecsAPI.reader(data)) {
                 final ImageData image = reader.readAll();
                 assertNotNull(image);
                 assertEquals(reader.width(), image.width());
@@ -122,7 +122,7 @@ public class CodecsApiContractTest {
         void testGifQuickReadExposesDurationFrameCountAndDelays() throws Exception {
             final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.GIF_ANIMATED));
 
-            try (final ImageReader reader = CodecsAPI.decodeImage(data)) {
+            try (final ImageReader reader = CodecsAPI.reader(data)) {
                 assertEquals(6, data.position(), "GIF header should be consumed by CodecsAPI");
                 assertTrue(reader.frameCount() > 1, "GIF fixture should be animated");
                 assertEquals(reader.frameCount(), reader.delays().length);
@@ -157,7 +157,7 @@ public class CodecsApiContractTest {
             });
             writePngChunk(out, "IEND", new byte[0]);
 
-            try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(out.toByteArray()))) {
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(out.toByteArray()))) {
                 final ImageMetadata metadata = reader.metadata();
 
                 assertEquals(PNG_TITLE_VALUE, metadata.title());
@@ -171,7 +171,7 @@ public class CodecsApiContractTest {
         @Test
         @DisplayName("Empty metadata: scalar fields null, collection fields empty (not null)")
         void testEmptyMetadataFields() throws Exception {
-            try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_BASELINE)))) {
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_BASELINE)))) {
                 final ImageMetadata metadata = reader.metadata();
                 assertNull(metadata.title());
                 assertTrue(metadata.authors().isEmpty());

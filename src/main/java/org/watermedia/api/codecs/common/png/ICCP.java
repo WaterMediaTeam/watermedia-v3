@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -17,21 +17,21 @@ import java.util.zip.Inflater;
 public record ICCP(String profileName, int compressionMethod, byte[] compressedProfile) implements IChunk {
     public static final int SIGNATURE = 0x69_43_43_50; // "iCCP"
     // CAP DECOMPRESSED PROFILE: A TINY iCCP CHUNK CAN INFLATE TO GIGABYTES (ZLIB BOMB); LEGIT ICC PROFILES ARE WELL UNDER THIS
-    private static final int MAX_DECOMPRESSED = 16 * 1024 * 1024; // 16 MB
+    private static final int MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024; // 16 MB
 
     /**
      * Reads iCCP chunk from buffer (reads length/type header first)
      */
-    public static ICCP read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated iCCP chunk header");
+    public static ICCP read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated iCCP chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(type));
         if (length < 0 || buffer.remaining() < length)
-            throw new XCodecException("Truncated iCCP chunk");
+            throw new CodecException("Truncated iCCP chunk");
 
         // READ PROFILE NAME (1-79 BYTES + NULL)
         final int endPosition = buffer.position() + length;
@@ -45,13 +45,13 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         bytesRead++; // COUNT NULL TERMINATOR
 
         final String profileName = nameBuilder.toString();
-        if (buffer.position() >= endPosition) throw new XCodecException("Truncated iCCP: missing compression method");
+        if (buffer.position() >= endPosition) throw new CodecException("Truncated iCCP: missing compression method");
         final int compressionMethod = buffer.get() & 0xFF;
         bytesRead++;
 
         // REMAINING DATA IS COMPRESSED PROFILE: AN UNTERMINATED NAME OVERSHOOTS AND GOES NEGATIVE
         final int profileLength = length - bytesRead;
-        if (profileLength < 0) throw new XCodecException("Invalid iCCP: unterminated profile name");
+        if (profileLength < 0) throw new CodecException("Invalid iCCP: unterminated profile name");
         final byte[] compressedProfile = new byte[profileLength];
         buffer.get(compressedProfile);
 
@@ -59,11 +59,11 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
     }
 
     /**
-     * Converts a generic CHUNK to ICCP
+     * Converts a generic PngChunk to ICCP
      */
-    public static ICCP convert(final CHUNK chunk) throws XCodecException {
+    public static ICCP convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new XCodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
+            throw new CodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
@@ -78,19 +78,19 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         }
 
         if (nullIndex < 1) {
-            throw new XCodecException("Invalid iCCP: missing or empty profile name");
+            throw new CodecException("Invalid iCCP: missing or empty profile name");
         }
 
         // NEED THE COMPRESSION-METHOD BYTE AFTER THE NAME NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
         if (data.length < nullIndex + 2) {
-            throw new XCodecException("Truncated iCCP: missing compression method");
+            throw new CodecException("Truncated iCCP: missing compression method");
         }
 
         final String profileName = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int compressionMethod = data[nullIndex + 1] & 0xFF;
 
         if (compressionMethod != 0) {
-            throw new XCodecException("Unknown iCCP compression method: " + compressionMethod);
+            throw new CodecException("Unknown iCCP compression method: " + compressionMethod);
         }
 
         // REMAINING DATA IS COMPRESSED PROFILE
@@ -102,7 +102,7 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
     }
 
     /** Decompresses and returns the ICC profile data. */
-    public byte[] profile() throws XCodecException {
+    public byte[] profile() throws CodecException {
         final Inflater inflater = new Inflater();
         inflater.setInput(this.compressedProfile);
 
@@ -115,21 +115,21 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
             while (true) {
                 final int length = inflater.inflate(buffer);
                 if (length > 0) {
-                    if (output.size() + length > MAX_DECOMPRESSED) {
-                        throw new XCodecException("iCCP exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
+                    if (output.size() + length > MAX_DECOMPRESSED_BYTES) {
+                        throw new CodecException("iCCP exceeds " + MAX_DECOMPRESSED_BYTES + " bytes decompressed");
                     }
                     output.write(buffer, 0, length);
                     continue;
                 }
                 if (inflater.finished()) break;
                 if (inflater.needsDictionary()) {
-                    throw new XCodecException("iCCP uses an unsupported compression dictionary");
+                    throw new CodecException("iCCP uses an unsupported compression dictionary");
                 }
-                if (inflater.needsInput()) throw new XCodecException("Incomplete compressed ICC profile");
-                throw new XCodecException("Invalid compressed ICC profile stream");
+                if (inflater.needsInput()) throw new CodecException("Incomplete compressed ICC profile");
+                throw new CodecException("Invalid compressed ICC profile stream");
             }
         } catch (final DataFormatException e) {
-            throw new XCodecException("Invalid compressed ICC profile: " + e.getMessage());
+            throw new CodecException("Invalid compressed ICC profile: " + e.getMessage(), e);
         } finally {
             inflater.end();
         }
@@ -149,7 +149,7 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

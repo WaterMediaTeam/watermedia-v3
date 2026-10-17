@@ -3,7 +3,7 @@ package org.watermedia.api.media;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.test.support.LocalHttp;
 
 import java.net.URI;
@@ -119,7 +119,7 @@ public class NetworkCacheTest {
             NetworkCache.start(cache);
             try {
                 final URI uri = server.uri("/pinned.png");
-                final RequestHeaders headers = new RequestHeaders().set("X-Variant", "first");
+                final HttpHeaders headers = new HttpHeaders().set("X-Variant", "first");
                 NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT);
 
                 // RE-DERIVE THE KEY FROM ITS CONTRACT: sha256(uri + '\n' + LOWERCASED "name:value"
@@ -154,8 +154,8 @@ public class NetworkCacheTest {
             NetworkCache.start(cache);
             try {
                 final URI uri = server.uri("/variant.png");
-                final RequestHeaders firstHeaders = new RequestHeaders().set("X-Variant", "first");
-                final RequestHeaders secondHeaders = new RequestHeaders().set("X-Variant", "second");
+                final HttpHeaders firstHeaders = new HttpHeaders().set("X-Variant", "first");
+                final HttpHeaders secondHeaders = new HttpHeaders().set("X-Variant", "second");
 
                 final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT);
                 final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT);

@@ -6,5 +6,5 @@ public interface IChunk {
     byte[] toBytes();
 
     /** Returns the complete chunk with its data length, type and calculated CRC. */
-    CHUNK toChunk();
+    PngChunk toChunk();
 }

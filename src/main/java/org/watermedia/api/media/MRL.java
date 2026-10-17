@@ -7,7 +7,7 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTool;
+import org.watermedia.tools.M3UTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -31,9 +31,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * An MRL represents a "gallery" of sources that can contain multiple videos, images,
  * or combinations thereof. Each uri can have multiple qualities and optional
- * slave tracks (audio, subtitles).
+ * secondary tracks (audio, subtitles).
  * <p>
- * Thread-safe and cached to avoid duplicate requests from IPlatform implementations.
+ * Thread-safe and cached to avoid duplicate requests from Platform implementations.
  */
 public final class MRL {
     private static final Marker IT = MarkerManager.getMarker(MRL.class.getSimpleName());
@@ -43,7 +43,7 @@ public final class MRL {
         final Map<URI, MRL> loaded = new ConcurrentHashMap<>(1024);
         final ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()), ThreadTool.workerFactory("MRL-Loader", Thread.NORM_PRIORITY - 1));
         volatile boolean active = true;
-        volatile long nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
+        volatile long nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlCleanupInterval);
 
         synchronized void submit(final MRL mrl) {
             if (!this.active) {
@@ -85,7 +85,7 @@ public final class MRL {
     }
 
     // INSTANCE FIELDS
-    public final URI uri;
+    private final URI uri;
     private final Session owner;
     private volatile Source[] sources;
     private volatile Instant expiresAt;
@@ -217,7 +217,7 @@ public final class MRL {
                                 return null;
                             }
                         }));
-                        this.owner.nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.cleanupInterval);
+                        this.owner.nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlCleanupInterval);
                     }
                 }
             }
@@ -226,7 +226,7 @@ public final class MRL {
             LOGGER.error(IT, "Failed to dispose forgotten MRLs", ex);
         }
         try {
-            PlatformData data = PlatformAPI.fetch(this.uri);
+            Platform.Resolution data = PlatformAPI.fetch(this.uri);
             if (data == null) {
                 try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug(IT, "Connected to {} with content type {}", this.uri, req.contentType());
@@ -247,25 +247,25 @@ public final class MRL {
                     final boolean m3uShape = (contentType != null && contentType.toLowerCase().contains("mpegurl")) || pathLower.endsWith(".m3u") || pathLower.endsWith(".m3u8");
 
                     if (m3uShape) {
-                        final String body = req.readAllAsString();
+                        final String body = req.text();
                         // IPTV LISTS EXPAND INTO N CHANNELS; HLS MASTER/MEDIA (AND ANYTHING THAT
                         // FAILS TO PARSE) COLLAPSE TO A SINGLE VIDEO SOURCE THE PLAYER DRIVES ITSELF.
-                        MPEGTool.Playlist parsed;
+                        M3UTool.Playlist parsed;
                         try {
-                            parsed = MPEGTool.parse(body, this.uri);
+                            parsed = M3UTool.parse(body, this.uri);
                         } catch (final IOException badPlaylist) {
                             // NOT A RECOGNIZABLE PLAYLIST — HAND THE RAW URL TO FFmpeg BELOW
                             LOGGER.debug(IT, "Body from {} is not a recognizable playlist ({}); using the raw URL", this.uri, badPlaylist.getMessage());
                             parsed = null;
                         }
-                        if (parsed instanceof final MPEGTool.Iptv iptv) {
-                            final List<MPEGTool.Channel> channels = iptv.channels();
+                        if (parsed instanceof final M3UTool.Iptv iptv) {
+                            final List<M3UTool.Channel> channels = iptv.channels();
                             if (channels.isEmpty())
                                 throw new IOException("IPTV playlist contained no entries: " + this.uri);
-                            final List<DataSource> sources = new ArrayList<>(channels.size());
-                            for (final MPEGTool.Channel e: channels) {
-                                // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY MPEGTool (MALFORMED ONES WERE DROPPED DURING PARSE)
-                                final URI childUri = e.url();
+                            final List<Platform.Source> sources = new ArrayList<>(channels.size());
+                            for (final M3UTool.Channel e: channels) {
+                                // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY M3UTool (MALFORMED ONES WERE DROPPED DURING PARSE)
+                                final URI childUri = e.uri();
                                 URI logoUri = null;
                                 if (e.tvgLogo() != null && !e.tvgLogo().isEmpty()) {
                                     try {
@@ -274,54 +274,54 @@ public final class MRL {
                                     IllegalArgumentException ignored) { /* TVG-LOGO IS BEST-EFFORT, BAD ENTRIES STAY UNILLUSTRATED */ }
                                 }
                                 final Metadata md = new Metadata(e.title(), null, null, 0, e.tvgGroup());
-                                sources.add(new DataSource(MediaType.UNKNOWN, logoUri, md,
-                                        RequestHeaders.defaults(childUri),
-                                        List.of(new DataQuality(childUri, 0, 0)),
+                                sources.add(new Platform.Source(MediaType.UNKNOWN, logoUri, md,
+                                        HttpHeaders.defaults(childUri),
+                                        List.of(new Platform.Quality(childUri, 0, 0)),
                                         null, null));
                             }
-                            data = new PlatformData(null, sources);
+                            data = new Platform.Resolution(null, sources);
                         } else {
-                            data = new PlatformData(null, List.of(new DataSource(MediaType.VIDEO, null, null, RequestHeaders.defaults(this.uri),
-                                    List.of(new DataQuality(this.uri, 0, 0)),
+                            data = new Platform.Resolution(null, List.of(new Platform.Source(MediaType.VIDEO, null, null, HttpHeaders.defaults(this.uri),
+                                    List.of(new Platform.Quality(this.uri, 0, 0)),
                                     null, null)));
                         }
                     } else {
-                        data = new PlatformData(null, List.of(new DataSource(sniffType(req, this.uri), null, null,
-                                RequestHeaders.defaults(this.uri),
-                                List.of(new DataQuality(this.uri, 0, 0)),
+                        data = new Platform.Resolution(null, List.of(new Platform.Source(sniffType(req, this.uri), null, null,
+                                HttpHeaders.defaults(this.uri),
+                                List.of(new Platform.Quality(this.uri, 0, 0)),
                                 null, null)));
                     }
                 }
-            } else if (data.size() == 1 && data.entries().get(0).type() == MediaType.UNKNOWN) {
+            } else if (data.sourceCount() == 1 && data.sources().get(0).type() == MediaType.UNKNOWN) {
                 // PLATFORMS THAT CANNOT KNOW THE PAYLOAD TYPE (water://, MEDIAFIRE) DELIVER UNKNOWN, WHICH
                 // DISPATCHES TO FFMPEG REGARDLESS OF CONTENT; CLASSIFY THE RESOLVED URL LIKE A DIRECT ONE.
                 // MULTI-SOURCE DATA (IPTV LISTS) IS EXEMPT — PROBING EVERY CHANNEL IS A REQUEST STORM.
-                final DataSource entry = data.entries().get(0);
-                final URI target = entry.variants().get(0).uri();
+                final Platform.Source entry = data.sources().get(0);
+                final URI target = entry.qualities().get(0).uri();
                 try (final NetRequest req = NetRequest.create(target).headers(entry.headers()).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
                     final MediaType type = req.statusCode() >= 400 ? MediaType.UNKNOWN : sniffType(req, target);
                     if (type != MediaType.UNKNOWN) {
-                        data = new PlatformData(data.expires(), new DataSource(type, entry.thumbnail(), entry.metadata(),
-                                entry.headers(), entry.variants(), entry.audioSlaves(), entry.subSlaves()));
+                        data = new Platform.Resolution(data.expires(), new Platform.Source(type, entry.thumbnail(), entry.metadata(),
+                                entry.headers(), entry.qualities(), entry.audioTracks(), entry.subtitleTracks()));
                     }
                 } catch (final IOException e) {
                     LOGGER.warn(IT, "Failed to classify {} resolved from {}: {}", target, this.uri, e.getMessage());
                 }
             }
 
-            if (data.size() > 0) {
-                final List<DataSource> entries = data.entries();
+            if (data.sourceCount() > 0) {
+                final List<Platform.Source> entries = data.sources();
                 final Source[] sources = new Source[entries.size()];
                 for (int i = 0; i < entries.size(); i++) {
-                    final DataSource entry = entries.get(i);
+                    final Platform.Source entry = entries.get(i);
                     if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
                     final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
-                    for (final DataQuality v: entry.variants()) {
+                    for (final Platform.Quality v: entry.qualities()) {
                         qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
                     }
 
                     sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
-                            entry.headers(), qualities, entry.audioSlaves(), entry.subSlaves());
+                            entry.headers(), qualities, entry.audioTracks(), entry.subtitleTracks());
                 }
 
 
@@ -334,9 +334,9 @@ public final class MRL {
                     }
                 }
                 this.fireListeners();
-                LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.size(), this.uri);
+                LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.sourceCount(), this.uri);
             } else {
-                throw new IllegalStateException("[INTERNAL] PlatformData resolved to zero entries for " + this.uri);
+                throw new IllegalStateException("[INTERNAL] Platform resolution has no sources for " + this.uri);
             }
         } catch (final Throwable t) {
             // STORE THE FAILURE VERBATIM SO exception() EXPOSES THE REAL MESSAGE, CAUSE AND STACK TO DEVS.
@@ -367,7 +367,7 @@ public final class MRL {
         MediaType type = MediaType.of(req.contentType());
         if (type != MediaType.UNKNOWN) return type;
         try (final InputStream in = req.inputStream()) {
-            type = CodecsAPI.mediaType(in);
+            type = CodecsAPI.sniff(in);
         } catch (final IOException e) {
             LOGGER.warn(IT, "Failed to sniff media type for {}", uri, e);
         }
@@ -426,6 +426,9 @@ public final class MRL {
             this.listeners.add(listener);
         }
     }
+
+    /** Returns the link this MRL was created for, as given by the caller. */
+    public URI uri() { return this.uri; }
 
     /** Returns the current state, marking expired loaded sources as EXPIRED. */
     public Status status() {
@@ -524,7 +527,7 @@ public final class MRL {
         final EnumMap<MediaQuality, URI> newQualities = new EnumMap<>(src.qualities());
         final URI uri = newQualities.remove(from);
         newQualities.put(to, uri);
-        s[sourceIndex] = new Source(src.type(), src.thumbnail(), src.metadata(), src.headers(), newQualities, src.audioSlaves(), src.subSlaves());
+        s[sourceIndex] = new Source(src.type(), src.thumbnail(), src.metadata(), src.headers(), newQualities, src.audioTracks(), src.subtitleTracks());
     }
 
 
@@ -533,7 +536,7 @@ public final class MRL {
     public boolean equals(final Object o) {
         if (this == o) return true;
         if (!(o instanceof final MRL mrl)) return false;
-        return this.uri.equals(mrl.uri);
+        return this.uri.equals(mrl.uri());
     }
 
     @Override
@@ -547,11 +550,11 @@ public final class MRL {
     }
 
     /**
-     * A URI Source container with multiple quality support and optional slave sources.
+     * A URI Source container with multiple quality support and optional secondary tracks.
      */
-    public record Source(MediaType type, URI thumbnail, Metadata metadata, RequestHeaders headers,
-                         Map<MediaQuality, URI> qualities, List<Slave> audioSlaves,
-                         List<Slave> subSlaves) {
+    public record Source(MediaType type, URI thumbnail, Metadata metadata, HttpHeaders headers,
+                         Map<MediaQuality, URI> qualities, List<Track> audioTracks,
+                         List<Track> subtitleTracks) {
 
         public Source {
             if (qualities.isEmpty())
@@ -560,9 +563,9 @@ public final class MRL {
             // DEFENSIVE UNMODIFIABLE COPY: Source IS CACHED AND SHARED ACROSS DECODE THREADS, THE MAP MUST NOT LEAK MUTABLE
             // ENUMMAP KEPT INTERNALLY FOR ORDERING/PERF; keySet() OF AN UNMODIFIABLE MAP IS ALSO SAFE TO EXPOSE
             qualities = Collections.unmodifiableMap(new EnumMap<>(qualities));
-            audioSlaves = audioSlaves == null ? List.of() : List.copyOf(audioSlaves);
-            subSlaves = subSlaves == null ? List.of() : List.copyOf(subSlaves);
-            if (headers == null) headers = new RequestHeaders();
+            audioTracks = audioTracks == null ? List.of() : List.copyOf(audioTracks);
+            subtitleTracks = subtitleTracks == null ? List.of() : List.copyOf(subtitleTracks);
+            if (headers == null) headers = new HttpHeaders();
         }
 
         /**

@@ -22,7 +22,6 @@ public record Report(long watcherId, Status status, long duration, boolean live)
 
     static final byte ID = 4;
     private static final byte VERSION = 1;
-    private static final int STATUS_COUNT = Status.values().length;
     private static final int LIVE_BIT = 0b1;
 
     public Report {
@@ -41,15 +40,14 @@ public record Report(long watcherId, Status status, long duration, boolean live)
         return buf.flip();
     }
 
-    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.of() (TRUST BOUNDARY)
+    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.read() (TRUST BOUNDARY)
     static Report read(final ByteBuffer buf, final byte version) {
         if (version != VERSION) throw new IllegalArgumentException("Unsupported Report version: " + version);
         if (buf.remaining() < BYTES - 2) throw new IllegalArgumentException("Truncated Report payload, needs " + BYTES + " bytes");
         final long watcherId = buf.getLong();
-        final int ordinal = buf.get() & 0xFF;
-        if (ordinal >= STATUS_COUNT) throw new IllegalArgumentException("Invalid status ordinal: " + ordinal);
+        final Status status = Status.of(buf.get() & 0xFF);
         final long duration = buf.getLong();
         final byte flags = buf.get();
-        return new Report(watcherId, Status.of(ordinal), duration, (flags & LIVE_BIT) != 0);
+        return new Report(watcherId, status, duration, (flags & LIVE_BIT) != 0);
     }
 }

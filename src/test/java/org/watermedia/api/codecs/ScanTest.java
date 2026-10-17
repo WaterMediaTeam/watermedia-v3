@@ -33,7 +33,7 @@ public class ScanTest {
     @Test
     @DisplayName("Static PNG scan reuses the EMPTY singleton")
     void testStaticPngScanIsTheStaticSingleton() throws IOException {
-        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(STATIC_PNG_BYTES))) {
+        try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(STATIC_PNG_BYTES))) {
             assertSame(ImageData.Scan.EMPTY, reader.scan(),
                     "static PNGs should reuse the STATIC scan singleton");
         }
@@ -64,7 +64,7 @@ public class ScanTest {
     // EQUALS THE SCAN'S REPORTED FRAME COUNT.
     private static void assertScanMatchesStreaming(final Path resource) throws IOException {
         final byte[] bytes = Fixtures.readAll(resource);
-        try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(bytes))) {
+        try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(bytes))) {
             final ImageData.Scan scan = reader.scan();
             assertNotNull(scan, resource + ": scan must not be null");
             assertTrue(scan.duration() > 0L, resource + ": scan duration must be positive");
@@ -73,8 +73,8 @@ public class ScanTest {
                     resource + ": scan duration must equal the sum of its per-frame delays");
 
             final ImageData image = reader.readAll();
-            for (int frameIndex = 0; frameIndex < image.delay().length; frameIndex++) {
-                assertEquals(scan.delays()[frameIndex], image.delay()[frameIndex],
+            for (int frameIndex = 0; frameIndex < image.delays().length; frameIndex++) {
+                assertEquals(scan.delays()[frameIndex], image.delays()[frameIndex],
                         resource + ": decoded delay for frame " + frameIndex + " must match scan");
             }
             assertEquals(scan.frameCount(), image.frames().length,

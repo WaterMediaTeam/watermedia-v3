@@ -24,9 +24,9 @@ public class MetadataTest {
         final Metadata md = new Metadata("Song", "Catchy tune", postedAt, 240_000L, "Artist");
 
         assertEquals("Song", md.title());
-        assertEquals("Catchy tune", md.desc());
+        assertEquals("Catchy tune", md.description());
         assertEquals(postedAt, md.postedAt());
-        assertEquals(240_000L, md.duration());
+        assertEquals(240_000L, md.durationMs());
         assertEquals("Artist", md.author());
     }
 
@@ -36,9 +36,9 @@ public class MetadataTest {
         final Metadata md = new Metadata(null, null, null, 0L, null);
 
         assertNull(md.title());
-        assertNull(md.desc());
+        assertNull(md.description());
         assertNull(md.postedAt());
-        assertEquals(0L, md.duration());
+        assertEquals(0L, md.durationMs());
         assertNull(md.author());
     }
 

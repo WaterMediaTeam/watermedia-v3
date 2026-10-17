@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -15,16 +15,16 @@ public record FDAT(int sequence, byte[] data) implements IChunk {
     public static final int SIGNATURE = 0x66_64_41_54; // "fdAT"
 
     /**
-     * Converts a generic CHUNK to FDAT
+     * Converts a generic PngChunk to FDAT
      */
-    public static FDAT convert(final CHUNK chunk) throws XCodecException {
+    public static FDAT convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for fdAT: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] rawData = chunk.data();
         if (rawData.length < 4) {
-            throw new XCodecException("fdAT data must be at least 4 bytes");
+            throw new CodecException("fdAT data must be at least 4 bytes");
         }
 
         // FIRST 4 BYTES ARE SEQUENCE NUMBER
@@ -47,7 +47,7 @@ public record FDAT(int sequence, byte[] data) implements IChunk {
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

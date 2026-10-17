@@ -25,18 +25,8 @@ public record Control(long watcherId, Op op, long value) implements Packet {
     }
 
     /**
-     * Builds a float-valued request ({@link Op#SPEED}).
-     * @param watcherId follower instance id
-     * @param op the requested mutation
-     * @param value the float operand, packed into the value bits
-     * @return the request
-     */
-    public static Control of(final long watcherId, final Op op, final float value) {
-        return new Control(watcherId, op, Float.floatToIntBits(value) & 0xFFFFFFFFL);
-    }
-
-    /**
-     * The operand decoded as the float it carries for {@link Op#SPEED}.
+     * The operand decoded as the float it carries for {@link Op#SPEED}, the inverse of the
+     * {@code Float.floatToIntBits} packing a speed request travels with.
      * @return the float operand
      */
     public float floatValue() {
@@ -53,7 +43,7 @@ public record Control(long watcherId, Op op, long value) implements Packet {
         return buf.flip();
     }
 
-    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.of() (TRUST BOUNDARY)
+    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.read() (TRUST BOUNDARY)
     static Control read(final ByteBuffer buf, final byte version) {
         if (version != VERSION) throw new IllegalArgumentException("Unsupported Control version: " + version);
         if (buf.remaining() < BYTES - 2) throw new IllegalArgumentException("Truncated Control payload, needs " + BYTES + " bytes");

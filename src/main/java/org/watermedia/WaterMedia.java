@@ -74,7 +74,7 @@ public final class WaterMedia {
         } finally {
             synchronized (LIFECYCLE) { transitioning = false; }
             for (final BootStatus.Failure failure: session.status().failures())
-                LOGGER.error("Module {} failed during {}", failure.module(), failure.task(), failure.cause());
+                LOGGER.error("Service {} failed during {}", failure.id(), failure.task(), failure.cause());
         }
     }
 
@@ -157,26 +157,26 @@ public final class WaterMedia {
 
     /** A coherent snapshot of the current bootstrap session and its diagnostics. */
     public record BootStatus(State state, int step, int steps, Id current, Progress progress,
-                             List<Module> modules, List<Failure> failures) {
+                             List<Service> services, List<Failure> failures) {
         public BootStatus {
-            modules = List.copyOf(modules);
+            services = List.copyOf(services);
             failures = List.copyOf(failures);
         }
 
-        /** Whether this snapshot contains a successfully initialized module. */
+        /** Whether this snapshot contains a successfully initialized service. */
         public boolean ready(final Id id) {
-            return this.modules.stream().anyMatch(module -> module.id() == id && module.outcome() == Outcome.READY);
+            return this.services.stream().anyMatch(service -> service.id() == id && service.outcome() == Outcome.READY);
         }
 
         public enum State { STOPPED, STARTING, READY, DEGRADED, FAILED, STOPPING }
         public enum Outcome { PENDING, STARTING, READY, SKIPPED, FAILED, BLOCKED, STOPPED }
-        public enum Id { CONFIG, NETWORK, BINARIES, PLATFORMS, MEDIA }
+        public enum Id { CONFIG, BINARIES, NETWORK, PLATFORMS, MEDIA }
 
-        /** Module outcome; dependency identifies a service blocking startup or shutdown. */
-        public record Module(Id id, Outcome outcome, Id dependency, String reason) {}
+        /** Service outcome; dependency identifies a service blocking startup or shutdown. */
+        public record Service(Id id, Outcome outcome, Id dependency, String reason) {}
 
-        /** A startup or shutdown failure with its original cause. */
-        public record Failure(Id module, String task, Throwable cause) {}
+        /** A startup or shutdown failure of the service {@code id}, with its original cause. */
+        public record Failure(Id id, String task, Throwable cause) {}
 
         /** Task and transfer progress published together by the owning module. */
         public record Progress(int taskStep, int taskSteps, String taskName, long work, long workTotal,

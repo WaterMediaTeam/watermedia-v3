@@ -200,7 +200,7 @@ public final class PlayerScreen extends Screen {
 
         this.ctx.releasePlayer();
 
-        this.ctx.player = MediaAPI.createPlayer(
+        this.ctx.player = MediaAPI.player(
                 this.ctx.selectedMRL,
                 this.ctx.sourceSelectorIndex,
                 // THE ACTIVE RENDER BACKEND DECIDES THE ENGINE (GLEngine / VKEngine) — THE SCREEN STAYS AGNOSTIC
@@ -274,7 +274,7 @@ public final class PlayerScreen extends Screen {
     private void applyVideoSettings() {
         final MediaPlayer player = this.ctx.player;
         if (player == null) return;
-        player.maxSize(this.parseDim(this.resWidthText, player.sourceWidth()), this.parseDim(this.resHeightText, player.sourceHeight()));
+        player.scale(this.parseDim(this.resWidthText, player.sourceWidth()), this.parseDim(this.resHeightText, player.sourceHeight()));
         player.lod(MediaPlayer.LodLevel.values()[this.lodSelectedIndex]);
     }
 
@@ -296,11 +296,11 @@ public final class PlayerScreen extends Screen {
         return MediaPlayer.LodLevel.values()[this.lodSelectedIndex].name();
     }
 
-    private String maxSizeLabel() {
+    private String scaleLabel() {
         final MediaPlayer player = this.ctx.player;
         if (player == null) return "FULL";
-        final int mw = player.maxWidth();
-        final int mh = player.maxHeight();
+        final int mw = player.scaleWidth();
+        final int mh = player.scaleHeight();
         if (mw == 0 && mh == 0) return "FULL";
         return (mw == 0 ? "*" : mw) + "x" + (mh == 0 ? "*" : mh);
     }
@@ -603,7 +603,7 @@ public final class PlayerScreen extends Screen {
         if (qualities.isEmpty()) return;
 
         this.ctx.availableQualities = qualities.toArray(new MediaQuality[0]);
-        Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(q -> q.threshold));
+        Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(MediaQuality::height));
 
         // FIND CURRENT QUALITY INDEX
         this.qualitySelectedIndex = 0;
@@ -995,7 +995,7 @@ public final class PlayerScreen extends Screen {
             canvas.text(this.quality.name().toUpperCase(), this.left + 28,
                     this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, true)) / 2),
                     this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
-            canvas.text(this.quality.threshold + "p", this.left + w - 62,
+            canvas.text(this.quality.height() + "p", this.left + w - 62,
                     this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
                     this.selected ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
         }
@@ -1111,7 +1111,7 @@ public final class PlayerScreen extends Screen {
             y = this.head(canvas, "ENGINE", x, y);
             y = this.metric(canvas, "Engine", player.getClass().getSimpleName(), x, y, AppTheme.NEON_LIGHT);
             if (ctx.selectedMRL != null) {
-                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.selectedMRL.uri.toString(), x, y, AppTheme.TEXT_SOFT, 2);
+                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.selectedMRL.uri().toString(), x, y, AppTheme.TEXT_SOFT, 2);
             }
             y = this.metric(canvas, "Source", (ctx.sourceSelectorIndex + 1) + "/" +
                     (ctx.availableSources != null ? ctx.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
@@ -1124,10 +1124,10 @@ public final class PlayerScreen extends Screen {
                     : ctx.formatTime(player.time()) + " / " + ctx.formatTime(duration);
             y = this.metric(canvas, "Time", timeValue, x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Volume", player.volume() + "%", x, y, AppTheme.TEXT_SOFT);
-            y = this.metric(canvas, "Quality", player.quality().name() + " - " + PlayerScreen.this.maxSizeLabel(), x, y, AppTheme.CYAN);
+            y = this.metric(canvas, "Quality", player.quality().name() + " - " + PlayerScreen.this.scaleLabel(), x, y, AppTheme.CYAN);
             y = this.metric(canvas, "Dimensions", PlayerScreen.this.playerResolution(player), x, y, AppTheme.CYAN);
             y = this.metric(canvas, "Speed", this.speedStr + "x", x, y, AppTheme.TEXT_SOFT);
-            y = this.metric(canvas, "Live", player.liveSource() ? "Yes" : "No", x, y, AppTheme.TEXT_SOFT);
+            y = this.metric(canvas, "Live", player.live() ? "Yes" : "No", x, y, AppTheme.TEXT_SOFT);
 
             y += 12;
             y = this.head(canvas, "METADATA", x, y);
@@ -1195,8 +1195,8 @@ public final class PlayerScreen extends Screen {
 
         private int descriptionBox(final Canvas canvas, final Metadata meta, final int x, final int y, final int w) {
             final TextRenderer text = PlayerScreen.this.text;
-            final String desc = meta != null && meta.desc() != null && !meta.desc().isBlank()
-                    ? meta.desc()
+            final String desc = meta != null && meta.description() != null && !meta.description().isBlank()
+                    ? meta.description()
                     : "No description available.";
             final List<String> lines = this.descWrap.lines(desc, w - 20, META_DESC_SCALE, 3);
             final int labelH = text.lineHeight(META_DESC_LABEL_SCALE);
@@ -1468,9 +1468,9 @@ public final class PlayerScreen extends Screen {
             this.loop.label(loopOn ? "ON" : "OFF")
                     .accent(loopOn ? AppTheme.GREEN : AppTheme.TEXT_FAINT)
                     .textColor(loopOn ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
-            final String maxSize = PlayerScreen.this.maxSizeLabel();
-            this.qual.label(p.quality().name()).chip(maxSize);
-            this.lod.label(PlayerScreen.this.lodLabel()).chip(maxSize);
+            final String scale = PlayerScreen.this.scaleLabel();
+            this.qual.label(p.quality().name()).chip(scale);
+            this.lod.label(PlayerScreen.this.lodLabel()).chip(scale);
             // KEEP THE DROPDOWN SELECTION MIRRORING THE LIVE PLAYER SPEED (SNAPPED TO THE NEAREST PRESET);
             // LOCK IT WHEN THE PLAYER CANNOT CHANGE SPEED (LIVE STREAM, OR AN ENGINE STUCK AT 1.0×)
             this.speedDrop.enabled(p.canSpeed());
@@ -1563,7 +1563,7 @@ public final class PlayerScreen extends Screen {
             final Metadata meta = ctx.selectedSource != null ? ctx.selectedSource.metadata() : null;
             final String title = meta != null && meta.title() != null ? meta.title() : ctx.selectedMRLName;
             final String author = meta != null && meta.author() != null ? meta.author() : p.getClass().getSimpleName();
-            final String host = ctx.selectedMRL != null && ctx.selectedMRL.uri.getHost() != null ? ctx.selectedMRL.uri.getHost() : "local";
+            final String host = ctx.selectedMRL != null && ctx.selectedMRL.uri().getHost() != null ? ctx.selectedMRL.uri().getHost() : "local";
             final String posted = meta != null && meta.postedAt() != null ? PlayerScreen.this.formatDate(meta) : "unknown date";
             final int sources = ctx.availableSources != null ? ctx.availableSources.length : 1;
             this.titleStr = text.truncateToWidth(title, Math.max(180, w - 520), AppTheme.TEXT_SECTION, Font.BOLD);

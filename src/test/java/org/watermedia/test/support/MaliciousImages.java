@@ -52,7 +52,7 @@ public final class MaliciousImages {
 
         // DIRECT-MEMORY BOMB — 15 ASCII BYTES. THE PER-AXIS CAP PASSES AT EXACTLY 16384 AND THE
         // VERY NEXT STATEMENT IS allocateDirect(w * h * 4) = 1 GiB, IN THE CONSTRUCTOR, BEFORE ONE
-        // RASTER BYTE IS READ. WEBPReader ALREADY CARRIES THE MISSING SECOND GATE AND SAYS SO IN A
+        // RASTER BYTE IS READ. WebPReader ALREADY CARRIES THE MISSING SECOND GATE AND SAYS SO IN A
         // COMMENT; NETPBM NEVER GOT IT. THE TRAILING NEWLINE IS LOAD-BEARING: WITHOUT IT THE TOKEN
         // NEVER TERMINATES AND THE HEADER PARSER FAILS BEFORE THE ALLOCATION.
         write(dir, "direct-memory-bomb.pam", ascii("P4\n16384 16384\n"));
@@ -521,7 +521,7 @@ public final class MaliciousImages {
 
         // tRNS ON AN RGBA IMAGE — A WELL-FORMED CHUNK THE SPEC FORBIDS. THE CHEAPEST MEMBER OF THE
         // 18-PARSER FAMILY THAT SIGNALS MALFORMED INPUT WITH IllegalArgumentException INSTEAD OF
-        // XCodecException, SO A CONSUMER CATCHING IOException IS BROKEN BY A 4-BYTE CHUNK.
+        // CodecException, SO A CONSUMER CATCHING IOException IS BROKEN BY A 4-BYTE CHUNK.
         write(dir, "trns-on-rgba.png", pngFile(
                 ihdr(1, 1, 8, 6),
                 pngChunk("tRNS", new Buf().fill(0x00, 2).bytes()),
@@ -693,10 +693,9 @@ public final class MaliciousImages {
                 .raw(0xFF, 0xD9)
                 .bytes());
 
-        // CHROMA SAMPLED TALLER THAN LUMA — writeColorBgra CLAMPS EVERY CHROMA INDEX BUT INDEXES
-        // THE LUMA PLANE RAW. THAT IS SAFE ONLY BECAUSE resolveNativeFormat, 250 LINES AWAY,
-        // ACCEPTS EXACTLY THREE SAMPLING LAYOUTS. THIS FIXTURE IS THE NEGATIVE REGRESSION THAT
-        // PINS THAT COUPLING: IT MUST STAY REJECTED. CVE-2018-14498 / CVE-2017-15232 SHAPE.
+        // CHROMA SAMPLED TALLER THAN LUMA — writeColorBgra RESAMPLES EVERY COMPONENT ONTO THE MAX
+        // SAMPLING GRID WITH CLAMPED INDEXES, SO THIS LAYOUT MUST NEVER TURN INTO AN OUT-OF-BOUNDS
+        // READ OF THE LUMA PLANE. CVE-2018-14498 / CVE-2017-15232 SHAPE.
         write(dir, "chroma-taller-than-luma.jpg", new Buf()
                 .raw(0xFF, 0xD8)
                 .raw(segment(0xDB, new Buf().u8(0).fill(0x01, 64).bytes()))
@@ -762,7 +761,7 @@ public final class MaliciousImages {
 
         // TRUNCATED GLOBAL COLOR TABLE — DECLARES A 2-ENTRY GCT (6 BYTES) AND SUPPLIES ONLY 3.
         // THE READER ANSWERS WITH A RAW EOFException, WHICH SITS OUTSIDE THE SEALED
-        // XCodecException HIERARCHY AND SO MAKES A MALFORMED IMAGE INDISTINGUISHABLE FROM A
+        // CodecException HIERARCHY AND SO MAKES A MALFORMED IMAGE INDISTINGUISHABLE FROM A
         // SOCKET FAILURE AT EVERY CALL SITE.
         write(dir, "truncated-color-table.gif", new Buf()
                 .ascii("GIF89a")

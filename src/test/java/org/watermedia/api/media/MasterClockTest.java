@@ -129,17 +129,6 @@ public class MasterClockTest {
             // TIME UNCHANGED — STILL FROZEN AT THE SEEK TARGET (0 MS).
             assertEquals(before, clock.timeMs());
         }
-
-        @Test
-        @DisplayName("nextSerial is strictly monotonic")
-        void testNextSerialIsMonotonic() {
-            final MasterClock clock = new MasterClock();
-            final int a = clock.nextSerial();
-            final int b = clock.nextSerial();
-            final int c = clock.nextSerial();
-            assertTrue(b > a);
-            assertTrue(c > b);
-        }
     }
 
     // ==========================================================================

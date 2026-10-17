@@ -28,7 +28,7 @@ public class ImageDataTest {
 
         // REBUILDING FROM ACCESSORS MUST NOT COMPOUND duration BY repeat
         final ImageData copy = new ImageData(data.frames(), data.width(), data.height(),
-                data.delay(), data.duration(), data.repeat());
+                data.delays(), data.duration(), data.repeat());
         assertEquals(100L, copy.duration());
     }
 

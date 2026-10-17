@@ -5,10 +5,10 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.MPEGTool;
+import org.watermedia.tools.M3UTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class DTubePlatform implements IPlatform {
+public final class DTubePlatform implements Platform {
     public static final String NAME = "D.tube";
     private static final Marker IT = MarkerManager.getMarker(DTubePlatform.class.getSimpleName());
 
@@ -39,12 +39,12 @@ public final class DTubePlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(DTubePlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());
-            final String html = req.readAllAsString();
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
+            final String html = req.text();
 
             final String videoUrl = extractRequired(html, VIDEO_URL, "video_url", uri);
             final URI hlsUri = new URI(videoUrl);
@@ -73,13 +73,13 @@ public final class DTubePlatform implements IPlatform {
             final String author = extract(html, USERNAME);
             final Metadata metadata = new Metadata(title, description, publishedAt, duration, author);
 
-            final List<DataQuality> variants = new ArrayList<>();
+            final List<Quality> variants = new ArrayList<>();
             try {
-                // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY MPEGTool)
-                final MPEGTool.Playlist r = fetchHls(hlsUri);
-                if (r instanceof final MPEGTool.Master master) {
-                    for (final MPEGTool.Variant variant: master.variants()) {
-                        variants.add(new DataQuality(variant.uri(), variant.width(), variant.height()));
+                // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY M3UTool)
+                final M3UTool.Playlist r = fetchHls(hlsUri);
+                if (r instanceof final M3UTool.Master master) {
+                    for (final M3UTool.Variant variant: master.variants()) {
+                        variants.add(new Quality(variant.uri(), variant.width(), variant.height()));
                     }
                     LOGGER.debug(IT, "D.tube parsed {} HLS rendition(s) for {}", master.variants().size(), uri);
                 } else {
@@ -89,27 +89,27 @@ public final class DTubePlatform implements IPlatform {
                 LOGGER.warn(IT, "D.tube failed to parse HLS playlist for {}: {} — falling back to direct URL", uri, e.getMessage());
             }
             if (variants.isEmpty()) {
-                variants.add(new DataQuality(hlsUri, 0, 0));
+                variants.add(new Quality(hlsUri, 0, 0));
             }
 
             // D.tube CDN demands a browser UA + d.tube origin/referer
-            final RequestHeaders headers = RequestHeaders.defaults(uri)
+            final HttpHeaders headers = HttpHeaders.defaults(uri)
                     .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
                     .set("Referer", ORIGIN + "/")
                     .set("Origin", ORIGIN);
 
             LOGGER.info(IT, "D.tube resolved '{}' with {} variant(s) for {}", title, variants.size(), uri);
-            final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
+            final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
                     headers,
                     variants,
                     null, null);
-            return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
+            return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
         }
     }
 
     // FETCHES THE HLS PLAYLIST WITH D.tube CDN HEADERS (BROWSER UA + d.tube ORIGIN/REFERER).
-    // KEPT SEPARATE FROM MPEGTool.fetch BECAUSE THAT HELPER CANNOT CARRY THE Origin/Referer HEADERS THE CDN DEMANDS.
-    private static MPEGTool.Playlist fetchHls(final URI uri) throws IOException {
+    // KEPT SEPARATE FROM M3UTool.fetch BECAUSE THAT HELPER CANNOT CARRY THE Origin/Referer HEADERS THE CDN DEMANDS.
+    private static M3UTool.Playlist fetchHls(final URI uri) throws IOException {
         try (final NetRequest req = NetRequest.create(uri)
                 .method("GET")
                 .accept("application/vnd.apple.mpegurl")
@@ -120,7 +120,7 @@ public final class DTubePlatform implements IPlatform {
                 .readTimeout(10_000)
                 .send()) {
             if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
-            return MPEGTool.parse(req.readAllAsString(), uri);
+            return M3UTool.parse(req.text(), uri);
         }
     }
 
@@ -132,7 +132,7 @@ public final class DTubePlatform implements IPlatform {
     private static String extractRequired(final String html, final Pattern pattern, final String field, final URI uri) throws PlatformException {
         final String value = extract(html, pattern);
         if (value == null) {
-            throw new PlatformException(DTubePlatform.class, "No " + field + " found in page: " + uri);
+            throw new PlatformException(NAME, "No " + field + " found in page: " + uri);
         }
         return value;
     }

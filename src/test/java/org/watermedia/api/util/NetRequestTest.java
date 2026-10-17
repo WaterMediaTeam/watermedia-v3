@@ -44,7 +44,7 @@ public class NetRequestTest {
                 .header("Cookie2", "session=test")
                 .send()) {
             assertEquals(200, req.statusCode());
-            assertEquals("null\nnull\nnull\nnull\n", req.readAllAsString());
+            assertEquals("null\nnull\nnull\nnull\n", req.text());
         }
     }
 
@@ -62,7 +62,7 @@ public class NetRequestTest {
             }
         }); final NetRequest req = NetRequest.create(server.uri("/start"))
                 .header("Authorization", "Bearer test").header("Cookie", "session=test").send()) {
-            assertEquals("Bearer test|session=test", req.readAllAsString());
+            assertEquals("Bearer test|session=test", req.text());
         }
     }
 
@@ -74,15 +74,15 @@ public class NetRequestTest {
                 .header("Authorization", "Bearer test").header("Proxy-Authorization", "proxy test")
                 .header("Cookie", "session=test").header("X-WaterMedia-Token", "test");
         for (final String target: List.of("https://example.com:443/end", "https://EXAMPLE.com/end")) {
-            final RequestHeaders headers = (RequestHeaders) materialize.invoke(builder, URI.create(target));
-            assertEquals("Bearer test", headers.get("Authorization"));
-            assertEquals("session=test", headers.get("Cookie"));
+            final HttpHeaders headers = (HttpHeaders) materialize.invoke(builder, URI.create(target));
+            assertEquals("Bearer test", headers.value("Authorization"));
+            assertEquals("session=test", headers.value("Cookie"));
         }
         for (final String target: List.of("http://example.com/end", "http://example.com:443/end",
                 "https://example.com:8443/end", "https://other.example/end")) {
-            final RequestHeaders headers = (RequestHeaders) materialize.invoke(builder, URI.create(target));
+            final HttpHeaders headers = (HttpHeaders) materialize.invoke(builder, URI.create(target));
             for (final String name: List.of("Authorization", "Proxy-Authorization", "Cookie", "X-WaterMedia-Token")) {
-                assertNull(headers.get(name), name + " leaked to " + target);
+                assertNull(headers.value(name), name + " leaked to " + target);
             }
         }
     }
@@ -95,7 +95,7 @@ public class NetRequestTest {
 
             try (final NetRequest req = NetRequest.create(server.uri("/text")).send()) {
                 assertEquals(200, req.statusCode());
-                assertEquals("hello", req.readAllAsString());
+                assertEquals("hello", req.text());
                 assertNotNull(req.contentType());
                 assertTrue(req.contentType().contains("text/plain"));
             }
@@ -135,7 +135,7 @@ public class NetRequestTest {
             })) {
                 try (final NetRequest req = NetRequest.create(redirector.uri("/start")).send()) {
                     assertEquals(200, req.statusCode());
-                    assertEquals("done", req.readAllAsString());
+                    assertEquals("done", req.text());
                     assertTrue(req.uri().getPath().endsWith("/final"));
                 }
             }
@@ -158,7 +158,7 @@ public class NetRequestTest {
                     () -> NetRequest.create(redirector.uri("/start")).method("POST").body("payload").send());
             assertTrue(failure.getMessage().contains("another origin"), failure.getMessage());
             try (final NetRequest req = NetRequest.create(redirector.uri("/start")).method("POST").body("payload", true).send()) {
-                assertEquals("POST payload", req.readAllAsString());
+                assertEquals("POST payload", req.text());
             }
         }
     }
@@ -179,7 +179,7 @@ public class NetRequestTest {
             final NetRequest.Builder builder = NetRequest.create(redirector.uri("/start")).method("POST").body("payload");
             for (int i = 0; i < 2; i++) {
                 try (final NetRequest req = builder.send()) {
-                    assertEquals("GET ", req.readAllAsString());
+                    assertEquals("GET ", req.text());
                 }
             }
             assertEquals(List.of("POST payload", "POST payload"), starts);
@@ -189,13 +189,14 @@ public class NetRequestTest {
     @Test
     @DisplayName("accept() builder sets the outbound Accept header")
     void testAcceptHeader() throws IOException {
+        // THE SERVER ECHOES THE Accept IT RECEIVED, SO THE ASSERTION COVERS THE HEADER AS SENT ON THE WIRE
         try (final LocalHttp server = LocalHttp.start("/echo",
-                ex -> LocalHttp.respond(ex, "text/plain", "ok".getBytes(), 0))) {
+                ex -> LocalHttp.respond(ex, "text/plain", ex.getRequestHeaders().getFirst("Accept").getBytes(), 0))) {
 
             try (final NetRequest req = NetRequest.create(server.uri("/echo"))
                     .accept("image/png")
                     .send()) {
-                assertEquals("image/png", req.requestHeaders().get("Accept"));
+                assertEquals("image/png", req.text());
             }
         }
     }

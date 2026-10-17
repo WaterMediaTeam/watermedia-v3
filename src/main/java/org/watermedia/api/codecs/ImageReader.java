@@ -7,11 +7,12 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * ByteBuffer-backed, frame-by-frame image decoder.
  *
- * <p>An {@code ImageReader} is constructed by {@link CodecsAPI#decodeImage(ByteBuffer)} once the
+ * <p>An {@code ImageReader} is constructed by {@link CodecsAPI#reader(ByteBuffer)} once the
  * format has been identified from the leading magic bytes. The {@code ByteBuffer} passed to a
  * concrete subclass is positioned <strong>past the format header</strong> — the reader assumes
  * the format is correct and starts parsing the body directly. Headers are never re-validated.
@@ -38,7 +39,7 @@ public abstract class ImageReader implements Closeable {
     protected final PixelFormat requestedFormat;
     // ORDERED SO A POST-PROCESSOR CHAIN RUNS IN INSERTION ORDER (E.G. DOWNSCALE THEN RECOLOR)
     protected final List<ReaderFilter> filters = new ArrayList<>(2);
-    protected long currentDelay;
+    protected long delayMs;
     // OUTPUT OF THE LATEST next() AFTER THE FILTER CHAIN; fresh MARKS A FILTER-ALLOCATED BUFFER THE CALLER MAY KEEP
     private ByteBuffer frame;
     private int frameWidth, frameHeight;
@@ -53,10 +54,12 @@ public abstract class ImageReader implements Closeable {
 
     /** Format short name (e.g. {@code "PNG"}, {@code "GIF"}). */
     public String name() {
+        // FORMAT NAMES ARE UPPERCASE ("PNG", "WEBP") WHATEVER THE CLASS CASING IS
         final String simpleName = this.getClass().getSimpleName();
-        return simpleName.endsWith("Reader")
+        final String format = simpleName.endsWith("Reader")
                 ? simpleName.substring(0, simpleName.length() - "Reader".length())
                 : simpleName;
+        return format.toUpperCase(Locale.ROOT);
     }
 
     /** Image width in pixels. Available immediately after construction. */
@@ -72,7 +75,7 @@ public abstract class ImageReader implements Closeable {
     public int frameHeight() { return this.frame == null ? this.height() : this.frameHeight; }
 
     /**
-     * Pixel layout of the buffer(s) returned by {@link #next()} / {@link #plane(int)}. The reader
+     * Pixel layout of the single, tightly packed buffer returned by {@link #next()}. The reader
      * chooses this layout based on the {@code requestedFormat} passed at construction time:
      * <ul>
      *   <li>If {@code requestedFormat} is non-null, the reader tries to honor it (converting
@@ -80,38 +83,12 @@ public abstract class ImageReader implements Closeable {
      *   <li>If {@code requestedFormat} is {@code null}, the reader returns whatever layout is
      *       cheapest for it to produce (its native format) without doing a color conversion.</li>
      * </ul>
-     * Callers must always read this method to know how to interpret the decoded bytes.
+     * Every built-in reader delivers {@link PixelFormat#BGRA}, except grayscale JPEG
+     * ({@link PixelFormat#GRAY} unless BGRA is requested) and SVG, which honors an
+     * {@link PixelFormat#RGBA} request. Callers must always read this method to know how to
+     * interpret the decoded bytes.
      */
     public abstract PixelFormat pixelFormat();
-
-    /**
-     * Number of planes in the decoded frame. {@code 1} for interleaved single-plane layouts
-     * ({@link PixelFormat#BGRA}, {@link PixelFormat#RGBA}, {@link PixelFormat#RGB},
-     * {@link PixelFormat#GRAY}, packed YUYV), {@code 2} for semi-planar
-     * ({@link PixelFormat#NV12}/{@link PixelFormat#NV21}), {@code 3} for planar YUV, {@code 4}
-     * for planar YUV + alpha.
-     */
-    public int planeCount() { return 1; }
-
-    /**
-     * Returns the buffer for the requested plane. Plane {@code 0} is the same buffer returned
-     * by the latest {@link #next()} call. Higher indices are valid only when
-     * {@link #planeCount()} is greater than 1; multi-plane readers expose their native planes,
-     * while filters apply to the packed frame {@code next()} returns.
-     */
-    public ByteBuffer plane(final int index) {
-        if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
-        return this.frame;
-    }
-
-    /**
-     * Row stride for the requested plane, in bytes. {@code 0} means tightly packed (stride
-     * equals the plane width in bytes).
-     */
-    public int planeStride(final int index) {
-        if (index != 0) throw new IndexOutOfBoundsException("plane " + index);
-        return 0;
-    }
 
     /**
      * Pre-generated animation summary computed during construction. Animated formats walk the
@@ -121,11 +98,11 @@ public abstract class ImageReader implements Closeable {
     public abstract ImageData.Scan scan();
 
     /**
-     * Loop count for animated images.
+     * Repeat count for animated images.
      * {@link ImageData#NO_REPEAT} (-1) for single-shot, {@link ImageData#REPEAT_FOREVER} (0) for
      * infinite loop, or a positive integer for explicit repeat count.
      */
-    public int loopCount() { return this.scan().loopCount(); }
+    public int repeat() { return this.scan().repeat(); }
 
     /** Total frame count if known, or {@code -1} if streaming/unknown. */
     public int frameCount() { return this.scan().frameCount(); }
@@ -183,14 +160,14 @@ public abstract class ImageReader implements Closeable {
             // READERS CAP THEIR OWN FRAME COUNTS; THIS BOUNDS WHAT SURVIVES ALL OF THEM COMBINED.
             retained += kept.remaining();
             if (retained > MAX_DECODED_BYTES) {
-                throw new XCodecException("Decoded animation exceeds budget: " + retained
+                throw new CodecException("Decoded animation exceeds budget: " + retained
                         + " bytes over " + frames.size() + " frames (max " + MAX_DECODED_BYTES + ")");
             }
             frames.add(kept);
-            frameDelays.add(this.currentDelay);
+            frameDelays.add(this.delayMs);
         }
         if (frames.isEmpty()) {
-            throw new XCodecException("No frames decoded by " + this.name());
+            throw new CodecException("No frames decoded by " + this.name());
         }
         final long[] delayArray = new long[frameDelays.size()];
         long total = 0L;
@@ -199,7 +176,7 @@ public abstract class ImageReader implements Closeable {
             total += delayArray[i];
         }
         return new ImageData(frames.toArray(ByteBuffer[]::new), this.frameWidth(), this.frameHeight(),
-                delayArray, total, this.loopCount());
+                delayArray, total, this.repeat());
     }
 
     // COPIES A REUSED READER FRAME INTO AN INDEPENDENTLY-OWNED DIRECT BUFFER, READY TO READ.

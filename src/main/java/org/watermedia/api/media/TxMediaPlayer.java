@@ -56,7 +56,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * random-access because each frame's canvas depends on prior frames, exactly like video's GOP
  * semantics.
  * <p>
- * When {@link #maxSize(int, int)} or a {@link LodLevel} below MAX is active, decoded frames
+ * When {@link #scale(int, int)} or a {@link LodLevel} below MAX is active, decoded frames
  * are downscaled (area average) before upload. Streaming playback (Mode 3) picks up LOD
  * changes on the fly; static images and preloaded texture sets (Modes 1-2) apply the target
  * at preparation time.
@@ -84,12 +84,13 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static final long REFILL_PERMIT_TIMEOUT_MS = 5_000L;
     // A TIMED-OUT RELEASE RETAINS ENGINE OWNERSHIP UNTIL THE HOST RETRIES AFTER I/O FINISHES.
     private static final long RELEASE_WAIT_TIMEOUT_MS = 5_000L;
+    private static final long SKIP_STEP_MS = 1_000L;
     private static final ExecutorService SINGLE_FRAME_POOL = Executors.newFixedThreadPool(
-            Math.max(1, ThreadTool.minThreads()),
+            Math.max(1, ThreadTool.baseThreads()),
             ThreadTool.createFactory("TxPlayer-SingleFrame", Thread.NORM_PRIORITY - 1));
     // GLOBAL PERMITS BOUNDING AGGREGATE DECODE CPU ACROSS ALL TX PLAYERS — MANY ANIMATED
     // IMAGES THROTTLE EACH OTHER INSTEAD OF STARVING THE GAME'S OWN THREADS
-    private static final Semaphore DECODE_PERMITS = new Semaphore(Math.max(2, ThreadTool.minThreads()));
+    private static final Semaphore DECODE_PERMITS = new Semaphore(Math.max(2, ThreadTool.baseThreads()));
     // ACCEPT HEADER SHARED BY IMAGE REQUESTS AND THEIR CACHE KEYS.
     private static final String IMAGE_ACCEPT = "image/*,*/*";
 
@@ -102,7 +103,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile boolean loaded;
     private volatile long knownDuration;       // 0 = UNKNOWN / STATIC. SET BY READER METADATA OR EOF.
     private volatile PixelFormat pixelFormat = PixelFormat.BGRA;
-    private volatile int planeCount = 1;
 
     // UPLOAD TARGET — SOURCE DIMENSIONS SHRUNK BY maxSize/LOD (SEE MathUtil#scaled).
     // WRITTEN ONLY BY THE PREPARE/LIFECYCLE THREAD THAT DECODES AND UPLOADS FRAMES.
@@ -321,7 +321,6 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.animated = reader.frameCount() != 1;
             this.knownDuration = Math.max(0L, reader.duration());
             this.pixelFormat = reader.pixelFormat();
-            this.planeCount = reader.planeCount();
             this.applyTarget();
             this.gfx.format(this.pixelFormat, this.outWidth, this.outHeight);
 
@@ -456,7 +455,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.gfx.frame(0);
 
         // BUILD THE CUMULATIVE TIMELINE THAT DRIVES THE PASSIVE CLOCK
-        final long[] delays = data.delay();
+        final long[] delays = data.delays();
         final long[] timeline = new long[data.frames().length];
         long total = 0L;
         for (int i = 0; i < timeline.length; i++) {
@@ -673,7 +672,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (next == null && !this.readerExhausted) {
                 // DECODING FELL BEHIND, SO SWITCH TO BUFFERING, REFILL, THEN RESUME.
                 this.status = Status.BUFFERING;
-                if (ThreadTool.tryAcquireLock(DECODE_PERMITS, REFILL_PERMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                if (ThreadTool.tryAcquire(DECODE_PERMITS, REFILL_PERMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                     try {
                         while (this.prefetchQueue.size() < this.prefetchRefill && !this.readerExhausted) {
                             if (!this.queueNextFrame(reader)) break;
@@ -726,7 +725,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (this.readerExhausted || this.prefetchQueue.size() >= this.prefetchMax) return;
         final long budget = deadlineMs - System.currentTimeMillis() - PREFETCH_SAFETY_MARGIN_MS;
         if (budget <= 0L) return;
-        if (!ThreadTool.tryAcquireLock(DECODE_PERMITS, budget, TimeUnit.MILLISECONDS)) return;
+        if (!ThreadTool.tryAcquire(DECODE_PERMITS, budget, TimeUnit.MILLISECONDS)) return;
         try {
             while (this.prefetchQueue.size() < this.prefetchMax && !this.readerExhausted) {
                 if (deadlineMs - System.currentTimeMillis() <= PREFETCH_SAFETY_MARGIN_MS) break;
@@ -783,15 +782,16 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.released || this.triggerStop || Thread.currentThread().isInterrupted())
                 throw new IOException("Image loading was cancelled");
             // THE MEDIA TYPE WAS ALREADY DETERMINED AUTHORITATIVELY BY MRL (BY CONTENT-TYPE OR, FOR
-            // AMBIGUOUS MIMES, BY BYTE-SNIFFING) AND decodeImage VALIDATES THE ACTUAL BYTES — SO WE DO
+            // AMBIGUOUS MIMES, BY BYTE-SNIFFING) AND decode VALIDATES THE ACTUAL BYTES — SO WE DO
             // NOT SECOND-GUESS WITH THE SERVER'S CONTENT-TYPE HEADER, WHICH WOULD WRONGLY REJECT IMAGES
             // SERVED AS application/octet-stream OR text/xml (e.g. SVG)
-            // GPU ENGINES (GL/VK) SAMPLE PLANAR YUV DIRECTLY; A SOFTWARE ENGINE (AWT/JavaFX) NEEDS BGRA, SO ASK
-            // THE DECODER FOR IT WHEN THE ENGINE WOULD DECLINE THE NATIVE LAYOUT (MIRRORS FFMediaPlayer'S sws FALLBACK).
+            // DECODERS DELIVER BGRA EXCEPT GRAYSCALE JPEG, WHICH STAYS ONE LUMA BYTE PER PIXEL FOR THE GPU ENGINES;
+            // AN ENGINE THAT DECLINES GRAY (SOFTWARE AWT/JavaFX) GETS BGRA FROM THE DECODER INSTEAD (MIRRORS
+            // FFMediaPlayer'S sws FALLBACK).
             final ByteBuffer bytes = ByteBuffer.wrap(sourceBytes.bytes());
-            final ImageReader reader = this.gfx != null && !this.gfx.supports(PixelFormat.YUV420P)
-                    ? CodecsAPI.decodeImage(bytes, PixelFormat.BGRA)
-                    : CodecsAPI.decodeImage(bytes);
+            final ImageReader reader = this.gfx != null && !this.gfx.supports(PixelFormat.GRAY)
+                    ? CodecsAPI.reader(bytes, PixelFormat.BGRA)
+                    : CodecsAPI.reader(bytes);
             this.activeReader = reader;
             return reader;
         } catch (final Throwable t) {
@@ -942,97 +942,18 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.bufferPool.offerLast(buffer);
     }
 
-    // PUSHES A BUFFER TO THE GPU AND HOLDS BACK THE LAST IN_FLIGHT_KEEP SUBMISSIONS.
-    // FOR MULTI-PLANE FORMATS THE BUFFER IS THE PACKED LAYOUT [PLANE0 | PLANE1 | ...] WITH TIGHT
-    // STRIDES — WE SLICE PER-PLANE VIEWS FROM IT AND BUILD THE MATCHING gfx.upload PLANE SET.
+    // PUSHES A BUFFER TO THE GPU AND HOLDS BACK THE LAST IN_FLIGHT_KEEP SUBMISSIONS. IMAGE READERS
+    // DELIVER ONE TIGHTLY PACKED PLANE, SO THE UPLOAD IS ALWAYS A SINGLE-PLANE SET
     private void uploadBuffer(final ByteBuffer buffer, final int w, final int h) {
         // SIZE FLIP (HOT maxSize/LOD CHANGE) — RECONFIGURE THE ENGINE FOR THIS FRAME
         if (this.gfx.width() != w || this.gfx.height() != h) {
             this.gfx.format(this.pixelFormat, w, h);
         }
-        if (this.planeCount <= 1) {
-            this.gfx.upload(new ByteBuffer[]{buffer}, new int[]{0});
-        } else {
-            this.uploadMultiPlane(buffer, w, h);
-        }
+        this.gfx.upload(new ByteBuffer[]{buffer}, new int[]{0});
         this.inFlight.offerLast(buffer);
         while (this.inFlight.size() > IN_FLIGHT_KEEP) {
             this.returnBuffer(this.inFlight.pollFirst());
         }
-    }
-
-    private void uploadMultiPlane(final ByteBuffer buffer, final int w, final int h) {
-        final PixelFormat cs = this.pixelFormat;
-        switch (cs) {
-            case NV12, NV21 -> {
-                final int chromaH = (h + 1) >> 1;
-                final ByteBuffer y = sliceView(buffer, 0, w * h);
-                final ByteBuffer uv = sliceView(buffer, w * h, w * chromaH);
-                this.gfx.upload(new ByteBuffer[]{y, uv}, new int[]{w, w});
-            }
-            case YUV420P -> {
-                final int chromaW = (w + 1) >> 1;
-                final int chromaH = (h + 1) >> 1;
-                final int yLen = w * h;
-                final int uvLen = chromaW * chromaH;
-                final ByteBuffer y = sliceView(buffer, 0, yLen);
-                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
-                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
-                this.gfx.upload(new ByteBuffer[]{y, u, v}, new int[]{w, chromaW, chromaW});
-            }
-            case YUV422P -> {
-                final int chromaW = (w + 1) >> 1;
-                final int yLen = w * h;
-                final int uvLen = chromaW * h;
-                final ByteBuffer y = sliceView(buffer, 0, yLen);
-                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
-                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
-                this.gfx.upload(new ByteBuffer[]{y, u, v}, new int[]{w, chromaW, chromaW});
-            }
-            case YUV444P -> {
-                final int yLen = w * h;
-                final ByteBuffer y = sliceView(buffer, 0, yLen);
-                final ByteBuffer u = sliceView(buffer, yLen, yLen);
-                final ByteBuffer v = sliceView(buffer, yLen + yLen, yLen);
-                this.gfx.upload(new ByteBuffer[]{y, u, v}, new int[]{w, w, w});
-            }
-            case YUVA420P -> {
-                final int chromaW = (w + 1) >> 1;
-                final int chromaH = (h + 1) >> 1;
-                final int yLen = w * h;
-                final int uvLen = chromaW * chromaH;
-                final ByteBuffer y = sliceView(buffer, 0, yLen);
-                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
-                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
-                final ByteBuffer a = sliceView(buffer, yLen + 2 * uvLen, yLen);
-                this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, chromaW, chromaW, w});
-            }
-            case YUVA422P -> {
-                final int chromaW = (w + 1) >> 1;
-                final int yLen = w * h;
-                final int uvLen = chromaW * h;
-                final ByteBuffer y = sliceView(buffer, 0, yLen);
-                final ByteBuffer u = sliceView(buffer, yLen, uvLen);
-                final ByteBuffer v = sliceView(buffer, yLen + uvLen, uvLen);
-                final ByteBuffer a = sliceView(buffer, yLen + 2 * uvLen, yLen);
-                this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, chromaW, chromaW, w});
-            }
-            case YUVA444P -> {
-                final int yLen = w * h;
-                final ByteBuffer y = sliceView(buffer, 0, yLen);
-                final ByteBuffer u = sliceView(buffer, yLen, yLen);
-                final ByteBuffer v = sliceView(buffer, 2 * yLen, yLen);
-                final ByteBuffer a = sliceView(buffer, 3 * yLen, yLen);
-                this.gfx.upload(new ByteBuffer[]{y, u, v, a}, new int[]{w, w, w, w});
-            }
-            default -> throw new IllegalStateException("Unsupported multi-plane pixel format: " + cs);
-        }
-    }
-
-    private static ByteBuffer sliceView(final ByteBuffer src, final int offset, final int length) {
-        final ByteBuffer view = src.duplicate().order(src.order());
-        view.position(offset).limit(offset + length);
-        return view.slice().order(src.order());
     }
 
     // COPIES THE REUSED READER BUFFER BEFORE UPLOAD BECAUSE RENDER WORK MAY RUN ASYNCHRONOUSLY.
@@ -1232,10 +1153,10 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     // IMAGES USE A FINER 1s STEP THAN THE 5s VIDEO DEFAULT
     @Override
-    public boolean forward() { return this.skipTime(1000); }
+    public boolean forward() { return this.skipTime(SKIP_STEP_MS); }
 
     @Override
-    public boolean rewind() { return this.skipTime(-1000); }
+    public boolean rewind() { return this.skipTime(-SKIP_STEP_MS); }
 
     @Override
     public boolean previousFrame() {
@@ -1287,7 +1208,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         return 1000f / this.currentDelayMs;
     }
 
-    @Override public boolean liveSource() { return false; }
+    @Override public boolean live() { return false; }
     @Override public boolean canSeek() { return this.animated; }
     @Override public boolean canPlay() { return this.loaded; }
 

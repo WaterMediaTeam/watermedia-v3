@@ -1,12 +1,14 @@
 package org.watermedia.api.media;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.LogTool;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -19,14 +21,13 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -39,12 +40,18 @@ import static org.watermedia.WaterMedia.LOGGER;
 final class NetworkCache {
     private static final Marker IT = MarkerManager.getMarker(NetworkCache.class.getSimpleName());
     private static final int MAGIC = 0x574D4943;
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
     private static final int HASH_BYTES = 32;
+    private static final int ENTRY_MIN_BYTES = HASH_BYTES + 8 + 8 + 2;
     private static final String INDEX_FILE = "index.dat";
     private static final String FILE_PREFIX = "wm_";
     private static final String FILE_SUFFIX = ".tmp";
+    private static final String PART_SUFFIX = ".part";
     private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
+    // LEFTOVERS YOUNGER THAN THIS MAY BELONG TO ANOTHER PROCESS SHARING THE FOLDER, SO THE STARTUP SWEEP SPARES THEM
+    private static final long SWEEP_GRACE_MS = 60_000L;
+    private static final long WRITE_REPORT_NS = 10_000_000_000L;
+    private static final LogTool.Throttle WRITE_REPORTS = new LogTool.Throttle(WRITE_REPORT_NS);
     private static volatile Store active;
 
     private NetworkCache() {}
@@ -55,8 +62,24 @@ final class NetworkCache {
         final Store store = new Store(dir.toAbsolutePath());
         Files.createDirectories(store.dir);
         loadIndex(store);
+        // PAYLOADS THE INDEX DOES NOT VOUCH FOR (CRASHED WRITES, EXPIRED ENTRIES, OLD FORMATS) ARE DERIVED DATA
+        final long stale = System.currentTimeMillis() - SWEEP_GRACE_MS;
+        try (final var paths = Files.list(store.dir)) {
+            for (final Path path: paths.toList()) {
+                final String name = path.getFileName().toString();
+                final boolean payload = name.startsWith(FILE_PREFIX) && name.endsWith(FILE_SUFFIX);
+                final boolean orphan = name.endsWith(PART_SUFFIX) || (payload && !store.index.containsKey(
+                        name.substring(FILE_PREFIX.length(), name.length() - FILE_SUFFIX.length())));
+                if (!orphan) continue;
+                try {
+                    if (Files.getLastModifiedTime(path).toMillis() < stale) Files.deleteIfExists(path);
+                } catch (final IOException ignored) {
+                    // ANOTHER PROCESS MAY HAVE JUST REMOVED OR REPLACED IT; THE NEXT START SWEEPS AGAIN
+                }
+            }
+        }
         active = store;
-        LOGGER.info(IT, "Media network cache initialized at {}", store.dir);
+        LOGGER.info(IT, "Media network cache initialized at {} ({} entries, {} bytes)", store.dir, store.index.size(), store.totalBytes);
     }
 
     /** Detaches the store and fails waiting cache readers; existing files remain on disk. */
@@ -66,6 +89,7 @@ final class NetworkCache {
         if (store == null) return;
         synchronized (store) {
             store.index.clear();
+            store.totalBytes = 0;
             final IOException failure = new IOException("Media cache session was closed");
             store.inflight.values().forEach(future -> future.completeExceptionally(failure));
             store.inflight.clear();
@@ -73,43 +97,51 @@ final class NetworkCache {
     }
 
     /** Reads bytes, using the configured image-cache preference. */
-    public static CachedBytes read(final URI uri, final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
+    public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept, final long maxBytes) throws IOException {
         return read(uri, headers, accept, maxBytes, WaterMediaConfig.media.tx.cache);
     }
 
     /** Reads bounded HTTP bytes; concurrent requests in this session share one download per key. */
-    public static CachedBytes read(final URI uri, final RequestHeaders headers, final String accept,
+    public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
         if (!enabled || !isHttp(uri) || store == null) return fetch(uri, headers, accept, maxBytes);
         final byte[] hash = keyHash(uri, headers, accept);
         final String hex = DataTool.hex(hash);
+        final Entry entry;
         synchronized (store) {
             checkSession(store);
-            final Entry entry = stored(store, hex);
-            if (entry != null && Files.size(file(store, hex)) <= maxBytes) {
-                try {
-                    return new CachedBytes(Files.readAllBytes(file(store, hex)), entry.contentType, true, entry.expiresAt);
-                } catch (final IOException failure) {
-                    delete(store, hex);
-                    throw failure;
+            entry = stored(store, hex);
+        }
+        // THE PAYLOAD IS READ OUTSIDE THE MONITOR SO ONE SLOW DISK HIT NEVER STALLS THE OTHER CACHE USERS
+        if (entry != null && entry.size <= maxBytes) {
+            final Path file = file(store, hex);
+            try {
+                return new CachedBytes(Files.readAllBytes(file), entry.contentType, true, entry.expiresAt);
+            } catch (final NoSuchFileException evicted) {
+                // ANOTHER WRITE EVICTED THE ENTRY BETWEEN THE LOOKUP AND THE READ, WHICH IS A PLAIN MISS
+                LOGGER.debug(IT, "Media cache entry {} was evicted while being read", file);
+            } catch (final IOException failure) {
+                synchronized (store) {
+                    if (active == store && store.index.get(hex) == entry) {
+                        try { delete(store, hex); }
+                        catch (final IOException ignored) { /* THE NEXT LOOKUP RETRIES THE DELETE */ }
+                    }
                 }
+                LOGGER.warn(IT, "Dropping unreadable media cache entry {}", file, failure);
             }
         }
         final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes);
-        synchronized (store) {
-            try {
-                checkSession(store);
-                if (downloaded.expiresAt > System.currentTimeMillis()) write(store, hash, downloaded);
-            } finally {
-                store.inflight.computeIfPresent(hex, (key, future) -> future.isDone() ? null : future);
-            }
+        try {
+            if (downloaded.expiresAt > System.currentTimeMillis()) store(store, hex, hash, downloaded);
+        } finally {
+            store.inflight.computeIfPresent(hex, (key, future) -> future.isDone() ? null : future);
         }
         return downloaded;
     }
 
     /** Returns a cached media file, or null when disabled, uncacheable, oversized or a playlist. */
-    public static CachedFile readFile(final URI uri, final RequestHeaders headers, final String accept,
+    public static CachedFile readFile(final URI uri, final HttpHeaders headers, final String accept,
                                       final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
         if (!enabled || !isHttp(uri) || store == null) return null;
@@ -120,25 +152,21 @@ final class NetworkCache {
             final Entry entry = stored(store, hex);
             if (entry != null) {
                 if (isPlaylist(entry.contentType)) delete(store, hex);
-                else if (Files.size(file(store, hex)) <= maxBytes)
-                    return new CachedFile(file(store, hex), true, entry.contentType);
+                else if (entry.size <= maxBytes) return new CachedFile(file(store, hex), true, entry.contentType);
             }
         }
         final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes);
-        synchronized (store) {
-            try {
-                checkSession(store);
-                if (isPlaylist(downloaded.contentType) || downloaded.expiresAt <= System.currentTimeMillis()) return null;
-                final Path file = write(store, hash, downloaded);
-                return file == null ? null : new CachedFile(file, false, downloaded.contentType);
-            } finally {
-                store.inflight.computeIfPresent(hex, (key, future) -> future.isDone() ? null : future);
-            }
+        try {
+            if (isPlaylist(downloaded.contentType) || downloaded.expiresAt <= System.currentTimeMillis()) return null;
+            final Path file = store(store, hex, hash, downloaded);
+            return file == null ? null : new CachedFile(file, false, downloaded.contentType);
+        } finally {
+            store.inflight.computeIfPresent(hex, (key, future) -> future.isDone() ? null : future);
         }
     }
 
     private static CachedBytes fetchShared(final Store store, final String hex, final URI uri,
-                                           final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
+                                           final HttpHeaders headers, final String accept, final long maxBytes) throws IOException {
         final CompletableFuture<CachedBytes> mine = new CompletableFuture<>();
         final CompletableFuture<CachedBytes> leader;
         synchronized (store) {
@@ -170,7 +198,7 @@ final class NetworkCache {
         }
     }
 
-    private static CachedBytes fetch(final URI uri, final RequestHeaders headers, final String accept, final long maxBytes) throws IOException {
+    private static CachedBytes fetch(final URI uri, final HttpHeaders headers, final String accept, final long maxBytes) throws IOException {
         final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
         if (accept != null && (headers == null || !headers.has("Accept"))) builder.accept(accept);
         // A FULL RANGE REQUEST AVOIDS REAL-TIME THROTTLING ON SOME MEDIA CDNS.
@@ -194,7 +222,8 @@ final class NetworkCache {
         if (active != store) throw new IOException("Media cache session was closed");
     }
 
-    // STORE OPERATIONS HOLD THE SESSION MONITOR; NETWORK TRANSFERS NEVER HOLD IT.
+    // INDEX OPERATIONS HOLD THE SESSION MONITOR; NETWORK TRANSFERS, PAYLOAD READS AND PAYLOAD STAGING NEVER HOLD IT.
+    // THE INDEX IS ACCESS-ORDERED, SO A LOOKUP MARKS ITS ENTRY AS RECENTLY USED AND THE HEAD IS THE EVICTION CANDIDATE
     private static Entry stored(final Store store, final String hex) throws IOException {
         final Entry entry = store.index.get(hex);
         if (entry != null && (entry.expiresAt <= System.currentTimeMillis() || !Files.isRegularFile(file(store, hex)))) {
@@ -204,46 +233,52 @@ final class NetworkCache {
         return entry;
     }
 
-    private static Path write(final Store store, final byte[] hash, final CachedBytes body) throws IOException {
-        final long budget = Math.max(1L, WaterMediaConfig.media.cacheMaxSize) * 1024L * 1024L;
-        if (body.bytes.length > budget) return null;
-        final String hex = DataTool.hex(hash);
+    // A CACHE FAILURE NEVER FAILS THE DOWNLOAD THAT ALREADY SUCCEEDED: THE CALLER JUST GETS NO CACHED FILE
+    private static Path store(final Store store, final String hex, final byte[] hash, final CachedBytes body) {
+        final long budget = Math.max(1L, WaterMediaConfig.media.cacheBudget) * 1024L * 1024L;
+        final long size = body.bytes.length;
+        if (size > budget) return null;
         final Path file = file(store, hex);
-        if (stored(store, hex) != null && Files.size(file) == body.bytes.length) return file;
-        final Path partial = Files.createTempFile(store.dir, FILE_PREFIX, ".part");
         try {
-            Files.write(partial, body.bytes);
-            IOTool.move(partial, file);
-        } finally {
-            Files.deleteIfExists(partial);
-        }
-        store.index.put(hex, new Entry(hash, body.expiresAt, body.contentType));
-        final List<StoreFile> files = new ArrayList<>();
-        try (final var paths = Files.list(store.dir)) {
-            for (final Path path: paths.toList()) {
-                final String name = path.getFileName().toString();
-                if (!name.startsWith(FILE_PREFIX) || !name.endsWith(FILE_SUFFIX) || !Files.isRegularFile(path)) continue;
-                files.add(new StoreFile(path, Files.size(path), Files.getLastModifiedTime(path).toMillis()));
+            final Path partial = Files.createTempFile(store.dir, FILE_PREFIX, PART_SUFFIX);
+            try {
+                Files.write(partial, body.bytes);
+                synchronized (store) {
+                    if (active != store) return null;
+                    final Entry existing = stored(store, hex);
+                    if (existing != null) {
+                        if (existing.size == size) return file;
+                        delete(store, hex);
+                    }
+                    IOTool.move(partial, file);
+                    store.index.put(hex, new Entry(hash, body.expiresAt, size, body.contentType));
+                    store.totalBytes += size;
+                    // EVICTS FROM THE LEAST RECENTLY USED END UNTIL THE STORE FITS; THE FRESH ENTRY IS THE TAIL AND FITS ALONE
+                    final Iterator<Map.Entry<String, Entry>> eldest = store.index.entrySet().iterator();
+                    while (store.totalBytes > budget) {
+                        final Map.Entry<String, Entry> old = eldest.next();
+                        if (old.getKey().equals(hex)) break;
+                        Files.deleteIfExists(file(store, old.getKey()));
+                        store.totalBytes -= old.getValue().size;
+                        eldest.remove();
+                    }
+                    flushIndex(store);
+                    return file;
+                }
+            } finally {
+                Files.deleteIfExists(partial);
             }
+        } catch (final IOException failure) {
+            LogTool.throttled(LOGGER, Level.WARN, IT, WRITE_REPORTS, "Media cache write failed for {}", file, failure);
+            return null;
         }
-        long total = files.stream().mapToLong(StoreFile::size).sum();
-        files.sort(Comparator.comparingLong(StoreFile::modified));
-        for (final StoreFile old: files) {
-            if (total <= budget) break;
-            if (old.path.equals(file)) continue;
-            Files.deleteIfExists(old.path);
-            final String name = old.path.getFileName().toString();
-            store.index.remove(name.substring(FILE_PREFIX.length(), name.length() - FILE_SUFFIX.length()));
-            total -= old.size;
-        }
-        writeIndex(store);
-        return file;
     }
 
     private static void delete(final Store store, final String hex) throws IOException {
         Files.deleteIfExists(file(store, hex));
-        store.index.remove(hex);
-        writeIndex(store);
+        final Entry entry = store.index.remove(hex);
+        if (entry != null) store.totalBytes -= entry.size;
+        flushIndex(store);
     }
 
     private static Path file(final Store store, final String hex) {
@@ -256,39 +291,37 @@ final class NetworkCache {
             final int magic = in.readInt();
             final int version = in.readInt();
             final int count = in.readInt();
-            if (magic != MAGIC || version != VERSION || count < 0 || count > (Files.size(store.indexPath) - 12) / 42)
+            if (magic != MAGIC || version != VERSION || count < 0 || count > (Files.size(store.indexPath) - 12) / ENTRY_MIN_BYTES)
                 throw new IOException("Unsupported media cache index");
             final long now = System.currentTimeMillis();
             for (int i = 0; i < count; i++) {
                 final byte[] hash = new byte[HASH_BYTES];
                 in.readFully(hash);
                 final long expiresAt = in.readLong();
+                final long size = in.readLong();
                 final String contentType = in.readUTF();
                 final String hex = DataTool.hex(hash);
-                if (expiresAt > now && Files.isRegularFile(file(store, hex)))
-                    store.index.put(hex, new Entry(hash, expiresAt, contentType.isEmpty() ? null : contentType));
+                final Path file = file(store, hex);
+                // AN ENTRY IS TRUSTED ONLY WHILE ITS PAYLOAD IS WHOLE; THE REST IS LEFT FOR THE STARTUP SWEEP
+                if (expiresAt > now && size >= 0 && Files.isRegularFile(file) && Files.size(file) == size) {
+                    store.index.put(hex, new Entry(hash, expiresAt, size, contentType.isEmpty() ? null : contentType));
+                    store.totalBytes += size;
+                }
             }
             if (in.read() != -1) throw new IOException("Trailing media cache index bytes");
         } catch (final IOException | RuntimeException failure) {
-            store.index.clear();
-            LOGGER.warn(IT, "Discarding unsupported or corrupt media cache index at {}", store.indexPath, failure);
             // CACHE FILES ARE DERIVED DATA; OBSOLETE INDEX FORMATS ARE DROPPED, NOT MIGRATED.
-            try (final var paths = Files.list(store.dir)) {
-                for (final Path path: paths.toList()) {
-                    final String name = path.getFileName().toString();
-                    if (name.startsWith(FILE_PREFIX) && (name.endsWith(FILE_SUFFIX) || name.endsWith(".part")))
-                        Files.deleteIfExists(path);
-                }
-            }
+            store.index.clear();
+            store.totalBytes = 0;
+            LOGGER.warn(IT, "Discarding unsupported or corrupt media cache index at {}", store.indexPath, failure);
             Files.deleteIfExists(store.indexPath);
         }
     }
 
-    private static void writeIndex(final Store store) throws IOException {
-        final Path partial = Files.createTempFile(store.dir, "index", ".part");
+    // THE INDEX IS A FEW DOZEN BYTES PER ENTRY, SO EVERY MUTATION REWRITES IT ATOMICALLY AND NO WRITE IS EVER LOST
+    private static void flushIndex(final Store store) throws IOException {
+        final Path partial = Files.createTempFile(store.dir, "index", PART_SUFFIX);
         try {
-            final long now = System.currentTimeMillis();
-            store.index.values().removeIf(entry -> entry.expiresAt <= now);
             try (final DataOutputStream out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(partial)))) {
                 out.writeInt(MAGIC);
                 out.writeInt(VERSION);
@@ -296,6 +329,7 @@ final class NetworkCache {
                 for (final Entry entry: store.index.values()) {
                     out.write(entry.hash);
                     out.writeLong(entry.expiresAt);
+                    out.writeLong(entry.size);
                     out.writeUTF(entry.contentType == null ? "" : entry.contentType);
                 }
             }
@@ -356,10 +390,10 @@ final class NetworkCache {
 
     // CANONICAL CACHE KEY: uri + '\n' + LOWERCASED "name:value" LINES + OPTIONAL "accept:" TAIL.
     // THE BYTE STREAM MUST STAY STABLE — ANY DRIFT ORPHANS EVERY EXISTING ON-DISK CACHE.
-    private static byte[] keyHash(final URI uri, final RequestHeaders headers, final String accept) {
+    private static byte[] keyHash(final URI uri, final HttpHeaders headers, final String accept) {
         final StringBuilder key = new StringBuilder(uri.toASCIIString()).append('\n');
-        if (headers != null && !headers.isEmpty()) {
-            for (final RequestHeaders.Entry entry: headers.entries()) {
+        if (headers != null && !headers.empty()) {
+            for (final HttpHeaders.Entry entry: headers.entries()) {
                 key.append(entry.name().toLowerCase(Locale.ROOT)).append(':').append(entry.value()).append('\n');
             }
         }
@@ -371,14 +405,14 @@ final class NetworkCache {
 
     public record CachedBytes(byte[] bytes, String contentType, boolean cached, long expiresAt) {}
     public record CachedFile(Path path, boolean cached, String contentType) {}
-    private record Entry(byte[] hash, long expiresAt, String contentType) {}
-    private record StoreFile(Path path, long size, long modified) {}
+    private record Entry(byte[] hash, long expiresAt, long size, String contentType) {}
 
     private static final class Store {
         private final Path dir;
         private final Path indexPath;
-        private final Map<String, Entry> index = new HashMap<>();
+        private final Map<String, Entry> index = new LinkedHashMap<>(64, 0.75f, true);
         private final Map<String, CompletableFuture<CachedBytes>> inflight = new ConcurrentHashMap<>();
+        private long totalBytes;
 
         private Store(final Path dir) {
             this.dir = dir;

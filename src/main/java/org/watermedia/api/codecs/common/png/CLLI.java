@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -18,17 +18,17 @@ public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) im
     /**
      * Reads cLLi chunk from buffer (reads length/type header first)
      */
-    public static CLLI read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated cLLi chunk header");
+    public static CLLI read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated cLLi chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for cLLi: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for cLLi: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new XCodecException("cLLi chunk length must be 8, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated cLLi chunk");
+            throw new CodecException("cLLi chunk length must be 8, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated cLLi chunk");
 
         return new CLLI(
                 buffer.getInt() & 0xFFFFFFFFL, // MAX CONTENT LIGHT LEVEL
@@ -37,16 +37,16 @@ public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) im
     }
 
     /**
-     * Converts a generic CHUNK to CLLI
+     * Converts a generic PngChunk to CLLI
      */
-    public static CLLI convert(final CHUNK chunk) throws XCodecException {
+    public static CLLI convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for cLLi: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new XCodecException("cLLi data must be 8 bytes, got " + data.length);
+            throw new CodecException("cLLi data must be 8 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
@@ -71,7 +71,7 @@ public record CLLI(long maxContentLightLevel, long maxFrameAverageLightLevel) im
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

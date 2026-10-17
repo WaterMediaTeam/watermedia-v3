@@ -545,8 +545,8 @@ public class OpenMultimediaScreen extends Screen {
 
     // REPLACES THE INPUT WITH THE RESULT'S RAW URL AND LEAVES SEARCH MODE SO IT CAN BE PLAYED.
     private void selectResult(final PlatformResult result) {
-        if (result == null || result.url() == null) return;
-        this.ctx.customUrlText = result.url().toString();
+        if (result == null || result.uri() == null) return;
+        this.ctx.customUrlText = result.uri().toString();
         this.clearSearch();
         this.field.focused(true);
         this.ensurePreviewMRL();
@@ -677,7 +677,7 @@ public class OpenMultimediaScreen extends Screen {
         final var sources = mrl.sources();
         for (int i = 0; i < sources.size(); i++) {
             if (sources.get(i).type() == MediaType.IMAGE) {
-                final MediaPlayer player = MediaAPI.createPlayer(mrl, i,
+                final MediaPlayer player = MediaAPI.player(mrl, i,
                         mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) {
                     player.repeat(true); // LOOP ANIMATED THUMBNAILS (GIF/WEBP) INSTEAD OF FREEZING ON THE LAST FRAME
@@ -834,7 +834,7 @@ public class OpenMultimediaScreen extends Screen {
         if (src == null) return null;
         MediaQuality best = MediaQuality.UNKNOWN;
         for (final MediaQuality q: src.qualities().keySet()) {
-            if (q.threshold > best.threshold) best = q;
+            if (q.height() > best.height()) best = q;
         }
         return best == MediaQuality.UNKNOWN ? null : best.name();
     }
@@ -1139,8 +1139,8 @@ public class OpenMultimediaScreen extends Screen {
                     final MRL.Source src = OpenMultimediaScreen.this.firstSource();
                     final Metadata meta = src != null ? src.metadata() : null;
                     final String title = meta != null && meta.title() != null ? meta.title() : OpenMultimediaScreen.this.previewTitle();
-                    final String desc = meta != null && meta.desc() != null ? meta.desc() : OpenMultimediaScreen.this.previewUrl;
-                    final String duration = meta != null && meta.duration() > 0 ? OpenMultimediaScreen.this.ctx.formatTime(meta.duration()) : "--:--";
+                    final String desc = meta != null && meta.description() != null ? meta.description() : OpenMultimediaScreen.this.previewUrl;
+                    final String duration = meta != null && meta.durationMs() > 0 ? OpenMultimediaScreen.this.ctx.formatTime(meta.durationMs()) : "--:--";
                     canvas.gradientV(ix, iy + ih / 2f, iw, ih / 2f, GRADIENT_TOP, AppTheme.alpha(AppTheme.BG_1, 224));
                     canvas.text(canvas.text().truncateToWidth(title.toUpperCase(Locale.ROOT), iw - 44, AppTheme.TEXT_BUTTON, Font.BOLD),
                             ix + 22, iy + ih - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
@@ -1322,7 +1322,7 @@ public class OpenMultimediaScreen extends Screen {
 
             final int textX = thumbX + thumbW + 10;
             final int textMaxW = Math.max(20, x + w - textX - 8);
-            final String platform = this.result.platform() == null ? "?" : this.result.platform();
+            final String platform = this.result.platform() == null ? "?" : this.result.platform().name();
             final String tag = platform + ":";
             final int tagW = canvas.textWidth(tag, AppTheme.TEXT_BODY, true);
             final float textY = y + (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f;

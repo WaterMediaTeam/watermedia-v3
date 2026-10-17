@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -35,16 +35,16 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
     /**
      * Reads sPLT chunk from buffer (reads length/type header first)
      */
-    public static SPLT read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated sPLT chunk header");
+    public static SPLT read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated sPLT chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(type));
         if (length < 0 || buffer.remaining() < length)
-            throw new XCodecException("Truncated sPLT chunk");
+            throw new CodecException("Truncated sPLT chunk");
 
         final int startPosition = buffer.position();
         final int endPosition = startPosition + length;
@@ -58,17 +58,17 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
         final String paletteName = nameBuilder.toString();
 
         // SAMPLE DEPTH (1 BYTE): THE NAME MAY HAVE EATEN THE WHOLE CHUNK, LEAVING NOTHING TO READ
-        if (buffer.position() >= endPosition) throw new XCodecException("Truncated sPLT: missing sample depth");
+        if (buffer.position() >= endPosition) throw new CodecException("Truncated sPLT: missing sample depth");
         final int sampleDepth = buffer.get() & 0xFF;
         if (sampleDepth != 8 && sampleDepth != 16)
-            throw new XCodecException("Invalid sPLT sample depth: " + sampleDepth);
+            throw new CodecException("Invalid sPLT sample depth: " + sampleDepth);
 
         // CALCULATE ENTRY SIZE AND COUNT
         final int entrySize = (sampleDepth == 8) ? 6 : 10;
         final int bytesRead = buffer.position() - startPosition;
         final int entryDataLength = length - bytesRead;
         if (entryDataLength % entrySize != 0)
-            throw new XCodecException("Invalid sPLT entry data length");
+            throw new CodecException("Invalid sPLT entry data length");
         final int entryCount = entryDataLength / entrySize;
 
         final SPLTEntry[] entries = new SPLTEntry[entryCount];
@@ -96,9 +96,9 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
     }
 
     /**
-     * Converts a generic CHUNK to SPLT
+     * Converts a generic PngChunk to SPLT
      */
-    public static SPLT convert(final CHUNK chunk) throws XCodecException {
+    public static SPLT convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(chunk.type()));
         }
@@ -115,19 +115,19 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
         }
 
         if (nullIndex < 1) {
-            throw new XCodecException("Invalid sPLT: missing or empty palette name");
+            throw new CodecException("Invalid sPLT: missing or empty palette name");
         }
 
         // NEED THE SAMPLE-DEPTH BYTE AFTER THE NAME NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
         if (data.length < nullIndex + 2) {
-            throw new XCodecException("Truncated sPLT: missing sample depth");
+            throw new CodecException("Truncated sPLT: missing sample depth");
         }
 
         final String paletteName = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int sampleDepth = data[nullIndex + 1] & 0xFF;
 
         if (sampleDepth != 8 && sampleDepth != 16) {
-            throw new XCodecException("Invalid sPLT sample depth: " + sampleDepth);
+            throw new CodecException("Invalid sPLT sample depth: " + sampleDepth);
         }
 
         // CALCULATE ENTRY SIZE AND COUNT
@@ -136,7 +136,7 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
         final int entryDataLength = data.length - entryDataStart;
 
         if (entryDataLength % entrySize != 0) {
-            throw new XCodecException("Invalid sPLT entry data length");
+            throw new CodecException("Invalid sPLT entry data length");
         }
 
         final int entryCount = entryDataLength / entrySize;
@@ -204,7 +204,7 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

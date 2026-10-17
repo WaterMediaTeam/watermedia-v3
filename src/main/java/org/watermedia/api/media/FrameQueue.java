@@ -148,32 +148,6 @@ final class FrameQueue {
     }
 
     /**
-     * Blocking version of {@link #peek()}.
-     * Blocks until at least one frame is available, or until the timeout elapses.
-     *
-     * @param timeoutMs maximum wait time in milliseconds. 0 = indefinite.
-     * @return readable slot, or null if aborted or timed out.
-     */
-    public Slot peekBlocking(final long timeoutMs) {
-        synchronized (this.lock) {
-            final long deadline = timeoutMs > 0 ? System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
-            while (this.size <= 0 && !this.aborted) {
-                final long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0) return null;
-                try {
-                    // push()/abort() BOTH notifyAll, SO WAIT THE FULL REMAINDER INSTEAD OF POLLING AT 10MS
-                    this.lock.wait(remaining);
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                }
-            }
-            if (this.aborted || this.size <= 0) return null;
-            return this.queue[this.readIndex];
-        }
-    }
-
-    /**
      * Peeks at the next frame after the current one (for computing inter-frame duration).
      * Requires {@code size >= 2}.
      *
@@ -208,7 +182,7 @@ final class FrameQueue {
     }
 
     /** Returns true if the queue is empty. */
-    public boolean isEmpty() {
+    public boolean empty() {
         synchronized (this.lock) { return this.size == 0; }
     }
 
@@ -234,7 +208,7 @@ final class FrameQueue {
         }
     }
 
-    /** Abort signal — unblocks {@link #peekWritable()} and {@link #peekBlocking(long)} immediately. */
+    /** Abort signal — unblocks {@link #peekWritable()} immediately. */
     public void abort() {
         synchronized (this.lock) {
             this.aborted = true;

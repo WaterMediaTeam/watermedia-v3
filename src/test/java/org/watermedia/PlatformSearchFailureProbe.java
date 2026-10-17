@@ -1,8 +1,8 @@
 package org.watermedia;
 
-import org.watermedia.api.platform.IPlatform;
+import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
-import org.watermedia.api.platform.PlatformData;
+import org.watermedia.api.platform.Platform.Resolution;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.test.support.PlayerWait;
 
@@ -16,27 +16,27 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 final class PlatformSearchFailureProbe {
     static void run() throws Exception {
-        for (final IPlatform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
+        for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
         final CountDownLatch slowEntered = new CountDownLatch(1);
         final CountDownLatch releaseSlow = new CountDownLatch(1);
         final AtomicInteger successfulProbes = new AtomicInteger();
-        PlatformAPI.register(new IPlatform() {
+        PlatformAPI.register(new Platform() {
             @Override public String name() { return "Slow fixture"; }
-            @Override public PlatformData data(final URI uri) { return null; }
+            @Override public Resolution resolve(final URI uri) { return null; }
             @Override public List<PlatformResult> search(final String query, final int limit) throws Exception {
                 successfulProbes.incrementAndGet();
                 slowEntered.countDown();
                 if (!releaseSlow.await(5, TimeUnit.SECONDS)) throw new IOException("Slow fixture was not released");
-                return List.of(new PlatformResult("fixture", "late success", null, URI.create("https://fixture.invalid/success")));
+                return List.of(new PlatformResult(this, "late success", null, URI.create("https://fixture.invalid/success")));
             }
         });
         final AtomicInteger names = new AtomicInteger();
-        PlatformAPI.register(new IPlatform() {
+        PlatformAPI.register(new Platform() {
             @Override public String name() {
                 if (names.incrementAndGet() > 1) throw new IllegalStateException("Broken diagnostic name");
                 return "Failing fixture";
             }
-            @Override public PlatformData data(final URI uri) { return null; }
+            @Override public Resolution resolve(final URI uri) { return null; }
             @Override public List<PlatformResult> search(final String query, final int limit) throws Exception {
                 throw new IOException("Fixture probe failed");
             }

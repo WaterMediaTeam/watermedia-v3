@@ -21,12 +21,14 @@ import java.util.Comparator;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.jar.Manifest;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 public class IOTool {
     public static final int BUFFER_SIZE = 1024 * 64; // 64 KB
-    public static final String VERSION_FILE = "version.cfg";
+    // VERIFIED HTTPS TRANSFERS: WHOLE-TRANSFER DEADLINE, PER-CONNECTION TIMEOUT, HOP CAP AND THE BOOTSTRAP UA
+    private static final long TRANSFER_DEADLINE_NS = 180_000_000_000L;
+    private static final int TRANSFER_TIMEOUT_MS = 15_000;
+    private static final int MAX_REDIRECTS = 8;
+    private static final String USER_AGENT = "WaterMedia";
 
     public static String platformClassifier() {
         final String system = os();
@@ -34,8 +36,8 @@ public class IOTool {
         return system == null || cpu == null ? "unsupported" : system + (cpu.equals("aarch64") ? "-arm64" : "");
     }
 
-    // NORMALISED OS TOKEN ("windows"/"macos"/"linux"), OR null IF UNSUPPORTED. UNLIKE platformClassifier
-    // (WHICH NAMES ffmpeg ZIPS), THIS FEEDS PER-OS/ARCH ASSET RESOLUTION FOR DOWNLOADED NATIVE BINARIES.
+    // NORMALISED OS TOKEN ("windows"/"macos"/"linux"), OR null IF UNSUPPORTED; platformClassifier NAMES THE ffmpeg
+    // ZIPS WHILE platform() RESOLVES THE PER-OS/ARCH ASSETS OF DOWNLOADED NATIVE BINARIES
     public static String os() {
         final String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         if (os.contains("mac") || os.contains("darwin")) return "macos";
@@ -45,7 +47,7 @@ public class IOTool {
     }
 
     // NORMALISED ARCH TOKEN ("x86_64"/"aarch64"), OR null IF UNSUPPORTED
-    public static String arch() {
+    private static String arch() {
         final String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
         if (arch.equals("amd64") || arch.equals("x86_64") || arch.equals("x64")) return "x86_64";
         if (arch.equals("aarch64") || arch.equals("arm64")) return "aarch64";
@@ -65,65 +67,6 @@ public class IOTool {
         } catch (final IOException e) {
             return null;
         }
-    }
-
-    public static boolean copy(final File inFile, final File outFile) {
-        try (final var in = Files.newInputStream(inFile.toPath())) {
-            return write(in, outFile);
-        } catch (final IOException e) {
-            return false;
-        }
-    }
-
-    public static boolean write(final InputStream in, final File outFile) {
-        final byte[] buffer = new byte[BUFFER_SIZE];
-        int bytesRead;
-
-        try (in; final var out = Files.newOutputStream(outFile.toPath())) {
-            while ((bytesRead = in.read(buffer)) != -1) {
-                out.write(buffer, 0, bytesRead);
-            }
-            return true;
-        } catch (final IOException e) {
-            return false;
-        }
-    }
-
-    public static int count(final File path) {
-        int count = 0;
-        if (path == null || !path.exists()) {
-            return 0;
-        }
-        if (path.isDirectory()) {
-            final File[] files = path.listFiles();
-            if (files != null) {
-                for (final File file: files) {
-                    count += count(file);
-                }
-            }
-        } else {
-            count++;
-        }
-        return count;
-    }
-
-    public static int deleteOnExit(final File path) {
-        if (path == null || !path.exists()) {
-            return 0;
-        }
-        // REGISTER THE PARENT BEFORE ITS CHILDREN: deleteOnExit RUNS IN REVERSE REGISTRATION
-        // ORDER, SO DIRECTORIES MUST BE REGISTERED FIRST TO BE DELETED LAST (ONCE EMPTY)
-        path.deleteOnExit();
-        int registered = 1;
-        if (path.isDirectory()) {
-            final File[] files = path.listFiles();
-            if (files != null) {
-                for (final File file: files) {
-                    registered += deleteOnExit(file);
-                }
-            }
-        }
-        return registered;
     }
 
     public static boolean closeQuietly(final AutoCloseable closeable) {
@@ -162,7 +105,7 @@ public class IOTool {
     /** Downloads a bounded HTTPS file and verifies its publisher-provided SHA-256. */
     public static void downloadVerified(final URI uri, final Path destination, final String expected, final long maxBytes) throws IOException {
         if (maxBytes < 1) throw new IllegalArgumentException("HTTPS download limit must be positive");
-        final String digest = sha256Digest(expected);
+        final String digest = requireSha256(expected);
         boolean created = false;
         try {
             try (final OutputStream output = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
@@ -182,16 +125,16 @@ public class IOTool {
     // CHECK HTTPS ON EVERY HOP SO A REDIRECT CANNOT DOWNGRADE A VERIFIED DOWNLOAD.
     private static void transferHttps(final URI origin, final OutputStream output, final long limit) throws IOException {
         URI uri = origin;
-        final long deadline = System.nanoTime() + 180_000_000_000L;
-        for (int redirects = 0; redirects <= 8; redirects++) {
+        final long deadline = System.nanoTime() + TRANSFER_DEADLINE_NS;
+        for (int redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
             if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null)
                 throw new IOException("Verified downloads require HTTPS without credentials: " + uri);
             if (System.nanoTime() > deadline) throw new IOException("HTTPS transfer deadline exceeded: " + uri);
             final HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
             connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(15_000);
-            connection.setReadTimeout(15_000);
-            connection.setRequestProperty("User-Agent", "WaterMedia");
+            connection.setConnectTimeout(TRANSFER_TIMEOUT_MS);
+            connection.setReadTimeout(TRANSFER_TIMEOUT_MS);
+            connection.setRequestProperty("User-Agent", USER_AGENT);
             try {
                 final int status = connection.getResponseCode();
                 if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
@@ -298,73 +241,22 @@ public class IOTool {
     }
 
     /** Validates and normalizes a SHA-256 digest from a manifest or release index. */
-    public static String sha256Digest(final String value) throws IOException {
+    public static String requireSha256(final String value) throws IOException {
         if (value == null || !value.matches("[a-fA-F0-9]{64}")) throw new IOException("Missing or invalid SHA-256 digest");
         return value.toLowerCase(Locale.ROOT);
     }
 
     /** Verifies a regular file without following links or modifying it after a mismatch. */
     public static void verifySha256(final Path file, final String expected) throws IOException {
-        final String digest = sha256Digest(expected);
+        final String digest = requireSha256(expected);
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !sha256(file).equals(digest))
             throw new IOException("File SHA-256 mismatch: " + file.getFileName());
-    }
-
-    // THROWS BECAUSE THIS IS A MORE COMPLEX TASK AND THE CALLER SHOULD HANDLE FAILURES
-    public static boolean jarExtractZip(final InputStream is, final File output) throws Exception {
-        try (final var in = new BufferedInputStream(is, BUFFER_SIZE); final var zip = new ZipInputStream(in)) {
-            ZipEntry entry;
-            final byte[] buffer = new byte[BUFFER_SIZE]; // THIS IS OUTSIDE THE LOOP TO AVOID MULTIPLE ALLOCATIONS PER ENTRY
-            final String outputPrefix = output.getCanonicalPath() + File.separator; // ZIP SLIP GUARD BASELINE
-            while ((entry = zip.getNextEntry()) != null) {
-                final File outFile = new File(output, entry.getName());
-                // ZIP SLIP: REJECT ENTRIES WHOSE RESOLVED PATH ESCAPES output
-                if (!outFile.getCanonicalPath().startsWith(outputPrefix)) {
-                    throw new IOException("Zip entry escapes target directory: " + entry.getName());
-                }
-                if (entry.isDirectory()) {
-                    if (!outFile.exists() && !outFile.mkdirs()) {
-                        return false;
-                    }
-                } else {
-                    final File parentDir = outFile.getParentFile();
-                    if (!parentDir.exists() && !parentDir.mkdirs()) {
-                        return false;
-                    }
-                    try (final var out = Files.newOutputStream(outFile.toPath())) {
-                        int len;
-                        while ((len = zip.read(buffer)) > 0) {
-                            out.write(buffer, 0, len);
-                        }
-                    }
-                }
-                zip.closeEntry();
-            }
-            return true;
-        }
-    }
-
-    public static String jarReadZip(final InputStream in, final String fileInZip) {
-        if (in == null) return null; // MISSING RESOURCE: LET THE CALLER REPORT IT INSTEAD OF SWALLOWING AN NPE
-        try (in; final var zip = new ZipInputStream(in)) {
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                if (entry.getName().equals(fileInZip)) {
-                    final byte[] data = zip.readAllBytes();
-                    return new String(data, StandardCharsets.UTF_8);
-                }
-                zip.closeEntry();
-            }
-            return null;
-        } catch (final Exception e) {
-            return null;
-        }
     }
 
     public static String jarVersion() {
         // MANIFEST OF THE JAR THAT LOADED THIS CLASS: A PLAIN CLASSLOADER LOOKUP WOULD RETURN THE FIRST
         // MANIFEST OF THE WHOLE CLASSPATH (E.G. LOG4J'S) AND REPORT A FOREIGN VERSION. CLASSES-DIR RUNS
-        // (IDE) SHIP NO MANIFEST AND FALL TO THE DEV PLACEHOLDER.
+        // (IDE) SHIP NO MANIFEST AND REPORT AN UNKNOWN VERSION RATHER THAN A FAKE ONE
         final String cls = IOTool.class.getName().replace('.', '/') + ".class";
         final URL url = IOTool.class.getClassLoader().getResource(cls);
         if (url != null) {
@@ -374,15 +266,15 @@ public class IOTool {
                 if (version != null) return version;
             } catch (final Exception ignored) {}
         }
-        return "3.0.0-unknown";
+        return "unknown";
     }
 
     /** Combines cleanup failures without hiding a fatal VM error behind an ordinary exception. */
     public static Throwable mergeFailure(final Throwable previous, final Throwable next) {
         Objects.requireNonNull(next, "next");
         if (previous == null || previous == next) return next;
-        final boolean previousFatal = previous instanceof VirtualMachineError || previous instanceof ThreadDeath;
-        final boolean nextFatal = next instanceof VirtualMachineError || next instanceof ThreadDeath;
+        final boolean previousFatal = previous instanceof VirtualMachineError;
+        final boolean nextFatal = next instanceof VirtualMachineError;
         if ((nextFatal && !previousFatal) || (next instanceof Error && !(previous instanceof Error))) {
             next.addSuppressed(previous);
             return next;

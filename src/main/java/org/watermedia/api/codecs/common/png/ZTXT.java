@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -17,21 +17,21 @@ import java.util.zip.Inflater;
 public record ZTXT(String keyword, int compressionMethod, byte[] compressedText) implements IChunk {
     public static final int SIGNATURE = 0x7A_54_58_74; // "zTXt"
     // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
-    private static final int MAX_DECOMPRESSED = 2 * 1024 * 1024; // 2 MB
+    private static final int MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024; // 2 MB
 
     /**
      * Reads zTXt chunk from buffer (reads length/type header first)
      */
-    public static ZTXT read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated zTXt chunk header");
+    public static ZTXT read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated zTXt chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(type));
         if (length < 0 || buffer.remaining() < length)
-            throw new XCodecException("Truncated zTXt chunk");
+            throw new CodecException("Truncated zTXt chunk");
 
         // READ KEYWORD (1-79 BYTES + NULL)
         final int endPosition = buffer.position() + length;
@@ -45,13 +45,13 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
         bytesRead++; // COUNT NULL TERMINATOR
 
         final String keyword = keywordBuilder.toString();
-        if (buffer.position() >= endPosition) throw new XCodecException("Truncated zTXt: missing compression method");
+        if (buffer.position() >= endPosition) throw new CodecException("Truncated zTXt: missing compression method");
         final int compressionMethod = buffer.get() & 0xFF;
         bytesRead++;
 
         // READ COMPRESSED TEXT (REMAINING BYTES): AN UNTERMINATED KEYWORD OVERSHOOTS AND GOES NEGATIVE
         final int textLength = length - bytesRead;
-        if (textLength < 0) throw new XCodecException("Invalid zTXt: unterminated keyword");
+        if (textLength < 0) throw new CodecException("Invalid zTXt: unterminated keyword");
         final byte[] compressedText = new byte[textLength];
         buffer.get(compressedText);
 
@@ -59,11 +59,11 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
     }
 
     /**
-     * Converts a generic CHUNK to ZTXT
+     * Converts a generic PngChunk to ZTXT
      */
-    public static ZTXT convert(final CHUNK chunk) throws XCodecException {
+    public static ZTXT convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new XCodecException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(chunk.type()));
+            throw new CodecException("Invalid chunk type for zTXt: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
@@ -78,19 +78,19 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
         }
 
         if (nullIndex < 1) {
-            throw new XCodecException("Invalid zTXt: missing or empty keyword");
+            throw new CodecException("Invalid zTXt: missing or empty keyword");
         }
 
         // NEED THE COMPRESSION-METHOD BYTE AFTER THE KEYWORD NUL; A TRUNCATED PAYLOAD OTHERWISE READS PAST THE ARRAY
         if (data.length < nullIndex + 2) {
-            throw new XCodecException("Truncated zTXt: missing compression method");
+            throw new CodecException("Truncated zTXt: missing compression method");
         }
 
         final String keyword = new String(data, 0, nullIndex, StandardCharsets.ISO_8859_1);
         final int compressionMethod = data[nullIndex + 1] & 0xFF;
 
         if (compressionMethod != 0) {
-            throw new XCodecException("Unknown zTXt compression method: " + compressionMethod);
+            throw new CodecException("Unknown zTXt compression method: " + compressionMethod);
         }
 
         // REMAINING DATA IS COMPRESSED TEXT
@@ -102,7 +102,7 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
     }
 
     /** Decompresses and returns the text. */
-    public String text() throws XCodecException {
+    public String text() throws CodecException {
         final Inflater inflater = new Inflater();
         inflater.setInput(this.compressedText);
 
@@ -115,21 +115,21 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
             while (true) {
                 final int length = inflater.inflate(buffer);
                 if (length > 0) {
-                    if (output.size() + length > MAX_DECOMPRESSED) {
-                        throw new XCodecException("zTXt exceeds " + MAX_DECOMPRESSED + " bytes decompressed");
+                    if (output.size() + length > MAX_DECOMPRESSED_BYTES) {
+                        throw new CodecException("zTXt exceeds " + MAX_DECOMPRESSED_BYTES + " bytes decompressed");
                     }
                     output.write(buffer, 0, length);
                     continue;
                 }
                 if (inflater.finished()) break;
                 if (inflater.needsDictionary()) {
-                    throw new XCodecException("zTXt uses an unsupported compression dictionary");
+                    throw new CodecException("zTXt uses an unsupported compression dictionary");
                 }
                 if (inflater.needsInput()) break; // TRUNCATED TEXT: KEEP WHAT DECOMPRESSED, THE IMAGE IS STILL USABLE
-                throw new XCodecException("Invalid compressed text stream");
+                throw new CodecException("Invalid compressed text stream");
             }
         } catch (final DataFormatException e) {
-            throw new XCodecException("Invalid compressed text: " + e.getMessage());
+            throw new CodecException("Invalid compressed text: " + e.getMessage(), e);
         } finally {
             inflater.end();
         }
@@ -149,7 +149,7 @@ public record ZTXT(String keyword, int compressionMethod, byte[] compressedText)
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.common.Tiff;
 
 import java.nio.ByteBuffer;
 
@@ -20,16 +21,16 @@ public record EXIF(byte[] data) implements IChunk {
     /**
      * Reads eXIf chunk from buffer (reads length/type header first)
      */
-    public static EXIF read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated eXIf chunk header");
+    public static EXIF read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated eXIf chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(type));
         if (length < 0 || buffer.remaining() < length)
-            throw new XCodecException("Truncated eXIf chunk");
+            throw new CodecException("Truncated eXIf chunk");
 
         final byte[] data = new byte[length];
         buffer.get(data);
@@ -37,9 +38,9 @@ public record EXIF(byte[] data) implements IChunk {
     }
 
     /**
-     * Converts a generic CHUNK to EXIF
+     * Converts a generic PngChunk to EXIF
      */
-    public static EXIF convert(final CHUNK chunk) throws XCodecException {
+    public static EXIF convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for eXIf: 0x" + Integer.toHexString(chunk.type()));
         }
@@ -48,18 +49,13 @@ public record EXIF(byte[] data) implements IChunk {
 
         // VALIDATE MINIMUM SIZE (AT LEAST TIFF HEADER)
         if (data.length < 8) {
-            throw new XCodecException("eXIf data too short: " + data.length + " bytes");
+            throw new CodecException("eXIf data too short: " + data.length + " bytes");
         }
 
-        // VALIDATE BYTE ORDER MARKER
+        // VALIDATE THE BYTE ORDER MARKER: "MM" AND "II" READ THE SAME IN EITHER BYTE ORDER
         final short byteOrder = (short) ((data[0] << 8) | (data[1] & 0xFF));
-        if (byteOrder != BIG_ENDIAN_MARKER && byteOrder != LITTLE_ENDIAN_MARKER) {
-            // TRY LITTLE ENDIAN ORDER
-            final short leByteOrder = (short) ((data[1] << 8) | (data[0] & 0xFF));
-            if (leByteOrder != BIG_ENDIAN_MARKER && leByteOrder != LITTLE_ENDIAN_MARKER) {
-                throw new XCodecException("Invalid EXIF byte order marker");
-            }
-        }
+        if (byteOrder != BIG_ENDIAN_MARKER && byteOrder != LITTLE_ENDIAN_MARKER)
+            throw new CodecException("Invalid EXIF byte order marker");
 
         return new EXIF(data.clone());
     }
@@ -69,6 +65,13 @@ public record EXIF(byte[] data) implements IChunk {
      */
     public boolean isBigEndian() {
         return (this.data[0] == 'M' && this.data[1] == 'M');
+    }
+
+    /**
+     * Returns the EXIF orientation (1-8) declared in IFD0, or 1 when absent
+     */
+    public int orientation() {
+        return Tiff.orientation(this.data);
     }
 
     /**
@@ -84,7 +87,7 @@ public record EXIF(byte[] data) implements IChunk {
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.data);
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.data);
     }
 }

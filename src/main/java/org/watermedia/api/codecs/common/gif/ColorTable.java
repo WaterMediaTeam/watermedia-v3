@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.gif;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 
@@ -9,14 +9,14 @@ public record ColorTable(int size, int[] colors) implements IChunk {
     public static final int MAX_COLORS = 256;
 
     /** Reads {@code size} RGB triples (up to {@link #MAX_COLORS}) as opaque ARGB colors. */
-    public static ColorTable read(final int size, final ByteBuffer buffer) throws XCodecException {
-        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
+    public static ColorTable read(final int size, final ByteBuffer buffer) throws CodecException {
+        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
         if (size < 0 || size > MAX_COLORS) {
-            throw new XCodecException("Color table size must be between 0 and " + MAX_COLORS);
+            throw new CodecException("Color table size must be between 0 and " + MAX_COLORS);
         }
         final int byteCount = size * 3;
         if (buffer.remaining() < byteCount) {
-            throw new XCodecException("Buffer does not contain enough data for Color Table. " +
+            throw new CodecException("Buffer does not contain enough data for Color Table. " +
                     "Expected " + byteCount + " bytes, but only " + buffer.remaining() + " available");
         }
 

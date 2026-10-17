@@ -29,7 +29,6 @@ public record Sync(int revision, Status status, long time, long duration, float 
 
     static final byte ID = 1;
     private static final byte VERSION = 2;
-    private static final int STATUS_COUNT = Status.values().length;
     private static final int REPEAT_BIT = 0b001;
     private static final int LIVE_BIT = 0b010;
     private static final int MUTE_BIT = 0b100;
@@ -56,19 +55,18 @@ public record Sync(int revision, Status status, long time, long duration, float 
         return buf.flip();
     }
 
-    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.of() (TRUST BOUNDARY)
+    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.read() (TRUST BOUNDARY)
     static Sync read(final ByteBuffer buf, final byte version) {
         if (version != VERSION) throw new IllegalArgumentException("Unsupported Sync version: " + version);
         if (buf.remaining() < BYTES - 2) throw new IllegalArgumentException("Truncated Sync payload, needs " + BYTES + " bytes");
         final int revision = buf.getInt();
-        final int ordinal = buf.get() & 0xFF;
-        if (ordinal >= STATUS_COUNT) throw new IllegalArgumentException("Invalid status ordinal: " + ordinal);
+        final Status status = Status.of(buf.get() & 0xFF);
         final long time = buf.getLong();
         final long duration = buf.getLong();
         final float speed = buf.getFloat();
         final int volume = buf.get() & 0xFF;
         final byte flags = buf.get();
-        return new Sync(revision, Status.of(ordinal), time, duration, speed, volume,
+        return new Sync(revision, status, time, duration, speed, volume,
                 (flags & MUTE_BIT) != 0, (flags & REPEAT_BIT) != 0, (flags & LIVE_BIT) != 0);
     }
 }

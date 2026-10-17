@@ -2,6 +2,8 @@ package org.watermedia.api.codecs.readers;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
@@ -11,13 +13,17 @@ import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PamImage;
 import org.watermedia.test.support.PixelDiff;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
@@ -26,9 +32,9 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * common chroma layouts.
  *
  * <p>Three tests are emitted per fixture: a structural check on the BGRA reader output, a
- * native pixel-format probe (no conversion), and a tolerance-bounded pixel comparison
- * against a pre-generated PAM reference. Tolerances are relaxed because JPEG decoders
- * legitimately differ at the IDCT/upsampling layer.
+ * native pixel-format probe (color stays BGRA, grayscale stays one luma byte per pixel), and a
+ * tolerance-bounded pixel comparison against a pre-generated PAM reference. Tolerances are
+ * relaxed because JPEG decoders legitimately differ at the IDCT/upsampling layer.
  */
 @DisplayName("JPEG decoder")
 public class JpegTest {
@@ -38,7 +44,7 @@ public class JpegTest {
     private static final double MAX_MEAN_DIFF = 6.0;
     private static final double MAX_SMALL_DIFF_PERCENT = 10.0;
 
-    private record Fixture(int id, String encoding, PixelFormat nativeFormat, int nativePlanes) {
+    private record Fixture(int id, String encoding, PixelFormat nativeFormat) {
         Path jpeg() {
             return Fixtures.JPEG_DIR.resolve(this.id + ".jpg");
         }
@@ -53,17 +59,17 @@ public class JpegTest {
     Iterable<DynamicTest> testJPEGFixtures() {
         final List<DynamicTest> tests = new ArrayList<>();
         for (final Fixture fixture: List.of(
-                new Fixture(1, "jpeg400jfif", PixelFormat.GRAY, 1),
-                new Fixture(2, "jpeg420exif", PixelFormat.YUV420P, 3),
-                new Fixture(3, "jpeg422jfif", PixelFormat.YUV422P, 3),
-                new Fixture(4, "jpeg444", PixelFormat.YUV444P, 3),
-                new Fixture(5, "jpeg444_all_appx_markers", PixelFormat.YUV444P, 3),
-                new Fixture(6, "jpeg420prog_unpadded", PixelFormat.YUV420P, 3)
+                new Fixture(1, "jpeg400jfif", PixelFormat.GRAY),
+                new Fixture(2, "jpeg420exif", PixelFormat.BGRA),
+                new Fixture(3, "jpeg422jfif", PixelFormat.BGRA),
+                new Fixture(4, "jpeg444", PixelFormat.BGRA),
+                new Fixture(5, "jpeg444_all_appx_markers", PixelFormat.BGRA),
+                new Fixture(6, "jpeg420prog_unpadded", PixelFormat.BGRA)
         )) {
             // BGRA STREAM SHAPE CHECK
             tests.add(dynamicTest("JPEG decode [" + fixture.id + " " + fixture.encoding + "]", () -> {
                 final ByteBuffer source = ByteBuffer.wrap(Fixtures.readAll(fixture.jpeg()));
-                try (final ImageReader reader = CodecsAPI.decodeImage(source, PixelFormat.BGRA)) {
+                try (final ImageReader reader = CodecsAPI.reader(source, PixelFormat.BGRA)) {
                     assertEquals("JPEG", reader.name());
                     assertEquals(2, source.position(), "JPEG SOI should be consumed by CodecsAPI");
                     assertTrue(reader.width() > 0);
@@ -78,41 +84,21 @@ public class JpegTest {
                 }
             }));
 
-            // NATIVE LAYOUT — NO COLOR CONVERSION REQUESTED
+            // NATIVE LAYOUT — NO FORMAT REQUESTED: COLOR IS CONVERTED TO BGRA, GRAYSCALE STAYS ONE BYTE PER PIXEL
             tests.add(dynamicTest("JPEG native format [" + fixture.id + " " + fixture.encoding + "]", () -> {
                 final ByteBuffer source = ByteBuffer.wrap(Fixtures.readAll(fixture.jpeg()));
-                try (final ImageReader reader = CodecsAPI.decodeImage(source)) {
+                try (final ImageReader reader = CodecsAPI.reader(source)) {
                     assertEquals(fixture.nativeFormat, reader.pixelFormat(), fixture.encoding);
-                    assertEquals(fixture.nativePlanes, reader.planeCount(), fixture.encoding);
                     final ByteBuffer frame = reader.next();
                     assertTrue(frame.isDirect(), fixture.encoding);
-
-                    // EXPECTED PAYLOAD SIZE FOR EACH NATIVE LAYOUT
-                    final int w = reader.width();
-                    final int h = reader.height();
-                    final int chromaW = (w + 1) >> 1;
-                    final int chromaH = (h + 1) >> 1;
-                    final int pixels = w * h;
-                    final int expectedBytes = switch (fixture.nativeFormat) {
-                        case GRAY -> pixels;
-                        case YUV420P -> pixels + 2 * chromaW * chromaH;
-                        case YUV422P -> pixels + 2 * chromaW * h;
-                        case YUV444P -> pixels * 3;
-                        default -> throw new IllegalArgumentException(
-                                "Unsupported JPEG native format " + fixture.nativeFormat);
-                    };
-                    assertEquals(expectedBytes, frame.remaining(), fixture.encoding);
-
-                    for (int i = 0; i < reader.planeCount(); i++) {
-                        assertNotNull(reader.plane(i), fixture.encoding + " plane " + i);
-                        assertTrue(reader.planeStride(i) > 0, fixture.encoding + " stride " + i);
-                    }
+                    final int pixels = reader.width() * reader.height();
+                    assertEquals(fixture.nativeFormat == PixelFormat.GRAY ? pixels : pixels * 4, frame.remaining(), fixture.encoding);
                 }
             }));
 
             // PIXEL DIFFERENCE AGAINST PAM REFERENCE (BGRA OUTPUT)
             tests.add(dynamicTest("JPEG pixels [" + fixture.id + " " + fixture.encoding + "]", () -> {
-                final ImageData image = CodecsAPI.decodeImage(Fixtures.readAll(fixture.jpeg()), PixelFormat.BGRA);
+                final ImageData image = CodecsAPI.decode(Fixtures.readAll(fixture.jpeg()), PixelFormat.BGRA);
                 final PamImage reference = PamImage.read(fixture.raw());
 
                 assertEquals(reference.width(), image.width(), fixture.encoding);
@@ -142,5 +128,59 @@ public class JpegTest {
             }));
         }
         return tests;
+    }
+
+    @Nested
+    @DisplayName("Metadata")
+    class Metadata {
+
+        @Test
+        @DisplayName("The EXIF payload and its orientation reach the metadata")
+        void exifFixture() throws IOException {
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_DIR.resolve("2.jpg"))))) {
+                final byte[] exif = assertInstanceOf(byte[].class, reader.metadata().value(CodecsAPI.JPEG_METAKEY_EXIF));
+                assertTrue((exif[0] == 'M' && exif[1] == 'M') || (exif[0] == 'I' && exif[1] == 'I'), "TIFF byte order marker");
+                final Integer orientation = assertInstanceOf(Integer.class, reader.metadata().value(CodecsAPI.JPEG_METAKEY_ORIENTATION));
+                assertTrue(orientation >= 1 && orientation <= 8, "orientation " + orientation);
+            }
+        }
+
+        @Test
+        @DisplayName("Orientation 6 rotates the picture 90 degrees clockwise and swaps its size")
+        void orientationRotates() throws IOException {
+            final byte[] plain = Fixtures.readAll(Fixtures.JPEG_BASELINE);
+            // "Exif\0\0" THEN A LITTLE-ENDIAN TIFF WHOSE IFD0 HOLDS ONE ENTRY: ORIENTATION (0x0112), SHORT, COUNT 1, VALUE 6
+            final byte[] exif = { 'E', 'x', 'i', 'f', 0, 0, 'I', 'I', 42, 0, 8, 0, 0, 0, 1, 0,
+                    0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0 };
+            final ImageData upright = CodecsAPI.decode(plain, PixelFormat.BGRA);
+            final ImageData turned = CodecsAPI.decode(withSegment(plain, 0xE1, exif), PixelFormat.BGRA);
+            final int w = upright.width(), h = upright.height();
+            assertEquals(h, turned.width(), "rotated width");
+            assertEquals(w, turned.height(), "rotated height");
+            final IntBuffer a = upright.frames()[0].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+            final IntBuffer b = turned.frames()[0].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+            // OUTPUT PIXEL (x, y) COMES FROM SOURCE PIXEL (y, h - 1 - x)
+            for (final int[] p: new int[][] { { 0, 0 }, { h - 1, 0 }, { 0, w - 1 }, { h / 2, w / 3 }, { h - 1, w - 1 } }) {
+                final int x = p[0], y = p[1];
+                assertEquals(a.get((h - 1 - x) * w + y), b.get(y * h + x), "pixel " + x + "," + y);
+            }
+        }
+
+        @Test
+        @DisplayName("COM segments become comments")
+        void comments() throws IOException {
+            final byte[] jpeg = withSegment(Fixtures.readAll(Fixtures.JPEG_BASELINE), 0xFE, "WaterMedia".getBytes(StandardCharsets.ISO_8859_1));
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(jpeg))) {
+                assertEquals(List.of("WaterMedia"), reader.metadata().comments());
+                assertEquals("WaterMedia", reader.metadata().value(CodecsAPI.JPEG_METAKEY_COMMENT));
+            }
+        }
+    }
+
+    // INSERTS ONE MARKER SEGMENT RIGHT AFTER SOI
+    private static byte[] withSegment(final byte[] jpeg, final int marker, final byte[] payload) {
+        final ByteBuffer out = ByteBuffer.allocate(jpeg.length + 4 + payload.length);
+        out.put(jpeg, 0, 2).put((byte) 0xFF).put((byte) marker).putShort((short) (payload.length + 2)).put(payload).put(jpeg, 2, jpeg.length - 2);
+        return out.array();
     }
 }

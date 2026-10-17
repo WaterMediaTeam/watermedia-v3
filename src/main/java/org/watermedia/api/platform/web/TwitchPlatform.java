@@ -10,11 +10,11 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JSONTool;
-import org.watermedia.tools.MPEGTool;
+import org.watermedia.tools.M3UTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
-public final class TwitchPlatform implements IPlatform {
+public final class TwitchPlatform implements Platform {
     public static final String NAME = "Twitch";
     private static final Marker IT = MarkerManager.getMarker(TwitchPlatform.class.getSimpleName());
     // TWITCH GQL ENDPOINT AND USHER CDN URLS
@@ -88,7 +88,7 @@ public final class TwitchPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         final String host = uri.getHost();
         if (!DataTool.equalsAnyIgnoreCase(host, HOSTS)) return null;
 
@@ -98,7 +98,7 @@ public final class TwitchPlatform implements IPlatform {
         // CLIPS.TWITCH.TV/{SLUG} OR CLIPS.TWITCH.TV/EMBED?CLIP={SLUG}
         if ("clips.twitch.tv".equalsIgnoreCase(host)) {
             final String slug = parseClipsHost(path, query);
-            if (slug == null) throw new PlatformException(TwitchPlatform.class, "No clip slug found: " + uri);
+            if (slug == null) throw new PlatformException(NAME, "No clip slug found: " + uri);
             return this.resolveClip(slug);
         }
 
@@ -110,10 +110,10 @@ public final class TwitchPlatform implements IPlatform {
                 final String channel = queryParam(query, "channel");
                 if (channel != null) return this.resolveStream(channel.toLowerCase());
             }
-            throw new PlatformException(TwitchPlatform.class, "Invalid player URL: " + uri);
+            throw new PlatformException(NAME, "Invalid player URL: " + uri);
         }
 
-        if (path == null || path.length() <= 1) throw new PlatformException(TwitchPlatform.class, "Invalid URL: " + uri);
+        if (path == null || path.length() <= 1) throw new PlatformException(NAME, "Invalid URL: " + uri);
 
         // VOD: /VIDEOS/{ID}, /{USER}/V/{ID}, /{USER}/VIDEO/{ID}
         Matcher m = VOD_PATH.matcher(path);
@@ -133,7 +133,7 @@ public final class TwitchPlatform implements IPlatform {
         m = CHANNEL_PATH.matcher(path);
         if (m.find()) return this.resolveStream(m.group(1).toLowerCase());
 
-        throw new PlatformException(TwitchPlatform.class, "Unrecognized URL: " + uri);
+        throw new PlatformException(NAME, "Unrecognized URL: " + uri);
     }
 
     @Override
@@ -181,14 +181,14 @@ public final class TwitchPlatform implements IPlatform {
                 if (profile != null) thumbnail = JSONTool.uri(profile);
             }
 
-            out.add(new PlatformResult(NAME, title, thumbnail, URI.create("https://www.twitch.tv/" + login)));
+            out.add(new PlatformResult(this, title, thumbnail, URI.create("https://www.twitch.tv/" + login)));
         }
         return out;
     }
 
     // --- CONTENT-TYPE HANDLERS ---
 
-    private PlatformData resolveStream(final String channel) throws Exception {
+    private Resolution resolveStream(final String channel) throws Exception {
         this.ensureNotMature(ContentKind.STREAM, channel);
 
         // RESOLVE METADATA FIRST: ITS StreamMetadata QUERY ALSO REPORTS WHETHER THE CHANNEL IS LIVE
@@ -213,21 +213,21 @@ public final class TwitchPlatform implements IPlatform {
         // IF THE API DID NOT ANSWER WE DON'T SECOND-GUESS IT: WE JUST RESOLVE RESILIENTLY BELOW
         // AND LET PLAYBACK FAIL ON ITS OWN IF THE STREAM TURNS OUT NOT TO WORK.
         if (apiAnswered && !online)
-            throw new PlatformException(TwitchPlatform.class, "Streamer '" + channel + "' is offline");
+            throw new PlatformException(NAME, "Streamer '" + channel + "' is offline");
 
-        final List<DataQuality> variants = this.fetchHlsVariants(channel, false);
+        final List<Quality> variants = this.fetchHlsVariants(channel, false);
 
         if (metadata == null) LOGGER.warn(IT, "Twitch stream '{}' resolved without metadata", channel);
         LOGGER.info(IT, "Twitch resolved stream '{}' with {} variant(s)", channel, variants.size());
-        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
-                new DataSource(MediaType.VIDEO, thumbnail, metadata,
-                        RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
+        return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new Source(MediaType.VIDEO, thumbnail, metadata,
+                        HttpHeaders.defaults(URI.create("https://www.twitch.tv/")),
                         variants, null, null));
     }
 
-    private PlatformData resolveVod(final String vodId) throws Exception {
+    private Resolution resolveVod(final String vodId) throws Exception {
         this.ensureNotMature(ContentKind.VOD, vodId);
-        final List<DataQuality> variants = this.fetchHlsVariants(vodId, true);
+        final List<Quality> variants = this.fetchHlsVariants(vodId, true);
 
         Metadata metadata = null;
         URI thumbnail = null;
@@ -240,26 +240,26 @@ public final class TwitchPlatform implements IPlatform {
 
         if (metadata == null) LOGGER.warn(IT, "Twitch VOD '{}' resolved without metadata", vodId);
         LOGGER.info(IT, "Twitch resolved VOD '{}' with {} variant(s)", vodId, variants.size());
-        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
-                new DataSource(MediaType.VIDEO, thumbnail, metadata,
-                        RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
+        return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new Source(MediaType.VIDEO, thumbnail, metadata,
+                        HttpHeaders.defaults(URI.create("https://www.twitch.tv/")),
                         variants, null, null));
     }
 
-    private PlatformData resolveClip(final String slug) throws Exception {
+    private Resolution resolveClip(final String slug) throws Exception {
         this.ensureNotMature(ContentKind.CLIP, slug);
         final JsonObject clip = this.fetchClipData(slug);
-        if (clip == null) throw new PlatformException(TwitchPlatform.class, "Clip not found or no longer available: " + slug);
+        if (clip == null) throw new PlatformException(NAME, "Clip not found or no longer available: " + slug);
 
         final JsonObject accessToken = clip.getAsJsonObject("playbackAccessToken");
-        if (accessToken == null) throw new PlatformException(TwitchPlatform.class, "No access token for clip: " + slug);
+        if (accessToken == null) throw new PlatformException(NAME, "No access token for clip: " + slug);
 
         final String sig = accessToken.get("signature").getAsString();
         final String token = accessToken.get("value").getAsString();
         final String accessQuery = "sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
                 + "&token=" + URLEncoder.encode(token, StandardCharsets.UTF_8);
 
-        final List<DataQuality> clipVariants = new ArrayList<>();
+        final List<Quality> clipVariants = new ArrayList<>();
 
         final JsonArray assets = clip.getAsJsonArray("assets");
         if (assets != null && !assets.isEmpty()) {
@@ -272,7 +272,7 @@ public final class TwitchPlatform implements IPlatform {
                     final int height = intOr(q, "quality", 0);
                     if (sourceUrl != null && height > 0) {
                         final String separator = sourceUrl.contains("?") ? "&" : "?";
-                        clipVariants.add(new DataQuality(
+                        clipVariants.add(new Quality(
                                 URI.create(sourceUrl + separator + accessQuery),
                                 0, height));
                     }
@@ -280,7 +280,7 @@ public final class TwitchPlatform implements IPlatform {
             }
         }
 
-        if (clipVariants.isEmpty()) throw new PlatformException(TwitchPlatform.class, "No video qualities found for clip: " + slug);
+        if (clipVariants.isEmpty()) throw new PlatformException(NAME, "No video qualities found for clip: " + slug);
 
         final String title = str(clip, "title");
         // TWITCH REPORTS clip durationSeconds IN SECONDS; Metadata IS MILLISECONDS
@@ -306,36 +306,36 @@ public final class TwitchPlatform implements IPlatform {
 
         final Metadata clipMetadata = new Metadata(title, null, publishedAt, durationMs, author);
         LOGGER.info(IT, "Twitch resolved clip '{}' with {} variant(s)", slug, clipVariants.size());
-        return new PlatformData(Instant.now().plus(30, ChronoUnit.MINUTES),
-                new DataSource(MediaType.VIDEO, thumbnailUri, clipMetadata,
-                        RequestHeaders.defaults(URI.create("https://www.twitch.tv/")),
+        return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES),
+                new Source(MediaType.VIDEO, thumbnailUri, clipMetadata,
+                        HttpHeaders.defaults(URI.create("https://www.twitch.tv/")),
                         clipVariants, null, null));
     }
 
     // --- HLS FETCHING ---
 
-    // RESOLVES THE CHANNEL/VOD MASTER PLAYLIST TO DataQuality VARIANTS CARRYING THE REAL width/height OF
+    // RESOLVES THE CHANNEL/VOD MASTER PLAYLIST TO Quality ENTRIES CARRYING THE REAL width/height OF
     // EACH HLS RENDITION TAG. A NON-MASTER PLAYLIST (OR, FOR A LIVE STREAM, A FETCH HICCUP) FALLS BACK TO
     // A SINGLE (0,0) VARIANT POINTING AT THE MASTER — MRL MARKS IT UNKNOWN, FFMediaPlayer UPGRADES IT.
     // STREAMS RESOLVE RESILIENTLY (A USHER HICCUP MUST NOT BREAK A LIVE WATCH; OFFLINE IS REJECTED UPSTREAM);
     // VODS RESOLVE STRICTLY SO A USHER 404 THROWS AS THE DELETED/UNAVAILABLE SIGNAL.
-    private List<DataQuality> fetchHlsVariants(final String id, final boolean isVod) throws IOException {
+    private List<Quality> fetchHlsVariants(final String id, final boolean isVod) throws IOException {
         final URI master = URI.create(this.buildPlaylistUrl(id, isVod));
 
-        // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST THE MASTER BY MPEGTool)
-        final List<MPEGTool.Variant> variants;
+        // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST THE MASTER BY M3UTool)
+        final List<M3UTool.Variant> variants;
         if (!isVod) {
-            variants = MPEGTool.qualities(master);
+            variants = M3UTool.qualities(master);
         } else {
-            final MPEGTool.Playlist playlist = MPEGTool.fetch(master);
-            variants = playlist instanceof final MPEGTool.Master m && !m.variants().isEmpty()
+            final M3UTool.Playlist playlist = M3UTool.fetch(master);
+            variants = playlist instanceof final M3UTool.Master m && !m.variants().isEmpty()
                     ? m.variants()
-                    : List.of(MPEGTool.Variant.self(master));
+                    : List.of(M3UTool.Variant.self(master));
         }
 
-        final List<DataQuality> out = new ArrayList<>(variants.size());
-        for (final MPEGTool.Variant v: variants) {
-            out.add(new DataQuality(v.uri(), v.width(), v.height()));
+        final List<Quality> out = new ArrayList<>(variants.size());
+        for (final M3UTool.Variant v: variants) {
+            out.add(new Quality(v.uri(), v.width(), v.height()));
         }
         LOGGER.debug(IT, "Twitch resolved {} HLS rendition(s) for {} '{}'", out.size(), isVod ? "VOD" : "stream", id);
         return out;
@@ -375,11 +375,11 @@ public final class TwitchPlatform implements IPlatform {
 
         final String response = this.gqlPost(body);
         final JsonObject data = JsonParser.parseString(response).getAsJsonObject().getAsJsonObject("data");
-        if (data == null) throw new PlatformException(TwitchPlatform.class, "Access token response missing 'data' field");
+        if (data == null) throw new PlatformException(NAME, "Access token response missing 'data' field");
 
         final String tokenKey = isVod ? "videoPlaybackAccessToken" : "streamPlaybackAccessToken";
         final JsonObject token = data.getAsJsonObject(tokenKey);
-        if (token == null) throw new PlatformException(TwitchPlatform.class, "Access token not found (key: " + tokenKey + ")");
+        if (token == null) throw new PlatformException(NAME, "Access token not found (key: " + tokenKey + ")");
 
         return token;
     }
@@ -581,7 +581,7 @@ public final class TwitchPlatform implements IPlatform {
         if (sign == null || sign.isJsonNull()) return;
 
         if (MATURE_SIGN_POST.equals(str(sign.getAsJsonObject(), "signPost")))
-            throw new MatureContentException(TwitchPlatform.class, kind.name().toLowerCase() + " '" + id + "' is marked as mature content");
+            throw new MatureContentException(NAME, kind.name().toLowerCase() + " '" + id + "' is marked as mature content");
     }
 
     // --- GQL HELPERS ---
@@ -589,13 +589,13 @@ public final class TwitchPlatform implements IPlatform {
     private String gqlPost(final Object body) throws IOException {
         try (final NetRequest req = NetRequest.create(URI.create(GQL_URL))
                 .method("POST")
-                .accept("application/json")
+                .accept(NetRequest.ACCEPT_JSON)
                 .contentType("application/json; charset=utf-8")
                 .header("Client-ID", CLIENT_ID)
                 .body(JSONTool.write(body))
                 .send()) {
-            if (req.statusCode() != 200) throw new PlatformException(TwitchPlatform.class, "HTTP " + req.statusCode() + " from GQL endpoint");
-            return req.readAllAsString();
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "HTTP " + req.statusCode() + " from GQL endpoint");
+            return req.text();
         }
     }
 

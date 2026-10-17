@@ -98,13 +98,13 @@ public final class JSONTool {
      * Parses a URL leniently: {@code null}/empty or unparseable input (e.g. illegal characters such as
      * spaces) yields {@code null}, so one bad URL never aborts a whole result set. Protocol-relative URLs
      * ({@code //host/...}) are promoted to {@code https}.
-     * @param url the raw URL string
+     * @param uri the raw URI text
      * @return the parsed URI, or {@code null} if it is missing or malformed
      */
-    public static URI uri(final String url) {
-        if (url == null || url.isEmpty()) return null;
+    public static URI uri(final String uri) {
+        if (uri == null || uri.isEmpty()) return null;
         try {
-            return URI.create(url.startsWith("//") ? "https:" + url : url);
+            return URI.create(uri.startsWith("//") ? "https:" + uri : uri);
         } catch (final IllegalArgumentException e) {
             return null;
         }

@@ -69,12 +69,12 @@ public final class VKEngine extends GFXEngine {
     private static final int MAX_PLANES = 4;
     private static final int PUSH_BYTES = 16; // { int mode; float bitScale; int width; int height; }
     private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
-    private static final long WAIT_TIMEOUT = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
+    private static final long WAIT_TIMEOUT_NS = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
 
     // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT), FILLED LAZILY
     // UNDER THE CLASS MONITOR ON THE FIRST CONVERSION FRAME. SEE compileSpirv().
-    private static volatile byte[] SPIRV;
-    private static volatile byte[] YCBCR_SPIRV;
+    private static volatile byte[] convertSpirv;
+    private static volatile byte[] ycbcrSpirv;
 
     // COMPUTE CONVERSION MODES (MUST MATCH THE GLSL BELOW)
     private static final int MODE_GRAY = 0;
@@ -496,8 +496,8 @@ public final class VKEngine extends GFXEngine {
             // PACKED YUYV/UYVY STAYS ON COMPUTE: THE EXACT PIXEL-PAIR texelFetch DECODE IS ILLEGAL
             // THROUGH A YCBCR SAMPLER (NO OpImageFetch), AND SINGLE-PLANE 422 PACKED FORMATS
             // (G8B8G8R8_422) HAVE SPOTTY OPTIMAL-TILING SUPPORT ACROSS DRIVERS.
-            case YUYV, YUYV2 -> {
-                this.mode = format == PixelFormat.YUYV2 ? MODE_UYVY : MODE_YUYV;
+            case YUYV, UYVY -> {
+                this.mode = format == PixelFormat.UYVY ? MODE_UYVY : MODE_YUYV;
                 // CEIL: FOR ODD WIDTHS THE SHADER FETCHES TEXEL gid.x>>1 == w/2 ON THE LAST COLUMN,
                 // SO A FLOOR-SIZED PLANE WOULD BE READ ONE TEXEL OUT OF BOUNDS.
                 this.plane(0, VK_FORMAT_R8G8B8A8_UNORM, 4, (width + 1) / 2, height);
@@ -600,12 +600,12 @@ public final class VKEngine extends GFXEngine {
             // FOR THE ZERO-COPY PATH WHERE THE GPU READS THE DECODER'S MEMORY DIRECTLY.
             final Slot twoAgo = this.slots[(int) ((this.head + 1) % SLOTS)];
             if (this.head >= 2 && twoAgo.submitted) {
-                vkWaitForFences(this.device, twoAgo.fence, true, WAIT_TIMEOUT);
+                vkWaitForFences(this.device, twoAgo.fence, true, WAIT_TIMEOUT_NS);
             }
             // THE SLOT WE REUSE LAST HELD FRAME head-SLOTS; ITS WORK MUST BE DONE BEFORE WE RESET
             // ITS COMMAND BUFFER AND OVERWRITE ITS IMAGES.
             if (slot.submitted) {
-                vkWaitForFences(this.device, slot.fence, true, WAIT_TIMEOUT);
+                vkWaitForFences(this.device, slot.fence, true, WAIT_TIMEOUT_NS);
             }
             synchronized (this.ctx.queueLock()) {
                 vkResetFences(this.device, slot.fence);
@@ -694,11 +694,11 @@ public final class VKEngine extends GFXEngine {
                 // LAZY: THE FIRST CONVERSION FRAME BUILDS THIS ENGINE'S SHADER MODULE + PIPELINE FROM
                 // THE PROCESS-CACHED SPIR-V (shaderc COMPILATION IS THE EXPENSIVE STEP — SHARED BY EVERY ENGINE).
                 if (this.pipeline == 0L) {
-                    byte[] spirv = SPIRV;
+                    byte[] spirv = convertSpirv;
                     if (spirv == null) {
                         synchronized (VKEngine.class) {
-                            if (SPIRV == null) SPIRV = compileSpirv(COMPUTE_GLSL, "convert.comp");
-                            spirv = SPIRV;
+                            if (convertSpirv == null) convertSpirv = compileSpirv(COMPUTE_GLSL, "convert.comp");
+                            spirv = convertSpirv;
                         }
                     }
                     final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
@@ -977,7 +977,7 @@ public final class VKEngine extends GFXEngine {
     private void waitAllIdle() {
         for (final Slot s: this.slots) {
             if (s.fence != 0L && s.submitted) {
-                vkWaitForFences(this.device, s.fence, true, WAIT_TIMEOUT);
+                vkWaitForFences(this.device, s.fence, true, WAIT_TIMEOUT_NS);
             }
         }
     }
@@ -1162,11 +1162,11 @@ public final class VKEngine extends GFXEngine {
             this.ycbcrPipeLayout = p.get(0);
 
             // PIPELINE FROM THE PROCESS-CACHED TRIVIAL SHADER; THE MODULE DIES RIGHT AFTER (LEGAL).
-            byte[] spirv = YCBCR_SPIRV;
+            byte[] spirv = ycbcrSpirv;
             if (spirv == null) {
                 synchronized (VKEngine.class) {
-                    if (YCBCR_SPIRV == null) YCBCR_SPIRV = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
-                    spirv = YCBCR_SPIRV;
+                    if (ycbcrSpirv == null) ycbcrSpirv = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
+                    spirv = ycbcrSpirv;
                 }
             }
             final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
@@ -1214,7 +1214,7 @@ public final class VKEngine extends GFXEngine {
     }
 
     // COMPILES GLSL TO SPIR-V VIA shaderc. RUNS ONCE PER PROCESS PER SHADER — CALLERS CACHE THE
-    // (DEVICE-INDEPENDENT) BYTECODE IN SPIRV/YCBCR_SPIRV UNDER THE CLASS MONITOR, SO CREATING MANY
+    // (DEVICE-INDEPENDENT) BYTECODE IN convertSpirv/ycbcrSpirv UNDER THE CLASS MONITOR, SO CREATING MANY
     // ENGINES NEVER RECOMPILES; shaderc COMPILATION IS THE EXPENSIVE STEP.
     private static byte[] compileSpirv(final String glsl, final String name) {
         final long compiler = shaderc_compiler_initialize();

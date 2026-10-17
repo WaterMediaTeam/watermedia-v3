@@ -37,7 +37,7 @@ The Java API targets Java 17. Supply WaterConfig, Log4j, Gson, JOML and the grap
 
 The Minecraft bootstraps refuse to start when TLauncher launched the game. They detect it through its injected skin mod, its classes, its files on the class path, its JVM options, its threads and its parent processes, and fail with a message naming the evidence; leftovers of a past installation in the game directory only log a warning. Embedding applications skip this check.
 
-Configuration loads before native provisioning. Check the generated configuration and the actual host classpath before diagnosing an unavailable backend. These field paths refer to `WaterMediaConfig`; sizes below use MiB (1,048,576 bytes), even where the configuration labels them MB.
+Configuration loads before native provisioning. Check the generated configuration and the actual host classpath before diagnosing an unavailable backend. These paths are the keys of the generated `watermedia.toml`; sizes below use MiB (1,048,576 bytes), even where the configuration labels them MB.
 
 | Setting | Default and related limits |
 | --- | --- |
@@ -46,13 +46,13 @@ Configuration loads before native provisioning. Check the generated configuratio
 | `media.ffmpeg.hardwareAccel` | `true`; actual use also depends on native/driver capabilities, codec and output engine. Software decoding remains available. |
 | `media.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; both main and separate-audio inputs use them. Zero analysis duration leaves FFmpeg's default. Larger values can increase startup time. |
 | `decoders.maxImageSourceSize` | 128 MiB of encoded image data. This is separate from the image reader's 512 MiB decoded-data limit. |
-| `media.tx.texturesBudget` | 32 MiB; preloading also requires a capable engine, a valid frame count, and both decoded source frames and output textures fitting the budget. Zero forces animation streaming. |
-| `media.ffmpeg.cache` / `cacheMaxSize` | Enabled / 10 MiB per eligible response; this does not cache every stream or HLS/DASH input. |
-| `media.tx.cache` / `media.cacheMaxSize` | Image cache enabled / 8,192 MiB shared disk budget; older entries are evicted after writes. Disk, encoded-image, decoded-image and texture limits are independent. |
+| `media.watertx.texturesBudget` | 32 MiB; preloading also requires a capable engine, a valid frame count, and both decoded source frames and output textures fitting the budget. Zero forces animation streaming. |
+| `media.ffmpeg.cache` / `cacheMaxResponse` | Enabled / 10 MiB per eligible response; this does not cache every stream or HLS/DASH input. |
+| `media.watertx.cache` / `media.cacheBudget` | Image cache enabled / 8,192 MiB shared disk budget; older entries are evicted after writes. Disk, encoded-image, decoded-image and texture limits are independent. |
 | `platforms.allowMatureContent` | `false`; supported platform adapters can mark a resource `BLOCKED` instead of handing it to playback. |
-| `platforms.searchCacheCleanup` | 15 minutes; zero clears cached searches on every search. |
+| `platforms.searchCleanupInterval` | 15 minutes; zero clears cached searches on every search. |
 
-The optional file server starts when `network.forceEnableServer` is true, or when running server-side with `network.enableServer` true. Both default to false. It binds to `127.0.0.1:25572`; a remote listener needs an explicit address and a custom nonblank `network.token`. `network.remoteHost` is the client's full HTTP(S) base URL and does not change the server's bind address. The built-in listener uses HTTP; remote HTTPS requires host-managed TLS termination.
+The optional file server starts according to `network.server`: `OFF` (the default) never, `DEDICATED` on any host started without a client (dedicated servers), `ALWAYS` on clients too. It binds to `127.0.0.1:25572`; a remote listener needs an explicit address and a custom nonblank `network.token`. `network.remoteUrl` is the client's full HTTP(S) base URL and does not change the server's bind address. The built-in listener uses HTTP; remote HTTPS requires host-managed TLS termination.
 
 The defaults allow eight simultaneous requests, a 30-second server request deadline, an 8 MiB upload and 1,024 MiB total storage. `maxUploadSize = 0` removes only the individual upload limit; storage quota, concurrency and deadline still apply. Java network requests separately default to a 15-second timeout, ten redirects and a 16 MiB text-body limit. Native playback input options use their own timeout policy.
 
@@ -60,7 +60,7 @@ The defaults allow eight simultaneous requests, a 30-second server request deadl
 
 The JAR is the explicit module `org.watermedia`. Its public API is the set of exported packages: `org.watermedia`, `api.codecs`, `api.media`, `api.network`, `api.platform` and `api.util`. Everything else is internal: codec readers, writers and chunk structures, player queues and caches, the built-in platforms, the bootstrap and the bundled FFmpeg bindings. `org.watermedia.tools` and `org.watermedia.bootstrap` are exported only to the Binaries module: `tools` shares its download, digest and JSON utilities, and `bootstrap` holds the module lifecycle Binaries implements.
 
-Forge 1.21.1 and newer enforce the descriptor, so code outside the module fails with `IllegalAccessError` or `IllegalAccessException` when it touches an internal package. NeoForge, Fabric, older Forge versions and classpath builds ignore it; treat the same boundary as the contract there too. Reach internal features through their entry points, such as `CodecsAPI.decodeImage`, `CodecsAPI.encodeWebM` and `PlatformAPI.fetch`. `gradle javadocInventory` checks only the exported packages, read from `src/main/module/org.watermedia/module-info.java`.
+Forge 1.21.1 and newer enforce the descriptor, so code outside the module fails with `IllegalAccessError` or `IllegalAccessException` when it touches an internal package. NeoForge, Fabric, older Forge versions and classpath builds ignore it; treat the same boundary as the contract there too. Reach internal features through their entry points, such as `CodecsAPI.reader`, `CodecsAPI.writer` and `PlatformAPI.fetch`. `gradle javadocInventory` checks only the exported packages, read from `src/main/module/org.watermedia/module-info.java`.
 
 ## Resolving addresses
 
@@ -85,12 +85,12 @@ if (mrl.status() == MRL.Status.LOADED) {
 
 `source(index)` returns null when the source is unavailable. `sources()` and `sourcesByType(...)` return lists. `MediaType` belongs to `org.watermedia.api.util`, not to `MRL`. Reload with `mrl = mrl.reload()`: a forgotten cache entry returns a replacement handle, while the old handle remains forgotten. MRLs belong to their bootstrap session and cannot revive work after that session closes.
 
-Indices start at zero: a gallery can have an image at index 0, a video at index 1 and an animation at index 2. Pass index 1 to `MediaAPI.createPlayer` to play that gallery's video. Omitting the index selects the first source.
+Indices start at zero: a gallery can have an image at index 0, a video at index 1 and an animation at index 2. Pass index 1 to `MediaAPI.player` to play that gallery's video. Omitting the index selects the first source.
 
 ## Creating and controlling a player
 
 ```java
-MediaPlayer player = MediaAPI.createPlayer(mrl, 0,
+MediaPlayer player = MediaAPI.player(mrl, 0,
         () -> MediaAPI.glEngine(renderThread, renderExecutor),
         MediaAPI::jsEngine);
 if (player == null) {
@@ -104,7 +104,7 @@ try {
 }
 ```
 
-`createPlayer` returns null if the source is still fetching, its index is invalid, the required backend is unavailable, or construction throws an `Exception`. An `Error` propagates. Check the MRL status before deciding whether to retry. Suppliers are invoked only when needed; images do not consume the audio supplier. Use a supplier returning null to omit an output, for example `() -> null` for audio-only playback's graphics engine. Do not share an engine between players.
+`player` returns null if the source is still fetching, its index is invalid, the required backend is unavailable, or construction throws an `Exception`. An `Error` propagates. Check the MRL status before deciding whether to retry. Suppliers are invoked only when needed; images do not consume the audio supplier. Use a supplier returning null to omit an output, for example `() -> null` for audio-only playback's graphics engine. Do not share an engine between players.
 
 `TxMediaPlayer` handles supported images and animations. `FFMediaPlayer` handles audio/video through FFmpeg. `ServerMediaPlayer` provides a synchronization clock without decoding or native engines.
 
@@ -116,10 +116,10 @@ player.volume(50);
 player.mute(true);
 player.speed(1.25f);
 player.repeat(true);
-player.maxSize(1280, 720);
+player.scale(1280, 720);
 ```
 
-`speed(value)` accepts finite values in `(0, 4]` and reports acceptance. Java Sound cannot change playback rate. `canSpeed()` is a pure query that any thread can call every frame; `speed(value)` must run on the owning audio context, and the player clock follows only a rate the audio engine accepted. A synchronized follower returns `false` even when it sends a control request; that return does not confirm remote application. `spatialAudio(...)` also reports whether the engine accepted the update; use `spatialAudioSupported()` before presenting positional controls.
+`speed(value)` accepts finite values in `(0, 4]` and reports acceptance. Java Sound cannot change playback rate. `canSpeed()` is a pure query that any thread can call every frame; `speed(value)` must run on the owning audio context, and the player clock follows only a rate the audio engine accepted. A synchronized follower returns `false` even when it sends a control request; that return does not confirm remote application. `spatialAudio(...)` also reports whether the engine accepted the update; use `spatial()` before presenting positional controls.
 
 Time arguments use milliseconds; player volume uses a percentage from 0 to 100. Check `canSeek()` for streams that do not support seeking. Poll `status()`, `time()`, `duration()`, `buffered()` and `exception()` for playback diagnostics. Scaling and level of detail affect supported pixel layouts. Built-in graphics engines do not currently accept compressed BC textures. Release with `player.release()` when the host removes the playback surface, including when playback has failed.
 
@@ -235,7 +235,7 @@ final MRL.Source media = mrl.source(0);
 if (media == null || (media.type() != MediaType.AUDIO && media.type() != MediaType.VIDEO)) {
     throw new IllegalStateException("A resolved audio or video source is required");
 }
-final MediaPlayer player = MediaAPI.createPlayer(mrl, () -> null, () -> MediaAPI.alEngine(true));
+final MediaPlayer player = MediaAPI.player(mrl, () -> null, () -> MediaAPI.alEngine(true));
 if (player == null) throw new IllegalStateException("The media backend could not create a player");
 try {
     player.spatialAudio(new SpatialAudio(sourceX, sourceY, sourceZ, 8.0f, 64.0f, 1.0f, false, environment));
@@ -283,56 +283,53 @@ An in-game check is still needed for audibility of occlusion and reflections, ho
 
 ## Image and DDS access
 
-`CodecsAPI.decodeImage` picks an internal reader from the leading bytes and returns it as an `ImageReader`. The PNG and GIF chunk structures in `api.codecs.common` are internal and keep their serializers for future animation writers. Run `gradle javadocInventory` from the project root to list missing public-method documentation with file names and line numbers; the task only reports findings.
+`CodecsAPI.reader` picks an internal reader from the leading bytes and returns it as an `ImageReader`. The PNG and GIF chunk structures in `api.codecs.common` are internal and keep their serializers for future animation writers. Run `gradle javadocInventory` from the project root to list missing public-method documentation with file names and line numbers; the task only reports findings.
 
 ```java
-try (ImageReader reader = CodecsAPI.decodeImage(encodedBuffer)) {
+try (ImageReader reader = CodecsAPI.reader(encodedBuffer)) {
+    PixelFormat format = reader.pixelFormat();
     while (reader.hasNext()) {
-        reader.next();
-        PixelFormat format = reader.pixelFormat();
-        for (int plane = 0; plane < reader.planeCount(); plane++) {
-            ByteBuffer pixels = reader.plane(plane);
-            // CONSUME OR COPY BEFORE THE NEXT FRAME REUSES THE READER'S BUFFER.
-        }
+        ByteBuffer pixels = reader.next();
+        // CONSUME OR COPY BEFORE THE NEXT FRAME REUSES THE READER'S BUFFER.
     }
 }
 ```
 
-Consult the returned pixel format and plane count rather than assuming BGRA. `readAll()` retains copies and enforces an aggregate decoded-byte limit for one image. Concurrent readers still consume independent memory: media players coordinate their decoding and reuse decoded images through their caches, while code that drives the decoders directly owns its concurrency.
+Consult the returned pixel format rather than assuming BGRA: every decoder delivers one tightly packed BGRA buffer per frame, except grayscale JPEGs, which deliver one luma byte per pixel (`GRAY`) unless `PixelFormat.BGRA` is requested, and SVGs, which honor an `RGBA` request. JPEG and WebP frames come out already rotated into their EXIF orientation, with `width()` and `height()` swapped when it calls for it; `ImageReader.metadata()` exposes the comments, EXIF, XMP and ICC segments through the `CodecsAPI.JPEG_METAKEY_*` and `WEBP_METAKEY_*` keys, and `JPEG_METAKEY_ORIENTATION` / `WEBP_METAKEY_ORIENTATION` report the value that was applied. Netpbm covers the plain `P1`..`P3` and binary `P4`..`P7` variants. `readAll()` retains copies and enforces an aggregate decoded-byte limit for one image. Concurrent readers still consume independent memory: media players coordinate their decoding and reuse decoded images through their caches, while code that drives the decoders directly owns its concurrency.
 
-`CodecsAPI.encodeWebM(...)` returns an experimental `ImageWriter` that encodes VP9 inside WebM; it requires FFmpeg and flattens alpha.
+`CodecsAPI.writer(...)` returns an experimental `ImageWriter` that encodes VP9 inside WebM; it requires FFmpeg and flattens alpha.
 
-`BCReader` reads already compressed BC1/BC3/BC7 blocks in a DX10 DDS texture array. Instantiate `org.watermedia.api.codecs.BCReader` directly for block access; `CodecsAPI.decodeImage` does not dispatch DDS files. No native encoder is needed, but built-in OpenGL, Vulkan and software engines do not accept BC textures, so DDS block reading does not establish end-to-end player support. A WaterMedia animation footer supplies delays when present, while ordinary DDS slices have zero delay. Mip chains, volumes and cube maps are rejected. There is no BC encoder or codec-cache option. `CodecsAPI.available(...)` reports software pixel-decoder support, not GPU texture-format support.
+`BcReader` reads already compressed BC1/BC3/BC7 blocks in a DX10 DDS texture array. Instantiate `org.watermedia.api.codecs.BcReader` directly for block access; `CodecsAPI.reader` does not dispatch DDS files. No native encoder is needed, but built-in OpenGL, Vulkan and software engines do not accept BC textures, so DDS block reading does not establish end-to-end player support. A WaterMedia animation footer supplies delays when present, while ordinary DDS slices have zero delay. Mip chains, volumes and cube maps are rejected. There is no BC encoder or codec-cache option. `CodecsAPI.available(...)` reports software pixel-decoder support, not GPU texture-format support.
 
 ## Synchronized playback
 
 Implement `Bridge.send(ByteBuffer)` with the host's transport. The authority's bridge broadcasts downstream; a follower's bridge sends upstream. Route incoming payloads to the matching `player.sync(payload)` session. Copy the bytes when the transport queues them beyond the call. Bridge implementations must be thread-safe and nonblocking; authenticate and authorize the peer in the host transport.
 
 ```java
-ServerMediaPlayer authority = MediaAPI.createPlayer(downstreamBridge,
+ServerMediaPlayer authority = MediaAPI.serverPlayer(downstreamBridge,
         Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
 authority.start();
-MediaPlayer follower = MediaAPI.createPlayer(mrl, gfxSupplier, sfxSupplier, upstreamBridge);
+MediaPlayer follower = MediaAPI.player(mrl, gfxSupplier, sfxSupplier, upstreamBridge);
 if (follower == null) throw new IllegalStateException("Follower media is unavailable");
 ```
 
-`MediaAPI.createFollower(upstreamBridge)` builds a media-less follower clock, useful for HUDs, logic-side replicas and protocol tests; `MediaAPI.createPlayer()` builds a plain clock with no bridge. Engines and players have no public constructors: every instance comes from `MediaAPI`.
+`MediaAPI.follower(upstreamBridge)` builds a media-less follower clock, useful for HUDs, logic-side replicas and protocol tests; `MediaAPI.serverPlayer()` builds a plain clock with no bridge. Engines and players have no public constructors: every instance comes from `MediaAPI`.
 
-Use `org.watermedia.api.media.Config.Capability`. `LOCKSTEP` holds the authority while an established follower buffers; late joiners do not immediately pause the audience. `CONTROLS` allows followers to request playback changes. `VOLUME` also synchronizes volume and mute. Other local controls, including scaling and spatial effects, remain local.
+Use `org.watermedia.api.media.Config.Capability`. `LOCKSTEP` holds the authority while an established follower buffers; late joiners do not immediately pause the pool. `CONTROLS` allows followers to request playback changes. `VOLUME` also synchronizes volume and mute. Other local controls, including scaling and spatial effects, remain local.
 
 `sync(...)` validates incoming packet structure. The bridge does not identify or authenticate peers for you. Followers announce themselves and receive session state; the authority learns duration/live status from a ready follower. Release each authority and follower when its host session ends. Tune drift with `tolerance(ms)` and inspect `authorityTime()`, `drift()` and `role()` when diagnosing synchronization.
 
 ### Session sequence and calling threads
 
-1. A follower announces itself as a loading spectator without immediately holding the existing audience.
+1. A follower announces itself as still loading without immediately holding the existing pool.
 2. The authority replies with capabilities and a current state snapshot.
 3. Followers report state changes and send periodic keepalives. Until the authority learns a duration or a live stream, its clock stays at zero.
 4. The authority broadcasts state changes and refreshes its snapshot about every five seconds. Followers ignore older revisions; equal revisions can refresh the time reference.
-5. Releasing a follower sends its departure. `watcherTimeout(ms)` removes silent viewers after 15 seconds by default.
+5. Releasing a follower sends its departure. `followerTimeout(ms)` removes silent followers after 15 seconds by default.
 
-Watcher timeouts must be between 1 and `Long.MAX_VALUE / 1_000_000` milliseconds. Values outside that range are rejected without changing the current timeout.
+Follower timeouts must be between 1 and `Long.MAX_VALUE / 1_000_000` milliseconds. Values outside that range are rejected without changing the current timeout.
 
-The authority retains the first positive duration for its session. When reports identify a live stream, later reports with `live=false` do not clear that classification. With `LOCKSTEP`, waiting for an established viewer presents `BUFFERING`, freezes the clock and resumes from the same position. Follower playback controls such as start, pause, seek, speed and repeat travel as requests to the authority instead of applying locally; after capabilities arrive, requests without `CONTROLS` are discarded.
+The authority retains the first positive duration for its session. When reports identify a live stream, later reports with `live=false` do not clear that classification. With `LOCKSTEP`, waiting for an established follower presents `BUFFERING`, freezes the clock and resumes from the same position. Follower playback controls such as start, pause, seek, speed and repeat travel as requests to the authority instead of applying locally; after capabilities arrive, requests without `CONTROLS` are discarded.
 
 `sync(...)` decodes and consumes the packet on the calling thread. Followers reconcile playback on their 50 ms synchronization tick. An authority can process controls and send replies synchronously during `sync`; not every effect is deferred to the tick. Bridge callbacks can also run on host control threads. Use `authority.sync(payload)` for upstream messages and `follower.sync(payload)` for downstream messages, after routing and authorizing them in the host transport.
 
@@ -340,7 +337,7 @@ Read `player.granted(capability)` when presenting controls. Frame stepping is un
 
 ### Packet format
 
-Packets are fixed-size big-endian records in the `org.watermedia.api.media` package. `Packet.of(ByteBuffer)` consumes only the packet's bytes, leaving trailing data for the host transport.
+Packets are fixed-size big-endian records in the `org.watermedia.api.media` package. `Packet.read(ByteBuffer)` consumes only the packet's bytes, leaving trailing data for the host transport.
 
 | Packet | Size | Direction |
 | --- | ---: | --- |

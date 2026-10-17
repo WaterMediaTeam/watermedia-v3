@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.gif;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -11,7 +11,7 @@ public record ImageDescriptor(
     boolean localColorTableFlag, boolean interlacedFlag, boolean sortFlag,
     int localColorTableSize) implements IChunk {
 
-    public static final int LOCAL_COLOR_TABLE_SIZE = 8;
+    public static final int LOCAL_COLOR_TABLE_SIZE_CODES = 8;
 
     /** Returns the local palette color count, {@code 2^(localColorTableSize + 1)}, even when no palette is present. */
     public int localColorCount() {
@@ -19,21 +19,21 @@ public record ImageDescriptor(
     }
 
     /** Rejects negative offsets, empty dimensions and palette-size codes outside the three-bit range. */
-    public void validate() throws XCodecException {
-        // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException, SO read() AND
-        // GIFReader.readImageDescriptor CALL THIS AT THE PARSE BOUNDARY
+    public void validate() throws CodecException {
+        // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException, SO read() AND
+        // GifReader.readImageDescriptor CALL THIS AT THE PARSE BOUNDARY
         if (this.left < 0 || this.top < 0 || this.width <= 0 || this.height <= 0) {
-            throw new XCodecException("Invalid dimensions for ImageDescriptor");
+            throw new CodecException("Invalid dimensions for ImageDescriptor");
         }
-        if (this.localColorTableSize < 0 || this.localColorTableSize >= LOCAL_COLOR_TABLE_SIZE) {
-            throw new XCodecException("Local color table size must be between 0 and " + (LOCAL_COLOR_TABLE_SIZE - 1));
+        if (this.localColorTableSize < 0 || this.localColorTableSize >= LOCAL_COLOR_TABLE_SIZE_CODES) {
+            throw new CodecException("Local color table size must be between 0 and " + (LOCAL_COLOR_TABLE_SIZE_CODES - 1));
         }
     }
 
     /** Reads and validates the nine-byte descriptor after the image separator, without its local palette. */
-    public static ImageDescriptor read(final ByteBuffer buffer) throws XCodecException {
+    public static ImageDescriptor read(final ByteBuffer buffer) throws CodecException {
         if (buffer.remaining() < 9) {
-            throw new XCodecException("Buffer does not contain enough data for Image Descriptor");
+            throw new CodecException("Buffer does not contain enough data for Image Descriptor");
         }
 
         final int left = Short.toUnsignedInt(buffer.getShort());

@@ -1,10 +1,10 @@
 package org.watermedia.api.codecs.readers.svg;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 /**
  * Drawing surface that paints user-space {@link Path} geometry into a raw ARGB canvas through the
- * {@link SVGRasterizer}. This is the AWT-free analogue of JSVG's {@code renderer.output.Output} +
+ * {@link SvgRasterizer}. This is the AWT-free analogue of JSVG's {@code renderer.output.Output} +
  * {@code Graphics2DOutput} seam: the renderer talks only to this surface, so the backend stays a raw
  * pixel buffer instead of a {@code Graphics2D}. Modelled as a record wrapping the rasterizer — a
  * single-implementation interface would add indirection without payoff.
@@ -14,19 +14,19 @@ import org.watermedia.api.codecs.XCodecException;
  *
  * @param ras the backing rasterizer that owns the pixel canvas
  */
-record RasterOutput(SVGRasterizer ras) {
+record RasterOutput(SvgRasterizer ras) {
     // DEVICE-SPACE FLATTENING TOLERANCE IN PIXELS — SMALL ENOUGH FOR CRISP CURVES AT ANY SCALE
     private static final double TOL = 0.25;
 
     RasterOutput(final int width, final int height) {
-        this(new SVGRasterizer(width, height));
+        this(new SvgRasterizer(width, height));
     }
 
     int width() { return this.ras.width; }
     int height() { return this.ras.height; }
     int[] canvas() { return this.ras.canvas; }
 
-    void fill(final Path geo, final Affine ctm, final boolean evenOdd, final SVGPaint paint, final float opacity) throws XCodecException {
+    void fill(final Path geo, final Affine ctm, final boolean evenOdd, final SvgPaint paint, final float opacity) throws CodecException {
         if (paint == null || opacity <= 0 || geo.isEmpty()) return;
         final double[] bb = geo.userBounds();
         if (bb == null) return;
@@ -34,7 +34,7 @@ record RasterOutput(SVGRasterizer ras) {
         this.ras.fill(geo.flatten(ctm, TOL), evenOdd, sampler, opacity);
     }
 
-    void stroke(final Path geo, final Affine ctm, final double strokeWidthUser, final SVGPaint paint, final float opacity) throws XCodecException {
+    void stroke(final Path geo, final Affine ctm, final double strokeWidthUser, final SvgPaint paint, final float opacity) throws CodecException {
         if (paint == null || opacity <= 0 || strokeWidthUser <= 0 || geo.isEmpty()) return;
         final double[] bb = geo.userBounds();
         if (bb == null) return;

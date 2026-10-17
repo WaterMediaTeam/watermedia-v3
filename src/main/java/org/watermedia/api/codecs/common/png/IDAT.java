@@ -9,7 +9,7 @@ public record IDAT(byte[] data) implements IChunk {
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.data);
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.data);
     }
 }

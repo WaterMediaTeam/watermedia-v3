@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -20,32 +20,32 @@ public record GAMA(int gamma) implements IChunk {
     /**
      * Reads gAMA chunk from buffer (reads length/type header first)
      */
-    public static GAMA read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated gAMA chunk header");
+    public static GAMA read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated gAMA chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new XCodecException("gAMA chunk length must be 4, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated gAMA chunk");
+            throw new CodecException("gAMA chunk length must be 4, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated gAMA chunk");
 
         return of(buffer.getInt());
     }
 
     /**
-     * Converts a generic CHUNK to GAMA
+     * Converts a generic PngChunk to GAMA
      */
-    public static GAMA convert(final CHUNK chunk) throws XCodecException {
+    public static GAMA convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new XCodecException("gAMA data must be 4 bytes, got " + data.length);
+            throw new CodecException("gAMA data must be 4 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
@@ -54,9 +54,9 @@ public record GAMA(int gamma) implements IChunk {
 
     // THE FIELD IS UNSIGNED gamma * 100000: 0x80000000 READS BACK NEGATIVE AND FEEDS A NEGATIVE EXPONENT
     // TO Math.pow, WHOSE +Infinity SATURATES THE DECODER'S GAMMA LUT AND BLEEDS OVER THE ALPHA BYTE
-    private static GAMA of(final int gamma) throws XCodecException {
+    private static GAMA of(final int gamma) throws CodecException {
         if (gamma <= 0 || gamma > MAX_GAMMA) {
-            throw new XCodecException("Invalid gAMA value: " + Integer.toUnsignedString(gamma));
+            throw new CodecException("Invalid gAMA value: " + Integer.toUnsignedString(gamma));
         }
         return new GAMA(gamma);
     }
@@ -83,7 +83,7 @@ public record GAMA(int gamma) implements IChunk {
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

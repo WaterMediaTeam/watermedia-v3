@@ -8,8 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exercises the pure helpers in {@link MathUtil}: clamping, unit conversions,
- * byte formatting and easing.
+ * Verifies the pure helpers in {@link MathUtil} (clamping, sizing, unit conversion and byte
+ * formatting) and the easing curves of {@link MathEases}.
  */
 @DisplayName("MathUtil")
 public class MathUtilTest {
@@ -52,78 +52,37 @@ public class MathUtilTest {
     }
 
     @Nested
-    @DisplayName("tick / millisecond / seconds conversions")
-    class TimeConversionTests {
+    @DisplayName("scaled / minutesToMs")
+    class SizingTests {
 
         @Test
-        @DisplayName("tickToMs(20) == 1000")
-        void tickToMs() {
-            assertEquals(1000L, MathUtil.tickToMs(20));
+        @DisplayName("scaled keeps the native size when nothing reduces it")
+        void scaledKeepsNative() {
+            assertEquals(1081, MathUtil.scaled(1081, 0, 100));
+            assertEquals(1081, MathUtil.scaled(1081, 4096, 100));
         }
 
         @Test
-        @DisplayName("msToTick(1000) == 20")
-        void msToTick() {
-            assertEquals(20, MathUtil.msToTick(1000L));
+        @DisplayName("scaled caps, applies the percentage and keeps the result even")
+        void scaledCapsAndEvens() {
+            assertEquals(720, MathUtil.scaled(1080, 720, 100));
+            assertEquals(540, MathUtil.scaled(1080, 0, 50));
+            assertEquals(10, MathUtil.scaled(1080, 0, 1));
+            assertEquals(2, MathUtil.scaled(100, 0, 1));
         }
 
         @Test
-        @DisplayName("secondsToMs multiplies before truncating, preserving fractional seconds")
-        void secondsToMsKeepsFraction() {
-            // 2.5 * 1000.0 == 2500.0; (long) 2500.0 == 2500
-            assertEquals(2500L, MathUtil.secondsToMs(2.5));
-        }
-
-        @Test
-        @DisplayName("msToSeconds(1500) == 1.5")
-        void msToSeconds() {
-            assertEquals(1.5d, MathUtil.msToSeconds(1500L), EPSILON);
-        }
-    }
-
-    @Nested
-    @DisplayName("argb packing")
-    class ArgbTests {
-
-        @Test
-        @DisplayName("opaque red == 0xFFFF0000")
-        void opaqueRed() {
-            assertEquals(0xFFFF0000, MathUtil.argb(255, 255, 0, 0));
+        @DisplayName("minutesToMs keeps fractional minutes down to the millisecond")
+        void minutesToMs() {
+            assertEquals(60_000L, MathUtil.minutesToMs(1.0));
+            assertEquals(60_030L, MathUtil.minutesToMs(1.0005));
+            assertEquals(30_000L, MathUtil.minutesToMs(0.5));
         }
     }
 
     @Nested
-    @DisplayName("parseLong fallback")
-    class ParseLongTests {
-
-        @Test
-        @DisplayName("parseLong of a numeric string")
-        void numeric() {
-            assertEquals(42L, MathUtil.parseLong("42"));
-        }
-
-        @Test
-        @DisplayName("parseLong of garbage returns 0")
-        void invalid() {
-            assertEquals(0L, MathUtil.parseLong("abc"));
-        }
-
-        @Test
-        @DisplayName("parseLong of null returns 0")
-        void nullInput() {
-            assertEquals(0L, MathUtil.parseLong(null));
-        }
-    }
-
-    @Nested
-    @DisplayName("byte conversions")
+    @DisplayName("byte formatting")
     class ByteTests {
-
-        @Test
-        @DisplayName("bytesToKB(2048) == 2.0")
-        void bytesToKB() {
-            assertEquals(2.0, MathUtil.bytesToKB(2048L), EPSILON);
-        }
 
         @Test
         @DisplayName("displayBytes(0) == '0 B'")
@@ -152,94 +111,46 @@ public class MathUtilTest {
     class EasingTests {
 
         @Test
-        @DisplayName("easeIn at t=1 reaches end")
-        void easeInEnd() {
-            assertEquals(10.0, MathUtil.easeIn(0.0, 10.0, 1.0), EPSILON);
+        @DisplayName("every curve starts at start and ends at end")
+        void everyCurveHitsBothEnds() {
+            for (final MathEases ease: MathEases.values()) {
+                assertEquals(0.0, ease.apply(0.0, 10.0, 0.0), EPSILON, ease.name());
+                assertEquals(10.0, ease.apply(0.0, 10.0, 1.0), EPSILON, ease.name());
+                assertEquals(10.0, ease.apply(10.0, 30.0, 0.0), EPSILON, ease.name());
+                assertEquals(30.0, ease.apply(10.0, 30.0, 1.0), EPSILON, ease.name());
+            }
         }
 
         @Test
-        @DisplayName("easeOut at t=0 stays at start")
-        void easeOutStart() {
-            assertEquals(0.0, MathUtil.easeOut(0.0, 10.0, 0.0), EPSILON);
+        @DisplayName("EASE_IN is quadratic and EASE_OUT its mirror")
+        void quadraticShapes() {
+            assertEquals(2.5, MathEases.EASE_IN.apply(0.0, 10.0, 0.5), EPSILON);
+            assertEquals(7.5, MathEases.EASE_OUT.apply(0.0, 10.0, 0.5), EPSILON);
         }
 
         @Test
-        @DisplayName("easeInOut midpoint is half-way")
-        void easeInOutMid() {
-            assertEquals(5.0, MathUtil.easeInOut(0.0, 10.0, 0.5), EPSILON);
-        }
-    }
-
-    @Nested
-    @DisplayName("sin/cos lookup table")
-    class TrigTests {
-
-        @Test
-        @DisplayName("sin(0) ~ 0")
-        void sinZero() {
-            assertEquals(0.0f, MathUtil.sin(0f), 0.01f);
+        @DisplayName("in-out curves cross the midpoint half-way")
+        void inOutMidpoints() {
+            assertEquals(5.0, MathEases.EASE_IN_OUT.apply(0.0, 10.0, 0.5), EPSILON);
+            assertEquals(5.0, MathEases.EASE_IN_OUT_QUAD.apply(0.0, 10.0, 0.5), EPSILON);
+            assertEquals(5.0, MathEases.EASE_IN_OUT_SINE.apply(0.0, 10.0, 0.5), EPSILON);
+            assertEquals(5.0, MathEases.EASE_IN_OUT_BOUNCE.apply(0.0, 10.0, 0.5), EPSILON);
         }
 
         @Test
-        @DisplayName("cos(0) ~ 1")
-        void cosZero() {
-            assertEquals(1.0f, MathUtil.cos(0f), 0.01f);
+        @DisplayName("composite curves honour a non-zero start and scale with the range")
+        void compositeCurvesHonourRange() {
+            assertEquals(11.25, MathEases.EASE_IN_OUT.apply(10.0, 20.0, 0.25), EPSILON);
+            assertEquals(15.0, MathEases.EASE_IN_OUT.apply(10.0, 20.0, 0.5), EPSILON);
+            assertEquals(13.75, MathEases.EASE_OUT_IN.apply(10.0, 20.0, 0.25), EPSILON);
+            assertEquals(15.0, MathEases.EASE_OUT_IN.apply(10.0, 20.0, 0.5), EPSILON);
+            for (final MathEases ease: new MathEases[] { MathEases.EASE_IN_OUT, MathEases.EASE_OUT_IN, MathEases.EASE_IN_OUT_ELASTIC }) {
+                for (final double t: new double[] { 0.1, 0.25, 0.4, 0.6, 0.75, 0.9 }) {
+                    // THE CURVE SCALES WITH THE RANGE AND SHIFTS WITH THE START
+                    assertEquals(10.0 * ease.apply(0.0, 1.0, t), ease.apply(0.0, 10.0, t), EPSILON, ease.name() + " at " + t);
+                    assertEquals(5.0 + ease.apply(0.0, 10.0, t), ease.apply(5.0, 15.0, t), EPSILON, ease.name() + " at " + t);
+                }
+            }
         }
-    }
-
-    @Nested
-    @DisplayName("scaleTempo / scaleDesTempo contract")
-    class ScaleTempoTests {
-
-        @Test
-        @DisplayName("scaleTempo(long) in-range returns the plain ratio")
-        void scaleTempoLongInRange() {
-            assertEquals(0.5d, MathUtil.scaleTempo(0L, 10L, 5L), EPSILON);
-        }
-
-        @Test
-        @DisplayName("scaleTempo(long) out-of-range wraps to zero via modulo")
-        void scaleTempoLongWraps() {
-            assertEquals(0.5d, MathUtil.scaleTempo(0L, 10L, 15L), EPSILON);
-        }
-
-        @Test
-        @DisplayName("scaleTempo(double) in-range returns the plain ratio")
-        void scaleTempoDoubleInRange() {
-            assertEquals(0.5d, MathUtil.scaleTempo(0.0, 10.0, 5.0), EPSILON);
-        }
-
-        @Test
-        @DisplayName("scaleTempo(double) out-of-range wraps to zero via modulo")
-        void scaleTempoDoubleWraps() {
-            assertEquals(0.5d, MathUtil.scaleTempo(0.0, 10.0, 15.0), EPSILON);
-        }
-
-        @Test
-        @DisplayName("scaleDesTempo in-range matches scaleTempo")
-        void scaleDesTempoInRange() {
-            assertEquals(0.5d, MathUtil.scaleDesTempo(0L, 10L, 5L), EPSILON);
-        }
-
-        @Test
-        @DisplayName("scaleDesTempo out-of-range over-scales without wrapping")
-        void scaleDesTempoOverScales() {
-            assertEquals(1.5d, MathUtil.scaleDesTempo(0L, 10L, 15L), EPSILON);
-        }
-
-        @Test
-        @DisplayName("scaleDesTempoTick over-scales while scaleTempoTick wraps for the same out-of-range tick")
-        void tickVariantsDiffer() {
-            // 20t = 1s SO end:10t=500ms, time:15t=750ms; WRAP GIVES 0.5, OVER-SCALE GIVES 1.5
-            assertEquals(0.5d, MathUtil.scaleTempoTick(0, 10, 15), EPSILON);
-            assertEquals(1.5d, MathUtil.scaleDesTempoTick(0, 10, 15), EPSILON);
-        }
-    }
-
-    @Test
-    @DisplayName("MathEases.EASE_IN.apply matches MathUtil.easeIn")
-    void enumDelegation() {
-        final double expected = MathUtil.easeIn(0.0, 10.0, 0.5);
-        assertEquals(expected, MathEases.EASE_IN.apply(0.0, 10.0, 0.5), EPSILON);
     }
 }

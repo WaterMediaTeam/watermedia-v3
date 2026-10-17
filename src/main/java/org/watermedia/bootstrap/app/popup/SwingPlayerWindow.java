@@ -164,9 +164,9 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         final GFXEngine engine = this.video.newEngine();
         ThreadTool.createStarted("Popup-Open", () -> {
             try {
-                final MediaPlayer p = MediaAPI.createPlayer(this.mrl, this.sourceIndex, () -> engine, this.audio);
+                final MediaPlayer p = MediaAPI.player(this.mrl, this.sourceIndex, () -> engine, this.audio);
                 if (p == null) {
-                    WaterMedia.LOGGER.error("Popup player: MediaAPI.createPlayer returned null");
+                    WaterMedia.LOGGER.error("Popup player: MediaAPI.player returned null");
                     return;
                 }
                 p.quality(this.quality);

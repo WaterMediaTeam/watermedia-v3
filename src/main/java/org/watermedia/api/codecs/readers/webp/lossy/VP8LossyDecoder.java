@@ -1,11 +1,13 @@
 package org.watermedia.api.codecs.readers.webp.lossy;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -23,44 +25,34 @@ public final class VP8LossyDecoder {
     private static final byte[] TOP_BORDER_8 = fillBorder(8, 127);
     private static final byte[] LEFT_BORDER_8 = fillBorder(8, 129);
     private static final byte[] LEFT_BORDER_4 = fillBorder(4, 129);
-
-    /**
-     * Decoded VP8 YUV planes — Y at full resolution, U/V chroma-subsampled 4:2:0. Strides may
-     * exceed the visual width because VP8 decoders allocate buffers on macroblock boundaries.
-     */
-    public record Yuv420P(byte[] y, byte[] u, byte[] v, int width, int height, int yStride, int uvStride) {}
-
-    /** Decodes an opaque VP8 key frame into packed ARGB pixels, requiring the declared dimensions to match. */
-    public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
-        final Yuv420P yuv = decodeToYuv(data, expW, expH);
-        return DataTool.yuvToBgra(yuv.y(), yuv.u(), yuv.v(), yuv.width(), yuv.height(), yuv.yStride(), yuv.uvStride());
-    }
+    // REPAIR NOTICES AGGREGATE PER WINDOW: AN ANIMATED WEBP WITH BROKEN PARTITIONS WOULD OTHERWISE WARN PER FRAME
+    private static final long REPAIR_REPORT_NS = 10_000_000_000L;
+    private static final LogTool.Throttle REPAIRS = new LogTool.Throttle(REPAIR_REPORT_NS);
 
     /** Converts an opaque VP8 key frame into a newly allocated direct BGRA buffer. */
-    public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
-        final Yuv420P yuv = decodeToYuv(data, expW, expH);
-        return DataTool.yuvToBgraBuf(yuv.y(), yuv.u(), yuv.v(), yuv.width(), yuv.height(), yuv.yStride(), yuv.uvStride());
+    public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH) throws CodecException {
+        return DataTool.bgraToBuffer(decode(data, expW, expH));
     }
 
-    /** Decodes a VP8 key frame to macroblock-padded YUV 4:2:0 planes without RGB conversion. */
-    public static Yuv420P decodeToYuv(final ByteBuffer data, final int expW, final int expH) throws XCodecException {
+    /** Decodes an opaque VP8 key frame into packed ARGB pixels, requiring the declared dimensions to match. */
+    public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws CodecException {
         final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
 
         // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
         final FrameInfo frm = parseFrameHeader(buf);
-        if (!frm.keyFrame) throw new XCodecException("Only VP8 key frames supported");
+        if (!frm.keyFrame) throw new CodecException("Only VP8 key frames supported");
         if (frm.w <= 0 || frm.h <= 0)
-            throw new XCodecException("Invalid VP8 frame size: " + frm.w + "x" + frm.h);
+            throw new CodecException("Invalid VP8 frame size: " + frm.w + "x" + frm.h);
         // THE CONTAINER (SIMPLE HEADER, VP8X CANVAS OR ANMF FRAME) AND THE BITSTREAM MUST AGREE:
         // CALLERS SIZE THEIR OUTPUT BUFFERS FROM THE CONTAINER, SO A MISMATCH WOULD OVERRUN THEM
         if (frm.w != expW || frm.h != expH)
-            throw new XCodecException("VP8 frame is " + frm.w + "x" + frm.h + ", container declares " + expW + "x" + expH);
+            throw new CodecException("VP8 frame is " + frm.w + "x" + frm.h + ", container declares " + expW + "x" + expH);
 
         // PARTITION 0 - COMPRESSED HEADER. p0Sz COMES FROM THE FRAME TAG AND CAN OVERRUN THE CHUNK
         if (frm.hdrSz + frm.p0Sz > buf.limit()) {
             if (!WaterMediaConfig.decoders.vp8.brokenTokens)
-                throw new XCodecException("Broken VP8 partition 0: declared " + frm.p0Sz + " bytes, chunk has " + (buf.limit() - frm.hdrSz));
-            LOGGER.warn(IT, "Broken VP8 partition 0: declared {} bytes, only {} available; clamping", frm.p0Sz, buf.limit() - frm.hdrSz);
+                throw new CodecException("Broken VP8 partition 0: declared " + frm.p0Sz + " bytes, chunk has " + (buf.limit() - frm.hdrSz));
+            repaired("Broken VP8 partition 0: declared {} bytes, only {} available; clamping", frm.p0Sz, buf.limit() - frm.hdrSz);
             frm.p0Sz = buf.limit() - frm.hdrSz;
         }
         final ByteBuffer p0 = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
@@ -74,7 +66,7 @@ public final class VP8LossyDecoder {
         // OUT WHILE PARSING IT MEANS EVERY FIELD BELOW WAS INVENTED. FAIL HERE, BEFORE THE
         // FRAME-SIZED PLANES ARE ALLOCATED FROM THOSE FIELDS
         if (hdrBr.eof())
-            throw new XCodecException("VP8 bitstream truncated: bool decoder ran past partition 0 end");
+            throw new CodecException("VP8 bitstream truncated: bool decoder ran past partition 0 end");
 
         // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES AND DECODERS
         buf.position(frm.hdrSz + frm.p0Sz);
@@ -106,7 +98,9 @@ public final class VP8LossyDecoder {
         // RFC6386 SECTION 15 - APPLY LOOP FILTER
         applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
 
-        return new Yuv420P(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
+        // VP8 IS BT.601 LIMITED RANGE; CONVERTING HERE KEEPS EVERY ENGINE ON THE SAME COLORS, SINCE
+        // THE GPU SHADERS EXPAND PLANAR YUV WITH BT.709 COEFFICIENTS
+        return DataTool.yuvToBgra(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
     }
 
     // RFC6386 SECTION 9.5 - READ THE TOKEN PARTITION SIZE TABLE AND BUILD ONE BOOL DECODER PER
@@ -115,15 +109,15 @@ public final class VP8LossyDecoder {
     // decoders.vp8.brokenTokens ENABLED THE SIZES ARE CLAMPED TO THE BYTES ACTUALLY AVAILABLE AND
     // UNUSABLE PARTITIONS ARE REPLACED WITH A DUPLICATE OF THE PREVIOUS ONE OR WITH FAKE ZEROED
     // DATA SO THE MACROBLOCK LOOP CAN STILL RUN BEST-EFFORT.
-    private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts) throws XCodecException {
+    private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts) throws CodecException {
         final boolean repair = WaterMediaConfig.decoders.vp8.brokenTokens;
 
         // SIZE TABLE: 3 BYTES PER PARTITION EXCEPT THE LAST ONE (IMPLICIT REMAINDER)
         final int tableLen = (numParts - 1) * 3;
         if (buf.remaining() < tableLen) {
             if (!repair)
-                throw new XCodecException("Truncated VP8 partition size table: " + buf.remaining() + " of " + tableLen + " bytes");
-            LOGGER.warn(IT, "Truncated VP8 partition size table ({} of {} bytes); missing sizes assumed 0", buf.remaining(), tableLen);
+                throw new CodecException("Truncated VP8 partition size table: " + buf.remaining() + " of " + tableLen + " bytes");
+            repaired("Truncated VP8 partition size table ({} of {} bytes); missing sizes assumed 0", buf.remaining(), tableLen);
         }
         final int[] partSz = new int[numParts];
         for (int i = 0; i < numParts - 1; i++)
@@ -136,8 +130,8 @@ public final class VP8LossyDecoder {
         for (int i = 0; i < numParts - 1; i++) {
             if (partSz[i] > avail) {
                 if (!repair)
-                    throw new XCodecException("Broken VP8 token partition " + i + ": declared " + partSz[i] + " bytes, only " + avail + " available");
-                LOGGER.warn(IT, "Broken VP8 token partition {}: declared {} bytes, only {} available; clamping", i, partSz[i], avail);
+                    throw new CodecException("Broken VP8 token partition " + i + ": declared " + partSz[i] + " bytes, only " + avail + " available");
+                repaired("Broken VP8 token partition {}: declared {} bytes, only {} available; clamping", i, partSz[i], avail);
                 partSz[i] = avail;
             }
             avail -= partSz[i];
@@ -156,8 +150,8 @@ public final class VP8LossyDecoder {
             // PARTITION BYTES OR, WHEN THERE IS NO PREVIOUS ONE, BY FAKING ZEROED DATA
             if (partSz[i] < 2) {
                 if (!repair)
-                    throw new XCodecException("Broken VP8 token partition " + i + ": only " + partSz[i] + " bytes");
-                LOGGER.warn(IT, "Empty VP8 token partition {}; {}", i, prev != null ? "duplicating previous partition" : "faking zeroed data");
+                    throw new CodecException("Broken VP8 token partition " + i + ": only " + partSz[i] + " bytes");
+                repaired("Empty VP8 token partition {}; {}", i, prev != null ? "duplicating previous partition" : "faking zeroed data");
                 pb = prev != null ? prev.duplicate() : ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN);
             }
             prev = pb;
@@ -166,10 +160,14 @@ public final class VP8LossyDecoder {
         return tokBr;
     }
 
+    private static void repaired(final String pattern, final Object... args) {
+        LogTool.throttled(LOGGER, Level.WARN, IT, REPAIRS, pattern, args);
+    }
+
     // RFC6386 SECTION 9 - FRAME HEADER
     // RFC6386 SECTION 9.1 - UNCOMPRESSED DATA CHUNK
-    private static FrameInfo parseFrameHeader(final ByteBuffer buf) throws XCodecException {
-        if (buf.remaining() < 10) throw new XCodecException("VP8 frame too small");
+    private static FrameInfo parseFrameHeader(final ByteBuffer buf) throws CodecException {
+        if (buf.remaining() < 10) throw new CodecException("VP8 frame too small");
 
         final FrameInfo f = new FrameInfo();
         final int b0 = buf.get() & 0xFF;
@@ -182,7 +180,7 @@ public final class VP8LossyDecoder {
         if (f.keyFrame) {
             // KEY FRAME START CODE: 0x9D 0x01 0x2A
             if ((buf.get() & 0xFF) != 0x9D || (buf.get() & 0xFF) != 0x01 || (buf.get() & 0xFF) != 0x2A)
-                throw new XCodecException("Invalid VP8 start code");
+                throw new CodecException("Invalid VP8 start code");
             f.w = buf.getShort() & 0x3FFF;
             f.h = buf.getShort() & 0x3FFF;
             f.hdrSz = 10;
@@ -193,7 +191,7 @@ public final class VP8LossyDecoder {
     }
 
     // RFC6386 SECTIONS 9.2-9.11 - COMPRESSED HEADER
-    private static State parseCompressedHeader(final VP8BoolDecoder br, final FrameInfo frm) throws XCodecException {
+    private static State parseCompressedHeader(final VP8BoolDecoder br, final FrameInfo frm) {
         final State st = new State();
 
         // RFC6386 SECTION 9.2 - COLOR SPACE AND PIXEL TYPE (KEY FRAMES)
@@ -280,7 +278,7 @@ public final class VP8LossyDecoder {
     // RFC6386 SECTIONS 11-14 - MACROBLOCK DECODING
     private static void decodeMBs(final VP8BoolDecoder hdrBr, final VP8BoolDecoder[] tokBr, final State st,
                                   final byte[] yPln, final byte[] uPln, final byte[] vPln,
-                                  final int yStr, final int uvStr, final int mbW, final int mbH) throws XCodecException {
+                                  final int yStr, final int uvStr, final int mbW, final int mbH) throws CodecException {
 
         // NON-ZERO COEFFICIENT TRACKING FOR CONTEXT
         final int[] topNzY = new int[mbW * 4];
@@ -504,7 +502,7 @@ public final class VP8LossyDecoder {
                 // SPENT THE REMAINING GRID WOULD BE SYNTHESISED FROM IMPLICIT ZERO BYTES, WHICH IS
                 // HOW A 2-BYTE TOKEN PARTITION "DECODES" A 64-MEGAPIXEL FRAME
                 if (hdrBr.eof() || tbr.eof())
-                    throw new XCodecException("VP8 bitstream truncated: bool decoder ran past partition end at macroblock "
+                    throw new CodecException("VP8 bitstream truncated: bool decoder ran past partition end at macroblock "
                             + mbX + "," + mbY + " of " + mbW + "x" + mbH);
             }
         }
@@ -512,7 +510,7 @@ public final class VP8LossyDecoder {
 
     // RFC6386 SECTION 13 - COEFFICIENT DECODING
     private static int decodeCoeffs(final VP8BoolDecoder br, final short[] coeffs, final int[][][][] probs,
-                                    final int type, final int first, final int dcQ, final int acQ, int ctx) throws XCodecException {
+                                    final int type, final int first, final int dcQ, final int acQ, int ctx) {
         int nz = 0;
         boolean prevZero = false;
 
@@ -550,7 +548,7 @@ public final class VP8LossyDecoder {
         return nz;
     }
 
-    private static int decodeTokenVal(final VP8BoolDecoder br, final int[] p) throws XCodecException {
+    private static int decodeTokenVal(final VP8BoolDecoder br, final int[] p) {
         if (!br.readBool(p[2])) return 1;
         if (!br.readBool(p[3])) {
             if (!br.readBool(p[4])) return 2;
@@ -566,7 +564,7 @@ public final class VP8LossyDecoder {
         return CATEGORY_BASE[cat + 2] + readExtra(br, CATEGORY_PROBS[cat + 2]);
     }
 
-    private static int readExtra(final VP8BoolDecoder br, final int[] probs) throws XCodecException {
+    private static int readExtra(final VP8BoolDecoder br, final int[] probs) {
         int v = 0;
         for (final int prob: probs) {
             if (prob == 0) break;
@@ -576,7 +574,7 @@ public final class VP8LossyDecoder {
     }
 
     // RFC6386 SECTION 11.2 - B-MODE TREE
-    private static SubMode readSubMode(final VP8BoolDecoder br, final SubMode above, final SubMode left) throws XCodecException {
+    private static SubMode readSubMode(final VP8BoolDecoder br, final SubMode above, final SubMode left) {
         final int[] p = KF_BMODE_PROB[above.ordinal()][left.ordinal()];
         if (!br.readBool(p[0])) return SubMode.B_DC;
         if (!br.readBool(p[1])) return SubMode.B_TM;

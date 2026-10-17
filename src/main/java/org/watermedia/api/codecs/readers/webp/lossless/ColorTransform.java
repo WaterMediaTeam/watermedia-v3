@@ -58,36 +58,34 @@ final class ColorTransform {
         }
     }
 
-    /** Expands green-channel palette indexes into ARGB pixels in place; packed input needs full output capacity. */
-    public static void applyPalette(final int[] pixels, final int width, final int height, final int[] colorTable, final int widthBits) {
-        if (widthBits == 0) {
-            // NO BUNDLING, DIRECT INDEX LOOKUP
+    /** Expands green-channel palette indexes into ARGB pixels; packed input ({@code bits > 0}) yields a new full-width array. */
+    public static int[] applyPalette(final int[] pixels, final int width, final int height, final int[] colorTable, final int bits) {
+        if (bits == 0) {
+            // ONE INDEX PER PIXEL, IN PLACE; AN INDEX PAST THE TABLE IS TRANSPARENT BLACK (RFC 9649)
             for (int i = 0; i < pixels.length; i++) {
-                final int index = (pixels[i] >> 8) & 0xFF; // GREEN CHANNEL IS INDEX
-                pixels[i] = (index < colorTable.length) ? colorTable[index] : 0;
+                final int index = (pixels[i] >> 8) & 0xFF;
+                pixels[i] = index < colorTable.length ? colorTable[index] : 0;
             }
-        } else {
-            // PIXELS ARE BUNDLED, NEED TO UNPACK
-            final int pixelsPerByte = 1 << widthBits;
-            final int mask = (1 << (8 / pixelsPerByte)) - 1;
-            final int bundledWidth = (width + pixelsPerByte - 1) / pixelsPerByte;
-
-            final int[] unpacked = new int[width * height];
-
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    final int bundledX = x / pixelsPerByte;
-                    final int shift = (x % pixelsPerByte) * (8 / pixelsPerByte);
-
-                    final int bundledPixel = pixels[y * bundledWidth + bundledX];
-                    final int index = ((bundledPixel >> 8) >> shift) & mask; // FROM GREEN CHANNEL
-
-                    unpacked[y * width + x] = (index < colorTable.length) ? colorTable[index] : 0;
-                }
-            }
-
-            System.arraycopy(unpacked, 0, pixels, 0, width * height);
+            return pixels;
         }
+        // EACH GREEN BYTE OF A PACKED ROW HOLDS 1 << bits INDEXES, THE LEFTMOST PIXEL IN THE LOW BITS
+        final int bitsPerPixel = 8 >> bits;
+        final int mask = (1 << bitsPerPixel) - 1;
+        final int countMask = (1 << bits) - 1;
+        final int packedWidth = (width + countMask) >> bits;
+        final int[] unpacked = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            int src = y * packedWidth;
+            final int dst = y * width;
+            int packed = 0;
+            for (int x = 0; x < width; x++) {
+                if ((x & countMask) == 0) packed = (pixels[src++] >> 8) & 0xFF;
+                final int index = packed & mask;
+                unpacked[dst + x] = index < colorTable.length ? colorTable[index] : 0;
+                packed >>= bitsPerPixel;
+            }
+        }
+        return unpacked;
     }
 
     /** Reconstructs a nonempty delta-coded ARGB color table without modifying the input. */

@@ -9,8 +9,8 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
-import org.watermedia.api.util.Slave;
+import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.Track;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.binaries.YtDlpBinary;
 
@@ -46,17 +46,17 @@ import static org.watermedia.tools.JSONTool.uri;
  *
  * <p>This class also <em>is</em> the shared yt-dlp engine: it drives the bundled yt-dlp binary
  * out-of-process ({@link #info}) and maps its {@code --dump-single-json} output into WaterMedia
- * {@link DataSource}s ({@link #extract}). {@link YouTubePlatform} extends it to reuse that engine while
+ * {@link Source}s ({@link #extract}). {@link YouTubePlatform} extends it to reuse that engine while
  * adding the YouTube-only BotGuard po_token retry — YouTube keeps its own handler because yt-dlp emits
  * the same JSON shape for every site, but only YouTube needs the bot gate bypass.
  *
  * <p>Out-of-process (like ffmpeg) keeps any failure inside yt-dlp from touching the JVM. yt-dlp already
  * deciphers the signature and throttling (n) parameters, so each {@code formats[].url} is playable
  * directly — but it is bound to the {@code http_headers} (notably {@code User-Agent}) yt-dlp used, which
- * are copied into the source's {@link RequestHeaders} so the player sends them. The yt-dlp binary itself
+ * are copied into the source's {@link HttpHeaders} so the player sends them. The yt-dlp binary itself
  * is provisioned lazily by the {@code binaries} module ({@link YtDlpBinary}).
  */
-public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
+public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     public static final String NAME = "yt-dlp";
     // HOST SUFFIXES, MATCHED CASE-INSENSITIVELY WITH endsWith SO SUBDOMAINS (www./m./web.) ARE COVERED
     private static final String[] HOSTS = {
@@ -91,7 +91,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         // NONE OF OUR HOSTS → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
         if (!hostMatches(uri.getHost(), HOSTS)) {
             return null;
@@ -100,7 +100,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         try {
             info = this.info(uri.toString(), List.of());
         } catch (final IOException e) {
-            throw new PlatformException(YtDlpPlatform.class, "yt-dlp could not resolve " + uri + ": " + e.getMessage(), e);
+            throw new PlatformException(this.name(), "yt-dlp could not resolve " + uri + ": " + e.getMessage(), e);
         }
         return this.extract(info); // EXTRACTION EXCEPTIONS (Mature/Platform) PROPAGATE AS-IS
     }
@@ -182,8 +182,8 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
                 process.destroyForcibly();
                 throw new IOException(tool + " timed out after " + timeoutSeconds + "s");
             }
-            // CHILD HAS EXITED, SO ITS STDOUT/STDERR ARE AT EOF — THESE JOINS RETURN ONCE EACH DRAIN
-            // FINISHES READING (UNBOUNDED ON PURPOSE: A 1s CAP TRUNCATED LARGE OUTPUTS LIKE BIG PLAYLISTS).
+            // THE CHILD HAS EXITED, SO ITS STDOUT/STDERR ARE AT EOF AND THE JOINS RETURN ONCE EACH DRAIN
+            // FINISHES READING; THEY STAY UNBOUNDED SO LARGE OUTPUTS LIKE BIG PLAYLISTS ARE NEVER TRUNCATED
             outDrain.join();
             errDrain.join();
         } catch (final InterruptedException e) {
@@ -210,22 +210,22 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     // ====================================================================================================
-    // JSON → PlatformData EXTRACTION — SHARED WITH YouTubePlatform
+    // JSON → Resolution EXTRACTION — SHARED WITH YouTubePlatform
     // ====================================================================================================
 
     /**
-     * Builds the {@link PlatformData} from yt-dlp's JSON: a single media object becomes one source, a
+     * Builds the {@link Resolution} from yt-dlp's JSON: a single media object becomes one source, a
      * playlist ({@code entries[]}) becomes several. Resolution exceptions reference {@link #getClass()},
      * so the actual handler (yt-dlp or YouTube) names itself.
      */
-    protected PlatformData extract(final JsonObject info) throws Exception {
+    protected Resolution extract(final JsonObject info) throws Exception {
         final JsonArray entries = info.getAsJsonArray("entries");
         if (entries == null) {
             final Result r = this.single(info);
-            return new PlatformData(r.expires(), r.source());
+            return new Resolution(r.expires(), r.source());
         }
 
-        final List<DataSource> sources = new ArrayList<>();
+        final List<Source> sources = new ArrayList<>();
         Instant earliest = null;
         for (final JsonElement e: entries) {
             if (e == null || e.isJsonNull()) continue; // yt-dlp NULLS OUT UNAVAILABLE PLAYLIST ITEMS
@@ -240,36 +240,36 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
             }
         }
         if (sources.isEmpty()) {
-            throw new PlatformException(this.getClass(), "No playable entries in playlist");
+            throw new PlatformException(this.name(), "No playable entries in playlist");
         }
-        return new PlatformData(earliest, sources);
+        return new Resolution(earliest, sources);
     }
 
     private Result single(final JsonObject media) throws Exception {
         // RESPECT THE MATURE-CONTENT GATE (yt-dlp REPORTS age_limit; >=18 IS AGE-RESTRICTED)
         if (intOr(media, "age_limit", 0) >= 18 && !WaterMediaConfig.platforms.allowMatureContent) {
-            throw new MatureContentException(this.getClass(), "Age-restricted: " + str(media, "webpage_url"));
+            throw new MatureContentException(this.name(), "Age-restricted: " + str(media, "webpage_url"));
         }
 
         final JsonArray formats = media.getAsJsonArray("formats");
         if (formats == null || formats.isEmpty()) {
-            throw new PlatformException(this.getClass(), "No formats for " + str(media, "webpage_url"));
+            throw new PlatformException(this.name(), "No formats for " + str(media, "webpage_url"));
         }
 
         final URI sourceUri = uri(str(media, "webpage_url"));
         final boolean live = bool(media, "is_live") || "is_live".equals(str(media, "live_status"));
         final URI thumbnail = uri(str(media, "thumbnail"));
         final Metadata metadata = metadata(media);
-        final List<Slave> subtitles = subtitles(media);
+        final List<Track> subtitles = subtitles(media);
 
         // SPLIT FORMATS: VIDEO-ONLY (acodec none), MUXED (both), AUDIO-ONLY (vcodec none). SKIP STORYBOARDS.
-        final List<DataQuality> variants = new ArrayList<>();
+        final List<Quality> variants = new ArrayList<>();
         final Set<Integer> seenHeights = new HashSet<>();
         JsonObject headerSource = null;
         JsonObject bestAudio = null;
         int bestAudioRate = -1;
 
-        // VIDEO-ONLY FIRST (BEST QUALITY, AUDIO CARRIED BY A SLAVE), THEN MUXED FILLS REMAINING TIERS
+        // VIDEO-ONLY FIRST (BEST QUALITY, AUDIO CARRIED BY A TRACK), THEN MUXED FILLS REMAINING TIERS
         for (int pass = 0; pass < 2; pass++) {
             for (final JsonElement fe: formats) {
                 final JsonObject f = fe.getAsJsonObject();
@@ -289,21 +289,21 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
                 if (height > 0 && !seenHeights.add(height)) continue;
                 final URI url = uri(str(f, "url"));
                 if (url == null) continue; // MALFORMED FORMAT URL — SKIP THIS VARIANT
-                // PER DataQuality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
+                // PER Quality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
                 final int width = intOr(f, "width", 0);
-                variants.add(new DataQuality(url, width, height));
+                variants.add(new Quality(url, width, height));
                 if (headerSource == null) headerSource = f;
             }
         }
 
-        final RequestHeaders headers = headers(headerSource != null ? headerSource : bestAudio, sourceUri);
+        final HttpHeaders headers = headers(headerSource != null ? headerSource : bestAudio, sourceUri);
 
         if (!variants.isEmpty()) {
             final URI bestAudioUri = bestAudio == null ? null : uri(str(bestAudio, "url"));
-            final List<Slave> audioSlaves = bestAudioUri == null ? null
-                    : List.of(new Slave(null, null, bestAudioUri));
-            final DataSource source = new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
-                    variants, audioSlaves, subtitles);
+            final List<Track> audioTracks = bestAudioUri == null ? null
+                    : List.of(new Track(null, null, bestAudioUri));
+            final Source source = new Source(MediaType.VIDEO, thumbnail, metadata, headers,
+                    variants, audioTracks, subtitles);
             return new Result(expiry(variants.get(0).uri(), live), source);
         }
 
@@ -311,13 +311,13 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         if (bestAudio != null) {
             final URI audio = uri(str(bestAudio, "url"));
             if (audio != null) {
-                final DataSource source = new DataSource(MediaType.AUDIO, thumbnail, metadata, headers,
-                        List.of(new DataQuality(audio, 0, 0)), null, subtitles);
+                final Source source = new Source(MediaType.AUDIO, thumbnail, metadata, headers,
+                        List.of(new Quality(audio, 0, 0)), null, subtitles);
                 return new Result(expiry(audio, live), source);
             }
         }
 
-        throw new PlatformException(this.getClass(), "No usable streams for " + str(media, "webpage_url"));
+        throw new PlatformException(this.name(), "No usable streams for " + str(media, "webpage_url"));
     }
 
     // A FORMAT IS PLAYABLE IF IT CARRIES MEDIA (NOT A STORYBOARD/THUMBNAIL TRACK) AND HAS A URL
@@ -360,14 +360,14 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         }
     }
 
-    // COPIES yt-dlp'S PER-FORMAT http_headers (User-Agent ETC.) INTO RequestHeaders SO THE PLAYER SENDS
+    // COPIES yt-dlp'S PER-FORMAT http_headers (User-Agent ETC.) INTO HttpHeaders SO THE PLAYER SENDS
     // THEM — THE GOOGLEVIDEO URLS 403 WITHOUT THE MATCHING UA. FALLS BACK TO WATERMEDIA DEFAULTS.
-    private static RequestHeaders headers(final JsonObject format, final URI sourceUri) {
+    private static HttpHeaders headers(final JsonObject format, final URI sourceUri) {
         final JsonObject hh = format == null ? null : format.getAsJsonObject("http_headers");
         if (hh == null || hh.size() == 0) {
-            return sourceUri == null ? new RequestHeaders() : RequestHeaders.defaults(sourceUri);
+            return sourceUri == null ? new HttpHeaders() : HttpHeaders.defaults(sourceUri);
         }
-        final RequestHeaders headers = new RequestHeaders();
+        final HttpHeaders headers = new HttpHeaders();
         for (final Map.Entry<String, JsonElement> e: hh.entrySet()) {
             if (!e.getValue().isJsonNull()) {
                 headers.set(e.getKey(), e.getValue().getAsString());
@@ -402,9 +402,9 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
         return new Metadata(title, description, publishedAt, durationMs, author);
     }
 
-    // BUILDS SUBTITLE SLAVES FROM subtitles{} (MANUAL) THEN automatic_captions{} (AUTO), ONE PER LANGUAGE
-    private static List<Slave> subtitles(final JsonObject media) {
-        final List<Slave> out = new ArrayList<>();
+    // BUILDS SUBTITLE TRACKS FROM subtitles{} (MANUAL) THEN automatic_captions{} (AUTO), ONE PER LANGUAGE
+    private static List<Track> subtitles(final JsonObject media) {
+        final List<Track> out = new ArrayList<>();
         final Set<String> langs = new HashSet<>();
         collectSubs(media.getAsJsonObject("subtitles"), false, langs, out);
         collectSubs(media.getAsJsonObject("automatic_captions"), true, langs, out);
@@ -412,7 +412,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     private static void collectSubs(final JsonObject subs, final boolean auto,
-                                    final Set<String> langs, final List<Slave> out) {
+                                    final Set<String> langs, final List<Track> out) {
         if (subs == null) return;
         for (final Map.Entry<String, JsonElement> e: subs.entrySet()) {
             final String lang = e.getKey();
@@ -425,7 +425,7 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
             String name = str(track, "name");
             if (name == null) name = lang;
             if (auto) name = name + " (auto-generated)";
-            out.add(new Slave(name, lang, uri(url)));
+            out.add(new Track(name, lang, uri(url)));
         }
     }
 
@@ -450,5 +450,5 @@ public sealed class YtDlpPlatform implements IPlatform permits YouTubePlatform {
     }
 
     // PAIRS A RESOLVED SOURCE WITH ITS EXPIRATION
-    private record Result(Instant expires, DataSource source) {}
+    private record Result(Instant expires, Source source) {}
 }

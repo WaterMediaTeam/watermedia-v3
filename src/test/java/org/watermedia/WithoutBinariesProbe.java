@@ -41,8 +41,9 @@ public final class WithoutBinariesProbe {
             } catch (final ClassNotFoundException expected) {}
             final Class<?> config = Class.forName(WaterMediaConfig.class.getName(), true, isolated);
             final Object network = config.getField("network").get(null);
-            network.getClass().getField("enableServer").setBoolean(network, false);
-            network.getClass().getField("forceEnableServer").setBoolean(network, false);
+            // OFF IS THE FIRST CONSTANT OF THE ISOLATED Server ENUM
+            final Object[] servers = Class.forName(WaterMediaConfig.Network.Server.class.getName(), true, isolated).getEnumConstants();
+            network.getClass().getField("server").set(network, servers[0]);
             final Class<?> waterMedia = Class.forName(WaterMedia.class.getName(), true, isolated);
             final Path root = Path.of("").toAbsolutePath();
             waterMedia.getMethod("start", String.class, Path.class, Path.class, boolean.class)
@@ -50,11 +51,11 @@ public final class WithoutBinariesProbe {
             final Object status = waterMedia.getMethod("status").invoke(null);
             if (!"READY".equals(status.getClass().getMethod("state").invoke(status).toString()))
                 throw new AssertionError("Server startup failed: " + status);
-            for (final Object module: (List<?>) status.getClass().getMethod("modules").invoke(status)) {
-                final String id = module.getClass().getMethod("id").invoke(module).toString();
+            for (final Object service: (List<?>) status.getClass().getMethod("services").invoke(status)) {
+                final String id = service.getClass().getMethod("id").invoke(service).toString();
                 if ((id.equals("BINARIES") || (!client && (id.equals("MEDIA") || id.equals("PLATFORMS"))))
-                        && !"SKIPPED".equals(module.getClass().getMethod("outcome").invoke(module).toString()))
-                    throw new AssertionError("Client module was loaded on server: " + module);
+                        && !"SKIPPED".equals(service.getClass().getMethod("outcome").invoke(service).toString()))
+                    throw new AssertionError("Client service was loaded on server: " + service);
             }
             if (client) {
                 final Class<?> media = Class.forName(MediaAPI.class.getName(), true, isolated);
@@ -62,7 +63,7 @@ public final class WithoutBinariesProbe {
                     throw new AssertionError("Absent binaries must disable video without a native initialization error");
                 final Class<?> codecs = Class.forName(CodecsAPI.class.getName(), true, isolated);
                 final ByteBuffer image = ByteBuffer.wrap("P6\n1 1\n255\nABC".getBytes(StandardCharsets.US_ASCII));
-                final Object reader = codecs.getMethod("decodeImage", ByteBuffer.class).invoke(null, image);
+                final Object reader = codecs.getMethod("reader", ByteBuffer.class).invoke(null, image);
                 try (final AutoCloseable closeable = (AutoCloseable) reader) {
                     final Object decoded = reader.getClass().getMethod("readAll").invoke(reader);
                     if ((int) decoded.getClass().getMethod("width").invoke(decoded) != 1)

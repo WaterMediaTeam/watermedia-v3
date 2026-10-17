@@ -67,8 +67,8 @@ class NetworkCacheSessionTest {
 
     @Test
     void diskBudgetEvictsOldEntriesAndRejectsOversizedFile() throws Exception {
-        final int previousBudget = WaterMediaConfig.media.cacheMaxSize;
-        WaterMediaConfig.media.cacheMaxSize = 1;
+        final int previousBudget = WaterMediaConfig.media.cacheBudget;
+        WaterMediaConfig.media.cacheBudget = 1;
         final byte[] body = new byte[768 * 1024];
         try (final LocalHttp origin = LocalHttp.start("/", exchange -> LocalHttp.respond(exchange, "video/mp4",
                 exchange.getRequestURI().getPath().equals("/large") ? new byte[2 * 1024 * 1024] : body, 3600))) {
@@ -90,7 +90,40 @@ class NetworkCacheSessionTest {
             }
         } finally {
             NetworkCache.release();
-            WaterMediaConfig.media.cacheMaxSize = previousBudget;
+            WaterMediaConfig.media.cacheBudget = previousBudget;
+        }
+    }
+
+    @Test
+    void recentlyUsedEntriesSurviveEvictionAndTheIndexIsAlwaysOnDisk() throws Exception {
+        final int previousBudget = WaterMediaConfig.media.cacheBudget;
+        WaterMediaConfig.media.cacheBudget = 2;
+        final byte[] body = new byte[768 * 1024];
+        try (final LocalHttp origin = LocalHttp.start("/", exchange -> LocalHttp.respond(exchange, "video/mp4", body, 3600))) {
+            NetworkCache.start(this.directory);
+            final var first = NetworkCache.readFile(origin.uri("/first"), null, null, 3 * 1024 * 1024, true);
+            final var second = NetworkCache.readFile(origin.uri("/second"), null, null, 3 * 1024 * 1024, true);
+            assertNotNull(first);
+            assertNotNull(second);
+            // TOUCHING THE OLDEST ENTRY MAKES THE OTHER ONE THE EVICTION CANDIDATE OF THE NEXT WRITE
+            final var touched = NetworkCache.readFile(origin.uri("/first"), null, null, 3 * 1024 * 1024, true);
+            assertNotNull(touched);
+            assertTrue(touched.cached());
+            final var third = NetworkCache.readFile(origin.uri("/third"), null, null, 3 * 1024 * 1024, true);
+            assertNotNull(third);
+            assertTrue(Files.exists(first.path()));
+            assertFalse(Files.exists(second.path()));
+            assertTrue(Files.exists(third.path()));
+            // A RESTART WITHOUT release() (A CRASH, OR A HOST THAT NEVER STOPS WATERMEDIA) KEEPS EVERY WRITE
+            NetworkCache.start(this.directory);
+            for (final String path: new String[] { "/first", "/third" }) {
+                final var kept = NetworkCache.readFile(origin.uri(path), null, null, 3 * 1024 * 1024, true);
+                assertNotNull(kept);
+                assertTrue(kept.cached());
+            }
+        } finally {
+            NetworkCache.release();
+            WaterMediaConfig.media.cacheBudget = previousBudget;
         }
     }
 

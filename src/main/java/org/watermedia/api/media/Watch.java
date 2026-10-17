@@ -3,10 +3,11 @@ package org.watermedia.api.media;
 import java.nio.ByteBuffer;
 
 /**
- * Upstream hello: a follower announces itself to the authority as a new spectator and
- * asks for its {@link Config} and a fresh {@link Sync}. Sent once when the bridged
- * player is created; the follower registers as loading and never interrupts an
- * already-running session.
+ * Upstream hello: a follower announces itself to the authority as a new member and
+ * asks for its {@link Config} and a fresh {@link Sync}. Sent when the bridged player
+ * receives its first {@code Sync} and repeated every few seconds until a {@code Config}
+ * answers it, since a lossy or late-wired transport may drop the first one; the follower
+ * registers as loading and never interrupts an already-running session.
  *
  * @param watcherId follower instance id, echoed back in {@link Config} for RTT measurement
  */
@@ -26,7 +27,7 @@ public record Watch(long watcherId) implements Packet {
         return buf.flip();
     }
 
-    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.of() (TRUST BOUNDARY)
+    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.read() (TRUST BOUNDARY)
     static Watch read(final ByteBuffer buf, final byte version) {
         if (version != VERSION) throw new IllegalArgumentException("Unsupported Watch version: " + version);
         if (buf.remaining() < BYTES - 2) throw new IllegalArgumentException("Truncated Watch payload, needs " + BYTES + " bytes");

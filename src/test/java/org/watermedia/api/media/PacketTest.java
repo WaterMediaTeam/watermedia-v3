@@ -24,7 +24,7 @@ public class PacketTest {
     private static Packet roundTrip(final Packet packet, final int expectedBytes) {
         final ByteBuffer buf = packet.toBytes();
         assertEquals(expectedBytes, buf.remaining(), "unexpected payload size for " + packet);
-        final Packet decoded = Packet.of(buf);
+        final Packet decoded = Packet.read(buf);
         assertEquals(packet, decoded);
         return decoded;
     }
@@ -59,7 +59,7 @@ public class PacketTest {
             roundTrip(new Control(9L, op, 30_000L), Control.BYTES);
         }
         // THE SPEED OPERAND TRAVELS AS PACKED FLOAT BITS
-        final Control speed = (Control) roundTrip(Control.of(9L, Op.SPEED, 2.5f), Control.BYTES);
+        final Control speed = (Control) roundTrip(new Control(9L, Op.SPEED, Float.floatToIntBits(2.5f) & 0xFFFFFFFFL), Control.BYTES);
         assertEquals(2.5f, speed.floatValue());
     }
 
@@ -77,36 +77,36 @@ public class PacketTest {
     @Test
     @DisplayName("Malformed payloads are rejected at decode")
     void testRejections() {
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(null));
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.allocate(0)));
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.allocate(1)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(null));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.allocate(0)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.allocate(1)));
         // UNKNOWN PACKET ID
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(new byte[]{99, 1, 0, 0})));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(new byte[]{99, 1, 0, 0})));
 
         final Sync sync = new Sync(1, Status.PLAYING, 0L, 1000L, 1f, 100, false, false, false);
         // WRONG VERSION
         final byte[] badVersion = sync.toBytes().array().clone();
         badVersion[1] = 99;
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(badVersion)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(badVersion)));
         // TRUNCATED
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(sync.toBytes().array(), 0, Sync.BYTES - 1)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(sync.toBytes().array(), 0, Sync.BYTES - 1)));
         // OUT-OF-RANGE STATUS ORDINAL
         final byte[] badStatus = sync.toBytes().array().clone();
         badStatus[6] = (byte) 200;
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(badStatus)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(badStatus)));
         // OUT-OF-RANGE SPEED SMUGGLED THROUGH THE WIRE
         final byte[] badSpeed = sync.toBytes().array().clone();
         ByteBuffer.wrap(badSpeed).putFloat(23, Float.NaN);
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(badSpeed)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(badSpeed)));
 
         // OUT-OF-RANGE CONTROL OP ORDINAL
         final byte[] badOp = new Control(1L, Op.SEEK, 0L).toBytes().array().clone();
         badOp[10] = (byte) 200;
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(badOp)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(badOp)));
         // OUT-OF-RANGE REPORT STATUS ORDINAL
         final byte[] badReport = new Report(1L, Status.PLAYING, 0L, false).toBytes().array().clone();
         badReport[10] = (byte) 200;
-        assertThrows(IllegalArgumentException.class, () -> Packet.of(ByteBuffer.wrap(badReport)));
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(badReport)));
     }
 
     @Test
@@ -115,9 +115,17 @@ public class PacketTest {
         // DEVS WRAP THE PAYLOAD IN THEIR OWN FRAME (BLOCK POS, CHANNEL ID); DECODING TAKES ONLY ITS BYTES
         final Watch watch = new Watch(7L);
         final ByteBuffer frame = ByteBuffer.allocate(Watch.BYTES + 8).put(watch.toBytes()).putLong(0xCAFEBABEL).flip();
-        assertEquals(watch, Packet.of(frame));
+        assertEquals(watch, Packet.read(frame));
         assertEquals(8, frame.remaining(), "the dev's trailing fields must survive the decode");
         assertEquals(0xCAFEBABEL, frame.getLong());
+    }
+
+    @Test
+    @DisplayName("Status.of rejects ordinals outside the enum")
+    void testStatusOrdinals() {
+        for (final Status status: Status.values()) assertEquals(status, Status.of(status.ordinal()));
+        assertThrows(IllegalArgumentException.class, () -> Status.of(Status.values().length));
+        assertThrows(IllegalArgumentException.class, () -> Status.of(-1));
     }
 
     @Test

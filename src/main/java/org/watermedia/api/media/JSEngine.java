@@ -124,7 +124,7 @@ public final class JSEngine extends SFXEngine {
     boolean format(final SampleType type, final int channels, final int sampleRate) {
         if (type == null) return false;
         if (channels < 1 || channels > 8) return false;
-        if (sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) return false;
+        if (sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
         final AudioFormat fmt = formatFor(type, channels, sampleRate);
         if (fmt == null) return false;
 

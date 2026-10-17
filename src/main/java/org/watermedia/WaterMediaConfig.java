@@ -12,16 +12,14 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 
+/** WaterMedia configuration: the TOML-backed settings of the decoders, the network, the media players and the platforms. */
 @Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
 public final class WaterMediaConfig {
-    private WaterMediaConfig() {}
     private static final int DEFAULT_NETWORK_SERVER_PORT = 25572;
+    /** Upload token shipped by default; a file server reachable from other machines refuses to start with it. */
+    public static final String DEFAULT_NETWORK_TOKEN = "watermedia_default_token_change_it";
 
-    @Spec.Field
-    @Comment("Prints all system information like hardware, os (and version), capabilities, supported codecs and engines version (GL/VK/AL)")
-    @Comment("Turns out, this impacts A LOT in bootstrap performance because it runs BAT and SH scripts to obtain certain driver capabilities (I am looking at you NVIDIA)")
-    @Comment("Enable by developer request. This is usually requested once")
-    public static boolean logSystemInformation = false;
+    private WaterMediaConfig() {}
 
     @Spec.Field
     @Comment("CodecsAPI settings")
@@ -39,6 +37,7 @@ public final class WaterMediaConfig {
     @Comment("Platform-specific settings")
     public static final Platforms platforms = new Platforms();
 
+    /** Settings of the house image decoders. */
     @Spec(value = "decoders", disableStatic = true)
     public static final class Decoders {
         @Spec.Field(suffix = "MB")
@@ -59,10 +58,7 @@ public final class WaterMediaConfig {
         @Comment("Related config for VP8 codec (WEBP lossy)")
         public final Vp8 vp8 = new Vp8();
 
-        @Spec.Field
-        @Comment("Related config for GIF codec")
-        public final Gif gif = new Gif();
-
+        /** Settings of the SVG rasterizer. */
         @Spec(value = "svg", disableStatic = true)
         public static final class Svg {
             @Spec.Field(suffix = "px")
@@ -72,6 +68,7 @@ public final class WaterMediaConfig {
             public int maxSize = 512;
         }
 
+        /** Settings of the PNG and APNG decoder. */
         @Spec(value = "png", disableStatic = true)
         public static final class Png {
             @Spec.Field
@@ -79,11 +76,13 @@ public final class WaterMediaConfig {
             public boolean failOnCorruptedData = true;
 
             @Spec.Field
-            @Comment("Use the PNG bKGD chunk as the disposal background colour")
-            @Comment("When false, transparent disposal is used (recommended for compositing).")
+            @Comment("Present PNG and APNG pictures against the colour declared by their bKGD chunk instead of transparency")
+            @Comment("When true the canvas starts filled with it, static pictures and frames blended as SOURCE are flattened onto it, and APNG dispose-to-background restores it")
+            @Comment("When false transparency is kept everywhere (recommended for compositing)")
             public boolean useBKGDChunk = false;
         }
 
+        /** Settings of the VP8 (lossy WebP) decoder. */
         @Spec(value = "vp8", disableStatic = true)
         public static final class Vp8 {
             @Spec.Field
@@ -92,32 +91,26 @@ public final class WaterMediaConfig {
             @Comment("Repaired frames decode best-effort and may show visual artifacts")
             public boolean brokenTokens = false;
         }
-
-        @Spec(value = "gif", disableStatic = true)
-        public static final class Gif {
-            @Spec.Field
-            @Comment("Clamp animation frames whose image descriptor extends beyond the logical screen instead of failing the decode")
-            @Comment("When false an out-of-bounds frame throws; when true it is clamped to the canvas (best-effort, may show artifacts)")
-            public boolean clampImageDesc = false;
-        }
     }
 
+    /** Settings of the media players and their caches. */
     @Spec(value = "media", disableStatic = true)
-    public final static class Media {
+    public static final class Media {
         @Spec.Field(control = Control.DROPDOWN)
         @Comment("Default quality for streaming media without a specified quality")
-        public MediaQuality defaultQuality = MediaQuality.HIGHER;
+        public MediaQuality defaultQuality = MediaQuality.HIGHEST;
 
         @Spec.Field(suffix = "min")
         @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")
         @Comment("MRL manager usually doesn't consume much memory, intervals below 60 minutes will not reduce memory consumption at all")
-        public float cleanupInterval = 60.0f;
+        @NumberConditions(minFloat = 1f)
+        public float mrlCleanupInterval = 60.0f;
 
         @Spec.Field(suffix = "MB")
         @Comment("Total on-disk budget (in MB) for the shared media cache store (network + codec tiers under %TEMP%)")
         @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
         @NumberConditions(minInt = 1, math = true)
-        public int cacheMaxSize = 1024 * 8;
+        public int cacheBudget = 1024 * 8;
 
         @Spec.Field
         @Comment("FFMPEG general settings")
@@ -127,6 +120,7 @@ public final class WaterMediaConfig {
         @Comment("WaterTexture general settings")
         public final WaterTx tx = new WaterTx();
 
+        /** Settings of the FFmpeg-backed video and music player. */
         @Spec(value = "ffmpeg", disableStatic = true)
         public static final class Ffmpeg {
             @Spec.Field
@@ -144,19 +138,19 @@ public final class WaterMediaConfig {
             public boolean hardwareAccel = true;
 
             @Spec.Field(suffix = "packets", control = Control.SEEKBAR)
-            @Comment("Configures how many audio packets read when video has an audio slave")
+            @Comment("Configures how many audio packets to read per loop when the video carries a separate audio track")
             @Comment("Increment this value if you find YouTube videos with slow playback")
             @NumberConditions(minInt = 1, maxInt = 12)
-            public int slavePacketReads = 3;
+            public int trackPacketReads = 3;
 
             @Spec.Field
             @Comment("Enables the on-disk HTTP media cache used by FFMediaPlayer for small files")
             public boolean cache = true;
 
             @Spec.Field(suffix = "MB")
-            @Comment("Maximum FFMediaPlayer network response size to cache, in megabytes")
+            @Comment("Maximum size of a network response FFMediaPlayer keeps in the cache, in megabytes")
             @NumberConditions(minInt = 1, math = true)
-            public int cacheMaxSize = 10;
+            public int cacheMaxResponse = 10;
 
             @Spec.Field(suffix = "ms")
             @Comment("FFMediaPlayer stream probing duration (FFmpeg analyzeduration), in milliseconds")
@@ -172,8 +166,9 @@ public final class WaterMediaConfig {
             public int probeSize = 10;
         }
 
+        /** Settings of the picture player, publicly known as WaterTX. */
         @Spec(value = "watertx", disableStatic = true)
-        public static final class WaterTx { // PUBLICLY KNOWN AS WaterTX (WaterTexture), INTERNALLY CLAMPED INTO TX.
+        public static final class WaterTx {
             @Spec.Field
             @Comment("Enables the on-disk HTTP image cache used by TxMediaPlayer")
             public boolean cache = true;
@@ -187,8 +182,9 @@ public final class WaterMediaConfig {
         }
     }
 
+    /** Settings of the web platforms. */
     @Spec(value = "platforms", disableStatic = true)
-    public final static class Platforms {
+    public static final class Platforms {
         @Spec.Field
         @Comment("Allow resolving streams/videos marked as mature content (e.g. Kick).")
         @Comment("When false, mature streams throw and never reach the player.")
@@ -198,7 +194,8 @@ public final class WaterMediaConfig {
         @Comment("Cleanup interval in minutes for the in-memory platform search results cache")
         @Comment("Identical searches are served from memory until the whole cache is flushed on this interval (general sweep)")
         @Comment("Set to 0 to disable caching and always query the platforms")
-        public float searchCacheCleanup = 15.0f;
+        @NumberConditions(minFloat = 0f)
+        public float searchCleanupInterval = 15.0f;
 
         @Spec.Field(control = Control.PASSWORD)
         @Comment("BiliBili session cookie for authenticated access")
@@ -207,27 +204,26 @@ public final class WaterMediaConfig {
         public String biliBiliCookie = "";
     }
 
+    /** Settings of the HTTP requests and the WaterMedia file servers. */
     @Spec(value = "network", disableStatic = true)
-    public final static class Network {
-        @Spec.Field
-        @Comment("Enables file storage server")
-        @Comment("Used only on server-side")
-        public boolean enableServer = false;
+    public static final class Network {
+        /** Where the file storage server runs. */
+        public enum Server { OFF, DEDICATED, ALWAYS }
 
-        @Spec.Field
-        @Comment("Force-Enable file storage server even on client-side")
-        @Comment("NOTE: this doesn't mean that the server will be accessible from other devices, you need to open the port and set the remoteHost to your public IP or domain")
-        public boolean forceEnableServer = false;
+        @Spec.Field(control = Control.DROPDOWN)
+        @Comment("Where the file storage server runs: OFF, DEDICATED (only on a dedicated server) or ALWAYS (also on clients)")
+        @Comment("ALWAYS doesn't open the port by itself: forward it and point remoteUrl at your public IP or domain")
+        public Server server = Server.OFF;
 
         @Spec.Field
         @Comment("Address used by the file server; use a LAN address or 0.0.0.0 to accept remote clients")
-        @Comment("Remote listeners require a non-default password")
+        @Comment("Remote listeners require a non-default token")
         public String serverBindAddress = "127.0.0.1";
 
         @Spec.Field
         @Comment("Maximum simultaneous file-server requests; excess connections are closed")
         @NumberConditions(minInt = 1, maxInt = 256)
-        public int serverMaxRequests = 8;
+        public int maxServerRequests = 8;
 
         @Spec.Field(suffix = "ms")
         @Comment("Maximum total time for a file-server request, including headers and transfer")
@@ -243,44 +239,44 @@ public final class WaterMediaConfig {
         @Comment("Maximum upload file size in megabytes, files larger than this will be rejected by the server")
         @Comment("Zero means unlimited, but be careful with that if your users aren't trustworthy enough")
         @Comment("NOTE: this doesn't affect manual file uploads to the server storage folder or existing files, but only uploads through the API")
-        @Comment("Used only on server-side")
+        @Comment("Used by the file server: on the server, or on a client with server = ALWAYS")
         @NumberConditions(minInt = 0, math = true)
         public int maxUploadSize = 8;
 
         @Spec.Field
         @NumberConditions(minInt = 1, maxInt = 65535)
         @Comment("Sets file storage server port, ask to your provider if the port is open worldwide before start the server or blame the lib")
-        @Comment("Used only on server-side")
+        @Comment("Used by the file server: on the server, or on a client with server = ALWAYS")
         public int serverPort = DEFAULT_NETWORK_SERVER_PORT;
 
         @Spec.Field
-        // FULL URL (scheme://host[:port][/path]); host MAY BE AN IPv4 OR A DOMAIN. MATCHES THE DEFAULT AND
-        // THE FORM NetworkAPI.upload BUILDS ("<remoteHost>/upload"), UNLIKE THE OLD BARE-HOST-ONLY REGEX.
+        // FULL URL (scheme://host[:port][/path]) WHOSE HOST MAY BE AN IPv4 OR A DOMAIN, THE FORM NetworkAPI.upload
+        // RESOLVES "<remoteUrl>/upload" AGAINST
         @StringConditions(value = "^https?://([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?)(\\.([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?))*(:\\d{1,5})?(/.*)?$", regexFlags = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE, mode = StringField.Mode.REGEX)
         @Comment("Sets the remote file server to upload and download files, it must match your game server IP or domain with the given port")
         @Comment("Include the scheme and port, e.g. http://your-host:25572/")
         @Comment("Used only on client-side")
-        public String remoteHost = "http://localhost:" + DEFAULT_NETWORK_SERVER_PORT + "/";
+        public String remoteUrl = "http://localhost:" + DEFAULT_NETWORK_SERVER_PORT + "/";
 
         @Spec.Field(control = Control.PASSWORD)
-        @Comment("The password to access the server, change this every time you have to update your server and the client to prevent external access and bandwidth abuse")
+        @Comment("The token clients present to the file server, change it every time you update your server and the clients to prevent external access and bandwidth abuse")
         @Comment("Used on server-side and client-side")
-        public String token = "watermedia_default_token_change_it";
+        public String token = DEFAULT_NETWORK_TOKEN;
 
         @Spec.Field(suffix = "ms")
-        @Comment("Default connect/read timeout for NetworkRequest, in milliseconds")
+        @Comment("Default connect/read timeout for NetRequest, in milliseconds")
         @NumberConditions(minInt = 1000, maxInt = 600_000)
         public int timeout = 15_000;
 
         @Spec.Field(control = Control.SEEKBAR)
-        @Comment("Maximum number of redirect hops NetworkRequest will follow before aborting")
+        @Comment("Maximum number of redirect hops NetRequest will follow before aborting")
         @NumberConditions(minInt = 0, maxInt = 50)
         public int maxRedirects = 10;
 
         @Spec.Field(suffix = "bytes")
-        @Comment("Hard cap (in bytes) for NetworkRequest text/JSON bodies — anything larger throws")
+        @Comment("Hard cap (in bytes) for NetRequest text/JSON bodies — anything larger throws")
         @NumberConditions(minInt = 1024, math = true)
-        public int maxTextSize = (1024 * 1024) * 16;
+        public int maxTextBytes = (1024 * 1024) * 16;
     }
 
     /** Internal bootstrap operation for the configuration facade. */

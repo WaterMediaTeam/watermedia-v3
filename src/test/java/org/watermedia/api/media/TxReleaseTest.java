@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.LocalHttp;
 import org.watermedia.test.support.MediaBootstrap;
@@ -82,12 +82,12 @@ class TxReleaseTest {
             finally { exchange.close(); }
         })) {
             final URI key = URI.create("fixture:tx-release-" + System.nanoTime());
-            final IPlatform platform = new IPlatform() {
+            final Platform platform = new Platform() {
                 @Override public String name() { return "Blocked image fixture"; }
-                @Override public PlatformData data(final URI uri) {
-                    return !key.equals(uri) ? null : new PlatformData(null,
-                            new DataSource(MediaType.IMAGE, null, null, new RequestHeaders(),
-                                    List.of(new DataQuality(origin.uri("/held.pnm"), 0, 0)), null, null));
+                @Override public Resolution resolve(final URI uri) {
+                    return !key.equals(uri) ? null : new Resolution(null,
+                            new Source(MediaType.IMAGE, null, null, new HttpHeaders(),
+                                    List.of(new Quality(origin.uri("/held.pnm"), 0, 0)), null, null));
                 }
             };
             PlatformAPI.register(platform);

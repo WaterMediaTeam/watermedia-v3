@@ -6,7 +6,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
@@ -19,12 +19,12 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class TwitterPlatform implements IPlatform {
+public final class TwitterPlatform implements Platform {
     public static final String NAME = "Twitter";
     private static final Marker IT = MarkerManager.getMarker(TwitterPlatform.class.getSimpleName());
     private static final String API_URL = "https://cdn.syndication.twimg.com/tweet-result?id=%s&token=%s&lang=en";
     private static final String API_TOKEN = "watermedia-java-x-access-token";
-    private static final Pattern ID_PATTERN = Pattern.compile("status/(\\d+)$");
+    private static final Pattern ID_PATTERN = Pattern.compile("/status/(\\d+)(?:/|$)");
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile("/(\\d{2,5})x(\\d{2,5})/");
     private static final String[] HOSTS = { "x.com", "www.x.com", "twitter.com", "www.twitter.com" };
 
@@ -32,37 +32,33 @@ public final class TwitterPlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
-        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
-        if (uri.getPath() == null || !ID_PATTERN.matcher(uri.getPath()).find()) return null;
-
-        String path = uri.getPath();
-        if (path.endsWith("/")) path = path.substring(0, path.length() - 1);
-
-        final Matcher m = ID_PATTERN.matcher(path);
-        if (!m.find()) throw new PlatformException(TwitterPlatform.class, "No tweet ID found in URL: " + uri);
+    public Resolution resolve(final URI uri) throws Exception {
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || uri.getPath() == null) return null;
+        // STATUS LINKS MAY END WITH A SEGMENT LIKE /video/1 OR /photo/1, SO THE ID IS NOT ANCHORED TO THE PATH END
+        final Matcher m = ID_PATTERN.matcher(uri.getPath());
+        if (!m.find()) return null;
 
         final String tweetId = m.group(1);
         LOGGER.debug(IT, "Twitter fetching tweet '{}'", tweetId);
 
-        final Tweet tweet = NetRequest.fetchJson(TwitterPlatform.class, String.format(API_URL, tweetId, API_TOKEN), Tweet.class);
+        final Tweet tweet = NetRequest.fetchJson(NAME, String.format(API_URL, tweetId, API_TOKEN), Tweet.class);
 
         if ("TweetTombstone".equals(tweet.typename))
-            throw new PlatformException(TwitterPlatform.class, "Tweet '" + tweetId + "' is unavailable (tombstoned / age-restricted / deleted)");
+            throw new PlatformException(NAME, "Tweet '" + tweetId + "' is unavailable (tombstoned / age-restricted / deleted)");
 
         if (tweet.mediaDetails == null || tweet.mediaDetails.length == 0)
-            throw new PlatformException(TwitterPlatform.class, "Tweet '" + tweetId + "' carries no media (text-only or protected)");
+            throw new PlatformException(NAME, "Tweet '" + tweetId + "' carries no media (text-only or protected)");
 
         final String title = tweet.user != null ? tweet.user.name : tweet.text;
         final String author = tweet.user != null ? tweet.user.screenName : null;
         // PARSE THE TIMESTAMP ONCE AND REUSE ACROSS EVERY MEDIA ENTRY (A BAD DATE MUST NOT DROP MEDIA)
         final Instant postedAt = parseInstant(tweet.createdAt);
 
-        final RequestHeaders headers = RequestHeaders.defaults(uri);
-        final List<DataSource> entries = new ArrayList<>(tweet.mediaDetails.length);
+        final HttpHeaders headers = HttpHeaders.defaults(uri);
+        final List<Source> entries = new ArrayList<>(tweet.mediaDetails.length);
         for (int i = 0; i < tweet.mediaDetails.length; i++) {
             try {
-                final DataSource entry = this.buildEntry(tweet, tweet.mediaDetails[i], title, author, postedAt, headers);
+                final Source entry = this.buildEntry(tweet, tweet.mediaDetails[i], title, author, postedAt, headers);
                 if (entry != null) entries.add(entry);
             } catch (final Exception e) {
                 LOGGER.warn(IT, "Twitter failed to build entry for media {} of tweet '{}': {}", i, tweetId, e.getMessage());
@@ -70,19 +66,19 @@ public final class TwitterPlatform implements IPlatform {
         }
 
         if (entries.isEmpty())
-            throw new PlatformException(TwitterPlatform.class, "All " + tweet.mediaDetails.length + " media source(s) failed to resolve for tweet '" + tweetId + "'");
+            throw new PlatformException(NAME, "All " + tweet.mediaDetails.length + " media source(s) failed to resolve for tweet '" + tweetId + "'");
 
         LOGGER.info(IT, "Twitter resolved {} of {} media entry(es) for tweet '{}'", entries.size(), tweet.mediaDetails.length, tweetId);
-        return new PlatformData(null, entries);
+        return new Resolution(null, entries);
     }
 
-    private DataSource buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final RequestHeaders headers) {
+    private Source buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final HttpHeaders headers) {
         if ("photo".equals(media.type)) {
             final int w = media.originalInfo != null ? media.originalInfo.width : 0;
             final int h = media.originalInfo != null ? media.originalInfo.height : 0;
             final Metadata metadata = new Metadata(title, tweet.text, postedAt, 0, author);
-            return new DataSource(MediaType.IMAGE, null, metadata, headers,
-                    List.of(new DataQuality(URI.create(media.mediaUrlHttps), w, h)),
+            return new Source(MediaType.IMAGE, null, metadata, headers,
+                    List.of(new Quality(URI.create(media.mediaUrlHttps), w, h)),
                     null, null);
         }
 
@@ -94,12 +90,12 @@ public final class TwitterPlatform implements IPlatform {
             final URI thumbnail = media.mediaUrlHttps != null ? URI.create(media.mediaUrlHttps) : null;
             final Metadata metadata = new Metadata(title, tweet.text, postedAt, media.videoInfo.durationMillis, author);
 
-            final List<DataQuality> variants = new ArrayList<>(media.videoInfo.variants.length);
+            final List<Quality> variants = new ArrayList<>(media.videoInfo.variants.length);
             for (final var variant: media.videoInfo.variants) {
                 if (variant.url == null) continue;
                 final var resMatcher = RESOLUTION_PATTERN.matcher(variant.url);
                 if (!resMatcher.find()) continue; // SKIP NON-PROGRESSIVE RENDITIONS (E.G. THE m3u8 PLAYLIST ENTRY)
-                variants.add(new DataQuality(URI.create(variant.url),
+                variants.add(new Quality(URI.create(variant.url),
                         Integer.parseInt(resMatcher.group(1)), Integer.parseInt(resMatcher.group(2))));
             }
 
@@ -108,7 +104,7 @@ public final class TwitterPlatform implements IPlatform {
                 return null;
             }
 
-            return new DataSource(MediaType.VIDEO, thumbnail, metadata, headers,
+            return new Source(MediaType.VIDEO, thumbnail, metadata, headers,
                     variants,
                     null, null);
         }

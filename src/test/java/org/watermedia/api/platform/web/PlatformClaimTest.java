@@ -8,7 +8,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.platform.IPlatform;
+import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.MatureContentException;
 import org.watermedia.api.platform.PlatformApiTest;
 import org.watermedia.api.platform.WaterPlatformTest;
@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
- * Offline coverage for the URI-claim half of {@link IPlatform#data(URI)}.
+ * Offline coverage for the URI-claim half of {@link Platform#resolve(URI)}.
  * Since validation now lives inside {@code data}, a foreign URI must be
  * rejected with a {@code null} return <i>before</i> any network access — these
  * cases exercise host matching, suffix rules, path prefixes and pattern
@@ -57,17 +57,19 @@ public class PlatformClaimTest {
                 arguments(DrivePlatform.class, "https://drive.google.com/drive/folders/X"),
                 arguments(DrivePlatform.class, "https://docs.google.com/file/d/ID/view"),
 
-                // Dropbox — host contains "dropbox.com" AND query contains dl=0
+                // Dropbox — host is dropbox.com or www.dropbox.com AND the query carries a whole dl=0 parameter
                 arguments(DropboxPlatform.class, "https://www.dropbox.com/s/abc/x.mp4?dl=1"),
                 arguments(DropboxPlatform.class, "https://www.dropbox.com/s/abc/x.mp4"),
+                arguments(DropboxPlatform.class, "https://www.dropbox.com/s/abc/x.mp4?dl=01"),
+                arguments(DropboxPlatform.class, "https://www.dropbox.com/s/abc/x.mp4?xdl=0"),
                 arguments(DropboxPlatform.class, "https://example.com/s/abc?dl=0"),
 
                 // Imgur — host equalsIgnoreCase imgur.com
                 arguments(ImgurPlatform.class, "https://i.imgur.com/abc.png"),
                 arguments(ImgurPlatform.class, "https://example.com/"),
 
-                // Kick — host equalsIgnoreCase kick.com
-                arguments(KickPlatform.class, "https://www.kick.com/channelname"),
+                // Kick — host is kick.com or www.kick.com
+                arguments(KickPlatform.class, "https://notkick.com/channelname"),
                 arguments(KickPlatform.class, "https://twitch.tv/x"),
 
                 // Lightshot — host equalsIgnoreCase prnt.sc
@@ -78,8 +80,8 @@ public class PlatformClaimTest {
                 arguments(MedalPlatform.class, "https://medal.tv/users/xxlynds"),
                 arguments(MedalPlatform.class, "https://medal.tv/games/gta-v"),
 
-                // MediaFire — host == www.mediafire.com AND path starts /file/
-                arguments(MediaFirePlatform.class, "https://mediafire.com/file/abc/x.zip"),
+                // MediaFire — host is mediafire.com or www.mediafire.com AND path starts /file/
+                arguments(MediaFirePlatform.class, "https://notmediafire.com/file/abc/x.zip"),
                 arguments(MediaFirePlatform.class, "https://www.mediafire.com/folder/abc"),
 
                 // Odysee — host odysee.com / www.odysee.com
@@ -94,8 +96,9 @@ public class PlatformClaimTest {
                 // Sendvid — host sendvid.com / www.sendvid.com
                 arguments(SendvidPlatform.class, "https://example.com/"),
 
-                // Streamable — host equalsIgnoreCase streamable.com
-                arguments(StreamablePlatform.class, "https://www.streamable.com/abc123"),
+                // Streamable — host is streamable.com or www.streamable.com AND the path carries an id
+                arguments(StreamablePlatform.class, "https://streamable.co/abc123"),
+                arguments(StreamablePlatform.class, "https://streamable.com/"),
                 arguments(StreamablePlatform.class, "https://example.com/"),
 
                 // TikTok — host whitelist
@@ -104,8 +107,9 @@ public class PlatformClaimTest {
                 // Twitch — host whitelist
                 arguments(TwitchPlatform.class, "https://example.com/"),
 
-                // Twitter — host whitelist AND path matches status/<id>
+                // Twitter — host whitelist AND path carries a numeric /status/<id> segment
                 arguments(TwitterPlatform.class, "https://twitter.com/user"),
+                arguments(TwitterPlatform.class, "https://twitter.com/user/status/abc"),
                 arguments(TwitterPlatform.class, "https://example.com/user/status/1"),
 
                 // VidLii — host vidlii.com / www.vidlii.com
@@ -121,10 +125,10 @@ public class PlatformClaimTest {
 
     @ParameterizedTest(name = "{0} data({1}) == null")
     @MethodSource("foreignUris")
-    void testForeignUriYieldsNull(final Class<? extends IPlatform> type, final String uriString) throws Exception {
-        final IPlatform platform = type.getDeclaredConstructor().newInstance();
+    void testForeignUriYieldsNull(final Class<? extends Platform> type, final String uriString) throws Exception {
+        final Platform platform = type.getDeclaredConstructor().newInstance();
         final URI uri = URI.create(uriString);
-        assertNull(platform.data(uri),
+        assertNull(platform.resolve(uri),
                 () -> type.getSimpleName() + ".data(" + uriString + ") must return null for a foreign URI");
     }
 
@@ -148,7 +152,7 @@ public class PlatformClaimTest {
         WaterMediaConfig.platforms.allowMatureContent = false;
         final PornHubPlatform platform = new PornHubPlatform();
         assertThrows(MatureContentException.class,
-                () -> platform.data(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),
+                () -> platform.resolve(URI.create("https://www.pornhub.com/view_video.php?viewkey=abc")),
                 "Mature-only platform must throw when mature content is disabled, before any fetch");
     }
 }

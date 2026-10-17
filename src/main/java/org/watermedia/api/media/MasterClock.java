@@ -60,7 +60,7 @@ final class MasterClock {
     // CLOCK RECALIBRATION THRESHOLD (SECONDS) — ONLY RECALIBRATE ptsDrift
     // WHEN AUDIO PTS DRIFTS MORE THAN THIS FROM WALLCLOCK. PREVENTS VIDEO
     // PROCESSING DELAY FROM PULLING THE CLOCK BACKWARD EVERY AUDIO UPDATE.
-    private static final double DRIFT_RECALIBRATION_THRESHOLD = 0.050;
+    private static final double DRIFT_RECALIBRATION_SEC = 0.050;
 
     // FRAME TIMING
     private volatile double frameDurationSec = 1.0 / 30.0;
@@ -126,7 +126,7 @@ final class MasterClock {
             // COMPARE AGAINST THE SPEED-CORRECTED time(); A PLAIN ptsDrift+now DIVERGED FROM THE
             // REAL CLOCK AT |1-speed| AND TRIPPED THE THRESHOLD ON NEARLY EVERY FRAME WHEN speed != 1.
             final double drift = ptsSec - this.time();
-            if (this.status == Status.BUFFERING || Math.abs(drift) > DRIFT_RECALIBRATION_THRESHOLD) {
+            if (this.status == Status.BUFFERING || Math.abs(drift) > DRIFT_RECALIBRATION_SEC) {
                 this.ptsDrift = ptsSec - now;
                 this.lastUpdated = now;
             }
@@ -255,7 +255,7 @@ final class MasterClock {
     }
 
     /** Checks if a seek request is pending — lock-free via volatile. */
-    public boolean hasSeekPending() {
+    public boolean seekPending() {
         return this.pendingSeek != null;
     }
 
@@ -346,34 +346,6 @@ final class MasterClock {
         }
     }
 
-    /**
-     * Pacing for video-only streams (no audio clock driver).
-     * Blocks until the clock reaches the given frame PTS. Uses the lock condition instead of
-     * {@link Thread#sleep(long)} to allow early wake-up on status changes.
-     *
-     * @param framePtsSec PTS of the frame in seconds
-     * @return true if the frame should be displayed, false if interrupted or the status changed
-     * @throws InterruptedException if the thread is interrupted
-     */
-    public boolean waitUntil(final double framePtsSec) throws InterruptedException {
-        this.lock.lock();
-        try {
-            while (this.status == Status.PLAYING) {
-                final double now = this.time();
-                final double diff = framePtsSec - now;
-
-                if (diff <= 0.002) return true; // 2MS TOLERANCE — TIME TO SHOW
-
-                final long sleepMs = Math.min((long) (diff * 1000.0), 10);
-                this.condition.await(sleepMs, TimeUnit.MILLISECONDS);
-            }
-            // STATUS CHANGED WHILE WAITING — CALLER SHOULD RE-EVALUATE
-            return false;
-        } finally {
-            this.lock.unlock();
-        }
-    }
-
     // PIPELINE LIFECYCLE
     /** Resets all state to its initial values. */
     public void reset() {
@@ -407,23 +379,8 @@ final class MasterClock {
     }
 
     /** Checks if the demuxer has finished — lock-free via volatile. */
-    public boolean isDemuxFinished() {
+    public boolean demuxFinished() {
         return this.demuxFinished;
-    }
-
-    /**
-     * Increments and returns the serial number.
-     * Used to invalidate stale packets and frames after a seek or restart.
-     *
-     * @return the new serial value
-     */
-    public int nextSerial() {
-        this.lock.lock();
-        try {
-            return ++this.serial;
-        } finally {
-            this.lock.unlock();
-        }
     }
 
     // FRAME TIMING

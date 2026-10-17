@@ -82,8 +82,8 @@ public class MediaPlayerBaseTest {
 
         @Test
         @DisplayName("live source cannot change speed")
-        void liveSourceLocksSpeed() {
-            // NO SYNCED DURATION -> liveSource() -> canSpeed() FALSE
+        void liveLocksSpeed() {
+            // NO SYNCED DURATION -> live() -> canSpeed() FALSE
             final ServerMediaPlayer player = new ServerMediaPlayer();
             assertFalse(player.canSpeed());
             assertFalse(player.speed(2.0f));
@@ -128,14 +128,14 @@ public class MediaPlayerBaseTest {
         @DisplayName("maxSize stores the cap and rejects negatives")
         void maxSizeValidation() {
             final ServerMediaPlayer player = new ServerMediaPlayer();
-            player.maxSize(160, 90);
-            assertEquals(160, player.maxWidth());
-            assertEquals(90, player.maxHeight());
+            player.scale(160, 90);
+            assertEquals(160, player.scaleWidth());
+            assertEquals(90, player.scaleHeight());
 
             // 0 MEANS UNLIMITED (NO_SIZE)
-            player.maxSize(0, 0);
-            assertEquals(MediaPlayer.NO_SIZE, player.maxWidth());
-            assertThrows(IllegalArgumentException.class, () -> player.maxSize(-1, 10));
+            player.scale(0, 0);
+            assertEquals(MediaPlayer.NO_SIZE, player.scaleWidth());
+            assertThrows(IllegalArgumentException.class, () -> player.scale(-1, 10));
         }
 
         @Test

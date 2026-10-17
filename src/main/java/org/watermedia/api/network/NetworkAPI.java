@@ -23,22 +23,26 @@ import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** File transfer facade: uploads to the remote WaterMedia file server and the lifecycle of the local one. */
 public final class NetworkAPI {
-    private NetworkAPI() {}
     private static final Marker IT = MarkerManager.getMarker(NetworkAPI.class.getSimpleName());
+    private static final String STEP_MIME = "MIME registry";
+    private static final String STEP_SERVER = "FileServer";
+    /** URI scheme of the internal sources the WaterMedia file servers serve. */
+    public static final String PROTOCOL_WATER = "water";
+    /** Request header carrying the upload token the file server authenticates with. */
+    public static final String X_WATERMEDIA_TOKEN = "X-WaterMedia-Token";
+    /** Request header carrying the original name of an uploaded file. */
+    public static final String X_WATERMEDIA_FILENAME = "X-WaterMedia-Filename";
     private static volatile Uploads uploads;
+
+    private NetworkAPI() {}
 
     private static final class Uploads {
         final ExecutorService executor = Executors.newFixedThreadPool(4, ThreadTool.workerFactory("NetworkAPI-Upload", Thread.NORM_PRIORITY));
         final Set<NetworkServer.UploadStatus> pending = ConcurrentHashMap.newKeySet();
         volatile boolean active = true;
     }
-    private static final String STEP_MIME = "MIME registry";
-    private static final String STEP_SERVER = "FileServer";
-    public static final String PROTOCOL_WATER = "water";
-    public static final String X_WATERMEDIA_ID = "X-WaterMedia-Id";
-    public static final String X_WATERMEDIA_TOKEN = "X-WaterMedia-Token";
-    public static final String X_WATERMEDIA_FILENAME = "X-WaterMedia-Filename";
 
     /**
      * Uploads multiple files to the remote WaterMedia server on a shared background thread pool.
@@ -81,24 +85,22 @@ public final class NetworkAPI {
     }
 
     /**
-     * Validated base URL of the remote file server ({@code network.remoteHost}) without the
+     * Validated base URL of the remote file server ({@code network.remoteUrl}) without the
      * trailing slash. Fails fast on a blank or non-absolute http(s) value instead of producing
      * a scheme-less URL that only breaks much later, far from the actual cause.
      */
-    public static String remoteHost() throws IOException {
-        final String base = WaterMediaConfig.network.remoteHost;
+    public static String remoteUrl() throws IOException {
+        final String base = WaterMediaConfig.network.remoteUrl;
         if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))
-            throw new IOException("network.remoteHost is not configured (expected an absolute http(s) URL): " + base);
+            throw new IOException("network.remoteUrl is not configured (expected an absolute http(s) URL): " + base);
         return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
     private static void upload(final File file, final NetworkServer.UploadStatus status, final Uploads owner) {
         HttpURLConnection conn = null;
         try {
-            // STREAMING UPLOADS WITH BYTE-LEVEL PROGRESS ARE OUT OF SCOPE FOR NetRequest,
-            // SO WE DRIVE HttpURLConnection DIRECTLY — BUT USE URI.toURL() TO AVOID THE
-            // DEPRECATED new URL(String) CONSTRUCTOR.
-            final URL url = URI.create(remoteHost() + "/upload").toURL();
+            // STREAMING UPLOADS WITH BYTE-LEVEL PROGRESS ARE OUT OF SCOPE FOR NetRequest, SO THIS DRIVES HttpURLConnection
+            final URL url = URI.create(remoteUrl() + "/upload").toURL();
             conn = (HttpURLConnection) url.openConnection();
             if (!owner.active) throw new IOException("Upload session stopped");
             conn.setConnectTimeout(WaterMediaConfig.network.timeout);
@@ -110,7 +112,7 @@ public final class NetworkAPI {
             conn.setRequestProperty(X_WATERMEDIA_FILENAME, file.getName());
 
             String contentType = URLConnection.guessContentTypeFromName(file.getName());
-            if (contentType == null) contentType = "application/octet-stream";
+            if (contentType == null) contentType = NetRequest.MIMETYPE_OCTET_STREAM;
             conn.setRequestProperty("Content-Type", contentType);
             conn.setFixedLengthStreamingMode(file.length());
 
@@ -163,6 +165,11 @@ public final class NetworkAPI {
         }
     }
 
+    // THE FILE SERVER RUNS EVERYWHERE UNDER ALWAYS AND ONLY ON HOSTS WITHOUT A CLIENT UNDER DEDICATED
+    static boolean serverEnabled(final boolean client, final WaterMediaConfig.Network.Server server) {
+        return server == WaterMediaConfig.Network.Server.ALWAYS || (!client && server == WaterMediaConfig.Network.Server.DEDICATED);
+    }
+
     /** Internal bootstrap operation for network services. */
     public static final class Module extends WaterMediaModule {
         @Override
@@ -174,7 +181,7 @@ public final class NetworkAPI {
                 uploads = new Uploads();
             }
             this.task(2, 2, STEP_SERVER);
-            if (WaterMediaConfig.network.forceEnableServer || (!WaterMedia.clientSide() && WaterMediaConfig.network.enableServer)) {
+            if (serverEnabled(WaterMedia.clientSide(), WaterMediaConfig.network.server)) {
                 try {
                     NetworkServer.start(WaterMediaConfig.network.serverPort, WaterMedia.cwd());
                 } catch (final Exception failure) {

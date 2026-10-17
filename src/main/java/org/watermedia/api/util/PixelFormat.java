@@ -23,8 +23,8 @@ public enum PixelFormat {
     GBRA(1),
     /** Packed YUV 4:2:2 in [Y0, U, Y1, V] order — 4 bytes per 2 pixels (avg 2 bytes/pixel). Chroma horizontally subsampled, shared between pixel pairs. */
     YUYV(1),
-    /** Packed YUV 4:2:2 in [U, Y0, V, Y1] order (UYVY). Same layout as {@link #YUYV} with luma and chroma bytes swapped. */
-    YUYV2(1),
+    /** Packed YUV 4:2:2 in [U, Y0, V, Y1] order. Same layout as {@link #YUYV} with luma and chroma bytes swapped. */
+    UYVY(1),
 
     // ===============
     // TWO PLANES (Y + interleaved chroma)

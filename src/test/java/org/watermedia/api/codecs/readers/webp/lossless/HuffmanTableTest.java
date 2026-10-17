@@ -4,7 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.common.webp.BitReader;
 
 import java.nio.ByteBuffer;
@@ -75,7 +75,7 @@ public class HuffmanTableTest {
 
     @Test
     @DisplayName("build() from canonical code lengths")
-    void testBuildFromCodeLengths() throws XCodecException {
+    void testBuildFromCodeLengths() throws CodecException {
         // CANONICAL ASSIGNMENT: SYM0/1 SYM1/10 SYM2/110 SYM3/111
         final int[] codeLengths = new int[8];
         codeLengths[0] = 1;
@@ -91,7 +91,7 @@ public class HuffmanTableTest {
 
     @Test
     @DisplayName("Edge-case code lengths (all-zero and single non-zero)")
-    void testEdgeCaseCodeLengths() throws XCodecException {
+    void testEdgeCaseCodeLengths() throws CodecException {
         // ALL ZEROS COLLAPSES TO THE SINGLE SYMBOL 0 TABLE
         final int[] allZeros = new int[10];
         final HuffmanTable zeroTable = HuffmanTable.build(allZeros, 10);
@@ -107,7 +107,7 @@ public class HuffmanTableTest {
 
     @Test
     @DisplayName("Sequential reads consume bits correctly")
-    void testSequentialReadsConsumeBitsCorrectly() throws XCodecException {
+    void testSequentialReadsConsumeBitsCorrectly() throws CodecException {
         final HuffmanTable table = HuffmanTable.simple(2, 0, 1);
         // BYTE 0x55 = 01010101 — LSB-FIRST READS YIELD 1, 0, 1, 0...
         final byte[] data = {(byte) 0x55, (byte) 0x55};
@@ -120,7 +120,7 @@ public class HuffmanTableTest {
 
     @Test
     @DisplayName("Two symbols with equal 2-bit codes")
-    void testTwoSymbol2BitCodes() throws XCodecException {
+    void testTwoSymbol2BitCodes() throws CodecException {
         // TWO SYMBOLS WITH EQUAL 2-BIT CODES — MIRRORS WHAT 6.webp'S META GREEN TABLE USES
         final int[] codeLengths = new int[280];
         codeLengths[0] = 2;
@@ -138,7 +138,7 @@ public class HuffmanTableTest {
 
     @Test
     @DisplayName("Null code lengths produce a valid fallback table")
-    void testNullCodeLengthsHandled() throws XCodecException {
+    void testNullCodeLengthsHandled() throws CodecException {
         // NULL CODE LENGTHS MUST PRODUCE A VALID FALLBACK TABLE
         assertNotNull(HuffmanTable.build(null, 10), "Should handle null code lengths");
     }
@@ -152,7 +152,7 @@ public class HuffmanTableTest {
         over[0] = 1;
         over[1] = 1;
         over[2] = 1;
-        assertThrows(XCodecException.class, () -> HuffmanTable.build(over, 8),
+        assertThrows(CodecException.class, () -> HuffmanTable.build(over, 8),
                 "Over-subscribed code lengths must throw");
     }
 }

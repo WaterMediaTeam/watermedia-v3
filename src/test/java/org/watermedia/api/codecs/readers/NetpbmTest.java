@@ -2,8 +2,11 @@ package org.watermedia.api.codecs.readers;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
 import org.watermedia.test.support.Fixtures;
@@ -11,6 +14,8 @@ import org.watermedia.test.support.Fixtures;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -18,14 +23,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Netpbm reader tests: a header parser smoke test over every fixture, plus a decode test that
- * runs {@link ImageReader#next()} for each binary variant and asserts the first BGRA pixel and
- * that {@link ImageReader#reset()} replays the raster.
+ * Netpbm reader tests: a header parser smoke test over every fixture, a decode test that runs
+ * {@link ImageReader#next()} for each binary variant and asserts the first BGRA pixel and that
+ * {@link ImageReader#reset()} replays the raster, plus hand-written plain (ASCII) and PAM alpha
+ * rasters checked pixel by pixel.
  */
 @DisplayName("Netpbm reader")
 public class NetpbmTest {
@@ -71,7 +78,7 @@ public class NetpbmTest {
             final Integer expected = FIRST_PIXEL.get(name);
             if (expected == null) continue;
             tests.add(DynamicTest.dynamicTest("Decode " + name, () -> {
-                try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(Fixtures.readAll(file)))) {
+                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(file)))) {
                     assertEquals(600, reader.width(), name);
                     assertEquals(600, reader.height(), name);
 
@@ -88,6 +95,63 @@ public class NetpbmTest {
             }));
         }
         return tests;
+    }
+
+    @Nested
+    @DisplayName("Plain and alpha variants")
+    class PlainAndAlpha {
+
+        @Test
+        @DisplayName("P1 bits need no separator and accept comments")
+        void plainBitmap() throws IOException {
+            final ImageData image = decode("P1\n# two rows\n3 2\n101\n0 1 0\n");
+            assertEquals(3, image.width());
+            assertEquals(2, image.height());
+            assertArrayEquals(new int[] { 0xFF000000, 0xFFFFFFFF, 0xFF000000, 0xFFFFFFFF, 0xFF000000, 0xFFFFFFFF }, pixels(image));
+        }
+
+        @Test
+        @DisplayName("P2 samples scale by maxval")
+        void plainGraymap() throws IOException {
+            assertArrayEquals(new int[] { 0xFF000000, 0xFFFFFFFF, 0xFF777777, 0xFF333333 }, pixels(decode("P2 2 2 15\n0 15\n7 3\n")));
+        }
+
+        @Test
+        @DisplayName("P3 triplets become opaque BGRA, even without a trailing newline")
+        void plainPixmap() throws IOException {
+            assertArrayEquals(new int[] { 0xFFFF0000, 0xFF0000FF }, pixels(decode("P3 2 1 255 255 0 0 0 0 255")));
+        }
+
+        @Test
+        @DisplayName("PAM GRAYSCALE_ALPHA keeps its alpha")
+        void grayscaleAlpha() throws IOException {
+            final ImageData image = decode("P7\nWIDTH 2\nHEIGHT 1\nDEPTH 2\nMAXVAL 255\nTUPLTYPE GRAYSCALE_ALPHA\nENDHDR\n",
+                    new byte[] { 0x2A, (byte) 0x80, (byte) 0xFF, 0x00 });
+            assertArrayEquals(new int[] { 0x802A2A2A, 0x00FFFFFF }, pixels(image));
+        }
+
+        @Test
+        @DisplayName("PAM BLACKANDWHITE_ALPHA keeps its alpha")
+        void blackAndWhiteAlpha() throws IOException {
+            final ImageData image = decode("P7\nWIDTH 2\nHEIGHT 1\nDEPTH 2\nMAXVAL 1\nTUPLTYPE BLACKANDWHITE_ALPHA\nENDHDR\n",
+                    new byte[] { 1, 1, 0, 0 });
+            assertArrayEquals(new int[] { 0xFFFFFFFF, 0x00000000 }, pixels(image));
+        }
+
+        private static ImageData decode(final String text) throws IOException {
+            return decode(text, new byte[0]);
+        }
+
+        private static ImageData decode(final String header, final byte[] raster) throws IOException {
+            final byte[] head = header.getBytes(StandardCharsets.US_ASCII);
+            return CodecsAPI.decode(ByteBuffer.allocate(head.length + raster.length).put(head).put(raster).array());
+        }
+
+        private static int[] pixels(final ImageData image) {
+            final int[] pixels = new int[image.width() * image.height()];
+            image.frames()[0].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
+            return pixels;
+        }
     }
 
     private static List<Path> netpbmFixtures() {

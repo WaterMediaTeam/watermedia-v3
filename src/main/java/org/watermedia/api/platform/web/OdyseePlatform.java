@@ -7,7 +7,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.*;
 
-public final class OdyseePlatform implements IPlatform {
+public final class OdyseePlatform implements Platform {
     public static final String NAME = "Odysee";
     private static final Marker IT = MarkerManager.getMarker(OdyseePlatform.class.getSimpleName());
     private static final Pattern JSON_LD_PATTERN = Pattern.compile(
@@ -34,34 +34,34 @@ public final class OdyseePlatform implements IPlatform {
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final String path = uri.getRawPath();
         if (path == null || path.length() < 2) {
-            throw new PlatformException(OdyseePlatform.class, "Invalid URL: " + uri);
+            throw new PlatformException(NAME, "Invalid URL: " + uri);
         }
 
         final URI embedUri = new URI("https://odysee.com/%24/embed/" + path.substring(1));
         LOGGER.debug(IT, "Odysee fetching embed page {} for {}", embedUri, uri);
         try (final NetRequest req = NetRequest.create(embedUri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(OdyseePlatform.class, "Embed request for " + embedUri + " returned HTTP " + req.statusCode());
-            final String html = req.readAllAsString();
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Embed request for " + embedUri + " returned HTTP " + req.statusCode());
+            final String html = req.text();
 
             final Matcher matcher = JSON_LD_PATTERN.matcher(html);
             if (!matcher.find()) {
-                throw new PlatformException(OdyseePlatform.class, "JSON-LD block not found in embed page (geo-blocked, removed, or markup changed): " + uri);
+                throw new PlatformException(NAME, "JSON-LD block not found in embed page (geo-blocked, removed, or markup changed): " + uri);
             }
 
             final JsonObject video = JsonParser.parseString(matcher.group(1)).getAsJsonObject();
             final String ldType = str(video, "@type");
             if (!"VideoObject".equals(ldType)) {
-                throw new PlatformException(OdyseePlatform.class, "JSON-LD is a '" + ldType + "', not a VideoObject (not a playable video): " + uri);
+                throw new PlatformException(NAME, "JSON-LD is a '" + ldType + "', not a VideoObject (not a playable video): " + uri);
             }
 
             final String contentUrl = str(video, "contentUrl");
             if (contentUrl == null)
-                throw new PlatformException(OdyseePlatform.class, "VideoObject is missing 'contentUrl' (stream not published yet?): " + uri);
+                throw new PlatformException(NAME, "VideoObject is missing 'contentUrl' (stream not published yet?): " + uri);
             final URI videoUri = new URI(contentUrl);
 
             final String title = str(video, "name");
@@ -91,12 +91,12 @@ public final class OdyseePlatform implements IPlatform {
 
             LOGGER.debug(IT, "Odysee resolved contentUrl {} (title='{}', durationMs={}) for {}", videoUri, title, durationMs, uri);
             final Metadata metadata = new Metadata(title, description, publishedAt, durationMs, author);
-            final var entry = new DataSource(MediaType.VIDEO, thumbnail, metadata,
-                    RequestHeaders.defaults(uri),
-                    List.of(new DataQuality(videoUri, 0, 0)),
+            final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
+                    HttpHeaders.defaults(uri),
+                    List.of(new Quality(videoUri, 0, 0)),
                     null, null);
 
-            return new PlatformData(null, entry);
+            return new Resolution(null, entry);
         }
     }
 }

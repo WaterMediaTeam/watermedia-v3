@@ -32,7 +32,7 @@ public class TxFrameTexturesTest {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(true);
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
         try {
-            player.maxSize(CAP, CAP);
+            player.scale(CAP, CAP);
             player.start();
             assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
             assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));

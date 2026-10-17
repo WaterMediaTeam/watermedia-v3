@@ -37,7 +37,7 @@ public final class FFTool {
             case AV_PIX_FMT_GRAY8 -> new Pixels(PixelFormat.GRAY, 8);
             // 8-BIT PACKED YUV
             case AV_PIX_FMT_YUYV422 -> new Pixels(PixelFormat.YUYV, 8);
-            case AV_PIX_FMT_UYVY422 -> new Pixels(PixelFormat.YUYV2, 8);
+            case AV_PIX_FMT_UYVY422 -> new Pixels(PixelFormat.UYVY, 8);
             // 8-BIT YUVA (4-PLANE)
             case AV_PIX_FMT_YUVA420P -> new Pixels(PixelFormat.YUVA420P, 8);
             case AV_PIX_FMT_YUVA422P -> new Pixels(PixelFormat.YUVA422P, 8);
@@ -87,7 +87,7 @@ public final class FFTool {
             case RGBA -> AV_PIX_FMT_RGBA;
             case BGRA -> AV_PIX_FMT_BGRA;
             case YUYV -> AV_PIX_FMT_YUYV422;
-            case YUYV2 -> AV_PIX_FMT_UYVY422;
+            case UYVY -> AV_PIX_FMT_UYVY422;
             case NV12 -> AV_PIX_FMT_NV12;
             case NV21 -> AV_PIX_FMT_NV21;
             case YUV420P -> AV_PIX_FMT_YUV420P;

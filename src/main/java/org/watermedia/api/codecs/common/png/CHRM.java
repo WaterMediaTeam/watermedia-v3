@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -18,17 +18,17 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     /**
      * Reads cHRM chunk from buffer (reads length/type header first)
      */
-    public static CHRM read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated cHRM chunk header");
+    public static CHRM read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated cHRM chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new XCodecException("cHRM chunk length must be 32, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated cHRM chunk");
+            throw new CodecException("cHRM chunk length must be 32, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated cHRM chunk");
 
         return new CHRM(
                 buffer.getInt(), // WHITE POINT X
@@ -43,16 +43,16 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     }
 
     /**
-     * Converts a generic CHUNK to CHRM
+     * Converts a generic PngChunk to CHRM
      */
-    public static CHRM convert(final CHUNK chunk) throws XCodecException {
+    public static CHRM convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for cHRM: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new XCodecException("cHRM data must be 32 bytes, got " + data.length);
+            throw new CodecException("cHRM data must be 32 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
@@ -101,7 +101,7 @@ public record CHRM(int whiteX, int whiteY, int redX, int redY, int greenX, int g
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

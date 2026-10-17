@@ -22,6 +22,6 @@ class CleanupFailureTest {
         final Throwable fatal = new InternalError("fatal");
         assertSame(assertion, IOTool.mergeFailure(ordinary, assertion));
         assertSame(fatal, IOTool.mergeFailure(assertion, fatal));
-        assertSame(fatal, IOTool.mergeFailure(fatal, new ThreadDeath()));
+        assertSame(fatal, IOTool.mergeFailure(fatal, new StackOverflowError()));
     }
 }

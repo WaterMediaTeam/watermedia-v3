@@ -386,7 +386,7 @@ public final class MRLSelectorScreen extends Screen {
                     break;
                 }
                 if (thumbStatus != MRL.Status.LOADED) continue; // ERROR/EXPIRED/BLOCKED/FORGOTTEN — TRY NEXT SOURCE
-                player = MediaAPI.createPlayer(thumbnailMrl, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
+                player = MediaAPI.player(thumbnailMrl, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) break;
             }
 
@@ -396,7 +396,7 @@ public final class MRLSelectorScreen extends Screen {
             if (player == null) {
                 for (int i = 0; i < sources.size(); i++) {
                     if (sources.get(i).type() == MediaType.IMAGE) {
-                        player = MediaAPI.createPlayer(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
+                        player = MediaAPI.player(mrl, i, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                         break;
                     }
                 }
@@ -711,7 +711,7 @@ public final class MRLSelectorScreen extends Screen {
         MediaQuality best = MediaQuality.UNKNOWN;
         for (final MRL.Source source: mrl.sources()) {
             for (final MediaQuality q: source.qualities().keySet()) {
-                if (q.threshold > best.threshold) best = q;
+                if (q.height() > best.height()) best = q;
             }
         }
         return best.name();

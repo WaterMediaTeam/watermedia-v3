@@ -6,8 +6,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.test.support.LocalHttp;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.Charset;
@@ -17,8 +15,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -26,10 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link IOTool}'s bounded IO, verified files and archive guards.
+ * Verifies {@link IOTool}'s bounded IO, verified downloads and platform identification.
  */
 @DisplayName("IOTool")
 public class IOToolTest {
@@ -116,16 +111,6 @@ public class IOToolTest {
         }
     }
 
-    private static byte[] zip(final String entryName) throws IOException {
-        final ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        try (final ZipOutputStream zos = new ZipOutputStream(bos)) {
-            zos.putNextEntry(new ZipEntry(entryName));
-            zos.write("payload".getBytes(StandardCharsets.UTF_8));
-            zos.closeEntry();
-        }
-        return bos.toByteArray();
-    }
-
     @Test
     @DisplayName("readLimited returns the body when under the cap")
     void readLimitedUnderCap() throws IOException {
@@ -138,22 +123,6 @@ public class IOToolTest {
     void readLimitedOverCap() {
         final byte[] data = new byte[100];
         assertThrows(IOException.class, () -> IOTool.readLimited(new ByteArrayInputStream(data), 10, -1L));
-    }
-
-    @Test
-    @DisplayName("jarExtractZip writes a normal entry into the output directory")
-    void extractsNormalEntry(@TempDir final Path out) throws Exception {
-        assertTrue(IOTool.jarExtractZip(new ByteArrayInputStream(zip("good.txt")), out.toFile()));
-        assertTrue(new File(out.toFile(), "good.txt").isFile());
-    }
-
-    @Test
-    @DisplayName("jarExtractZip rejects a Zip Slip entry that escapes the target")
-    void rejectsZipSlip(@TempDir final Path out) throws Exception {
-        final byte[] evil = zip("../escapes.txt");
-        assertThrows(IOException.class, () -> IOTool.jarExtractZip(new ByteArrayInputStream(evil), out.toFile()));
-        // THE ESCAPING FILE MUST NOT HAVE BEEN WRITTEN OUTSIDE THE TARGET
-        assertFalse(new File(out.toFile().getParentFile(), "escapes.txt").exists());
     }
 
     @Test

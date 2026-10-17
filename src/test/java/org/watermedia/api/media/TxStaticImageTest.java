@@ -52,8 +52,8 @@ public class TxStaticImageTest {
     @Test
     @DisplayName("Static SVG loads and uploads one frame end-to-end")
     void testStaticSvgLoadsAndUploadsOneFrame() {
-        // EXERCISES MRL → TxMediaPlayer → openSource → SVGReader: openSource MUST NOT REJECT THE
-        // SOURCE ON ITS CONTENT-TYPE HEADER (MRL ALREADY ROUTED IT AND decodeImage VALIDATES THE BYTES)
+        // EXERCISES MRL → TxMediaPlayer → openSource → SvgReader: openSource MUST NOT REJECT THE
+        // SOURCE ON ITS CONTENT-TYPE HEADER (MRL ALREADY ROUTED IT AND CodecsAPI.reader VALIDATES THE BYTES)
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.SVG_DIR.resolve("car-filled-color.svg")));
         assertTrue(mrl.await(MRL_TIMEOUT_MS));
 

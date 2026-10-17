@@ -8,7 +8,7 @@ import org.watermedia.api.media.SFXEngine;
 import java.util.function.Supplier;
 
 /**
- * Audio backend the standalone app hands to {@code MediaAPI.createPlayer} when opening a player.
+ * Audio backend the standalone app hands to {@code MediaAPI.player} when opening a player.
  * A first-class, user-selectable choice (see the settings screen) — not an automatic fallback:
  * {@link #JAVASOUND} can be picked even when OpenAL is available, and {@link #OPENAL} stays the default.
  */
@@ -25,7 +25,7 @@ public enum AudioEngine {
     }
 
     /**
-     * Returns the engine factory passed to {@code MediaAPI.createPlayer}. Each call to the supplier
+     * Returns the engine factory passed to {@code MediaAPI.player}. Each call to the supplier
      * builds a fresh engine — engines are player-exclusive and must not be shared.
      * @return the {@link SFXEngine} supplier for this backend
      */

@@ -2,7 +2,7 @@ package org.watermedia.api.codecs.common.gif;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -21,7 +21,7 @@ public class ChunkContractTest {
 
     @Test
     @DisplayName("Serializes GIF blocks that read back unchanged")
-    void serializesBlocks() throws XCodecException {
+    void serializesBlocks() throws CodecException {
         final ScreenDescriptor screen = new ScreenDescriptor(320, 240, true, 8, false, 1, 0, 0);
         final GraphicExtension control = new GraphicExtension(2, false, true, 25, 1);
         final ImageDescriptor image = new ImageDescriptor(1, 2, 16, 9, true, false, false, 7);
@@ -42,12 +42,12 @@ public class ChunkContractTest {
 
     @Test
     @DisplayName("Rejects truncated descriptors and unencodable palette sizes")
-    void rejectsInvalidDescriptors() throws XCodecException {
+    void rejectsInvalidDescriptors() throws CodecException {
         final ImageDescriptor valid = new ImageDescriptor(0, 0, 1, 1, true, false, false, 7);
         valid.validate();
         assertEquals(256, valid.localColorCount());
-        assertThrows(XCodecException.class, () -> ImageDescriptor.read(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)));
-        assertThrows(XCodecException.class, () -> new ImageDescriptor(0, 0, 1, 1, true, false, false, 8).validate());
-        assertThrows(XCodecException.class, () -> new ImageDescriptor(0, 0, 1, 1, true, false, false, -1).validate());
+        assertThrows(CodecException.class, () -> ImageDescriptor.read(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)));
+        assertThrows(CodecException.class, () -> new ImageDescriptor(0, 0, 1, 1, true, false, false, 8).validate());
+        assertThrows(CodecException.class, () -> new ImageDescriptor(0, 0, 1, 1, true, false, false, -1).validate());
     }
 }

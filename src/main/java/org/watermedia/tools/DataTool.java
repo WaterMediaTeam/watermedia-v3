@@ -5,6 +5,7 @@ import org.watermedia.api.util.PixelFormat;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -55,47 +56,14 @@ public class DataTool {
         return map;
     }
 
-    public static boolean endsWith(final String o, final String... arr) {
-        for (final String element: arr)
-            if (element != null && o.endsWith(element)) return true;
-        return false;
-    }
-
     public static boolean equalsAnyIgnoreCase(final String o, final String... arr) {
         for (final String element: arr)
             if (element != null && element.equalsIgnoreCase(o)) return true; // CASE-INSENSITIVE EQUALITY CHECK
         return false;
     }
 
-    @SafeVarargs
-    public static <T> boolean contains(final T o, final T... arr) {
-        for (final T element: arr)
-            if (Objects.equals(element, o)) return true; // OBJECT EQUALITY CHECK
-        return false;
-    }
-
     public static boolean contains(final String o, final String in) {
         return o != null && o.contains(in);
-    }
-
-    public static byte bytesAt(final long packet, final int position) {
-        return (byte) ((packet >> (position * 8)) & 0xFF);
-    }
-
-    public static int readBytesAsInt(final ByteBuffer buffer, final int length, final ByteOrder order) {
-        int value = 0;
-        for (int i = 0; i < length; i++) {
-            value |= (buffer.get() & 0xFF) << shiftFor((length * 8) - 8, i * 8, order);
-        }
-        return value;
-    }
-
-    public static long readBytesAsLong(final ByteBuffer buffer, final int length, final ByteOrder order) {
-        long value = 0;
-        for (int i = 0; i < length; i++) {
-            value |= (long) (buffer.get() & 0xFF) << shiftFor((length * 8) - 8, i * 8, order);
-        }
-        return value;
     }
 
     public static long sumArray(final long... array) {
@@ -107,79 +75,10 @@ public class DataTool {
         return result;
     }
 
-    public static int sumArray(final int... array) {
-        int i = 0;
-        int result = 0;
-        while (i < array.length) {
-            result += array[i++];
-        }
-        return result;
-    }
-
-    public static short toShort(final byte one, final byte two, final ByteOrder order) {
-        return (short) ((one & 0xFF) << shiftFor(8, 0, order) | (two & 0xFF) << shiftFor(8, 8, order));
-    }
-
-    public static int toInt(final byte one, final byte two, final byte three, final byte four, final ByteOrder order) {
-        return (one & 0xFF) << shiftFor(24, 0, order) | (two & 0xFF) << shiftFor(24, 8, order) | (three & 0xFF) << shiftFor(24, 16, order) | (four & 0xFF) << shiftFor(24, 24, order);
-    }
-
-    public static long toLong(final byte b1, final byte b2, final byte b3, final byte b4, final byte b5, final byte b6, final byte b7, final byte b8, final ByteOrder order) {
-        return ((long)(b1 & 0xFF) << shiftFor(56, 0, order)) |
-                ((long)(b2 & 0xFF) << shiftFor(56, 8, order)) |
-                ((long)(b3 & 0xFF) << shiftFor(56, 16, order)) |
-                ((long)(b4 & 0xFF) << shiftFor(56, 24, order)) |
-                ((long)(b5 & 0xFF) << shiftFor(56, 32, order)) |
-                ((long)(b6 & 0xFF) << shiftFor(56, 40, order)) |
-                ((long)(b7 & 0xFF) << shiftFor(56, 48, order))  |
-                ((long)(b8 & 0xFF) << shiftFor(56, 56, order));
-    }
-
-    private static int shiftFor(final int top, final int pos, final ByteOrder order) {
-        return order == ByteOrder.BIG_ENDIAN ? top - pos : pos;
-    }
-
-    public static void rgbaToBgra(final ByteBuffer buffer, final int pixel, final byte a) {
-        final int r = (pixel >> 16) & 0xFF;
-        final int g = (pixel >> 8) & 0xFF;
-        final int b = pixel & 0xFF;
-        buffer.put((byte) b);
-        buffer.put((byte) g);
-        buffer.put((byte) r);
-        buffer.put(a);
-    }
-
-    // CONVERTS YUV TO BGRA INT ARRAY (USED FOR ANIMATION COMPOSITING)
-    // INT LAYOUT: (A<<24 | R<<16 | G<<8 | B) - WHEN WRITTEN AS LITTLE-ENDIAN GIVES [B,G,R,A] BYTES
+    // CONVERTS BT.601 LIMITED-RANGE YUV 4:2:0 PLANES (VP8) TO PACKED OPAQUE ARGB INTS, WHICH LAND AS [B,G,R,A]
+    // BYTES ONCE WRITTEN LITTLE-ENDIAN. STRIDES MAY EXCEED THE WIDTH (MACROBLOCK PADDING)
     public static int[] yuvToBgra(final byte[] yP, final byte[] uP, final byte[] vP, final int w, final int h, final int yS, final int uvS) {
         final int[] bgra = new int[w * h];
-        for (int py = 0; py < h; py++)
-            for (int px = 0; px < w; px++) {
-                final int y = yP[py * yS + px] & 0xFF;
-                final int i = (py >> 1) * uvS + (px >> 1);
-                final int u = uP[i] & 0xFF;
-                final int v = vP[i] & 0xFF;
-                final int c = y - 16, d = u - 128, e = v - 128;
-                int r = (298 * c + 409 * e + 128) >> 8;
-                int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-                int b = (298 * c + 516 * d + 128) >> 8;
-
-                r = Math.min(255, Math.max(0, r));
-                g = Math.min(255, Math.max(0, g));
-                b = Math.min(255, Math.max(0, b));
-
-                bgra[py * w + px] = (255 << 24) | (r << 16) | (g << 8) | b;
-            }
-        return bgra;
-    }
-
-    // CONVERTS YUV DIRECTLY TO BGRA BYTEBUFFER
-    public static ByteBuffer yuvToBgraBuf(final byte[] yP, final byte[] uP, final byte[] vP, final int w, final int h, final int yS, final int uvS) {
-        // CONVERT INTO AN ON-HEAP int[] FIRST (TIGHT ALLOCATION-FREE HOT LOOP WITH ARRAY
-        // BOUNDS-CHECK ELIMINATION), THEN DO A SINGLE BULK COPY INTO THE DIRECT BUFFER.
-        // THIS AVOIDS ~w*h DIRECT-BUFFER put/putInt CALLS, EACH OF WHICH WOULD BE A SEPARATE
-        // ACCESS WITH ITS OWN BOUNDS CHECK.
-        final int[] packed = new int[w * h];
         for (int py = 0; py < h; py++) {
             final int yRow = py * yS;
             final int uvRow = (py >> 1) * uvS;
@@ -198,13 +97,9 @@ public class DataTool {
                 if (g < 0) g = 0; else if (g > 255) g = 255;
                 if (b < 0) b = 0; else if (b > 255) b = 255;
 
-                // PACK AS LITTLE-ENDIAN INT: WHEN COPIED INTO LE DIRECT BUFFER THIS LANDS AS
-                // B, G, R, A IN MEMORY, MATCHING THE WEBP READER'S EXPECTED LAYOUT.
-                packed[dstRow + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                bgra[dstRow + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
             }
         }
-        final ByteBuffer bgra = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.LITTLE_ENDIAN);
-        bgra.asIntBuffer().put(packed);
         return bgra;
     }
 
@@ -213,6 +108,20 @@ public class DataTool {
         final ByteBuffer buffer = ByteBuffer.allocateDirect(bgra.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         buffer.asIntBuffer().put(bgra);
         return buffer;
+    }
+
+    // NON-PREMULTIPLIED SOURCE-OVER OF TWO PACKED ARGB PIXELS (APNG AND WEBP FRAME BLENDING). THE DESTINATION
+    // WEIGHT IS COMPUTED ONCE AND SHARED BY THE ALPHA SUM AND EVERY CHANNEL, SO NO CHANNEL CAN EXCEED 255
+    public static int blendOver(final int src, final int dst) {
+        final int srcA = src >>> 24;
+        if (srcA == 255) return src;
+        if (srcA == 0) return dst;
+        final int dstW = (dst >>> 24) * (255 - srcA) / 255;
+        final int outA = srcA + dstW;
+        final int r = (((src >> 16) & 0xFF) * srcA + ((dst >> 16) & 0xFF) * dstW) / outA;
+        final int g = (((src >> 8) & 0xFF) * srcA + ((dst >> 8) & 0xFF) * dstW) / outA;
+        final int b = ((src & 0xFF) * srcA + (dst & 0xFF) * dstW) / outA;
+        return (outA << 24) | (r << 16) | (g << 8) | b;
     }
 
     // PREMULTIPLIES 8-BIT FOUR-CHANNEL PIXELS WITH ALPHA LAST (BGRA OR RGBA) IN PLACE, FROM position TO limit.
@@ -231,19 +140,54 @@ public class DataTool {
         }
     }
 
-    public static int toInt(final String s, final int def) {
+    // REMAPS A TIGHTLY PACKED RASTER OF 1 OR 4 BYTES PER PIXEL INTO ITS EXIF ORIENTATION (1-8), FROM THE START OF
+    // src INTO THE START OF dst; 5-8 SWAP THE AXES, SO dst ENDS UP height x width. OUTPUT PIXEL (x, y) COMES FROM
+    // SOURCE INDEX a + y * b + x * step
+    public static void orient(final ByteBuffer src, final ByteBuffer dst, final int w, final int h,
+                              final int bytesPerPixel, final int orientation) {
+        final boolean swap = orientation >= 5;
+        final int ow = swap ? h : w, oh = swap ? w : h;
+        final int a, b, step;
+        switch (orientation) {
+            case 1 -> { a = 0; b = w; step = 1; }
+            case 2 -> { a = w - 1; b = w; step = -1; }
+            case 3 -> { a = (h - 1) * w + w - 1; b = -w; step = -1; }
+            case 4 -> { a = (h - 1) * w; b = -w; step = 1; }
+            case 5 -> { a = 0; b = 1; step = w; }
+            case 6 -> { a = (h - 1) * w; b = 1; step = -w; }
+            case 7 -> { a = (h - 1) * w + w - 1; b = -1; step = -w; }
+            case 8 -> { a = w - 1; b = -1; step = w; }
+            default -> throw new IllegalArgumentException("Invalid EXIF orientation: " + orientation);
+        }
+        final ByteBuffer in = src.duplicate().clear();
+        final ByteBuffer out = dst.duplicate().clear();
+        if (bytesPerPixel == 4) {
+            final IntBuffer pixels = in.asIntBuffer();
+            final IntBuffer target = out.asIntBuffer();
+            for (int y = 0, di = 0; y < oh; y++) {
+                for (int x = 0, si = a + y * b; x < ow; x++, si += step) target.put(di++, pixels.get(si));
+            }
+        } else if (bytesPerPixel == 1) {
+            for (int y = 0, di = 0; y < oh; y++) {
+                for (int x = 0, si = a + y * b; x < ow; x++, si += step) out.put(di++, in.get(si));
+            }
+        } else throw new IllegalArgumentException("Unsupported bytes per pixel: " + bytesPerPixel);
+        dst.position(0).limit(ow * oh * bytesPerPixel);
+    }
+
+    public static int parseInt(final String s, final int def) {
         if (s == null) return def;
         try { return Integer.parseInt(s.trim()); }
         catch (final NumberFormatException e) { return def; }
     }
 
-    public static long toLong(final String s, final long def) {
+    public static long parseLong(final String s, final long def) {
         if (s == null) return def;
         try { return Long.parseLong(s.trim()); }
         catch (final NumberFormatException e) { return def; }
     }
 
-    public static double toDouble(final String s, final double def) {
+    public static double parseDouble(final String s, final double def) {
         if (s == null) return def;
         try { return Double.parseDouble(s.trim()); }
         catch (final NumberFormatException e) { return def; }
@@ -272,13 +216,13 @@ public class DataTool {
     // ============================================================
 
     // TIGHTLY-PACKED BYTE SIZE OF ONE FRAME IN THE GIVEN FORMAT AT w x h.
-    public static long frameBytes(final PixelFormat cs, final int w, final int h) {
+    public static long frameBytes(final PixelFormat format, final int w, final int h) {
         final long pixels = (long) w * h;
         final long chromaW = (w + 1L) >> 1;
         final long chromaH = (h + 1L) >> 1;
-        return switch (cs) {
+        return switch (format) {
             case GRAY -> pixels;
-            case YUYV, YUYV2 -> pixels * 2L;
+            case YUYV, UYVY -> pixels * 2L;
             case RGB, YUV444P -> pixels * 3L;
             case BGRA, RGBA, GBRA, YUVA444P -> pixels * 4L;
             case NV12, NV21, YUV420P -> pixels + 2L * chromaW * chromaH;
@@ -286,15 +230,15 @@ public class DataTool {
             case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
             case YUVA422P -> pixels * 2L + 2L * chromaW * h;
             // BCn: ONE PLANE OF 4x4 BLOCKS
-            case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * cs.blockBytes();
+            case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * format.blockBytes();
         };
     }
 
     // FORMATS THE AREA SCALER UNDERSTANDS — PACKED YUYV (PIXEL PAIRS SHARE CHROMA) AND
     // COMPRESSED BCn (GPU-SIDE BLOCKS) CANNOT BE AVERAGED BYTE-WISE.
-    public static boolean scalable(final PixelFormat cs) {
-        return switch (cs) {
-            case YUYV, YUYV2, BC1, BC2, BC3, BC5, BC7 -> false;
+    public static boolean scalable(final PixelFormat format) {
+        return switch (format) {
+            case YUYV, UYVY, BC1, BC2, BC3, BC5, BC7 -> false;
             default -> true;
         };
     }
@@ -302,9 +246,9 @@ public class DataTool {
     // AREA-AVERAGE SCALE OF A FULL FRAME (TIGHTLY-PACKED PLANES) FROM sw x sh INTO dst AT dw x dh.
     // MIRRORS THE PLANE LAYOUT OF frameBytes; EACH OUTPUT PIXEL AVERAGES ITS WHOLE SOURCE BLOCK.
     public static void scaleArea(final ByteBuffer src, final int sw, final int sh,
-                                 final ByteBuffer dst, final int dw, final int dh, final PixelFormat cs) {
+                                 final ByteBuffer dst, final int dw, final int dh, final PixelFormat format) {
         final int base = src.position();
-        switch (cs) {
+        switch (format) {
             case GRAY -> scalePlane(src, base, sw, sh, dst, dw, dh, 1);
             case RGB -> scalePlane(src, base, sw, sh, dst, dw, dh, 3);
             case BGRA, RGBA, GBRA -> scalePlane(src, base, sw, sh, dst, dw, dh, 4);
@@ -320,7 +264,7 @@ public class DataTool {
                 scalePlane(src, base, sw, sh, dst, dw, dh, 1);
                 scalePlane(src, base + sw * sh, scw, sch, dst, dcw, dch, 1);
                 scalePlane(src, base + sw * sh + scw * sch, scw, sch, dst, dcw, dch, 1);
-                if (cs == PixelFormat.YUVA420P) {
+                if (format == PixelFormat.YUVA420P) {
                     scalePlane(src, base + sw * sh + 2 * scw * sch, sw, sh, dst, dw, dh, 1);
                 }
             }
@@ -330,12 +274,12 @@ public class DataTool {
                 scalePlane(src, base, sw, sh, dst, dw, dh, 1);
                 scalePlane(src, base + sw * sh, scw, sh, dst, dcw, dh, 1);
                 scalePlane(src, base + sw * sh + scw * sh, scw, sh, dst, dcw, dh, 1);
-                if (cs == PixelFormat.YUVA422P) {
+                if (format == PixelFormat.YUVA422P) {
                     scalePlane(src, base + sw * sh + 2 * scw * sh, sw, sh, dst, dw, dh, 1);
                 }
             }
             case YUV444P, YUVA444P -> {
-                final int planes = cs == PixelFormat.YUVA444P ? 4 : 3;
+                final int planes = format == PixelFormat.YUVA444P ? 4 : 3;
                 for (int p = 0; p < planes; p++) {
                     scalePlane(src, base + p * sw * sh, sw, sh, dst, dw, dh, 1);
                 }

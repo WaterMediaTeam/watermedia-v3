@@ -4,7 +4,7 @@ import org.bytedeco.ffmpeg.avformat.AVFormatContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.util.Slave;
+import org.watermedia.api.util.Track;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
@@ -39,10 +39,10 @@ class FFInputOptionsTest {
             WaterMediaConfig.media.ffmpeg.probeSize = 23;
             assertTrue(player.startPaused());
             assertTrue(PlayerWait.awaitLoaded(player, 15_000));
-            final var slave = FFMediaPlayer.class.getDeclaredMethod("initAudioSlave", Slave.class);
-            slave.setAccessible(true);
-            assertTrue((boolean) slave.invoke(player, new Slave("Separate audio", "en", audio.toUri())));
-            for (final String name: new String[] { "formatContext", "slaveFormatContext" }) {
+            final var track = FFMediaPlayer.class.getDeclaredMethod("initAudioTrack", Track.class);
+            track.setAccessible(true);
+            assertTrue((boolean) track.invoke(player, new Track("Separate audio", "en", audio.toUri())));
+            for (final String name: new String[] { "formatContext", "trackFormatContext" }) {
                 final var field = FFMediaPlayer.class.getDeclaredField(name);
                 field.setAccessible(true);
                 final AVFormatContext context = (AVFormatContext) field.get(player);

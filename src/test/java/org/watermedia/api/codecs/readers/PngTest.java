@@ -2,7 +2,9 @@ package org.watermedia.api.codecs.readers;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
@@ -10,16 +12,22 @@ import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PamImage;
 import org.watermedia.test.support.PixelDiff;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
+import java.util.zip.CRC32;
+import java.util.zip.Deflater;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,7 +40,7 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * PNG decoder verification.
  *
  * <p>For every PNG fixture under {@code src/test/resources/png} two dynamic tests run:
- * the first checks that {@code CodecsAPI.decodeImage} produces a well-formed
+ * the first checks that {@code CodecsAPI.decode} produces a well-formed
  * {@link ImageData} (positive dimensions, frame buffers sized {@code w*h*4}), and the
  * second compares the first decoded frame pixel-for-pixel against a pre-generated PAM
  * reference under {@code png/raw}. PNG is lossless so the tolerance is zero.
@@ -62,7 +70,7 @@ public class PngTest {
                 // TEST 1: DECODING SUCCEEDS WITH SANE BUFFER GEOMETRY
                 tests.add(dynamicTest("PNG decode [" + name + "]", () -> {
                     final byte[] bytes = Fixtures.readAll(imageFile);
-                    final ImageData result = CodecsAPI.decodeImage(bytes);
+                    final ImageData result = CodecsAPI.decode(bytes);
                     assertNotNull(result, "PNG signature not recognized for: " + name);
                     assertTrue(result.width() > 0, "Width must be positive");
                     assertTrue(result.height() > 0, "Height must be positive");
@@ -87,7 +95,7 @@ public class PngTest {
 
                 // TEST 2: FIRST FRAME MUST MATCH REFERENCE PAM EXACTLY
                 tests.add(dynamicTest("PNG data match [" + name + "]", () -> {
-                    final ImageData decoded = CodecsAPI.decodeImage(Fixtures.readAll(imageFile));
+                    final ImageData decoded = CodecsAPI.decode(Fixtures.readAll(imageFile));
                     assertNotNull(decoded, "PNG signature not recognized");
 
                     final Path pamPath = Fixtures.PNG_DIR.resolve("raw")
@@ -134,7 +142,7 @@ public class PngTest {
             for (final Path imageFile: images) {
                 final String name = imageFile.getFileName().toString();
                 tests.add(dynamicTest("PNG reset replay [" + name + "]", () -> {
-                    try (final ImageReader reader = CodecsAPI.decodeImage(ByteBuffer.wrap(Fixtures.readAll(imageFile)))) {
+                    try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(imageFile)))) {
                         final long[] delays = reader.delays().clone();
                         final List<byte[]> first = decodeFrameHashes(reader);
                         assertFalse(first.isEmpty(), "No frames decoded for " + name);
@@ -155,6 +163,49 @@ public class PngTest {
         }
 
         return tests;
+    }
+
+    @Test
+    @DisplayName("useBKGDChunk presents the picture against its bKGD colour")
+    void bkgdPresentation() throws IOException {
+        // 2x1 RGBA: A HALF-COVERING RED PIXEL AND A FULLY TRANSPARENT GREEN ONE, OVER A BLUE bKGD
+        final ByteArrayOutputStream png = new ByteArrayOutputStream();
+        png.writeBytes(new byte[] { (byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' });
+        chunk(png, "IHDR", new byte[] { 0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+        chunk(png, "bKGD", new byte[] { 0, 0, 0, 0, 0, (byte) 255 });
+        final Deflater deflater = new Deflater();
+        deflater.setInput(new byte[] { 0, (byte) 255, 0, 0, (byte) 128, 0, (byte) 255, 0, 0 });
+        deflater.finish();
+        final byte[] idat = new byte[64];
+        final int compressed = deflater.deflate(idat);
+        deflater.end();
+        chunk(png, "IDAT", Arrays.copyOf(idat, compressed));
+        chunk(png, "IEND", new byte[0]);
+        final byte[] bytes = png.toByteArray();
+
+        final boolean previous = WaterMediaConfig.decoders.png.useBKGDChunk;
+        try {
+            WaterMediaConfig.decoders.png.useBKGDChunk = false;
+            assertArrayEquals(new int[] { 0x80FF0000, 0x0000FF00 }, pixels(CodecsAPI.decode(bytes)), "transparency kept");
+            WaterMediaConfig.decoders.png.useBKGDChunk = true;
+            assertArrayEquals(new int[] { 0xFF80007F, 0xFF0000FF }, pixels(CodecsAPI.decode(bytes)), "flattened onto bKGD");
+        } finally {
+            WaterMediaConfig.decoders.png.useBKGDChunk = previous;
+        }
+    }
+
+    private static void chunk(final ByteArrayOutputStream out, final String type, final byte[] data) {
+        final byte[] typeBytes = type.getBytes(StandardCharsets.US_ASCII);
+        final CRC32 crc = new CRC32();
+        crc.update(typeBytes);
+        crc.update(data);
+        out.writeBytes(ByteBuffer.allocate(12 + data.length).putInt(data.length).put(typeBytes).put(data).putInt((int) crc.getValue()).array());
+    }
+
+    private static int[] pixels(final ImageData image) {
+        final int[] pixels = new int[image.width() * image.height()];
+        image.frames()[0].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
+        return pixels;
     }
 
     // HASH FRAMES INSTEAD OF COPYING THEM — LARGE FIXTURES TIMES THREE DECODE PASSES WOULD BLOW

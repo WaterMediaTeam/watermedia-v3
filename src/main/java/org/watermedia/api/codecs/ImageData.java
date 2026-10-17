@@ -11,23 +11,23 @@ import java.util.Arrays;
  * @param frames   decoded frames in the requested or reader-selected pixel layout
  * @param width    frame width; the widest frame when frames differ in size
  * @param height   frame height; the tallest frame when frames differ in size
- * @param delay    per-frame delay in milliseconds; {@code 0} advances to the next frame immediately
- * @param duration single-cycle playback time, the sum of every entry in {@code delay}; use
- *                 {@link #duration()} for the repeat-aware value
+ * @param delays    per-frame delay in milliseconds; {@code 0} advances to the next frame immediately
+ * @param duration single-cycle playback time, the sum of every entry in {@code delays}; use
+ *                 {@link #duration(boolean)} for the repeat-aware value
  * @param repeat   repeat count: {@link #NO_REPEAT} to play once, {@link #REPEAT_FOREVER} to loop
- *                 forever, or a positive number of extra loops
+ *                 forever, or the total number of plays as the container declares it
  */
-public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay, long duration, int repeat) {
+public record ImageData(ByteBuffer[] frames, int width, int height, long[] delays, long duration, int repeat) {
     public static final int REPEAT_FOREVER = 0;
     public static final int NO_REPEAT = -1;
     public static final long[] NO_DELAY = new long[] { 0L };
 
     /**
      * Lightweight scan result produced by an {@link ImageReader} at construction time.
-     * Carries the animation shape (frame count, per-frame delays, total duration, loop count)
+     * Carries the animation shape (frame count, per-frame delays, total duration, repeat count)
      * without holding any decoded pixel data.
      */
-    public record Scan(int frameCount, long[] delays, long duration, int loopCount) {
+    public record Scan(int frameCount, long[] delays, long duration, int repeat) {
         public static final Scan EMPTY = new Scan(1, NO_DELAY, 0L, NO_REPEAT);
     }
 
@@ -38,7 +38,7 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("Width and height must be positive");
         }
-        if (delay == null || delay.length != frames.length) {
+        if (delays == null || delays.length != frames.length) {
             throw new IllegalArgumentException("Delay array must match the number of frames");
         }
         if (duration < 0) {
@@ -49,8 +49,8 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
         }
     }
 
-    public ImageData(final ByteBuffer[] images, final int width, final int height, final long[] delay, final int repeat) {
-        this(images, width, height, delay, DataTool.sumArray(delay), repeat);
+    public ImageData(final ByteBuffer[] frames, final int width, final int height, final long[] delays, final int repeat) {
+        this(frames, width, height, delays, DataTool.sumArray(delays), repeat);
     }
 
     @Override
@@ -58,9 +58,9 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
         return this.duration(false);
     }
 
-    /** Repeat-aware total playback time: one cycle multiplied by the loop count (minimum one cycle). */
-    public long duration(final boolean loopAware) {
-        return this.duration * (loopAware ? Math.max(1, this.repeat) : 1);
+    /** Repeat-aware total playback time: one cycle multiplied by the repeat count (minimum one cycle). */
+    public long duration(final boolean repeatAware) {
+        return this.duration * (repeatAware ? Math.max(1, this.repeat) : 1);
     }
 
     @Override
@@ -69,7 +69,7 @@ public record ImageData(ByteBuffer[] frames, int width, int height, long[] delay
                 "frames=" + Arrays.toString(this.frames) +
                 ", width=" + this.width +
                 ", height=" + this.height +
-                ", delay=" + Arrays.toString(this.delay) +
+                ", delays=" + Arrays.toString(this.delays) +
                 ", duration=" + this.duration +
                 ", repeat=" + this.repeat +
                 '}';

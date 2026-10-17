@@ -35,7 +35,7 @@ class BootstrapTest {
         try {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertFalse(loading.isDone());
-            assertEquals(Outcome.PENDING, boot.status().modules().get(1).outcome());
+            assertEquals(Outcome.PENDING, boot.status().services().get(1).outcome());
             resume.countDown();
             loading.get(5, TimeUnit.SECONDS);
             assertEquals(List.of(Id.BINARIES, Id.NETWORK), started);
@@ -48,7 +48,7 @@ class BootstrapTest {
         final Bootstrap absent = new Bootstrap(List.of(new Bootstrap.Definition(Id.BINARIES, true, true, List.of(), () -> null)));
         absent.start(true);
         assertEquals(State.READY, absent.status().state());
-        assertEquals(Outcome.SKIPPED, absent.status().modules().get(0).outcome());
+        assertEquals(Outcome.SKIPPED, absent.status().services().get(0).outcome());
         assertFalse(absent.status().ready(Id.BINARIES));
         absent.stop();
     }
@@ -60,7 +60,7 @@ class BootstrapTest {
         })));
         boot.start(false);
         assertEquals(State.READY, boot.status().state());
-        assertEquals(Outcome.SKIPPED, boot.status().modules().get(0).outcome());
+        assertEquals(Outcome.SKIPPED, boot.status().services().get(0).outcome());
         assertTrue(boot.status().failures().isEmpty());
         boot.stop();
         assertFalse(boot.ownsResources());
@@ -87,7 +87,7 @@ class BootstrapTest {
             assertEquals(1, snapshot.step());
             assertEquals("Configuration", snapshot.progress().taskName());
             assertEquals(4, snapshot.progress().work());
-            assertThrows(UnsupportedOperationException.class, () -> snapshot.modules().clear());
+            assertThrows(UnsupportedOperationException.class, () -> snapshot.services().clear());
             resume.countDown();
             running.get(5, TimeUnit.SECONDS);
             assertEquals(State.STARTING, snapshot.state());
@@ -116,8 +116,8 @@ class BootstrapTest {
         ));
         boot.start(true);
         assertEquals(State.DEGRADED, boot.status().state());
-        assertEquals(Outcome.BLOCKED, boot.status().modules().get(2).outcome());
-        assertEquals(Id.NETWORK, boot.status().modules().get(2).dependency());
+        assertEquals(Outcome.BLOCKED, boot.status().services().get(2).outcome());
+        assertEquals(Id.NETWORK, boot.status().services().get(2).dependency());
         assertSame(failure, boot.status().failures().get(0).cause());
         boot.stop();
         assertEquals(List.of(Id.NETWORK, Id.CONFIG), released);
@@ -137,7 +137,7 @@ class BootstrapTest {
         ));
         boot.start(true);
         assertEquals(State.DEGRADED, boot.status().state());
-        assertEquals(Outcome.READY, boot.status().modules().get(1).outcome());
+        assertEquals(Outcome.READY, boot.status().services().get(1).outcome());
         assertEquals("FFmpeg", boot.status().failures().get(0).task());
         boot.stop();
     }
@@ -220,7 +220,7 @@ class BootstrapTest {
         ));
         boot.start(true);
         assertEquals(State.DEGRADED, boot.status().state());
-        assertEquals(Outcome.FAILED, boot.status().modules().get(0).outcome());
+        assertEquals(Outcome.FAILED, boot.status().services().get(0).outcome());
         assertTrue(boot.status().ready(Id.MEDIA));
         assertSame(failure, boot.status().failures().get(0).cause());
         boot.stop();
@@ -338,7 +338,7 @@ class BootstrapTest {
         boot.start(true);
         assertThrows(IllegalStateException.class, () -> boot.stop());
         assertEquals(List.of(Id.NETWORK), released);
-        assertEquals(Outcome.BLOCKED, boot.status().modules().get(0).outcome());
+        assertEquals(Outcome.BLOCKED, boot.status().services().get(0).outcome());
         boot.stop();
         assertEquals(List.of(Id.NETWORK, Id.NETWORK, Id.CONFIG), released);
     }

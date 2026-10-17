@@ -1,11 +1,11 @@
 package org.watermedia.api.codecs;
 
-import org.watermedia.api.codecs.readers.GIFReader;
-import org.watermedia.api.codecs.readers.JPEGReader;
-import org.watermedia.api.codecs.readers.NETPBMReader;
-import org.watermedia.api.codecs.readers.PNGReader;
-import org.watermedia.api.codecs.readers.WEBPReader;
-import org.watermedia.api.codecs.readers.svg.SVGReader;
+import org.watermedia.api.codecs.readers.GifReader;
+import org.watermedia.api.codecs.readers.JpegReader;
+import org.watermedia.api.codecs.readers.NetpbmReader;
+import org.watermedia.api.codecs.readers.PngReader;
+import org.watermedia.api.codecs.readers.WebPReader;
+import org.watermedia.api.codecs.readers.svg.SvgReader;
 import org.watermedia.api.codecs.writers.WebMWriter;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.PixelFormat;
@@ -21,7 +21,7 @@ import java.util.Locale;
 /**
  * Image codec entry point.
  *
- * <p>{@link #decodeImage(ByteBuffer)} scans the buffer's leading bytes against the supported
+ * <p>{@link #reader(ByteBuffer)} scans the buffer's leading bytes against the supported
  * format headers, identifies the format, advances the buffer position past the matched header,
  * and returns the matching {@link ImageReader}. Readers parse only the format body.
  */
@@ -64,12 +64,21 @@ public final class CodecsAPI {
     public static final String PNG_METAKEY_ANCILLARY_CHUNK = "png.ancillary_chunk";
 
     public static final String GIF_METAKEY_COMMENT = "gif.comment";
-    public static final String GIF_METAKEY_LOOP_COUNT = "gif.loop_count";
+    public static final String GIF_METAKEY_REPEAT = "gif.repeat";
     public static final String GIF_METAKEY_APPLICATION_EXTENSION = "gif.application_extension";
 
     public static final String WEBP_METAKEY_ICC_PROFILE = "webp.icc_profile";
     public static final String WEBP_METAKEY_EXIF = "webp.exif";
     public static final String WEBP_METAKEY_XMP = "webp.xmp";
+    // WEBP PIXELS ARE DELIVERED ALREADY ROTATED INTO THEIR EXIF ORIENTATION; THE KEY REPORTS THE VALUE APPLIED
+    public static final String WEBP_METAKEY_ORIENTATION = "webp.orientation";
+
+    // JPEG PIXELS ARE DELIVERED ALREADY ROTATED INTO THEIR EXIF ORIENTATION; THE KEY REPORTS THE VALUE APPLIED
+    public static final String JPEG_METAKEY_COMMENT = "jpeg.comment";
+    public static final String JPEG_METAKEY_EXIF = "jpeg.exif";
+    public static final String JPEG_METAKEY_XMP = "jpeg.xmp";
+    public static final String JPEG_METAKEY_ICC_PROFILE = "jpeg.icc_profile";
+    public static final String JPEG_METAKEY_ORIENTATION = "jpeg.orientation";
 
     private static final byte[] PNG_HEADER = { (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
     private static final byte[] JPEG_HEADER = { (byte) 0xFF, (byte) 0xD8 };
@@ -78,7 +87,7 @@ public final class CodecsAPI {
     private static final byte[] RIFF_HEADER = { 'R', 'I', 'F', 'F' };
     private static final byte[] WEBP_HEADER = { 'W', 'E', 'B', 'P' };
 
-    // ADDITIONAL IMAGE SIGNATURES (USED ONLY BY mediaType)
+    // ADDITIONAL IMAGE SIGNATURES (USED ONLY BY sniff)
     private static final byte[] BMP_HEADER = { 'B', 'M' };
     private static final byte[] TIFF_LE_HEADER = { 0x49, 0x49, 0x2A, 0x00 };
     private static final byte[] TIFF_BE_HEADER = { 0x4D, 0x4D, 0x00, 0x2A };
@@ -140,22 +149,22 @@ public final class CodecsAPI {
     private static final byte[] ASS_HEADER = { '[', 'S', 'c', 'r', 'i', 'p', 't', ' ', 'I', 'n', 'f', 'o', ']' };
 
     // BYTES SCANNED FOR THE SVG ROOT ELEMENT (PROLOG/COMMENTS/DOCTYPE MAY PRECEDE <svg>)
-    private static final int SVG_SNIFF_WINDOW = 4096;
+    private static final int SVG_SNIFF_WINDOW_BYTES = 4_096;
     // BYTES READ FROM THE STREAM FOR SNIFFING; COVERS THE MPEG-TS 188-BYTE SYNC CHECK AND MATCHES
-    // THE SVG SNIFF WINDOW SO mediaType ACCEPTS THE SAME PROLOG-HEAVY SVGS AS decodeImage
-    private static final int PROBE_SIZE = SVG_SNIFF_WINDOW;
+    // THE SVG SNIFF WINDOW SO sniff ACCEPTS THE SAME PROLOG-HEAVY SVGS AS reader
+    private static final int PROBE_SIZE = SVG_SNIFF_WINDOW_BYTES;
 
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
      * consumed format header. The reader returns frames in its native {@link PixelFormat} —
-     * whichever layout is cheapest for it to produce. For example, WEBP lossy returns YUV. Use
-     * {@link #decodeImage(ByteBuffer, PixelFormat)} to request a specific output layout.
+     * whichever layout is cheapest for it to produce. For example, a grayscale JPEG returns GRAY.
+     * Use {@link #reader(ByteBuffer, PixelFormat)} to request a specific output layout.
      *
      * @throws UnsupportedFormatException if the leading bytes don't match any supported format
      * @throws IOException                on malformed bitstream
      */
-    public static ImageReader decodeImage(final ByteBuffer source) throws IOException {
-        return decodeImage(source, null);
+    public static ImageReader reader(final ByteBuffer source) throws IOException {
+        return reader(source, null);
     }
 
     /**
@@ -168,37 +177,37 @@ public final class CodecsAPI {
      * @throws UnsupportedFormatException if the leading bytes don't match any supported format
      * @throws IOException                on malformed bitstream
      */
-    public static ImageReader decodeImage(final ByteBuffer source, final PixelFormat requestedFormat) throws IOException {
+    public static ImageReader reader(final ByteBuffer source, final PixelFormat requestedFormat) throws IOException {
         if (source == null) throw new NullPointerException("source");
         final int start = source.position();
 
         if (DataTool.startsWith(source, start, PNG_HEADER)) {
             source.position(start + PNG_HEADER.length);
-            return new PNGReader(source);
+            return new PngReader(source);
         }
         if (DataTool.startsWith(source, start, JPEG_HEADER)) {
             source.position(start + JPEG_HEADER.length);
-            return new JPEGReader(source, requestedFormat);
+            return new JpegReader(source, requestedFormat);
         }
         if (DataTool.startsWith(source, start, GIF87_HEADER) || DataTool.startsWith(source, start, GIF89_HEADER)) {
             source.position(start + GIF89_HEADER.length);
-            return new GIFReader(source);
+            return new GifReader(source);
         }
         if (DataTool.startsWith(source, start, RIFF_HEADER) && DataTool.startsWith(source, start + 8, WEBP_HEADER)) {
             source.position(start + 12);
-            return new WEBPReader(source, requestedFormat);
+            return new WebPReader(source);
         }
         if (source.limit() - start >= 2 && source.get(start) == 'P') {
             final int version = source.get(start + 1) & 0xFF;
-            if (version >= '4' && version <= '7') {
+            if (version >= '1' && version <= '7') {
                 source.position(start + 2);
-                return new NETPBMReader(source, version - '0');
+                return new NetpbmReader(source, version - '0');
             }
         }
         if (looksLikeSvg(probeText(source, start))) {
             // SVG HAS NO FIXED HEADER — THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
             source.position(start);
-            return new SVGReader(source, requestedFormat);
+            return new SvgReader(source, requestedFormat);
         }
 
         source.position(start);
@@ -206,33 +215,37 @@ public final class CodecsAPI {
     }
 
     /**
-     * @see #decodeImage(ByteBuffer)
-     * @param data buffer data array
-     * @return a {@link ImageData} instance with raw decoded image in the reader's native layout
-     *         (check {@link ImageReader#pixelFormat()} on the underlying reader to know what it
-     *         picked).
+     * Decodes every frame of an encoded image in the reader's native layout: BGRA for every
+     * format except grayscale JPEG, which stays one luma byte per pixel. Use
+     * {@link #decode(byte[], PixelFormat)} with {@link PixelFormat#BGRA} when a uniform layout matters.
+     *
+     * @param data the whole encoded file
+     * @return the decoded frames, delays and repeat count
      * @throws IOException on unsupported format or malformed bitstream
+     * @see #reader(ByteBuffer)
      */
-    public static ImageData decodeImage(final byte[] data) throws IOException {
-        return decodeImage(data, null);
+    public static ImageData decode(final byte[] data) throws IOException {
+        return decode(data, null);
     }
 
     /**
-     * @see #decodeImage(ByteBuffer, PixelFormat)
-     * @param data            buffer data array
-     * @param requestedFormat desired output pixel format, or {@code null} for the reader's native
-     *                        layout.
-     * @return a {@link ImageData} instance with raw decoded image
+     * Decodes every frame of an encoded image into the requested pixel layout, closing the
+     * underlying reader before returning.
+     *
+     * @param data            the whole encoded file
+     * @param requestedFormat desired output pixel format, or {@code null} for the reader's native layout
+     * @return the decoded frames, delays and repeat count
      * @throws IOException on unsupported format or malformed bitstream
+     * @see #reader(ByteBuffer, PixelFormat)
      */
-    public static ImageData decodeImage(final byte[] data, final PixelFormat requestedFormat) throws IOException {
-        try (final ImageReader reader = decodeImage(ByteBuffer.wrap(data), requestedFormat)) {
+    public static ImageData decode(final byte[] data, final PixelFormat requestedFormat) throws IOException {
+        try (final ImageReader reader = reader(ByteBuffer.wrap(data), requestedFormat)) {
             return reader.readAll();
         }
     }
 
     /** Opens an experimental VP9 WebM {@link ImageWriter} at 30 fps and CRF 31. */
-    public static ImageWriter encodeWebM(final OutputStream out, final int width, final int height, final PixelFormat format) throws IOException {
+    public static ImageWriter writer(final OutputStream out, final int width, final int height, final PixelFormat format) throws IOException {
         return new WebMWriter(out, width, height, format);
     }
 
@@ -245,8 +258,8 @@ public final class CodecsAPI {
      * @throws IllegalArgumentException when {@code fps <= 0}, {@code crf} is out of range or the format cannot feed VP9
      * @throws IOException              when FFmpeg or a VP9 encoder is unavailable, or setup fails
      */
-    public static ImageWriter encodeWebM(final OutputStream out, final int width, final int height, final PixelFormat format,
-                                         final int fps, final int crf) throws IOException {
+    public static ImageWriter writer(final OutputStream out, final int width, final int height, final PixelFormat format,
+                                     final int fps, final int crf) throws IOException {
         return new WebMWriter(out, width, height, format, fps, crf);
     }
 
@@ -265,7 +278,7 @@ public final class CodecsAPI {
      * @return the detected type, or {@link MediaType#UNKNOWN} when nothing matches
      * @throws IOException if reading the stream fails
      */
-    public static MediaType mediaType(final InputStream in) throws IOException {
+    public static MediaType sniff(final InputStream in) throws IOException {
         if (in == null) throw new NullPointerException("in");
         final byte[] h = in.readNBytes(PROBE_SIZE);
         if (h.length < 2) return MediaType.UNKNOWN;
@@ -375,7 +388,7 @@ public final class CodecsAPI {
         int p = start;
         if (limit - p >= 3 && (src.get(p) & 0xFF) == 0xEF && (src.get(p + 1) & 0xFF) == 0xBB && (src.get(p + 2) & 0xFF) == 0xBF) p += 3;
         else if (limit - p >= 2 && (((src.get(p) & 0xFF) == 0xFF && (src.get(p + 1) & 0xFF) == 0xFE) || ((src.get(p) & 0xFF) == 0xFE && (src.get(p + 1) & 0xFF) == 0xFF))) p += 2;
-        final int end = Math.min(limit, p + SVG_SNIFF_WINDOW);
+        final int end = Math.min(limit, p + SVG_SNIFF_WINDOW_BYTES);
         final StringBuilder sb = new StringBuilder(Math.max(16, end - p));
         for (int i = p; i < end; i++) {
             final int b = src.get(i) & 0xFF;
@@ -424,7 +437,7 @@ public final class CodecsAPI {
     // ==========================================================================
     /**
      * Reports support for decoding pixels through this API. BC texture identifiers describe
-     * compressed GPU storage; use {@link BCReader} for their blocks and query the graphics engine separately.
+     * compressed GPU storage; use {@link BcReader} for their blocks and query the graphics engine separately.
      * @param codec a pixel codec id, case-insensitive
      * @return true when its pure Java pixel decoder is available
      */

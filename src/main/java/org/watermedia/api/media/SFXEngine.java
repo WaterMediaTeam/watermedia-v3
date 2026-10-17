@@ -20,9 +20,9 @@ import java.util.Set;
  */
 public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Minimum reasonable sample rate (sub-telephony threshold, below is garbage). */
-    public static final int MIN_SAMPLE_RATE = 4000;
+    public static final int MIN_SAMPLE_RATE_HZ = 4_000;
     /** Maximum reasonable sample rate (covers DXD and any hi-res consumer content). */
-    public static final int MAX_SAMPLE_RATE = 384_000;
+    public static final int MAX_SAMPLE_RATE_HZ = 384_000;
 
     /**
      * Canonical PCM sample type — backend-independent.
@@ -121,7 +121,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         return best;
     }
 
-    // RECONFIGURES THE SOURCE FOR A SAMPLE TYPE, CHANNEL COUNT AND RATE (MIN_SAMPLE_RATE..MAX_SAMPLE_RATE) BEFORE THE FIRST
+    // RECONFIGURES THE SOURCE FOR A SAMPLE TYPE, CHANNEL COUNT AND RATE (MIN_SAMPLE_RATE_HZ..MAX_SAMPLE_RATE_HZ) BEFORE THE FIRST
     // UPLOAD AND ON EVERY CHANGE; FALSE WHEN UNSUPPORTED. STREAM BACKENDS MAY REOPEN THEIR LINE, BUFFER BACKENDS UPDATE STATE
     abstract boolean format(final SampleType type, final int channels, final int sampleRate);
 

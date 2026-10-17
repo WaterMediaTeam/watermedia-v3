@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -18,17 +18,17 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     /**
      * Reads IHDR chunk from buffer (reads length/type header first)
      */
-    public static IHDR read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated IHDR chunk header");
+    public static IHDR read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated IHDR chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new XCodecException("IHDR chunk length must be 13, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated IHDR chunk");
+            throw new CodecException("IHDR chunk length must be 13, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated IHDR chunk");
 
         return new IHDR(
                 buffer.getInt(),    // WIDTH (4 BYTES)
@@ -42,15 +42,15 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     }
 
     /**
-     * Converts a generic CHUNK to IHDR
+     * Converts a generic PngChunk to IHDR
      */
-    public static IHDR convert(final CHUNK chunk, final ByteOrder order) throws XCodecException {
+    public static IHDR convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(chunk.type()));
         }
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new XCodecException("Invalid IHDR data length: " + data.length + " (expected 13)");
+            throw new CodecException("Invalid IHDR data length: " + data.length + " (expected 13)");
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
@@ -66,14 +66,14 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     }
 
     /** Returns the byte distance used by PNG filters, at least one for packed samples; reserved color types throw. */
-    public int bytesPerPixel() throws XCodecException {
+    public int bytesPerPixel() throws CodecException {
         final int samplesPerPixel = switch (ColorType.of(this.colorType)) {
             case GREYSCALE -> 1;
             case TRUECOLOR -> 3;
             case INDEXED -> 1;
             case GREYSCALE_ALPHA -> 2;
             case TRUECOLOR_ALPHA -> 4;
-            case FORBIDDEN_1, FORBIDDEN_5 -> throw new XCodecException("Forbidden color type: " + this.colorType);
+            case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + this.colorType);
         };
         return Math.max(1, (samplesPerPixel * this.depth) / 8);
     }
@@ -92,7 +92,7 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

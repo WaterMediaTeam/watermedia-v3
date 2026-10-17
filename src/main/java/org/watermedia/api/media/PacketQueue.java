@@ -141,21 +141,6 @@ final class PacketQueue {
         }
     }
 
-    /**
-     * Clear: removes all packets without changing the serial.
-     * Used during a precise seek when the demux thread drains the codec synchronously — the
-     * serial must stay the same so the decode thread doesn't re-flush the codec on the next packet.
-     */
-    public void clear() {
-        synchronized (this.lock) {
-            while (!this.packets.isEmpty()) {
-                avcodec.av_packet_free(this.packets.pollFirst().packet);
-            }
-            this.totalBytes = 0;
-            this.lock.notifyAll();
-        }
-    }
-
     /** Current serial. Changes with each {@link #flush()}. */
     public int serial() { return this.serial; }
 
@@ -170,11 +155,6 @@ final class PacketQueue {
     /** Total bytes enqueued. */
     public long byteSize() {
         synchronized (this.lock) { return this.totalBytes; }
-    }
-
-    /** Number of packets enqueued. */
-    public int count() {
-        synchronized (this.lock) { return this.packets.size(); }
     }
 
     /**
@@ -212,6 +192,12 @@ final class PacketQueue {
      * drains the outstanding clones; unlike {@link #flush()} it does not bump the serial.
      */
     public void free() {
-        this.clear();
+        synchronized (this.lock) {
+            while (!this.packets.isEmpty()) {
+                avcodec.av_packet_free(this.packets.pollFirst().packet);
+            }
+            this.totalBytes = 0;
+            this.lock.notifyAll();
+        }
     }
 }

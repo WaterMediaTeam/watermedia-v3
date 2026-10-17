@@ -4,7 +4,7 @@ import java.nio.ByteBuffer;
 
 /**
  * Upstream goodbye: a follower deregisters from the authority on release, leaving the
- * watcher pool cleanly instead of waiting for its keepalive to expire.
+ * follower pool cleanly instead of waiting for its keepalive to expire.
  *
  * @param watcherId follower instance id given in the original {@link Watch}
  */
@@ -24,7 +24,7 @@ public record Unwatch(long watcherId) implements Packet {
         return buf.flip();
     }
 
-    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.of() (TRUST BOUNDARY)
+    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.read() (TRUST BOUNDARY)
     static Unwatch read(final ByteBuffer buf, final byte version) {
         if (version != VERSION) throw new IllegalArgumentException("Unsupported Unwatch version: " + version);
         if (buf.remaining() < BYTES - 2) throw new IllegalArgumentException("Truncated Unwatch payload, needs " + BYTES + " bytes");

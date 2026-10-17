@@ -1,11 +1,12 @@
 package org.watermedia.api.codecs.readers.netpbm;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 
 /**
- * Parsed Netpbm header. Produced by {@link #parse(ByteBuffer)}; {@code depth} and {@code maxVal}
+ * Parsed Netpbm header for the plain ({@code P1}..{@code P3}), binary ({@code P4}..{@code P6}) and
+ * PAM ({@code P7}) variants. Produced by {@link #parse(ByteBuffer)}; {@code depth} and {@code maxVal}
  * are {@code null} when the variant does not declare them ({@code tuplType} follows the PAM
  * spec spelling).
  */
@@ -19,9 +20,9 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
     /**
      * Parses an ASCII Netpbm header starting at the {@code Pn} version token and validates it.
      *
-     * @throws XCodecException when the header is malformed or declares out-of-range values
+     * @throws CodecException when the header is malformed or declares out-of-range values
      */
-    public static NetpbmHeader parse(final ByteBuffer data) throws XCodecException {
+    public static NetpbmHeader parse(final ByteBuffer data) throws CodecException {
         String versionString = null;
         int version = 0;
         int width = 0;
@@ -45,7 +46,7 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
             }
 
             switch (version) {
-                case 4 -> {
+                case 1, 4 -> {
                     // EXPECT WIDTH AND HEIGHT IN ORDER
                     switch (tokenIndex) {
                         case 2 -> width = parseInt(token);
@@ -55,7 +56,7 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
                         }
                     }
                 }
-                case 5, 6 -> {
+                case 2, 3, 5, 6 -> {
                     // EXPECT WIDTH, HEIGHT, MAXVAL IN ORDER
                     switch (tokenIndex) {
                         case 2 -> width = parseInt(token);
@@ -76,7 +77,7 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
                         case "TUPLTYPE" -> {
                             // REPEATED TAGS USED TO CONCATENATE INSTEAD OF OVERWRITING, LETTING ONE
                             // FILE GROW A SINGLE ATTACKER-CHOSEN STRING WITHOUT ANY BOUND
-                            if (tuplTypeSeen) throw new XCodecException("Duplicate PAM TUPLTYPE");
+                            if (tuplTypeSeen) throw new CodecException("Duplicate PAM TUPLTYPE");
                             tuplTypeSeen = true;
                             tuplType = readRestOfLine(data).trim();
                         }
@@ -85,16 +86,16 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
                         }
                     }
                 }
-                default -> throw new XCodecException("Unsupported Netpbm version: " + version);
+                default -> throw new CodecException("Unsupported Netpbm version: " + version);
             }
         }
 
-        if (width <= 0) throw new XCodecException("Invalid WIDTH: " + width + ". Must be greater than 0.");
-        if (height <= 0) throw new XCodecException("Invalid HEIGHT: " + height + ". Must be greater than 0.");
+        if (width <= 0) throw new CodecException("Invalid WIDTH: " + width + ". Must be greater than 0.");
+        if (height <= 0) throw new CodecException("Invalid HEIGHT: " + height + ". Must be greater than 0.");
         if (version == 7) {
             // ENFORCE THE UPPER BOUND THE MESSAGE ALREADY CLAIMS; AN UNBOUNDED DEPTH OVERFLOWS THE RASTER MATH
             if (depth == null || depth <= 0 || depth > 65535)
-                throw new XCodecException("Invalid DEPTH: " + depth + ". Must be between 1 and 65535.");
+                throw new CodecException("Invalid DEPTH: " + depth + ". Must be between 1 and 65535.");
 
             // DEPTH SIZES EVERY ROW BUFFER AND IS THE ONE RASTER DIMENSION THE READER'S MAX_DIM DOES
             // NOT COVER, SO BIND IT TO THE TUPLE TYPE: "DEPTH 65535 / TUPLTYPE RGB" IS A 2 GiB ROW
@@ -102,20 +103,21 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
             // BY THE READER BEFORE ANY RASTER IS SIZED
             final int expectedDepth = switch (tuplType) {
                 case "BLACKANDWHITE", "GRAYSCALE" -> 1;
+                case "BLACKANDWHITE_ALPHA", "GRAYSCALE_ALPHA" -> 2;
                 case "RGB" -> 3;
                 case "RGB_ALPHA" -> 4;
                 default -> 0;
             };
             if (expectedDepth != 0 && depth != expectedDepth)
-                throw new XCodecException("PAM DEPTH " + depth + " does not match TUPLTYPE " + tuplType);
+                throw new CodecException("PAM DEPTH " + depth + " does not match TUPLTYPE " + tuplType);
         }
 
-        // PGM/PPM/PAM ALL REQUIRE MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
-        if ((version == 5 || version == 6 || version == 7) && maxVal == null)
-            throw new XCodecException("Missing MAXVAL for P" + version);
+        // EVERYTHING BUT A BITMAP REQUIRES MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
+        if (version != 1 && version != 4 && maxVal == null)
+            throw new CodecException("Missing MAXVAL for P" + version);
 
         if (maxVal != null && (maxVal <= 0 || maxVal > 65535))
-            throw new XCodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
+            throw new CodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
 
         return new NetpbmHeader(versionString, version, width, height, depth, maxVal, tuplType);
     }
@@ -128,17 +130,17 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
         return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0x0B || c == 0x0C;
     }
 
-    private static int nextTokenInt(final ByteBuffer buf) throws XCodecException {
+    private static int nextTokenInt(final ByteBuffer buf) throws CodecException {
         final String valueToken = nextToken(buf);
-        if (valueToken.isBlank()) throw new XCodecException("Expected integer token but found blank");
+        if (valueToken.isBlank()) throw new CodecException("Expected integer token but found blank");
         return parseInt(valueToken);
     }
 
-    private static int parseInt(final String string) throws XCodecException {
+    private static int parseInt(final String string) throws CodecException {
         try {
             return Integer.parseInt(string);
         } catch (final NumberFormatException e) {
-            throw new XCodecException(e);
+            throw new CodecException(e);
         }
     }
 
@@ -167,12 +169,12 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
     // READS A TAG VALUE UP TO ITS END OF LINE. THE VALUE IS ATTACKER-CHOSEN AND IS INTERPOLATED INTO
     // MESSAGES THE PLAYER LOGS VERBATIM, SO IT IS BOUNDED AND EVERYTHING OUTSIDE PRINTABLE ASCII
     // BECOMES A SPACE — A RAW CR/LF WOULD LET AN IMAGE FORGE WHOLE LINES INTO latest.log
-    private static String readRestOfLine(final ByteBuffer buf) throws XCodecException {
+    private static String readRestOfLine(final ByteBuffer buf) throws CodecException {
         final StringBuilder sb = new StringBuilder();
         while (buf.hasRemaining()) {
             final char c = (char) (buf.get() & 0xFF);
             if (c == '\n') break;
-            if (sb.length() >= MAX_TUPLTYPE) throw new XCodecException("PAM TUPLTYPE too long");
+            if (sb.length() >= MAX_TUPLTYPE) throw new CodecException("PAM TUPLTYPE too long");
             sb.append(c >= 0x20 && c < 0x7F ? c : ' ');
         }
         return sb.toString();

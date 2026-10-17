@@ -68,13 +68,13 @@ public class TxScalingTest {
     @DisplayName("maxSize caps the upload below the native size")
     void testMaxSizeCapsBelowNative() {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.maxSize(100, 100));
+        final TxMediaPlayer player = startStatic(gfx, p -> p.scale(100, 100));
         try {
             // min(150, 100) = 100 ON EACH AXIS; SOURCE SIZE IS LEFT UNTOUCHED
             assertEquals(100, player.width());
             assertEquals(100, player.height());
             assertEquals(NATIVE, player.sourceWidth());
-            assertEquals(100, player.maxWidth());
+            assertEquals(100, player.scaleWidth());
         } finally {
             player.stop();
             player.release();
@@ -85,7 +85,7 @@ public class TxScalingTest {
     @DisplayName("maxSize above the native size never upscales")
     void testMaxSizeNeverUpscales() {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.maxSize(4000, 4000));
+        final TxMediaPlayer player = startStatic(gfx, p -> p.scale(4000, 4000));
         try {
             assertEquals(NATIVE, player.width());
             assertEquals(NATIVE, player.height());
@@ -99,7 +99,7 @@ public class TxScalingTest {
     @DisplayName("maxSize 0 means unlimited")
     void testZeroMaxSizeIsUnlimited() {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
-        final TxMediaPlayer player = startStatic(gfx, p -> p.maxSize(0, 0));
+        final TxMediaPlayer player = startStatic(gfx, p -> p.scale(0, 0));
         try {
             assertEquals(NATIVE, player.width());
             assertEquals(NATIVE, player.height());
@@ -129,7 +129,7 @@ public class TxScalingTest {
     void testMaxSizeAndLodCompose() {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine();
         final TxMediaPlayer player = startStatic(gfx, p -> {
-            p.maxSize(100, 100);
+            p.scale(100, 100);
             p.lod(LodLevel.NEAR);
         });
         try {
@@ -185,8 +185,8 @@ public class TxScalingTest {
         @DisplayName("Negative maxSize is rejected")
         void testNegativeMaxSizeRejected() {
             final TxMediaPlayer player = this.newPlayer();
-            assertThrows(IllegalArgumentException.class, () -> player.maxSize(-1, 10));
-            assertThrows(IllegalArgumentException.class, () -> player.maxSize(10, -1));
+            assertThrows(IllegalArgumentException.class, () -> player.scale(-1, 10));
+            assertThrows(IllegalArgumentException.class, () -> player.scale(10, -1));
         }
 
         @Test

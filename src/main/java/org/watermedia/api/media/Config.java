@@ -41,7 +41,7 @@ public record Config(long watcherId, int capabilities) implements Packet {
         return buf.flip();
     }
 
-    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.of() (TRUST BOUNDARY)
+    // DECODES THE POST-HEADER FIELDS — CALLED ONLY FROM Packet.read() (TRUST BOUNDARY)
     static Config read(final ByteBuffer buf, final byte version) {
         if (version != VERSION) throw new IllegalArgumentException("Unsupported Config version: " + version);
         if (buf.remaining() < BYTES - 2) throw new IllegalArgumentException("Truncated Config payload, needs " + BYTES + " bytes");
@@ -55,10 +55,10 @@ public record Config(long watcherId, int capabilities) implements Packet {
      */
     public enum Capability {
         /**
-         * Gates playback on the whole audience: while any pooled follower is still
+         * Gates playback on the whole follower pool: while any pooled follower is still
          * loading or buffering, the authority presents {@code BUFFERING} with a frozen
          * clock and every follower holds. Errored or vanished followers never hold the
-         * gate, and a spectator joining mid-playback never interrupts the others.
+         * gate, and a follower joining mid-playback never interrupts the others.
          */
         LOCKSTEP,
         /**

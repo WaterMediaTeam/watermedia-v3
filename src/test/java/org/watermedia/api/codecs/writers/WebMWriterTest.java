@@ -78,7 +78,7 @@ public class WebMWriterTest {
         assertEquals((byte) 0xDF, webm[2]);
         assertEquals((byte) 0xA3, webm[3]);
         // THE PROJECT'S OWN SNIFFER MUST CLASSIFY IT AS VIDEO
-        assertEquals(MediaType.VIDEO, CodecsAPI.mediaType(new ByteArrayInputStream(webm)));
+        assertEquals(MediaType.VIDEO, CodecsAPI.sniff(new ByteArrayInputStream(webm)));
     }
 
     @Test
@@ -93,7 +93,7 @@ public class WebMWriterTest {
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(file));
         assertTrue(mrl.await(3000L));
         final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
-        final FFMediaPlayer player = (FFMediaPlayer) MediaAPI.createPlayer(mrl, () -> gfx, () -> null);
+        final FFMediaPlayer player = (FFMediaPlayer) MediaAPI.player(mrl, () -> gfx, () -> null);
         try {
             player.start();
             assertTrue(PlayerWait.awaitStatus(player, 15000L, Status.PLAYING, Status.BUFFERING, Status.PAUSED, Status.ENDED));

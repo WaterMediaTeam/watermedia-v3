@@ -94,7 +94,7 @@ public class MediaTypeSniffTest {
 
     private static MediaType sniff(final byte[] data) throws Exception {
         try (final ByteArrayInputStream in = new ByteArrayInputStream(data)) {
-            return CodecsAPI.mediaType(in);
+            return CodecsAPI.sniff(in);
         }
     }
 

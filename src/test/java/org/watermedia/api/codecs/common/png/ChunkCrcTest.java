@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link CHUNK#calculateCRC()} / {@link CHUNK#corrupted()} against reference CRC-32
+ * Verifies {@link PngChunk#calculateCRC()} / {@link PngChunk#corrupted()} against reference CRC-32
  * vectors. The CRC gate drives PNG {@code failOnCorruptedData}, so it must match both the canonical
  * PNG IEND value and the JDK's independent CRC-32 implementation over arbitrary chunk bytes.
  */
@@ -25,7 +25,7 @@ public class ChunkCrcTest {
     @Test
     @DisplayName("Matches the canonical IEND CRC-32 vector")
     void testIendReferenceVector() {
-        final CHUNK iend = new CHUNK(0, IEND_TYPE, new byte[0], 0xAE426082);
+        final PngChunk iend = new PngChunk(0, IEND_TYPE, new byte[0], 0xAE426082);
         assertEquals(0xAE426082, iend.calculateCRC(), "IEND CRC must equal the canonical 0xAE426082");
         assertFalse(iend.corrupted(), "a chunk carrying its correct CRC must not be flagged corrupted");
     }
@@ -40,11 +40,11 @@ public class ChunkCrcTest {
         ref.update(data);
         final int expected = (int) ref.getValue();
 
-        final CHUNK good = new CHUNK(data.length, IDAT_TYPE, data, expected);
+        final PngChunk good = new PngChunk(data.length, IDAT_TYPE, data, expected);
         assertEquals(expected, good.calculateCRC());
         assertFalse(good.corrupted());
 
-        final CHUNK bad = new CHUNK(data.length, IDAT_TYPE, data, expected ^ 0x1);
+        final PngChunk bad = new PngChunk(data.length, IDAT_TYPE, data, expected ^ 0x1);
         assertTrue(bad.corrupted(), "a chunk whose stored CRC is wrong must be flagged corrupted");
     }
 }

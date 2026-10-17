@@ -4,7 +4,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,23 +16,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("DataTool")
 public class DataToolTest {
-
-    @Test
-    @DisplayName("bytesAt extracts the little-endian byte at a position")
-    void bytesAt() {
-        final long packet = 0x0102030405060708L;
-        assertEquals((byte) 0x08, DataTool.bytesAt(packet, 0));
-        assertEquals((byte) 0x01, DataTool.bytesAt(packet, 7));
-    }
-
-    @Test
-    @DisplayName("toInt / toLong honor byte order")
-    void byteOrderAssembly() {
-        assertEquals(0x01020304, DataTool.toInt((byte) 1, (byte) 2, (byte) 3, (byte) 4, ByteOrder.BIG_ENDIAN));
-        assertEquals(0x04030201, DataTool.toInt((byte) 1, (byte) 2, (byte) 3, (byte) 4, ByteOrder.LITTLE_ENDIAN));
-        assertEquals(0x0102030405060708L,
-                DataTool.toLong((byte) 1, (byte) 2, (byte) 3, (byte) 4, (byte) 5, (byte) 6, (byte) 7, (byte) 8, ByteOrder.BIG_ENDIAN));
-    }
 
     @Test
     @DisplayName("hex renders lowercase two-digit bytes")
@@ -66,7 +48,6 @@ public class DataToolTest {
     void stringHelpers() {
         assertTrue(DataTool.startsWith("hello", "x", "he"));
         assertFalse(DataTool.startsWith("hello", "x", "y"));
-        assertTrue(DataTool.endsWith("file.mp4", ".mkv", ".mp4"));
         assertTrue(DataTool.equalsAnyIgnoreCase("ABC", "abc"));
         assertTrue(DataTool.contains("hello", "ell"));
     }
@@ -74,12 +55,11 @@ public class DataToolTest {
     @Test
     @DisplayName("lenient numeric parsing falls back to the default")
     void numericFallback() {
-        assertEquals(42, DataTool.toInt("42", 0));
-        assertEquals(7, DataTool.toInt("nope", 7));
-        assertEquals(3L, DataTool.toLong(null, 3L));
-        assertEquals(1.5, DataTool.toDouble("1.5", 0.0));
+        assertEquals(42, DataTool.parseInt("42", 0));
+        assertEquals(7, DataTool.parseInt("nope", 7));
+        assertEquals(3L, DataTool.parseLong(null, 3L));
+        assertEquals(1.5, DataTool.parseDouble("1.5", 0.0));
         assertEquals(6L, DataTool.sumArray(1L, 2L, 3L));
-        assertEquals(6, DataTool.sumArray(1, 2, 3));
     }
 
     @Test
@@ -107,5 +87,27 @@ public class DataToolTest {
         }
         assertEquals(0x7F, pixels.get(0) & 0xFF);
         assertEquals(0x7F, pixels.get(pixels.capacity() - 1) & 0xFF);
+    }
+
+    @Test
+    @DisplayName("blendOver passes opaque and clear sources through and never overflows a channel")
+    void blendOver() {
+        assertEquals(0x80FF0000, DataTool.blendOver(0x80FF0000, 0x00123456));
+        assertEquals(0xFF0000FF, DataTool.blendOver(0x00FF0000, 0xFF0000FF));
+        assertEquals(0xFF123456, DataTool.blendOver(0xFF123456, 0x80FF0000));
+        // HALF-COVERING RED OVER OPAQUE BLUE IS AN EXACT LERP WITH AN OPAQUE RESULT
+        assertEquals(0xFF80007F, DataTool.blendOver(0x80FF0000, 0xFF0000FF));
+        // ALPHA 1 RED OVER ALPHA 2 RED MUST STAY RED WITH ALPHA 2: NO CHANNEL MAY OVERFLOW INTO ITS NEIGHBOUR
+        assertEquals(0x02FF0000, DataTool.blendOver(0x01FF0000, 0x02FF0000));
+        // EVERY ALPHA PAIR: RED COMES ONLY FROM THE SOURCE AND BLUE ONLY FROM THE DESTINATION, SO THEIR SUM IS
+        // THE TOTAL COVERAGE AND CAN NEVER EXCEED 255; GREEN HAS NO CONTRIBUTOR AND STAYS ZERO
+        for (int sa = 1; sa < 255; sa++) {
+            for (int da = 0; da < 256; da++) {
+                final int out = DataTool.blendOver((sa << 24) | 0xFF0000, (da << 24) | 0x0000FF);
+                assertEquals(sa + da * (255 - sa) / 255, out >>> 24, "alpha sa=" + sa + " da=" + da);
+                assertEquals(0, (out >> 8) & 0xFF, "green sa=" + sa + " da=" + da);
+                assertTrue(((out >> 16) & 0xFF) + (out & 0xFF) <= 255, "coverage sa=" + sa + " da=" + da);
+            }
+        }
     }
 }

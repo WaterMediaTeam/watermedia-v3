@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.png;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -11,24 +11,24 @@ import java.nio.ByteOrder;
  *
  * @see <a href="https://www.w3.org/TR/png-3/#acTL-chunk">PNG Specification - acTL</a>
  */
-public record ACTL(int frameCount, int loopCount) implements IChunk {
+public record ACTL(int frameCount, int repeat) implements IChunk {
     public static final int SIGNATURE = 0x61_63_54_4C; // "acTL"
     public static final int LENGTH = 8;
 
     /**
      * Reads acTL chunk from buffer (reads length/type header first)
      */
-    public static ACTL read(final ByteBuffer buffer) throws XCodecException {
-        if (buffer.remaining() < 8) throw new XCodecException("Truncated acTL chunk header");
+    public static ACTL read(final ByteBuffer buffer) throws CodecException {
+        if (buffer.remaining() < 8) throw new CodecException("Truncated acTL chunk header");
         final int length = buffer.getInt();
         final int type = buffer.getInt();
 
         // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
         if (type != SIGNATURE)
-            throw new XCodecException("Invalid chunk type for acTL: 0x" + Integer.toHexString(type));
+            throw new CodecException("Invalid chunk type for acTL: 0x" + Integer.toHexString(type));
         if (length != LENGTH)
-            throw new XCodecException("acTL chunk length must be 8, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new XCodecException("Truncated acTL chunk");
+            throw new CodecException("acTL chunk length must be 8, got " + Integer.toUnsignedString(length));
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated acTL chunk");
 
         return new ACTL(
                 buffer.getInt(),  // FRAME COUNT
@@ -37,50 +37,42 @@ public record ACTL(int frameCount, int loopCount) implements IChunk {
     }
 
     /**
-     * Converts a generic CHUNK to ACTL
+     * Converts a generic PngChunk to ACTL
      */
-    public static ACTL convert(final CHUNK chunk, final ByteOrder order) throws XCodecException {
+    public static ACTL convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for acTL: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
         if (data.length != LENGTH) {
-            throw new XCodecException("acTL data must be 8 bytes, got " + data.length);
+            throw new CodecException("acTL data must be 8 bytes, got " + data.length);
         }
 
         final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         final int frameCount = buffer.getInt();
-        final int loopCount = buffer.getInt();
+        final int repeat = buffer.getInt();
 
-        return new ACTL(frameCount, loopCount);
+        return new ACTL(frameCount, repeat);
     }
 
     /**
-     * Returns whether the animation loops indefinitely
+     * Returns whether the animation repeats forever
      */
-    public boolean loopsInfinitely() {
-        return this.loopCount == 0;
-    }
-
-    /**
-     * Returns the actual number of times to play the animation
-     * 0 means infinite, 1 means play once, etc.
-     */
-    public int playCount() {
-        return this.loopCount;
+    public boolean repeatsForever() {
+        return this.repeat == 0;
     }
 
     @Override
     public byte[] toBytes() {
         final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.BIG_ENDIAN);
         buf.putInt(this.frameCount);
-        buf.putInt(this.loopCount);
+        buf.putInt(this.repeat);
         return buf.array();
     }
 
     @Override
-    public CHUNK toChunk() {
-        return CHUNK.create(SIGNATURE, this.toBytes());
+    public PngChunk toChunk() {
+        return PngChunk.create(SIGNATURE, this.toBytes());
     }
 }

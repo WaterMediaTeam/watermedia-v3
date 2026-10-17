@@ -4,7 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
-import org.watermedia.api.util.RequestHeaders;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
@@ -17,26 +17,26 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-public final class MediaFirePlatform implements IPlatform {
+public final class MediaFirePlatform implements Platform {
     public static final String NAME = "MediaFire";
     private static final Marker IT = MarkerManager.getMarker(MediaFirePlatform.class.getSimpleName());
     private static final Pattern PATTERN_POPSOK = Pattern.compile("<a\\s+class=\"input\\s+popsok\"\\s+aria-label=\"Download\\s+file\"\\s+href=\"([^\"]+)\"[^>]*>");
     private static final Pattern PATTERN_DATA_SCRAMBLED = Pattern.compile("data-scrambled-url=\"([^\"]+)\"");
-    private static final String[] HOSTS = { "www.mediafire.com" };
+    private static final String[] HOSTS = { "mediafire.com", "www.mediafire.com" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         final String path = uri.getPath();
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || path == null || !path.startsWith("/file/"))
             return null;
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
-            if (req.statusCode() != 200) throw new PlatformException(MediaFirePlatform.class, "Page request for " + uri + " returned HTTP " + req.statusCode());
+            if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
 
-            final String html = req.readAllAsString();
+            final String html = req.text();
             final Matcher popsokMatcher = PATTERN_POPSOK.matcher(html);
             final Matcher dataScrambledMatcher = PATTERN_DATA_SCRAMBLED.matcher(html);
 
@@ -51,14 +51,14 @@ public final class MediaFirePlatform implements IPlatform {
                 downloadUri = new URI(new String(decoded, StandardCharsets.UTF_8));
                 LOGGER.debug(IT, "MediaFire resolved direct link via scrambled attribute: {}", downloadUri);
             } else {
-                throw new PlatformException(MediaFirePlatform.class, "Download link not found in page (private, removed, or markup changed): " + uri);
+                throw new PlatformException(NAME, "Download link not found in page (private, removed, or markup changed): " + uri);
             }
 
-            final var entry = new DataSource(MediaType.UNKNOWN, null, null,
-                    RequestHeaders.defaults(uri),
-                    List.of(new DataQuality(downloadUri, 0, 0)),
+            final var entry = new Source(MediaType.UNKNOWN, null, null,
+                    HttpHeaders.defaults(uri),
+                    List.of(new Quality(downloadUri, 0, 0)),
                     null, null);
-            return new PlatformData(null, entry);
+            return new Resolution(null, entry);
         }
     }
 }

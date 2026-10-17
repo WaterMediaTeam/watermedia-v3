@@ -8,7 +8,7 @@ import java.nio.ByteBuffer;
  * WaterMedia owns the protocol and the correction math; the bridge owns the routing. Nothing
  * about who the peers are reaches this API: an implementation knows which session it serves
  * (a block position, a resource location, an entity id) and delivers the payload to it —
- * downstream to every viewer when it backs an authority, upstream to the server when it backs
+ * downstream to every follower when it backs an authority, upstream to the server when it backs
  * a follower. The natural shape is a small class holding that key:
  * <pre>{@code
  * public final class MediaBridge implements Bridge {

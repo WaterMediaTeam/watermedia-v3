@@ -51,13 +51,13 @@ public class NetworkServerLimitsTest {
         final var config = WaterMediaConfig.network;
         this.previousBind = config.serverBindAddress;
         this.previousToken = config.token;
-        this.previousRequests = config.serverMaxRequests;
+        this.previousRequests = config.maxServerRequests;
         this.previousTimeout = config.serverTimeout;
         this.previousStorage = config.maxStorageSize;
         this.previousUpload = config.maxUploadSize;
         config.serverBindAddress = "127.0.0.1";
         config.token = TOKEN;
-        config.serverMaxRequests = 2;
+        config.maxServerRequests = 2;
         config.serverTimeout = 1000;
         config.maxStorageSize = 1;
         config.maxUploadSize = 1;
@@ -71,7 +71,7 @@ public class NetworkServerLimitsTest {
         final var config = WaterMediaConfig.network;
         config.serverBindAddress = "127.0.0.1";
         config.token = TOKEN;
-        config.serverMaxRequests = 2;
+        config.maxServerRequests = 2;
         config.serverTimeout = 1000;
         config.maxStorageSize = 1;
         config.maxUploadSize = 1;
@@ -92,7 +92,7 @@ public class NetworkServerLimitsTest {
         final var config = WaterMediaConfig.network;
         config.serverBindAddress = this.previousBind;
         config.token = this.previousToken;
-        config.serverMaxRequests = this.previousRequests;
+        config.maxServerRequests = this.previousRequests;
         config.serverTimeout = this.previousTimeout;
         config.maxStorageSize = this.previousStorage;
         config.maxUploadSize = this.previousUpload;

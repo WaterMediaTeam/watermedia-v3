@@ -1,10 +1,13 @@
 package org.watermedia.api.platform;
 
 import org.watermedia.WaterMedia;
+import org.watermedia.api.platform.Platform.Quality;
+import org.watermedia.api.platform.Platform.Resolution;
+import org.watermedia.api.platform.Platform.Source;
 import org.watermedia.api.platform.web.YouTubePlatform;
 import org.watermedia.api.platform.web.YtDlpPlatform;
-import org.watermedia.api.util.RequestHeaders;
-import org.watermedia.api.util.Slave;
+import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.Track;
 
 import java.net.URI;
 import java.util.List;
@@ -12,7 +15,7 @@ import java.util.List;
 /**
  * MANUAL verification harness (not a JUnit test): resolves URLs through the actual yt-dlp platforms,
  * exactly as {@code PlatformAPI} would — so host routing, yt-dlp extraction and the resulting
- * {@link DataSource} are all exercised end-to-end on this machine's own network (useful when a site
+ * {@link Source} are all exercised end-to-end on this machine's own network (useful when a site
  * blocks datacenter IPs). Run with {@code gradle platformSmoke -Purl=<url>}; with no URL it resolves one
  * public sample per platform. Facebook/Instagram public items rot fast and often need a logged-in
  * session, so test those by passing a fresh public link.
@@ -28,7 +31,7 @@ public final class PlatformSmokeTest {
         WaterMedia.start("TEST", null, null, true);
 
         // SAME HANDLERS PlatformAPI REGISTERS, IN ITS PROBE ORDER (FIRST NON-NULL WINS)
-        final List<IPlatform> platforms = List.of(
+        final List<Platform> platforms = List.of(
                 new YtDlpPlatform(),
                 new YouTubePlatform());
 
@@ -42,17 +45,17 @@ public final class PlatformSmokeTest {
         System.exit(0);
     }
 
-    private static void resolve(final List<IPlatform> platforms, final String url) {
+    private static void resolve(final List<Platform> platforms, final String url) {
         System.out.println("\n=== " + url + " ===");
         final URI uri = URI.create(url);
         final long started = System.currentTimeMillis();
         try {
-            for (final IPlatform platform: platforms) {
-                final PlatformData data = platform.data(uri);
+            for (final Platform platform: platforms) {
+                final Resolution data = platform.resolve(uri);
                 if (data == null) continue; // NOT THIS PLATFORM'S HOST — KEEP PROBING
-                System.out.println("platform=" + platform.name() + " entries=" + data.size()
+                System.out.println("platform=" + platform.name() + " sources=" + data.sourceCount()
                         + " expires=" + data.expires() + " (" + (System.currentTimeMillis() - started) + "ms)");
-                for (final DataSource src: data.entries()) {
+                for (final Source src: data.sources()) {
                     print(src);
                 }
                 return;
@@ -63,23 +66,23 @@ public final class PlatformSmokeTest {
         }
     }
 
-    private static void print(final DataSource src) {
-        final RequestHeaders h = src.headers();
-        System.out.println("  type=" + src.type() + " variants=" + src.variants().size()
+    private static void print(final Source src) {
+        final HttpHeaders h = src.headers();
+        System.out.println("  type=" + src.type() + " qualities=" + src.qualities().size()
                 + " | title=" + src.metadata().title() + " | author=" + src.metadata().author());
-        System.out.println("  UA=" + (h == null ? "(none)" : h.get("User-Agent")));
-        for (final DataQuality q: src.variants()) {
+        System.out.println("  UA=" + (h == null ? "(none)" : h.value("User-Agent")));
+        for (final Quality q: src.qualities()) {
             final String u = q.uri().toString();
             System.out.println("  " + q.width() + "x" + q.height() + " -> " + u.substring(0, Math.min(90, u.length())));
         }
-        if (src.audioSlaves() != null) {
-            for (final Slave a: src.audioSlaves()) {
+        if (src.audioTracks() != null) {
+            for (final Track a: src.audioTracks()) {
                 final String u = a.uri().toString();
                 System.out.println("  audio -> " + u.substring(0, Math.min(90, u.length())));
             }
         }
-        if (src.subSlaves() != null) {
-            System.out.println("  subtitles=" + src.subSlaves().size());
+        if (src.subtitleTracks() != null) {
+            System.out.println("  subtitles=" + src.subtitleTracks().size());
         }
     }
 }

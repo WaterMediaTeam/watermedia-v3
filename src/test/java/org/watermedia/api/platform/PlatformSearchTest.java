@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Verifies {@link PlatformAPI#search(String, int)} and its live {@link PlatformSearch} handle
  * offline: history dedup/cap, the timed result cache, the defensive per-platform cap, and
- * supersede semantics. All pure-JVM logic driven by stub {@link IPlatform}s.
+ * supersede semantics. All pure-JVM logic driven by stub {@link Platform}s.
  * <p>
  * The registry is a package-private static and the search state is private, so the latter is
  * reached through reflection: each case snapshots and clears the registry, history and cache
@@ -34,7 +34,7 @@ public class PlatformSearchTest {
     @BeforeAll
     static void clientBootstrap() { MediaBootstrap.client(); }
 
-    private List<IPlatform> savedPlatforms;
+    private List<Platform> savedPlatforms;
 
     @BeforeEach
     void isolate() throws Exception {
@@ -123,7 +123,7 @@ public class PlatformSearchTest {
     // ==========================================================================
 
     // EMITS `count` MARKER HITS PER SEARCH; A NON-NULL `blockMs` SLEEPS (INTERRUPTIBLY) TO STAY IN-FLIGHT.
-    private static final class StubPlatform implements IPlatform {
+    private static final class StubPlatform implements Platform {
         private final int count;
         private final Integer blockMs;
         private final AtomicInteger probes = new AtomicInteger();
@@ -134,7 +134,7 @@ public class PlatformSearchTest {
         }
 
         @Override public String name() { return "STUB"; }
-        @Override public PlatformData data(final URI uri) { return null; }
+        @Override public Resolution resolve(final URI uri) { return null; }
 
         @Override
         public List<PlatformResult> search(final String query, final int limit) throws Exception {
@@ -142,7 +142,7 @@ public class PlatformSearchTest {
             if (this.blockMs != null) Thread.sleep(this.blockMs);
             final List<PlatformResult> out = new ArrayList<>(this.count);
             for (int i = 0; i < this.count; i++) {
-                out.add(new PlatformResult("STUB", query + "#" + i, null, URI.create("https://stub.test/" + i)));
+                out.add(new PlatformResult(this, query + "#" + i, null, URI.create("https://stub.test/" + i)));
             }
             return out;
         }

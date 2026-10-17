@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.gif;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -11,13 +11,13 @@ public record ScreenDescriptor(
     boolean globalColorTableFlag, int colorResolution, boolean sortFlag,
     int globalColorTableSize, int backgroundColorIndex, int pixelAspectRatio) implements IChunk {
 
-    public static final int SIGNATURE_SIZE = 7;
+    public static final int LENGTH = 7;
 
-    /** Reads the {@value #SIGNATURE_SIZE}-byte logical screen descriptor that follows the GIF signature and version. */
-    public static ScreenDescriptor read(final ByteBuffer buffer) throws XCodecException {
-        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW XCodecException
-        if (buffer.remaining() < SIGNATURE_SIZE) {
-            throw new XCodecException("Buffer does not contain enough data for Screen Descriptor");
+    /** Reads the {@value #LENGTH}-byte logical screen descriptor that follows the GIF signature and version. */
+    public static ScreenDescriptor read(final ByteBuffer buffer) throws CodecException {
+        // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
+        if (buffer.remaining() < LENGTH) {
+            throw new CodecException("Buffer does not contain enough data for Screen Descriptor");
         }
 
         final int width = Short.toUnsignedInt(buffer.getShort());
@@ -31,7 +31,7 @@ public record ScreenDescriptor(
         final int pixelAspectRatio = Byte.toUnsignedInt(buffer.get());
 
         if (width <= 0 || height <= 0)
-            throw new XCodecException("Width and height must be positive integers");
+            throw new CodecException("Width and height must be positive integers");
 
         return new ScreenDescriptor(width, height, globalColorTableFlag, colorResolution, sortFlag,
                 globalColorTableSize, backgroundColorIndex, pixelAspectRatio);
@@ -39,7 +39,7 @@ public record ScreenDescriptor(
 
     @Override
     public byte[] toBytes() {
-        final ByteBuffer buf = ByteBuffer.allocate(SIGNATURE_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+        final ByteBuffer buf = ByteBuffer.allocate(LENGTH).order(ByteOrder.LITTLE_ENDIAN);
         buf.putShort((short) this.width);
         buf.putShort((short) this.height);
         int packed = 0;

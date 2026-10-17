@@ -6,8 +6,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.api.platform.PlatformData;
-import org.watermedia.api.platform.DataSource;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.util.NetRequest;
@@ -27,7 +25,7 @@ import static org.watermedia.tools.JSONTool.uri;
 
 /**
  * YouTube platform backed by yt-dlp. Extends {@link YtDlpPlatform} to reuse its yt-dlp engine (binary
- * invocation + JSON→{@link DataSource} mapping) and adds the two things
+ * invocation + JSON→{@link Source} mapping) and adds the two things
  * YouTube alone needs: the BotGuard po_token retry for the "Sign in to confirm you're not a bot" gate,
  * and the InnerTube {@code visitorData} fetch the token must be bound to.
  *
@@ -62,7 +60,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
     }
 
     @Override
-    public PlatformData data(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws Exception {
         // NOT A YOUTUBE URL → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
         if (!hostMatches(uri.getHost(), HOSTS)) {
             return null;
@@ -81,7 +79,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
             if (isBotCheck(e.getMessage())) {
                 return this.retryWithPoToken(uri, args);
             }
-            throw new PlatformException(YouTubePlatform.class, "yt-dlp could not resolve " + uri + ": " + e.getMessage(), e);
+            throw new PlatformException(NAME, "yt-dlp could not resolve " + uri + ": " + e.getMessage(), e);
         }
         return this.extract(info); // EXTRACTION EXCEPTIONS (Mature/Platform) PROPAGATE AS-IS
     }
@@ -90,7 +88,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
     // (THE BotGuard WEB TOKEN COVERS web/web_safari/mweb/tv). NO player_client OVERRIDE: yt-dlp KEEPS ITS
     // BOT-RESISTANT DEFAULTS (android_vr, web_safari) AND THE TOKEN UNBLOCKS THE WEB CLIENT'S GATED STREAMS
     // — FORCING ONLY THE WEB CLIENTS YIELDS NO FORMATS. SURFACES THE ORIGINAL ERROR IF THE RETRY ALSO FAILS.
-    private PlatformData retryWithPoToken(final URI uri, final List<String> baseArgs) throws Exception {
+    private Resolution retryWithPoToken(final URI uri, final List<String> baseArgs) throws Exception {
         try {
             final String visitorData = fetchVisitorData();
             final String token = this.mintToken(visitorData);
@@ -104,7 +102,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
             LOGGER.info(IT, "Retrying '{}' with a BotGuard po_token", uri);
             return this.extract(this.info(uri.toString(), args));
         } catch (final Exception retry) {
-            throw new PlatformException(YouTubePlatform.class,
+            throw new PlatformException(NAME,
                     "YouTube blocked this request and the po_token retry failed: " + retry.getMessage(), retry);
         }
     }
@@ -117,7 +115,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
         try {
             info = this.info("ytsearch" + limit + ":" + query, List.of("--flat-playlist"));
         } catch (final IOException e) {
-            throw new PlatformException(YouTubePlatform.class, "yt-dlp could not search '" + query + "': " + e.getMessage(), e);
+            throw new PlatformException(NAME, "yt-dlp could not search '" + query + "': " + e.getMessage(), e);
         }
 
         final JsonArray entries = info.getAsJsonArray("entries");
@@ -143,7 +141,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
             final URI page = parsed != null && parsed.isAbsolute() ? parsed
                     : id != null ? uri("https://www.youtube.com/watch?v=" + id) : null;
             if (page == null) continue; // NEITHER AN ABSOLUTE url NOR AN id — NOTHING PLAYABLE TO LINK
-            out.add(new PlatformResult(NAME, str(entry, "title"), thumbnail, page));
+            out.add(new PlatformResult(this, str(entry, "title"), thumbnail, page));
             if (out.size() >= limit) break;
         }
         return out;
@@ -178,12 +176,12 @@ public final class YouTubePlatform extends YtDlpPlatform {
         throw new IOException("rustypipe-botguard produced no token");
     }
 
-    // FETCHES A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT (REPLACING NEWPIPE'S
-    // FORMER visitor-data CALL). THE po_token MUST BE BOUND TO THE SAME visitorData HANDED TO yt-dlp.
+    // FETCHES A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT; THE po_token MUST BE
+    // BOUND TO THE SAME visitorData HANDED TO yt-dlp
     private static String fetchVisitorData() throws IOException {
         try (final NetRequest request = NetRequest.create(VISITOR_ENDPOINT)
                 .method("POST")
-                .contentType("application/json")
+                .contentType(NetRequest.MIMETYPE_JSON)
                 .header("X-YouTube-Client-Name", "1")
                 .header("X-YouTube-Client-Version", CLIENT_VERSION)
                 .body(VISITOR_BODY)
@@ -191,7 +189,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
             if (request.statusCode() != 200) {
                 throw new IOException("visitor_id endpoint returned HTTP " + request.statusCode());
             }
-            final JsonObject json = JsonParser.parseString(request.readAllAsString()).getAsJsonObject();
+            final JsonObject json = JsonParser.parseString(request.text()).getAsJsonObject();
             return json.getAsJsonObject("responseContext").get("visitorData").getAsString();
         }
     }

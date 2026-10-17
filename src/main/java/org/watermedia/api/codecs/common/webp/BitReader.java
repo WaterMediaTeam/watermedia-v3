@@ -1,6 +1,6 @@
 package org.watermedia.api.codecs.common.webp;
 
-import org.watermedia.api.codecs.XCodecException;
+import org.watermedia.api.codecs.CodecException;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -57,9 +57,9 @@ public final class BitReader {
      * Max 24 bits at once.
      * If there aren't enough bits available, returns what's available padded with zeros.
      */
-    public int peek(final int bits) throws XCodecException {
+    public int peek(final int bits) throws CodecException {
         if (bits == 0) return 0;
-        if (bits > MAX_BURST_BITS) throw new XCodecException("Cannot peek more than 24 bits at once");
+        if (bits > MAX_BURST_BITS) throw new CodecException("Cannot peek more than 24 bits at once");
 
         final int available = this.ensureBits(bits);
         if (available == 0) return 0;
@@ -71,13 +71,13 @@ public final class BitReader {
      * Read N bits (LSB first) - max 24 bits at once.
      * Consumes the bits from the buffer.
      */
-    public int read(final int bits) throws XCodecException {
+    public int read(final int bits) throws CodecException {
         if (bits == 0) return 0;
-        if (bits > MAX_BURST_BITS) throw new XCodecException("Cannot read more than 24 bits at once");
+        if (bits > MAX_BURST_BITS) throw new CodecException("Cannot read more than 24 bits at once");
 
         final int available = this.ensureBits(bits);
         if (available < bits) {
-            throw new XCodecException("Unexpected end of data: needed " + bits + " bits, only " + available + " available");
+            throw new CodecException("Unexpected end of data: needed " + bits + " bits, only " + available + " available");
         }
 
         final int result = (int) (this.bitBuf & ((1L << bits) - 1L));
@@ -89,9 +89,9 @@ public final class BitReader {
     /**
      * Read single bit as boolean.
      */
-    public boolean readBool() throws XCodecException {
+    public boolean readBool() throws CodecException {
         if (this.bitsAvail == 0) this.ensureBits(1);
-        if (this.bitsAvail == 0) throw new XCodecException("Unexpected end of data: needed 1 bit, only 0 available");
+        if (this.bitsAvail == 0) throw new CodecException("Unexpected end of data: needed 1 bit, only 0 available");
         final boolean result = (this.bitBuf & 1L) != 0L;
         this.bitBuf >>>= 1;
         this.bitsAvail -= 1;
@@ -101,7 +101,7 @@ public final class BitReader {
     /**
      * Read signed value with sign extension.
      */
-    public int readSigned(final int bits) throws XCodecException {
+    public int readSigned(final int bits) throws CodecException {
         int v = this.read(bits);
         final int signBit = 1 << (bits - 1);
         if ((v & signBit) != 0) {
@@ -113,7 +113,7 @@ public final class BitReader {
     /**
      * Skip N bits (consume without returning).
      */
-    public void skip(final int bits) throws XCodecException {
+    public void skip(final int bits) throws CodecException {
         if (bits <= this.bitsAvail) {
             this.bitBuf >>>= bits;
             this.bitsAvail -= bits;
@@ -152,7 +152,7 @@ public final class BitReader {
     }
 
     /** Returns a diagnostic snapshot of unread bytes, buffered bits and the accumulator value. */
-    public String bitPosition() {
+    public String snapshot() {
         return "bytes=" + this.buf.remaining() + ",bitsAvail=" + this.bitsAvail + ",bitBuf=0x" + Long.toHexString(this.bitBuf);
     }
 }

@@ -62,7 +62,7 @@ public final class ApiGuideExample {
 
     public static MediaPlayer play(final MRL mrl, final Supplier<GFXEngine> graphics, final Supplier<SFXEngine> audio) {
         if (mrl.status() != MRL.Status.LOADED) throw new IllegalStateException("Media has not loaded");
-        final MediaPlayer player = MediaAPI.createPlayer(mrl, 0, graphics, audio);
+        final MediaPlayer player = MediaAPI.player(mrl, 0, graphics, audio);
         if (player == null) throw new IllegalStateException("Source is unavailable or its backend failed");
         try {
             if (!player.start()) throw new IllegalStateException("Player refused to start");
@@ -81,23 +81,23 @@ public final class ApiGuideExample {
         player.mute(true);
         player.speed(1.25f);
         player.repeat(true);
-        player.maxSize(1280, 720);
+        player.scale(1280, 720);
     }
 
     public static ServerMediaPlayer authority(final Bridge bridge) {
-        final ServerMediaPlayer authority = MediaAPI.createPlayer(bridge, Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
+        final ServerMediaPlayer authority = MediaAPI.serverPlayer(bridge, Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
         authority.start();
         return authority;
     }
 
     public static MediaPlayer follower(final MRL mrl, final Supplier<GFXEngine> graphics,
                                        final Supplier<SFXEngine> audio, final Bridge bridge) {
-        return MediaAPI.createPlayer(mrl, graphics, audio, bridge);
+        return MediaAPI.player(mrl, graphics, audio, bridge);
     }
 
     public static long decode(final ByteBuffer encoded) throws IOException {
         long frames = 0L;
-        try (final ImageReader reader = CodecsAPI.decodeImage(encoded)) {
+        try (final ImageReader reader = CodecsAPI.reader(encoded)) {
             reader.addFilter(new DownscaleFilter(0.5f));
             while (reader.hasNext()) {
                 final ByteBuffer pixels = reader.next();

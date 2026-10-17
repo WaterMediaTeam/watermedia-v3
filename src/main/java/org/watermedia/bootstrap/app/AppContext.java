@@ -24,6 +24,7 @@ import static org.lwjgl.openal.AL10.alSourceStop;
 public final class AppContext implements Executor {
 
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
+    public static final String REPO = "SrRapero720/watermedia"; // MIRRORS github IN gradle.properties
     // IMMUTABLE, THREAD-SAFE FORMATTER FOR ELAPSED MEDIA TIME (HH:MM:SS). REPLACES A PUBLIC, MUTABLE
     // SimpleDateFormat THAT ALLOCATED A Date PLUS INTERNAL BUFFERS ON EVERY PER-FRAME formatTime() CALL.
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -96,7 +97,7 @@ public final class AppContext implements Executor {
     public MRL.Source[] availableSources;
     public MRL.Source selectedSource;
     public MediaQuality[] availableQualities;
-    public MediaQuality selectedQuality = MediaQuality.HIGHER;
+    public MediaQuality selectedQuality = MediaQuality.HIGHEST;
     public int sourceSelectorIndex;
 
     // PLAYER

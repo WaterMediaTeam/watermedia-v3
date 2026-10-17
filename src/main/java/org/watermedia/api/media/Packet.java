@@ -7,7 +7,7 @@ import java.nio.ByteBuffer;
  * <p>
  * Every packet encodes to a fixed-size big-endian payload headed by a packet id and a
  * per-type version byte, small enough for any byte carrier — a Minecraft custom payload,
- * a plain socket frame. {@link #of(ByteBuffer)} is the single decode entry and the trust
+ * a plain socket frame. {@link #read(ByteBuffer)} is the single decode entry and the trust
  * boundary: malformed, unknown or out-of-range payloads never reach playback code.
  * <p>
  * Downstream (authority to followers): {@link Sync} and {@link Config}. Upstream
@@ -31,7 +31,7 @@ public sealed interface Packet permits Sync, Config, Watch, Report, Control, Unw
      * @throws IllegalArgumentException if the payload is null, truncated, has an unknown
      *         packet id, an unsupported version or out-of-range values
      */
-    static Packet of(final ByteBuffer buf) {
+    static Packet read(final ByteBuffer buf) {
         if (buf == null || buf.remaining() < 2)
             throw new IllegalArgumentException("Packet payload is null or truncated");
         final byte id = buf.get();
