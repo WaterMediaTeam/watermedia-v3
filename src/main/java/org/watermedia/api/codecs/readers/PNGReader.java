@@ -464,7 +464,7 @@ public final class PNGReader extends ImageReader {
             else if (cicp.isHDR()) return null;
             else fileGamma = DEFAULT_GAMMA;
         } else if (gamma != null) {
-            fileGamma = gamma.gammaValue();
+            fileGamma = gamma.decodingExponent();
         } else {
             return null;
         }
