@@ -4,6 +4,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.codecs.DownscaleFilter;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.util.MathUtil;
@@ -410,35 +411,35 @@ public final class TxMediaPlayer extends MediaPlayer {
     // texture() RESOLVES THE DISPLAYED FRAME FROM WALL TIME ON EVERY CALL, SO PLAYBACK COSTS
     // ZERO UPLOADS, ZERO WAKEUPS, AND HAS NO SLEEP DRIFT.
 
-    // ELIGIBLE WHEN THE DECODED RGBA FRAME SET FITS THE CONFIGURED VRAM BUDGET, THE FRAME
+    // ELIGIBLE WHEN THE FRAME SET AT THE UPLOAD TARGET FITS THE CONFIGURED VRAM BUDGET, THE FRAME
     // COUNT IS KNOWN AND SANE, AND THE GFX BACKEND SUPPORTS THE PATH.
     private boolean shouldUseFrameTextures(final ImageReader reader) {
         final int frames = reader.frameCount();
         if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.preload()) return false;
         final long budget = Math.max(0L, WaterMediaConfig.media.tx.texturesBudget) * 1024L * 1024L;
-        // VRAM COST IS RGBA8 PER FRAME AT THE UPLOAD TARGET REGARDLESS OF THE SOURCE PIXEL LAYOUT.
-        final long vramCost = (long) frames * this.outWidth * this.outHeight * 4L;
-        // prepareTextures' readAll() TRANSIENTLY DECODES THE WHOLE SET AT SOURCE RESOLUTION INTO HEAP
-        // BEFORE THE DOWNSCALE, SO GATE ON THAT PEAK TOO — OTHERWISE maxSize/LOD LETS A TINY VRAM COST
-        // HIDE A MULTI-GB HEAP ALLOC (OOM). WHEN IT DOESN'T FIT WE FALL THROUGH TO MODE 3 STREAMING.
-        final long heapPeak = (long) frames * this.sourceWidth * this.sourceHeight * 4L;
-        return vramCost <= budget && heapPeak <= budget;
+        // RGBA8 PER FRAME AT THE UPLOAD TARGET REGARDLESS OF THE SOURCE LAYOUT; prepareTextures DECODES THE SET THROUGH
+        // A DownscaleFilter, SO ITS MEMORY PEAK FOLLOWS THE SAME TARGET AND ONE GATE COVERS VRAM AND DECODE ALIKE.
+        return (long) frames * this.outWidth * this.outHeight * 4L <= budget;
     }
 
     private void prepareTextures(final ImageReader reader) throws IOException {
         this.status = Status.BUFFERING;
         this.clearBuffers();
 
+        // SHRINK WHILE DECODING: THE RETAINED SET, ITS PEAK MEMORY AND THE BULK UPLOAD FOLLOW THE TARGET SIZE
+        if (this.outWidth != this.sourceWidth || this.outHeight != this.sourceHeight)
+            reader.addFilter(new DownscaleFilter(this.outWidth, this.outHeight));
         // DECODE EVERY FRAME. IF readAll() YIELDS ONLY ONE FRAME (E.G. APNG WITH A SINGLE FCTL)
         // FALL BACK TO STATIC SEMANTICS RATHER THAN BUILDING A CLOCK FOR NOTHING.
         final ImageData data = reader.readAll();
         // A TRUNCATED/CORRUPT ANIMATION CAN DECODE TO ZERO FRAMES EVEN THOUGH frameCount() REPORTED >1;
         // FAIL CLEANLY INSTEAD OF INDEXING frames()[0] (AIOOBE SWALLOWED AS A VAGUE "Lifecycle error").
-        if (data.frames().length == 0) {
-            throw new IOException("No frames decoded from: " + this.source);
-        }
-        if (data.frames().length <= 1) {
-            this.uploadFrame(data.frames()[0]);
+        if (data.frames().length == 0) throw new IOException("No frames decoded from: " + this.source);
+        if (data.frames().length == 1) {
+            // ALREADY AT THE UPLOAD SIZE: POOL IT WITHOUT THE RESCALE copyFrame WOULD APPLY
+            final ByteBuffer single = this.borrowBuffer();
+            single.put(data.frames()[0].duplicate()).flip();
+            this.uploadBuffer(single, this.outWidth, this.outHeight);
             this.currentFrameIndex = 0;
             this.currentDelayMs = 0L;
             this.time = 0L;
@@ -450,23 +451,8 @@ public final class TxMediaPlayer extends MediaPlayer {
             return;
         }
 
-        ByteBuffer[] frames = data.frames();
-        if (this.outWidth != this.sourceWidth || this.outHeight != this.sourceHeight) {
-            // DOWNSCALE THE WHOLE SET BEFORE THE BULK UPLOAD — VRAM AND UPLOAD COST
-            // FOLLOW THE TARGET SIZE, NOT THE SOURCE SIZE
-            final ByteBuffer[] scaled = new ByteBuffer[frames.length];
-            for (int i = 0; i < scaled.length; i++) {
-                final ByteBuffer dst = ByteBuffer.allocateDirect(this.bufferByteSize).order(ByteOrder.nativeOrder());
-                DataTool.scaleArea(frames[i], this.sourceWidth, this.sourceHeight, dst, this.outWidth, this.outHeight, this.pixelFormat);
-                dst.flip();
-                scaled[i] = dst;
-            }
-            frames = scaled;
-        }
-
-        if (!this.gfx.preload(frames, 0)) {
+        if (!this.gfx.preload(data.frames(), 0))
             throw new IOException("GFXEngine rejected preloaded frame textures for: " + this.source);
-        }
         this.gfx.frame(0);
 
         // BUILD THE CUMULATIVE TIMELINE THAT DRIVES THE PASSIVE CLOCK

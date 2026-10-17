@@ -1,0 +1,54 @@
+package org.watermedia.api.media;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.watermedia.api.media.MediaPlayer.Status;
+import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.PlayerWait;
+import org.watermedia.tools.DataTool;
+
+import java.nio.ByteBuffer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Verifies the pre-uploaded frame-texture mode of {@link TxMediaPlayer}: a capped animation is
+ * decoded through a {@code DownscaleFilter}, so every preloaded frame already has the target size
+ * and no per-frame upload ever happens.
+ */
+@DisplayName("TxMediaPlayer frame textures")
+public class TxFrameTexturesTest {
+    private static final long MRL_TIMEOUT_MS = 2000L;
+    private static final long PLAYER_TIMEOUT_MS = 3000L;
+    private static final int CAP = 16;
+
+    @Test
+    @DisplayName("A capped animation preloads every frame at the target size")
+    void cappedAnimationPreloadsScaledFrames() {
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.GIF_ANIMATED));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(true);
+        final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
+        try {
+            player.maxSize(CAP, CAP);
+            player.start();
+            assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.PLAYING, Status.PAUSED));
+            assertTrue(PlayerWait.awaitLoaded(player, PLAYER_TIMEOUT_MS));
+
+            final ByteBuffer[] frames = gfx.preloadedFrames();
+            assertNotNull(frames, "A capped animation within the budget must take the frame-texture path");
+            assertTrue(frames.length > 1);
+            assertEquals(0L, gfx.uploadCount(), "Preloaded animations never upload per frame");
+            assertTrue(player.width() <= CAP && player.height() <= CAP);
+            assertTrue(player.width() < player.sourceWidth() || player.height() < player.sourceHeight());
+            // THE FILTER SHRANK EVERY FRAME WHILE DECODING: EACH BUFFER HOLDS EXACTLY THE TARGET-SIZE FRAME
+            final long bytes = DataTool.frameBytes(gfx.format(), player.width(), player.height());
+            for (final ByteBuffer frame: frames) assertEquals(bytes, frame.remaining());
+        } finally {
+            player.stop();
+            player.release();
+        }
+    }
+}
