@@ -237,7 +237,7 @@ public final class AppContext implements Executor {
      */
     public void releaseAsync(final String name, final Runnable release) {
         final Thread prev = this.releaseThread;
-        this.releaseThread = ThreadTool.createStarted(name, () -> {
+        this.releaseThread = ThreadTool.thread(name, () -> {
             if (prev != null) {
                 while (prev.isAlive()) ThreadTool.join(prev);
             }

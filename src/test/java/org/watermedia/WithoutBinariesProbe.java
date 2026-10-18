@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.platform.PlatformAPI;
 
 /** Verifies client and server bootstrap without the optional binaries module. */
 public final class WithoutBinariesProbe {
@@ -49,14 +50,18 @@ public final class WithoutBinariesProbe {
             waterMedia.getMethod("start", String.class, Path.class, Path.class, boolean.class)
                     .invoke(null, "WITHOUT_BINARIES", root.resolve("temp"), root, client);
             final Object status = waterMedia.getMethod("status").invoke(null);
-            if (!"READY".equals(status.getClass().getMethod("state").invoke(status).toString()))
-                throw new AssertionError("Server startup failed: " + status);
-            for (final Object service: (List<?>) status.getClass().getMethod("services").invoke(status)) {
-                final String id = service.getClass().getMethod("id").invoke(service).toString();
-                if ((id.equals("BINARIES") || (!client && (id.equals("MEDIA") || id.equals("PLATFORMS"))))
-                        && !"SKIPPED".equals(service.getClass().getMethod("outcome").invoke(service).toString()))
-                    throw new AssertionError("Client service was loaded on server: " + service);
-            }
+            if (!(boolean) waterMedia.getMethod("loaded").invoke(null) || !"LOADED".equals(status.getClass().getMethod("state").invoke(status).toString()))
+                throw new AssertionError("Startup failed: " + status);
+            if (!((List<?>) status.getClass().getMethod("failures").invoke(status)).isEmpty())
+                throw new AssertionError("Absent binaries were reported as a failure: " + status);
+            // THE MISSING MODULE IS SKIPPED AND COUNTED AS DONE: A SERVER WALKS TWO MODULES, A CLIENT FOUR
+            final int total = (int) status.getClass().getMethod("total").invoke(status);
+            if (total != (client ? 4 : 2) || (int) status.getClass().getMethod("done").invoke(status) != total)
+                throw new AssertionError("Module count did not match the installed set: " + status);
+            // THE PLATFORM REGISTRY MUST ENLIST WITHOUT LINKING THE yt-dlp HANDLERS
+            final Class<?> platforms = Class.forName(PlatformAPI.class.getName(), true, isolated);
+            if (((List<?>) platforms.getMethod("platforms").invoke(null)).isEmpty())
+                throw new AssertionError("Built-in platforms were not enlisted without binaries");
             if (client) {
                 final Class<?> media = Class.forName(MediaAPI.class.getName(), true, isolated);
                 if ((boolean) media.getMethod("ffmpegLoaded").invoke(null) || (boolean) media.getMethod("ffmpegError").invoke(null))
@@ -70,10 +75,6 @@ public final class WithoutBinariesProbe {
                         throw new AssertionError("Image decoding failed without binaries");
                 }
             }
-            waterMedia.getMethod("stop").invoke(null);
-            final Object stopped = waterMedia.getMethod("status").invoke(null);
-            if (!"STOPPED".equals(stopped.getClass().getMethod("state").invoke(stopped).toString()))
-                throw new AssertionError("Server did not stop: " + stopped);
         } finally {
             Thread.currentThread().setContextClassLoader(original);
         }

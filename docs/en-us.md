@@ -8,30 +8,28 @@ WaterMedia resolves media addresses, decodes content and sends frames to graphic
 
 ```java
 import org.watermedia.WaterMedia;
-import org.watermedia.WaterMedia.BootStatus;
+import org.watermedia.WaterMedia.Status;
 
 WaterMedia.start("My application", temporaryDirectory, workingDirectory, true);
-BootStatus snapshot = WaterMedia.status();
+Status snapshot = WaterMedia.status();
 ```
 
-Read `snapshot.state()` and `snapshot.failures()` together. `STARTING` is not ready. `READY` means services started; `DEGRADED` means optional services failed, so check the capability you need, such as `MediaAPI.ffmpegLoaded()`. `FAILED` retains failure diagnostics. Dedicated servers skip client modules normally. Pure Java image decoding through `CodecsAPI` needs no bootstrap.
+`start` loads the modules once for the life of the process and nothing is ever unloaded: there is no stop, and a second `start` throws. The last argument selects the client environment; dedicated servers skip the client modules. `WaterMedia.loaded()` is the only readiness check. `snapshot.state()` is `IDLE`, `LOADING`, `LOADED` or `FAILED`; while loading, `snapshot.loading()` names the module class being started and `done()`/`total()` count the modules, which is all a loading screen needs. `snapshot.failures()` lists every module that failed with its cause: a module the library can live without (the file server, FFmpeg) is listed there while the state still reaches `LOADED`, so check the capability you need, such as `MediaAPI.ffmpegLoaded()`; an essential one (the configuration, an installed Binaries module) leaves `FAILED` and makes `start` throw with that failure as its cause. Pure Java image decoding through `CodecsAPI` needs no bootstrap.
 
-`STOPPING` closes admission while services release their resources; `STOPPED` means there is no active session. An incomplete shutdown reports `FAILED`, logs every shutdown failure, throws with the last one as its cause and requires a later stop attempt with the necessary host contexts still available. A failed start that retained no module leaves no session behind, so the next `start` needs no `stop` first. The last argument to `start` selects the client environment.
+`MediaAPI.mrl`, the media players and `NetworkAPI.upload` throw `IllegalStateException` until `loaded()` is true, and the media ones also on dedicated servers. `PlatformAPI` needs no bootstrap at all: its registry is static, `register`, `fetch` and `search` work at any time, and the handlers that need Binaries (YouTube, yt-dlp) fail with their own `PlatformException` until it loads, and always on dedicated servers, which never load Binaries. `NetworkAPI.upload` also rejects anything that is not an existing file up front; an unreachable or misconfigured remote server fails the returned status instead.
 
-`PlatformAPI.fetch`, `PlatformAPI.search` and `NetworkAPI.upload` need their service: they throw `IllegalStateException` before startup finishes, once a stop begins and on dedicated servers, where the platform service is skipped. `BootStatus.running(id)` is the predicate they share; `MRL` skips the platform lookup and resolves direct links itself while the platform service is down. `NetworkAPI.upload` also rejects anything that is not an existing file up front; an unreachable or misconfigured remote server fails the returned status instead.
-
-The binaries module requires WaterMedia and shares this lifecycle. Minecraft clients require Binaries;
-dedicated servers can omit it. After configuration loads, its startup blocks the remaining services
-until it finishes; an installed module that fails stops startup.
+The binaries module requires WaterMedia and loads with it. Minecraft clients require Binaries;
+dedicated servers can omit it. After configuration loads, it provisions the natives before the
+network and media modules; an installed module that fails ends the load.
 Applications embedding the Java API can omit the module and retain image decoding and native-free
-platform resolvers. Disabling FFmpeg skips extraction. `WaterMedia.stop()` clears native paths
-after their consumers stop. There is no separate binaries initialization or shutdown API.
+platform resolvers. Disabling FFmpeg skips extraction. The native paths stay published for the life
+of the process. There is no separate binaries initialization or shutdown API.
 
 Compatible custom FFmpeg distributions may use GPL, LGPL or another declared license and build version.
 The loader checks integrity and required native capabilities, not a fixed version or license allowlist.
 The distribution must still provide JNI bindings compatible with the Java API used by WaterMedia.
 
-A player owns the engines its factory consumes. Create engines lazily through suppliers so an unavailable media source cannot leak preallocated native resources. The application owns its OpenGL/Vulkan/OpenAL contexts and releases every player on the required host contexts before `WaterMedia.stop()`. Stop refuses while players remain open. A device/context reload requires new engines. Restarting WaterMedia does not unload native libraries or switch their version inside an existing JVM.
+A player owns the engines its factory consumes. Create engines lazily through suppliers so an unavailable media source cannot leak preallocated native resources. The application owns its OpenGL/Vulkan/OpenAL contexts and releases every player on the required host contexts before it tears those contexts down. A device/context reload requires new engines. Native libraries are never unloaded and cannot switch their version inside an existing JVM.
 
 ## Runtime requirements and configuration
 
@@ -43,7 +41,7 @@ Configuration loads before native provisioning. Check the generated configuratio
 
 | Setting | Default and related limits |
 | --- | --- |
-| `media.ffmpeg.disable` | `false`; enabling it skips FFmpeg provisioning and initialization. Restart the session after changing startup settings. Images remain independent of FFmpeg. |
+| `media.ffmpeg.disable` | `false`; enabling it skips FFmpeg provisioning and initialization. Startup settings take effect on the next launch. Images remain independent of FFmpeg. |
 | `media.ffmpeg.customPath` | Empty; an explicit directory must contain compatible native libraries, not an `ffmpeg.exe` command-line program. Patched TLS/origin capabilities remain required. |
 | `media.ffmpeg.hardwareAccel` | `true`; actual use also depends on native/driver capabilities, codec and output engine. Software decoding remains available. |
 | `media.ffmpeg.analyzeDuration` / `probeSize` | 7,000 ms / 10 MiB; both main and separate-audio inputs use them. Zero analysis duration leaves FFmpeg's default. Larger values can increase startup time. |
@@ -54,7 +52,7 @@ Configuration loads before native provisioning. Check the generated configuratio
 | `platforms.allowMatureContent` | `false`; supported platform adapters can mark a resource `BLOCKED` instead of handing it to playback. |
 | `platforms.searchCleanupInterval` | 15 minutes; zero clears cached searches on every search. |
 
-The optional file server starts according to `network.server`: `OFF` (the default) never, `DEDICATED` on any host started without a client (dedicated servers), `ALWAYS` on clients too. It binds to `127.0.0.1:25572`; a remote listener needs an explicit address and a custom nonblank `network.token`; a bad value fails the file server's start, which the network service reports as a failure while the session stays `DEGRADED`. `network.remoteUrl` is the full HTTP(S) base URL every uploader uses, clients included, and does not change the server's bind address. The built-in listener uses HTTP; remote HTTPS requires host-managed TLS termination. Its root answers only the product name, file IDs use lowercase letters and digits so they name the same file on every file system, a single satisfiable `Range` is honoured by `GET` and `HEAD` alike, and a malformed or multipart one is ignored.
+The optional file server starts according to `network.server`: `OFF` (the default) never, `DEDICATED` on any host started without a client (dedicated servers), `ALWAYS` on clients too. It binds to `127.0.0.1:25572`; a remote listener needs an explicit address and a custom nonblank `network.token`; a bad value fails the file server's start, which `WaterMedia.status()` lists as a failure of the network module while the load still completes. `network.remoteUrl` is the full HTTP(S) base URL every uploader uses, clients included, and does not change the server's bind address. The built-in listener uses HTTP; remote HTTPS requires host-managed TLS termination. Its root answers only the product name, file IDs use lowercase letters and digits so they name the same file on every file system, a single satisfiable `Range` is honoured by `GET` and `HEAD` alike, and a malformed or multipart one is ignored.
 
 The defaults allow eight simultaneous requests, a 30-second idle timeout per request, an 8 MiB upload and 1,024 MiB total storage. The timeout cuts a request only after that long without headers or transfer progress, so a long download on a slow link finishes while a stalled one is dropped. `maxUploadSize = 0` removes only the individual upload limit; storage quota, concurrency and the idle timeout still apply, and a full storage refuses uploads with `507` and a throttled warning until files are removed by hand. Java network requests, playlist fetches and the yt-dlp socket timeout share `network.timeout` (15 seconds), ten redirects and a 16 MiB text-body limit. Native playback input options use their own timeout policy.
 
@@ -73,7 +71,7 @@ MRL[] playlist = MediaAPI.preload(firstUri, secondUri);
 
 An MRL is a cached media-resource locator. One URI can resolve to multiple media sources, and each source can contain quality variants and separate audio tracks. Resolution is asynchronous. Poll `mrl.status()` from a game tick; the terminal states include `LOADED`, `ERROR` and `BLOCKED`. Inspect `mrl.exception()` on failure. `mrl.await(timeoutMillis)` is intended for background/application code: `true` means resolution finished, including a failure, rather than guaranteeing playable media.
 
-`FETCHING` means resolution is pending, `EXPIRED` marks stale sources, and `FORGOTTEN` marks an evicted resource or a closed session. `await` returns `false` if its wait expires or the waiting thread is interrupted. Retain the returned handle when refreshing; a request made during a current load is deferred until that load finishes.
+`FETCHING` means resolution is pending, `EXPIRED` marks stale sources, and `FORGOTTEN` marks an evicted resource. `await` returns `false` if its wait expires or the waiting thread is interrupted. Retain the returned handle when refreshing; a request made during a current load is deferred until that load finishes.
 
 ```java
 if (mrl.status() == MRL.Status.LOADED) {
@@ -85,13 +83,13 @@ if (mrl.status() == MRL.Status.LOADED) {
 }
 ```
 
-`source(index)` returns null when the source is unavailable. `sources()` and `sourcesByType(...)` return lists. `MediaType` belongs to `org.watermedia.api.util`, not to `MRL`. Reload with `mrl = mrl.reload()`: a forgotten cache entry returns a replacement handle, while the old handle remains forgotten. MRLs belong to their bootstrap session and cannot revive work after that session closes.
+`source(index)` returns null when the source is unavailable. `sources()` and `sourcesByType(...)` return lists. `MediaType` belongs to `org.watermedia.api.util`, not to `MRL`. Reload with `mrl = mrl.reload()`: a forgotten cache entry returns a replacement handle, while the old handle remains forgotten.
 
 `MediaAPI.mrl(String)` treats a string naming an existing file as a path relative to the working directory WaterMedia started with; any other string is parsed as a URI. Malformed, relative or empty inputs return an uncached MRL born in `ERROR` whose `reload()` returns itself. A direct link is rejected only when the server answers with a document type (HTML, CSS, JavaScript, JSON, XHTML); any other content type passes whatever its casing or parameters, and ambiguous ones are classified by sniffing the first bytes. Each source keeps one URL per quality bucket — the widest rendition, then the tallest, then the highest frame rate, then the first the platform listed — and its headers are frozen.
 
 Indices start at zero: a gallery can have an image at index 0, a video at index 1 and an animation at index 2. Pass index 1 to `MediaAPI.player` to play that gallery's video. Omitting the index selects the first source.
 
-Platform handlers follow one contract. `Platform.resolve` returns `null` only for a foreign host or scheme; a URL of its own host whose shape it cannot play (a profile, a folder, a bare host) fails with `PlatformException` ("Unsupported URL") without touching the network, and every other failure, an interrupted wait included, is a `PlatformException` too, so `MRL` reports the handler's own message. Mature content blocks with `MatureContentException` wherever the platform exposes a flag or label (Imgur, Kick, Twitch, Bluesky, PornHub, yt-dlp, Twitter's age gate and YouTube's), which `MRL` turns into `BLOCKED`. An album or playlist skips a bad item with a warning and only fails when nothing remains. Handlers registered with `PlatformAPI.register` are probed before the built-in ones, newest first, and outlive the session: register once, before or after `WaterMedia.start`, and the override survives a restart until `unregister`, which also drops a built-in handler for the rest of the session. Registration drops cached searches, and a blank search is a no-op that leaves a running search alone.
+Platform handlers follow one contract. `Platform.resolve` returns `null` only for a foreign host or scheme; a URL of its own host whose shape it cannot play (a profile, a folder, a bare host) fails with `PlatformException` ("Unsupported URL") without touching the network, and every other failure, an interrupted wait included, is a `PlatformException` too, so `MRL` reports the handler's own message. Mature content blocks with `MatureContentException` wherever the platform exposes a flag or label (Imgur, Kick, Twitch, Bluesky, PornHub, yt-dlp, Twitter's age gate and YouTube's), which `MRL` turns into `BLOCKED`. An album or playlist skips a bad item with a warning and only fails when nothing remains. Handlers registered with `PlatformAPI.register` are probed before the built-in ones, newest first, and need no bootstrap: register once, before or after `WaterMedia.start`, and the override holds until `unregister`, which also drops a built-in handler for the rest of the process. Registration drops cached searches, and a blank search is a no-op that leaves a running search alone.
 
 `Metadata` means the same thing everywhere: `title` names the content (a video, stream, post or clip, never the account), `description` carries its caption, body text or category and `author` the channel, uploader or streamer. Signed CDN links expire when their `expire`, `expires`, `validto` or `x-expires` parameter says so; the rest carry a per-platform lifetime or none.
 
@@ -160,8 +158,8 @@ it does not replace FFmpeg's OpenSSL transport. `FFMediaPlayer` creates and owns
 when FFmpeg starts, checks that the required native options exist and applies them to the main and
 separate-audio inputs of every player it opens; nothing in the public API touches that configuration.
 Custom JSSE socket factories, hostname-verifier callbacks and revocation policies are not transferred
-to OpenSSL. Protocol whitelists remain unchanged. The temporary CA bundle is removed when the media
-module stops, after all players have released their native connections.
+to OpenSSL. Protocol whitelists remain unchanged. The temporary CA bundle lives for the whole process
+and is deleted when the JVM exits.
 
 Playback credentials belong to the initial request's origin: scheme, hostname and effective port.
 Redirects and HLS/DASH child requests send `Authorization`, `Proxy-Authorization`, `Cookie`, `Cookie2`
@@ -177,6 +175,16 @@ inside that playback input. Native HTTP logs omit full requests, header dumps an
 of resending the body unless the body is set with `body(body, true)`. A 303 response switches only
 that send to GET without a body; the builder keeps its method and body for later sends.
 
+Redirects only move between http and https, in either direction: a `Location` pointing at a `file:`,
+`jar:` or `ftp:` resource fails the request, and only the first request may name a local file. URLs
+taken from platform JSON must be web links too. Playlist entries may use any streaming scheme FFmpeg
+speaks (`rtsp`, `rtmp`, `udp`, `srt`) but never a local file or archive, unless the playlist itself is
+a local file. The headers a caller sets win over the defaults, User-Agent included,
+and the derived Referer keeps an explicit port. `inputStream()` and `text()` return the body of an
+error status instead of throwing, the body can be read once, `json(type)` accepts every JSON content
+type (`application/json`, `text/json`, `+json` subtypes) and a text body that trickles in stops after
+four read timeouts in total. Neither the builder nor the response is thread-safe.
+
 ## Choosing engines
 
 Vulkan development takes priority; OpenGL remains supported as the secondary backend. Backend decisions belong in the rendering layer. This development preference does not change the standalone launcher's current initial OpenGL default or the user's saved engine selection.
@@ -187,7 +195,7 @@ Vulkan development takes priority; OpenGL remains supported as the secondary bac
 | `MediaAPI.vkEngine(context)` | Supply a `VKContext`; its Vulkan objects and retirement mechanism outlive the engine. |
 | `MediaAPI.awtEngine(onFrame)` | Paint the published image from the AWT/Swing UI; marshal the optional callback to the UI thread as needed. |
 | `MediaAPI.jfxEngine(onFrame)` | Supply a JavaFX runtime and bind the engine's image to the host UI. |
-| `MediaAPI.headlessEngine()` / `headlessEngine(preload)` | Captures uploaded frames without a graphics context; useful for tests and image processing. Like every engine and media player it only exists on a client session; a dedicated server can only create `ServerMediaPlayer` clocks. |
+| `MediaAPI.headlessEngine()` / `headlessEngine(preload)` | Captures uploaded frames without a graphics context; useful for tests and image processing. Like every engine and media player it only exists on a client; a dedicated server can only create `ServerMediaPlayer` clocks. |
 | `MediaAPI.alEngine()` | OpenAL context is already current and remains valid on the threads performing audio operations. |
 | `MediaAPI.alEngine(true)` | Same OpenAL contract; advertises mono output for positional sound. |
 | `MediaAPI.jsEngine()` | Java Sound device/line is available; positional audio is unsupported. |

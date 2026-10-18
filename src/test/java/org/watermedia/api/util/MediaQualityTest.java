@@ -10,6 +10,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Verifies {@link MediaQuality} classification, navigation and lookup helpers.
@@ -43,6 +44,17 @@ public class MediaQualityTest {
         @DisplayName("0x0 maps to UNKNOWN")
         void allZero() {
             assertSame(MediaQuality.UNKNOWN, MediaQuality.of(0, 0));
+            assertSame(MediaQuality.UNKNOWN, MediaQuality.of(-1, -1));
+        }
+
+        @Test
+        @DisplayName("known sizes below 144 map to LOWEST")
+        void tinySizesAreLowest() {
+            assertSame(MediaQuality.LOWEST, MediaQuality.of(1, 1));
+            assertSame(MediaQuality.LOWEST, MediaQuality.of(256, 143));
+            assertSame(MediaQuality.LOWEST, MediaQuality.of(0, 64));
+            assertSame(MediaQuality.LOWEST, MediaQuality.of(256, 144));
+            assertSame(MediaQuality.LOWER, MediaQuality.of(426, 240));
         }
 
         @Test
@@ -96,6 +108,14 @@ public class MediaQualityTest {
         @DisplayName("null set returns null")
         void nullReturnsNull() {
             assertNull(MediaQuality.closest(null, MediaQuality.HIGHER));
+        }
+
+        @Test
+        @DisplayName("null preferred quality is rejected")
+        void nullPreferredRejected() {
+            final IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> MediaQuality.closest(EnumSet.of(MediaQuality.HIGH), null));
+            assertEquals("Preferred quality cannot be null", failure.getMessage());
         }
 
         @Test

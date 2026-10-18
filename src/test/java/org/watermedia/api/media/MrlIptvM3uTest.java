@@ -3,7 +3,6 @@ package org.watermedia.api.media;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.watermedia.WaterMedia;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
@@ -28,18 +27,6 @@ public class MrlIptvM3uTest {
 
     private static final long TIMEOUT_MS = 5000L;
     private static final Path IPTV_FIXTURE = Fixtures.RESOURCES.resolve("m3u").resolve("iptv_sample.m3u8");
-
-    @BeforeAll
-    static void initWaterMedia() {
-        // MIME TYPE MAPPING FOR .m3u8 IS INSTALLED BY NetworkAPI ON START;
-        // WITHOUT IT URLConnection LEAVES file://*.m3u8 CONTENT-TYPE AS NULL
-        // AND MRL.load() WOULD REJECT IT BEFORE THE IPTV EXPANSION RUNS.
-        try {
-            WaterMedia.start("TEST", null, null, false);
-        } catch (final IllegalStateException ignored) {
-            // ALREADY STARTED BY ANOTHER TEST
-        }
-    }
 
     @Test
     @DisplayName("IPTV playlist expands into one source per channel")

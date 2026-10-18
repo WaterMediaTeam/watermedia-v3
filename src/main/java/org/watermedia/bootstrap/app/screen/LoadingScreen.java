@@ -1,7 +1,7 @@
 package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
-import org.watermedia.WaterMedia.BootStatus;
+import org.watermedia.WaterMedia.Status;
 import org.watermedia.api.util.MathEases;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.Assets;
@@ -15,16 +15,14 @@ import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.Spacing;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
-import java.util.Locale;
-
 /**
  * Boot splash as a fully retained tree: a centered column with the glowing banner, the animated duck
- * (or the glowing pack icon as fallback), the spaced title and three captioned progress bars — the
- * overall module boot, the active module's steps and the download/extraction byte progress. Live boot
- * state is pulled from the {@link WaterMedia} metrics in the elements' {@code onUpdate} hooks every frame.
+ * (or the glowing pack icon as fallback), the spaced title and one captioned progress bar naming the
+ * module WaterMedia is loading. Live boot state is pulled from {@link WaterMedia#status()} in the
+ * elements' {@code onUpdate} hooks every frame.
  */
 public final class LoadingScreen extends Screen {
-    private BootStatus boot = WaterMedia.status();
+    private Status boot = WaterMedia.status();
 
     @Override
     protected void onUpdate() { this.boot = WaterMedia.status(); }
@@ -61,9 +59,7 @@ public final class LoadingScreen extends Screen {
                 .add(new Duck().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 22, 0)))
                 .add(new Text("LOADING WATERMEDIA...").scale(TITLE_SCALE).letterSpacing(TITLE_SPACING)
                         .color(AppTheme.NEON_LIGHT).gravity(Gravity.CENTER).margin(new Spacing(0, 0, 24, 0)))
-                .add(new ModuleBar().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 14, 0)))
-                .add(new StepBar().gravity(Gravity.CENTER).margin(new Spacing(0, 0, 14, 0)))
-                .add(new WorkBar().gravity(Gravity.CENTER)));
+                .add(new ModuleBar().gravity(Gravity.CENTER)));
     }
 
     @Override
@@ -90,27 +86,6 @@ public final class LoadingScreen extends Screen {
         final float sy = (float) h / srcH;
         canvas.image(glowId, x - (glowW - srcW) * 0.5f * sx, y - (glowH - srcH) * 0.5f * sy,
                 glowW * sx, glowH * sy, null);
-    }
-
-    // WORK FRACTION OF THE DEMANDING TASK IN FLIGHT — FULL WHEN NONE IS ACTIVE SO STEP RATIOS COMPLETE
-    private static float workFrac(final BootStatus.Progress progress) {
-        final long total = progress.workTotal();
-        return total > 0 ? clamp01((float) progress.work() / total) : 1f;
-    }
-
-    // HUMAN-READABLE BYTES FOR THE WORK CAPTION — ONE UNIT FOR BOTH VALUES PICKED FROM THE LARGEST;
-    // A ZERO TOTAL (UNKNOWN SIZE) SHOWS ONLY THE PROCESSED AMOUNT
-    private static String bytes(final long done, final long total) {
-        final boolean mb = Math.max(done, total) >= 1L << 20;
-        final double div = mb ? 1048576.0 : 1024.0;
-        final String unit = mb ? " MB" : " KB";
-        return total > 0
-                ? String.format(Locale.ROOT, "%.1f/%.1f%s", done / div, total / div, unit)
-                : String.format(Locale.ROOT, "%.1f%s", done / div, unit);
-    }
-
-    private static String clean(final String value) {
-        return value == null ? "" : value.trim();
     }
 
     private static float clamp01(final float v) {
@@ -225,38 +200,43 @@ public final class LoadingScreen extends Screen {
         }
     }
 
-    // SHARED BAR CHASSIS — NEON TRACK + GRADIENT FILL WITH A CENTERED CAPTION BELOW; SUBCLASSES FEED
-    // THE GOAL RATIO AND CAPTION EVERY FRAME, THE SHOWN VALUE OPTIONALLY CHASES IT WITH THE EASE RAMP
-    private abstract static class Bar<T extends Bar<T>> extends Element<T> {
+    // THE BOOT BAR — NEON TRACK + GRADIENT FILL WITH A CAPTION NAMING THE MODULE LOADING AND MODULES DONE OUT OF
+    // THE TOTAL (THE APP'S OWN PIECES OUTSIDE THE MODULE WALK); THE SHOWN VALUE CHASES THE GOAL WITH THE EASE RAMP
+    private final class ModuleBar extends Element<ModuleBar> {
 
-        protected String caption = "";
-        protected String alert = ""; // RED SUFFIX (FAILED STEPS) — EMPTY WHEN CLEAN
+        private String caption = "";
+        private String alert = ""; // RED SUFFIX (FAILED MODULES) — EMPTY WHEN CLEAN
         private float shown;
         private float from;
         private float target;
         private long startMs;
 
-        // FEEDS THE GOAL RATIO; EASED CHASES WITH THE EASE-IN-OUT RAMP, OTHERWISE IT SNAPS (LIVE BYTES)
-        protected final void goal(final float goal, final boolean eased) {
-            if (!eased) {
-                this.shown = this.target = clamp01(goal);
-                return;
+        @Override
+        protected void onUpdate() {
+            final Status status = LoadingScreen.this.boot;
+            final float goal;
+            if (!this.ctx.backendsLoading) {
+                goal = 1f;
+                this.caption = "Starting: WaterMediaApp";
+            } else if (status.total() > 0) {
+                goal = clamp01((float) status.done() / status.total());
+                final Class<?> loading = status.loading();
+                this.caption = "Loading: " + (loading == null ? WaterMedia.NAME : Status.name(loading)) + " (" + status.done() + "/" + status.total() + ")";
+            } else {
+                goal = 0f;
+                this.caption = "Starting: WaterMediaApp";
             }
+            final int failed = status.failures().size();
+            this.alert = failed > 0 ? " [" + failed + " module(s) failed]" : "";
+
             final long now = System.currentTimeMillis();
             if (Math.abs(goal - this.target) > 0.001f) {
                 this.from = this.shown;
-                this.target = clamp01(goal);
+                this.target = goal;
                 this.startMs = now;
             }
             final double t = clamp01((now - this.startMs) / (double) PROGRESS_ANIM_MS);
             this.shown = t >= 1.0 ? this.target : clamp01((float) MathEases.EASE_IN_OUT_QUAD.apply(this.from, this.target, t));
-        }
-
-        // DROPS THE RAMP STATE TO ZERO — USED WHEN THE TRACKED SCOPE CHANGES (NEW MODULE)
-        protected final void rebase() {
-            this.shown = 0f;
-            this.from = 0f;
-            this.target = 0f;
         }
 
         @Override
@@ -285,75 +265,6 @@ public final class LoadingScreen extends Screen {
             final int ty = y + BAR_H + CAPTION_GAP;
             canvas.text(this.caption, tx, ty, AppTheme.TEXT, CAPTION_SCALE, false);
             if (alertW > 0) canvas.text(this.alert, tx + captionW, ty, AppTheme.RED, CAPTION_SCALE, false);
-        }
-    }
-
-    // BAR 1 (MAIN) — OVERALL BOOT: MODULES DONE PLUS THE ACTIVE MODULE'S STEP FRACTION (ITSELF REFINED
-    // BY THE LIVE WORK BYTES); OUTSIDE THE MODULE WALK IT IS THE APP ITSELF LOADING ITS OWN PIECES
-    private final class ModuleBar extends Bar<ModuleBar> {
-
-        @Override
-        protected void onUpdate() {
-            final BootStatus status = LoadingScreen.this.boot;
-            final BootStatus.Progress progress = status.progress();
-            final int steps = status.steps();
-            final int step = status.step();
-            if (!this.ctx.backendsLoading) {
-                this.goal(1f, true);
-                this.caption = "Starting: WaterMediaApp";
-            } else if (step > 0 && steps > 0) {
-                final int taskSteps = progress.taskSteps();
-                final float taskFrac = taskSteps > 0 ? clamp01((progress.taskStep() - 1 + workFrac(progress)) / taskSteps) : 0f;
-                this.goal(clamp01((step - 1 + taskFrac) / steps), true);
-                this.caption = "Starting: " + clean((status.current() == null ? "" : status.current().name())) + " (" + step + "/" + steps + ")";
-            } else {
-                this.goal(0f, true);
-                this.caption = "Starting: WaterMediaApp";
-            }
-            final int failed = status.failures().size();
-            this.alert = failed > 0 ? " [" + failed + " step(s) failed]" : "";
-        }
-    }
-
-    // BAR 2 — ACTIVE MODULE STEPS: VISIBLE ONLY WHILE THE BOOT PUBLISHES STEPS, GONE ONCE THE MODULES
-    // FINISH AND ONLY THE APP KEEPS LOADING; THE RAMP REBASES WHEN THE ACTIVE MODULE CHANGES
-    private final class StepBar extends Bar<StepBar> {
-
-        private int tracked; // LAST MODULE INDEX SEEN — A CHANGE DROPS THE RAMP TO ZERO
-
-        @Override
-        protected void onUpdate() {
-            final BootStatus status = LoadingScreen.this.boot;
-            final BootStatus.Progress progress = status.progress();
-            final int taskSteps = progress.taskSteps();
-            final int taskStep = progress.taskStep();
-            this.visible = this.ctx.backendsLoading && taskSteps > 0 && taskStep > 0;
-            if (!this.visible) return;
-            final int module = status.step();
-            if (module != this.tracked) {
-                this.tracked = module;
-                this.rebase();
-            }
-            this.goal(clamp01((taskStep - 1 + workFrac(progress)) / taskSteps), true);
-            final String step = clean(progress.taskName());
-            this.caption = (step.isEmpty() ? "Loading" : "Loading: " + step) + " (" + taskStep + "/" + taskSteps + ")";
-        }
-    }
-
-    // BAR 3 — DEMANDING WORK (DOWNLOAD/EXTRACTION BYTES): ONLY VISIBLE WHILE ONE IS IN FLIGHT; AN
-    // UNKNOWN TOTAL KEEPS THE TRACK EMPTY AND THE CAPTION COUNTING RAW BYTES
-    private final class WorkBar extends Bar<WorkBar> {
-
-        @Override
-        protected void onUpdate() {
-            final BootStatus status = LoadingScreen.this.boot;
-            final BootStatus.Progress progress = status.progress();
-            final long total = progress.workTotal();
-            this.visible = this.ctx.backendsLoading && (total > 0 || !clean(progress.workName()).isEmpty());
-            if (!this.visible) return;
-            final long done = progress.work();
-            this.goal(total > 0 ? clamp01((float) done / total) : 0f, false);
-            this.caption = (progress.remote() ? "Downloading: " : "Extracting: ") + bytes(done, total);
         }
     }
 }

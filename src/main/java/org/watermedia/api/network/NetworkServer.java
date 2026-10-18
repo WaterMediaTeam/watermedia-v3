@@ -20,7 +20,6 @@ import java.math.BigInteger;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.URLConnection;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
@@ -59,7 +58,7 @@ public final class NetworkServer {
     static synchronized void start(final int port, final Path cwd) throws IOException {
         if (running != null) throw new IllegalStateException("The file server is already running");
         final var config = WaterMediaConfig.network;
-        // THE CONFIGURATION IS STATE OF THE SESSION, NOT AN ARGUMENT OF THIS CALL
+        // THE CONFIGURATION IS PROCESS STATE, NOT AN ARGUMENT OF THIS CALL
         if (config.serverBindAddress == null || config.serverBindAddress.isBlank())
             throw new IllegalStateException("The file server requires an explicit bind address");
         final InetAddress bind = InetAddress.getByName(config.serverBindAddress);
@@ -126,9 +125,9 @@ public final class NetworkServer {
             ScheduledThreadPoolExecutor deadlines = null;
             try {
                 executor = new ThreadPoolExecutor(config.maxServerRequests, config.maxServerRequests,
-                        0, TimeUnit.MILLISECONDS, new SynchronousQueue<>(), ThreadTool.createFactory("NetworkServer", Thread.NORM_PRIORITY));
+                        0, TimeUnit.MILLISECONDS, new SynchronousQueue<>(), ThreadTool.factory("NetworkServer", Thread.NORM_PRIORITY));
                 deadlines = new ScheduledThreadPoolExecutor(1,
-                        ThreadTool.createFactory("NetworkServer-Deadline", Thread.NORM_PRIORITY));
+                        ThreadTool.factory("NetworkServer-Deadline", Thread.NORM_PRIORITY));
                 deadlines.setRemoveOnCancelPolicy(true);
                 final Running state = new Running(server, executor, deadlines, storage, storageChannel, token.getBytes(StandardCharsets.UTF_8),
                         config.maxUploadSize * 1024L * 1024L, config.maxStorageSize * 1024L * 1024L, used, config.serverTimeout);
@@ -382,7 +381,7 @@ public final class NetworkServer {
                 return;
             }
             final String filename = file.getFileName().toString();
-            final String contentType = URLConnection.guessContentTypeFromName(filename);
+            final String contentType = NetRequest.contentTypeOf(filename);
             final long size = Files.size(file);
             long start = 0;
             long end = size - 1;
@@ -408,7 +407,7 @@ public final class NetworkServer {
                 }
             }
             final long length = size == 0 ? 0 : end - start + 1;
-            exchange.getResponseHeaders().set("Content-Type", contentType == null ? NetRequest.MIMETYPE_OCTET_STREAM : contentType);
+            exchange.getResponseHeaders().set("Content-Type", contentType);
             exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
             if (partial) exchange.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + size);
             else exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename.replace('"', '_') + "\"");

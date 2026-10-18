@@ -2,24 +2,19 @@ package org.watermedia.api.platform;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.WaterMedia;
-import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.platform.internal.WaterPlatform;
 import org.watermedia.api.platform.web.*;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
 
-import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Supplier;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -27,6 +22,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.function.Supplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -36,19 +32,20 @@ import static org.watermedia.WaterMedia.LOGGER;
  * going through {@link MRL}.
  * <p>
  * Platforms return {@link Platform.Resolution} (their own structure); {@link MRL} and other
- * consumers build their domain types (e.g. {@code MRL.Source}) from that data. Resolving and
- * searching need the platform service: both throw {@link IllegalStateException} before
- * {@link WaterMedia#start} finishes, once {@link WaterMedia#stop} begins and on dedicated servers,
- * where the service is skipped. Registering handlers works at any time.
+ * consumers build their domain types (e.g. {@code MRL.Source}) from that data. The registry is
+ * static and the search workers start on first use, so resolving, searching and registering work at
+ * any time; a handler that needs the Binaries module (yt-dlp, YouTube) fails with its own
+ * {@link PlatformException} until WaterMedia loads.
  */
 public final class PlatformAPI {
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
     private static final int HISTORY_LIMIT = 10;
     private static final int DEFAULT_LIMIT = 2; // RESULTS PER PLATFORM WHEN THE CALLER DOES NOT SPECIFY
     private static final int SEARCH_CACHE_LIMIT = 32;
+    private static final int SEARCH_THREADS = 4;
     private static final Object SEARCH_LOCK = new Object();
     // COPY-ON-WRITE: REGISTRATION IS RARE WHILE THE MRL LOADER THREADS ITERATE HOT AND MUST NEVER SEE A CME.
-    // APPLICATION HANDLERS OUTLIVE THE SESSION AND ARE PROBED FIRST; THE BUILT-IN ONES BELONG TO THE SESSION
+    // APPLICATION HANDLERS ARE PROBED FIRST; THE BUILT-IN ONES ARE ENLISTED ONCE AT CLASS LOAD
     static final CopyOnWriteArrayList<Platform> CUSTOM = new CopyOnWriteArrayList<>();
     static final CopyOnWriteArrayList<Platform> BUILTIN = new CopyOnWriteArrayList<>();
     // RECENT QUERIES, MOST RECENT FIRST, CAPPED AT HISTORY_LIMIT — GUARDED BY SEARCH_LOCK
@@ -63,12 +60,38 @@ public final class PlatformAPI {
     };
     private static long nextCacheClean;
 
-    // THE COORDINATOR HAS ITS OWN THREAD SO WAITING FOR BOUNDED PROBES CANNOT DEADLOCK THE POOL.
+    // THE SEARCH WORKERS LIVE FOR THE WHOLE PROCESS ONCE THE FIRST SEARCH CREATES THEM; THE COORDINATOR HAS ITS OWN
+    // THREAD SO WAITING FOR BOUNDED PROBES CANNOT DEADLOCK THE POOL. GUARDED BY SEARCH_LOCK
     private static ThreadPoolExecutor searchPool;
     private static ThreadPoolExecutor coordinator;
     private static long searchGeneration;
     private static long registryVersion; // BUMPED UNDER SEARCH_LOCK ON EVERY REGISTRY CHANGE SO A STALE SEARCH NEVER CACHES
     private static Future<?> searchTask; // CURRENT SEARCH — GUARDED BY SEARCH_LOCK, CANCELLED WHEN A NEW ONE STARTS
+
+    static {
+        // ONE HANDLER THAT CANNOT BE BUILT MUST NOT TAKE THE REGISTRY DOWN WITH IT: THE OTHERS STILL ENLIST
+        final List<Supplier<Platform>> factories = new ArrayList<>(List.of(
+                WaterPlatform::new, ImgurPlatform::new, KickPlatform::new, StreamablePlatform::new, MedalPlatform::new,
+                PornHubPlatform::new, LightshotPlatform::new, TwitchPlatform::new, TwitterPlatform::new, BlueskyPlatform::new,
+                BiliBiliPlatform::new, DrivePlatform::new, DropboxPlatform::new, MediaFirePlatform::new, SendvidPlatform::new,
+                OdyseePlatform::new, VidLiiPlatform::new, TikTokPlatform::new, DTubePlatform::new));
+        // THE yt-dlp HANDLERS LINK THE BINARIES MODULE, SO THEY EXIST ONLY WHEN ITS JAR IS ON THE CLASS PATH
+        if (PlatformAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") != null) {
+            try {
+                factories.addAll(NativePlatforms.factories());
+            } catch (final RuntimeException | LinkageError failure) {
+                LOGGER.warn(IT, "The yt-dlp platforms could not be enlisted; WaterMedia Binaries may be incompatible", failure);
+            }
+        }
+        for (final Supplier<Platform> factory: factories) {
+            try {
+                BUILTIN.add(factory.get());
+            } catch (final RuntimeException | LinkageError failure) {
+                LOGGER.warn(IT, "A built-in platform could not be enlisted", failure);
+            }
+        }
+        LOGGER.debug(IT, "Enlisted {} built-in platforms", BUILTIN.size());
+    }
 
     private PlatformAPI() {}
 
@@ -79,7 +102,6 @@ public final class PlatformAPI {
      *
      * @param query the user's search text
      * @return a live {@link PlatformSearch} handle whose result list fills in off-thread
-     * @throws IllegalStateException when the platform service is not running
      */
     public static PlatformSearch search(final String query) {
         return search(query, DEFAULT_LIMIT);
@@ -101,12 +123,15 @@ public final class PlatformAPI {
      * @param query the user's search text
      * @param limit   the maximum number of results to take from each platform (clamped to at least 1)
      * @return a live handle to poll for results
-     * @throws IllegalStateException when the platform service is not running
      */
     public static PlatformSearch search(final String query, final int limit) {
-        if (!WaterMedia.status().running(BootStatus.Id.PLATFORMS)) throw new IllegalStateException("The platform service is not running");
         synchronized (SEARCH_LOCK) {
-            if (coordinator == null || coordinator.isShutdown()) throw new IllegalStateException("The platform service is not running");
+            if (coordinator == null) {
+                searchPool = new ThreadPoolExecutor(SEARCH_THREADS, SEARCH_THREADS, 0, TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>(), ThreadTool.workerFactory("PlatformAPI-Search", Thread.NORM_PRIORITY));
+                coordinator = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>(1), ThreadTool.workerFactory("PlatformAPI-Coordinator", Thread.NORM_PRIORITY));
+            }
 
             // BLANK QUERY: NOTHING TO SEARCH, NOTHING WORTH REMEMBERING AND NOTHING TO SUPERSEDE
             if (query == null || query.isBlank()) {
@@ -253,18 +278,14 @@ public final class PlatformAPI {
      * @throws PlatformException whatever the matching platform throws while resolving; a handler bug
      *         (an escaped runtime exception) and a cancelled resolution are reported the same way
      * @throws IllegalArgumentException when {@code uri} is null
-     * @throws IllegalStateException when the platform service is not running
      */
     public static Platform.Resolution fetch(final URI uri) throws PlatformException {
         if (uri == null) throw new IllegalArgumentException("URI cannot be null");
-        if (!WaterMedia.status().running(BootStatus.Id.PLATFORMS)) throw new IllegalStateException("The platform service is not running");
         for (final Platform platform: probeOrder()) {
             final Platform.Resolution data;
             try {
                 data = platform.resolve(uri);
-            } catch (final PlatformException e) { // ALREADY DISPLAYABLE — RETHROW UNTOUCHED
-                throw e;
-            } catch (final RuntimeException | LinkageError e) { // BUG IN THE HANDLER, OR A CANCELLED WAIT IT DID NOT TRANSLATE
+            } catch (final RuntimeException | LinkageError e) { // BUG IN THE HANDLER, OR A CANCELLED WAIT IT DID NOT TRANSLATE; A PlatformException PASSES THROUGH
                 if (Thread.currentThread().isInterrupted()) throw new PlatformException(platform.name(), "Resolution of " + uri + " was cancelled", e);
                 throw new PlatformException(platform.name(), "Unexpected error resolving " + uri + " (" + e + ")", e);
             }
@@ -278,9 +299,8 @@ public final class PlatformAPI {
 
     /**
      * Registers an application handler. Application handlers are probed before the built-in ones,
-     * newest first, so an app can override a built-in handler with a more specific one. They do not
-     * belong to the session: a handler registered before {@link WaterMedia#start} or kept across a
-     * restart stays active until {@link #unregister(Platform) unregistered}. Cached searches are dropped.
+     * newest first, so an app can override a built-in handler with a more specific one; a handler
+     * registered twice stays registered once. Cached searches are dropped.
      *
      * @throws IllegalArgumentException when {@code platform} is null
      */
@@ -295,8 +315,8 @@ public final class PlatformAPI {
     }
 
     /**
-     * Removes a registered handler, built-in or application-provided; a no-op when it was never
-     * registered. A removed built-in handler comes back with the next session. Cached searches are dropped.
+     * Removes a registered handler, built-in or application-provided, for the rest of the process; a
+     * no-op when it was never registered. Cached searches are dropped.
      */
     public static void unregister(final Platform platform) {
         if (!CUSTOM.remove(platform) && !BUILTIN.remove(platform)) return;
@@ -326,79 +346,10 @@ public final class PlatformAPI {
         return order;
     }
 
-    // THESE CONSTRUCTORS LINK EXECUTABLE WRAPPERS ONLY WHEN THE BINARIES MODULE IS READY.
+    // THESE CONSTRUCTORS LINK EXECUTABLE WRAPPERS FROM THE BINARIES JAR, SO THE HOLDER IS ONLY TOUCHED WHEN IT EXISTS
     private static final class NativePlatforms {
-        private static final List<Supplier<Platform>> FACTORIES = List.of(YtDlpPlatform::new, YouTubePlatform::new);
-    }
-
-    /** Internal bootstrap operation for platform discovery and searches. */
-    public static final class Module extends WaterMediaModule {
-        @Override
-        protected void start() {
-            synchronized (SEARCH_LOCK) {
-                if (searchPool != null) throw new IllegalStateException("Previous platform searches have not stopped");
-                searchPool = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
-                        new LinkedBlockingQueue<>(), ThreadTool.workerFactory("PlatformAPI-Search", Thread.NORM_PRIORITY));
-                coordinator = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
-                        new LinkedBlockingQueue<>(1), ThreadTool.workerFactory("PlatformAPI-Coordinator", Thread.NORM_PRIORITY));
-                searchGeneration++;
-            }
-            final List<Platform> platforms = new ArrayList<>(List.of(
-                    new WaterPlatform(),
-                    new ImgurPlatform(),
-                    new KickPlatform(),
-                    new StreamablePlatform(),
-                    new MedalPlatform(),
-                    new PornHubPlatform(),
-                    new LightshotPlatform(),
-                    new TwitchPlatform(),
-                    new TwitterPlatform(),
-                    new BlueskyPlatform(),
-                    new BiliBiliPlatform(),
-                    new DrivePlatform(),
-                    new DropboxPlatform(),
-                    new MediaFirePlatform(),
-                    new SendvidPlatform(),
-                    new OdyseePlatform(),
-                    new VidLiiPlatform(),
-                    new TikTokPlatform(),
-                    new DTubePlatform()
-            ));
-            if (WaterMedia.status().ready(BootStatus.Id.BINARIES))
-                for (final Supplier<Platform> factory: NativePlatforms.FACTORIES) platforms.add(factory.get());
-            for (int i = 0; i < platforms.size(); i++) {
-                final Platform platform = platforms.get(i);
-                this.task(i + 1, platforms.size(), platform.getClass().getSimpleName());
-                BUILTIN.add(platform);
-                LOGGER.debug(IT, "Registered built-in {} platform", platform.name());
-            }
-            LOGGER.info(IT, "Registered {} built-in platforms", platforms.size());
-        }
-
-        @Override
-        protected void release() throws Exception {
-            final ExecutorService previous, previousCoordinator;
-            synchronized (SEARCH_LOCK) {
-                searchGeneration++;
-                if (searchTask != null) searchTask.cancel(true);
-                searchTask = null;
-                previous = searchPool;
-                previousCoordinator = coordinator;
-                if (previous != null) previous.shutdownNow();
-                if (previousCoordinator != null) previousCoordinator.shutdownNow();
-                HISTORY.clear();
-                SEARCH_CACHE.clear();
-                nextCacheClean = 0;
-                BUILTIN.clear();
-            }
-            if (previous != null && !previous.awaitTermination(30, TimeUnit.SECONDS))
-                throw new IOException("Platform searches have not stopped; retry after their network timeout");
-            if (previousCoordinator != null && !previousCoordinator.awaitTermination(30, TimeUnit.SECONDS))
-                throw new IOException("Search coordinator has not stopped");
-            synchronized (SEARCH_LOCK) {
-                if (searchPool == previous) searchPool = null;
-                if (coordinator == previousCoordinator) coordinator = null;
-            }
+        private static List<Supplier<Platform>> factories() {
+            return List.of(YtDlpPlatform::new, YouTubePlatform::new);
         }
     }
 }

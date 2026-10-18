@@ -6,7 +6,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.test.support.LocalHttp;
 
 import java.io.ByteArrayInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.net.URI;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -22,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies {@link IOTool}'s bounded IO, verified downloads and platform identification.
@@ -115,14 +119,75 @@ public class IOToolTest {
     @DisplayName("readLimited returns the body when under the cap")
     void readLimitedUnderCap() throws IOException {
         final byte[] data = "hello".getBytes(StandardCharsets.UTF_8);
-        assertArrayEquals(data, IOTool.readLimited(new ByteArrayInputStream(data), 100, -1L));
+        assertArrayEquals(data, IOTool.readLimited(new ByteArrayInputStream(data), 100, -1L, 0L));
     }
 
     @Test
     @DisplayName("readLimited throws once the body exceeds the cap")
     void readLimitedOverCap() {
         final byte[] data = new byte[100];
-        assertThrows(IOException.class, () -> IOTool.readLimited(new ByteArrayInputStream(data), 10, -1L));
+        assertThrows(IOException.class, () -> IOTool.readLimited(new ByteArrayInputStream(data), 10, -1L, 0L));
+    }
+
+    @Test
+    @DisplayName("readLimited never preallocates a hostile declared length")
+    void readLimitedBoundsPreallocation() throws IOException {
+        final byte[] data = "tiny".getBytes(StandardCharsets.UTF_8);
+        // A 2 GiB DECLARATION WOULD EXHAUST THE TEST HEAP IF IT SIZED THE FIRST BUFFER
+        assertArrayEquals(data, IOTool.readLimited(new ByteArrayInputStream(data), Long.MAX_VALUE, Integer.MAX_VALUE, 0L));
+        assertArrayEquals(data, IOTool.readLimited(new ByteArrayInputStream(data), 16, Long.MAX_VALUE, 0L));
+    }
+
+    @Test
+    @DisplayName("readLimited stops a slow stream at its total deadline")
+    void readLimitedDeadline() {
+        // EACH READ RETURNS ONE BYTE AFTER 20 MS: NEVER STUCK, BUT 200 BYTES WOULD TAKE FOUR SECONDS
+        final InputStream slow = new InputStream() {
+            private int left = 200;
+            @Override
+            public int read() throws IOException {
+                if (this.left-- <= 0) return -1;
+                try { Thread.sleep(20); }
+                catch (final InterruptedException e) { throw new InterruptedIOException(); }
+                return 'x';
+            }
+            @Override
+            public int read(final byte[] b, final int off, final int len) throws IOException {
+                final int value = this.read();
+                if (value < 0) return -1;
+                b[off] = (byte) value;
+                return 1;
+            }
+        };
+        final long start = System.nanoTime();
+        final IOException failure = assertThrows(IOException.class, () -> IOTool.readLimited(slow, 1_024, -1L, 300L));
+        final long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+        assertTrue(failure.getMessage().contains("deadline"), failure.getMessage());
+        assertTrue(elapsedMs >= 300L, "Stopped before the deadline: " + elapsedMs + " ms");
+        assertTrue(elapsedMs < 4_000L, "Read the whole stream: " + elapsedMs + " ms");
+    }
+
+    @Test
+    @DisplayName("jarRead throws for a missing resource and web accepts only http and https")
+    void jarReadAndWeb() throws IOException {
+        assertThrows(FileNotFoundException.class, () -> IOTool.jarRead("missing/" + System.nanoTime() + ".json"));
+        assertFalse(IOTool.jarRead("org/watermedia/tools/IOTool.class").isEmpty());
+        assertTrue(IOTool.web(URI.create("http://a.test/")));
+        assertTrue(IOTool.web(URI.create("HTTPS://a.test/")));
+        assertFalse(IOTool.web(URI.create("file:///x")));
+        assertFalse(IOTool.web(URI.create("jar:file:///x.zip!/y")));
+        assertFalse(IOTool.web(URI.create("relative")));
+        assertFalse(IOTool.web(null));
+    }
+
+    @Test
+    @DisplayName("closeQuietly closes, swallows failures and accepts null")
+    void closeQuietly() {
+        final boolean[] closed = new boolean[1];
+        IOTool.closeQuietly(() -> closed[0] = true);
+        assertTrue(closed[0]);
+        IOTool.closeQuietly(() -> { throw new IOException("ignored"); });
+        IOTool.closeQuietly(null);
     }
 
     @Test

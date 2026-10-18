@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.Field;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -122,7 +123,7 @@ public class NetworkServerLimitsTest {
         WaterMediaConfig.network.token = " ";
         assertThrows(IllegalStateException.class, () -> NetworkServer.start(0, this.directory));
         WaterMediaConfig.network.token = TOKEN;
-        try (final ServerSocket occupied = new ServerSocket(0)) {
+        try (final ServerSocket occupied = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
             assertThrows(IOException.class, () -> NetworkServer.start(occupied.getLocalPort(), this.directory));
             assertNull(NetworkServer.address());
         }

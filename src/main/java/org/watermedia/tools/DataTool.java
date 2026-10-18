@@ -35,17 +35,27 @@ public class DataTool {
         return false;
     }
 
+    /**
+     * Parses a RAW query ({@link URI#getRawQuery()}, never the decoded {@link URI#getQuery()}) into an
+     * unmodifiable map, decoding each key and value exactly once. A pair with a malformed escape keeps its
+     * raw text instead of failing; a repeated key keeps its last value and a key without {@code =} maps to "".
+     */
     public static Map<String, String> parseQuery(final String query) {
         if (query == null || query.isEmpty()) return Map.of();
 
-        final var result = new HashMap<String, String>();
-        for (final var param: query.split("&")) {
-            final var pair = param.split("=", 2);
-            final var key = URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
-            final var value = pair.length > 1 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "";
-            result.put(key, value);
+        final Map<String, String> result = new HashMap<>();
+        for (final String param: query.split("&")) {
+            if (param.isEmpty()) continue;
+            final int eq = param.indexOf('=');
+            final String key = eq < 0 ? param : param.substring(0, eq);
+            final String value = eq < 0 ? "" : param.substring(eq + 1);
+            try {
+                result.put(URLDecoder.decode(key, StandardCharsets.UTF_8), URLDecoder.decode(value, StandardCharsets.UTF_8));
+            } catch (final IllegalArgumentException malformed) {
+                result.put(key, value);
+            }
         }
-        return result;
+        return Map.copyOf(result);
     }
 
     // EXPIRY CARRIED BY A SIGNED CDN URL: THE FIRST expire/expires/validto/x-expires QUERY VALUE, IN EPOCH SECONDS

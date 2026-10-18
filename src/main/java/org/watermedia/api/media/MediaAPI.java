@@ -24,7 +24,6 @@ import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.tools.FFTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.WaterMedia;
-import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.bootstrap.WaterMediaModule;
 
@@ -33,10 +32,8 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class MediaAPI {
     private MediaAPI() {}
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
-    private static final String STEP_CACHE = "CACHE";
-    private static final String STEP_FFMPEG = "FFMPEG";
 
-    // NATIVE STATE IS PUBLISHED AT STARTUP AND CLEARED DURING MODULE SHUTDOWN.
+    // NATIVE STATE IS PUBLISHED ONCE, WHEN THE MODULE LOADS
     private static volatile boolean ffmpegLoaded;
     private static volatile Throwable ffmpegFailure;
     // private static LogCallback nativeLog; // KEEPS THE NATIVE LOG THUNK REACHABLE WHILE FFMPEG MAY CALL IT
@@ -56,7 +53,7 @@ public final class MediaAPI {
      * @param uri the media URI or file path
      * @return the MRL instance (may still be loading, or in ERROR for malformed input)
      * @throws NullPointerException  when {@code uri} is null
-     * @throws IllegalStateException before the media service starts or while it stops
+     * @throws IllegalStateException before WaterMedia loads, and on dedicated servers
      */
     public static MRL mrl(final String uri) {
         Objects.requireNonNull(uri, "URI cannot be null");
@@ -83,7 +80,7 @@ public final class MediaAPI {
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
      * @throws NullPointerException  when {@code uri} is null
-     * @throws IllegalStateException before the media service starts or while it stops
+     * @throws IllegalStateException before WaterMedia loads, and on dedicated servers
      */
     public static MRL mrl(final URI uri) {
         return MRL.get(uri);
@@ -338,42 +335,22 @@ public final class MediaAPI {
         return vulkanHwDecode;
     }
 
-    /** Internal bootstrap operation for media resolution and native playback. */
+    /** Internal module: media resolution, the network cache and native playback. */
     public static final class Module extends WaterMediaModule {
         @Override
         protected void start() {
-            ffmpegLoaded = false;
-            ffmpegFailure = null;
-            vulkanHwDecode = false;
-            this.task(1, 3, "Media resolution");
             MRL.start();
-            this.task(2, 3, STEP_CACHE);
             try {
                 NetworkCache.start(WaterMedia.tmp().resolve("cache"));
-            } catch (final Exception failure) {
-                this.failure(STEP_CACHE, failure);
+            } catch (final Exception failure) { // PLAYBACK WORKS WITHOUT THE DISK CACHE
+                this.failure(failure);
             }
-            this.task(3, 3, STEP_FFMPEG);
-            if (!WaterMedia.status().ready(Id.BINARIES)) return;
-            if (!startFFmpeg() && ffmpegFailure != null) this.failure(STEP_FFMPEG, ffmpegFailure);
-        }
-
-        @Override
-        protected void release() throws Exception {
-            ffmpegLoaded = false;
-            ffmpegFailure = null;
-            vulkanHwDecode = false;
-            Throwable failure = null;
-            for (final AutoCloseable resource: new AutoCloseable[] { MRL::release, NetworkCache::release, FFMediaPlayer::stopTLS }) {
-                try {
-                    resource.close();
-                } catch (final Exception | Error problem) {
-                    if (problem instanceof InterruptedException) Thread.currentThread().interrupt();
-                    failure = IOTool.mergeFailure(failure, problem);
-                }
+            // THE NATIVES COME FROM THE BINARIES MODULE; WITHOUT ITS JAR THERE IS NOTHING TO LOAD AND NO FAILURE TO REPORT
+            if (MediaAPI.class.getClassLoader().getResource("org/watermedia/binaries/WaterMediaBinaries.class") == null) {
+                LOGGER.warn(IT, "FFmpeg is unavailable: WaterMedia Binaries is not installed");
+                return;
             }
-            if (failure instanceof final Error error) throw error;
-            if (failure instanceof final Exception error) throw error;
+            if (!startFFmpeg() && ffmpegFailure != null) this.failure(ffmpegFailure);
         }
     }
 

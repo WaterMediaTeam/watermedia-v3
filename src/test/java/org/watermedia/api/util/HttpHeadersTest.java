@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -80,6 +81,15 @@ public class HttpHeadersTest {
             assertEquals("3", h.value("Y"));
             assertEquals(1, h.count());
         }
+
+        @Test
+        @DisplayName("merging a bag into itself is a no-op")
+        void selfMergeIsNoOp() {
+            final HttpHeaders h = new HttpHeaders().add("X", "1").add("X", "2").set("Y", "3");
+            assertSame(h, h.merge(h));
+            assertEquals(List.of("1", "2"), h.values("X"));
+            assertEquals(3, h.count());
+        }
     }
 
     @Nested
@@ -131,13 +141,16 @@ public class HttpHeadersTest {
             assertNotNull(userAgent);
             assertFalse(userAgent.isBlank());
 
-            final String accept = h.value("Accept");
-            assertNotNull(accept);
-            assertTrue(accept.contains("audio/"));
-            assertTrue(accept.contains("video/"));
-            assertTrue(accept.contains("image/"));
-
+            assertEquals(NetRequest.ACCEPT_MEDIA, h.value("Accept"));
             assertEquals("https://example.com/", h.value("Referer"));
+        }
+
+        @Test
+        @DisplayName("Referer keeps an explicit port and drops path and query")
+        void refererKeepsPort() {
+            assertEquals("http://127.0.0.1:8080/", HttpHeaders.defaults(URI.create("http://127.0.0.1:8080/a/b?c=d")).value("Referer"));
+            assertEquals("https://example.com:443/", HttpHeaders.defaults(URI.create("https://example.com:443/x")).value("Referer"));
+            assertNull(HttpHeaders.defaults(URI.create("file:///tmp/x.mp4")).value("Referer"));
         }
 
         @Test

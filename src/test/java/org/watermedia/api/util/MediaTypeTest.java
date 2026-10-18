@@ -82,6 +82,16 @@ public class MediaTypeTest {
         void caseInsensitivePrimaryType() {
             assertSame(MediaType.VIDEO, MediaType.of("VIDEO/MP4"));
         }
+
+        @Test
+        @DisplayName("parameters and surrounding whitespace are ignored")
+        void parametersIgnored() {
+            assertSame(MediaType.SUBTITLES, MediaType.of("text/vtt; charset=utf-8"));
+            assertSame(MediaType.VIDEO, MediaType.of("application/vnd.apple.mpegurl;charset=UTF-8"));
+            assertSame(MediaType.SUBTITLES, MediaType.of("  application/x-subrip  "));
+            assertSame(MediaType.IMAGE, MediaType.of(" image / png ; q=1"));
+            assertSame(MediaType.UNKNOWN, MediaType.of(" ; charset=utf-8"));
+        }
     }
 
     @Nested

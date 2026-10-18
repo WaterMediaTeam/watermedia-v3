@@ -69,7 +69,6 @@ class TxReleaseTest {
         final byte[] image = "P6\n1 1\n255\nRGB".getBytes(StandardCharsets.US_ASCII);
         final int previousTimeout = WaterMediaConfig.network.timeout;
         WaterMediaConfig.network.timeout = 20000;
-        final int previousPlayers = MediaPlayer.openPlayers();
         try (final LocalHttp origin = LocalHttp.start("/held.pnm", exchange -> {
             exchange.getResponseHeaders().set("Content-Type", "image/x-portable-pixmap");
             exchange.sendResponseHeaders(200, image.length);
@@ -103,7 +102,6 @@ class TxReleaseTest {
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
                 assertThrows(IllegalStateException.class, player::release);
                 assertFalse(gfx.released());
-                assertEquals(previousPlayers + 1, MediaPlayer.openPlayers());
                 assertFalse(player.start());
                 resume.countDown();
                 assertTrue(PlayerWait.awaitCondition(() -> idle(active), 3000));
@@ -111,7 +109,6 @@ class TxReleaseTest {
                 assertNull(gfx.format());
                 player.release();
                 assertTrue(gfx.released());
-                assertEquals(previousPlayers, MediaPlayer.openPlayers());
             } finally {
                 resume.countDown();
                 PlatformAPI.unregister(platform);

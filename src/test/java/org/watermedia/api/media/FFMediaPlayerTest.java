@@ -214,7 +214,6 @@ public class FFMediaPlayerTest {
     @ParameterizedTest
     @EnumSource(value = Status.class, names = { "ENDED", "ERROR" })
     void terminalCallbackCannotFreeItsOwnPlaybackResources(final Status terminal, @TempDir final Path directory) throws Exception {
-        final int previousPlayers = MediaPlayer.openPlayers();
         final Path input = terminal == Status.ERROR ? directory.resolve("removed.mp4") : Fixtures.MP4_H264;
         if (terminal == Status.ERROR) Files.copy(Fixtures.MP4_H264, input);
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(input));
@@ -233,7 +232,7 @@ public class FFMediaPlayerTest {
             Throwable failure = null;
             try { player.release(); }
             catch (final Throwable rejected) { failure = rejected; }
-            retained[0] = !graphics.released() && MediaPlayer.openPlayers() == previousPlayers + 1;
+            retained[0] = !graphics.released();
             callback.complete(failure);
         });
         try {
@@ -245,12 +244,11 @@ public class FFMediaPlayerTest {
             }
             assertInstanceOf(IllegalStateException.class, callback.get(LOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS));
             assertNotSame(Thread.currentThread(), callbackThread[0]);
-            assertTrue(retained[0], "Callback release must retain graphics and registered ownership");
+            assertTrue(retained[0], "Callback release must retain graphics");
             assertFalse(Thread.currentThread().isInterrupted(), "Only the playback thread was interrupted");
             player.onStatus(null);
             player.release();
             assertTrue(graphics.released());
-            assertEquals(previousPlayers, MediaPlayer.openPlayers());
         } finally {
             player.onStatus(null);
             player.release();

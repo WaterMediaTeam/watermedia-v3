@@ -26,7 +26,7 @@ public final class MediaBootstrap {
         if (!attempted) {
             attempted = true;
             try {
-                if (!WaterMedia.started()) {
+                if (!WaterMedia.loaded()) {
                     final Path tmp = Files.createTempDirectory("wm-test");
                     WaterMedia.start("WMTEST", tmp, Path.of("").toAbsolutePath(), true);
                 }

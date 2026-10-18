@@ -46,14 +46,15 @@ final class PlatformSearchFailureProbe {
                 throw new PlatformException("Failing fixture", "Fixture probe failed");
             }
         });
-        final var field = PlatformAPI.class.getDeclaredField("searchPool");
-        field.setAccessible(true);
-        final ThreadPoolExecutor pool = (ThreadPoolExecutor) field.get(null);
-        final var coordinatorField = PlatformAPI.class.getDeclaredField("coordinator");
-        coordinatorField.setAccessible(true);
-        final ThreadPoolExecutor coordinator = (ThreadPoolExecutor) coordinatorField.get(null);
         try {
             final var search = PlatformAPI.search("failure contract");
+            // THE WORKERS EXIST FROM THE FIRST SEARCH ON
+            final var field = PlatformAPI.class.getDeclaredField("searchPool");
+            field.setAccessible(true);
+            final ThreadPoolExecutor pool = (ThreadPoolExecutor) field.get(null);
+            final var coordinatorField = PlatformAPI.class.getDeclaredField("coordinator");
+            coordinatorField.setAccessible(true);
+            final ThreadPoolExecutor coordinator = (ThreadPoolExecutor) coordinatorField.get(null);
             if (!slowEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Second probe did not start");
             if (!PlayerWait.awaitCondition(() -> pool.getCompletedTaskCount() >= 1, 3000))
                 throw new AssertionError("Failing probe did not complete exceptionally");

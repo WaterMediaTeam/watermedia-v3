@@ -907,7 +907,7 @@ public final class SettingsScreen extends Screen {
         final ConfigSpec configSpec = spec.configSpec;
         // RUN THE REFLECTIVE DISK WRITE OFF THE RENDER THREAD, THEN PUBLISH THE OUTCOME BACK ON IT VIA
         // ctx.execute SO THE SAVE STATE STAYS RENDER-THREAD-CONFINED AND THE SAVING FRAME ACTUALLY RENDERS.
-        ThreadTool.createStarted("WaterMedia-ConfigSave", () -> {
+        ThreadTool.thread("WaterMedia-ConfigSave", () -> {
             ReflectiveOperationException error = null;
             try {
                 if (CONFIG_SAVE == null) throw new NoSuchMethodException("ConfigSpec#save unavailable");

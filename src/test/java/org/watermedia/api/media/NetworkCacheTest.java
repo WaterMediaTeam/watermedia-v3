@@ -22,9 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Network-tier round-trip tests for {@link NetworkCache}. Each scenario boots a
- * loopback HTTP origin via {@link LocalHttp}, exercises a single cache surface,
- * and asserts the index/payload state on disk after the second access.
+ * Verifies {@link NetworkCache} round trips against a loopback HTTP origin ({@link LocalHttp}): each
+ * scenario opens its own store, exercises a single cache surface and asserts the index and payload
+ * state on disk after the second access.
  */
 @DisplayName("NetworkCache round-trip")
 public class NetworkCacheTest {
@@ -52,30 +52,26 @@ public class NetworkCacheTest {
         })) {
             final Path cache = this.tempDir.resolve("cache");
             NetworkCache.start(cache);
-            try {
-                final URI uri = server.uri("/image.png");
+            final URI uri = server.uri("/image.png");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
+            final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
+            final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
 
-                assertFalse(first.cached());
-                assertTrue(second.cached());
-                assertArrayEquals(body, first.bytes());
-                assertArrayEquals(body, second.bytes());
-                assertEquals("image/png", second.contentType());
-                assertEquals(1, this.hits.get());
-                assertTrue(Files.isRegularFile(cache.resolve("index.dat")));
+            assertFalse(first.cached());
+            assertTrue(second.cached());
+            assertArrayEquals(body, first.bytes());
+            assertArrayEquals(body, second.bytes());
+            assertEquals("image/png", second.contentType());
+            assertEquals(1, this.hits.get());
+            assertTrue(Files.isRegularFile(cache.resolve("index.dat")));
 
-                // VERIFY ONE PAYLOAD FILE LANDED ALONGSIDE THE INDEX.
-                try (final var stream = Files.list(cache)) {
-                    final boolean payloadPresent = stream.anyMatch(path -> {
-                        final String name = path.getFileName().toString();
-                        return name.startsWith("wm_") && name.endsWith(".tmp");
-                    });
-                    assertTrue(payloadPresent);
-                }
-            } finally {
-                NetworkCache.release();
+            // VERIFY ONE PAYLOAD FILE LANDED ALONGSIDE THE INDEX.
+            try (final var stream = Files.list(cache)) {
+                final boolean payloadPresent = stream.anyMatch(path -> {
+                    final String name = path.getFileName().toString();
+                    return name.startsWith("wm_") && name.endsWith(".tmp");
+                });
+                assertTrue(payloadPresent);
             }
         }
     }
@@ -91,23 +87,19 @@ public class NetworkCacheTest {
         })) {
             final Path cache = this.tempDir.resolve("cache-file");
             NetworkCache.start(cache);
-            try {
-                final URI uri = server.uri("/clip.mp4");
+            final URI uri = server.uri("/clip.mp4");
 
-                final NetworkCache.CachedFile first = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
-                final NetworkCache.CachedFile second = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
+            final NetworkCache.CachedFile first = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
+            final NetworkCache.CachedFile second = NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true);
 
-                assertNotNull(first);
-                assertNotNull(second);
-                assertFalse(first.cached());
-                assertTrue(second.cached());
-                assertEquals(first.path(), second.path());
-                assertEquals("video/mp4", second.contentType());
-                assertArrayEquals(body, Files.readAllBytes(second.path()));
-                assertEquals(1, this.hits.get());
-            } finally {
-                NetworkCache.release();
-            }
+            assertNotNull(first);
+            assertNotNull(second);
+            assertFalse(first.cached());
+            assertTrue(second.cached());
+            assertEquals(first.path(), second.path());
+            assertEquals("video/mp4", second.contentType());
+            assertArrayEquals(body, Files.readAllBytes(second.path()));
+            assertEquals(1, this.hits.get());
         }
     }
 
@@ -124,15 +116,11 @@ public class NetworkCacheTest {
         })) {
             final Path cache = this.tempDir.resolve("cache-unbounded");
             NetworkCache.start(cache);
-            try {
-                final URI uri = server.uri("/radio");
-                assertThrows(IOException.class, () -> NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true),
-                        "the file cache refuses to download an endless source");
-                // THE BYTE READER (IMAGES) STILL ACCEPTS CHUNKED RESPONSES
-                assertArrayEquals(body, NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true).bytes());
-            } finally {
-                NetworkCache.release();
-            }
+            final URI uri = server.uri("/radio");
+            assertThrows(IOException.class, () -> NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true),
+                    "the file cache refuses to download an endless source");
+            // THE BYTE READER (IMAGES) STILL ACCEPTS CHUNKED RESPONSES
+            assertArrayEquals(body, NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true).bytes());
         }
     }
 
@@ -144,24 +132,20 @@ public class NetworkCacheTest {
                 LocalHttp.respond(exchange, "image/png", body, 3600))) {
             final Path cache = this.tempDir.resolve("cache-key");
             NetworkCache.start(cache);
-            try {
-                final URI uri = server.uri("/pinned.png");
-                final HttpHeaders headers = new HttpHeaders().set("X-Variant", "first");
-                NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT, true);
+            final URI uri = server.uri("/pinned.png");
+            final HttpHeaders headers = new HttpHeaders().set("X-Variant", "first");
+            NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT, true);
 
-                // RE-DERIVE THE KEY FROM ITS CONTRACT: sha256(uri + '\n' + LOWERCASED "name:value"
-                // LINES + "accept:" TAIL) HEX-ENCODED INTO THE PAYLOAD FILENAME. IF THE DERIVATION
-                // EVER DRIFTS, EVERY EXISTING ON-DISK CACHE IS ORPHANED — THIS TEST PINS IT.
-                final String key = uri.toASCIIString() + '\n' + "x-variant:first\n" + "accept:" + ACCEPT_IMAGE;
-                final byte[] hash = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
-                final StringBuilder hex = new StringBuilder(hash.length * 2);
-                for (final byte b: hash) {
-                    hex.append(Character.forDigit((b >>> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
-                }
-                assertTrue(Files.isRegularFile(cache.resolve("wm_" + hex + ".tmp")));
-            } finally {
-                NetworkCache.release();
+            // RE-DERIVE THE KEY FROM ITS CONTRACT: sha256(uri + '\n' + LOWERCASED "name:value"
+            // LINES + "accept:" TAIL) HEX-ENCODED INTO THE PAYLOAD FILENAME. IF THE DERIVATION
+            // EVER DRIFTS, EVERY EXISTING ON-DISK CACHE IS ORPHANED — THIS TEST PINS IT.
+            final String key = uri.toASCIIString() + '\n' + "x-variant:first\n" + "accept:" + ACCEPT_IMAGE;
+            final byte[] hash = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+            final StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (final byte b: hash) {
+                hex.append(Character.forDigit((b >>> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
             }
+            assertTrue(Files.isRegularFile(cache.resolve("wm_" + hex + ".tmp")));
         }
     }
 
@@ -179,25 +163,21 @@ public class NetworkCacheTest {
         })) {
             final Path cache = this.tempDir.resolve("cache-headers");
             NetworkCache.start(cache);
-            try {
-                final URI uri = server.uri("/variant.png");
-                final HttpHeaders firstHeaders = new HttpHeaders().set("X-Variant", "first");
-                final HttpHeaders secondHeaders = new HttpHeaders().set("X-Variant", "second");
+            final URI uri = server.uri("/variant.png");
+            final HttpHeaders firstHeaders = new HttpHeaders().set("X-Variant", "first");
+            final HttpHeaders secondHeaders = new HttpHeaders().set("X-Variant", "second");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
-                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
+            final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
+            final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
+            final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
 
-                assertArrayEquals(firstBody, first.bytes());
-                assertArrayEquals(secondBody, second.bytes());
-                assertArrayEquals(firstBody, firstAgain.bytes());
-                assertFalse(first.cached());
-                assertFalse(second.cached());
-                assertTrue(firstAgain.cached());
-                assertEquals(2, this.hits.get());
-            } finally {
-                NetworkCache.release();
-            }
+            assertArrayEquals(firstBody, first.bytes());
+            assertArrayEquals(secondBody, second.bytes());
+            assertArrayEquals(firstBody, firstAgain.bytes());
+            assertFalse(first.cached());
+            assertFalse(second.cached());
+            assertTrue(firstAgain.cached());
+            assertEquals(2, this.hits.get());
         }
     }
 }

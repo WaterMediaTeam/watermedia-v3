@@ -62,7 +62,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
-    private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.createThreadGroupFactory("FFThread", Thread.NORM_PRIORITY);
+    private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.groupFactory("FFThread", Thread.NORM_PRIORITY);
 
     // AUDIO OUTPUT FORMAT
     private static final int AUDIO_SAMPLES = 2048;
@@ -118,8 +118,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             AV_HWDEVICE_TYPE_VULKAN         // VULKAN
     };
 
-    // NATIVE TLS — THE CA BUNDLE IS PUBLISHED WHEN FFMPEG STARTS AND CLEARED WHEN THE MEDIA MODULE STOPS
-    private static Path certificateFile;
+    // NATIVE TLS — THE CA BUNDLE IS PUBLISHED WHEN FFMPEG STARTS AND KEPT FOR THE LIFE OF THE PROCESS
     private static volatile Certificates certificates;
 
     private record Certificates(String file, String protocols) {}
@@ -2235,7 +2234,6 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // EXPORTS THE JVM TRUST ANCHORS AS A PEM BUNDLE AFTER CHECKING THE PATCHED TRANSPORT OPTIONS EVERY INPUT RELIES ON
     static void startTLS() throws Exception {
-        if (certificateFile != null) throw new IllegalStateException("The previous TLS session has not stopped");
         // HTTP MUST RETAIN TLS OPTIONS AND CREDENTIAL ORIGINS FOR NESTED MEDIA REQUESTS.
         for (final String protocol: new String[] { "http", "https", "hls", "dash" }) {
             final boolean http = protocol.equals("http") || protocol.equals("https");
@@ -2270,10 +2268,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         for (final String certificate: anchors)
             pem.append("-----BEGIN CERTIFICATE-----\n").append(certificate).append("\n-----END CERTIFICATE-----\n");
 
-        // TRACK PARTIAL WRITES FOR MODULE CLEANUP; ONLY A COMPLETE BUNDLE BECOMES AVAILABLE TO PLAYERS.
-        certificateFile = Files.createTempFile("watermedia-ca-", ".pem");
-        Files.writeString(certificateFile, pem, StandardCharsets.US_ASCII);
-        final String file = certificateFile.toString();
+        // THE BUNDLE LIVES AS LONG AS THE PROCESS; ONLY A COMPLETE ONE BECOMES AVAILABLE TO PLAYERS
+        final Path bundle = Files.createTempFile("watermedia-ca-", ".pem");
+        bundle.toFile().deleteOnExit();
+        Files.writeString(bundle, pem, StandardCharsets.US_ASCII);
+        final String file = bundle.toString();
         final var nested = new AVDictionary(null);
         final var serialized = new BytePointer((Pointer) null);
         try {
@@ -2285,15 +2284,6 @@ public final class FFMediaPlayer extends MediaPlayer {
         } finally {
             av_free(serialized);
             av_dict_free(nested);
-        }
-    }
-
-    // FORGETS THE BUNDLE AND DELETES IT; A FILE THAT CANNOT BE DELETED KEEPS THE MEDIA MODULE FROM STOPPING
-    static void stopTLS() throws IOException {
-        certificates = null;
-        if (certificateFile != null) {
-            Files.deleteIfExists(certificateFile);
-            certificateFile = null;
         }
     }
 

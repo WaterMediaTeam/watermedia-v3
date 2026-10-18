@@ -48,7 +48,7 @@ public final class WaterPlatform implements Platform {
      * @param u water address to resolve
      * @return the resolved URL text
      * @throws PlatformException if the address has no supported host
-     * @throws IllegalStateException if the remote base URL is not configured or WaterMedia has no session
+     * @throws IllegalStateException if the remote base URL is not configured or WaterMedia has not started
      */
     public static String location(final URI u) throws PlatformException {
         final String host = u.getHost();

@@ -151,10 +151,8 @@ public class WaterMediaApp {
         initShell();
         glfwShowWindow(ctx.windowHandle);
 
-        // PHASE 2 — show the loading splash INSIDE the shell (live titlebar +
-        // pulsing backend strip), initialize the app-side audio output, then
-        // run WaterMedia.start() in the background. The splash polls WaterMedia
-        // progress each frame and renders the three boot bars.
+        // PHASE 2 — THE LOADING SPLASH INSIDE THE SHELL (LIVE TITLEBAR + PULSING BACKEND STRIP), THE APP-SIDE AUDIO
+        // OUTPUT, THEN WaterMedia.start() IN THE BACKGROUND; THE SPLASH POLLS THE LOAD STATE EACH FRAME FOR ITS BOOT BAR
         final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx);
         loadingScreen.onEnter();
         root.mount(loadingScreen);
@@ -164,7 +162,8 @@ public class WaterMediaApp {
 
         // PHASE 3 — final init that depends on WaterMedia (or that we delayed
         // to keep phase 1 fast).
-        ctx.uriGroups = JSONTool.parse(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class);
+        try { ctx.uriGroups = JSONTool.parse(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class); }
+        catch (final IOException e) { throw new IllegalStateException("Cannot read the bundled uris.json", e); }
         loadIptvCatalog();
         if (!WaterMedia.LOGGER.isDebugEnabled()) {
             for (int i = 0; i < ctx.uriGroups.length; i++) {
@@ -185,7 +184,7 @@ public class WaterMediaApp {
         try {
             final AppContext.IptvCatalog catalog = JSONTool.parse(IOTool.jarRead("iptv.json"), AppContext.IptvCatalog.class);
             ctx.iptvChannels = catalog == null || catalog.channels() == null ? new AppContext.IptvChannel[0] : catalog.channels();
-        } catch (final RuntimeException e) {
+        } catch (final IOException | RuntimeException e) {
             ctx.iptvChannels = new AppContext.IptvChannel[0];
             WaterMedia.LOGGER.warn("Failed to load IPTV catalog", e);
         }
@@ -195,7 +194,7 @@ public class WaterMediaApp {
         // SINGLE-SLOT HOLDER FOR THE LOADER THREAD'S FAILURE — loader.join() BELOW ESTABLISHES THE
         // HAPPENS-BEFORE THAT MAKES THE WRITE VISIBLE HERE, SO NO Atomic*/volatile IS NEEDED.
         final Throwable[] failure = new Throwable[1];
-        final Thread loader = ThreadTool.createStarted("WaterMediaApp-Init", () -> {
+        final Thread loader = ThreadTool.thread("WaterMediaApp-Init", () -> {
             try {
                 // ROOT ALL PERSISTENT DATA AT THE PROCESS WORKING DIRECTORY (THE DEV `run/` FOLDER). PASSING
                 // THE CWD EXPLICITLY MAKES WaterMedia.cwd() — AND THUS THE FILE SERVER STORAGE — LAND NEXT TO
@@ -613,7 +612,7 @@ public class WaterMediaApp {
                     // FREEZE THE RENDER THREAD FOR THE WHOLE SCAN IF DONE INLINE.
                     openUploadLogsDialog();
                     ctx.upload.working = true;
-                    ThreadTool.createStarted("WaterMediaApp-UploadScan", WaterMediaApp::scanUploadLogFiles);
+                    ThreadTool.thread("WaterMediaApp-UploadScan", WaterMediaApp::scanUploadLogFiles);
                     return;
                 }
                 if (ctx.upload.working) {
@@ -623,13 +622,13 @@ public class WaterMediaApp {
                 if (ctx.upload.stage <= 1) {
                     if (!hasUploadCandidate()) return;
                     ctx.upload.working = true;
-                    ThreadTool.createStarted("WaterMediaApp-UploadLogs", WaterMediaApp::uploadLogs);
+                    ThreadTool.thread("WaterMediaApp-UploadLogs", WaterMediaApp::uploadLogs);
                 } else if (ctx.upload.stage == 2) {
                     if (!hasUploadedLog()) return;
-                    ThreadTool.createStarted("WaterMediaApp-UploadIssueReport", WaterMediaApp::uploadIssueReport);
+                    ThreadTool.thread("WaterMediaApp-UploadIssueReport", WaterMediaApp::uploadIssueReport);
                 } else {
                     if (ctx.upload.repoUrl == null || ctx.upload.repoUrl.isBlank()) return;
-                    ThreadTool.createStarted("WaterMediaApp-OpenRepoPage", WaterMediaApp::openRepoPage);
+                    ThreadTool.thread("WaterMediaApp-OpenRepoPage", WaterMediaApp::openRepoPage);
                 }
             }
 
@@ -639,7 +638,7 @@ public class WaterMediaApp {
                     // THOUSANDS OF FILES), WHICH WOULD FREEZE THE RENDER THREAD IF DONE INLINE.
                     openCleanupDialog();
                     ctx.cleanup.working = true;
-                    ThreadTool.createStarted("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
+                    ThreadTool.thread("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
                     return;
                 }
                 if (ctx.cleanup.working) {
@@ -649,11 +648,11 @@ public class WaterMediaApp {
                 if (ctx.cleanup.stage <= 1) {
                     if (ctx.cleanup.fileCount <= 0) return;
                     ctx.cleanup.working = true;
-                    ThreadTool.createStarted("WaterMediaApp-CacheCleanup", WaterMediaApp::cleanupCache);
+                    ThreadTool.thread("WaterMediaApp-CacheCleanup", WaterMediaApp::cleanupCache);
                 } else {
                     // DIALOG ALREADY HIDDEN — REFRESH THE COUNTS FOR THE NEXT OPEN OFF THE RENDER THREAD
                     ctx.cleanup.visible = false;
-                    ThreadTool.createStarted("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
+                    ThreadTool.thread("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
                 }
             }
         }
@@ -665,7 +664,7 @@ public class WaterMediaApp {
         ctx.requestRender();
         // DRIVE THE SLOW GLOW HEARTBEAT ON RENDER-ON-DEMAND SCREENS: NUDGE A REDRAW ~15x/s SO THE PULSE
         // ADVANCES. CONTINUOUS SCREENS (VIDEO / CRT) ALREADY REPAINT FASTER; requestRender COALESCES.
-        ThreadTool.createStarted("WaterMedia-GlowPulse", () -> {
+        ThreadTool.thread("WaterMedia-GlowPulse", () -> {
             while (running) {
                 ctx.requestRender();
                 ThreadTool.sleep(66);

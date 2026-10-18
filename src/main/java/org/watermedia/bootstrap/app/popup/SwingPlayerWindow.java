@@ -162,7 +162,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
     // PLAYER-EXCLUSIVE ENGINE IS BUILT PER SOURCE — THE PREVIOUS PLAYER'S release() DESTROYS THE OLD ONE.
     private void startPlayer() {
         final GFXEngine engine = this.video.newEngine();
-        ThreadTool.createStarted("Popup-Open", () -> {
+        ThreadTool.thread("Popup-Open", () -> {
             try {
                 final MediaPlayer p = MediaAPI.player(this.mrl, this.sourceIndex, () -> engine, this.audio);
                 if (p == null) {
@@ -187,7 +187,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         this.player = null;
         if (old != null) {
             old.stop();
-            ThreadTool.createStarted("Popup-Release", old::release);
+            ThreadTool.thread("Popup-Release", old::release);
         }
         this.startPlayer();
     }
@@ -291,7 +291,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
         if (p != null) {
             p.stop();
             // release() JOINS THE DECODER LIFECYCLE AND BLOCKS ~HUNDREDS OF MS — KEEP IT OFF THE EDT
-            ThreadTool.createStarted("Popup-Release", p::release);
+            ThreadTool.thread("Popup-Release", p::release);
         }
         this.frame.dispose();
     }

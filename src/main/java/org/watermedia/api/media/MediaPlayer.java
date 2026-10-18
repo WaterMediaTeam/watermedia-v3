@@ -3,7 +3,6 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.WaterMedia.BootStatus;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.MathUtil;
@@ -51,9 +50,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // EFFECTIVELY SINGLE-THREADED AND THE BRIDGE FLOW NEVER TOUCHES THE GAME THREAD.
     private static final long TICK_MS = 50;
     private static final Set<MediaPlayer> TICKING = ConcurrentHashMap.newKeySet();
-    private static final Set<MediaPlayer> OPEN = ConcurrentHashMap.newKeySet();
     private static final ScheduledExecutorService TICKER = Executors.newSingleThreadScheduledExecutor(
-            ThreadTool.createFactory("MediaSync", Thread.NORM_PRIORITY - 2)
+            ThreadTool.workerFactory("MediaSync", Thread.NORM_PRIORITY - 2)
     );
 
     // MONOTONIC MILLISECONDS FOR PACING, DEADLINES AND PASSIVE CLOCKS — A WALL-CLOCK ADJUSTMENT MUST
@@ -211,14 +209,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // NEVER CALLED FROM THIS BASE CLASS, WHERE SUBCLASS FIELDS WOULD STILL BE UNINITIALIZED
     // WHEN THE TICKER FIRES.
     protected final void arm() {
-        synchronized (MediaPlayer.class) {
+        synchronized (this.bridgeLock) {
             if (this.armed) return;
-            final BootStatus.State state = WaterMedia.status().state();
-            if (state == BootStatus.State.STARTING || state == BootStatus.State.STOPPING || state == BootStatus.State.FAILED
-                    || (this.mrl != null && state != BootStatus.State.READY && state != BootStatus.State.DEGRADED))
-                throw new IllegalStateException("Cannot create a player while WaterMedia is starting, stopping or failed");
+            // A SERVER PLAYER NEEDS NO SESSION; A MEDIA PLAYER NEEDS THE LOADED MEDIA MODULE
+            if (this.mrl != null && !WaterMedia.loaded()) throw new IllegalStateException("Cannot create a media player before WaterMedia loads");
             this.armed = true;
-            OPEN.add(this);
         }
         if (this.role == Role.FOLLOWER) {
             // BACKDATE THE COOLDOWN SO THE FIRST CORRECTION IS NEVER BLOCKED (nanoTime ORIGIN IS ARBITRARY)
@@ -229,7 +224,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
                 this.send(new Watch(this.watcherId));
             } catch (final RuntimeException | Error failure) {
                 TICKING.remove(this);
-                OPEN.remove(this);
                 throw failure;
             }
         } else if (this.role == Role.AUTHORITY) {
@@ -1126,28 +1120,22 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             TICKING.remove(this);
         }
         Throwable failure = null;
-        boolean closed = true;
         // ATTEMPT EVERY OWNED RESOURCE EVEN WHEN A HOST CALLBACK OR ANOTHER ENGINE FAILS.
         final Runnable[] cleanup = {
                 () -> { if (this.role == Role.FOLLOWER) this.send(new Unwatch(this.watcherId)); },
                 () -> { if (this.gfx != null) this.gfx.release(); },
                 () -> { if (this.sfx != null) this.sfx.release(); }
         };
-        for (int i = 0; i < cleanup.length; i++) {
+        for (final Runnable step: cleanup) {
             try {
-                cleanup[i].run();
+                step.run();
             } catch (final RuntimeException | Error problem) {
-                if (i > 0) closed = false;
                 failure = IOTool.mergeFailure(failure, problem);
             }
         }
-        if (closed) OPEN.remove(this);
         if (failure instanceof final Error error) throw error;
         if (failure instanceof final RuntimeException error) throw error;
     }
-
-    /** Number of constructed players whose release lifecycle has not completed. */
-    public static int openPlayers() { return OPEN.size(); }
 
     // MONOTONIC MILLISECONDS SINCE CLASS LOAD (SEE EPOCH_NS)
     protected static long nowMs() { return (System.nanoTime() - EPOCH_NS) / 1_000_000L; }

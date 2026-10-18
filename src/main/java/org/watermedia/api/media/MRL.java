@@ -3,11 +3,11 @@ package org.watermedia.api.media;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
-import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
+import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.M3UTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -22,7 +22,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CancellationException;
 import java.util.function.Consumer;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -40,49 +39,17 @@ public final class MRL {
     private static final Marker IT = MarkerManager.getMarker(MRL.class.getSimpleName());
     private static volatile Session session;
 
+    // THE CACHE AND ITS LOADERS, CREATED WHEN THE MEDIA MODULE LOADS AND KEPT FOR THE LIFE OF THE PROCESS; THE
+    // SESSION MONITOR ORDERS THE CACHE SWEEP AGAINST get() AND reload()
     private static final class Session {
         final Map<URI, MRL> loaded = new ConcurrentHashMap<>(1024);
         final ExecutorService executor = Executors.newFixedThreadPool(Math.min(4, Runtime.getRuntime().availableProcessors()), ThreadTool.workerFactory("MRL-Loader", Thread.NORM_PRIORITY - 1));
-        volatile boolean active = true;
         volatile long nextClean = System.currentTimeMillis() + MathUtil.minutesToMs(WaterMediaConfig.media.mrlCleanupInterval);
-
-        synchronized void submit(final MRL mrl) {
-            if (!this.active) {
-                synchronized (mrl.loadLock) { mrl.status = Status.FORGOTTEN; }
-                return;
-            }
-            this.executor.execute(mrl::load);
-        }
     }
 
     static synchronized void start() {
-        if (session != null) throw new IllegalStateException("The previous MRL session has not stopped");
+        if (session != null) throw new IllegalStateException("The media module has already started");
         session = new Session();
-    }
-
-    static void release() throws InterruptedException, IOException {
-        final Session previous = session;
-        if (previous == null) return;
-        synchronized (previous) {
-            previous.active = false;
-            for (final MRL mrl: previous.loaded.values()) {
-                synchronized (mrl.loadLock) {
-                    mrl.reloadPending = false;
-                    mrl.sources = null;
-                    mrl.expiresAt = null;
-                    mrl.exception = new CancellationException("WaterMedia stopped");
-                    mrl.status = Status.FORGOTTEN;
-                    mrl.listeners.clear();
-                }
-            }
-            previous.loaded.clear();
-            previous.executor.shutdownNow();
-        }
-        if (!previous.executor.awaitTermination(30, TimeUnit.SECONDS))
-            throw new IOException("MRL requests have not stopped; their network timeout must expire before restart");
-        synchronized (MRL.class) {
-            if (session == previous) session = null;
-        }
     }
 
     // INSTANCE FIELDS
@@ -109,18 +76,17 @@ public final class MRL {
     static MRL get(final URI uri) {
         Objects.requireNonNull(uri, "URI cannot be null");
         final Session current = session;
-        if (current == null) throw new IllegalStateException("The media module has not started");
+        if (current == null || !WaterMedia.loaded()) throw new IllegalStateException("The media module is not loaded");
         // A RELATIVE URI CAN NEVER RESOLVE: BORN IN ERROR INSTEAD OF CACHED AND FAILING LATE
         if (!uri.isAbsolute()) return error(uri.toString(), new IllegalArgumentException("URI must be absolute: " + uri));
         synchronized (current) {
-            if (!current.active) throw new IllegalStateException("The media module is stopping");
             return current.loaded.compute(uri, (key, existing) -> {
                 if (existing != null) {
                     if (existing.status() == Status.EXPIRED) existing.reload();
                     return existing;
                 }
                 final MRL mrl = new MRL(key, current);
-                current.submit(mrl);
+                current.executor.execute(mrl::load);
                 return mrl;
             });
         }
@@ -157,7 +123,6 @@ public final class MRL {
     public MRL reload() {
         if (this.owner == null) return this; // BORN IN ERROR FROM UNPARSEABLE INPUT: THERE IS NOTHING TO REFETCH
         synchronized (this.owner) {
-            if (!this.owner.active) throw new IllegalStateException("This MRL belongs to an inactive session");
             if (this.status == Status.FORGOTTEN) {
                 final MRL current = get(this.uri);
                 return current.status == Status.FETCHING ? current : current.reload();
@@ -172,7 +137,7 @@ public final class MRL {
                 this.status = Status.FETCHING;
                 this.exception = null;
             }
-            this.owner.submit(this);
+            this.owner.executor.execute(this::load);
             return this;
         }
     }
@@ -180,7 +145,7 @@ public final class MRL {
     private void load() {
         // CLAIM THE SINGLE IN-FLIGHT SLOT; LOSERS (STALE OR DUPLICATE QUEUED LOADS) BAIL OUT
         synchronized (this.loadLock) {
-            if (!this.owner.active || this.status != Status.FETCHING || this.loading) return;
+            if (this.status != Status.FETCHING || this.loading) return;
             this.loading = true;
         }
         try {
@@ -190,7 +155,7 @@ public final class MRL {
             synchronized (this.loadLock) {
                 this.loading = false;
                 // A reload() ARRIVED MID-FETCH — RESET STATE NOW AND RE-QUEUE EXACTLY ONE FRESH LOAD
-                if (this.reloadPending && this.owner.active) {
+                if (this.reloadPending) {
                     this.reloadPending = false;
                     this.sources = null;
                     this.expiresAt = null;
@@ -199,13 +164,13 @@ public final class MRL {
                     requeue = true;
                 }
             }
-            if (requeue) this.owner.submit(this);
+            if (requeue) this.owner.executor.execute(this::load);
         }
     }
 
     private void doLoad() {
         try {
-            if (this.owner.active && this.owner.nextClean <= System.currentTimeMillis()) {
+            if (this.owner.nextClean <= System.currentTimeMillis()) {
                 synchronized (this.owner) {
                     // RE-CHECK UNDER LOCK: ONLY THE FIRST RACER RUNS CLEANUP, LOSERS STILL FALL THROUGH TO THE FETCH BELOW
                     if (this.owner.nextClean <= System.currentTimeMillis()) {
@@ -230,8 +195,8 @@ public final class MRL {
             LOGGER.error(IT, "Failed to dispose forgotten MRLs", ex);
         }
         try {
-            // A DEGRADED SESSION WITHOUT THE PLATFORM SERVICE STILL PLAYS DIRECT LINKS THROUGH THE PROBE BELOW
-            Platform.Resolution data = WaterMedia.status().running(Id.PLATFORMS) ? PlatformAPI.fetch(this.uri) : null;
+            // NO HANDLER CLAIMS A DIRECT LINK; THE PROBE BELOW RESOLVES IT FROM ITS CONTENT TYPE
+            Platform.Resolution data = PlatformAPI.fetch(this.uri);
             if (data == null) {
                 try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug(IT, "Connected to {} with content type {}", this.uri, req.contentType());
@@ -276,13 +241,8 @@ public final class MRL {
                             for (final M3UTool.Channel e: channels) {
                                 // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY M3UTool (MALFORMED ONES WERE DROPPED DURING PARSE)
                                 final URI childUri = e.uri();
-                                URI logoUri = null;
-                                if (e.tvgLogo() != null && !e.tvgLogo().isEmpty()) {
-                                    try {
-                                        logoUri = URI.create(e.tvgLogo());
-                                    } catch (final
-                                    IllegalArgumentException ignored) { /* TVG-LOGO IS BEST-EFFORT, BAD ENTRIES STAY UNILLUSTRATED */ }
-                                }
+                                // THE LOGO IS BEST-EFFORT AND MUST STAY ON THE WEB: A BAD OR LOCAL ONE LEAVES THE CHANNEL UNILLUSTRATED
+                                final URI logoUri = JSONTool.uri(e.tvgLogo());
                                 // THE IPTV GROUP IS A CATEGORY ("Sports"), NOT WHO PUBLISHED THE CHANNEL
                                 final Metadata md = new Metadata(e.title(), e.tvgGroup(), null, 0, null);
                                 sources.add(new Platform.Source(MediaType.UNKNOWN, logoUri, md,
@@ -341,13 +301,10 @@ public final class MRL {
                 }
 
 
-                synchronized (this.owner) {
-                    if (!this.owner.active) return;
-                    synchronized (this.loadLock) {
-                        this.sources = sources;
-                        this.expiresAt = data.expires();
-                        this.status = Status.LOADED;
-                    }
+                synchronized (this.loadLock) {
+                    this.sources = sources;
+                    this.expiresAt = data.expires();
+                    this.status = Status.LOADED;
                 }
                 this.fireListeners();
                 LOGGER.info(IT, "Loaded {} uri(s) for: {}", data.sourceCount(), this.uri);
@@ -356,12 +313,9 @@ public final class MRL {
             }
         } catch (final Throwable t) {
             // STORE THE FAILURE VERBATIM SO exception() EXPOSES THE REAL MESSAGE, CAUSE AND STACK TO DEVS.
-            synchronized (this.owner) {
-                if (!this.owner.active) return;
-                synchronized (this.loadLock) {
-                    this.exception = t;
-                    this.status = t instanceof MatureContentException ? Status.BLOCKED : Status.ERROR;
-                }
+            synchronized (this.loadLock) {
+                this.exception = t;
+                this.status = t instanceof MatureContentException ? Status.BLOCKED : Status.ERROR;
             }
 
             // A BLOCK IS EXPECTED AND SELF-DESCRIBING (WARN WITHOUT TRACE); EVERY OTHER FAILURE TRAVELS WITH ITS THROWABLE
@@ -390,7 +344,6 @@ public final class MRL {
     // RUNS OUTSIDE ANY MONITOR: A LISTENER MAY WAIT ON A THREAD THAT IS SUBSCRIBING TO THIS SAME MRL. EACH LISTENER IS
     // CLAIMED (REMOVED) BEFORE IT FIRES, SO A RACING subscribe EITHER CLAIMS IT ITSELF OR LEAVES IT TO THIS PASS, NEVER BOTH
     private void fireListeners() {
-        if (this.owner != null && !this.owner.active) return;
         for (final Consumer<MRL> c: this.listeners) {
             if (!this.listeners.remove(c)) continue;
             try { c.accept(this); }

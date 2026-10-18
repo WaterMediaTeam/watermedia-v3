@@ -31,8 +31,12 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Cross-protocol redirects (http ↔ https) ARE followed — Java's {@link HttpURLConnection}
  * refuses to follow them automatically (it returns 302 even when {@code followRedirects}
  * is enabled), so this implementation walks them by hand to keep that switch transparent
- * to callers. Credentials and request bodies stay with the original origin; a body is resent to
- * another origin only when set with {@code crossOrigin}, otherwise that redirect fails.
+ * to callers. A redirect to any other scheme ({@code file:}, {@code jar:}, {@code ftp:}) fails,
+ * so a server can never point a request at local resources. Credentials and request bodies stay
+ * with the original origin; a body is resent to another origin only when set with
+ * {@code crossOrigin}, otherwise that redirect fails.
+ * <p>
+ * A {@code NetRequest} is not thread-safe: send it and read its response on one thread.
  */
 public final class NetRequest implements AutoCloseable {
     private static final Marker IT = MarkerManager.getMarker(NetRequest.class.getSimpleName());
@@ -46,36 +50,24 @@ public final class NetRequest implements AutoCloseable {
 
     /** Accept value taking any response. */
     public static final String ACCEPT_ANY = "*/*";
-    /** Accept value for playable media and the HLS and DASH manifests that describe it. */
-    public static final String ACCEPT_MEDIA = "audio/*, video/*, application/vnd.apple.mpegurl, application/x-mpegURL, application/dash+xml";
+    /** Accept value for playable media, images and the HLS and DASH manifests that describe them. */
+    public static final String ACCEPT_MEDIA = "audio/*, video/*, image/*, application/vnd.apple.mpegurl, application/x-mpegurl, application/dash+xml, application/ogg, */*;q=0.8";
     /** Accept value for a JSON response. */
     public static final String ACCEPT_JSON = "application/json";
-    private static volatile boolean mimeInstalled;
+
+    // A TRICKLING SERVER CAN KEEP EVERY READ UNDER THE SOCKET TIMEOUT, SO A TEXT BODY GETS THIS MANY READ TIMEOUTS IN TOTAL
+    private static final int TEXT_DEADLINE_READ_TIMEOUTS = 4;
 
     /**
-     * Extends {@link URLConnection#getFileNameMap()} with {@link MediaType#mime(String)}'s
-     * extension table, so platform code can rely on
-     * {@code URLConnection.guessContentTypeFromName(...)} returning a sensible value.
-     * Idempotent: subsequent calls are no-ops. Invoked once during NetworkAPI startup.
+     * Content type for a file name: WaterMedia's own extension table first, then the JDK's, else
+     * {@link #MIMETYPE_OCTET_STREAM}. A local lookup, so no global JDK state is ever replaced.
      */
-    public static synchronized void installExtraMimeTypes() {
-        if (mimeInstalled) return;
-        final FileNameMap base = URLConnection.getFileNameMap();
-        URLConnection.setFileNameMap(fileName -> {
-            final String ct = base.getContentTypeFor(fileName);
-            if (ct != null) return ct;
-
-            final String name = fileName.toLowerCase(Locale.ROOT);
-            final int dot = name.lastIndexOf('.');
-            if (dot >= 0 && dot < name.length() - 1) {
-                final String mapped = MediaType.mime(name.substring(dot + 1));
-                if (mapped != null) return mapped;
-            }
-
-            LOGGER.warn(IT, "Unknown file type for {}", fileName);
-            return null;
-        });
-        mimeInstalled = true;
+    public static String contentTypeOf(final String fileName) {
+        final int dot = fileName.lastIndexOf('.');
+        final String known = dot < 0 || dot == fileName.length() - 1 ? null : MediaType.mime(fileName.substring(dot + 1));
+        if (known != null) return known;
+        final String guessed = URLConnection.guessContentTypeFromName(fileName);
+        return guessed != null ? guessed : MIMETYPE_OCTET_STREAM;
     }
 
     /**
@@ -104,6 +96,7 @@ public final class NetRequest implements AutoCloseable {
     private final URLConnection connection;
     private final int statusCode;
     private final HttpHeaders responseHeaders;
+    private boolean consumed;
 
     private NetRequest(final URI uri, final URLConnection connection, final int statusCode) {
         this.uri = uri;
@@ -126,10 +119,10 @@ public final class NetRequest implements AutoCloseable {
      * Fetches {@code uri} with a JSON GET request and binds the response body to {@code type}
      * through the shared Gson tooling ({@link JSONTool}). This is the common REST resolver for
      * platform handlers: one identical implementation instead of a private copy per handler.
-     * Every failure — non-200 status, empty/non-JSON body, transport or parse error — surfaces
-     * as a {@link PlatformException} tagged with {@code platform}, keeping the root cause.
-     * Handlers needing extra headers, another method or a custom user agent should build their
-     * own request via {@link #create(URI)} instead.
+     * Every failure — non-200 status, empty/non-JSON body, malformed JSON, transport or parse
+     * error — surfaces as a {@link PlatformException} tagged with {@code platform}, keeping the
+     * root cause. Handlers needing extra headers, another method or a custom user agent should
+     * build their own request via {@link #create(URI)} instead.
      *
      * @param platform the handler the request belongs to, used to tag failures
      * @param uri the API endpoint to request
@@ -199,42 +192,61 @@ public final class NetRequest implements AutoCloseable {
     public HttpHeaders responseHeaders() { return this.responseHeaders; }
 
     /**
-     * Raw response stream. Caller must close it (or {@link #close()} the request).
+     * Raw response stream; the caller must close it (or {@link #close()} the request). An HTTP
+     * status of 400 or more yields the error body instead of throwing, or an empty stream when the
+     * server sent none. The body can be read once, through this, {@link #text()} or {@link #json(Class)}.
+     *
+     * @return the response body stream
+     * @throws IOException when the connection cannot provide the body
+     * @throws IllegalStateException when the body was already read
      */
     public InputStream inputStream() throws IOException {
+        if (this.consumed) throw new IllegalStateException("The response body was already read");
+        this.consumed = true;
+        if (this.statusCode >= 400 && this.connection instanceof final HttpURLConnection http) {
+            final InputStream error = http.getErrorStream();
+            return error != null ? error : InputStream.nullInputStream();
+        }
         return this.connection.getInputStream();
     }
 
     /**
-     * Reads the entire response as a UTF-8 string. Throws if the body exceeds
-     * {@link WaterMediaConfig.Network#maxTextBytes}.
+     * Reads the entire response as a UTF-8 string, the error body of a failed status included.
+     * Throws when the body exceeds {@link WaterMediaConfig.Network#maxTextBytes} or takes longer
+     * than four read timeouts in total; a read timeout of zero sets no total deadline.
+     *
+     * @return the response body text
+     * @throws IOException when the transfer fails or exceeds its size or time budget
+     * @throws IllegalStateException when the body was already read
      */
     public String text() throws IOException {
-        try (final InputStream is = this.inputStream()) {
-            return new String(IOTool.readLimited(is, WaterMediaConfig.network.maxTextBytes, -1L), StandardCharsets.UTF_8);
+        try (final InputStream in = this.inputStream()) {
+            final long deadlineMs = (long) TEXT_DEADLINE_READ_TIMEOUTS * this.connection.getReadTimeout();
+            return new String(IOTool.readLimited(in, WaterMediaConfig.network.maxTextBytes, this.contentLength(), deadlineMs), StandardCharsets.UTF_8);
         }
     }
 
     /**
-     * Parses the response body as JSON and binds it to {@code type} through {@link JSONTool}.
-     * Returns {@code null} when the {@code content-type} does not contain
-     * {@code application/json}. Honors {@link WaterMediaConfig.Network#maxTextBytes}.
+     * Parses the response body as JSON and binds it to {@code type} through {@link JSONTool}, with
+     * the size and time budget of {@link #text()}. Accepts {@code application/json},
+     * {@code text/json} and any {@code +json} subtype such as {@code application/vnd.api+json}.
+     *
+     * @param type the class the JSON body binds to
+     * @param <T> the bound type
+     * @return the bound body, or {@code null} for another content type (the body stays unread) or an empty body
+     * @throws IOException when the transfer fails or the body is malformed JSON
+     * @throws IllegalStateException when the body was already read
      */
     public <T> T json(final Class<T> type) throws IOException {
-        final String body = this.readJsonBody();
-        if (body == null) return null;
+        if (this.consumed) throw new IllegalStateException("The response body was already read");
+        final String contentType = this.contentType();
+        final String mime = contentType == null ? "" : contentType.split(";", 2)[0].strip().toLowerCase(Locale.ROOT);
+        if (!mime.equals(MIMETYPE_JSON) && !mime.equals("text/json") && !mime.endsWith("+json")) return null;
+        final String body = this.text();
         try {
             return JSONTool.parse(body, type);
         } catch (final JsonSyntaxException e) {
             throw new IOException("Malformed JSON in response from " + this.uri, e);
-        }
-    }
-
-    private String readJsonBody() throws IOException {
-        final String ct = this.contentType();
-        if (ct == null || !ct.toLowerCase(Locale.ROOT).contains(MIMETYPE_JSON)) return null;
-        try (final InputStream is = this.inputStream()) {
-            return new String(IOTool.readLimited(is, WaterMediaConfig.network.maxTextBytes, -1L), StandardCharsets.UTF_8);
         }
     }
 
@@ -250,10 +262,13 @@ public final class NetRequest implements AutoCloseable {
         } catch (final IOException ignored) {}
     }
 
+    /**
+     * Request configuration. A builder is not thread-safe: configure and send it on one thread,
+     * though one builder may send several sequential requests.
+     */
     public static final class Builder {
         private final URI uri;
         private String method = "GET";
-        private UserAgent userAgent = UserAgent.WATERMEDIA;
         private final HttpHeaders headers = new HttpHeaders();
         private byte[] body;
         private boolean crossOrigin;
@@ -263,7 +278,8 @@ public final class NetRequest implements AutoCloseable {
 
         Builder(final URI uri) {
             this.uri = Objects.requireNonNull(uri, "uri cannot be null");
-            this.headers.set("Accept", ACCEPT_ANY);
+            // DEFAULTS LIVE IN THE BAG, SO header(), headers() AND THE PRESETS REPLACE THEM IN CALL ORDER
+            this.headers.set("Accept", ACCEPT_ANY).set("User-Agent", UserAgent.WATERMEDIA.value);
         }
 
         /** Sets the HTTP method, uppercased; the connection validates it on {@link #send()}. */
@@ -274,8 +290,8 @@ public final class NetRequest implements AutoCloseable {
         public Builder accept(final String accept) { this.headers.set("Accept", accept); return this; }
         /** Replaces the {@code Referer} header, overriding the derived default. */
         public Builder referer(final String referer) { this.headers.set("Referer", referer); return this; }
-        /** Selects the User-Agent preset. */
-        public Builder userAgent(final UserAgent userAgent) { this.userAgent = Objects.requireNonNull(userAgent); return this; }
+        /** Replaces the {@code User-Agent} header with a preset; the last writer of that header wins. */
+        public Builder userAgent(final UserAgent userAgent) { this.headers.set("User-Agent", userAgent.value); return this; }
         /** Replaces every value of a header; names must be HTTP tokens and values free of control characters. */
         public Builder header(final String name, final String value) { this.headers.set(name, value); return this; }
 
@@ -299,7 +315,7 @@ public final class NetRequest implements AutoCloseable {
         public Builder body(final String body, final boolean crossOrigin) { return this.body(body == null ? null : body.getBytes(StandardCharsets.UTF_8), crossOrigin); }
         /** Sets the connect timeout in milliseconds; zero waits forever and negatives fail on {@link #send()}. */
         public Builder connectTimeout(final int ms) { this.connectTimeout = ms; return this; }
-        /** Sets the read timeout in milliseconds; zero waits forever and negatives fail on {@link #send()}. */
+        /** Sets the read timeout in milliseconds, which also sizes the total text deadline; zero waits forever and negatives fail on {@link #send()}. */
         public Builder readTimeout(final int ms) { this.readTimeout = ms; return this; }
         /** Sets how many redirects {@link #send()} may follow; zero or less rejects the first one. */
         public Builder maxRedirects(final int n) { this.maxRedirects = n; return this; }
@@ -307,7 +323,8 @@ public final class NetRequest implements AutoCloseable {
         /**
          * Opens the connection, writes the body if any, and follows redirects manually,
          * including cross-protocol switches that {@link HttpURLConnection} silently refuses.
-         * @throws IOException when the transfer fails, the method is rejected or the redirect chain exceeds {@link #maxRedirects}
+         * @throws IOException when the transfer fails, the method is rejected, a redirect leaves http and https
+         *                     or the redirect chain exceeds {@link #maxRedirects}
          */
         public NetRequest send() throws IOException {
             URI current = this.uri;
@@ -361,6 +378,10 @@ public final class NetRequest implements AutoCloseable {
 
                 http.disconnect();
 
+                // ONLY THE INITIAL REQUEST MAY BE LOCAL: A SERVER-CHOSEN HOP OUTSIDE HTTP(S) WOULD READ LOCAL FILES OR ARCHIVES
+                if (!IOTool.web(next))
+                    throw new IOException("Redirect to unsupported scheme: " + next.getScheme() + " (from " + this.uri + ")");
+
                 // RFC 9110: A 303 SEE OTHER MUST BE RE-REQUESTED AS GET WITHOUT THE ORIGINAL BODY
                 if (code == HttpURLConnection.HTTP_SEE_OTHER) {
                     method = "GET";
@@ -376,11 +397,10 @@ public final class NetRequest implements AutoCloseable {
 
         private HttpHeaders materializeHeaders(final URI target) {
             final HttpHeaders out = new HttpHeaders(this.headers);
-            out.set("User-Agent", this.userAgent.value);
-            // ACCEPT IS ALWAYS SEEDED IN THE CTOR; ONLY DERIVE A REFERER WHEN THE CALLER DID NOT SET ONE
+            // ACCEPT AND USER-AGENT ARE ALWAYS SEEDED IN THE CTOR; ONLY DERIVE A REFERER WHEN THE CALLER DID NOT SET ONE
             if (!out.has("Referer")) {
-                final String host = target.getHost();
-                if (host != null) out.set("Referer", target.getScheme() + "://" + host);
+                final String referer = HttpHeaders.referer(target);
+                if (referer != null) out.set("Referer", referer);
             }
             if (!sameOrigin(this.uri, target)) {
                 out.removeAll("Authorization");

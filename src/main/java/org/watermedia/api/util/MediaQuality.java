@@ -38,11 +38,13 @@ public enum MediaQuality {
      * It picks the smallest non-zero one — landscape videos (1920x1080)
      * will use 1080 to determine quality (HIGHER). When a single dimension
      * is reported (HLS rendition tags often give height only), the
-     * non-zero value is used directly.
+     * non-zero value is used directly. Sizes between 1 and 143 pixels
+     * map to {@link #LOWEST}.
      *
      * @param width  video width (0 if unknown)
      * @param height video height (0 if unknown)
-     * @return the matching quality, or {@link #UNKNOWN} when no dimension reaches the first threshold
+     * @return the matching quality, {@link #LOWEST} for any known size below 144 pixels,
+     *         or {@link #UNKNOWN} when both dimensions are unknown
      */
     public static MediaQuality of(final int width, final int height) {
         final int size;
@@ -51,7 +53,8 @@ public enum MediaQuality {
         else if (height <= 0) size = width;
         else size = Math.min(width, height);
 
-        for (int i = VALUES.length - 1; i >= 0; i--) {
+        // UNKNOWN (INDEX 0) IS NO THRESHOLD: A KNOWN SIZE UNDER EVERY REAL ONE IS STILL THE LOWEST QUALITY
+        for (int i = VALUES.length - 1; i > LOWEST.ordinal(); i--) {
             if (size >= VALUES[i].height) {
                 return VALUES[i];
             }
@@ -65,8 +68,10 @@ public enum MediaQuality {
      * @param available set of available qualities
      * @param preferred the preferred quality
      * @return the closest available quality, or null if none available
+     * @throws IllegalArgumentException when {@code preferred} is null
      */
     public static MediaQuality closest(final Set<MediaQuality> available, final MediaQuality preferred) {
+        if (preferred == null) throw new IllegalArgumentException("Preferred quality cannot be null");
         if (available == null || available.isEmpty()) return null;
 
         // LINEAR MIN-DISTANCE SCAN; ASCENDING ORDER BREAKS TIES TOWARD THE LOWER QUALITY

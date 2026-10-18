@@ -3,6 +3,10 @@ package org.watermedia.api.util;
 /**
  * Easing curves interpolating between a start and an end value over a normalized time.
  * <p>
+ * Every curve expects the time {@code t} in [0, 1] and never clamps it: outside that range the
+ * circle curves return NaN once {@code t} leaves their domain, while the elastic and bounce
+ * curves extrapolate into meaningless values. Clamp {@code t} first when it can overshoot.
+ * <p>
  * This API is safe to use even if watermedia isn't successfully loaded.
  */
 public enum MathEases {

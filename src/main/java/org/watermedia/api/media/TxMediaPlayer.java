@@ -25,6 +25,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -90,7 +91,9 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static final long REFUSED_REPORT_NS = 10_000_000_000L;
     private static final ExecutorService SINGLE_FRAME_POOL = Executors.newFixedThreadPool(
             Math.max(1, ThreadTool.baseThreads()),
-            ThreadTool.createFactory("TxPlayer-SingleFrame", Thread.NORM_PRIORITY - 1));
+            ThreadTool.workerFactory("TxPlayer-SingleFrame", Thread.NORM_PRIORITY - 1));
+    // ONE STREAMING DECODE THREAD PER PLAYING ANIMATION, OWNED LIKE THE POOL SO ITS CALLBACKS CANNOT RUN LIFECYCLE OPERATIONS
+    private static final ThreadFactory STREAM_THREADS = ThreadTool.workerFactory("TxPlayer-Stream", Thread.NORM_PRIORITY - 1);
     // GLOBAL PERMITS BOUNDING AGGREGATE DECODE CPU ACROSS ALL TX PLAYERS — MANY ANIMATED
     // IMAGES THROTTLE EACH OTHER INSTEAD OF STARVING THE GAME'S OWN THREADS
     private static final Semaphore DECODE_PERMITS = new Semaphore(Math.max(2, ThreadTool.baseThreads()));
@@ -409,9 +412,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             final ImageReader streamingReader = reader;
             reader = null;
             handedOff = true;
-            this.lifecycleThread = new Thread(() -> this.playStreaming(streamingReader, serial),
-                    "TxPlayer-" + Integer.toHexString(this.source.hashCode()));
-            this.lifecycleThread.setDaemon(true);
+            this.lifecycleThread = STREAM_THREADS.newThread(() -> this.playStreaming(streamingReader, serial));
             this.lifecycleThread.start();
         } catch (final Exception e) {
             if (this.triggerStop || Thread.currentThread().isInterrupted()) {

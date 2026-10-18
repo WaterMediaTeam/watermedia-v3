@@ -1,20 +1,23 @@
 package org.watermedia.tools;
 
+import org.watermedia.api.util.MathUtil;
+
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
+/**
+ * Daemon thread creation with one per-name counter shared by every creator, so no two threads ever
+ * carry the same name, plus the owned-worker mark that keeps service callbacks from running lifecycle
+ * operations.
+ */
 public class ThreadTool {
+    // NAME -> NEXT SUFFIX, SHARED BY thread, factory, workerFactory AND groupFactory
     private static final ConcurrentHashMap<String, Integer> THREADS = new ConcurrentHashMap<>();
     private static final ThreadLocal<Boolean> WORKER = new ThreadLocal<>();
 
-    public static Thread createStarted(final String name, final Runnable runnable) {
-        // AUTO-APPENDS A PER-NAME COUNTER (name-0, name-1, ...); merge IS ATOMIC AND RETURNS THE POST-INCREMENT
-        // VALUE, SO SUBTRACT 1 FOR THE SUFFIX
-        final int c = THREADS.merge(name, 1, Integer::sum) - 1;
-        final Thread t = new Thread(runnable, name + "-" + c);
-        t.setDaemon(true);
-        t.setPriority(Thread.NORM_PRIORITY);
+    /** Starts a daemon thread with normal priority named {@code name-N}. */
+    public static Thread thread(final String name, final Runnable task) {
+        final Thread t = factory(name, Thread.NORM_PRIORITY).newThread(task);
         t.start();
         return t;
     }
@@ -28,44 +31,35 @@ public class ThreadTool {
         return false;
     }
 
-    public static ThreadGroupFactory createThreadGroupFactory(final String name, final int priority) {
-        final AtomicInteger count = new AtomicInteger(0);
-        return () -> {
-            final int group = count.incrementAndGet();
-            return (childName, r) -> {
-                final Thread t = new Thread(r);
-                t.setDaemon(true);
-                t.setPriority(Math.min(Math.max(priority, Thread.MIN_PRIORITY), Thread.MAX_PRIORITY));
-                t.setName(name + "-" + group + "-" + childName);
-                return t;
-            };
-        };
-    }
-
-    public static ThreadFactory createFactory(final String name, final int priority) {
-        final AtomicInteger count = new AtomicInteger(0);
-        return r -> {
-            final Thread t = new Thread(r);
+    /** Creates daemon threads named {@code name-N}; the priority is clamped to the valid range. */
+    public static ThreadFactory factory(final String name, final int priority) {
+        final int clamped = MathUtil.clamp(priority, Thread.MIN_PRIORITY, Thread.MAX_PRIORITY);
+        return task -> {
+            final Thread t = new Thread(task, name + "-" + next(name));
             t.setDaemon(true);
-            t.setPriority(Math.min(Math.max(priority, Thread.MIN_PRIORITY), Thread.MAX_PRIORITY));
-            t.setName(name + "-" + count.getAndIncrement());
+            t.setPriority(clamped);
             return t;
         };
     }
 
     /** Creates owned service workers whose callbacks cannot initiate blocking lifecycle operations. */
     public static ThreadFactory workerFactory(final String name, final int priority) {
-        final ThreadFactory factory = createFactory(name, priority);
-        return task -> factory.newThread(() -> {
-            final Boolean previous = WORKER.get();
-            WORKER.set(Boolean.TRUE);
-            try {
-                task.run();
-            } finally {
-                if (previous == null) WORKER.remove();
-                else WORKER.set(previous);
-            }
-        });
+        final ThreadFactory factory = factory(name, priority);
+        return task -> factory.newThread(owned(task));
+    }
+
+    /** Creates groups of owned service workers named {@code name-G-child}, one group per {@link ThreadGroupFactory#newFactory()}. */
+    public static ThreadGroupFactory groupFactory(final String name, final int priority) {
+        final int clamped = MathUtil.clamp(priority, Thread.MIN_PRIORITY, Thread.MAX_PRIORITY);
+        return () -> {
+            final String group = name + "-" + next(name);
+            return (child, task) -> {
+                final Thread t = new Thread(owned(task), group + "-" + child);
+                t.setDaemon(true);
+                t.setPriority(clamped);
+                return t;
+            };
+        };
     }
 
     /** Whether this thread is executing an owned service worker. */
@@ -118,5 +112,25 @@ public class ThreadTool {
 
     public interface ThreadGroupFactory {
         BiFunction<String, Runnable, Thread> newFactory();
+    }
+
+    // UTILITY
+    // NEXT SUFFIX FOR name; merge IS ATOMIC AND RETURNS THE POST-INCREMENT VALUE, SO THE FIRST THREAD GETS 0
+    private static int next(final String name) {
+        return THREADS.merge(name, 1, Integer::sum) - 1;
+    }
+
+    // MARKS task AS AN OWNED WORKER WHILE IT RUNS, RESTORING THE PREVIOUS MARK AFTER A NESTED run()
+    private static Runnable owned(final Runnable task) {
+        return () -> {
+            final Boolean previous = WORKER.get();
+            WORKER.set(Boolean.TRUE);
+            try {
+                task.run();
+            } finally {
+                if (previous == null) WORKER.remove();
+                else WORKER.set(previous);
+            }
+        };
     }
 }

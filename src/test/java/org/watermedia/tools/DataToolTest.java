@@ -27,12 +27,27 @@ public class DataToolTest {
     @Test
     @DisplayName("parseQuery decodes pairs and tolerates value-less keys")
     void parseQuery() {
-        final Map<String, String> q = DataTool.parseQuery("a=1&b=%20&c");
+        final Map<String, String> q = DataTool.parseQuery("a=1&b=%20&c&&d=x=y");
         assertEquals("1", q.get("a"));
         assertEquals(" ", q.get("b"));
         assertEquals("", q.get("c"));
+        assertEquals("x=y", q.get("d"));
+        assertEquals(4, q.size());
         assertTrue(DataTool.parseQuery("").isEmpty());
         assertTrue(DataTool.parseQuery(null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("parseQuery decodes a raw query once and keeps malformed pairs raw")
+    void parseQueryRaw() {
+        assertEquals("a+b%3D", DataTool.parseQuery(URI.create("https://cdn.test/x?sig=a%2Bb%253D").getRawQuery()).get("sig"));
+        final Map<String, String> q = DataTool.parseQuery("sig=a%2Bb%253D&bad=100%&tail=%E2%82%AC&k%zz=v");
+        assertEquals("a+b%3D", q.get("sig"));
+        assertEquals("100%", q.get("bad"));
+        assertEquals("€", q.get("tail"));
+        assertEquals("v", q.get("k%zz"));
+        assertThrows(UnsupportedOperationException.class, () -> q.put("x", "y"));
+        assertThrows(UnsupportedOperationException.class, () -> DataTool.parseQuery("a=1").put("x", "y"));
     }
 
     @Test

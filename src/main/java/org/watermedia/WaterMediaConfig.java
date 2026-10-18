@@ -283,7 +283,6 @@ public final class WaterMediaConfig {
     public static final class Module extends WaterMediaModule {
         @Override
         protected void start() throws InterruptedException {
-            this.task(1, 1, "Configuration");
             WaterConfig.init();
             final ConfigSpec existing = WaterConfig.spec(WaterMedia.ID, false);
             if (existing == null) {

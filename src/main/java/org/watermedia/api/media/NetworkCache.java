@@ -36,7 +36,7 @@ import java.util.concurrent.ExecutionException;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
-/** Shared HTTP body cache with bounded disk storage and isolated startup sessions. */
+/** Shared HTTP body cache with bounded disk storage, opened once when the media module loads. */
 final class NetworkCache {
     private static final Marker IT = MarkerManager.getMarker(NetworkCache.class.getSimpleName());
     private static final int MAGIC = 0x574D4943;
@@ -56,9 +56,8 @@ final class NetworkCache {
 
     private NetworkCache() {}
 
-    /** Opens a new cache session; retired requests cannot publish into it. */
+    /** Opens the cache store at {@code dir}; a previous store, if any, is simply replaced. */
     public static synchronized void start(final Path dir) throws IOException {
-        release();
         final Store store = new Store(dir.toAbsolutePath());
         Files.createDirectories(store.dir);
         loadIndex(store);
@@ -82,21 +81,7 @@ final class NetworkCache {
         LOGGER.info(IT, "Media network cache initialized at {} ({} entries, {} bytes)", store.dir, store.index.size(), store.totalBytes);
     }
 
-    /** Detaches the store and fails waiting cache readers; existing files remain on disk. */
-    public static synchronized void release() {
-        final Store store = active;
-        active = null;
-        if (store == null) return;
-        synchronized (store) {
-            store.index.clear();
-            store.totalBytes = 0;
-            final IOException failure = new IOException("Media cache session was closed");
-            store.inflight.values().forEach(future -> future.completeExceptionally(failure));
-            store.inflight.clear();
-        }
-    }
-
-    /** Reads bounded HTTP bytes; concurrent requests in this session share one download per key. */
+    /** Reads bounded HTTP bytes; concurrent requests share one download per key. */
     public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
@@ -105,7 +90,6 @@ final class NetworkCache {
         final String hex = DataTool.hex(hash);
         final Entry entry;
         synchronized (store) {
-            checkSession(store);
             entry = stored(store, hex);
         }
         // THE PAYLOAD IS READ OUTSIDE THE MONITOR SO ONE SLOW DISK HIT NEVER STALLS THE OTHER CACHE USERS
@@ -118,7 +102,7 @@ final class NetworkCache {
                 LOGGER.debug(IT, "Media cache entry {} was evicted while being read", file);
             } catch (final IOException failure) {
                 synchronized (store) {
-                    if (active == store && store.index.get(hex) == entry) {
+                    if (store.index.get(hex) == entry) {
                         try { delete(store, hex); }
                         catch (final IOException ignored) { /* THE NEXT LOOKUP RETRIES THE DELETE */ }
                     }
@@ -147,7 +131,6 @@ final class NetworkCache {
         final byte[] hash = keyHash(uri, headers, accept);
         final String hex = DataTool.hex(hash);
         synchronized (store) {
-            checkSession(store);
             final Entry entry = stored(store, hex);
             if (entry != null) {
                 if (isPlaylist(entry.contentType)) delete(store, hex);
@@ -169,25 +152,22 @@ final class NetworkCache {
         final CompletableFuture<CachedBytes> mine = new CompletableFuture<>();
         final CompletableFuture<CachedBytes> leader;
         synchronized (store) {
-            checkSession(store);
             leader = store.inflight.putIfAbsent(hex, mine);
         }
         if (leader != null) {
             try {
                 final CachedBytes shared = leader.get();
-                checkSession(store);
                 if (shared.bytes.length <= maxBytes) return shared;
             } catch (final InterruptedException failure) {
                 Thread.currentThread().interrupt();
                 throw new InterruptedIOException("Interrupted waiting for media cache download");
             } catch (final ExecutionException failure) {
-                checkSession(store);
+                // THE LEADER FAILED; THIS WAITER FETCHES ON ITS OWN BELOW
             }
             return fetch(uri, headers, accept, maxBytes, bounded);
         }
         try {
             final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes, bounded);
-            checkSession(store);
             mine.complete(downloaded);
             return downloaded;
         } catch (final IOException | RuntimeException | Error failure) {
@@ -215,17 +195,13 @@ final class NetworkCache {
                 throw new IOException("Unbounded media source is not cacheable: " + uri);
             final byte[] bytes;
             try (final InputStream in = req.inputStream()) {
-                bytes = IOTool.readLimited(in, maxBytes, contentLength);
+                bytes = IOTool.readLimited(in, maxBytes, contentLength, 0L);
             }
             return new CachedBytes(bytes, req.contentType(), false, expiry(req));
         }
     }
 
-    private static void checkSession(final Store store) throws IOException {
-        if (active != store) throw new IOException("Media cache session was closed");
-    }
-
-    // INDEX OPERATIONS HOLD THE SESSION MONITOR; NETWORK TRANSFERS, PAYLOAD READS AND PAYLOAD STAGING NEVER HOLD IT.
+    // INDEX OPERATIONS HOLD THE STORE MONITOR; NETWORK TRANSFERS, PAYLOAD READS AND PAYLOAD STAGING NEVER HOLD IT.
     // THE INDEX IS ACCESS-ORDERED, SO A LOOKUP MARKS ITS ENTRY AS RECENTLY USED AND THE HEAD IS THE EVICTION CANDIDATE
     private static Entry stored(final Store store, final String hex) throws IOException {
         final Entry entry = store.index.get(hex);

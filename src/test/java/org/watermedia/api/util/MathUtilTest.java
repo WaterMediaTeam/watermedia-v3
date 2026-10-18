@@ -4,6 +4,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,6 +38,14 @@ public class MathUtilTest {
         @DisplayName("clamp returns upper bound when above")
         void clampUpper() {
             assertEquals(10, MathUtil.clamp(20, 0, 10));
+        }
+
+        @Test
+        @DisplayName("clamp with inverted bounds always returns max")
+        void clampInverted() {
+            for (final int value: new int[] { Integer.MIN_VALUE, -5, 0, 5, 10, 20, Integer.MAX_VALUE }) {
+                assertEquals(0, MathUtil.clamp(value, 10, 0), "value " + value);
+            }
         }
 
         @Test
@@ -91,18 +101,23 @@ public class MathUtilTest {
         }
 
         @Test
-        @DisplayName("displayBytes(1024) renders 1.0 KB (locale aware decimal)")
-        void displayBytesOneKB() {
-            // STRING.FORMAT IS LOCALE-AWARE; ACCEPT EITHER '.' OR ',' AS THE FRACTION SEPARATOR
-            final String s = MathUtil.displayBytes(1024L);
-            assertTrue(s.matches("1[.,]0 KB"), "Unexpected format: " + s);
+        @DisplayName("displayBytes scales to KB, MB and GB")
+        void displayBytesUnits() {
+            assertEquals("1.0 KB", MathUtil.displayBytes(1024L));
+            assertEquals("1.5 MB", MathUtil.displayBytes(1024L * 1024L * 3 / 2));
+            assertEquals("2.0 GB", MathUtil.displayBytes(2L * 1024L * 1024L * 1024L));
         }
 
         @Test
-        @DisplayName("displayBytes(1MiB) renders 1.0 MB (locale aware decimal)")
-        void displayBytesOneMB() {
-            final String s = MathUtil.displayBytes(1024L * 1024L);
-            assertTrue(s.matches("1[.,]0 MB"), "Unexpected format: " + s);
+        @DisplayName("displayBytes keeps a dot separator under a comma locale")
+        void displayBytesIgnoresLocale() {
+            final Locale previous = Locale.getDefault();
+            try {
+                Locale.setDefault(Locale.forLanguageTag("es-ES"));
+                assertEquals("1.5 KB", MathUtil.displayBytes(1536L));
+            } finally {
+                Locale.setDefault(previous);
+            }
         }
     }
 
@@ -119,6 +134,16 @@ public class MathUtilTest {
                 assertEquals(10.0, ease.apply(10.0, 30.0, 0.0), EPSILON, ease.name());
                 assertEquals(30.0, ease.apply(10.0, 30.0, 1.0), EPSILON, ease.name());
             }
+        }
+
+        @Test
+        @DisplayName("outside [0, 1] circle curves return NaN while elastic and bounce extrapolate")
+        void outsideUnitRange() {
+            assertTrue(Double.isNaN(MathEases.EASE_IN_CIRCLE.apply(0.0, 10.0, 1.5)));
+            assertTrue(Double.isNaN(MathEases.EASE_OUT_CIRCLE.apply(0.0, 10.0, -0.5)));
+            assertTrue(Double.isNaN(MathEases.EASE_IN_OUT_CIRCLE.apply(0.0, 10.0, 2.0)));
+            assertTrue(Double.isFinite(MathEases.EASE_OUT_ELASTIC.apply(0.0, 10.0, 1.5)));
+            assertTrue(Double.isFinite(MathEases.EASE_IN_OUT_BOUNCE.apply(0.0, 10.0, -0.5)));
         }
 
         @Test

@@ -2,7 +2,7 @@ package org.watermedia.tools;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.Locale;
 import java.util.Objects;
@@ -25,6 +26,7 @@ import java.util.jar.Manifest;
 
 public class IOTool {
     public static final int BUFFER_SIZE = 1024 * 64; // 64 KB
+    private static final int MAX_PREALLOCATED_BYTES = 4 * 1024 * 1024; // FIRST BUFFER readLimited SIZES FROM A DECLARED LENGTH
     // VERIFIED HTTPS TRANSFERS: WHOLE-TRANSFER DEADLINE, PER-CONNECTION TIMEOUT, HOP CAP AND THE BOOTSTRAP UA
     private static final long TRANSFER_DEADLINE_NS = 180_000_000_000L;
     private static final int TRANSFER_TIMEOUT_MS = 15_000;
@@ -62,32 +64,38 @@ public class IOTool {
         return system == null || cpu == null ? "unsupported" : system + "-" + cpu;
     }
 
-    public static String read(final File path) {
-        try {
-            return Files.readString(path.toPath(), StandardCharsets.UTF_8);
-        } catch (final IOException e) {
-            return null;
-        }
+    /** Whether {@code uri} uses the http or https scheme, in any case. */
+    public static boolean web(final URI uri) {
+        final String scheme = uri == null ? null : uri.getScheme();
+        return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
     }
 
-    public static boolean closeQuietly(final AutoCloseable closeable) {
-        if (closeable != null) {
-            try {
-                closeable.close();
-                return true;
-            } catch (final Exception ignored) {}
-        }
-        return false;
+    /** Closes {@code closeable} when non-null, swallowing any failure. */
+    public static void closeQuietly(final AutoCloseable closeable) {
+        if (closeable == null) return;
+        try { closeable.close(); }
+        catch (final Exception ignored) {}
     }
 
-    public static byte[] readLimited(final InputStream in, final long maxBytes, final long expectedBytes) throws IOException {
-        final int initialCapacity = expectedBytes > 0L && expectedBytes <= Integer.MAX_VALUE ? (int) expectedBytes : BUFFER_SIZE;
-        final ByteArrayOutputStream out = new ByteArrayOutputStream(initialCapacity);
+    /**
+     * Reads {@code in} to its end, failing past {@code maxBytes}. {@code expectedBytes} (or -1) only sizes the
+     * first buffer, never past {@code maxBytes} or 4 MiB; a positive {@code timeoutMs} bounds the whole read in
+     * wall-clock time, checked between chunks.
+     */
+    public static byte[] readLimited(final InputStream in, final long maxBytes, final long expectedBytes, final long timeoutMs) throws IOException {
+        // A HOSTILE Content-Length MUST NOT DRIVE THE ALLOCATION: THE BUFFER STARTS BOUNDED AND GROWS WITH REAL BYTES
+        final long initial = Math.min(expectedBytes > 0L ? expectedBytes : BUFFER_SIZE, Math.min(maxBytes, MAX_PREALLOCATED_BYTES));
+        final ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.max(0L, initial));
         final byte[] buffer = new byte[BUFFER_SIZE];
+        final long start = System.nanoTime();
+        final long timeoutNs = timeoutMs > 0L ? timeoutMs * 1_000_000L : 0L;
         long total = 0L;
         while (true) {
             // SOCKET READS ARE NOT INTERRUPTIBLE, SO A CANCELLED CALLER (A STOPPED PLAYER) IS HONOURED BETWEEN CHUNKS
             if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Read cancelled after " + total + " bytes");
+            // EACH READ IS CAPPED BY THE SOCKET TIMEOUT, BUT A TRICKLING SOURCE NEEDS A TOTAL ONE
+            if (timeoutNs > 0L && System.nanoTime() - start > timeoutNs)
+                throw new IOException("Failed to read input: exceeded the " + timeoutMs + " ms deadline after " + total + " bytes");
             final int read = in.read(buffer);
             if (read < 0) break;
             total += read;
@@ -225,13 +233,13 @@ public class IOTool {
             throw new IOException("Cannot grant executable permission: " + file);
     }
 
-    // LOWERCASE HEX SHA-256 OF file
+    // LOWERCASE HEX SHA-256 OF file; SHA-256 IS MANDATED BY THE JVM SPEC, SO ABSENCE MEANS A BROKEN RUNTIME
     public static String sha256(final Path file) throws IOException {
         final MessageDigest digest;
         try {
             digest = MessageDigest.getInstance("SHA-256");
-        } catch (final Exception e) {
-            throw new IOException("SHA-256 is unavailable", e);
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
         }
         try (final InputStream in = new BufferedInputStream(Files.newInputStream(file))) {
             final byte[] buffer = new byte[BUFFER_SIZE];
@@ -286,11 +294,11 @@ public class IOTool {
         return previous;
     }
 
-    public static String jarRead(final String path) {
-        try (final var in = jarOpenFile(path, IOTool.class.getClassLoader())) {
+    /** Reads a bundled UTF-8 resource; a missing one throws {@link FileNotFoundException}. */
+    public static String jarRead(final String path) throws IOException {
+        try (final InputStream in = jarOpenFile(path, IOTool.class.getClassLoader())) {
+            if (in == null) throw new FileNotFoundException("Bundled resource not found: " + path);
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (final Exception e) {
-            return null;
         }
     }
 

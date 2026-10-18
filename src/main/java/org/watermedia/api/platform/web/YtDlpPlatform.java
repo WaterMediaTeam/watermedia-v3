@@ -17,6 +17,7 @@ import org.watermedia.api.util.Track;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.binaries.YtDlpBinary;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,9 +41,8 @@ import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.bool;
-import static org.watermedia.tools.JSONTool.dbl;
 import static org.watermedia.tools.JSONTool.intOr;
-import static org.watermedia.tools.JSONTool.intOrNull;
+import static org.watermedia.tools.JSONTool.num;
 import static org.watermedia.tools.JSONTool.str;
 import static org.watermedia.tools.JSONTool.uri;
 
@@ -179,12 +179,8 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
 
         final StringBuilder out = new StringBuilder();
         final StringBuilder err = new StringBuilder();
-        final Thread outDrain = new Thread(() -> out.append(readAll(process.getInputStream())), tool + "-stdout");
-        final Thread errDrain = new Thread(() -> err.append(readAll(process.getErrorStream())), tool + "-stderr");
-        outDrain.setDaemon(true);
-        errDrain.setDaemon(true);
-        outDrain.start();
-        errDrain.start();
+        final Thread outDrain = ThreadTool.thread(tool + "-stdout", () -> out.append(readAll(process.getInputStream())));
+        final Thread errDrain = ThreadTool.thread(tool + "-stderr", () -> err.append(readAll(process.getErrorStream())));
 
         try {
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
@@ -306,7 +302,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
                 if (url == null) continue; // MALFORMED FORMAT URL — SKIP THIS VARIANT
                 // PER Quality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
                 final int width = Math.max(0, intOr(f, "width", 0));
-                variants.add(new Quality(url, width, height, (float) Math.max(0d, dbl(f, "fps"))));
+                variants.add(new Quality(url, width, height, (float) Math.max(0d, num(f, "fps"))));
                 if (headerSource == null) headerSource = f;
             }
         }
@@ -346,13 +342,14 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     }
 
     private static int audioRate(final JsonObject f) {
-        final double abr = dbl(f, "abr");
-        return (int) Math.round(abr > 0 ? abr : dbl(f, "tbr"));
+        final double abr = num(f, "abr");
+        return (int) Math.round(abr > 0 ? abr : num(f, "tbr"));
     }
 
     private static int heightOf(final JsonObject f) {
-        final Integer h = intOrNull(f, "height");
-        if (h != null) return Math.max(0, h);
+        // A MISSING OR UNUSABLE height FALLS BACK TO THE resolution AND format_note TEXT
+        final int h = intOr(f, "height", -1);
+        if (h >= 0) return h;
         final String res = str(f, "resolution");
         if (res != null) {
             final Matcher m = HEIGHT_IN_RES.matcher(res);
@@ -383,7 +380,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         String author = str(media, "uploader");
         if (author == null) author = str(media, "channel");
         final String description = str(media, "description");
-        final long durationMs = (long) Math.max(0d, dbl(media, "duration") * 1000d);
+        final long durationMs = (long) Math.max(0d, num(media, "duration") * 1000d);
 
         Instant publishedAt = null;
         final JsonElement ts = media.get("timestamp");

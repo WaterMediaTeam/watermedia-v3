@@ -1,5 +1,7 @@
 package org.watermedia.api.util;
 
+import java.util.Locale;
+
 /**
  * Numeric helpers shared by the players, the decoders and the engines.
  * <p>
@@ -11,9 +13,9 @@ public final class MathUtil {
     /** Converts minutes to milliseconds, truncating anything below one millisecond. */
     public static long minutesToMs(final double min) { return (long) (min * 60_000.0); }
 
-    /** Limits a value to the inclusive range between {@code min} and {@code max}. */
+    /** Limits a value to the inclusive range between {@code min} and {@code max}; inverted bounds ({@code min > max}) always return {@code max}. */
     public static int clamp(final int value, final int min, final int max) {
-        return value >= max ? max : value <= min ? min : value;
+        return Math.min(Math.max(value, min), max);
     }
 
     /** Limits a value to the unsigned-byte range, 0 to 255. */
@@ -41,11 +43,11 @@ public final class MathUtil {
         return Math.max(2, size & ~1);
     }
 
-    /** Formats a byte count as a human-readable string, scaling from B to KB, MB and GB at 1024 boundaries. */
+    /** Formats a byte count as a human-readable string with a dot decimal separator in every locale, scaling from B to KB, MB and GB at 1024 boundaries. */
     public static String displayBytes(final long bytes) {
         if (bytes < 1024L) return bytes + " B";
-        if (bytes < 1024L * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024));
+        if (bytes < 1024L * 1024) return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024));
+        return String.format(Locale.ROOT, "%.1f GB", bytes / (1024.0 * 1024 * 1024));
     }
 }

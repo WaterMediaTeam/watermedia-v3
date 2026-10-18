@@ -19,7 +19,7 @@ public enum MediaType {
     /**
      * Extension-to-MIME table for every format WaterMedia consumes (codecs API + FFmpeg).
      * Single source of truth: {@link #ofExtension(String)} classifies through it and
-     * {@link NetRequest} extends Java's file-name map with it — the bundled
+     * {@link NetRequest#contentTypeOf(String)} consults it before the JDK's table — the bundled
      * {@code content-types.properties} misses most of these.
      */
     private static final Map<String, String> MIMES = DataTool.arrayMapper(new String[] {
@@ -97,16 +97,19 @@ public enum MediaType {
     });
 
     /**
-     * Parses a MIME type string into MediaType. Streaming manifests and containers hiding
-     * behind {@code application/*} (HLS, DASH, RealMedia, SubRip) are classified too.
+     * Parses a MIME type string into MediaType, ignoring parameters such as {@code ; charset=utf-8}
+     * and surrounding whitespace. Streaming manifests and containers hiding behind
+     * {@code application/*} (HLS, DASH, RealMedia, SubRip) are classified too.
      * @return the matching type, or {@link #UNKNOWN} for null, empty or unsupported input
      */
     public static MediaType of(final String mimeType) {
         if (mimeType == null || mimeType.isEmpty()) return UNKNOWN;
 
-        final String[] type = mimeType.split("/");
-        final String subtype = type.length == 2 ? type[1].toLowerCase(Locale.ROOT) : "";
-        return switch (type[0].toLowerCase(Locale.ROOT)) {
+        // ONLY THE type/subtype ESSENCE CLASSIFIES; PARAMETERS NEVER CHANGE THE MEDIA KIND
+        final String essence = mimeType.split(";", 2)[0].strip().toLowerCase(Locale.ROOT);
+        final int slash = essence.indexOf('/');
+        final String subtype = slash < 0 ? "" : essence.substring(slash + 1).strip();
+        return switch (slash < 0 ? essence : essence.substring(0, slash).strip()) {
             case "image" -> IMAGE;
             case "video" -> VIDEO;
             case "audio" -> AUDIO;

@@ -67,18 +67,23 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
     public boolean frozen() { return this.frozen; }
 
     /**
-     * Default header bag for outbound platform requests: WaterMedia User-Agent, a wide
-     * media-friendly Accept, and a Referer derived from {@code uri}'s host; platforms stamp it
-     * onto each {@link Platform.Source} they emit.
+     * Default header bag for outbound platform requests: WaterMedia User-Agent,
+     * {@link NetRequest#ACCEPT_MEDIA} and a Referer derived from {@code uri}'s origin; platforms
+     * stamp it onto each {@link Platform.Source} they emit.
      */
     public static HttpHeaders defaults(final URI uri) {
         final HttpHeaders h = new HttpHeaders()
                 .set("User-Agent", WaterMedia.USER_AGENT)
-                .set("Accept", "video/*,audio/*,image/*,application/vnd.apple.mpegurl,application/x-mpegurl,application/dash+xml,application/ogg,*/*;q=0.8");
-        if (uri != null && uri.getHost() != null) {
-            h.set("Referer", uri.getScheme() + "://" + uri.getHost() + "/");
-        }
+                .set("Accept", NetRequest.ACCEPT_MEDIA);
+        final String referer = referer(uri);
+        if (referer != null) h.set("Referer", referer);
         return h;
+    }
+
+    // ORIGIN-SHAPED REFERER scheme://host[:port]/ KEEPING AN EXPLICIT PORT, OR NULL WITHOUT A HOST
+    static String referer(final URI uri) {
+        if (uri == null || uri.getHost() == null) return null;
+        return uri.getScheme() + "://" + uri.getHost() + (uri.getPort() != -1 ? ":" + uri.getPort() : "") + "/";
     }
 
     /**
@@ -104,11 +109,11 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
     /**
      * Applies {@code other} on top of this bag: the first occurrence of each name replaces any
      * existing entries (like {@link #set}), later occurrences append (like {@link #add}),
-     * preserving multi-valued headers. A {@code null} or empty bag is a no-op.
+     * preserving multi-valued headers. A {@code null} or empty bag, or this same bag, is a no-op.
      */
     public HttpHeaders merge(final HttpHeaders other) {
         this.checkMutable();
-        if (other == null || other.empty()) return this;
+        if (other == null || other == this || other.empty()) return this;
         final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (final Entry e: other.entries) {
             if (seen.add(e.name)) this.set(e.name, e.value);

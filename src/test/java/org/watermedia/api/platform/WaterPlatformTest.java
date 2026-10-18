@@ -4,7 +4,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.watermedia.WaterMedia;
+import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.platform.Platform.Resolution;
 import org.watermedia.api.platform.internal.WaterPlatform;
@@ -32,16 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("WaterPlatform")
 public class WaterPlatformTest {
 
+    // location(local) NEEDS WaterMedia.cwd(); THE SHARED CLIENT LOAD KEEPS THE TEST JVM A CLIENT FOR THE MEDIA TESTS
     @BeforeAll
-    static void initWaterMedia() {
-        // location(local) NEEDS WaterMedia.cwd(); START THE FRAMEWORK ONCE PER TEST JVM.
-        // CALLING start() TWICE THROWS IllegalStateException — SUPPRESS WHEN ALREADY INITIALIZED.
-        try {
-            WaterMedia.start("TEST", null, null, false);
-        } catch (final IllegalStateException ignored) {
-            // ALREADY STARTED BY ANOTHER TEST
-        }
-    }
+    static void initWaterMedia() { MediaBootstrap.client(); }
 
     // ==========================================================================
     // location MAPPING TESTS

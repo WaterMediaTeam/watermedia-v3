@@ -185,8 +185,8 @@ With that jar you won't need to compile or install FFMPEG or any other native ap
 Its sources live in this repository under [`binaries/`](https://github.com/SrRapero720/watermedia/tree/main/binaries).
 Minecraft clients require Binaries; dedicated servers can omit it. Applications embedding the Java API
 can run without it, keeping image support but skipping video decoding and executable-backed platform
-resolvers. When installed, binaries initialize before the other services; a failed binaries startup
-stops the session.
+resolvers. When installed, binaries load before the other modules; a failed binaries load ends the
+startup.
 CurseForge and Modrinth list Binaries as required because their dependency relationships do not support
 client/server conditions, so installers may also include it in server installations.
 

@@ -529,7 +529,7 @@ public class HomeScreen extends Screen {
         // COALESCE: SKIP IF A WALK IS ALREADY RUNNING SO RE-ENTERING HOME DOES NOT SPAWN REDUNDANT WALKS
         if (this.cacheWalking) return;
         this.cacheWalking = true;
-        ThreadTool.createStarted("WaterMedia-CacheSize", () -> {
+        ThreadTool.thread("WaterMedia-CacheSize", () -> {
             final Path cache = WaterMedia.tmp().resolve("cache");
             long bytes = 0L;
             try {

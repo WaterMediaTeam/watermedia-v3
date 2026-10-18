@@ -36,7 +36,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p><b>URIs are resolved here.</b> Every {@link Variant}, {@link Segment}, {@link Rendition}
  * and {@link Channel} URL is resolved against the source while parsing, so callers always get
  * absolute {@link URI}s and never repeat the relative-resolution dance themselves. Malformed
- * URLs are skipped (logged) rather than aborting the whole playlist.
+ * URLs, relative leftovers and local files or archives named by a remote playlist are skipped
+ * (logged) rather than aborting the whole playlist; only a local ({@code file:}) playlist may list local files.
  *
  * <p><b>Classification order is significant:</b> {@code #EXT-X-STREAM-INF} wins (master), then
  * ANY remaining {@code #EXT-X-} tag marks an HLS media playlist, and only a tag-less
@@ -74,6 +75,8 @@ public final class M3UTool {
     /**
      * Fetches and parses the playlist at {@code uri} with the given request headers (an
      * authenticated or geo-locked playlist needs the same ones the media request carries).
+     * Every header in the bag, {@code User-Agent} and {@code Accept} included, replaces the
+     * request default.
      *
      * @param headers extra request headers, or {@code null} for none
      * @throws IOException if the request fails, the server does not answer {@code 200},
@@ -81,9 +84,7 @@ public final class M3UTool {
      */
     public static Playlist fetch(final URI uri, final HttpHeaders headers) throws IOException {
         // THE CONFIGURED network.timeout APPLIES, LIKE EVERY OTHER REQUEST
-        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
-        if (headers == null || !headers.has("Accept")) builder.accept(NetRequest.ACCEPT_ANY);
-        try (final NetRequest req = builder.send()) {
+        try (final NetRequest req = NetRequest.create(uri).method("GET").headers(headers).send()) {
             final int code = req.statusCode();
             if (code != 200)
                 throw new IOException("Cannot fetch playlist from " + uri + ": server returned HTTP " + code + " (expected 200 OK)");
@@ -305,7 +306,7 @@ public final class M3UTool {
                             uri,
                             DataTool.parseLong(a.get("BANDWIDTH"), 0),
                             w, h,
-                            fps >= 0d ? fps : 0d,
+                            fps >= 0d ? fps : 0d, // NaN AND NEGATIVES BOTH MAP TO ZERO
                             a.get("CODECS"),
                             videoGroup,
                             a.get("AUDIO"),
@@ -441,14 +442,22 @@ public final class M3UTool {
     // UTILITIES
     // ================================================================================================
 
-    // RESOLVES spec AGAINST base; NULL/BLANK OR MALFORMED INPUTS YIELD NULL (LOGGED)
+    // RESOLVES spec AGAINST base; NULL/BLANK, MALFORMED OR NON-HTTP(S) RESULTS YIELD NULL (LOGGED), SO A REMOTE
+    // PLAYLIST CAN NEVER POINT A PLAYER AT LOCAL FILES OR ARCHIVES
+    // ANY STREAMING SCHEME FFMPEG SPEAKS IS FINE (rtsp, rtmp, udp, srt); A REMOTE PLAYLIST NEVER REACHES LOCAL FILES
+    // OR ARCHIVES, AND ONLY A LOCAL ONE MAY LIST LOCAL FILES
     private static URI resolve(final URI base, final String spec) {
         if (spec == null || spec.isEmpty()) return null;
         try {
-            return base.resolve(spec);
+            final URI resolved = base.resolve(spec);
+            final String scheme = resolved.getScheme() == null ? "" : resolved.getScheme().toLowerCase(Locale.ROOT);
+            final boolean allowed = IOTool.web(resolved) || (!scheme.isEmpty() && !scheme.equals("jar") && !scheme.equals("water")
+                    && (!scheme.equals("file") || "file".equalsIgnoreCase(base.getScheme())));
+            if (allowed) return resolved;
+            LogTool.throttled(LOGGER, Level.WARN, IT, MALFORMED_URIS, "Skipping local or relative URI '{}' in {}", spec, base);
         } catch (final IllegalArgumentException e) {
             LogTool.throttled(LOGGER, Level.WARN, IT, MALFORMED_URIS, "Skipping malformed URI '{}' relative to {}", spec, base);
-            return null;
         }
+        return null;
     }
 }

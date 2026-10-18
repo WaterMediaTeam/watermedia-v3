@@ -9,7 +9,7 @@ import java.nio.ByteBuffer;
  * {@link MediaPlayer} run its full decode/upload pipeline where no display is available — CI,
  * headless validation, image processing — and lets callers introspect what the pipeline pushed
  * ({@link #uploadCount()}, {@link #lastUpload()}, {@link #format()}, {@link #activeFrame()}). It
- * needs no GPU but, like every engine and media player, it only exists on a client session.
+ * needs no GPU but, like every engine and media player, it only exists on a client.
  * <p>
  * {@link #texture()} returns a non-zero sentinel once the first frame is captured (0 before),
  * matching the base contract; there is no real texture to bind. Every mutable field is

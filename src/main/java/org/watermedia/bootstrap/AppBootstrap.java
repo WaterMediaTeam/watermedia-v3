@@ -24,6 +24,7 @@ import java.net.URLClassLoader;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -72,7 +73,11 @@ public final class AppBootstrap {
                     return;
                 }
                 String engine = engine(System.getProperty(ENGINE_PROP));
-                if (engine == null) engine = engine(IOTool.read(ENGINE_FILE.toFile()));
+                if (engine == null) {
+                    try { engine = engine(Files.readString(ENGINE_FILE)); }
+                    catch (final NoSuchFileException absent) {} // NO SAVED CHOICE YET
+                    catch (final IOException failure) { bootstrap.log("Cannot read the render engine: " + failure.getMessage()); }
+                }
                 final boolean choose = firstLaunch && (engine == null || Arrays.stream(args)
                         .anyMatch(arg -> arg.equalsIgnoreCase("--engine") || arg.equalsIgnoreCase("--select-engine")));
                 if (choose && !GraphicsEnvironment.isHeadless()) {
@@ -186,8 +191,10 @@ public final class AppBootstrap {
             this.log("Extracting " + name);
             jars.add(extract("/META-INF/jarjar/" + name, LIBS_DIR));
         }
-        final String player = IOTool.read(PLAYER_MODE_FILE.toFile());
-        final boolean javafx = player != null && player.trim().equalsIgnoreCase("JFX");
+        boolean javafx = false;
+        try { javafx = Files.readString(PLAYER_MODE_FILE).trim().equalsIgnoreCase("JFX"); }
+        catch (final NoSuchFileException absent) {} // NO SAVED CHOICE YET
+        catch (final IOException failure) { this.log("Cannot read the player mode: " + failure.getMessage()); }
         for (final Dependency dependency: dependencies(versions)) {
             final Path jar = LIBS_DIR.resolve(dependency.name());
             final String sha256 = versions.getProperty(dependency.name());

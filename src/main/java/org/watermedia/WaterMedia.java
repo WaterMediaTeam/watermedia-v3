@@ -4,25 +4,23 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.network.NetworkAPI;
-import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.WaterMediaModule;
-import org.watermedia.bootstrap.WaterMediaModule.Bootstrap;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import org.watermedia.WaterMedia.BootStatus.Id;
-import org.watermedia.WaterMedia.BootStatus.State;
+import org.watermedia.WaterMedia.Status.Failure;
+import org.watermedia.WaterMedia.Status.State;
 
-/** Coordinates WaterMedia services and exposes immutable bootstrap diagnostics. */
+/** Loads WaterMedia's modules once for the life of the process and exposes the loading state. */
 public final class WaterMedia {
     private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
     public static final String ID = "watermedia";
@@ -33,120 +31,103 @@ public final class WaterMedia {
     private static final Path DEFAULT_TEMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
     private static final Path DEFAULT_CWD = Path.of("").toAbsolutePath();
 
-    // THE ENVIRONMENT OF ONE SESSION; PUBLISHED BEFORE ANY MODULE STARTS AND RETAINED UNTIL EVERY MODULE STOPS.
+    // THE ENVIRONMENT OF THE PROCESS; PUBLISHED BEFORE ANY MODULE STARTS AND KEPT FOR THE LIFE OF THE JVM
     private record Context(Path tmp, Path cwd, boolean clientSide) {}
 
-    // FACTORY BODIES ARE RESOLVED ONLY AFTER SIDE AND DEPENDENCY GATES PASS.
-    private static final List<Bootstrap.Definition> MODULES = List.of(
-            new Bootstrap.Definition(Id.CONFIG, false, true, List.of(), WaterMediaConfig.Module::new),
-            new Bootstrap.Definition(Id.BINARIES, true, true, List.of(Id.CONFIG), WaterMedia::binaries),
-            new Bootstrap.Definition(Id.NETWORK, false, false, List.of(Id.CONFIG), NetworkAPI.Module::new),
-            new Bootstrap.Definition(Id.PLATFORMS, true, false, List.of(Id.CONFIG, Id.NETWORK), PlatformAPI.Module::new),
-            new Bootstrap.Definition(Id.MEDIA, true, false, List.of(Id.CONFIG, Id.NETWORK), MediaAPI.Module::new)
-    );
+    // A MODULE IN LOAD ORDER: WHETHER ONLY CLIENTS LOAD IT, WHETHER ITS FAILURE ENDS THE LOAD, AND ITS FACTORY,
+    // RESOLVED ONLY AFTER THE SIDE CHECK PASSES (BINARIES STAYS BEHIND ITS LAZY HOLDER)
+    private record Definition(boolean client, boolean essential, Supplier<WaterMediaModule> factory) {}
+
+    private static final List<Definition> MODULES = List.of(
+            new Definition(false, true, WaterMediaConfig.Module::new),
+            new Definition(true, true, WaterMedia::binaries),
+            new Definition(false, false, NetworkAPI.Module::new),
+            new Definition(true, false, MediaAPI.Module::new));
     private static final Object LIFECYCLE = new Object();
-    private static boolean transitioning;
     private static volatile Context instance;
-    private static volatile Bootstrap bootstrap = new Bootstrap(MODULES);
+    private static volatile Status status = new Status(State.IDLE, null, 0, 0, List.of());
 
     private WaterMedia() {}
 
     /**
-     * Starts configured services. Client-only factories are never invoked on a server.
-     * Optional failures produce DEGRADED; essential failures throw and retain their diagnostics.
-     * A failed start that retained no module leaves no session behind, so the next {@code start}
-     * needs no {@link #stop()}; one that did keeps the session until {@code stop} releases it.
+     * Loads every module, once for the life of the process; nothing is ever unloaded. Client-only modules
+     * never load on a server and a module that is not installed is skipped. A module the library can live
+     * without (the file server, FFmpeg) leaves the state LOADED with its failure listed in {@link #status()};
+     * an essential one (the configuration, an installed Binaries module) leaves FAILED and throws.
+     *
+     * @throws IllegalStateException when WaterMedia already started, when called from an owned worker thread,
+     *         or when an essential module fails, with that failure as the cause
      */
     public static void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
-        if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host lifecycle thread, not a managed worker");
+        if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host thread, not a managed worker");
         if (Objects.requireNonNull(name).isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
-        final Context context = new Context((tmp == null ? DEFAULT_TEMP : tmp).toAbsolutePath().normalize(),
-                (cwd == null ? DEFAULT_CWD : cwd).toAbsolutePath().normalize(), clientSide);
-        final Bootstrap session = new Bootstrap(MODULES);
+        final List<Definition> modules = new ArrayList<>(MODULES.size());
+        for (final Definition definition: MODULES) if (clientSide || !definition.client()) modules.add(definition);
         synchronized (LIFECYCLE) {
-            if (transitioning || instance != null) throw new IllegalStateException("WaterMedia already has a session or lifecycle transition");
-            synchronized (MediaPlayer.class) {
-                session.state(State.STARTING);
-                bootstrap = session;
-                instance = context;
-                transitioning = true;
-            }
+            if (status.state() != State.IDLE) throw new IllegalStateException("WaterMedia has already started");
+            instance = new Context((tmp == null ? DEFAULT_TEMP : tmp).toAbsolutePath().normalize(),
+                    (cwd == null ? DEFAULT_CWD : cwd).toAbsolutePath().normalize(), clientSide);
+            status = new Status(State.LOADING, null, 0, modules.size(), List.of());
         }
         LOGGER.info(IT, "Starting {} {} for {} ({})", NAME, VERSION, name, clientSide ? "client" : "server");
+        final List<Failure> failures = new ArrayList<>();
+        int done = 0;
+        Class<?> type = null;
         try {
-            session.start(clientSide);
-            LOGGER.info(IT, "{} startup completed: {}", NAME, session.status().state());
-        } finally {
-            synchronized (LIFECYCLE) {
-                // A FAILED START THAT RETAINED NO MODULE LEAVES NO SESSION BEHIND, EXACTLY LIKE A COMPLETED STOP
-                if (session.status().state() == State.FAILED && !session.ownsResources()) instance = null;
-                transitioning = false;
+            for (final Definition definition: modules) {
+                type = null;
+                try {
+                    final WaterMediaModule module = definition.factory().get();
+                    if (module != null) {
+                        type = module.getClass();
+                        status = new Status(State.LOADING, type, done, modules.size(), List.copyOf(failures));
+                        module.load();
+                        for (final Throwable partial: module.failures()) failures.add(new Failure(type, partial));
+                    }
+                } catch (final Exception | LinkageError failure) {
+                    final Failure failed = new Failure(type, failure);
+                    failures.add(failed);
+                    final boolean interrupted = failure instanceof InterruptedException;
+                    if (interrupted) Thread.currentThread().interrupt();
+                    if (definition.essential() || interrupted) {
+                        status = new Status(State.FAILED, type, done, modules.size(), List.copyOf(failures));
+                        LOGGER.error(IT, "{} did not load: module {} {}", NAME, failed.name(), interrupted ? "was interrupted" : "failed", failure);
+                        throw new IllegalStateException((interrupted ? "WaterMedia load interrupted at module " : "Essential WaterMedia module failed: ") + failed.name(), failure);
+                    }
+                }
+                done++;
             }
-            for (final BootStatus.Failure failure: session.status().failures())
-                LOGGER.error(IT, "Service {} failed during {}", failure.id(), failure.task(), failure.cause());
+        } catch (final Error fatal) { // A VM ERROR LEAVES THE LOAD WHERE IT WAS; NOTHING CAN BE RETRIED
+            failures.add(new Failure(type, fatal));
+            status = new Status(State.FAILED, type, done, modules.size(), List.copyOf(failures));
+            throw fatal;
         }
+        status = new Status(State.LOADED, null, done, modules.size(), List.copyOf(failures));
+        for (final Failure failure: failures)
+            LOGGER.error(IT, "Module {} failed; the features it provides are unavailable", failure.name(), failure.cause());
+        LOGGER.info(IT, "{} loaded {} module(s) with {} failure(s)", NAME, done, failures.size());
     }
 
-    /**
-     * Stops services in reverse order. Release all players on their owning host contexts first.
-     * Incomplete shutdown retains the session and must be retried before another start; every
-     * shutdown failure is logged and the last one is the cause of the thrown exception. Stopping
-     * without a session is a no-op.
-     */
-    public static void stop() {
-        if (ThreadTool.workerThread()) throw new IllegalStateException("Stop WaterMedia from a host lifecycle thread, not a managed worker");
-        final Bootstrap session;
-        synchronized (LIFECYCLE) {
-            if (transitioning) throw new IllegalStateException("WaterMedia is already changing lifecycle state");
-            if (instance == null) return;
-            session = bootstrap;
-            // PLAYER ADMISSION AND CLOSING THE SESSION SHARE THIS SHORT GATE; NO CALLBACK RUNS HERE.
-            synchronized (MediaPlayer.class) {
-                if (MediaPlayer.openPlayers() != 0)
-                    throw new IllegalStateException("Release all media players on their owning contexts before stopping WaterMedia");
-                session.state(State.STOPPING);
-                transitioning = true;
-            }
-        }
-        final int reported = session.status().failures().size();
-        try {
-            session.stop();
-            LOGGER.info(IT, "{} stopped", NAME);
-        } finally {
-            synchronized (LIFECYCLE) {
-                if (session.status().state() == State.STOPPED && !session.ownsResources()) instance = null;
-                transitioning = false;
-            }
-            // START FAILURES ARE LOGGED BY start(); THIS REPORTS THE SHUTDOWN ONES
-            final List<BootStatus.Failure> failures = session.status().failures();
-            for (int i = reported; i < failures.size(); i++)
-                LOGGER.error(IT, "Service {} failed during {}", failures.get(i).id(), failures.get(i).task(), failures.get(i).cause());
-        }
-    }
+    /** True once every module loaded; the failures of optional modules do not change it. */
+    public static boolean loaded() { return status.state() == State.LOADED; }
 
-    /** True only after startup finishes with ready or degraded services. */
-    public static boolean started() {
-        final State state = bootstrap.status().state();
-        return state == State.READY || state == State.DEGRADED;
-    }
-
-    /** Returns one coherent lifecycle, progress and failure snapshot. */
-    public static BootStatus status() { return bootstrap.status(); }
+    /** Returns the current load state. */
+    public static Status status() { return status; }
 
     /** Prefixes a resource path with this library's identifier, as {@code watermedia:path}. */
     public static String toId(final String path) { return ID + ":" + path; }
 
-    /** Returns the session's absolute working directory; throws when WaterMedia is not initialized. */
+    /** Returns the process's absolute working directory; throws before {@link #start}. */
     public static Path cwd() { return context().cwd; }
 
-    /** Returns the session's absolute temporary directory; throws when WaterMedia is not initialized. */
+    /** Returns the process's absolute temporary directory; throws before {@link #start}. */
     public static Path tmp() { return context().tmp; }
 
-    /** Whether the session runs on a client; throws when WaterMedia is not initialized. */
+    /** Whether WaterMedia runs on a client; throws before {@link #start}. */
     public static boolean clientSide() { return context().clientSide; }
 
     /**
-     * Rejects a client-only operation requested by {@code type} when WaterMedia is uninitialized or server-side.
+     * Rejects a client-only operation requested by {@code type} before {@link #start} or on a server.
      * Engines, media players and any client-only tool call it from their constructors, so a dedicated server
      * cannot reach rendering, audio or decoding code even where the host does not hide those classes.
      */
@@ -156,7 +137,7 @@ public final class WaterMedia {
 
     private static Context context() {
         final Context context = instance;
-        if (context == null) throw new IllegalStateException(NAME + " was not initialized");
+        if (context == null) throw new IllegalStateException(NAME + " has not started");
         return context;
     }
 
@@ -171,38 +152,25 @@ public final class WaterMedia {
         private static final Supplier<WaterMediaModule> BINARIES = WaterMediaBinaries::new;
     }
 
-    /** A coherent snapshot of the current bootstrap session and its diagnostics. */
-    public record BootStatus(State state, int step, int steps, Id current, Progress progress,
-                             List<Service> services, List<Failure> failures) {
-        public BootStatus {
-            services = List.copyOf(services);
+    /** The load state: the module being loaded (null between modules), modules done out of total, and every failure so far, the essential one that ended the load included. */
+    public record Status(State state, Class<?> loading, int done, int total, List<Failure> failures) {
+        public Status {
             failures = List.copyOf(failures);
         }
 
-        /** Whether this snapshot contains a successfully initialized service. */
-        public boolean ready(final Id id) {
-            return this.services.stream().anyMatch(service -> service.id() == id && service.outcome() == Outcome.READY);
+        public enum State { IDLE, LOADING, LOADED, FAILED }
+
+        /** Returns the display name of a module class: the API that owns a nested Module, or "unknown" for null. */
+        public static String name(final Class<?> module) {
+            if (module == null) return "unknown";
+            final Class<?> owner = module.getEnclosingClass();
+            return (owner != null ? owner : module).getSimpleName();
         }
 
-        /** Whether the session is up (ready or degraded) and the service {@code id} started, so its API accepts calls. */
-        public boolean running(final Id id) {
-            return (this.state == State.READY || this.state == State.DEGRADED) && this.ready(id);
-        }
-
-        public enum State { STOPPED, STARTING, READY, DEGRADED, FAILED, STOPPING }
-        public enum Outcome { PENDING, STARTING, READY, SKIPPED, FAILED, BLOCKED, STOPPED }
-        public enum Id { CONFIG, BINARIES, NETWORK, PLATFORMS, MEDIA }
-
-        /** Service outcome; dependency identifies a service blocking startup or shutdown. */
-        public record Service(Id id, Outcome outcome, Id dependency, String reason) {}
-
-        /** A startup or shutdown failure of the service {@code id}, with its original cause. */
-        public record Failure(Id id, String task, Throwable cause) {}
-
-        /** Task and transfer progress published together by the owning module. */
-        public record Progress(int taskStep, int taskSteps, String taskName, long work, long workTotal,
-                               String workName, boolean remote) {
-            public static final Progress NONE = new Progress(0, 0, "", 0, 0, "", false);
+        /** A module that failed to load with its cause; {@code module} is null when it could not even be constructed. */
+        public record Failure(Class<?> module, Throwable cause) {
+            /** Returns the module's display name, or "unknown" when it never got constructed. */
+            public String name() { return Status.name(this.module); }
         }
     }
 }
