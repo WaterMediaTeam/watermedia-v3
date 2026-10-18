@@ -15,16 +15,18 @@ import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the {@link AWTEngine} software sink: BGRA/RGBA byte order lands as {@code 0xAARRGGBB}
- * in the {@code BufferedImage}, resize reallocates, and format declines steer the producer to BGRA.
+ * in the {@code BufferedImage}, resize reallocates, format declines steer the producer to BGRA and
+ * the shared engine lifecycle (refused sizes, release, isolated callbacks) holds.
  */
 @DisplayName("AWTEngine")
-class AWTEngineTest {
+public class AWTEngineTest {
 
     @BeforeAll
     static void boot() {
@@ -74,10 +76,29 @@ class AWTEngineTest {
 
         engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
         assertTrue(fired[0]);
-        assertEquals(1L, engine.texture()); // FRAME PRESENT — SENTINEL FLIPS NON-ZERO
+        assertNotEquals(0L, engine.texture()); // FRAME PRESENT — SENTINEL FLIPS NON-ZERO
 
         engine.release();
         assertEquals(0L, engine.texture());
+        assertTrue(engine.released());
+        assertFalse(engine.format(PixelFormat.BGRA, 1, 1, 8), "a released engine refuses formats");
+        assertNull(engine.image(), "no surface comes back after release");
+        fired[0] = false;
+        engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
+        assertFalse(fired[0], "uploads are dropped after release");
+        engine.release(); // IDEMPOTENT
+    }
+
+    @Test
+    @DisplayName("A frame callback that throws is logged, not thrown at the decoder")
+    void callbackFailuresAreIsolated() {
+        final AWTEngine engine = MediaAPI.awtEngine(() -> { throw new IllegalStateException("host repaint failed"); });
+        engine.format(PixelFormat.BGRA, 1, 1, 8);
+        try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+            engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
+            assertEquals(Level.ERROR, capture.events().get(0).getLevel());
+        }
+        assertNotEquals(0L, engine.texture(), "the frame was published before the callback failed");
     }
 
     @Test
@@ -124,19 +145,28 @@ class AWTEngineTest {
     }
 
     @Test
-    @DisplayName("Sizes that cannot back one buffer warn, leave no surface and drop frames")
+    @DisplayName("Sizes that cannot back one buffer are refused, leave no surface and drop frames")
     void invalidSizesDropFrames() {
         final AWTEngine engine = MediaAPI.awtEngine(null);
-        for (final int[] size: new int[][] { { 0, 4 }, { 4, -1 }, { 50_000, 50_000 } }) {
+        // EMPTY SIZES ARE REFUSED BY THE BASE CONTRACT BEFORE ANY BACKEND WORK, SILENTLY
+        for (final int[] size: new int[][] { { 0, 4 }, { 4, -1 } }) {
             try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
-                engine.format(PixelFormat.BGRA, size[0], size[1], 8);
+                assertFalse(engine.format(PixelFormat.BGRA, size[0], size[1], 8));
                 assertNull(engine.image());
-                assertEquals(Level.WARN, capture.events().get(0).getLevel());
-                assertTrue(capture.events().get(0).getMessage().getFormattedMessage().contains(size[0] + "x" + size[1]));
+                assertTrue(capture.events().isEmpty());
             }
             engine.upload(new ByteBuffer[] { direct(1, 2, 3, 4) }, new int[] { 0 });
             assertEquals(0L, engine.texture());
         }
+        // A SIZE NO SINGLE BUFFER CAN BACK IS REFUSED BY THE SOFTWARE SINK WITH A WARNING
+        try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+            assertFalse(engine.format(PixelFormat.BGRA, 50_000, 50_000, 8));
+            assertNull(engine.image());
+            assertEquals(Level.WARN, capture.events().get(0).getLevel());
+            assertTrue(capture.events().get(0).getMessage().getFormattedMessage().contains("50000x50000"));
+        }
+        engine.upload(new ByteBuffer[] { direct(1, 2, 3, 4) }, new int[] { 0 });
+        assertEquals(0L, engine.texture());
     }
 
     @Test
@@ -147,5 +177,6 @@ class AWTEngineTest {
         assertTrue(engine.supports(PixelFormat.RGBA));
         assertFalse(engine.supports(PixelFormat.RGB));
         assertFalse(engine.supports(PixelFormat.YUV420P));
+        assertFalse(engine.supports(PixelFormat.RGBA, 16), "a software surface copies four bytes per pixel");
     }
 }

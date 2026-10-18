@@ -26,8 +26,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class JFXEngine extends SWEngine {
     private static final Marker IT = MarkerManager.getMarker(JFXEngine.class.getSimpleName());
+    // BOTH ARE REPLACED ON THE DECODE THREAD AND READ FROM THE FX THREAD (repaint) — HENCE volatile
     private volatile WritableImage image;
-    private PixelBuffer<ByteBuffer> pixelBuffer;
+    private volatile PixelBuffer<ByteBuffer> pixelBuffer;
     private volatile boolean loggedPresent;
 
     JFXEngine(final Runnable onFrame) {
@@ -41,12 +42,10 @@ public final class JFXEngine extends SWEngine {
 
     @Override
     protected void allocSurface(final int width, final int height, final ByteBuffer bgra) {
-        try {
-            this.pixelBuffer = new PixelBuffer<>(width, height, bgra, PixelFormat.getByteBgraPreInstance());
-            this.image = new WritableImage(this.pixelBuffer);
-        } catch (final RuntimeException t) {
-            LOGGER.error(IT, "Failed to allocate the {}x{} surface", width, height, t);
-        }
+        // A FAILURE PROPAGATES TO SWEngine, WHICH REFUSES THE FORMAT AND LEAVES NO SURFACE BEHIND
+        final PixelBuffer<ByteBuffer> buffer = new PixelBuffer<>(width, height, bgra, PixelFormat.getByteBgraPreInstance());
+        this.image = new WritableImage(buffer);
+        this.pixelBuffer = buffer;
     }
 
     /**

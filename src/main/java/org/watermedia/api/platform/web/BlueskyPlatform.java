@@ -119,7 +119,7 @@ public final class BlueskyPlatform implements Platform {
             if (hlsResult instanceof final M3UTool.Master master) {
                 for (final M3UTool.Variant variant: master.variants()) {
                     if (variant.width() <= 0 || variant.height() <= 0) continue;
-                    variants.add(new Quality(variant.uri(), variant.width(), variant.height()));
+                    variants.add(new Quality(variant.uri(), variant.width(), variant.height(), (float) variant.fps()));
                 }
                 LOGGER.debug(IT, "Bluesky parsed {} HLS rendition(s) for '{}'", variants.size(), postId);
             }

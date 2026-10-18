@@ -1,6 +1,7 @@
 package org.watermedia.api.media;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * Wire unit of the bridge sync protocol.
@@ -25,7 +26,8 @@ public sealed interface Packet permits Sync, Config, Watch, Report, Control, Unw
     /**
      * Decodes a packet from its binary form. Exactly the packet's own bytes are consumed and
      * anything after them is left in the buffer, so a payload may travel inside a larger frame
-     * carrying the dev's own routing fields.
+     * carrying the dev's own routing fields. The buffer's byte order is irrelevant (the wire is
+     * big-endian) and a rejected payload leaves the position untouched.
      * @param buf a payload produced by {@link #toBytes()}
      * @return the decoded packet
      * @throws IllegalArgumentException if the payload is null, truncated, has an unknown
@@ -34,16 +36,21 @@ public sealed interface Packet permits Sync, Config, Watch, Report, Control, Unw
     static Packet read(final ByteBuffer buf) {
         if (buf == null || buf.remaining() < 2)
             throw new IllegalArgumentException("Packet payload is null or truncated");
-        final byte id = buf.get();
-        final byte version = buf.get();
-        return switch (id) {
-            case Sync.ID -> Sync.read(buf, version);
-            case Config.ID -> Config.read(buf, version);
-            case Watch.ID -> Watch.read(buf, version);
-            case Report.ID -> Report.read(buf, version);
-            case Control.ID -> Control.read(buf, version);
-            case Unwatch.ID -> Unwatch.read(buf, version);
+        // DECODE FROM A BIG-ENDIAN VIEW SO THE CALLER'S BYTE ORDER NEVER MATTERS, AND ADVANCE THE
+        // CALLER'S POSITION ONLY ONCE THE WHOLE PACKET PARSED — A REJECTED PAYLOAD LEAVES IT UNTOUCHED
+        final ByteBuffer view = buf.duplicate().order(ByteOrder.BIG_ENDIAN);
+        final byte id = view.get();
+        final byte version = view.get();
+        final Packet packet = switch (id) {
+            case Sync.ID -> Sync.read(view, version);
+            case Config.ID -> Config.read(view, version);
+            case Watch.ID -> Watch.read(view, version);
+            case Report.ID -> Report.read(view, version);
+            case Control.ID -> Control.read(view, version);
+            case Unwatch.ID -> Unwatch.read(view, version);
             default -> throw new IllegalArgumentException("Unknown packet id: " + id);
         };
+        buf.position(view.position());
+        return packet;
     }
 }

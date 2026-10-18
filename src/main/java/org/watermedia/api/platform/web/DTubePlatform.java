@@ -79,7 +79,7 @@ public final class DTubePlatform implements Platform {
                 final M3UTool.Playlist r = fetchHls(hlsUri);
                 if (r instanceof final M3UTool.Master master) {
                     for (final M3UTool.Variant variant: master.variants()) {
-                        variants.add(new Quality(variant.uri(), variant.width(), variant.height()));
+                        variants.add(new Quality(variant.uri(), variant.width(), variant.height(), (float) variant.fps()));
                     }
                     LOGGER.debug(IT, "D.tube parsed {} HLS rendition(s) for {}", master.variants().size(), uri);
                 } else {

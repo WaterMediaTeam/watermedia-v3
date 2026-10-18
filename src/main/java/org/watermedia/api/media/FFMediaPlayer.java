@@ -144,12 +144,16 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int audioStreamIndex = -1;
     private boolean useAudioTrack = false;
 
-    // THREADS
+    // THREADS — lifecycleLock SERIALIZES start()/stop()/release() AGAINST EACH OTHER; IT IS NEVER
+    // HELD ACROSS A JOIN, SO A LIFECYCLE PUBLISHING ITS LAST STATUS CANNOT DEADLOCK A RELEASE
     private final BiFunction<String, Runnable, Thread> factory = DEFAULT_THREAD_FACTORY.newFactory();
-    private Thread lifecycleThread;
-    private Thread demuxThread;
-    private Thread videoDecodeThread;
-    private Thread audioDecodeThread;
+    private final Object lifecycleLock = new Object();
+    private final Object decodeLock = new Object();
+    private final Object releaseLock = new Object();
+    private volatile Thread lifecycleThread;
+    private volatile Thread demuxThread;
+    private volatile Thread videoDecodeThread;
+    private volatile Thread audioDecodeThread;
 
     // QUEUES — VOLATILE: buffered() READS THEM FROM THE GAME/RENDER THREAD WHILE THE
     // LIFECYCLE THREAD CREATES AND FREES THEM (THE QUEUES THEMSELVES ARE SYNCHRONIZED)
@@ -162,8 +166,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     private final MasterClock clock = new MasterClock();
     private volatile boolean qualityRequest = false;
     private volatile boolean ioAbortRequested = false;
-    private volatile boolean startPausedRequest = false;
     private volatile boolean released = false; // ONCE release() RUNS THE ENGINES ARE FREED — REJECT NEW start()s
+    private volatile boolean releaseDone; // SET ONCE THE ENGINES ARE FREED, SO A REPEATED release() IS A NO-OP
+    private volatile boolean playable; // THE SOURCE OPENED AT LEAST ONCE AND NOTHING FAILED SINCE — canPlay()
+    private volatile float fps; // 0 UNTIL THE VIDEO STREAM REPORTS A PLAUSIBLE RATE; AUDIO-ONLY STAYS 0
+    private volatile long displayTimeMs; // HOW LONG A SINGLE-FRAME SOURCE STAYS UP BEFORE ENDED (0 = FOREVER)
+    private volatile int runSerial; // BUMPED PER lifecycle() RUN SO ASYNC PROBES CANNOT WRITE INTO A LATER RUN
     private volatile Boolean hlsLiveSource;
     private Callback_Pointer interruptCallback;
 
@@ -215,6 +223,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int lastFrameHeight;
     private PixelFormat lastFormat;
     private int lastBitsPerComponent;
+    private boolean uploadRefused; // THE ENGINE REFUSED THE LAST LAYOUT: FRAMES DROP UNTIL IT CHANGES
     // FFTool.Pixels CACHE (CONSUME THREAD ONLY): THE STREAM PIXEL FORMAT IS STABLE, SO MAP ONCE PER
     // FORMAT CHANGE INSTEAD OF ALLOCATING A MAPPING EVERY FRAME IN THE UPLOAD HOT PATH.
     private int cachedUploadFmt = Integer.MIN_VALUE;
@@ -254,6 +263,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private final LogTool.Throttle starvationReports = new LogTool.Throttle(SLOW_REPORT_NS);
     private final LogTool.Throttle audioSlotReports = new LogTool.Throttle(SLOW_REPORT_NS);
     private final LogTool.Throttle audioFormatReports = new LogTool.Throttle(SLOW_REPORT_NS);
+    private final LogTool.Throttle gfxReports = new LogTool.Throttle(SLOW_REPORT_NS);
 
     // NOTHING IS OPENED UNTIL start(); THE HEAVY FFMPEG SETUP RUNS ON THE INTERNAL THREADS SPAWNED THEN.
     // A NULL gfx MEANS AUDIO-ONLY AND A NULL sfx VIDEO-ONLY PLAYBACK
@@ -264,70 +274,82 @@ public final class FFMediaPlayer extends MediaPlayer {
     // A NON-NULL bridge FOLLOWS A SERVER-SIDE AUTHORITY (SEE MediaPlayer)
     FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx, final Bridge bridge) {
         super(mrl, sourceIndex, gfx, sfx, bridge);
+        // EVERY CLOCK TRANSITION (INCLUDING THE ONES THE PIPELINE MAKES INTERNALLY) REACHES THE LISTENER
+        this.clock.listener(this::invokeStatus);
         this.arm();
     }
 
     // MEDIAPLAYER OVERRIDES
     @Override
     public boolean start() {
-        if (!super.start()) return false;
-        // release() FREES gfx/sfx — REBUILDING THE PIPELINE ON DEAD ENGINES WOULD CRASH ON UPLOAD
-        if (this.released) {
-            LOGGER.warn(IT, "start() ignored — player already released");
-            return false;
-        }
-        LOGGER.debug(IT, "Start requested (quality={})", this.quality);
-        if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
-            this.abort();
-        }
-        final Thread oldThread = this.lifecycleThread;
-
-        this.lifecycleThread = this.factory.apply("lifecycle", () -> {
-            // join RETURNS false WHEN THIS THREAD IS INTERRUPTED WHILE WAITING — THE RESTART WAS
-            // DROPPED, SO LEAVE A CLEAN TERMINAL STATE INSTEAD OF THE PREVIOUS RUN'S STALE STATUS
-            if (oldThread != null && !ThreadTool.join(oldThread)) {
-                LOGGER.warn(IT, "Restart aborted — interrupted while joining the previous lifecycle");
-                this.publishTransition(Status.STOPPED);
-                return;
-            }
-            this.lifecycle();
-        });
-        this.lifecycleThread.setDaemon(true);
-        this.lifecycleThread.start();
-        return true;
+        return super.start() && this.launch(false, -1L);
     }
 
     @Override
     public boolean startPaused() {
-        if (!super.startPaused()) return false;
-        // THE PAUSE INTENT CANNOT LIVE IN THE CLOCK HERE: lifecycle() CALLS
-        // clock.reset() WHICH WIPES pauseIntent, SO THE PLAYER WOULD START
-        // PLAYING. THE FLAG IS CONSUMED BY lifecycle() RIGHT AFTER THE RESET.
-        this.startPausedRequest = true;
-        return this.start();
+        return super.startPaused() && this.launch(true, -1L);
+    }
+
+    // LAUNCHES A LIFECYCLE RUN, ABORTING THE ONE IN FLIGHT. THE PAUSE INTENT AND THE INITIAL SEEK TRAVEL
+    // WITH THE RUN (THE CLOCK IS RESET BY IT); THE THREAD STARTS UNDER THE LOCK SO release() ALWAYS JOINS IT
+    private boolean launch(final boolean paused, final long seekMs) {
+        synchronized (this.lifecycleLock) {
+            // release() FREES gfx/sfx — REBUILDING THE PIPELINE ON DEAD ENGINES WOULD CRASH ON UPLOAD
+            if (this.released) {
+                LOGGER.warn(IT, "start() ignored — player already released");
+                return false;
+            }
+            LOGGER.debug(IT, "Start requested (quality={}, paused={}, at={}ms)", this.quality, paused, seekMs);
+            final Thread oldThread = this.lifecycleThread;
+            if (oldThread != null && oldThread.isAlive() && !oldThread.isInterrupted()) this.abort();
+            final Thread thread = this.factory.apply("lifecycle", () -> {
+                // join RETURNS false WHEN THIS THREAD IS INTERRUPTED WHILE WAITING — THE RESTART WAS
+                // DROPPED, SO LEAVE A CLEAN TERMINAL STATE INSTEAD OF THE PREVIOUS RUN'S STALE STATUS
+                if (oldThread != null && !ThreadTool.join(oldThread)) {
+                    LOGGER.warn(IT, "Restart aborted — interrupted while joining the previous lifecycle");
+                    this.publishTransition(Status.STOPPED);
+                    return;
+                }
+                this.lifecycle(paused, seekMs);
+            });
+            thread.setDaemon(true);
+            this.lifecycleThread = thread;
+            thread.start();
+        }
+        return true;
     }
 
     @Override
     public void release() {
-        LOGGER.debug(IT, "Release requested");
-        this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
-        // TEAR DOWN DIRECTLY, NEVER THROUGH stop(): ON A BRIDGED PLAYER THAT WOULD ASK THE SYNC
-        // AUTHORITY TO STOP THE MEDIA FOR EVERY FOLLOWER JUST BECAUSE ONE CLIENT WENT AWAY.
-        this.abort();
-        // WAIT FOR THE PIPELINE TO EXIT BEFORE FREEING ENGINES — THE CONSUMPTION
-        // LOOP KEEPS TOUCHING sfx/gfx AND NATIVE CONTEXTS UNTIL IT FINISHES.
-        // ioAbortRequested (SET BY stop()) MAKES BLOCKING NATIVE I/O RETURN FAST.
-        final Thread lifecycle = this.lifecycleThread;
+        // FAIL FAST FROM THE PLAYER'S OWN THREADS BEFORE TOUCHING ANY STATE, SO THE HOST CAN RETRY LATER
         final Thread caller = Thread.currentThread();
-        if (caller == lifecycle || caller == this.demuxThread || caller == this.videoDecodeThread || caller == this.audioDecodeThread)
-            throw new IllegalStateException("Release the player from its host thread after the playback callback returns");
-        if (lifecycle != null) {
-            ThreadTool.join(lifecycle);
+        if (caller == this.lifecycleThread || caller == this.demuxThread || caller == this.videoDecodeThread || caller == this.audioDecodeThread)
+            throw new IllegalStateException("Release the player from its host thread, not from a playback callback");
+        // ONE RELEASE AT A TIME: A CONCURRENT SECOND CALL WAITS AND THEN FINDS THE WORK DONE
+        synchronized (this.releaseLock) {
+            final Thread lifecycle;
+            synchronized (this.lifecycleLock) {
+                if (this.releaseDone) return;
+                LOGGER.debug(IT, "Release requested");
+                this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
+                // TEAR DOWN DIRECTLY, NEVER THROUGH stop(): ON A BRIDGED PLAYER THAT WOULD ASK THE SYNC
+                // AUTHORITY TO STOP THE MEDIA FOR EVERY FOLLOWER JUST BECAUSE ONE CLIENT WENT AWAY.
+                this.abort();
+                lifecycle = this.lifecycleThread;
+            }
+            // WAIT FOR THE PIPELINE TO EXIT BEFORE FREEING ENGINES — THE CONSUMPTION LOOP KEEPS TOUCHING sfx/gfx
+            // AND NATIVE CONTEXTS UNTIL IT FINISHES; ioAbortRequested (SET BY abort()) MAKES NATIVE I/O RETURN FAST
+            if (lifecycle != null) {
+                ThreadTool.join(lifecycle);
+            }
+            // RETIRE EACH GPU IMPORT BEFORE FREEING ITS HOST BUFFER, WHILE THE GRAPHICS ENGINE IS LIVE.
+            // AUDIO ADAPTER CLEANUP MAY THROW, SO THE DECODED PLANE POOL MUST ALREADY BE RELEASED.
+            this.freePlanePool();
+            this.playable = false;
+            this.clock.halt(); // EVERY PLAYER LANDS STOPPED ON RELEASE, EVEN FROM ERROR
+            this.releaseDone = true;
+            super.release();
         }
-        // RETIRE EACH GPU IMPORT BEFORE FREEING ITS HOST BUFFER, WHILE THE GRAPHICS ENGINE IS LIVE.
-        // AUDIO ADAPTER CLEANUP MAY THROW, SO THE DECODED PLANE POOL MUST ALREADY BE RELEASED.
-        this.freePlanePool();
-        super.release();
     }
 
     // FREES THE ROTATING PLANE POOL. PAGE-ALIGNED BUFFERS (memAlignedAlloc, FOR ZERO-COPY VULKAN IMPORT) ARE
@@ -369,17 +391,27 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
-        return super.stop() && this.abort();
+        if (!super.stop()) return false;
+        synchronized (this.lifecycleLock) {
+            final Thread lifecycle = this.lifecycleThread;
+            if (lifecycle != null && lifecycle.isAlive() && !lifecycle.isInterrupted()) return this.abort();
+        }
+        // AN ENDED OR FAILED PIPELINE IS ALREADY GONE: stop() ONLY MOVES THE STATUS AND REWINDS THE CLOCK.
+        // OUTSIDE THE LOCK BECAUSE THE TRANSITION NOTIFIES THE LISTENER; A RESTART RACING IT RE-CHECKS LOADING
+        final Status status = this.clock.status();
+        return (status == Status.ENDED || status == Status.ERROR) && this.clock.transition(Status.STOPPED);
     }
 
     // INTERRUPTS THE PIPELINE AND ABORTS BLOCKING NATIVE I/O. SHARED BY stop(), THE RESTART PATH IN
-    // start() AND release() — THE LATTER TWO ARE LOCAL TEARDOWNS THAT MUST NOT REACH THE AUTHORITY.
+    // launch() AND release() — THE LATTER TWO ARE LOCAL TEARDOWNS THAT MUST NOT REACH THE AUTHORITY.
     private boolean abort() {
-        if (this.lifecycleThread != null) {
+        final Thread lifecycle = this.lifecycleThread;
+        if (lifecycle != null) {
             LOGGER.debug(IT, "Stop requested (status={}, clock={}ms)", this.clock.status(), this.clock.timeMs());
             this.ioAbortRequested = true; // ABORT BLOCKING NATIVE I/O (OPEN/READ) ASAP
-            this.lifecycleThread.interrupt();
-            if (this.demuxThread != null) this.demuxThread.interrupt();
+            lifecycle.interrupt();
+            final Thread demux = this.demuxThread;
+            if (demux != null) demux.interrupt();
             return true;
         }
         return false;
@@ -387,7 +419,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean togglePlay() {
-        return super.togglePlay() && this.pause(!this.clock.pauseRequested());
+        if (!super.togglePlay()) return false;
+        return switch (this.clock.status()) {
+            case ENDED, STOPPED -> this.launch(false, -1L);
+            case WAITING, ERROR -> false;
+            default -> this.pause(!this.clock.pauseRequested());
+        };
     }
 
     @Override
@@ -410,33 +447,44 @@ public final class FFMediaPlayer extends MediaPlayer {
         final long duration = this.duration();
         final long target = Math.max(0, duration > 0 ? Math.min(timeMs, duration) : timeMs);
         LOGGER.debug(IT, "Seek requested -> {}ms (precise={}, clamped from {}ms)", target, precise, timeMs);
+        // A FINISHED OR STOPPED PIPELINE IS GONE: SCRUBBING IT MEANS A PAUSED RESTART AT THE TARGET
+        final Status status = this.clock.status();
+        if (status == Status.ENDED || status == Status.STOPPED) return this.launch(true, target);
         return this.clock.requestSeek(target, precise);
     }
 
+    // FRAME STEPPING IS A PAUSED-ONLY CONTROL ON EVERY PLAYER
     @Override
     public boolean previousFrame() {
-        if (!super.previousFrame() || !this.canSeek()) return false;
-        return this.seek(Math.max(0, this.time() - this.clock.frameDurationMs()));
+        if (!super.previousFrame() || !this.paused() || !this.canSeek()) return false;
+        return this.clock.requestSeek(Math.max(0, this.time() - this.clock.frameDurationMs()), true);
     }
 
     @Override
     public boolean nextFrame() {
-        if (!super.nextFrame() || !this.canSeek()) return false;
-        return this.seek(this.time() + this.clock.frameDurationMs());
+        if (!super.nextFrame() || !this.paused() || !this.canSeek()) return false;
+        final long duration = this.duration();
+        final long target = this.time() + this.clock.frameDurationMs();
+        return this.clock.requestSeek(duration > 0 ? Math.min(target, duration) : target, true);
     }
 
     @Override
-    public float fps() { return this.clock.fps(); }
+    public float fps() { return this.fps; }
 
     @Override
     public Status status() { return this.clock.status(); }
 
-    // TRANSITIONS THE CLOCK AND NOTIFIES THE STATUS LISTENER. USED FOR TERMINAL STATES
-    // (ENDED/ERROR/STOPPED) SO PLAYLIST CONSUMERS CAN ADVANCE WITHOUT POLLING status().
+    @Override
+    public void displayTime(final long ms) { this.displayTimeMs = ms; }
+
+    @Override
+    public long displayTime() { return this.displayTimeMs; }
+
+    // TERMINAL TRANSITION: THE CLOCK NOTIFIES THE LISTENER ITSELF (SEE THE CONSTRUCTOR); A FAILURE
+    // ALSO ENDS THE MEDIA'S PLAYABLE LIFE UNTIL THE NEXT start()
     private void publishTransition(final Status next) {
-        final Status prev = this.clock.status();
+        if (next == Status.ERROR) this.playable = false;
         this.clock.transition(next);
-        this.invokeStatus(prev, this.clock.status());
     }
 
     @Override
@@ -447,18 +495,20 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    public boolean canSeek() { return !this.live(); }
+    public boolean canSeek() { return this.playable && !this.live(); }
 
     @Override
-    public boolean canPlay() { return this.opened && (this.videoStreamIndex >= 0 || this.audioStreamIndex >= 0); }
+    public boolean canPlay() { return this.playable; }
 
     @Override
     public long duration() { return this.live() ? NO_DURATION : this.mediaDurationMs; }
 
     @Override
     public int buffered() {
-        // AFTER DEMUX EOF THERE IS NOTHING LEFT TO READ AHEAD — THE PIPELINE IS AS FULL AS IT GETS
-        if (this.opened && this.clock.demuxFinished()) return 100;
+        // AFTER DEMUX EOF THERE IS NOTHING LEFT TO READ AHEAD, AND A PIPELINE THAT IS PLAYING OR
+        // PAUSED IS KEEPING UP — ONLY LOADING/BUFFERING REPORT THE REAL QUEUE FILL
+        final Status status = this.clock.status();
+        if (this.opened && (this.clock.demuxFinished() || status == Status.PLAYING || status == Status.PAUSED)) return 100;
         final PacketQueue video = this.videoPacketQueue;
         final PacketQueue audio = this.audioPacketQueue;
         long sum = 0;
@@ -477,7 +527,8 @@ public final class FFMediaPlayer extends MediaPlayer {
     @Override
     public void quality(final MediaQuality quality) {
         super.quality(quality);
-        if (this.lifecycleThread != null && this.lifecycleThread.isAlive() && !this.lifecycleThread.isInterrupted()) {
+        final Thread lifecycle = this.lifecycleThread;
+        if (lifecycle != null && lifecycle.isAlive() && !lifecycle.isInterrupted()) {
             this.qualityRequest = true;
             LOGGER.debug(IT, "Quality switch requested -> {}", quality);
         }
@@ -750,8 +801,9 @@ public final class FFMediaPlayer extends MediaPlayer {
         return didWork;
     }
 
-    // LIFECYCLE (SUPERVISOR THREAD)
-    private void lifecycle() {
+    // LIFECYCLE (SUPERVISOR THREAD). paused LATCHES THE startPaused() INTENT; seekMs >= 0 IS THE POSITION A
+    // RESTART FROM ENDED/STOPPED RESUMES AT (PAUSED), -1 STARTS FROM THE BEGINNING
+    private void lifecycle(final boolean paused, final long seekMs) {
         long slowWindowStart = System.nanoTime();
         long slowCount = 0;
         long slowWorstMs = 0;
@@ -759,20 +811,22 @@ public final class FFMediaPlayer extends MediaPlayer {
         long slowVideoMs = 0;
         long slowFrameMs = 0;
         try {
+            this.runSerial++;
+            this.ioAbortRequested = false; // ONE RESET PER RUN, BEFORE THE DEMUXER CAN OPEN ANYTHING
             this.clock.reset();
-            // APPLY startPaused() INTENT AFTER THE RESET (WHICH WIPES pauseIntent)
-            if (this.startPausedRequest) {
-                this.startPausedRequest = false;
-                this.clock.paused(true);
-            }
-            this.clock.transition(Status.LOADING);
+            // A stop() THAT RACED THIS RESTART ALREADY MOVED THE FRESH CLOCK TO STOPPED: THE USER WINS
+            if (!this.clock.transition(Status.LOADING)) return;
+            // THE PAUSE INTENT AND THE RESTART POSITION LATCH INTO LOADING; start() LANDS PAUSED AND, WITH A
+            // PENDING SEEK, IN BUFFERING AT THE TARGET
+            if (paused) this.clock.paused(true);
+            if (seekMs >= 0) this.clock.requestSeek(seekMs, true);
             this.totalSkippedFrames = 0;
             this.totalRenderedFrames = 0;
             this.renderDebtSec = 0;
             this.qualityRequest = false; // this.quality IS ALREADY THE LATEST — A STALE SWITCH WOULD REBUILD THE FRESH PIPELINE
             // STARVATION DETECTION
             long starvationStartMs = 0;
-            long lastStarvationRecoveryMs = 0;
+            long lastStarvationRecoveryMs = Long.MIN_VALUE / 4; // "NEVER", FAR ENOUGH FROM ANY MONOTONIC STAMP
             this.videoPtsOffset = 0;
             this.lastRawVideoPts = Double.NaN;
             this.audioPtsOffset = 0;
@@ -781,6 +835,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.lastAudioUploadSerial = -1;
             this.hlsLiveSource = null;
             this.opened = false;
+            this.fps = 0f;
             this.mediaDurationMs = NO_DURATION;
 
             this.videoPacketQueue = new PacketQueue(VIDEO_PACKET_QUEUE_BYTES);
@@ -798,16 +853,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                 return;
             }
 
-            if (this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
-                this.videoDecodeThread = this.factory.apply("video", this::videoDecodeLoop);
-                this.videoDecodeThread.setDaemon(true);
-                this.videoDecodeThread.start();
-            }
-            if (this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
-                this.audioDecodeThread = this.factory.apply("audio", this::audioDecodeLoop);
-                this.audioDecodeThread.setDaemon(true);
-                this.audioDecodeThread.start();
-            }
+            // THE DEMUXER MAY ALREADY HAVE STARTED THE DECODERS WHILE SERVING AN INITIAL SEEK — NEVER
+            // RUN TWO DECODERS ON ONE CODEC CONTEXT
+            this.ensureDecodeThreads();
 
             // CONSUMPTION LOOP
             while (!Thread.currentThread().isInterrupted()) {
@@ -837,15 +885,22 @@ public final class FFMediaPlayer extends MediaPlayer {
                             this.publishTransition(Status.ERROR);
                             break;
                         }
-                        if (this.repeat()) {
-                            // IMAGE-LIKE SOURCE (ONE VIDEO FRAME, NO AUDIO — E.G. A PNG THAT FELL INTO
-                            // FFMPEG): LOOPING WOULD ROUNDTRIP THE WHOLE PIPELINE FOREVER FOR THE SAME
-                            // PIXELS, SO HOLD THE UPLOADED FRAME AND IDLE UNTIL A CONTROL ARRIVES.
-                            if (this.audioStreamIndex < 0 && this.totalRenderedFrames + this.totalSkippedFrames <= 1) {
-                                this.hlsLiveSource = false; // A FULLY DRAINED FINITE SOURCE IS NEVER LIVE
-                                this.clock.awaitChange(500);
-                                continue;
+                        // A STILL (ONE VIDEO FRAME, NO AUDIO) BEHAVES LIKE THE IMAGE PLAYER'S: SHOWN UNTIL displayTime
+                        // ENDS IT, FOREVER WHEN UNTIMED, NEVER LOOPED (REPLAYING THE PIPELINE FOR THE SAME PIXELS BUYS NOTHING)
+                        if (this.audioStreamIndex < 0 && this.totalRenderedFrames + this.totalSkippedFrames <= 1) {
+                            this.hlsLiveSource = false; // A FULLY DRAINED FINITE SOURCE IS NEVER LIVE
+                            final long shown = this.displayTimeMs;
+                            if (shown > 0) {
+                                this.mediaDurationMs = shown; // THE TIMED STILL EXPOSES ITS DISPLAY WINDOW AS DURATION
+                                if (this.clock.timeMs() >= shown) {
+                                    this.publishTransition(Status.ENDED);
+                                    break;
+                                }
                             }
+                            this.clock.awaitChange(shown > 0 ? Math.max(1L, Math.min(500L, shown - this.clock.timeMs())) : 500L);
+                            continue;
+                        }
+                        if (this.repeat()) {
                             // ALL DATA CONSUMED — SEEK TO BEGINNING FOR REPEAT.
                             // THIS TRIGGERS AFTER FULL DRAIN, NOT AT DEMUX EOF,
                             // SO NO UNPROCESSED PACKETS ARE THROWN AWAY.
@@ -883,7 +938,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 boolean didWork = false;
 
                 // PLAYBACK RATE MONITOR
-                final long nowMs = System.currentTimeMillis();
+                final long nowMs = nowMs();
                 if (current == Status.PLAYING && nowMs - this.perfLastCheckMs > PERF_CHECK_INTERVAL_MS && this.perfLastClockMs > 0) {
                     final long wallElapsed = nowMs - this.perfLastCheckMs;
                     final long clockElapsed = this.clock.timeMs() - this.perfLastClockMs;
@@ -969,7 +1024,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         FFTool.Pixels mapping = this.cachedUploadMapping;
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
-                        if (mapping != null && !this.gfx.supports(mapping.format())) mapping = null;
+                        if (mapping != null && !this.gfx.supports(mapping.format(), mapping.bits())) mapping = null;
                         final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
                         final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
 
@@ -1019,19 +1074,25 @@ public final class FFMediaPlayer extends MediaPlayer {
                             // SCALER UNAVAILABLE BUT THE FORMAT UPLOADS NATIVELY — DEGRADE TO SOURCE SIZE
                         }
 
-                        // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine
+                        // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine; A REFUSED LAYOUT DROPS FRAMES UNTIL IT CHANGES
                         if (mapping.format() != this.lastFormat || mapping.bits() != this.lastBitsPerComponent
                                 || uploadW != this.lastFrameWidth || uploadH != this.lastFrameHeight) {
-                            this.gfx.format(mapping.format(), uploadW, uploadH, mapping.bits());
+                            this.uploadRefused = !this.gfx.format(mapping.format(), uploadW, uploadH, mapping.bits());
                             this.lastFormat = mapping.format();
                             this.lastBitsPerComponent = mapping.bits();
                             this.lastFrameWidth = uploadW;
                             this.lastFrameHeight = uploadH;
-                            LOGGER.debug(IT, "GFX format: {} {}x{} {}bit (source={}x{})",
-                                    mapping.format(), uploadW, uploadH, mapping.bits(), slot.width, slot.height);
+                            if (this.uploadRefused)
+                                LogTool.throttled(LOGGER, Level.ERROR, IT, this.gfxReports, "Graphics engine refused {} {}x{} {}bit; frames are dropped until the layout changes",
+                                        mapping.format(), uploadW, uploadH, mapping.bits());
+                            else
+                                LOGGER.debug(IT, "GFX format: {} {}x{} {}bit (source={}x{})",
+                                        mapping.format(), uploadW, uploadH, mapping.bits(), slot.width, slot.height);
                         }
-
-                        this.uploadNativePlanes(uploadFrame, mapping.format(), uploadH);
+                        // A REFUSED LAYOUT SKIPS ONLY THE UPLOAD: THE FRAME IS STILL CONSUMED AND THE CLOCK ADVANCES, SO
+                        // PLAYBACK AND LOOPING KEEP THEIR PACE (COUNTED AS SKIPPED FOR THE ZERO-FRAME → ERROR CHECK)
+                        if (this.uploadRefused) this.totalSkippedFrames++;
+                        else this.uploadNativePlanes(uploadFrame, mapping.format(), uploadH);
 
                         // TRACK RENDER DEBT (CONVERT+UPLOAD TIME VS FRAME BUDGET)
                         final double workSec = (System.nanoTime() - workStart) / 1_000_000_000.0;
@@ -1043,8 +1104,10 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                         // CONSUME (frameSec ALREADY HOLDS THE PTS — slot IS RECYCLED BY next())
                         this.videoFrameQueue.next();
-                        this.totalRenderedFrames++;
-                        this.perfVideoRenders++;
+                        if (!this.uploadRefused) {
+                            this.totalRenderedFrames++;
+                            this.perfVideoRenders++;
+                        }
 
                         // CLOCK UPDATE (ONLY WHEN VIDEO DRIVES THE CLOCK: NO AUDIO, OR DURING BUFFERING)
                         if (this.audioStreamIndex < 0 || this.clock.status() == Status.BUFFERING) {
@@ -1084,7 +1147,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
                 // TRACK BUFFERING→PLAYING RECOVERY FOR STARVATION COOLDOWN
                 if (current == Status.BUFFERING && this.clock.status() == Status.PLAYING) {
-                    lastStarvationRecoveryMs = System.currentTimeMillis();
+                    lastStarvationRecoveryMs = nowMs();
                 }
 
                 if (!didWork) {
@@ -1095,7 +1158,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     // BUFFERING — THE PIPELINE IS STILL RUNNING, AND clock.update() WILL RETURN
                     // TO PLAYING WHEN FRAMES ARRIVE.
                     if (current == Status.PLAYING && !this.clock.demuxFinished()) {
-                        final long starvNowMs = System.currentTimeMillis();
+                        final long starvNowMs = nowMs();
                         final boolean queuesEmpty =
                                 (this.videoFrameQueue == null || this.videoFrameQueue.empty()) &&
                                         (this.audioFrameQueue == null || this.audioFrameQueue.empty());
@@ -1152,11 +1215,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             this.stopThreads();
 
-            // AN INTERRUPTED EXIT (stop()/RESTART RACING THE LOOP) MUST STILL LAND ON A TERMINAL
-            // STATE — LEAVING PLAYING/BUFFERING BEHIND WOULD REPORT A LIVE STATUS ON A DEAD PIPELINE
+            // AN INTERRUPTED EXIT (stop()/RESTART RACING THE LOOP) MUST STILL LAND ON A TERMINAL STATE — LEAVING
+            // PLAYING/BUFFERING BEHIND WOULD REPORT A LIVE STATUS, AND A stop() DURING THE ENDED TEARDOWN MUST WIN
             final Status finalStatus = this.clock.status();
-            if (finalStatus != Status.ERROR && finalStatus != Status.ENDED && finalStatus != Status.STOPPED) {
-                this.publishTransition(Thread.currentThread().isInterrupted() ? Status.STOPPED : Status.ENDED);
+            final boolean interrupted = Thread.currentThread().isInterrupted();
+            if (finalStatus != Status.ERROR && finalStatus != Status.STOPPED && (finalStatus != Status.ENDED || interrupted)) {
+                this.publishTransition(interrupted ? Status.STOPPED : Status.ENDED);
             }
 
         } catch (final InterruptedException e) {
@@ -1180,7 +1244,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     private void demuxLoop() {
         try {
             if (!this.init()) {
-                this.publishTransition(Status.ERROR);
+                // AN OPEN CUT SHORT BY stop()/RESTART/RELEASE IS NOT A FAILURE: THE INTERRUPTED
+                // LIFECYCLE LANDS ON STOPPED BY ITSELF AND NO EXCEPTION LEAKS INTO THE NEXT RUN
+                if (!this.ioAbortRequested) this.publishTransition(Status.ERROR);
                 return;
             }
         } catch (final Throwable e) {
@@ -1262,8 +1328,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                         this.audioPacketQueue.reset();
                         this.clock.serial(this.videoPacketQueue.serial());
                         if (!reopenOk) {
-                            // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS
-                            // NOTHING LEFT TO READ FROM, THE PIPELINE CANNOT RECOVER
+                            // reopenFormat ALREADY CLOSED THE OLD CONTEXT — THERE IS NOTHING LEFT TO READ FROM, THE
+                            // PIPELINE CANNOT RECOVER; A REOPEN CUT SHORT BY stop() IS THE CALLER'S OWN DOING, NOT A FAILURE
+                            if (this.ioAbortRequested) return;
                             LOGGER.error(IT, "Seek to {}ms failed and the input could not be reopened — stopping pipeline", targetMs);
                             this.exception(new IOException("Seek to " + targetMs + "ms failed and the input could not be reopened"));
                             this.publishTransition(Status.ERROR);
@@ -1845,47 +1912,57 @@ public final class FFMediaPlayer extends MediaPlayer {
         return true;
     }
 
-    // THREAD MANAGEMENT
+    // THREAD MANAGEMENT — THE DECODERS ARE (RE)STARTED BY THE LIFECYCLE AND BY THE DEMUXER'S SEEK PATH,
+    // SO THEIR CREATION AND TEARDOWN SHARE decodeLock: TWO DECODERS ON ONE CODEC CONTEXT CRASH NATIVELY
     private void stopThreads() {
         this.ioAbortRequested = true;
         if (this.videoPacketQueue != null) this.videoPacketQueue.abort();
         if (this.audioPacketQueue != null) this.audioPacketQueue.abort();
         if (this.videoFrameQueue != null) this.videoFrameQueue.abort();
         if (this.audioFrameQueue != null) this.audioFrameQueue.abort();
-        if (this.demuxThread != null) this.demuxThread.interrupt();
-        if (this.videoDecodeThread != null) this.videoDecodeThread.interrupt();
-        if (this.audioDecodeThread != null) this.audioDecodeThread.interrupt();
         final boolean wasInterrupted = Thread.interrupted();
-        if (this.demuxThread != null) ThreadTool.join(this.demuxThread);
-        if (this.videoDecodeThread != null) ThreadTool.join(this.videoDecodeThread);
-        if (this.audioDecodeThread != null) ThreadTool.join(this.audioDecodeThread);
-        if (wasInterrupted) Thread.currentThread().interrupt();
+        // THE DEMUXER GOES FIRST: ONCE IT IS GONE NOBODY ELSE CAN SPAWN A DECODER BEHIND THIS TEARDOWN
+        final Thread demux = this.demuxThread;
+        if (demux != null) {
+            demux.interrupt();
+            ThreadTool.join(demux);
+        }
         this.demuxThread = null;
-        this.videoDecodeThread = null;
-        this.audioDecodeThread = null;
+        this.stopDecodeThreads();
+        if (wasInterrupted) Thread.currentThread().interrupt();
     }
 
     private void stopDecodeThreads() {
         if (this.videoPacketQueue != null) this.videoPacketQueue.abort();
         if (this.audioPacketQueue != null) this.audioPacketQueue.abort();
         final boolean wasInterrupted = Thread.interrupted();
-        if (this.videoDecodeThread != null) ThreadTool.join(this.videoDecodeThread);
-        if (this.audioDecodeThread != null) ThreadTool.join(this.audioDecodeThread);
+        synchronized (this.decodeLock) {
+            if (this.videoDecodeThread != null) {
+                this.videoDecodeThread.interrupt();
+                ThreadTool.join(this.videoDecodeThread);
+            }
+            if (this.audioDecodeThread != null) {
+                this.audioDecodeThread.interrupt();
+                ThreadTool.join(this.audioDecodeThread);
+            }
+            this.videoDecodeThread = null;
+            this.audioDecodeThread = null;
+        }
         if (wasInterrupted) Thread.currentThread().interrupt();
-        this.videoDecodeThread = null;
-        this.audioDecodeThread = null;
     }
 
     private void ensureDecodeThreads() {
-        if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive()) && this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
-            this.videoDecodeThread = this.factory.apply("video", this::videoDecodeLoop);
-            this.videoDecodeThread.setDaemon(true);
-            this.videoDecodeThread.start();
-        }
-        if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive()) && this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
-            this.audioDecodeThread = this.factory.apply("audio", this::audioDecodeLoop);
-            this.audioDecodeThread.setDaemon(true);
-            this.audioDecodeThread.start();
+        synchronized (this.decodeLock) {
+            if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive()) && this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
+                this.videoDecodeThread = this.factory.apply("video", this::videoDecodeLoop);
+                this.videoDecodeThread.setDaemon(true);
+                this.videoDecodeThread.start();
+            }
+            if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive()) && this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
+                this.audioDecodeThread = this.factory.apply("audio", this::audioDecodeLoop);
+                this.audioDecodeThread.setDaemon(true);
+                this.audioDecodeThread.start();
+            }
         }
     }
 
@@ -2003,6 +2080,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
         this.clock.transition(Status.LOADING);
 
+        this.ioAbortRequested = false; // stopThreads() RAISED IT TO DRAIN THE OLD DEMUXER; THE NEW ONE MUST OPEN
         this.demuxThread = this.factory.apply("demux", this::demuxLoop);
         this.demuxThread.setDaemon(true);
         this.demuxThread.start();
@@ -2014,7 +2092,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
-            this.publishTransition(Status.ERROR);
+            // THE SWITCH WAS CUT SHORT BY stop()/RESTART — THE LIFECYCLE LANDS ON STOPPED, NOT ERROR
             return;
         }
 
@@ -2038,7 +2116,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     private String resolveInputUrl(final URI uri, final boolean allowCache) {
-        if (allowCache && this.shouldUseFFmpegCache(uri)) {
+        // PLAYLISTS ARE NEVER CACHED BY EXTENSION (THE CACHE ALSO REJECTS THEM BY CONTENT TYPE, BUT ONLY
+        // AFTER DOWNLOADING); THE SCHEME AND CONFIG GATES LIVE INSIDE NetworkCache.readFile
+        final String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+        if (allowCache && !path.endsWith(".m3u8") && !path.endsWith(".mpd")) {
             try {
                 final NetworkCache.CachedFile cached = NetworkCache.readFile(
                         uri,
@@ -2066,19 +2147,6 @@ public final class FFMediaPlayer extends MediaPlayer {
         return uri.toString();
     }
 
-    private boolean shouldUseFFmpegCache(final URI uri) {
-        if (!WaterMediaConfig.media.ffmpeg.cache) return false;
-        if (uri == null) return false;
-
-        final String scheme = uri.getScheme();
-        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) return false;
-
-        final String path = uri.getPath();
-        if (path == null) return true;
-        final String lower = path.toLowerCase(Locale.ROOT);
-        return !lower.endsWith(".m3u8") && !lower.endsWith(".mpd");
-    }
-
     // OPENS THE ALREADY-ALLOCATED MAIN INPUT; FFMPEG FREES THE CONTEXT WHEN OPENING FAILS.
     // CLEAR ITS JAVA REFERENCE SO CLEANUP AND READS CANNOT TOUCH FREED MEMORY.
     private boolean openInput(final String url) {
@@ -2088,10 +2156,15 @@ public final class FFMediaPlayer extends MediaPlayer {
 
             final int ret = avformat.avformat_open_input(this.formatContext, url, null, options);
             if (ret < 0) {
+                this.formatContext = null;
+                // AN OPEN CUT SHORT BY THE INTERRUPT CALLBACK IS THE CALLER'S OWN stop(), NOT A FAILURE
+                if (this.ioAbortRequested) {
+                    LOGGER.debug(IT, "Open aborted by stop/restart: {}", url);
+                    return false;
+                }
                 final String reason = FFTool.error(ret);
                 LOGGER.error(IT, "Failed to open input ({}): {}", reason, url);
                 this.exception(new IOException("Failed to open input (" + reason + "): " + url));
-                this.formatContext = null;
                 return false;
             }
             return true;
@@ -2118,7 +2191,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (!this.openInput(url)) return false;
 
         if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
-            LOGGER.error(IT, "reopenFormat: failed to find stream info");
+            if (!this.ioAbortRequested) LOGGER.error(IT, "reopenFormat: failed to find stream info");
             return false;
         }
 
@@ -2273,7 +2346,6 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
 
             this.formatContext = avformat.avformat_alloc_context();
-            this.ioAbortRequested = false;
             this.interruptCallback = new Callback_Pointer() {
                 @Override
                 public int call(final Pointer opaque) {
@@ -2286,6 +2358,10 @@ public final class FFMediaPlayer extends MediaPlayer {
             if (!this.openInput(url)) return false;
 
             if (avformat.avformat_find_stream_info(this.formatContext, (PointerPointer<?>) null) < 0) {
+                if (this.ioAbortRequested) {
+                    LOGGER.debug(IT, "Stream probe aborted by stop/restart: {}", url);
+                    return false;
+                }
                 LOGGER.error(IT, "Failed to find stream info");
                 this.exception(new IOException("Failed to find stream info: " + url));
                 return false;
@@ -2298,23 +2374,25 @@ public final class FFMediaPlayer extends MediaPlayer {
                 // ASYNC ON PURPOSE: THE PROBE COSTS 1-2 EXTRA HTTP ROUNDTRIPS AND ONLY REFINES
                 // live() — UNTIL IT LANDS, THE DURATION HEURISTIC (HLS VOD PLAYLISTS CARRY A
                 // DURATION, LIVE ONES DON'T) ANSWERS CORRECTLY, SO PLAYBACK NEEDN'T WAIT FOR IT.
+                // IT FETCHES WITH THE SOURCE'S OWN HEADERS (AN AUTHENTICATED PLAYLIST IS COMMON) AND
+                // ONLY WRITES INTO THE RUN THAT STARTED IT; A FAILED PROBE LEAVES THE HEURISTIC IN CHARGE
+                final int run = this.runSerial;
                 final Thread probe = this.factory.apply("hls-probe", () -> {
                     try {
-                        M3UTool.Playlist hlsResult = M3UTool.fetch(uri);
+                        M3UTool.Playlist hlsResult = M3UTool.fetch(uri, this.source.headers());
                         // MASTER PLAYLIST: FOLLOW THE FIRST VARIANT (URL ALREADY ABSOLUTE) DOWN TO A REAL MEDIA PLAYLIST
                         if (hlsResult instanceof final M3UTool.Master master && !master.variants().isEmpty()) {
-                            hlsResult = M3UTool.fetch(master.variants().get(0).uri());
+                            hlsResult = M3UTool.fetch(master.variants().get(0).uri(), this.source.headers());
                         }
+                        if (run != this.runSerial) return;
                         if (hlsResult instanceof final M3UTool.Media media) {
                             this.hlsLiveSource = media.live();
                             LOGGER.debug(IT, "HLS probe: live={}, vod={}, totalDuration={}s", media.live(), media.vod(), media.totalDuration());
                         } else {
-                            this.hlsLiveSource = false;
-                            LOGGER.warn(IT, "HLS probe: inconclusive ({}), defaulting to VOD", hlsResult.kind());
+                            LOGGER.warn(IT, "HLS probe: inconclusive ({}), keeping the duration heuristic", hlsResult.kind());
                         }
                     } catch (final IOException e) {
-                        this.hlsLiveSource = false;
-                        LOGGER.warn(IT, "HLS probe failed, defaulting to VOD", e);
+                        LOGGER.warn(IT, "HLS probe failed, keeping the duration heuristic", e);
                     }
                 });
                 probe.setDaemon(true);
@@ -2381,9 +2459,12 @@ public final class FFMediaPlayer extends MediaPlayer {
                 throw new IllegalStateException("Video and Audio failed to initialize");
 
             this.opened = true;
+            this.playable = true;
             LOGGER.info(IT, "FFMediaPlayer started - video: {} (hw: {}), audio: {}", videoInit, this.hwAccel(), audioInit);
             return true;
         } catch (final Exception e) {
+            // A SETUP CUT SHORT BY stop()/RESTART IS NOT A FAILURE WORTH RECORDING
+            if (this.ioAbortRequested) return false;
             LOGGER.error(IT, "Failed to initialize FFMediaPlayer", e);
             this.exception(e);
             return false;
@@ -2464,9 +2545,12 @@ public final class FFMediaPlayer extends MediaPlayer {
         final double rFps = av_q2d(videoStream.r_frame_rate());
         if (isPlausibleFps(avgFps)) {
             this.clock.fps((float) avgFps);
+            this.fps = (float) avgFps;
         } else if (isPlausibleFps(rFps)) {
             this.clock.fps((float) rFps);
+            this.fps = (float) rFps;
         } else {
+            // THE CLOCK KEEPS ITS PACING DEFAULT; fps() STAYS 0 BECAUSE THE RATE IS GENUINELY UNKNOWN
             LOGGER.warn(IT, "No plausible frame rate (avg={}, r={}) — keeping default {}fps", avgFps, rFps, this.clock.fps());
         }
 
@@ -2540,7 +2624,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
             final int targetW = MathUtil.scaled(w, this.scaleWidth, this.lod.percent());
             final int targetH = MathUtil.scaled(h, this.scaleHeight, this.lod.percent());
-            this.gfx.format(initialMapping.format(), targetW, targetH, initialMapping.bits());
+            this.uploadRefused = !this.gfx.format(initialMapping.format(), targetW, targetH, initialMapping.bits());
             this.lastFormat = initialMapping.format();
             this.lastBitsPerComponent = initialMapping.bits();
             this.lastFrameWidth = targetW;
@@ -2924,9 +3008,11 @@ public final class FFMediaPlayer extends MediaPlayer {
         // SAFETY NET — IDEMPOTENT.
         this.freePlanePool();
         this.lastFormat = null;
+        this.uploadRefused = false;
         this.lastBitsPerComponent = 0;
 
         this.opened = false;
+        this.fps = 0f;
         this.videoStreamIndex = -1;
         this.audioStreamIndex = -1;
         this.swsInputFormat = AV_PIX_FMT_NONE;

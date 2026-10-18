@@ -16,16 +16,12 @@ import java.nio.ByteBuffer;
  * {@code volatile} because the player's lifecycle thread writes them while another thread may read them.
  */
 public final class HeadlessGFXEngine extends GFXEngine {
-    // FIXED NON-ZERO HANDLE — NO REAL GPU TEXTURE EXISTS, BUT texture() MUST READ AS "A FRAME IS PRESENT"
-    private static final long SENTINEL_TEXTURE = 1L;
-
     private final boolean preload;
     private volatile long uploadCount;
     private volatile int activeFrame;
     private volatile ByteBuffer[] preloaded;
     private volatile ByteBuffer lastUpload;
     private volatile boolean framed;
-    private volatile boolean released;
 
     HeadlessGFXEngine() {
         this(false);
@@ -43,8 +39,9 @@ public final class HeadlessGFXEngine extends GFXEngine {
 
     @Override
     boolean preload(final ByteBuffer[] frames, final int stride) {
-        // CLONE ON STORE — THE ARRAY IS PUBLIC API, DON'T ALIAS THE PRODUCER'S ARRAY
-        this.preloaded = frames != null ? frames.clone() : null;
+        // HONOR THE ADVERTISED CAPABILITY LIKE A REAL BACKEND; CLONE ON STORE SO THE PRODUCER'S ARRAY IS NEVER ALIASED
+        if (!this.preload || this.released || frames == null || frames.length == 0) return false;
+        this.preloaded = frames.clone();
         this.framed = true;
         return true;
     }
@@ -55,15 +52,15 @@ public final class HeadlessGFXEngine extends GFXEngine {
     }
 
     @Override
-    void upload(final ByteBuffer[] planes, final int[] strides) {
+    void push(final ByteBuffer[] planes, final int[] strides) {
         this.lastUpload = planes.length > 0 ? planes[0] : null;
         this.uploadCount++;
         this.framed = true;
     }
 
     @Override
-    public void release() {
-        this.released = true;
+    void destroy() {
+        // NOTHING NATIVE TO FREE: THE CAPTURED BUFFERS BELONG TO THE PRODUCER
     }
 
     /** Number of {@code upload} calls received so far. */
@@ -72,12 +69,12 @@ public final class HeadlessGFXEngine extends GFXEngine {
     /** Index of the preloaded frame the player last selected. */
     public int activeFrame() { return this.activeFrame; }
 
-    /** Frame set the player last preloaded, or null. */
-    public ByteBuffer[] preloadedFrames() { return this.preloaded; }
+    /** Copy of the frame set the player last preloaded, or null. */
+    public ByteBuffer[] preloadedFrames() {
+        final ByteBuffer[] frames = this.preloaded;
+        return frames == null ? null : frames.clone();
+    }
 
     /** Y (or sole) plane of the most recent {@code upload}, or null. */
     public ByteBuffer lastUpload() { return this.lastUpload; }
-
-    /** Whether {@link #release()} has been called. */
-    public boolean released() { return this.released; }
 }

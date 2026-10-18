@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.test.support.LocalHttp;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -17,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -53,8 +55,8 @@ public class NetworkCacheTest {
             try {
                 final URI uri = server.uri("/image.png");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT);
+                final NetworkCache.CachedBytes first = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
+                final NetworkCache.CachedBytes second = NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true);
 
                 assertFalse(first.cached());
                 assertTrue(second.cached());
@@ -110,6 +112,31 @@ public class NetworkCacheTest {
     }
 
     @Test
+    @DisplayName("An unbounded media response (chunked, no Content-Length) is never cached as a file")
+    void testUnboundedResponseIsNotCachedAsFile() throws Exception {
+        final byte[] body = new byte[] { 1, 2, 3 };
+        try (final LocalHttp server = LocalHttp.start("/radio", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "audio/mpeg");
+            exchange.getResponseHeaders().set("icy-name", "endless");
+            exchange.sendResponseHeaders(200, 0); // CHUNKED: THE LENGTH IS UNKNOWN, LIKE A LIVE RADIO
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        })) {
+            final Path cache = this.tempDir.resolve("cache-unbounded");
+            NetworkCache.start(cache);
+            try {
+                final URI uri = server.uri("/radio");
+                assertThrows(IOException.class, () -> NetworkCache.readFile(uri, null, ACCEPT_VIDEO, READ_LIMIT, true),
+                        "the file cache refuses to download an endless source");
+                // THE BYTE READER (IMAGES) STILL ACCEPTS CHUNKED RESPONSES
+                assertArrayEquals(body, NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true).bytes());
+            } finally {
+                NetworkCache.release();
+            }
+        }
+    }
+
+    @Test
     @DisplayName("Derives stable on-disk cache keys")
     void testDerivesStableOnDiskCacheKeys() throws Exception {
         final byte[] body = new byte[] { 7, 7, 7 };
@@ -120,7 +147,7 @@ public class NetworkCacheTest {
             try {
                 final URI uri = server.uri("/pinned.png");
                 final HttpHeaders headers = new HttpHeaders().set("X-Variant", "first");
-                NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT);
+                NetworkCache.read(uri, headers, ACCEPT_IMAGE, READ_LIMIT, true);
 
                 // RE-DERIVE THE KEY FROM ITS CONTRACT: sha256(uri + '\n' + LOWERCASED "name:value"
                 // LINES + "accept:" TAIL) HEX-ENCODED INTO THE PAYLOAD FILENAME. IF THE DERIVATION
@@ -157,9 +184,9 @@ public class NetworkCacheTest {
                 final HttpHeaders firstHeaders = new HttpHeaders().set("X-Variant", "first");
                 final HttpHeaders secondHeaders = new HttpHeaders().set("X-Variant", "second");
 
-                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT);
-                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT);
-                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT);
+                final NetworkCache.CachedBytes first = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
+                final NetworkCache.CachedBytes second = NetworkCache.read(uri, secondHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
+                final NetworkCache.CachedBytes firstAgain = NetworkCache.read(uri, firstHeaders, ACCEPT_IMAGE, READ_LIMIT, true);
 
                 assertArrayEquals(firstBody, first.bytes());
                 assertArrayEquals(secondBody, second.bytes());

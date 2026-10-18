@@ -102,7 +102,7 @@ public interface Platform {
 
         public Source {
             if (qualities == null || qualities.isEmpty()) throw new IllegalArgumentException("Source constructed with no qualities");
-            if (headers == null) headers = new HttpHeaders();
+            headers = new HttpHeaders(headers).freeze(); // SHARED WITH PLAYER THREADS ONCE RESOLVED: NEVER MUTABLE
 
             // DEFENSIVE COPIES: RECORD COMPONENTS MUST NOT EXPOSE MUTABLE STATE SHARED WITH THE PLATFORM
             qualities = List.copyOf(qualities);
@@ -118,7 +118,14 @@ public interface Platform {
      * <p>
      * If a platform has no resolution data, pass {@code 0}/{@code 0}. If only one of the dimensions
      * is known (typical for HLS rendition tags that only report height), pass {@code 0} for the other.
+     * {@code fps} is the frame rate when the platform reports one (0 otherwise); it breaks ties
+     * between renditions of the same size when {@link MRL} keeps one URL per quality bucket.
      */
-    record Quality(URI uri, int width, int height) {
+    record Quality(URI uri, int width, int height, float fps) {
+
+        /** Creates a quality whose frame rate is unknown. */
+        public Quality(final URI uri, final int width, final int height) {
+            this(uri, width, height, 0f);
+        }
     }
 }

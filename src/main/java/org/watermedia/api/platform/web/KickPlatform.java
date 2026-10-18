@@ -217,7 +217,7 @@ public final class KickPlatform implements Platform {
         final List<M3UTool.Variant> variants = M3UTool.qualities(source);
         final List<Quality> out = new ArrayList<>(variants.size());
         for (final M3UTool.Variant v: variants) {
-            out.add(new Quality(v.uri(), v.width(), v.height()));
+            out.add(new Quality(v.uri(), v.width(), v.height(), (float) v.fps()));
         }
         LOGGER.debug(IT, "Kick resolved {} HLS rendition(s) for {}", out.size(), ctx);
         return out;

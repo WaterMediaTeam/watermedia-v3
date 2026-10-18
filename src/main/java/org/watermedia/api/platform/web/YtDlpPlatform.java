@@ -291,7 +291,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
                 if (url == null) continue; // MALFORMED FORMAT URL — SKIP THIS VARIANT
                 // PER Quality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
                 final int width = intOr(f, "width", 0);
-                variants.add(new Quality(url, width, height));
+                variants.add(new Quality(url, width, height, (float) dbl(f, "fps")));
                 if (headerSource == null) headerSource = f;
             }
         }

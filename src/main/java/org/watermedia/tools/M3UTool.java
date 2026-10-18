@@ -3,6 +3,7 @@ package org.watermedia.tools;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 
 import java.io.IOException;
@@ -68,12 +69,25 @@ public final class M3UTool {
      *                     or the body is not a recognizable playlist (see {@link #parse}).
      */
     public static Playlist fetch(final URI uri) throws IOException {
-        try (final NetRequest req = NetRequest.create(uri)
+        return fetch(uri, null);
+    }
+
+    /**
+     * Fetches and parses the playlist at {@code uri} with the given request headers (an
+     * authenticated or geo-locked playlist needs the same ones the media request carries).
+     *
+     * @param headers extra request headers, or {@code null} for none
+     * @throws IOException if the request fails, the server does not answer {@code 200},
+     *                     or the body is not a recognizable playlist (see {@link #parse}).
+     */
+    public static Playlist fetch(final URI uri, final HttpHeaders headers) throws IOException {
+        final NetRequest.Builder builder = NetRequest.create(uri)
                 .method("GET")
-                .accept(NetRequest.ACCEPT_ANY)
+                .headers(headers)
                 .connectTimeout(FETCH_TIMEOUT_MS)
-                .readTimeout(FETCH_TIMEOUT_MS)
-                .send()) {
+                .readTimeout(FETCH_TIMEOUT_MS);
+        if (headers == null || !headers.has("Accept")) builder.accept(NetRequest.ACCEPT_ANY);
+        try (final NetRequest req = builder.send()) {
             final int code = req.statusCode();
             if (code != 200)
                 throw new IOException("Cannot fetch playlist from " + uri + ": server returned HTTP " + code + " (expected 200 OK)");

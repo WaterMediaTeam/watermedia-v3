@@ -6,7 +6,6 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
-import org.watermedia.tools.DataTool;
 import org.watermedia.tools.M3UTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -109,6 +108,8 @@ public final class MRL {
         Objects.requireNonNull(uri, "URI cannot be null");
         final Session current = session;
         if (current == null) throw new IllegalStateException("The media module has not started");
+        // A RELATIVE URI CAN NEVER RESOLVE: BORN IN ERROR INSTEAD OF CACHED AND FAILING LATE
+        if (!uri.isAbsolute()) return error(uri.toString(), new IllegalArgumentException("URI must be absolute: " + uri));
         synchronized (current) {
             if (!current.active) throw new IllegalStateException("The media module is stopping");
             return current.loaded.compute(uri, (key, existing) -> {
@@ -148,10 +149,11 @@ public final class MRL {
      * Restarts the async platform lookup for this MRL, clearing the previous sources and error
      * state. If a load is already in flight, the refresh is deferred until it finishes rather than
      * wiping state mid-fetch, so concurrent reloads never race or duplicate the lookup.
-     * @return the active resource handle; a forgotten handle is replaced rather than revived
+     * @return the active resource handle; a forgotten handle is replaced rather than revived and an
+     *         MRL born in {@link Status#ERROR} from unparseable input returns itself unchanged
      */
     public MRL reload() {
-        if (this.owner == null) throw new IllegalStateException("This MRL belongs to an inactive session");
+        if (this.owner == null) return this; // BORN IN ERROR FROM UNPARSEABLE INPUT: THERE IS NOTHING TO REFETCH
         synchronized (this.owner) {
             if (!this.owner.active) throw new IllegalStateException("This MRL belongs to an inactive session");
             if (this.status == Status.FORGOTTEN) {
@@ -236,15 +238,20 @@ public final class MRL {
                         throw new IOException("HTTP " + req.statusCode() + " for " + this.uri);
                     }
 
-                    // SCAN RECEIVED CONTENT-TYPE
+                    // ONLY DOCUMENT TYPES (HTML, JSON, SCRIPTS) ARE REJECTED, WHATEVER THEIR CASING OR PARAMETERS; text/plain
+                    // AND XML PASS BECAUSE MISCONFIGURED HOSTS SERVE MEDIA UNDER THEM AND THE BYTE SNIFF SETTLES THE TYPE
                     final String contentType = req.contentType();
-                    if (contentType != null && !DataTool.startsWith(contentType, "video", "image", "audio", "application/vnd.rn-realmedia", "application/vnd.rn-realmedia-vbr", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/octet-stream")) {
+                    final String mime = contentType == null ? "" : contentType.split(";", 2)[0].strip().toLowerCase(Locale.ROOT);
+                    if (mime.equals("text/html") || mime.equals("text/css") || mime.equals("text/javascript")
+                            || mime.equals("application/xhtml+xml") || mime.equals("application/javascript")
+                            || mime.equals("application/x-javascript") || mime.equals("application/ecmascript")
+                            || mime.equals("application/json") || mime.endsWith("+json")) {
                         throw new IOException("Content is not multimedia (received content-type '" + contentType + "'): " + this.uri);
                     }
 
                     // DETECT HLS/IPTV AND PARSE IT
-                    final String pathLower = this.uri.getPath() == null ? "" : this.uri.getPath().toLowerCase();
-                    final boolean m3uShape = (contentType != null && contentType.toLowerCase().contains("mpegurl")) || pathLower.endsWith(".m3u") || pathLower.endsWith(".m3u8");
+                    final String pathLower = this.uri.getPath() == null ? "" : this.uri.getPath().toLowerCase(Locale.ROOT);
+                    final boolean m3uShape = mime.contains("mpegurl") || pathLower.endsWith(".m3u") || pathLower.endsWith(".m3u8");
 
                     if (m3uShape) {
                         final String body = req.text();
@@ -315,10 +322,15 @@ public final class MRL {
                 for (int i = 0; i < entries.size(); i++) {
                     final Platform.Source entry = entries.get(i);
                     if (entry == null) throw new IllegalArgumentException("[INTERNAL] Platform delivered a null entry");
-                    final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
+                    // ONE URL PER BUCKET: THE WIDEST RENDITION WINS, THEN THE TALLEST, THEN THE HIGHER FRAME RATE, THEN THE FIRST
+                    final EnumMap<MediaQuality, Platform.Quality> best = new EnumMap<>(MediaQuality.class);
                     for (final Platform.Quality v: entry.qualities()) {
-                        qualities.put(MediaQuality.of(v.width(), v.height()), v.uri());
+                        best.merge(MediaQuality.of(v.width(), v.height()), v, (kept, next) -> next.width() > kept.width()
+                                || next.width() == kept.width() && (next.height() > kept.height()
+                                || next.height() == kept.height() && next.fps() > kept.fps()) ? next : kept);
                     }
+                    final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(MediaQuality.class);
+                    best.forEach((bucket, v) -> qualities.put(bucket, v.uri()));
 
                     sources[i] = new Source(entry.type(), entry.thumbnail(), entry.metadata(),
                             entry.headers(), qualities, entry.audioTracks(), entry.subtitleTracks());
@@ -348,14 +360,11 @@ public final class MRL {
                 }
             }
 
-            // EXPECTED FAILURES (BLOCK / PLATFORM / IO) ALREADY CARRY A SELF-DESCRIBING MESSAGE: LOG IT
-            // WITHOUT THE STACK TRACE. ONLY GENUINELY UNEXPECTED ERRORS DUMP THE TRACE SO THEY STAND OUT.
+            // A BLOCK IS EXPECTED AND SELF-DESCRIBING (WARN WITHOUT TRACE); EVERY OTHER FAILURE TRAVELS WITH ITS THROWABLE
             if (t instanceof MatureContentException)
                 LOGGER.warn(IT, "Blocked (mature content disabled) {}: {}", this.uri, t.getMessage());
-            else if (t instanceof IOException) // PlatformException + DIRECT-LOAD IO FAILURES
-                LOGGER.error(IT, "Failed to resolve {}: {}", this.uri, t.getMessage(), t);
             else
-                LOGGER.error(IT, "Unexpected error resolving {}", this.uri, t);
+                LOGGER.error(IT, "Failed to resolve {}", this.uri, t);
 
             this.fireListeners();
         }
@@ -374,14 +383,14 @@ public final class MRL {
         return type != MediaType.UNKNOWN ? type : MediaType.ofExtension(uri.getPath());
     }
 
+    // RUNS OUTSIDE ANY MONITOR: A LISTENER MAY WAIT ON A THREAD THAT IS SUBSCRIBING TO THIS SAME MRL. EACH LISTENER IS
+    // CLAIMED (REMOVED) BEFORE IT FIRES, SO A RACING subscribe EITHER CLAIMS IT ITSELF OR LEAVES IT TO THIS PASS, NEVER BOTH
     private void fireListeners() {
         if (this.owner != null && !this.owner.active) return;
-        synchronized (this.listeners) {
-            for (final Consumer<MRL> c: this.listeners) {
-                try { c.accept(this); }
-                catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
-            }
-            this.listeners.clear();
+        for (final Consumer<MRL> c: this.listeners) {
+            if (!this.listeners.remove(c)) continue;
+            try { c.accept(this); }
+            catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
         }
     }
 
@@ -416,15 +425,14 @@ public final class MRL {
      * @param listener consumer invoked with this MRL once it reaches a terminal state (success or failure)
      */
     public void subscribe(final Consumer<MRL> listener) {
-        synchronized (this.listeners) {
-            // ANY NON-FETCHING STATE IS TERMINAL: fireListeners() ALREADY RAN AND CLEARED THE LIST, SO FIRE NOW
-            if (this.status != Status.FETCHING) {
-                try { listener.accept(this); }
-                catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
-                return;
-            }
+        if (this.status == Status.FETCHING) {
             this.listeners.add(listener);
+            // A TERMINAL STATE MAY LAND WHILE ADDING: WHEN THE FIRE PASS DID NOT TAKE THIS LISTENER, FIRE IT HERE
+            if (this.status == Status.FETCHING || !this.listeners.remove(listener)) return;
         }
+        // ANY NON-FETCHING STATE IS TERMINAL: fireListeners() ALREADY RAN, SO FIRE ON THE CALLING THREAD
+        try { listener.accept(this); }
+        catch (final Throwable t) { LOGGER.error(IT, "Listener failed for {}", this.uri, t); }
     }
 
     /** Returns the link this MRL was created for, as given by the caller. */
@@ -550,7 +558,9 @@ public final class MRL {
     }
 
     /**
-     * A URI Source container with multiple quality support and optional secondary tracks.
+     * A URI Source container with multiple quality support and optional secondary tracks. Each
+     * {@link MediaQuality} bucket keeps one URL: the widest rendition the platform listed, then the
+     * tallest, then the one with the highest frame rate, then the first listed. The headers are frozen.
      */
     public record Source(MediaType type, URI thumbnail, Metadata metadata, HttpHeaders headers,
                          Map<MediaQuality, URI> qualities, List<Track> audioTracks,
@@ -565,7 +575,7 @@ public final class MRL {
             qualities = Collections.unmodifiableMap(new EnumMap<>(qualities));
             audioTracks = audioTracks == null ? List.of() : List.copyOf(audioTracks);
             subtitleTracks = subtitleTracks == null ? List.of() : List.copyOf(subtitleTracks);
-            if (headers == null) headers = new HttpHeaders();
+            headers = new HttpHeaders(headers).freeze(); // SHARED ACROSS PLAYER THREADS: NEVER MUTABLE
         }
 
         /**

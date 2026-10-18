@@ -1,7 +1,9 @@
 package org.watermedia.api.media;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.Map;
@@ -40,6 +42,10 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private static final long DURATION_DIVERGENCE_MS = 500;
     private static final long HEARTBEAT_NS = 5_000_000_000L;     // PERIODIC SNAPSHOT RESEND
     private static final long FOLLOWER_TTL_NS = 15_000_000_000L;  // 3 MISSED FOLLOWER KEEPALIVES
+    private static final long DEPARTED_TTL_NS = 10_000_000_000L;  // 2 KEEPALIVES: A REPORT IN FLIGHT BEHIND AN Unwatch LANDS WITHIN THIS
+    private static final int MAX_FOLLOWERS = 4_096;                // BOUNDS THE PER-TICK SWEEP AGAINST A FLOOD OF FORGED HELLOS
+    private static final long FLOOD_REPORT_NS = 10_000_000_000L;
+    private static final LogTool.Throttle FLOOD_REPORTS = new LogTool.Throttle(FLOOD_REPORT_NS);
 
     // TIME TRACKING — MUTATORS ARE synchronized (CALLER THREAD vs SHARED TICKER), READS STAY VOLATILE
     // LOCK-FREE. time() MAY PAIR accumulatedMs/segmentStartNanos ACROSS A CONCURRENT REBASE: THE GLITCH
@@ -49,18 +55,20 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private volatile long accumulatedMs;      // TIME ACCUMULATED BEFORE THE CURRENT PLAY SEGMENT
     private volatile long segmentStartNanos;  // System.nanoTime() WHEN THE CURRENT SEGMENT BEGAN
     private volatile Status status = Status.WAITING;
-    // MUTATION COUNTER — EVERY SUCCESSFUL STATE CHANGE BUMPS IT SO THE BROADCASTER KNOWS TO RESEND;
-    // AtomicInteger BY APPROVED EXCEPTION: ++ ON volatile ISN'T ATOMIC AND repeat() BUMPS UNLOCKED
-    private final AtomicInteger revision = new AtomicInteger();
+    private volatile boolean released;
+    // MUTATION COUNTER (AtomicInteger: ++ ON volatile ISN'T ATOMIC AND repeat() BUMPS UNLOCKED), SEEDED FROM
+    // THE CLOCK SO A REPLACEMENT AUTHORITY OUTRANKS ITS PREDECESSOR ON FOLLOWERS (SIGNED-DISTANCE COMPARE)
+    private final AtomicInteger revision = new AtomicInteger((int) System.currentTimeMillis());
 
-    // AUTHORITY BRIDGE STATE — registry HOLDS THE FOLLOWERS; gated IS THE LOCKSTEP OVERLAY:
-    // WHILE SET, THE UNDERLYING STATUS STAYS PLAYING BUT THE CLOCK FREEZES AND BUFFERING IS PRESENTED.
+    // registry HOLDS THE FOLLOWERS, departed WHO JUST LEFT (A REPORT BEHIND ITS Unwatch CANNOT RE-ENROLL IT);
+    // gated IS THE LOCKSTEP OVERLAY: THE STATUS STAYS PLAYING UNDERNEATH, THE CLOCK FREEZES, BUFFERING SHOWS
     private final int capabilities;
     private final Map<Long, Follower> registry = new ConcurrentHashMap<>();
+    private final Map<Long, Long> departed = new ConcurrentHashMap<>();
     private volatile boolean gated;
     private volatile long followerTtlNanos = FOLLOWER_TTL_NS;
     // BROADCAST STATE — TOUCHED ONLY FROM THE SHARED TICKER THREAD
-    private int lastCastRevision = -1;
+    private int lastCastRevision = this.revision.get() - 1;
     private long lastCastNanos;
 
     // A PLAIN CLOCK WITH NO BRIDGE; BROADCASTING, IF ANY, IS MANUAL
@@ -166,15 +174,25 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     protected void upstream(final Packet packet) {
         if (packet instanceof final Watch watch) {
-            final Follower f =this.registry.computeIfAbsent(watch.watcherId(), id -> this.enroll());
+            // A HELLO IS AN EXPLICIT (RE)JOIN — IT OVERRIDES ANY EARLIER DEPARTURE
+            this.departed.remove(watch.watcherId());
+            final Follower f = this.registry.computeIfAbsent(watch.watcherId(), id -> this.enroll());
+            if (f == null) return;
             f.lastSeenNanos = System.nanoTime();
             // ANSWER WITH THE SESSION CONFIG (ECHOING THE ID FOR RTT) AND A FRESH SNAPSHOT,
             // SO LATE JOINERS SYNC IMMEDIATELY INSTEAD OF WAITING FOR THE NEXT HEARTBEAT
             this.send(new Config(watch.watcherId(), this.capabilities));
             this.send(this.snapshot());
         } else if (packet instanceof final Report report) {
-            // A REPORT FROM AN UNSEEN ID REGISTERS IMPLICITLY — Watch MAY BE LOST ON UNORDERED TRANSPORTS
-            final Follower f =this.registry.computeIfAbsent(report.watcherId(), id -> this.enroll());
+            // A REPORT FROM AN UNSEEN ID REGISTERS IMPLICITLY — Watch MAY BE LOST ON UNORDERED TRANSPORTS —
+            // UNLESS THE ID JUST LEFT: THEN IT IS THE KEEPALIVE THAT OVERTOOK ITS OWN Unwatch
+            final Long left = this.departed.get(report.watcherId());
+            if (left != null && System.nanoTime() - left < DEPARTED_TTL_NS) {
+                LOGGER.debug(IT, "Ignored a late report from departed follower {}", report.watcherId());
+                return;
+            }
+            final Follower f = this.registry.computeIfAbsent(report.watcherId(), id -> this.enroll());
+            if (f == null) return;
             f.lastSeenNanos = System.nanoTime();
             f.status = report.status();
             // FIRST READY REPORT POOLS A MID-PLAYBACK JOINER INTO THE LOCKSTEP GATE
@@ -188,7 +206,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 if (report.live()) this.live(true);
             }
         } else if (packet instanceof final Control control) {
-            final Follower f =this.registry.get(control.watcherId());
+            final Follower f = this.registry.get(control.watcherId());
             if (f != null) f.lastSeenNanos = System.nanoTime();
             if ((this.capabilities & Config.Capability.CONTROLS.bit) == 0) {
                 LOGGER.debug(IT, "Dropped control request {} — CONTROLS capability is off", control.op());
@@ -206,15 +224,20 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 case REPEAT -> this.repeat(control.value() != 0);
             }
         } else if (packet instanceof final Unwatch unwatch) {
-            this.registry.remove(unwatch.watcherId());
+            // ONLY A KNOWN FOLLOWER LEAVES A TOMBSTONE — STRANGERS MUST NOT GROW THE MAP
+            if (this.registry.remove(unwatch.watcherId()) != null) this.departed.put(unwatch.watcherId(), System.nanoTime());
         } else {
             LOGGER.debug(IT, "Ignored downstream packet on the authority: {}", packet);
         }
     }
 
-    // A FOLLOWER JOINING A RUNNING SESSION NEVER GATES UNTIL ITS FIRST READY REPORT;
-    // BEFORE THE SESSION RUNS, EVERY FOLLOWER GATES THE INITIAL LOCKSTEP START.
+    // A FOLLOWER JOINING A RUNNING SESSION NEVER GATES UNTIL ITS FIRST READY REPORT; BEFORE THE SESSION
+    // RUNS, EVERY FOLLOWER GATES THE INITIAL LOCKSTEP START. A FULL REGISTRY ENROLLS NOBODY (NULL)
     private Follower enroll() {
+        if (this.registry.size() >= MAX_FOLLOWERS) {
+            LogTool.throttled(LOGGER, Level.WARN, IT, FLOOD_REPORTS, "Follower registry is full ({}); ignoring new followers", MAX_FOLLOWERS);
+            return null;
+        }
         final Follower f = new Follower();
         if (this.status != Status.PLAYING) f.pooled = true;
         return f;
@@ -266,7 +289,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
         final long now = System.nanoTime();
         boolean hold = false;
         for (final Map.Entry<Long, Follower> e: this.registry.entrySet()) {
-            final Follower f =e.getValue();
+            final Follower f = e.getValue();
             if (now - f.lastSeenNanos >= this.followerTtlNanos) {
                 // A VANISHED FOLLOWER IS TREATED LIKE A FAILED ONE — IT NEVER HOLDS THE GATE
                 this.registry.remove(e.getKey());
@@ -275,6 +298,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             // ONLY POOLED FOLLOWERS STILL WAITING/LOADING/BUFFERING HOLD THE GATE; ERROR NEVER DOES
             hold |= f.pooled && (f.status == Status.WAITING || f.status == Status.LOADING || f.status == Status.BUFFERING);
         }
+        this.departed.values().removeIf(left -> now - left >= DEPARTED_TTL_NS);
         if ((this.capabilities & Config.Capability.LOCKSTEP.bit) != 0) this.gate(hold);
         // THE GATE FLIP BUMPS THE REVISION, SO IT TRAVELS IN THIS VERY BROADCAST
         final int rev = this.revision.get();
@@ -285,27 +309,29 @@ public final class ServerMediaPlayer extends MediaPlayer {
         }
     }
 
-    // FLIPS THE LOCKSTEP GATE: ON FREEZES THE CLOCK WHERE IT STANDS, OFF RESUMES FROM THE SAME SPOT
-    private synchronized void gate(final boolean on) {
-        if (this.gated == on || this.status != Status.PLAYING) return;
-        if (on) {
-            this.accumulatedMs = this.computeTime(this.speed());
-        } else {
-            this.segmentStartNanos = System.nanoTime();
+    // FLIPS THE LOCKSTEP GATE: ON FREEZES THE CLOCK WHERE IT STANDS, OFF RESUMES FROM THE SAME SPOT.
+    // THE PRESENTED STATUS FLIPS PLAYING<->BUFFERING, WHICH IS A TRANSITION LISTENERS HEAR ABOUT
+    private void gate(final boolean on) {
+        synchronized (this) {
+            if (this.gated == on || this.status != Status.PLAYING) return;
+            if (on) this.accumulatedMs = this.computeTime(this.speed());
+            else this.segmentStartNanos = System.nanoTime();
+            this.gated = on;
+            this.revision.incrementAndGet();
         }
-        this.gated = on;
-        this.revision.incrementAndGet();
+        this.invokeStatus(on ? Status.PLAYING : Status.BUFFERING, on ? Status.BUFFERING : Status.PLAYING);
     }
 
     // --- PLAYBACK CONTROLS ---
 
-    // EVERY CONTROL DELEGATES TO super FIRST: THAT IS WHERE A FOLLOWER'S CALL IS HANDED TO ITS
-    // AUTHORITY, AND THE CLOCK MUTATION BELOW ONLY RUNS WHEN THE CALL IS THIS PLAYER'S OWN.
-    // THE LOCK IS TAKEN AFTER super SO THE DEV'S BRIDGE IS NEVER INVOKED WHILE HOLDING IT.
+    // EVERY CONTROL DELEGATES TO super FIRST (A FOLLOWER'S CALL IS HANDED TO ITS AUTHORITY THERE); THE LOCK
+    // COMES AFTER IT AND THE LISTENER AFTER THE LOCK, SO NEITHER THE BRIDGE NOR A CALLBACK RUNS UNDER IT
     @Override
     public boolean start() {
         if (!super.start()) return false;
+        final Status prev;
         synchronized (this) {
+            prev = this.status();
             this.accumulatedMs = 0;
             this.segmentStartNanos = System.nanoTime();
             this.gated = false;
@@ -313,26 +339,32 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.revision.incrementAndGet();
             this.ticking(true);
         }
+        this.invokeStatus(prev, Status.PLAYING);
         return true;
     }
 
     @Override
     public boolean startPaused() {
         if (!super.startPaused()) return false;
+        final Status prev;
         synchronized (this) {
+            prev = this.status();
             this.accumulatedMs = 0;
             this.gated = false;
             this.status = Status.PAUSED;
             this.revision.incrementAndGet();
             this.ticking(true);
         }
+        this.invokeStatus(prev, Status.PAUSED);
         return true;
     }
 
     @Override
     public boolean pause(final boolean paused) {
         if (!super.pause(paused)) return false;
+        final Status prev;
         synchronized (this) {
+            prev = this.status();
             if (paused) {
                 if (this.status != Status.PLAYING) return false;
                 // A GATED CLOCK IS ALREADY FROZEN — DON'T RE-DERIVE TIME FROM A STALE SEGMENT START
@@ -349,20 +381,24 @@ public final class ServerMediaPlayer extends MediaPlayer {
             }
             this.revision.incrementAndGet();
         }
+        this.invokeStatus(prev, paused ? Status.PAUSED : Status.PLAYING);
         return true;
     }
 
     @Override
     public boolean stop() {
         if (!super.stop()) return false;
+        final Status prev;
         synchronized (this) {
             if (this.status == Status.WAITING || this.status == Status.STOPPED) return false;
+            prev = this.status();
             this.accumulatedMs = 0;
             this.gated = false;
             this.status = Status.STOPPED;
             this.revision.incrementAndGet();
             this.ticking(false);
         }
+        this.invokeStatus(prev, Status.STOPPED);
         return true;
     }
 
@@ -382,13 +418,16 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public boolean seek(final long time) {
         if (!super.seek(time)) return false;
+        final Status prev;
         synchronized (this) {
             if (this.status == Status.WAITING) return false;
+            prev = this.status();
             // SCRUBBING A FINISHED/STOPPED CLOCK LANDS PAUSED AT THE POSITION INSTEAD OF STAYING DEAD
             if (this.status == Status.ENDED || this.status == Status.STOPPED) this.status = Status.PAUSED;
             final long d = this.duration;
-            this.syncTime(d > 0 ? Math.min(time, d) : time);
+            this.syncTime(d > 0 ? Math.min(Math.max(0L, time), d) : Math.max(0L, time));
         }
+        this.invokeStatus(prev, this.status());
         return true;
     }
 
@@ -427,9 +466,9 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public boolean repeat(final boolean repeat) {
         final boolean old = this.repeat();
-        final boolean now = super.repeat(repeat);
-        if (old != now) this.revision.incrementAndGet();
-        return now;
+        if (!super.repeat(repeat)) return false;
+        if (old != repeat) this.revision.incrementAndGet();
+        return true;
     }
 
     @Override
@@ -472,9 +511,15 @@ public final class ServerMediaPlayer extends MediaPlayer {
         return !this.live();
     }
 
+    /** Only an explicitly live session locks the rate; an unknown duration merely holds the clock. */
+    @Override
+    public boolean canSpeed() {
+        return !this.live;
+    }
+
     @Override
     public boolean canPlay() {
-        return this.status != Status.ERROR;
+        return !this.released && this.status != Status.ERROR;
     }
 
     @Override
@@ -489,12 +534,17 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     @Override
     public void release() {
+        final Status prev;
         synchronized (this) {
+            prev = this.status();
+            this.released = true;
             this.gated = false;
             this.status = Status.STOPPED;
             this.registry.clear();
+            this.departed.clear();
         }
         // OUTSIDE THE LOCK — A FOLLOWER'S super SENDS Unwatch THROUGH THE DEV'S BRIDGE
+        this.invokeStatus(prev, Status.STOPPED);
         super.release();
     }
 
@@ -508,33 +558,39 @@ public final class ServerMediaPlayer extends MediaPlayer {
         // EVENTUAL DURATION LATCH WOULD SNAP EVERY FOLLOWER TO A MEANINGLESS POSITION.
         if (this.duration <= 0 && !this.live) return this.accumulatedMs;
         final long elapsedNanos = System.nanoTime() - this.segmentStartNanos;
-        return this.accumulatedMs + (long) (TimeUnit.NANOSECONDS.toMillis(elapsedNanos) * rate);
+        final long run = (long) (TimeUnit.NANOSECONDS.toMillis(elapsedNanos) * rate);
+        // SATURATE: A POSITION SEEKED NEAR Long.MAX_VALUE MUST NOT WRAP NEGATIVE AND BREAK THE SNAPSHOT
+        return run > Long.MAX_VALUE - this.accumulatedMs ? Long.MAX_VALUE : this.accumulatedMs + run;
     }
 
-    // 50ms CLOCK MAINTENANCE: LOOP WRAP AND THE ENDED TRANSITION
-    private synchronized void update() {
-        if (this.status != Status.PLAYING || this.gated) return;
+    // 50ms CLOCK MAINTENANCE: LOOP WRAP AND THE ENDED TRANSITION, PUBLISHED OUTSIDE THE MONITOR
+    private void update() {
+        final boolean ended;
+        synchronized (this) {
+            if (this.status != Status.PLAYING || this.gated) return;
 
-        // A LIVE TIMELINE HAS NO END — NEVER WRAP NOR END IT, EVEN WITH A DURATION LATCHED
-        final long d = this.duration;
-        if (d <= 0 || this.live) return;
-        final long now = this.computeTime(this.speed());
-        if (now < d) return;
+            // A LIVE TIMELINE HAS NO END — NEVER WRAP NOR END IT, EVEN WITH A DURATION LATCHED
+            final long d = this.duration;
+            if (d <= 0 || this.live) return;
+            final long now = this.computeTime(this.speed());
+            if (now < d) return;
 
-        if (this.repeat()) {
-            // CARRY THE OVERSHOOT ACROSS THE LOOP BOUNDARY — DISCARDING IT SLIPPED THE AUTHORITATIVE
-            // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT.
-            this.accumulatedMs = now % d;
-            this.segmentStartNanos = System.nanoTime();
-            // THE WRAP REBASES THE TIMELINE — BUMP SO THE BROADCASTER RESENDS WHERE CLIENTS DRIFT MOST
-            this.revision.incrementAndGet();
-        } else {
-            this.accumulatedMs = d;
-            this.status = Status.ENDED;
-            this.revision.incrementAndGet();
-            this.ticking(false);
-            this.invokeStatus(Status.PLAYING, Status.ENDED);
+            ended = !this.repeat();
+            if (ended) {
+                this.accumulatedMs = d;
+                this.status = Status.ENDED;
+                this.revision.incrementAndGet();
+                this.ticking(false);
+            } else {
+                // CARRY THE OVERSHOOT ACROSS THE LOOP BOUNDARY — DISCARDING IT SLIPPED THE AUTHORITATIVE
+                // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT.
+                this.accumulatedMs = now % d;
+                this.segmentStartNanos = System.nanoTime();
+                // THE WRAP REBASES THE TIMELINE — BUMP SO THE BROADCASTER RESENDS WHERE CLIENTS DRIFT MOST
+                this.revision.incrementAndGet();
+            }
         }
+        if (ended) this.invokeStatus(Status.PLAYING, Status.ENDED);
     }
 
     // PER-FOLLOWER REGISTRY ENTRY. pooled MARKS LOCKSTEP GATE MEMBERSHIP — IMMEDIATE WHEN THE

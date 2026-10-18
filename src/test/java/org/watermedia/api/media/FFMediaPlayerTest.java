@@ -14,7 +14,9 @@ import org.watermedia.test.support.PlayerWait;
 
 import java.nio.file.Path;
 import java.nio.file.Files;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -42,6 +44,8 @@ public class FFMediaPlayerTest {
     private static final long MRL_TIMEOUT_MS = 3000L;
     private static final long LOAD_TIMEOUT_MS = 15000L;
     private static final long PLAY_OBSERVE_MS = 8000L;
+    // A PAUSED RESTART LANDS ON THE KEYFRAME NEAREST THE TARGET, SO THE POSITION IS A WINDOW, NOT A POINT
+    private static final long SEEK_LANDING_MS = 1_500L;
 
     @BeforeAll
     static void boot() {
@@ -144,6 +148,67 @@ public class FFMediaPlayerTest {
             player.stop();
             player.release();
         }
+    }
+
+    @Test
+    @DisplayName("A seek after ENDED restarts paused at the target; stop() from ENDED rewinds; release lands STOPPED")
+    void seekAfterEndedRestartsPaused() {
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
+        final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> {});
+        final List<Status> seen = new CopyOnWriteArrayList<>();
+        player.onStatus((prev, next) -> seen.add(next));
+        try {
+            assertTrue(player.fps() > 0f, "a decoded video stream reports its rate");
+            assertTrue(player.canPlay());
+            final long duration = player.duration();
+            assertTrue(duration > 1_000L);
+            assertTrue(player.seek(duration - 500L));
+            assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.ENDED));
+            assertTrue(player.canPlay(), "an ended media is still playable");
+            assertFalse(player.pause(), "nothing to pause after the end");
+
+            final long target = duration / 2;
+            assertTrue(player.seek(target));
+            assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PAUSED));
+            assertTrue(Math.abs(player.time() - target) < SEEK_LANDING_MS, "the restart lands near the scrubbed position: " + player.time());
+
+            assertTrue(player.togglePlay());
+            assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PLAYING));
+            assertTrue(player.stop());
+            assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.STOPPED));
+            assertEquals(0L, player.time());
+            assertFalse(player.stop(), "already stopped");
+        } finally {
+            player.release();
+        }
+        assertEquals(Status.STOPPED, player.status());
+        assertFalse(player.canPlay());
+        assertTrue(seen.contains(Status.LOADING) && seen.contains(Status.PAUSED), "intermediate transitions are published: " + seen);
+        gfx.release();
+    }
+
+    @Test
+    @DisplayName("A still image through FFmpeg stays up until displayTime ends it, ignoring repeat")
+    void stillImageDisplayTime() {
+        // A PPM IS A TRUE SINGLE-FRAME SOURCE DECODED IN SOFTWARE (THE PNG FIXTURES ARE APNG STREAMS FOR
+        // FFMPEG AND THE GRAY JPEG IS REFUSED BY HARDWARE DECODERS)
+        final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.NETPBM_PPM));
+        assertTrue(mrl.await(MRL_TIMEOUT_MS));
+        final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
+        final FFMediaPlayer player = new FFMediaPlayer(mrl, 0, gfx, null);
+        try {
+            player.repeat(true);
+            player.displayTime(400L);
+            assertTrue(player.start());
+            assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.PLAYING));
+            assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, LOAD_TIMEOUT_MS));
+            assertTrue(PlayerWait.awaitStatus(player, LOAD_TIMEOUT_MS, Status.ENDED));
+            assertEquals(400L, player.duration());
+            assertEquals(1L, gfx.uploadCount(), "the still is uploaded once, never looped");
+        } finally {
+            player.release();
+        }
+        gfx.release();
     }
 
     @ParameterizedTest

@@ -1,10 +1,12 @@
 package org.watermedia.api.media;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -211,14 +213,14 @@ public final class GLEngine extends GFXEngine {
     // TEXTURE UNITS SCANNED BY THE ORPHAN SWEEP — COVERS MINECRAFT'S 12-UNIT BINDING CACHE
     // WITH MARGIN; HOSTS BINDING BEYOND THIS USE DSA OR UNCACHED PATHS
     private static final int ORPHAN_SCAN_UNITS = 32;
+    private static final long UPLOAD_REPORT_NS = 10_000_000_000L;
 
     // THREAD CONTEXT (OPENGL-SPECIFIC)
     private final Thread renderThread;
     private final Executor renderThreadEx;
     private final Hub hub;
+    private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
     private boolean hubQueued;            // GUARDED BY hub MONITOR
-    private boolean hubReleased;          // GUARDS THE HUB REFCOUNT DECREMENT (release() MAY RUN TWICE)
-    private volatile boolean released;    // TERMINAL FLAG — STOPS PRODUCERS AND STALE RENDER TASKS
 
     // MANAGED TEXTURE (WHAT THE DEV BINDS)
     private int managedTexture = 0;
@@ -284,9 +286,9 @@ public final class GLEngine extends GFXEngine {
     private final int[][] uniforms = new int[FRAGMENTS.length][];
     private int conv = CONV_NONE; // ACTIVE CONVERSION KIND FOR THE CURRENT FORMAT
 
-    // FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE — DECLINED IN supports() SO THE PRODUCER
-    // PRE-CONVERTS IT TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM
-    private volatile PixelFormat shaderFailFormat;
+    // CONVERSION KINDS WHOSE SHADER FAILED TO COMPILE (ONE BIT PER CONV_*): THEIR FORMATS ARE DECLINED IN supports()
+    // SO THE PRODUCER PRE-CONVERTS TO BGRA INSTEAD OF RENDERING BLACK, AND THE COMPILE IS NEVER RETRIED
+    private volatile int shaderFailKinds;
 
     // LAST REQUESTED FORMAT (PRODUCER-SIDE SNAPSHOT): format() DEFERS FIELD UPDATES TO THE RENDER
     // THREAD, SO ASYNC preload() VALIDATES AGAINST THIS TO REJECT SYNCHRONOUSLY INSTEAD OF WARN-ONLY
@@ -342,6 +344,7 @@ public final class GLEngine extends GFXEngine {
      */
     @Override
     public long texture() {
+        if (this.released) return 0L;
         final int[] textures = this.frameTextures;
         final int frame = this.activeFrameTexture;
         if (frame >= 0 && frame < textures.length) return textures[frame];
@@ -354,13 +357,18 @@ public final class GLEngine extends GFXEngine {
     }
 
     @Override
-    public boolean supports(final PixelFormat format) {
-        // A FORMAT WHOSE CONVERSION SHADER FAILED TO COMPILE IS DECLINED SO THE PRODUCER RE-ROUTES IT
-        // THROUGH THE SCALER TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM.
-        if (format == this.shaderFailFormat) return false;
+    public boolean supports(final PixelFormat format, final int bits) {
         // GBRA WOULD SAMPLE CHANNEL-SHUFFLED THROUGH THE GL_RGBA PLANE PATH — DECLINED SO THE
         // PRODUCER PRE-CONVERTS TO BGRA; BCn SAMPLING IS NOT WIRED YET, DECLINED UNTIL IT IS.
-        return format != PixelFormat.GBRA && !format.compressed();
+        if (!super.supports(format, bits) || format == PixelFormat.GBRA) return false;
+        return switch (format) {
+            // DIRECT LAYOUTS UPLOAD AS GL TYPES: PACKED 8_8_8_8_REV FOR BGRA/YUYV, BYTE OR SHORT FOR RGB/RGBA
+            case BGRA, YUYV, UYVY -> bits == 8;
+            case RGB, RGBA -> bits == 8 || bits == 16;
+            // A KIND WHOSE CONVERSION SHADER FAILED TO COMPILE IS DECLINED SO THE PRODUCER RE-ROUTES IT
+            // THROUGH THE SCALER TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM.
+            default -> (this.shaderFailKinds & (1 << kindOf(format))) == 0;
+        };
     }
 
     @Override
@@ -467,16 +475,21 @@ public final class GLEngine extends GFXEngine {
         this.activeFrameTexture = Math.min(Math.max(index, 0), ready - 1);
     }
 
-    // RESETS THE PIPELINE FOR A NEW FORMAT: PLANE TEXTURES, PBOs AND THE PERSISTENT RING GO, THE CONVERSION SHADER COMPILES
-    // ON FIRST USE (CACHED PER CONVERSION KIND) AND THE MANAGED TEXTURE IS REALLOCATED ON THE NEXT UPLOAD IF THE SIZE CHANGED
+    // RESETS THE PIPELINE FOR A NEW FORMAT (PLANE TEXTURES, PBOs, RING; SHADERS CACHED PER KIND, MANAGED TEXTURE REALLOCATED
+    // ON THE NEXT UPLOAD). DEFERRED TO THE RENDER THREAD, SO width()/height() LAG: PRODUCERS TRACK THEIR OWN SIZE
     @Override
-    void format(final PixelFormat format, final int width, final int height, final int bits) {
-        if (this.released) return;
+    boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
         this.req = new Req(format, width, height);
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.format(format, width, height, bits));
-            return;
+            this.renderThreadEx.execute(() -> this.applyNow(format, width, height, bits));
+            return true;
         }
+        this.applyNow(format, width, height, bits);
+        return true;
+    }
+
+    private void applyNow(final PixelFormat format, final int width, final int height, final int bits) {
+        if (this.released) return; // A RELEASE OVERTOOK THE DEFERRED TASK
 
         // RELEASE FORMAT-SPECIFIC RESOURCES
         final Env env = Env.save(false);
@@ -533,14 +546,14 @@ public final class GLEngine extends GFXEngine {
             }
         }
 
-        // UPDATE BASE STATE THEN BUILD THE PLANE LAYOUT FOR THE NEW FORMAT
-        super.format(format, width, height, bits);
+        // PUBLISH THE LAYOUT THEN BUILD THE PLANE LAYOUT FOR THE NEW FORMAT
+        this.publish(format, width, height, bits);
         this.buildPlanes();
         this.activePlanes = this.planes.length;
 
         // LAZY-COMPILE THE CONVERSION SHADER (ONCE PER KIND). ALL PROGRAMS SHARE ONE UNIFORM SCHEME,
         // SO ONE RESOLVE LOOP COVERS EVERY KIND; UNDECLARED UNIFORMS RESOLVE TO -1 AND ARE IGNORED.
-        if (this.conv != CONV_NONE && this.programs[this.conv] == 0) {
+        if (this.conv != CONV_NONE && this.programs[this.conv] == 0 && (this.shaderFailKinds & (1 << this.conv)) == 0) {
             final int prog = this.compileShader(VERTEX_SHADER, FRAGMENTS[this.conv]);
             if (prog != 0) {
                 final int[] locs = new int[UNIFORMS.length];
@@ -549,7 +562,7 @@ public final class GLEngine extends GFXEngine {
                 this.uniforms[this.conv] = locs;
                 LOGGER.info(IT, "Successfully compiled conversion shader for {} (program={})", format, prog);
             } else {
-                this.shaderFailFormat = format; // DECLINE THIS FORMAT GOING FORWARD (SEE supports)
+                this.shaderFailKinds |= 1 << this.conv; // DECLINE THIS KIND GOING FORWARD (SEE supports)
             }
         }
 
@@ -562,43 +575,56 @@ public final class GLEngine extends GFXEngine {
     // WRITES THE FRAME INTO THE PERSISTENT RING (PRODUCER-SIDE MEMCPY) OR PARKS THE CLIENT BUFFERS
     // IN THE LATEST-WINS SLOT; THE SHARED HUB QUEUES AT MOST ONE BATCHED DRAIN PER RENDER THREAD.
     @Override
-    void upload(final ByteBuffer[] bufs, final int[] strides) {
+    void push(final ByteBuffer[] bufs, final int[] strides) {
         for (final ByteBuffer buf: bufs) {
             if (buf == null || !buf.isDirect()) return;
         }
-        if (this.released) return;
-        if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
-            // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
-            final Env env = Env.save(this.conv != CONV_NONE);
-            try {
-                this.renderSubmission(new Submission(bufs, strides, this.sizesOf(bufs), -1L, 0));
-            } finally {
-                env.restore();
+        try {
+            if (this.renderThread == null || this.renderThread == Thread.currentThread()) {
+                // SYNCHRONOUS PATH: ALREADY ON THE RENDER THREAD (OR NO THREAD CONTRACT AT ALL)
+                final Env env = Env.save(this.conv != CONV_NONE);
+                try {
+                    this.renderSubmission(client(bufs, strides));
+                } finally {
+                    env.restore();
+                }
+                return;
             }
-            return;
-        }
 
-        // RING CONGESTION (DROPPED) SKIPS THE FRAME BUT STILL SCHEDULES A DRAIN SO FENCES
-        // RETIRE AND THE RING RECOVERS.
-        final int[] sizes = this.sizesOf(bufs);
-        final Submission ring = this.ringWrite(bufs, strides, sizes);
-        if (ring != DROPPED) {
-            this.pending = ring != null ? ring : new Submission(bufs, strides, sizes, -1L, 0);
+            // RING CONGESTION (DROPPED) SKIPS THE FRAME BUT STILL SCHEDULES A DRAIN SO FENCES
+            // RETIRE AND THE RING RECOVERS.
+            final Submission ring = this.ringWrite(bufs, strides);
+            if (ring != DROPPED) {
+                this.pending = ring != null ? ring : client(bufs, strides);
+            }
+            this.hub.schedule(this);
+        } catch (final RuntimeException e) {
+            // A GL FAILURE OR A REJECTING EXECUTOR DROPS THE FRAME; UPLOADS NEVER THROW AT THE DECODER
+            LogTool.throttled(LOGGER, Level.ERROR, IT, this.uploadReports, "Upload failed; frame dropped", e);
         }
-        this.hub.schedule(this);
     }
 
-    private int[] sizesOf(final ByteBuffer[] bufs) {
+    // SNAPSHOTS SIZES AND BASE ADDRESSES NOW: THE DRAIN RUNS LATER ON THE RENDER THREAD AND MUST NOT
+    // DEPEND ON WHERE position SITS BY THEN (THE CONTRACT ONLY PROMISES THE BYTES STAY VALID)
+    private static Submission client(final ByteBuffer[] bufs, final int[] strides) {
         final int[] sizes = new int[bufs.length];
-        for (int i = 0; i < bufs.length; i++) sizes[i] = bufs[i].remaining();
-        return sizes;
+        final long[] addrs = new long[bufs.length];
+        for (int i = 0; i < bufs.length; i++) {
+            sizes[i] = bufs[i].remaining();
+            addrs[i] = MemoryUtil.memAddress(bufs[i]);
+        }
+        return new Submission(bufs, addrs, strides, sizes, -1L, 0);
     }
 
     // COPIES ALL PLANES INTO THE NEXT FREE SLOT; RETURNS null WHEN THE RING IS UNAVAILABLE/TOO
     // SMALL (CALLER FALLS BACK TO CLIENT BUFFERS) OR DROPPED WHEN EVERY SLOT IS IN FLIGHT.
-    private Submission ringWrite(final ByteBuffer[] bufs, final int[] strides, final int[] sizes) {
+    private Submission ringWrite(final ByteBuffer[] bufs, final int[] strides) {
+        final int[] sizes = new int[bufs.length];
         long total = 0L;
-        for (final int size: sizes) total += size;
+        for (int i = 0; i < bufs.length; i++) {
+            sizes[i] = bufs[i].remaining();
+            total += sizes[i];
+        }
         synchronized (this.ringLock) {
             if (this.ringAddr == 0L || total > this.ringSlotBytes) return null;
             if (this.ringProduced - this.ringRetired >= RING_SLOTS) return DROPPED;
@@ -609,7 +635,7 @@ public final class GLEngine extends GFXEngine {
                 dst += sizes[i];
             }
             this.ringProduced = slot + 1;
-            return new Submission(null, strides, sizes, slot, this.ringEra);
+            return new Submission(null, null, strides, sizes, slot, this.ringEra);
         }
     }
 
@@ -685,7 +711,7 @@ public final class GLEngine extends GFXEngine {
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
                 final long needed = (long) p.effStride(s.strides[i]) * p.h;
-                final long addr = MemoryUtil.memAddress(s.bufs[i]);
+                final long addr = s.addrs[i];
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, addr);
@@ -708,7 +734,7 @@ public final class GLEngine extends GFXEngine {
             }
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
-                this.seedPBO(i * NUM_PBOS + writeIdx, this.planeBytes[i], MemoryUtil.memAddress(s.bufs[i]));
+                this.seedPBO(i * NUM_PBOS + writeIdx, this.planeBytes[i], s.addrs[i]);
             }
             this.pboWriteIdx = writeIdx;
         }
@@ -829,23 +855,24 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // RELEASE
     // ==========================================================================
+    // released IS ALREADY SET: PRODUCERS STOP AT ONCE AND STALE RENDER TASKS BECOME NO-OPS; THE GPU
+    // TEARDOWN RUNS ONCE, DEFERRED TO THE RENDER THREAD WHEN THERE IS ONE
     @Override
-    public void release() {
-        this.released = true; // STOP PRODUCERS IMMEDIATELY; STALE RENDER TASKS BECOME NO-OPS
-        // DROP OUR HUB REFERENCE — TEST-AND-SET INSIDE THE HUBS MONITOR (release() MAY RUN TWICE,
-        // EVEN CONCURRENTLY); THE LAST ENGINE LEAVING EVICTS THE HUB, SO A DEAD THREAD LEAKS NOTHING.
+    void destroy() {
+        // DROP OUR HUB REFERENCE; THE LAST ENGINE LEAVING EVICTS THE HUB, SO A DEAD THREAD LEAKS NOTHING
         if (this.hub != null) {
             synchronized (HUBS) {
-                if (!this.hubReleased) {
-                    this.hubReleased = true;
-                    if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
-                }
+                if (--this.hub.engines <= 0) HUBS.remove(this.renderThread, this.hub);
             }
         }
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(this::release);
+            this.renderThreadEx.execute(this::destroyGL);
             return;
         }
+        this.destroyGL();
+    }
+
+    private void destroyGL() {
         final Env env = Env.save(false);
         try {
             this.destroyRing();
@@ -944,14 +971,7 @@ public final class GLEngine extends GFXEngine {
         final int w = this.width;
         final int h = this.height;
         final int bps = this.bytesPerSample;
-        this.conv = switch (this.format) {
-            case GRAY -> CONV_GRAY;
-            case NV12, NV21 -> CONV_NV;
-            case YUV420P, YUV422P, YUV444P -> CONV_YUV3;
-            case YUVA420P, YUVA422P, YUVA444P -> CONV_YUVA;
-            case YUYV, UYVY -> CONV_YUYV;
-            default -> CONV_NONE; // BGRA, RGBA, GBRA, RGB — DIRECT UPLOAD, NO SHADER PASS
-        };
+        this.conv = kindOf(this.format);
         this.planes = switch (this.format) {
             case BGRA -> new Plane[]{
                     new Plane(w, h, GL11.GL_RGBA, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
@@ -975,6 +995,18 @@ public final class GLEngine extends GFXEngine {
             default -> this.bits == 16 // RGBA / GBRA
                     ? new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_SHORT, 8)}
                     : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
+        };
+    }
+
+    // CONVERSION KIND OF A LAYOUT: DIRECT FORMATS (BGRA, RGBA, GBRA, RGB) NEED NO SHADER PASS
+    private static int kindOf(final PixelFormat format) {
+        return switch (format) {
+            case GRAY -> CONV_GRAY;
+            case NV12, NV21 -> CONV_NV;
+            case YUV420P, YUV422P, YUV444P -> CONV_YUV3;
+            case YUVA420P, YUVA422P, YUVA444P -> CONV_YUVA;
+            case YUYV, UYVY -> CONV_YUYV;
+            default -> CONV_NONE;
         };
     }
 
@@ -1221,12 +1253,12 @@ public final class GLEngine extends GFXEngine {
     // ==========================================================================
     // RECORDS + PLANE DESCRIPTOR
     // ==========================================================================
-    // ONE SUBMITTED FRAME. slot >= 0 MEANS PIXELS LIVE IN THE PERSISTENT RING (bufs IS NULL);
-    // OTHERWISE bufs HOLDS THE CALLER'S DIRECT BUFFERS UNTIL THE DRAIN CONSUMES OR REPLACES IT.
-    private record Submission(ByteBuffer[] bufs, int[] strides, int[] sizes, long slot, int era) {}
+    // ONE SUBMITTED FRAME. slot >= 0 MEANS PIXELS LIVE IN THE PERSISTENT RING (bufs IS NULL); OTHERWISE bufs KEEPS THE
+    // CALLER'S DIRECT BUFFERS REACHABLE AND addrs THEIR BASE ADDRESSES UNTIL THE DRAIN CONSUMES OR REPLACES IT.
+    private record Submission(ByteBuffer[] bufs, long[] addrs, int[] strides, int[] sizes, long slot, int era) {}
 
     // SENTINEL FOR "RING FULL — FRAME DROPPED"
-    private static final Submission DROPPED = new Submission(null, null, new int[0], -2L, 0);
+    private static final Submission DROPPED = new Submission(null, null, null, new int[0], -2L, 0);
 
     // PRODUCER-VISIBLE SNAPSHOT OF THE LAST format() REQUEST (SEE req FIELD)
     private record Req(PixelFormat format, int width, int height) {}

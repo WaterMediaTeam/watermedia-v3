@@ -335,7 +335,7 @@ public final class TwitchPlatform implements Platform {
 
         final List<Quality> out = new ArrayList<>(variants.size());
         for (final M3UTool.Variant v: variants) {
-            out.add(new Quality(v.uri(), v.width(), v.height()));
+            out.add(new Quality(v.uri(), v.width(), v.height(), (float) v.fps()));
         }
         LOGGER.debug(IT, "Twitch resolved {} HLS rendition(s) for {} '{}'", out.size(), isVod ? "VOD" : "stream", id);
         return out;

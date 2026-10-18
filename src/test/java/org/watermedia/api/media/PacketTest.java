@@ -7,6 +7,7 @@ import org.watermedia.api.media.Control.Op;
 import org.watermedia.api.media.MediaPlayer.Status;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -107,6 +108,22 @@ public class PacketTest {
         final byte[] badReport = new Report(1L, Status.PLAYING, 0L, false).toBytes().array().clone();
         badReport[10] = (byte) 200;
         assertThrows(IllegalArgumentException.class, () -> Packet.read(ByteBuffer.wrap(badReport)));
+    }
+
+    @Test
+    @DisplayName("The caller's byte order is ignored and a rejected payload leaves the position untouched")
+    void testByteOrderAndFailedDecode() {
+        final Sync sync = new Sync(1, Status.PLAYING, 1_234L, 1_000L, 1f, 100, false, false, false);
+        // A TRANSPORT HANDING OVER A LITTLE-ENDIAN VIEW MUST STILL DECODE THE BIG-ENDIAN WIRE
+        final ByteBuffer little = ByteBuffer.wrap(sync.toBytes().array()).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(sync, Packet.read(little));
+        assertEquals(0, little.remaining());
+
+        final byte[] badVersion = sync.toBytes().array().clone();
+        badVersion[1] = 99;
+        final ByteBuffer rejected = ByteBuffer.wrap(badVersion);
+        assertThrows(IllegalArgumentException.class, () -> Packet.read(rejected));
+        assertEquals(0, rejected.position(), "a rejected payload must not consume bytes");
     }
 
     @Test

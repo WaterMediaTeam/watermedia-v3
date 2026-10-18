@@ -31,13 +31,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Pure-Java verification of the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer
- * sync contract depends on: {@link JSEngine} format validation and both engines' capability
- * tables. The OpenAL cases run only when a real device/context can be opened, skipping gracefully
- * otherwise.
+ * Verifies the {@link SFXEngine} implementations that the MasterClock/FFMediaPlayer sync contract
+ * depends on: {@link JSEngine} validation and inertness after release, both engines' capability
+ * tables and the OpenAL queue ownership. The OpenAL cases run only when a real device/context can
+ * be opened, skipping gracefully otherwise.
  */
 @DisplayName("SFXEngine")
-class SFXEngineTest {
+public class SFXEngineTest {
 
     @BeforeAll
     static void boot() {
@@ -92,6 +92,26 @@ class SFXEngineTest {
             assertFalse(engine.speed(2.0f), "Java Sound refuses speed control");
             assertEquals(1.0f, engine.speed(), "a refused speed keeps the 1.0x default");
             assertEquals(0, engine.source(), "Java Sound has no source handle");
+        }
+
+        @Test
+        @DisplayName("volume() rejects negative and non-finite gains")
+        void volumeValidation() {
+            final JSEngine engine = MediaAPI.jsEngine();
+            assertThrows(IllegalArgumentException.class, () -> engine.volume(-0.1f));
+            assertThrows(IllegalArgumentException.class, () -> engine.volume(Float.NaN));
+            assertThrows(IllegalArgumentException.class, () -> engine.volume(Float.POSITIVE_INFINITY));
+        }
+
+        @Test
+        @DisplayName("A released engine refuses formats and uploads instead of reopening a line")
+        void releasedEngineStaysInert() {
+            final JSEngine engine = MediaAPI.jsEngine();
+            engine.release();
+            assertTrue(engine.released());
+            assertFalse(engine.format(SFXEngine.SampleType.S16, 2, 48_000), "no line is reopened after release");
+            assertFalse(engine.upload(ByteBuffer.allocateDirect(4)));
+            engine.release(); // IDEMPOTENT
         }
     }
 
@@ -180,8 +200,11 @@ class SFXEngineTest {
                 assertEquals(0, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
                 assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
                 assertTrue(engine.upload(pcm));
+                // A LAYOUT CHANGE WITH QUEUED AUDIO FLUSHES THE QUEUE, SO THE NEXT UPLOAD IS ACCEPTED
                 assertTrue(engine.format(SFXEngine.SampleType.S16, 2, 48_000));
-                assertThrows(IllegalStateException.class, () -> engine.upload(pcm));
+                assertEquals(2, free.getInt(engine));
+                assertEquals(0, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
+                assertTrue(engine.upload(pcm));
                 assertEquals(1, free.getInt(engine));
                 assertEquals(1, AL10.alGetSourcei(engine.source(), AL10.AL_BUFFERS_QUEUED));
                 engine.flush();

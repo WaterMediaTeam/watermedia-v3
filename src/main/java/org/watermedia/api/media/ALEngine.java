@@ -197,15 +197,14 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    synchronized void volume(final float volume) {
+    synchronized void gain(final float volume) {
         if (this.source == 0) return;
-        if (!Float.isFinite(volume) || volume < 0) throw new IllegalArgumentException("Volume must be finite and nonnegative");
         this.requireContext();
         AL10.alSourcef(this.source, AL10.AL_GAIN, volume);
     }
 
     @Override
-    public synchronized void release() {
+    synchronized void destroy() {
         if (this.source == 0) return;
         this.requireContext();
         try {
@@ -233,15 +232,14 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    synchronized boolean format(final SampleType type, final int channels, final int sampleRate) {
-        if (type == null) return false;
+    synchronized boolean apply(final SampleType type, final int channels, final int sampleRate) {
         if (this.source == 0 || (this.spatial && channels != 1)) return false;
-        if (channels < 1 || channels > 8) return false;
-        if (sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
         final ChannelSupport support = this.channelSupport(channels);
         if (support == null || !support.supports(type)) return false;
         final int al = alFormatFor(type, channels);
         if (al == -1) return false;
+        // A LAYOUT CHANGE WITH QUEUED AUDIO WOULD MAKE THE DRIVER REJECT THE NEXT BUFFER: DROP THE QUEUE FIRST
+        if (this.alFormat != 0 && (al != this.alFormat || sampleRate != this.sampleRate) && this.queuedCount > 0) this.flush();
         this.sampleType = type;
         this.channels = channels;
         this.sampleRate = sampleRate;
@@ -251,7 +249,7 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    synchronized boolean upload(final ByteBuffer data) {
+    synchronized boolean push(final ByteBuffer data) {
         if (this.source == 0) return false;
         this.requireContext();
         if (this.alFormat == 0) return false;

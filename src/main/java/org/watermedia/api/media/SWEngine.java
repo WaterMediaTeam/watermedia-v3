@@ -1,8 +1,10 @@
 package org.watermedia.api.media;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -13,8 +15,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Software {@link GFXEngine} base for CPU render targets that consume a packed BGRA frame
  * instead of a GPU texture — JavaFX ({@link JFXEngine}) and AWT/Swing ({@link AWTEngine}).
  * <p>
- * It only accepts single-plane {@code BGRA}/{@code RGBA}; every planar or packed-YUV format is
- * declined, so the frame producer pre-converts those to BGRA through the decoder's scaler. Each
+ * It only accepts single-plane 8-bit {@code BGRA}/{@code RGBA}; every planar or packed-YUV format
+ * is declined, so the frame producer pre-converts those to BGRA through the decoder's scaler. Each
  * frame is written into a reusable direct BGRA buffer that the concrete engine wraps into (or copies
  * to) its native surface. Because there is no GPU texture, {@link #texture()} returns a non-zero
  * sentinel once the first frame is uploaded (0 before), matching the base contract; the real output
@@ -22,55 +24,66 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * A frame arrives on the player's decode thread: {@code upload(ByteBuffer[], int[])} writes the buffer
  * and calls {@link #present()} to publish it, then fires the optional {@code onFrame} callback so a
- * UI can repaint. The surface is reallocated on every {@code format(PixelFormat, int, int, int)}
- * (resolution change).
+ * UI can repaint; a callback that throws is logged and never reaches the decoder. The surface is
+ * reallocated on every {@code format(PixelFormat, int, int, int)} (resolution change), and a size
+ * the backend cannot allocate refuses the format and leaves no surface.
  */
 public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEngine {
     private static final Marker IT = MarkerManager.getMarker(SWEngine.class.getSimpleName());
+    private static final long CALLBACK_REPORT_NS = 10_000_000_000L;
 
-    // REUSABLE DIRECT BGRA SURFACE — width*height*4 BYTES, REALLOCATED ON RESIZE
-    protected ByteBuffer bgra;
+    // REUSABLE DIRECT BGRA SURFACE — width*height*4 BYTES, REALLOCATED ON RESIZE, NULL WHILE NO LAYOUT IS BACKED
+    protected volatile ByteBuffer bgra;
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
+    private final LogTool.Throttle callbackReports = new LogTool.Throttle(CALLBACK_REPORT_NS);
     private volatile boolean framed;
-    private volatile boolean released;
 
     protected SWEngine(final Runnable onFrame) {
         this.onFrame = onFrame;
     }
 
     @Override
-    public boolean supports(final PixelFormat format) {
-        // ANYTHING ELSE (PLANAR/PACKED YUV, RGB, GRAY, BCn) IS DECLINED SO THE PRODUCER CONVERTS IT TO BGRA
-        return format == PixelFormat.BGRA || format == PixelFormat.RGBA;
+    public boolean supports(final PixelFormat format, final int bits) {
+        // ANYTHING ELSE (PLANAR/PACKED YUV, RGB, GRAY, BCn, DEEP COLOR) IS DECLINED SO THE PRODUCER CONVERTS IT TO BGRA
+        return (format == PixelFormat.BGRA || format == PixelFormat.RGBA) && bits == 8;
     }
 
     @Override
-    void format(final PixelFormat format, final int width, final int height, final int bits) {
-        super.format(format, width, height, bits);
-        // THE SURFACE KEEPS THE REQUESTED SIZE; ONE THAT CANNOT BACK A SINGLE BUFFER LEAVES NO SURFACE, SO UPLOADS DROP
+    boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
+        // DROP THE PREVIOUS SURFACE FIRST SO A FAILED ALLOCATION NEVER LEAVES A STALE IMAGE ON SCREEN
+        this.framed = false;
+        this.bgra = null;
+        this.disposeSurface();
         final long bytes = (long) width * height * 4;
-        if (width <= 0 || height <= 0 || bytes > Integer.MAX_VALUE) {
-            LOGGER.warn(IT, "Surface {}x{} needs {} bytes, outside 1 to {}; frames are dropped until the next format",
-                    width, height, bytes, Integer.MAX_VALUE);
-            this.bgra = null;
-            this.disposeSurface();
-            return;
+        if (bytes > Integer.MAX_VALUE) {
+            LOGGER.warn(IT, "Surface {}x{} needs {} bytes, above {}; the format is refused", width, height, bytes, Integer.MAX_VALUE);
+            return false;
         }
-        this.bgra = ByteBuffer.allocateDirect((int) bytes).order(ByteOrder.nativeOrder());
-        this.allocSurface(width, height, this.bgra);
+        final ByteBuffer surface;
+        try {
+            surface = ByteBuffer.allocateDirect((int) bytes).order(ByteOrder.nativeOrder());
+            this.allocSurface(width, height, surface);
+        } catch (final RuntimeException | OutOfMemoryError e) {
+            this.disposeSurface();
+            LOGGER.error(IT, "Failed to allocate the {}x{} surface", width, height, e);
+            return false;
+        }
+        this.bgra = surface;
+        this.publish(format, width, height, bits);
+        return true;
     }
 
     @Override
-    public long texture() { return this.released || !this.framed ? 0L : 1L; }
+    public long texture() { return this.released || !this.framed ? 0L : SENTINEL_TEXTURE; }
 
     @Override
-    void upload(final ByteBuffer[] planes, final int[] strides) {
+    void push(final ByteBuffer[] planes, final int[] strides) {
         // ONLY SINGLE-PLANE BGRA/RGBA IS ACCEPTED (supports), SO THE FIRST PLANE IS THE WHOLE FRAME
         final ByteBuffer buffer = planes[0];
         final int stride = strides[0];
         final ByteBuffer dst = this.bgra;
-        if (this.released || dst == null) return;
+        if (dst == null) return;
         final int w = this.width;
         final int h = this.height;
         final int rowBytes = w * 4;
@@ -108,24 +121,24 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
 
         this.framed = true;
         this.present();
-        if (this.onFrame != null) this.onFrame.run();
+        if (this.onFrame == null) return;
+        // THE HOST CALLBACK RUNS ON THE DECODE THREAD: ITS FAILURES ARE REPORTED HERE, NEVER THROWN AT THE DECODER
+        try { this.onFrame.run(); }
+        catch (final RuntimeException e) { LogTool.throttled(LOGGER, Level.ERROR, IT, this.callbackReports, "Frame callback failed", e); }
     }
 
     @Override
-    public void release() {
-        this.released = true;
+    void destroy() {
         this.bgra = null;
         this.disposeSurface();
     }
 
-    protected boolean released() { return this.released; }
-
-    // CREATES THE NATIVE SURFACE FOR A NEW SIZE; jfx WRAPS bgra ZERO-COPY, awt KEEPS ITS OWN IMAGE
+    // CREATES THE NATIVE SURFACE FOR A NEW SIZE; jfx WRAPS bgra ZERO-COPY, awt KEEPS ITS OWN IMAGE. A THROW REFUSES THE FORMAT
     protected abstract void allocSurface(int width, int height, ByteBuffer bgra);
 
     // PUBLISHES THE FRAME JUST WRITTEN INTO bgra (FX-THREAD updateBuffer / AWT PIXEL CONVERSION)
     protected abstract void present();
 
-    // DROPS THE NATIVE SURFACE ON release()
+    // DROPS THE NATIVE SURFACE BEFORE A REALLOCATION AND ON release()
     protected abstract void disposeSurface();
 }

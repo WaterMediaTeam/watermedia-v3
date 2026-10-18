@@ -11,17 +11,28 @@ import java.nio.ByteBuffer;
  * WATERMeDIA creates the texture, uploads pixel data, and exposes a handle.
  * The developer binds that handle in their rendering pipeline.
  * <p>
- * Engines are created through {@link MediaAPI} factory methods and are
- * client-side only — construction throws on a server-side environment, headless capture
- * included. Backends are OpenGL, Vulkan, software surfaces and headless capture; thread-safety
- * contracts depend on the backend — see each implementation's javadoc. The owning
- * {@link MediaPlayer} drives formats and uploads; the public surface only queries the engine.
+ * Engines are created through {@link MediaAPI} factory methods and are client-side only —
+ * construction throws on a server-side environment, headless capture included. Backends are
+ * OpenGL, Vulkan, software surfaces and headless capture. The owning {@link MediaPlayer} drives
+ * formats and uploads from one producer thread; the public surface only queries the engine.
+ * <p>
+ * Every backend shares one lifecycle contract: {@link #release()} is idempotent, may run on any
+ * thread but never concurrently with a format or upload, and leaves the engine inert
+ * ({@link #texture()} returns 0, formats are refused and uploads are dropped). Uploads never
+ * throw: a backend that hits a driver failure logs it, drops the frame and keeps the last texture
+ * it published. Software and headless backends expose a non-zero sentinel texture because they
+ * have no GPU handle.
  */
 public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEngine, SWEngine {
-    protected PixelFormat format;
-    protected int width;
-    protected int height;
-    protected int bits = 8;
+    // NON-ZERO HANDLE FOR BACKENDS WITHOUT A GPU TEXTURE (SOFTWARE SURFACES, HEADLESS CAPTURE): NEVER A VALID GL NAME
+    static final long SENTINEL_TEXTURE = -1L;
+
+    // CONFIGURED LAYOUT, WRITTEN BY THE PRODUCER (THE RENDER THREAD IN GL) AND READ FROM ANY HOST THREAD
+    protected volatile PixelFormat format;
+    protected volatile int width;
+    protected volatile int height;
+    protected volatile int bits = 8;
+    protected volatile boolean released;
 
     // SINGLE ENFORCEMENT POINT: EVERY ENGINE CONSTRUCTION PASSES THROUGH HERE, HEADLESS CAPTURE INCLUDED.
     protected GFXEngine() {
@@ -29,13 +40,26 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     }
 
     // RECONFIGURES FOR AN 8-BIT FORMAT; SEE THE FOUR-ARGUMENT OVERLOAD
-    void format(final PixelFormat format, final int width, final int height) {
-        this.format(format, width, height, 8);
+    final boolean format(final PixelFormat format, final int width, final int height) {
+        return this.format(format, width, height, 8);
     }
 
-    // RESETS PLANE TEXTURES, UPLOAD BUFFERS AND BUFFERED FRAMES FOR A NEW FORMAT; CALLED BEFORE THE FIRST UPLOAD AND ON
-    // EVERY RESOLUTION OR LAYOUT CHANGE. bits IS THE SAMPLE PRECISION (8, 10, 12, 16 OR 32); COMPILED PROGRAMS MAY BE CACHED
-    void format(final PixelFormat format, final int width, final int height, final int bits) {
+    // RESETS PLANE TEXTURES, UPLOAD BUFFERS AND BUFFERED FRAMES FOR A NEW LAYOUT; CALLED BEFORE THE FIRST UPLOAD AND ON
+    // EVERY RESOLUTION OR LAYOUT CHANGE. FALSE (RELEASED, EMPTY SIZE, UNSUPPORTED FORMAT/BITS) LEAVES THE ENGINE AS IT WAS
+    final boolean format(final PixelFormat format, final int width, final int height, final int bits) {
+        if (this.released || width <= 0 || height <= 0 || !this.supports(format, bits)) return false;
+        return this.apply(format, width, height, bits);
+    }
+
+    // APPLIES A LAYOUT THE BASE ALREADY ACCEPTED; FALSE WHEN THE BACKEND CANNOT BACK IT (E.G. A SURFACE TOO LARGE).
+    // THE DEFAULT ONLY PUBLISHES THE FIELDS
+    boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
+        this.publish(format, width, height, bits);
+        return true;
+    }
+
+    // PUBLISHES THE LAYOUT ONCE THE BACKEND APPLIED IT (GL DOES SO ON ITS RENDER THREAD, THE REST SYNCHRONOUSLY)
+    final void publish(final PixelFormat format, final int width, final int height, final int bits) {
         this.format = format;
         this.width = width;
         this.height = height;
@@ -51,30 +75,40 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     /** Pixel layout the engine is configured for, or null before the player configures the first format. */
     public PixelFormat format() { return this.format; }
 
-    /** Sample precision in bits per component (8, 10, 12, 16, or 32). */
+    /** Sample precision in bits per component (8, 10, 12, 16, or 32 for float); 8 before the first format. */
     public int bits() { return this.bits; }
+
+    /** Whether {@link #release()} already ran; a released engine refuses formats and drops uploads. */
+    public final boolean released() { return this.released; }
 
     /**
      * Returns the GPU-side handle for the final RGBA texture.
      * <p>
-     * For OpenGL this is a {@code GLuint} texture name (fits in the lower 32 bits).
-     * For Vulkan this would be a {@code VkImageView} handle ({@code uint64_t}).
-     * @return texture handle, or 0 if no frame has been uploaded yet
+     * For OpenGL this is a {@code GLuint} texture name (fits in the lower 32 bits), for Vulkan a
+     * {@code VkImageView} handle ({@code uint64_t}); software and headless backends return a fixed
+     * non-zero sentinel once a frame is present, so hosts only test the handle against 0.
+     * @return texture handle, or 0 if no frame has been uploaded yet or the engine was released
      */
     public abstract long texture();
 
+    /** Whether the engine consumes 8-bit frames in {@code format} directly; see {@link #supports(PixelFormat, int)}. */
+    public final boolean supports(final PixelFormat format) { return this.supports(format, 8); }
+
     /**
-     * Whether the engine can consume frames in the given pixel format directly.
+     * Whether the engine can consume frames in the given pixel layout and sample precision directly.
      * <p>
-     * The frame producer calls this before choosing an upload path: raw formats the engine
-     * declines are pre-converted (via the decoder's scaler) to a format it does accept —
-     * typically {@code BGRA} — before {@code upload}; declined {@link PixelFormat#compressed()
-     * compressed} formats fall back to the decode path. The default accepts every raw format and
-     * declines compressed ones, so a backend opts into BCn sampling explicitly.
+     * The frame producer calls this before choosing an upload path: layouts the engine declines are
+     * pre-converted (via the decoder's scaler) to one it does accept — typically 8-bit {@code BGRA} —
+     * before {@code upload}; declined {@link PixelFormat#compressed() compressed} formats fall back
+     * to the decode path. The default accepts every raw layout at 8, 10, 12, 16 or 32 (float) bits
+     * and declines compressed ones, so a backend opts into BCn sampling explicitly.
      * @param format the candidate pixel layout
-     * @return true when the engine handles this format without external conversion
+     * @param bits   bits per component the frames carry
+     * @return true when the engine handles this layout without external conversion
      */
-    public boolean supports(final PixelFormat format) { return !format.compressed(); }
+    public boolean supports(final PixelFormat format, final int bits) {
+        return format != null && !format.compressed() && (bits == 8 || bits == 10 || bits == 12 || bits == 16 || bits == 32);
+    }
 
     /**
      * Whether this engine can keep a small animated image as one texture per frame.
@@ -94,15 +128,32 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     int alignment() { return 0; }
 
     // A PLANE BUFFER IS ABOUT TO BE FREED: ZERO-COPY BACKENDS DROP ITS GPU IMPORT HERE, DRAINING PENDING READS FIRST,
-    // SINCE DESTROYING AN IMPORT AFTER ITS HOST MEMORY IS GONE CRASHES THE DRIVER. CALLED FROM THE upload THREAD
+    // SINCE DESTROYING AN IMPORT AFTER ITS HOST MEMORY IS GONE CRASHES THE DRIVER. NEVER CONCURRENT WITH upload
     void release(final ByteBuffer buffer) {}
 
-    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(); STRIDES IN BYTES, 0 = TIGHT). THE ENGINE MAY
-    // READ THE BUFFERS UNTIL THE SECOND LATER upload RETURNS AND MAY RETAIN THE ARRAYS, SO CALLERS PASS FRESH ONES
-    abstract void upload(final ByteBuffer[] planes, final int[] strides);
+    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(); STRIDES IN BYTES, 0 = TIGHT): READS [position,
+    // limit) WITHOUT MOVING position AND MAY KEEP READING UNTIL THE SECOND LATER upload RETURNS, SO CALLERS PASS FRESH ARRAYS
+    final void upload(final ByteBuffer[] planes, final int[] strides) {
+        if (this.released) return;
+        this.push(planes, strides);
+    }
+
+    // BACKEND UPLOAD (SEE upload); IMPLEMENTATIONS LOG AND DROP ON FAILURE INSTEAD OF THROWING
+    abstract void push(final ByteBuffer[] planes, final int[] strides);
 
     /**
-     * Releases all GPU resources. The engine is unusable after this call.
+     * Releases all GPU resources. The engine is unusable after this call; later calls are no-ops.
+     * Never call it concurrently with an upload or a format change.
      */
-    public abstract void release();
+    public final void release() {
+        // THE TEST-AND-SET IS ATOMIC SO TWO CONCURRENT RELEASES NEVER TEAR DOWN TWICE
+        synchronized (this) {
+            if (this.released) return;
+            this.released = true;
+        }
+        this.destroy();
+    }
+
+    // BACKEND TEARDOWN, RUN EXACTLY ONCE AFTER released IS SET; GL DEFERS ITS GPU WORK TO THE RENDER THREAD
+    abstract void destroy();
 }

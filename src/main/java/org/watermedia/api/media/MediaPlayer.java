@@ -40,11 +40,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /** Sentinel for unknown or unset video dimensions. */
     public static final int NO_SIZE = 0;
     /** Sentinel for a missing GPU texture handle. */
-    public static final int NO_TEXTURE = 0;
+    public static final long NO_TEXTURE = 0L;
     /** Sentinel for a missing audio source handle. */
     public static final int NO_SOURCE = 0;
     /** Sentinel for an unknown media duration. */
-    public static final int NO_DURATION = 0;
+    public static final long NO_DURATION = 0L;
 
     // === SHARED 50ms TICKER — DRIVES SERVER CLOCKS, FOLLOWER CORRECTIONS AND AUTHORITY BROADCASTS ===
     // A SINGLE DAEMON THREAD TICKS EVERY REGISTERED PLAYER, SO ALL CORRECTION STATE IS
@@ -56,6 +56,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             ThreadTool.createFactory("MediaSync", Thread.NORM_PRIORITY - 2)
     );
 
+    // MONOTONIC MILLISECONDS FOR PACING, DEADLINES AND PASSIVE CLOCKS — A WALL-CLOCK ADJUSTMENT MUST
+    // NEVER MOVE A PLAYBACK POSITION. ANCHORED AT CLASS LOAD SO VALUES START NEAR ZERO AND GROW
+    private static final long EPOCH_NS = System.nanoTime();
+
     // A PLAYER WHOSE TICK KEEPS FAILING WOULD OTHERWISE LOG AN ERROR EVERY 50 MS
     private static final long TICK_REPORT_NS = 10_000_000_000L;
     private static final LogTool.Throttle TICK_REPORTS = new LogTool.Throttle(TICK_REPORT_NS);
@@ -64,7 +68,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         TICKER.scheduleAtFixedRate(MediaPlayer::tickAll, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
     }
 
+    // THE TICKER THREAD, SO A FOLLOWER CAN TELL ITS OWN follow() PASS FROM A USER CALL RACING IT
+    private static volatile Thread tickerThread;
+
     private static void tickAll() {
+        tickerThread = Thread.currentThread();
         for (final MediaPlayer player: TICKING) {
             try {
                 if (player.armed) player.tick();
@@ -87,7 +95,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     protected final MRL.Source source;
     protected final GFXEngine gfx;
     protected final SFXEngine sfx;
-    protected MediaQuality quality = WaterMediaConfig.media.defaultQuality;
+    // WRITTEN BY THE CALLER AND BY THE PIPELINE THREADS WHEN THEY RESOLVE THE REAL RENDITION
+    protected volatile MediaQuality quality = WaterMediaConfig.media.defaultQuality;
 
     // AUDIO PROPERTIES
     private volatile boolean repeat;
@@ -122,12 +131,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private Status lastReport;
     private long lastReportNanos;
     // SET WHILE follow() IMPOSES AUTHORITY STATE, SO THOSE CALLS LAND LOCALLY INSTEAD OF BEING SENT
-    // BACK UPSTREAM. IT NEEDS NO CROSS-THREAD VISIBILITY: A CONCURRENT USER CALL READING A STALE
-    // false SIMPLY FORWARDS, WHICH IS EXACTLY WHAT A USER CALL SHOULD DO.
+    // BACK UPSTREAM. ONLY HONOURED ON THE TICKER THREAD: A USER CALL RACING THE PASS STILL FORWARDS
     private volatile boolean applying;
 
-    // OPTIONAL STATUS-TRANSITION LISTENER — LETS CONSUMERS REACT TO TERMINAL STATES
-    // (ENDED/ERROR) WITHOUT POLLING status() EVERY TICK. INVOKED FROM INTERNAL THREADS.
+    // OPTIONAL STATUS-TRANSITION LISTENER — LETS CONSUMERS REACT TO EVERY STATUS CHANGE WITHOUT
+    // POLLING status() EVERY TICK. INVOKED FROM INTERNAL THREADS.
     private volatile BiConsumer<Status, Status> statusListener;
 
     // FAILURE BEHIND THE CURRENT ERROR STATE — SET BY SUBCLASSES, CLEARED ON EVERY LOCAL start()
@@ -156,10 +164,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         final MRL.Source resolved = mrl.source(sourceIndex);
         Objects.requireNonNull(resolved, "Source at index " + sourceIndex + " is not available");
         if (gfx == null && sfx == null) throw new IllegalStateException("MediaPlayer must have a valid GFX or SFX resource.");
+        // A MISSING VIDEO SINK IS WORTH A WARNING; MISSING AUDIO IS THE NORMAL SHAPE OF EVERY IMAGE PLAYER
         if (gfx == null)
             LOGGER.warn(IT, "GFXEngine is null — there will be no video output");
         if (sfx == null)
-            LOGGER.warn(IT, "SFXEngine is null — there will be no audio output");
+            LOGGER.debug(IT, "SFXEngine is null — there will be no audio output");
 
         // INIT PROPERTIES
         this.mrl = mrl;
@@ -278,8 +287,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public final void sync(final Packet packet) {
         if (packet == null) throw new IllegalArgumentException("Packet cannot be null");
         if (!this.armed) return;
-        if (this.role != Role.FOLLOWER) {
+        if (this.role == Role.AUTHORITY) {
             this.upstream(packet);
+            return;
+        }
+        if (this.role == Role.SOLO) {
+            // A SOLO PLAYER HAS NO SESSION: ACCEPTING FOLLOWER TRAFFIC WOULD ENROLL CLIENTS NOBODY SWEEPS
+            LOGGER.debug(IT, "Ignored {} on a solo player", packet);
             return;
         }
         if (packet instanceof final Sync snapshot) {
@@ -288,7 +302,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             // CARRYING A FRESHER TIMESTAMP, SO IT MUST LAND. THE ARRIVAL STAMP GOES FIRST: A READER
             // SEEING THE NEW SNAPSHOT MUST NEVER PAIR IT WITH THE PREVIOUS ONE'S AGE.
             final Sync known = this.target;
-            if (known == null || snapshot.revision() >= known.revision()) {
+            // SIGNED DISTANCE: CLOCK-SEEDED REVISIONS MAY WRAP, AND A REPLACEMENT AUTHORITY STILL READS AS NEWER
+            if (known == null || snapshot.revision() - known.revision() >= 0) {
                 this.targetNanos = System.nanoTime();
                 this.target = snapshot;
             }
@@ -521,7 +536,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // USER'S FIRST CLICK BECAUSE THE CONFIG HASN'T LANDED IS WORSE THAN ASKING FOR TOO MUCH.
     private boolean request(final Control.Op op, final long value) {
         if (!this.armed) return true;
-        if (this.role != Role.FOLLOWER || this.applying) return false;
+        if (this.role != Role.FOLLOWER || (this.applying && Thread.currentThread() == tickerThread)) return false;
         if (this.configured && (this.caps & Config.Capability.CONTROLS.bit) == 0) {
             LOGGER.debug(IT, "Dropped {} — controls are locked on this bridged player", op);
             return true;
@@ -768,11 +783,17 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public boolean mute() { return this.muted; }
 
+    // ==========================================================================
+    // SESSION CONTROLS
+    // ==========================================================================
+    // EVERY BOOLEAN CONTROL ANSWERS ONE QUESTION: DID THIS CALL CHANGE THIS PLAYER'S OWN STATE? false
+    // COVERS A CALL FORWARDED TO THE AUTHORITY, DROPPED BY A LOCKED SESSION, REFUSED OR MADE AFTER release()
+
     /**
      * Starts media playback from the beginning, recovering from any previous state
      * (stopped, ended or error). An already-playing player restarts. Non-blocking.
-     * @return true if playback was started locally, false when it was requested from the
-     *         sync authority instead (see {@link #sync(ByteBuffer)}) or refused.
+     * @return true if a local run was launched, false when the call was forwarded to the
+     *         sync authority (see {@link #sync(ByteBuffer)}), dropped or refused
      */
     public boolean start() {
         if (this.request(Control.Op.START, 0L)) return false;
@@ -784,8 +805,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Starts media playback like {@link #start()} but landing in a paused state. Not equivalent
      * to {@code start()} followed by {@link #pause()}: those two calls race the pipeline setup,
      * so implementations latch the pause intent before playback begins. Non-blocking.
-     * @return true if playback was started locally, false when it was requested from the
-     *         sync authority instead or refused.
+     * @return true if a local run was launched, false when the call was forwarded, dropped or refused
      * @see MediaPlayer#start()
      */
     public boolean startPaused() { return !this.request(Control.Op.START_PAUSED, 0L); }
@@ -793,92 +813,95 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Resumes media playback from the current position.
      * @see #pause(boolean)
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the player left the paused state, false otherwise
      */
     public boolean resume() { return this.pause(false); }
 
     /**
      * Pauses media playback at the current position.
      * @see #pause(boolean)
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the player entered the paused state, false otherwise
      */
     public boolean pause() { return this.pause(true); }
 
     /**
-     * Pauses or resumes media playback based on the provided parameter.
-     * If paused is true, the media playback will be paused.
-     * If paused is false, the media playback will be resumed.
+     * Pauses or resumes media playback. A pause while loading is latched and applied when the
+     * pipeline opens; an ended, stopped, waiting or failed player has nothing to pause or resume
+     * and answers false (use {@link #start()} or {@link #togglePlay()} to play it again).
      * @param paused true to pause the media playback, false to resume
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the local state changed, false when forwarded, dropped, already there or impossible
      */
     public boolean pause(final boolean paused) { return !this.request(Control.Op.PAUSE, paused ? 1L : 0L); }
 
     /**
-     * Stops media playback and resets the position to the beginning.
-     * This method is non-blocking and returns immediately.
-     * @return true if the operation was successful, false otherwise.
+     * Stops media playback, tearing the pipeline down and resetting the position to the beginning.
+     * Every player, a failed one included, lands in {@link Status#STOPPED} with {@link #time()} at 0.
+     * Non-blocking.
+     * @return true if a transition to stopped happened (or was scheduled on the playback thread),
+     *         false when the player was already stopped, never started, forwarded or dropped
      */
     public boolean stop() { return !this.request(Control.Op.STOP, 0L); }
 
     /**
-     * Toggles media playback between play and pause states.
-     * If the media is currently playing, it will be paused.
-     * If the media is currently paused, it will be resumed.
-     * @return true if the operation was successful, false otherwise.
+     * Toggles playback: a playing (or buffering) player pauses, a paused one resumes, and an ended
+     * or stopped one starts again from the beginning like {@link #start()}.
+     * @return true if the local state changed, false when forwarded, dropped or there is nothing to toggle
      */
     public boolean togglePlay() { return !this.request(Control.Op.TOGGLE, 0L); }
 
     /**
-     * Seeks to a specific time in the media.
-     * The time is specified in milliseconds.
+     * Seeks to a specific time in the media, clamped to the known duration. Seeking an ended or
+     * stopped player restarts it paused at the target; a waiting, failed or non-seekable one
+     * answers false.
      * @param time the time to seek to, in milliseconds.
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the seek was taken locally, false when forwarded, dropped or impossible
      */
     public boolean seek(final long time) { return !this.request(Control.Op.SEEK, time); }
 
     /**
-     * Returns the current playback time in milliseconds.
-     * @return the current playback time in milliseconds, or {@link MediaPlayer#NO_DURATION NO_DURATION} if unknown.
+     * Returns the current playback time in milliseconds: 0 before the first frame and after
+     * {@link #stop()}, the duration after the media ended.
+     * @return the current playback time in milliseconds
      */
     public abstract long time();
 
     /**
-     * Skips forward or backward by a specific time in the media.
-     * The time is specified in milliseconds.
-     * A positive value skips forward, while a negative value skips backward.
+     * Skips forward or backward by a specific time in the media. A positive value skips forward,
+     * a negative one backward; the sum saturates instead of overflowing.
      * @param time the time to skip, in milliseconds.
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
      */
-    public boolean skipTime(final long time) { return this.seek(this.time() + time); }
+    public boolean skipTime(final long time) {
+        final long now = this.time();
+        final long target = (time > 0 && now > Long.MAX_VALUE - time) ? Long.MAX_VALUE : Math.max(0L, now + time);
+        return this.seek(target);
+    }
 
     /**
      * Quickly seeks to a specific time in the media without precise accuracy.
      * This method is useful for fast seeking operations where exact frame accuracy is not required.
-     * The time is specified in milliseconds.
      * @param time the time to seek to, in milliseconds.
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
      */
     public boolean seekQuick(final long time) { return !this.request(Control.Op.SEEK_QUICK, time); }
 
     /**
      * Skips forward 5 seconds in the media. Players with a finer natural step
      * (e.g. animated images) may override the distance.
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
      */
     public boolean forward() { return this.skipTime(SKIP_STEP_MS); }
 
     /**
      * Skips backward 5 seconds in the media. Players with a finer natural step
      * (e.g. animated images) may override the distance.
-     * @return true if the operation was successful, false otherwise.
+     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
      */
     public boolean rewind() { return this.skipTime(-SKIP_STEP_MS); }
 
     /**
-     * Provides the Frames per Second
-     * Result value its a float because 29.97 framerate exists.
-     * Check this <a href="https://www.youtube.com/watch?v=3GJUM6pCpew">full explanation</a>
-     * @return the FPS count
+     * Frame rate of the video stream being played, a float because 29.97 exists.
+     * @return the frames per second, or 0 until the rate is known or when the media has no video
      */
     public abstract float fps();
 
@@ -898,8 +921,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * while a speed less than 1.0f indicates slower playback.
      * The speed must be within the range (0.0f, 4.0f].
      * @param speed the desired playback speed.
-     * @return true if the speed applies, false when the value is out of range, the player cannot
-     *         change speed ({@link #canSpeed()}) or the audio engine refused the new rate.
+     * @return true if the speed applies locally, false when the value is out of range, the call was
+     *         forwarded or dropped, the player cannot change speed ({@link #canSpeed()}) or the
+     *         audio engine refused the new rate.
      */
     public boolean speed(final float speed) {
         // NaN FAILS BOTH COMPARISONS, WHICH IS THE POINT — IT MUST NEVER REACH THE CLOCKS
@@ -926,13 +950,15 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean repeat() { return this.repeat; }
 
     /**
-     * Sets whether the media should repeat playback when it reaches the end.
+     * Sets whether the media should repeat playback when it reaches the end. A timed still image
+     * (see {@link #displayTime(long)}) never loops.
      * @param repeat true to enable repeat playback, false to disable
-     * @return the new repeat state
+     * @return true if the setting applied locally, false when forwarded to the authority or dropped
      */
     public boolean repeat(final boolean repeat) {
-        if (this.request(Control.Op.REPEAT, repeat ? 1L : 0L)) return this.repeat;
-        return this.repeat = repeat;
+        if (this.request(Control.Op.REPEAT, repeat ? 1L : 0L)) return false;
+        this.repeat = repeat;
+        return true;
     }
 
     /**
@@ -942,10 +968,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public abstract Status status();
 
     /**
-     * Registers a status-transition listener, replacing any previous one. The listener is
-     * invoked with the previous and new status on terminal transitions (at least {@link Status#ENDED}
-     * and {@link Status#ERROR}), letting playlist consumers advance without polling {@link #status()}.
-     * It is called from internal player threads, so keep the callback short and non-blocking.
+     * Registers a status-transition listener, replacing any previous one. The listener receives
+     * the previous and the new status on every real transition, including the ones a restart,
+     * {@link #stop()} and {@link #release()} cause, so playlist consumers advance without polling
+     * {@link #status()}. It runs on whichever thread drove the transition: a playback thread, the
+     * shared sync ticker, or the caller of {@link #status()}, {@link #time()} or {@link #texture()}
+     * on image players whose clock resolves the end lazily. Keep it short, never block, and never
+     * call {@link #release()} from it.
      * @param listener the listener to notify, or {@code null} to clear it
      */
     public void onStatus(final BiConsumer<Status, Status> listener) { this.statusListener = listener; }
@@ -977,9 +1006,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     /**
-     * Sets how long non-animated media (a static image) should remain displayed before it
-     * transitions to {@link Status#ENDED}. The base player has no timed display and ignores this;
-     * image-backed players override it. A value {@code <= 0} means no time limit.
+     * Sets how long a still image should remain displayed before the player transitions to
+     * {@link Status#ENDED}; a timed still ignores {@link #repeat()}. Applies to image players and
+     * to single-frame sources that fall into the video backend; a server clock has no media and
+     * ignores it. A value {@code <= 0} shows the still until stopped.
      * @param ms display duration in milliseconds
      */
     public void displayTime(final long ms) {}
@@ -1011,9 +1041,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * Best-effort fill of the playback read-ahead buffers as a percentage (0-100).
      * Complements {@link #buffering()}: while the player loads or buffers this reports how full
-     * its pipeline is, so a UI can show real progress instead of an indeterminate spinner.
-     * Players without a streaming pipeline (images, server clocks) report 100 whenever they
-     * {@link #canPlay()}.
+     * its pipeline is, so a UI can show real progress instead of an indeterminate spinner; a
+     * pipeline that is playing or paused is keeping up and reports 100. Players without a
+     * streaming pipeline (images, server clocks) report 100 whenever they {@link #canPlay()}.
      * @return the buffered percentage (0-100)
      */
     public int buffered() { return this.canPlay() ? 100 : 0; }
@@ -1049,22 +1079,24 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean error() { return this.status() == Status.ERROR; }
 
     /**
-     * Indicates if the media uri is a live stream.
-     * Live streams typically do not support seeking and have an indefinite duration.
+     * Indicates if the media uri is a live stream. Live streams do not support seeking and have
+     * an indefinite duration. False until the source is open and says otherwise.
      * @return true if the media uri is a live stream, false otherwise.
      */
     public abstract boolean live();
 
     /**
-     * Indicates if the media player supports seeking operations.
-     * Some media formats or live streams may not support seeking.
+     * Indicates if the media player supports seeking operations: false until the source is open,
+     * on live streams and on still images.
      * @return true if seeking is supported, false otherwise.
      */
     public abstract boolean canSeek();
+
     /**
-     * Indicates if the media player is ready to start playback.
-     * This typically means that the media has been loaded and buffered sufficiently.
-     * @return true if the media player can start playback, false otherwise.
+     * Indicates if the media is loadable and playable: true from the first successful load of the
+     * source, through ended and stopped states (where {@link #start()} plays it again), until the
+     * player fails or is released.
+     * @return true if the media can be played, false otherwise.
      */
     public abstract boolean canPlay();
 
@@ -1082,9 +1114,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Releases all resources associated with the media player, including the GPU and audio
-     * resources held by the backing engines. A follower deregisters from its authority.
+     * resources held by the backing engines. A follower deregisters from its authority and every
+     * player lands in {@link Status#STOPPED}. Idempotent: a second call is a no-op.
      * <p>Implementations may block the calling thread while their internal decode/IO threads
-     * finish. After calling this method, the media player should not be used again.
+     * finish, so never call it from a status listener or a playback callback. After calling this
+     * method, the media player should not be used again.
      */
     public void release() {
         synchronized (this.bridgeLock) {
@@ -1114,6 +1148,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /** Number of constructed players whose release lifecycle has not completed. */
     public static int openPlayers() { return OPEN.size(); }
+
+    // MONOTONIC MILLISECONDS SINCE CLASS LOAD (SEE EPOCH_NS)
+    protected static long nowMs() { return (System.nanoTime() - EPOCH_NS) / 1_000_000L; }
 
     /**
      * What a player is within a synchronized session. Not a client/server split: the axis is who

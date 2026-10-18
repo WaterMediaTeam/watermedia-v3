@@ -83,8 +83,10 @@ public class MediaPlayerBaseTest {
         @Test
         @DisplayName("live source cannot change speed")
         void liveLocksSpeed() {
-            // NO SYNCED DURATION -> live() -> canSpeed() FALSE
+            // AN UNKNOWN DURATION ONLY HOLDS THE CLOCK — ONLY AN EXPLICIT LIVE FLAG LOCKS THE RATE
             final ServerMediaPlayer player = new ServerMediaPlayer();
+            assertTrue(player.canSpeed(), "unknown duration must not lock speed");
+            player.live(true);
             assertFalse(player.canSpeed());
             assertFalse(player.speed(2.0f));
             // RE-REQUESTING THE CURRENT SPEED IS A SUCCESSFUL NO-OP EVEN WHEN LOCKED

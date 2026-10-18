@@ -3,7 +3,10 @@ package org.watermedia.api.media;
 import java.io.File;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 import org.apache.logging.log4j.Marker;
@@ -43,19 +46,26 @@ public final class MediaAPI {
      * Gets or creates an MRL for the given URI string.
      * If cached and not expired, returns immediately; otherwise starts async loading.
      * <p>
-     * A string naming an existing file is resolved through the filesystem — relative
-     * paths resolve against the current working directory, so the same string can
-     * point to different media depending on launch location. Anything else is parsed
-     * as a URI. This method never throws on malformed input: it returns a non-cached
-     * MRL born in {@link MRL.Status#ERROR} carrying the parse failure as
-     * {@link MRL#exception()}, consistent with every other resolution failure.
+     * A string naming an existing file is resolved through the filesystem — relative paths
+     * resolve against the working directory WaterMedia started with (the same root as
+     * {@code water://local}), never the launch directory. Anything else is parsed as a URI.
+     * This method never throws on malformed or relative input: it returns a non-cached MRL born
+     * in {@link MRL.Status#ERROR} carrying the failure as {@link MRL#exception()}, consistent
+     * with every other resolution failure.
      *
      * @param uri the media URI or file path
      * @return the MRL instance (may still be loading, or in ERROR for malformed input)
+     * @throws NullPointerException  when {@code uri} is null
+     * @throws IllegalStateException before the media service starts or while it stops
      */
     public static MRL mrl(final String uri) {
-        final File f = new File(uri);
-        if (f.exists()) return MRL.get(f.getAbsoluteFile().toURI());
+        Objects.requireNonNull(uri, "URI cannot be null");
+        try {
+            final Path file = WaterMedia.cwd().resolve(uri);
+            if (Files.isRegularFile(file)) return MRL.get(file.toAbsolutePath().normalize().toUri());
+        } catch (final InvalidPathException ignored) {
+            // URLS CARRY CHARACTERS A PATH CANNOT (":" ON WINDOWS): NOT A FILE
+        }
         try {
             return MRL.get(URI.create(uri));
         } catch (final IllegalArgumentException e) {
@@ -67,10 +77,13 @@ public final class MediaAPI {
     /**
      * Gets or creates an MRL for the given URI.
      * If cached and not expired, returns immediately.
-     * Otherwise, starts async loading via the platform API.
+     * Otherwise, starts async loading via the platform API. A relative URI cannot be resolved
+     * and yields a non-cached MRL born in {@link MRL.Status#ERROR}.
      *
      * @param uri the media URI
      * @return the MRL instance (may still be loading)
+     * @throws NullPointerException  when {@code uri} is null
+     * @throws IllegalStateException before the media service starts or while it stops
      */
     public static MRL mrl(final URI uri) {
         return MRL.get(uri);

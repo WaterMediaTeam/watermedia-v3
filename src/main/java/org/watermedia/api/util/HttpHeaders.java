@@ -20,6 +20,8 @@ import java.util.TreeSet;
  * Used by {@link NetRequest} for both the headers we send and the headers we receive.
  * {@link #toRawString()} produces the {@code "Name: Value\r\n..."} form expected by raw
  * consumers like FFmpeg's {@code -headers} option; {@link #toString()} lists header names only.
+ * A bag shared across threads (every resolved source carries one) is {@link #freeze() frozen}:
+ * its mutators then throw, and {@link #HttpHeaders(HttpHeaders) copying} it yields a mutable bag again.
  */
 public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
 
@@ -47,12 +49,22 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
     }
 
     private final List<Entry> entries = new ArrayList<>();
+    private boolean frozen;
 
     public HttpHeaders() {}
 
     public HttpHeaders(final HttpHeaders other) {
         if (other != null) this.entries.addAll(other.entries);
     }
+
+    /** Makes this bag immutable: every later mutator throws {@link IllegalStateException}. */
+    public HttpHeaders freeze() {
+        this.frozen = true;
+        return this;
+    }
+
+    /** Whether {@link #freeze()} ran on this bag. */
+    public boolean frozen() { return this.frozen; }
 
     /**
      * Default header bag for outbound platform requests: WaterMedia User-Agent, a wide
@@ -73,6 +85,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Replaces all values for {@code name} with a single entry. Case-insensitive match.
      */
     public HttpHeaders set(final String name, final String value) {
+        this.checkMutable();
         final Entry entry = new Entry(name, value);
         this.removeAll(name);
         this.entries.add(entry);
@@ -83,6 +96,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Appends a new value for {@code name}. Existing values are kept.
      */
     public HttpHeaders add(final String name, final String value) {
+        this.checkMutable();
         this.entries.add(new Entry(name, value));
         return this;
     }
@@ -93,6 +107,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * preserving multi-valued headers. A {@code null} or empty bag is a no-op.
      */
     public HttpHeaders merge(final HttpHeaders other) {
+        this.checkMutable();
         if (other == null || other.empty()) return this;
         final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (final Entry e: other.entries) {
@@ -106,6 +121,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Removes every entry whose name matches (case-insensitive).
      */
     public HttpHeaders removeAll(final String name) {
+        this.checkMutable();
         this.entries.removeIf(entry -> eq(entry.name, name));
         return this;
     }
@@ -192,6 +208,11 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
 
     @Override
     public String toString() { return "HttpHeaders" + this.entries; }
+
+    // MUTATORS SHARE ONE GUARD SO A FROZEN BAG FAILS LOUDLY INSTEAD OF RACING ITS READERS
+    private void checkMutable() {
+        if (this.frozen) throw new IllegalStateException("Headers are frozen; copy them to change them");
+    }
 
     // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
     private static boolean eq(final String a, final String b) {

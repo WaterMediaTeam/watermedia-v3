@@ -75,8 +75,8 @@ public interface VKContext {
     /**
      * Schedules a destruction callback to run once the consumer's in-flight frames that might still
      * reference the engine's resources have completed. The engine calls this from {@code release()}
-     * instead of destroying its images/views immediately, so a {@code VkImageView} is never destroyed
-     * while a render command buffer still samples it. The callback runs on the consumer's render
+     * and whenever a superseded view retires, instead of destroying its images/views immediately, so
+     * a {@code VkImageView} is never destroyed while a render command buffer still samples it. The callback runs on the consumer's render
      * thread; the consumer must also run any still-pending callbacks when it tears down the device.
      */
     void retire(Runnable destroy);

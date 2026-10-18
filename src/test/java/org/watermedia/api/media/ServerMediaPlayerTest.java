@@ -5,12 +5,13 @@ import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.PlayerWait;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -171,8 +172,8 @@ public class ServerMediaPlayerTest {
         assertFalse(player.ended());
         assertTrue(player.time() < 120L, "repeat time() must wrap under the duration, was " + player.time());
         assertNotNull(player.status());
-        // NO TERMINAL TRANSITION WAS EVER PUBLISHED WHILE LOOPING.
-        assertNull(cap.to);
+        // NO TERMINAL TRANSITION WAS EVER PUBLISHED WHILE LOOPING — ONLY THE START ITSELF
+        assertEquals(Status.PLAYING, cap.to);
         player.release();
     }
 
@@ -229,6 +230,77 @@ public class ServerMediaPlayerTest {
         player.live(false);
         assertFalse(player.live());
         player.release();
+    }
+
+    @Test
+    @DisplayName("seek() clamps negative targets and saturates instead of overflowing")
+    void testSeekClampsAndSaturates() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        try {
+            player.start();
+            assertTrue(player.seek(-5L));
+            assertEquals(0L, player.time());
+            // NO DURATION YET: THE POSITION IS KEPT VERBATIM AND THE RUNNING SEGMENT MUST NOT WRAP NEGATIVE
+            assertTrue(player.seek(Long.MAX_VALUE - 10L));
+            assertTrue(player.time() >= Long.MAX_VALUE - 10L);
+            assertTrue(player.skipTime(100L));
+            assertEquals(Long.MAX_VALUE, player.time());
+            assertNotNull(player.snapshot(), "a saturated clock still snapshots");
+        } finally {
+            player.release();
+        }
+    }
+
+    @Test
+    @DisplayName("A solo clock ignores follower traffic and never enrolls anyone")
+    void testSoloIgnoresUpstream() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        try {
+            player.sync(new Watch(7L));
+            player.sync(new Report(7L, Status.PLAYING, 60_000L, false));
+            assertEquals(0, player.followers());
+            assertEquals(0L, player.duration(), "a solo clock must not learn facts from strangers");
+        } finally {
+            player.release();
+        }
+    }
+
+    @Test
+    @DisplayName("A late report behind an Unwatch does not re-enroll the departed follower")
+    void testLateReportAfterUnwatch() {
+        final ServerMediaPlayer player = new ServerMediaPlayer(ignored -> {});
+        try {
+            player.sync(new Watch(9L));
+            assertEquals(1, player.followers());
+            player.sync(new Unwatch(9L));
+            player.sync(new Report(9L, Status.PLAYING, 60_000L, false));
+            assertEquals(0, player.followers(), "the keepalive that overtook its own Unwatch must be ignored");
+            // AN EXPLICIT HELLO IS A REJOIN
+            player.sync(new Watch(9L));
+            assertEquals(1, player.followers());
+        } finally {
+            player.release();
+        }
+    }
+
+    @Test
+    @DisplayName("Every transition reaches the listener, including the ones controls and release cause")
+    void testListenerHearsEveryTransition() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        final List<Status> seen = new CopyOnWriteArrayList<>();
+        player.onStatus((prev, next) -> seen.add(next));
+        try {
+            player.syncDuration(60_000L);
+            player.start();
+            player.pause();
+            player.resume();
+            player.stop();
+            assertEquals(List.of(Status.PLAYING, Status.PAUSED, Status.PLAYING, Status.STOPPED), seen);
+        } finally {
+            player.release();
+        }
+        assertEquals(Status.STOPPED, seen.get(seen.size() - 1));
+        assertEquals(4, seen.size(), "release from STOPPED is not a transition");
     }
 
     @Test

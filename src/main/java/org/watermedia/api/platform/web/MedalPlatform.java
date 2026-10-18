@@ -69,7 +69,7 @@ public final class MedalPlatform implements Platform {
         final URI hls = JSONTool.uri(content.contentUrlHls);
         if (hls != null) {
             for (final M3UTool.Variant v: M3UTool.qualities(hls)) {
-                if (!privacyProtected(v.uri())) variants.add(new Quality(v.uri(), v.width(), v.height()));
+                if (!privacyProtected(v.uri())) variants.add(new Quality(v.uri(), v.width(), v.height(), (float) v.fps()));
             }
         }
         // FALLBACK: A PROGRESSIVE SOURCE MP4 FOR CLIPS MEDAL NEVER PACKAGED AS HLS (CARRIES REAL SOURCE DIMENSIONS)

@@ -96,16 +96,11 @@ final class NetworkCache {
         }
     }
 
-    /** Reads bytes, using the configured image-cache preference. */
-    public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept, final long maxBytes) throws IOException {
-        return read(uri, headers, accept, maxBytes, WaterMediaConfig.media.tx.cache);
-    }
-
     /** Reads bounded HTTP bytes; concurrent requests in this session share one download per key. */
     public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
-        if (!enabled || !isHttp(uri) || store == null) return fetch(uri, headers, accept, maxBytes);
+        if (!enabled || !isHttp(uri) || store == null) return fetch(uri, headers, accept, maxBytes, false);
         final byte[] hash = keyHash(uri, headers, accept);
         final String hex = DataTool.hex(hash);
         final Entry entry;
@@ -131,7 +126,7 @@ final class NetworkCache {
                 LOGGER.warn(IT, "Dropping unreadable media cache entry {}", file, failure);
             }
         }
-        final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes);
+        final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes, false);
         try {
             if (downloaded.expiresAt > System.currentTimeMillis()) store(store, hex, hash, downloaded);
         } finally {
@@ -140,7 +135,11 @@ final class NetworkCache {
         return downloaded;
     }
 
-    /** Returns a cached media file, or null when disabled, uncacheable, oversized or a playlist. */
+    /**
+     * Returns a cached media file, or null when disabled, uncacheable, oversized or a playlist. Only
+     * bounded responses are downloaded: a missing Content-Length or an ICY stream is an endless
+     * source and fails fast so the caller streams it directly.
+     */
     public static CachedFile readFile(final URI uri, final HttpHeaders headers, final String accept,
                                       final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
@@ -155,7 +154,7 @@ final class NetworkCache {
                 else if (entry.size <= maxBytes) return new CachedFile(file(store, hex), true, entry.contentType);
             }
         }
-        final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes);
+        final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes, true);
         try {
             if (isPlaylist(downloaded.contentType) || downloaded.expiresAt <= System.currentTimeMillis()) return null;
             final Path file = store(store, hex, hash, downloaded);
@@ -165,8 +164,8 @@ final class NetworkCache {
         }
     }
 
-    private static CachedBytes fetchShared(final Store store, final String hex, final URI uri,
-                                           final HttpHeaders headers, final String accept, final long maxBytes) throws IOException {
+    private static CachedBytes fetchShared(final Store store, final String hex, final URI uri, final HttpHeaders headers,
+                                           final String accept, final long maxBytes, final boolean bounded) throws IOException {
         final CompletableFuture<CachedBytes> mine = new CompletableFuture<>();
         final CompletableFuture<CachedBytes> leader;
         synchronized (store) {
@@ -184,10 +183,10 @@ final class NetworkCache {
             } catch (final ExecutionException failure) {
                 checkSession(store);
             }
-            return fetch(uri, headers, accept, maxBytes);
+            return fetch(uri, headers, accept, maxBytes, bounded);
         }
         try {
-            final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes);
+            final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes, bounded);
             checkSession(store);
             mine.complete(downloaded);
             return downloaded;
@@ -198,7 +197,9 @@ final class NetworkCache {
         }
     }
 
-    private static CachedBytes fetch(final URI uri, final HttpHeaders headers, final String accept, final long maxBytes) throws IOException {
+    // bounded REFUSES ENDLESS SOURCES (NO Content-Length, ICY RADIO) BEFORE READING A SINGLE BODY BYTE
+    private static CachedBytes fetch(final URI uri, final HttpHeaders headers, final String accept, final long maxBytes,
+                                     final boolean bounded) throws IOException {
         final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
         if (accept != null && (headers == null || !headers.has("Accept"))) builder.accept(accept);
         // A FULL RANGE REQUEST AVOIDS REAL-TIME THROTTLING ON SOME MEDIA CDNS.
@@ -210,6 +211,8 @@ final class NetworkCache {
             final long contentLength = req.contentLength();
             if (contentLength > maxBytes)
                 throw new IOException("Media source exceeds cache limit (" + contentLength + " > " + maxBytes + " bytes): " + uri);
+            if (bounded && (contentLength < 0 || req.header("icy-metaint") != null || req.header("icy-name") != null))
+                throw new IOException("Unbounded media source is not cacheable: " + uri);
             final byte[] bytes;
             try (final InputStream in = req.inputStream()) {
                 bytes = IOTool.readLimited(in, maxBytes, contentLength);

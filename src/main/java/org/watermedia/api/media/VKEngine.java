@@ -1,16 +1,21 @@
 package org.watermedia.api.media;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.memAddress;
@@ -70,11 +75,14 @@ public final class VKEngine extends GFXEngine {
     private static final int PUSH_BYTES = 16; // { int mode; float bitScale; int width; int height; }
     private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
     private static final long WAIT_TIMEOUT_NS = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
+    private static final long FAILURE_REPORT_NS = 10_000_000_000L;
 
     // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT), FILLED LAZILY
     // UNDER THE CLASS MONITOR ON THE FIRST CONVERSION FRAME. SEE compileSpirv().
     private static volatile byte[] convertSpirv;
     private static volatile byte[] ycbcrSpirv;
+    // SHADER COMPILATION FAILED IN THIS PROCESS (NO shaderc, BAD GLSL): EVERY CONVERSION LAYOUT IS DECLINED FROM THEN ON
+    private static volatile boolean convertBroken;
 
     // COMPUTE CONVERSION MODES (MUST MATCH THE GLSL BELOW)
     private static final int MODE_GRAY = 0;
@@ -196,11 +204,10 @@ public final class VKEngine extends GFXEngine {
 
     private final Slot[] slots = new Slot[SLOTS];
 
-    // IMPORT CACHE: HOST POINTER -> IMPORTED {VkDeviceMemory, VkBuffer}. PRODUCER-THREAD ONLY.
+    // IMPORT CACHE: HOST POINTER -> IMPORTED {VkDeviceMemory, VkBuffer}. GUARDED BY THE ENGINE MONITOR.
     private final Map<Long, Imported> importCache = new HashMap<>();
 
-    // FORMAT-DERIVED STATE (BUILT IN format())
-    private boolean fmtOk;       // FALSE FOR FORMATS THE ENGINE DOES NOT HANDLE
+    // FORMAT-DERIVED STATE (BUILT IN apply())
     private boolean convert;     // TRUE WHEN A COMPUTE PASS PRODUCES THE MANAGED IMAGE
     private int mode;            // COMPUTE MODE WHEN convert
     private int outFormat;       // MANAGED IMAGE FORMAT
@@ -222,16 +229,20 @@ public final class VKEngine extends GFXEngine {
     private long ycbcrPipeLayout;
     private long ycbcrPipeline;
     private long ycbcrPool;      // SLOTS SETS FOR THE YCBCR LAYOUT
-    private final Map<Integer, Integer> ycbcrFeats = new HashMap<>(); // vkFormat -> optimalTilingFeatures (CACHED QUERY)
+    private final Map<Integer, Integer> formatFeats = new ConcurrentHashMap<>(); // vkFormat -> optimalTilingFeatures (CACHED QUERY, ANY THREAD)
 
     // SUBMISSION BOOKKEEPING (PRODUCER-THREAD ONLY)
     private long head;           // NUMBER OF FRAMES SUBMITTED
     private long submitSeq;      // MONOTONIC SEQUENCE STAMPED ONTO EACH SLOT ON SUBMIT
 
-    // PUBLISHED TO texture() (RENDER THREAD)
+    // PUBLISHED TO texture() (RENDER THREAD). retiring HOLDS THE IMAGES OF A PREVIOUS LAYOUT WHOSE VIEW STAYS
+    // EXPOSED UNTIL THE FIRST FRAME OF THE NEW ONE LANDS — GUARDED BY THE QUEUE LOCK
     private volatile long lastView;
     private volatile long lastSeq;
-    private volatile boolean released;
+    private final List<Runnable> retiring = new ArrayList<>();
+    // A DRIVER FAILURE PARKS THE ENGINE: UPLOADS ARE DROPPED (REPORTED PER WINDOW) UNTIL THE NEXT LAYOUT
+    private volatile boolean failed;
+    private final LogTool.Throttle failureReports = new LogTool.Throttle(FAILURE_REPORT_NS);
 
     // THE CONTEXT AND EVERY VULKAN OBJECT IT EXPOSES MUST OUTLIVE THIS ENGINE, WHICH ONLY CREATES ITS OWN COMMAND POOL,
     // DESCRIPTORS, PIPELINES AND PER-SLOT IMAGES ON IT
@@ -317,6 +328,9 @@ public final class VKEngine extends GFXEngine {
             final LongBuffer ppl = stack.mallocLong(1);
             check(vkCreatePipelineLayout(this.device, plci, null, ppl), "create pipeline layout");
             this.pipeLayout = ppl.get(0);
+        } catch (final RuntimeException | Error e) {
+            this.destroyResources(); // NOTHING CREATED SO FAR OUTLIVES A FAILED CONSTRUCTION
+            throw e;
         }
         // THE COMPUTE SHADER + PIPELINE ARE BUILT LAZILY ON THE FIRST CONVERSION UPLOAD:
         // PASSTHROUGH-ONLY ENGINES (E.G. BGRA/RGBA IMAGE THUMBNAILS) NEVER COMPILE, AND THE SPIR-V
@@ -340,19 +354,17 @@ public final class VKEngine extends GFXEngine {
      * fence, rotating across the slot ring as frames complete, and 0 until the first frame is ready.
      * <p>
      * <b>Pipeline caution.</b> Read this fresh on every draw and sample it within (or right after)
-     * the engine's render cycle. The view rotates per frame and is recreated on a format or
-     * resolution change, so caching it across frames, or using it from an unrelated render stage,
-     * can sample a stale view or one whose backing image has already been destroyed.
+     * the engine's render cycle. The view rotates per frame; a format or resolution change keeps
+     * the previous view until the first frame of the new layout completes, so the handle never
+     * drops to 0 mid-stream, but caching it across frames or using it from an unrelated render
+     * stage can sample a stale view or one whose backing image has already been destroyed.
      * @return the RGBA {@code VkImageView} handle, or 0 if no frame has completed yet
      */
     @Override
     public long texture() {
         if (this.released) return 0L;
-        // FENCE STATUS IS A FENCE READER; vkResetFences/vkQueueSubmit ON THE SAME FENCE ARE
-        // WRITERS. SERIALIZE THEM THROUGH THE SHARED QUEUE LOCK SO THE POLL IS RACE-FREE.
-        // THE lastSeq/lastView READ AND WRITE-BACK STAY INSIDE THE LOCK TOO: format() ZEROES
-        // THEM UNDER THIS LOCK BEFORE DESTROYING THE VIEWS, SO A STALE PAIR CAN NEVER BE
-        // REPUBLISHED AFTER THE VIEW IT POINTS TO IS GONE.
+        // THE QUEUE LOCK SERIALIZES THIS FENCE POLL WITH vkResetFences/vkQueueSubmit AND KEEPS THE lastSeq/lastView
+        // READ-MODIFY-WRITE ATOMIC WITH apply(), WHICH ZEROES THE SLOT VIEWS UNDER THE SAME LOCK
         synchronized (this.ctx.queueLock()) {
             long bestSeq = this.lastSeq;
             long bestView = this.lastView;
@@ -362,6 +374,12 @@ public final class VKEngine extends GFXEngine {
                     bestSeq = seq;
                     bestView = s.view;
                 }
+            }
+            // THE FIRST FRAME OF A NEW LAYOUT REPLACES THE VIEW KEPT ALIVE ACROSS apply(): ITS IMAGES RETIRE
+            // NOW, ONCE THE CONSUMER'S IN-FLIGHT FRAMES (WHICH MAY STILL SAMPLE THEM) COMPLETE
+            if (bestView != this.lastView && !this.retiring.isEmpty()) {
+                for (final Runnable old: this.retiring) this.ctx.retire(old);
+                this.retiring.clear();
             }
             this.lastSeq = bestSeq;
             this.lastView = bestView;
@@ -375,47 +393,53 @@ public final class VKEngine extends GFXEngine {
     }
 
     @Override
-    public boolean supports(final PixelFormat format) {
+    public boolean supports(final PixelFormat format, final int bits) {
+        if (!super.supports(format, bits)) return false;
+        // WITHOUT A WORKING SHADER COMPILER ONLY THE PASSTHROUGH LAYOUTS REMAIN; THE PRODUCER CONVERTS THE REST TO BGRA
+        if (convertBroken && format != PixelFormat.BGRA && format != PixelFormat.RGBA) return false;
         return switch (format) {
             // RGB (3-BYTE, NO ALPHA) AND GBRA ARE DECLINED: 3-CHANNEL OPTIMAL-TILING SUPPORT IS
             // OPTIONAL IN VULKAN, SO THE PRODUCER PRE-CONVERTS THEM TO BGRA UPSTREAM (ROBUST).
             // BCn SAMPLING IS NOT WIRED YET — DECLINED UNTIL IT IS.
             case RGB, GBRA -> false;
-            default -> !format.compressed();
+            // PASSTHROUGH COPIES FOUR BYTES PER PIXEL AND PACKED 4:2:2 IS FETCHED THROUGH AN RGBA8 PLANE
+            case BGRA, RGBA, YUYV, UYVY -> bits == 8;
+            // PLANAR AND GRAY SAMPLE R (AND RG FOR NV) PLANES THROUGH THE LINEAR SAMPLER: 16-BIT AND FLOAT
+            // SAMPLING ARE OPTIONAL IN THE SPEC, SO THE DEVICE MUST ADVERTISE THEM FOR THIS DEPTH
+            default -> this.sampleable(redFormat(bits))
+                    && (format != PixelFormat.NV12 && format != PixelFormat.NV21 || this.sampleable(redGreenFormat(bits)));
         };
     }
 
-    // RESETS PER-FORMAT GPU STATE: ENGINE WORK DRAINS, THE PUBLISH STATE AND EVERY SLOT'S IMAGES ARE RELEASED (REBUILT ON THE
-    // NEXT UPLOAD) AND THE HOST-IMPORT CACHE IS CLEARED; THE COMMAND POOL, PIPELINE, SAMPLER AND FENCES ARE KEPT
+    // RESETS PER-FORMAT GPU STATE (SLOT IMAGES, IMPORT CACHE; POOL, PIPELINE, SAMPLER AND FENCES STAY) AFTER DRAINING OUR
+    // WORK; THE LAST PUBLISHED VIEW STAYS EXPOSED UNTIL THE FIRST FRAME OF THE NEW LAYOUT COMPLETES (SEE texture)
     @Override
-    void format(final PixelFormat format, final int width, final int height, final int bits) {
-        if (this.released) return;
-        // DRAIN ENGINE WORK SO PER-FORMAT RESOURCES CAN BE DESTROYED SAFELY.
-        this.waitAllIdle();
+    synchronized boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
+        // DRAIN ENGINE WORK SO PER-FORMAT RESOURCES CAN BE DESTROYED SAFELY; A WEDGED GPU REFUSES THE LAYOUT INSTEAD
+        if (!this.waitAllIdle()) return false;
         synchronized (this.ctx.queueLock()) {
             for (final Slot s: this.slots) {
+                // THE CONSUMER MAY STILL SAMPLE THE VIEW texture() RETURNED (waitAllIdle DRAINS ONLY OUR FENCES), SO IT
+                // DIES AFTER THE NEXT PUBLISHED FRAME; PLANE/STAGING RESOURCES ARE PRIVATE AND DRAINED, SO THEY DIE NOW
+                final long view = s.view, img = s.outImg, mem = s.outMem;
+                if (view != 0L || img != 0L || mem != 0L) {
+                    s.view = 0L;
+                    s.outImg = 0L;
+                    s.outMem = 0L;
+                    final Runnable destroy = () -> {
+                        if (view != 0L) vkDestroyImageView(this.device, view, null);
+                        if (img != 0L) vkDestroyImage(this.device, img, null);
+                        if (mem != 0L) vkFreeMemory(this.device, mem, null);
+                    };
+                    // ONLY THE EXPOSED VIEW WAITS FOR THE NEXT PUBLISHED FRAME; THE OTHERS RETIRE WITH THE IN-FLIGHT FRAMES
+                    if (view == this.lastView) this.retiring.add(destroy);
+                    else this.ctx.retire(destroy);
+                }
                 s.seq = 0L;
                 s.submitted = false;
             }
-            this.lastSeq = 0L;
-            this.lastView = 0L;
         }
         for (final Slot s: this.slots) {
-            // THE MANAGED IMAGE/VIEW IS SAMPLED BY THE CONSUMER: AN IN-FLIGHT UI FRAME (UP TO
-            // MAX_FRAMES_IN_FLIGHT) MAY STILL REFERENCE THE VIEW texture() RETURNED, AND waitAllIdle
-            // DRAINED ONLY THE ENGINE'S OWN FENCES. DEFER ITS DESTRUCTION LIKE release() DOES;
-            // PLANE/STAGING RESOURCES ARE ENGINE-PRIVATE AND ALREADY DRAINED, SO THEY DIE NOW.
-            final long view = s.view, img = s.outImg, mem = s.outMem;
-            if (view != 0L || img != 0L || mem != 0L) {
-                s.view = 0L;
-                s.outImg = 0L;
-                s.outMem = 0L;
-                this.ctx.retire(() -> {
-                    if (view != 0L) vkDestroyImageView(this.device, view, null);
-                    if (img != 0L) vkDestroyImage(this.device, img, null);
-                    if (mem != 0L) vkFreeMemory(this.device, mem, null);
-                });
-            }
             this.destroySlotFormatRes(s);
             s.gen = -1L;
         }
@@ -425,7 +449,7 @@ public final class VKEngine extends GFXEngine {
         // THEY DIE SYNCHRONOUSLY AND ARE LAZILY REBUILT IF THE NEW FORMAT USES THE YCBCR PATH.
         this.destroyYcbcrRes();
 
-        super.format(format, width, height, bits);
+        this.publish(format, width, height, bits);
 
         // BUILD THE FORMAT TABLE IN ONE PASS: PER-PLANE SPECS, OUTPUT FORMAT/USAGE, COMPUTE MODE
         // AND THE OPTIONAL SAMPLER-YCBCR ROUTE, ALL DERIVED FROM THE NEW FORMAT.
@@ -435,10 +459,9 @@ public final class VKEngine extends GFXEngine {
             case 12 -> 65535.0f / 4095.0f;
             default -> 1.0f; // 8, 16, 32
         };
-        final int rF = bps == 1 ? VK_FORMAT_R8_UNORM : (bps == 2 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT);
-        final int rgF = bps == 1 ? VK_FORMAT_R8G8_UNORM : (bps == 2 ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R32G32_SFLOAT);
+        final int rF = redFormat(bits);
+        final int rgF = redGreenFormat(bits);
 
-        this.fmtOk = true;
         this.convert = true;
         this.planeCount = 0;
         this.ycbcrFmt = 0;
@@ -503,12 +526,8 @@ public final class VKEngine extends GFXEngine {
                 this.plane(0, VK_FORMAT_R8G8B8A8_UNORM, 4, (width + 1) / 2, height);
                 this.planeCount = 1;
             }
-            default -> { // RGB, GBRA, BCn — DECLINED BY supports(); NEVER UPLOADED
-                this.fmtOk = false;
-                this.convert = false;
-                this.outFormat = VK_FORMAT_R8G8B8A8_UNORM;
-                this.outTexelBytes = 4;
-            }
+            // RGB, GBRA AND BCn NEVER PASS supports(), SO THEY CANNOT REACH THIS TABLE
+            default -> throw new IllegalStateException("VKEngine: " + format + " has no upload path");
         }
         if (this.convert) {
             this.outFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -519,6 +538,7 @@ public final class VKEngine extends GFXEngine {
 
         this.formatGen++;
         this.head = 0L;
+        this.failed = false; // A NEW LAYOUT IS A FRESH ATTEMPT AFTER A DRIVER FAILURE
         if (this.ycbcrFmt != 0) {
             LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> YCbCr sampler path (vkFormat={}, chromaLoc={}, filter={})",
                     format, width, height, this.planeCount, bits,
@@ -529,34 +549,42 @@ public final class VKEngine extends GFXEngine {
                     format, width, height, this.planeCount, bits,
                     this.convert ? "compute" : "passthrough");
         }
+        return true;
     }
 
-
     @Override
-    void release(final ByteBuffer buffer) {
+    synchronized void release(final ByteBuffer buffer) {
         if (this.released || buffer == null || !buffer.isDirect()) return;
         // THE CACHE IS KEYED BY THE BUFFER'S BASE ADDRESS (POSITION-0 IMPORTS ONLY).
         final Imported imp = this.importCache.remove(memAddress(buffer) - buffer.position());
         if (imp == null) return;
-        // AN IN-FLIGHT UPLOAD COMMAND BUFFER MAY STILL READ THE IMPORT — DRAIN THE ENGINE'S OWN
-        // WORK FIRST, THEN DESTROY IT WHILE THE HOST MEMORY IS STILL VALID.
-        this.waitAllIdle();
+        // AN IN-FLIGHT UPLOAD COMMAND BUFFER MAY STILL READ THE IMPORT — DRAIN THE ENGINE'S OWN WORK FIRST, THEN
+        // DESTROY IT WHILE THE HOST MEMORY IS STILL VALID; A WEDGED GPU LEAKS THE IMPORT RATHER THAN FREEING IT IN USE
+        if (!this.waitAllIdle()) return;
         vkDestroyBuffer(this.device, imp.buffer(), null);
         vkFreeMemory(this.device, imp.memory(), null);
     }
 
+    // HOST IMPORTS DIE NOW: THE PRODUCER FREES THEIR MEMORY RIGHT AFTER release() AND AN IMPORT OUTLIVING ITS HOST POINTER
+    // CRASHES THE DRIVER; THE REST IS RETIRED BY THE BACKEND ONCE ITS IN-FLIGHT FRAMES (WHICH MAY SAMPLE THE VIEW) COMPLETE
     @Override
-    public void release() {
-        if (this.released) return;
-        this.released = true; // texture()/upload() BECOME NO-OPS
-        this.waitAllIdle();   // THE ENGINE'S OWN UPLOAD/COMPUTE WORK IS DONE BEFORE WE HAND OFF
-        // DESTROY THE HOST IMPORTS NOW (SYNCHRONOUSLY): THEY WRAP THE PRODUCER'S PLANE BUFFERS, WHICH THE
-        // PRODUCER FREES RIGHT AFTER release() RETURNS. FREEING AN IMPORTED VkDeviceMemory WHOSE HOST
-        // POINTER WAS ALREADY FREED CRASHES THE DRIVER. waitAllIdle GUARANTEES NO UPLOAD STILL READS THEM.
+    synchronized void destroy() {
+        if (!this.waitAllIdle()) {
+            // A WEDGED GPU MAY STILL READ EVERY OBJECT: LEAKING THEM BEATS DESTROYING MEMORY IN USE
+            LOGGER.error(IT, "VKEngine released while the GPU is wedged; its Vulkan objects are leaked");
+            return;
+        }
         this.destroyImportCache();
-        // DEFER THE REST: A CONSUMER RENDER FRAME IN FLIGHT MAY STILL SAMPLE THE LAST texture() VIEW. THE
-        // BACKEND RUNS THIS ONCE ITS IN-FLIGHT FRAMES RETIRE, SO NO COMMAND BUFFER REFERENCES A DESTROYED VIEW.
-        this.ctx.retire(this::destroyResources);
+        final List<Runnable> old;
+        synchronized (this.ctx.queueLock()) {
+            old = List.copyOf(this.retiring);
+            this.retiring.clear();
+        }
+        this.ctx.retire(() -> {
+            for (final Runnable r: old) r.run();
+            this.destroyResources();
+            LOGGER.debug(IT, "VKEngine released");
+        });
     }
 
     // RUNS ON THE CONSUMER'S RENDER THREAD AFTER ITS IN-FLIGHT FRAMES RETIRE (SEE VKContext#retire).
@@ -574,15 +602,15 @@ public final class VKEngine extends GFXEngine {
         if (this.sampler != 0L) { vkDestroySampler(this.device, this.sampler, null); this.sampler = 0L; }
         if (this.descPool != 0L) { vkDestroyDescriptorPool(this.device, this.descPool, null); this.descPool = 0L; } // FREES SETS
         if (this.cmdPool != 0L) { vkDestroyCommandPool(this.device, this.cmdPool, null); this.cmdPool = 0L; }       // FREES CMD BUFFERS
-        LOGGER.debug(IT, "VKEngine released");
     }
 
     // ==========================================================================
     // SUBMISSION (PRODUCER THREAD)
     // ==========================================================================
+    // NEVER THROWS: ANY DRIVER FAILURE PARKS THE ENGINE (SEE fail) AND THE FRAME IS DROPPED
     @Override
-    void upload(final ByteBuffer[] bufs, final int[] strides) {
-        if (this.released || !this.fmtOk || this.width <= 0 || this.height <= 0) return;
+    synchronized void push(final ByteBuffer[] bufs, final int[] strides) {
+        if (this.failed || this.width <= 0 || this.height <= 0) return;
         final int sources = this.convert ? this.planeCount : 1;
         if (bufs.length != sources) return; // STALE FORMAT / WRONG PLANE COUNT
         for (final ByteBuffer b: bufs) {
@@ -599,16 +627,12 @@ public final class VKEngine extends GFXEngine {
             // GFXEngine "FINISH READING BEFORE THE SECOND SUBSEQUENT UPLOAD" CONTRACT, WHICH MATTERS
             // FOR THE ZERO-COPY PATH WHERE THE GPU READS THE DECODER'S MEMORY DIRECTLY.
             final Slot twoAgo = this.slots[(int) ((this.head + 1) % SLOTS)];
-            if (this.head >= 2 && twoAgo.submitted) {
-                vkWaitForFences(this.device, twoAgo.fence, true, WAIT_TIMEOUT_NS);
-            }
+            if (this.head >= 2 && twoAgo.submitted && !this.await(twoAgo.fence, "Retention wait")) return;
             // THE SLOT WE REUSE LAST HELD FRAME head-SLOTS; ITS WORK MUST BE DONE BEFORE WE RESET
             // ITS COMMAND BUFFER AND OVERWRITE ITS IMAGES.
-            if (slot.submitted) {
-                vkWaitForFences(this.device, slot.fence, true, WAIT_TIMEOUT_NS);
-            }
+            if (slot.submitted && !this.await(slot.fence, "Slot wait")) return;
             synchronized (this.ctx.queueLock()) {
-                vkResetFences(this.device, slot.fence);
+                check(vkResetFences(this.device, slot.fence), "reset fence");
             }
             slot.submitted = false; // texture() SKIPS THIS SLOT WHILE WE RE-RECORD IT
 
@@ -646,12 +670,13 @@ public final class VKEngine extends GFXEngine {
                 }
                 src[i] = buffer;
             }
+            if (this.failed) return; // A WEDGED DRAIN WHILE REPLACING AN IMPORT PARKED THE ENGINE MID-LOOP
 
             // RECORD
-            vkResetCommandBuffer(slot.cmd, 0);
+            check(vkResetCommandBuffer(slot.cmd, 0), "reset command buffer");
             final VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack)
                     .sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-            vkBeginCommandBuffer(slot.cmd, begin);
+            check(vkBeginCommandBuffer(slot.cmd, begin), "begin command buffer");
 
             if (this.ycbcrFmt != 0) {
                 // SAMPLER-YCBCR PATH: EVERY PLANE LIVES IN ONE MULTIPLANAR IMAGE. WHOLE-IMAGE LAYOUT
@@ -763,7 +788,7 @@ public final class VKEngine extends GFXEngine {
                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             }
-            vkEndCommandBuffer(slot.cmd);
+            check(vkEndCommandBuffer(slot.cmd), "end command buffer");
 
             // SUBMIT UNDER THE SHARED QUEUE LOCK SIGNALING THIS SLOT'S FENCE.
             final VkSubmitInfo si = VkSubmitInfo.calloc(stack).sType$Default()
@@ -771,7 +796,7 @@ public final class VKEngine extends GFXEngine {
             synchronized (this.ctx.queueLock()) {
                 final int r = vkQueueSubmit(this.ctx.queue(), si, slot.fence);
                 if (r != VK_SUCCESS) {
-                    LOGGER.error(IT, "vkQueueSubmit failed: {}", r);
+                    this.fail("vkQueueSubmit", r);
                     return;
                 }
             }
@@ -779,6 +804,8 @@ public final class VKEngine extends GFXEngine {
             slot.seq = ++this.submitSeq;
             slot.submitted = true;
             this.head++;
+        } catch (final RuntimeException | LinkageError e) {
+            this.fail("Upload", e);
         }
     }
 
@@ -790,10 +817,11 @@ public final class VKEngine extends GFXEngine {
     private long importBuffer(final long ptr, final long size) {
         final Imported cached = this.importCache.get(ptr);
         if (cached != null && cached.size() >= size) return cached.buffer();
-        if (cached != null) { // A LARGER REGION IS NEEDED — DROP THE STALE IMPORT FIRST
+        if (cached != null) { // A LARGER REGION IS NEEDED — DRAIN THE READS OF THE STALE IMPORT, THEN DROP IT
+            if (!this.waitAllIdle()) return 0L;
+            this.importCache.remove(ptr);
             vkDestroyBuffer(this.device, cached.buffer(), null);
             vkFreeMemory(this.device, cached.memory(), null);
-            this.importCache.remove(ptr);
         }
         try (final MemoryStack stack = stackPush()) {
             // WHICH MEMORY TYPES MAY THIS HOST POINTER BE IMPORTED AS.
@@ -861,24 +889,31 @@ public final class VKEngine extends GFXEngine {
                 final LongBuffer pBuf = stack.mallocLong(1);
                 check(vkCreateBuffer(this.device, bci, null, pBuf), "create staging buffer");
                 final long buffer = pBuf.get(0);
+                long memory = 0L;
+                try {
+                    final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
+                    vkGetBufferMemoryRequirements(this.device, buffer, req);
+                    int type = this.memType(req.memoryTypeBits(),
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    if (type < 0) type = this.memType(req.memoryTypeBits(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                    if (type < 0) throw new IllegalStateException("VKEngine: no host-visible memory type for staging");
 
-                final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
-                vkGetBufferMemoryRequirements(this.device, buffer, req);
-                int type = this.memType(req.memoryTypeBits(),
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-                if (type < 0) type = this.memType(req.memoryTypeBits(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-                if (type < 0) throw new IllegalStateException("VKEngine: no host-visible memory type for staging");
+                    final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack).sType$Default()
+                            .allocationSize(req.size()).memoryTypeIndex(type);
+                    final LongBuffer pMem = stack.mallocLong(1);
+                    check(vkAllocateMemory(this.device, mai, null, pMem), "alloc staging memory");
+                    memory = pMem.get(0);
+                    check(vkBindBufferMemory(this.device, buffer, memory, 0), "bind staging memory");
 
-                final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack).sType$Default()
-                        .allocationSize(req.size()).memoryTypeIndex(type);
-                final LongBuffer pMem = stack.mallocLong(1);
-                check(vkAllocateMemory(this.device, mai, null, pMem), "alloc staging memory");
-                final long memory = pMem.get(0);
-                check(vkBindBufferMemory(this.device, buffer, memory, 0), "bind staging memory");
-
-                final PointerBuffer pp = stack.mallocPointer(1);
-                check(vkMapMemory(this.device, memory, 0, req.size(), 0, pp), "map staging memory");
-                st = new Stage(buffer, memory, pp.get(0), needed);
+                    final PointerBuffer pp = stack.mallocPointer(1);
+                    check(vkMapMemory(this.device, memory, 0, req.size(), 0, pp), "map staging memory");
+                    st = new Stage(buffer, memory, pp.get(0), needed);
+                } catch (final RuntimeException e) {
+                    // A PARTIAL FAILURE MUST NOT LEAK THE BUFFER OR ITS MEMORY
+                    if (memory != 0L) vkFreeMemory(this.device, memory, null);
+                    vkDestroyBuffer(this.device, buffer, null);
+                    throw e;
+                }
                 slot.stage[i] = st;
             }
         }
@@ -974,12 +1009,12 @@ public final class VKEngine extends GFXEngine {
         this.importCache.clear();
     }
 
-    private void waitAllIdle() {
+    // DRAINS THE ENGINE'S OWN FENCES; FALSE PARKS THE ENGINE BECAUSE A WEDGED GPU MAY STILL READ EVERY OBJECT
+    private boolean waitAllIdle() {
         for (final Slot s: this.slots) {
-            if (s.fence != 0L && s.submitted) {
-                vkWaitForFences(this.device, s.fence, true, WAIT_TIMEOUT_NS);
-            }
+            if (s.fence != 0L && s.submitted && !this.await(s.fence, "Idle wait")) return false;
         }
+        return true;
     }
 
     // ==========================================================================
@@ -1023,26 +1058,33 @@ public final class VKEngine extends GFXEngine {
         final LongBuffer p = stack.mallocLong(1);
         check(vkCreateImage(this.device, ici, null, p), "create image");
         final long img = p.get(0);
+        long mem = 0L;
+        try {
+            final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
+            vkGetImageMemoryRequirements(this.device, img, req);
+            final int type = this.memType(req.memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (type < 0) throw new IllegalStateException("VKEngine: no device-local memory type for image");
+            final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack).sType$Default()
+                    .allocationSize(req.size()).memoryTypeIndex(type);
+            final LongBuffer pm = stack.mallocLong(1);
+            check(vkAllocateMemory(this.device, mai, null, pm), "alloc image memory");
+            mem = pm.get(0);
+            check(vkBindImageMemory(this.device, img, mem, 0), "bind image memory");
 
-        final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
-        vkGetImageMemoryRequirements(this.device, img, req);
-        final int type = this.memType(req.memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (type < 0) throw new IllegalStateException("VKEngine: no device-local memory type for image");
-        final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack).sType$Default()
-                .allocationSize(req.size()).memoryTypeIndex(type);
-        final LongBuffer pm = stack.mallocLong(1);
-        check(vkAllocateMemory(this.device, mai, null, pm), "alloc image memory");
-        final long mem = pm.get(0);
-        check(vkBindImageMemory(this.device, img, mem, 0), "bind image memory");
-
-        final VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
-                .image(img).viewType(VK_IMAGE_VIEW_TYPE_2D).format(format);
-        // COMPONENTS STAY IDENTITY (calloc): REQUIRED WHEN A CONVERSION IS CHAINED.
-        if (conv != 0L) vci.pNext(VkSamplerYcbcrConversionInfo.calloc(stack).sType$Default().conversion(conv));
-        vci.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-        final LongBuffer pv = stack.mallocLong(1);
-        check(vkCreateImageView(this.device, vci, null, pv), "create image view");
-        return new Img(img, mem, pv.get(0));
+            final VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
+                    .image(img).viewType(VK_IMAGE_VIEW_TYPE_2D).format(format);
+            // COMPONENTS STAY IDENTITY (calloc): REQUIRED WHEN A CONVERSION IS CHAINED.
+            if (conv != 0L) vci.pNext(VkSamplerYcbcrConversionInfo.calloc(stack).sType$Default().conversion(conv));
+            vci.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+            final LongBuffer pv = stack.mallocLong(1);
+            check(vkCreateImageView(this.device, vci, null, pv), "create image view");
+            return new Img(img, mem, pv.get(0));
+        } catch (final RuntimeException e) {
+            // A PARTIAL FAILURE MUST NOT LEAK THE IMAGE OR ITS MEMORY
+            if (mem != 0L) vkFreeMemory(this.device, mem, null);
+            vkDestroyImage(this.device, img, null);
+            throw e;
+        }
     }
 
     // FINDS A MEMORY TYPE INDEX IN typeBits WITH ALL props SET, OR -1. props == 0 MATCHES ANY TYPE.
@@ -1066,6 +1108,33 @@ public final class VKEngine extends GFXEngine {
         spec.h = Math.max(1, h);
     }
 
+    // PLANE FORMATS PER SAMPLE DEPTH: 8-BIT UNORM, 16-BIT UNORM FOR 10/12/16 (bitScale RESCALES), 32-BIT FLOAT
+    private static int redFormat(final int bits) {
+        return bits == 32 ? VK_FORMAT_R32_SFLOAT : (bits > 8 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM);
+    }
+
+    private static int redGreenFormat(final int bits) {
+        return bits == 32 ? VK_FORMAT_R32G32_SFLOAT : (bits > 8 ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM);
+    }
+
+    // WHETHER A PLANE FORMAT CAN BE COPIED INTO AND SAMPLED THROUGH THE LINEAR SAMPLER ON THIS DEVICE
+    private boolean sampleable(final int vkFormat) {
+        final int need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+                | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        return (this.formatFeatures(vkFormat) & need) == need;
+    }
+
+    // OPTIMAL-TILING FEATURES OF A FORMAT, QUERIED ONCE PER DEVICE AND FORMAT
+    private int formatFeatures(final int vkFormat) {
+        return this.formatFeats.computeIfAbsent(vkFormat, fmt -> {
+            try (final MemoryStack stack = stackPush()) {
+                final VkFormatProperties props = VkFormatProperties.malloc(stack);
+                vkGetPhysicalDeviceFormatProperties(this.ctx.physicalDevice(), fmt, props);
+                return props.optimalTilingFeatures();
+            }
+        });
+    }
+
     // ROUTES THE CURRENT FORMAT THROUGH THE SAMPLER-YCBCR PATH WHEN THE DEVICE FEATURE IS ON AND
     // THE MULTIPLANAR FORMAT CARRIES THE REQUIRED OPTIMAL-TILING BITS; OTHERWISE ycbcrFmt STAYS 0
     // AND THE ARITHMETIC COMPUTE PATH ALREADY CONFIGURED BY THE CALLER REMAINS ACTIVE.
@@ -1074,15 +1143,7 @@ public final class VKEngine extends GFXEngine {
             LOGGER.info(IT, "YCbCr sampler path declined for {}: samplerYcbcrConversion feature off", this.format);
             return;
         }
-        Integer feats = this.ycbcrFeats.get(fmt);
-        if (feats == null) {
-            try (final MemoryStack stack = stackPush()) {
-                final VkFormatProperties props = VkFormatProperties.malloc(stack);
-                vkGetPhysicalDeviceFormatProperties(this.ctx.physicalDevice(), fmt, props);
-                feats = props.optimalTilingFeatures();
-            }
-            this.ycbcrFeats.put(fmt, feats);
-        }
+        final int feats = this.formatFeatures(fmt);
         // THE IMAGE IS SAMPLED BY THE TRIVIAL PASS AND FILLED VIA BUFFER->IMAGE COPIES, AND THE
         // CONVERSION NEEDS A SUPPORTED CHROMA SITING (EVEN 444 FORMATS MUST ADVERTISE ONE BIT —
         // OTHERWISE NO VALID xChromaOffset/yChromaOffset EXISTS AND THE ENGINE FALLS BACK).
@@ -1217,10 +1278,11 @@ public final class VKEngine extends GFXEngine {
     // (DEVICE-INDEPENDENT) BYTECODE IN convertSpirv/ycbcrSpirv UNDER THE CLASS MONITOR, SO CREATING MANY
     // ENGINES NEVER RECOMPILES; shaderc COMPILATION IS THE EXPENSIVE STEP.
     private static byte[] compileSpirv(final String glsl, final String name) {
-        final long compiler = shaderc_compiler_initialize();
-        if (compiler == 0L) throw new IllegalStateException("VKEngine: shaderc_compiler_initialize failed");
+        long compiler = 0L;
         long result = 0L;
         try {
+            compiler = shaderc_compiler_initialize();
+            if (compiler == 0L) throw new IllegalStateException("VKEngine: shaderc_compiler_initialize failed");
             result = shaderc_compile_into_spv(compiler, glsl, shaderc_compute_shader, name, "main", 0L);
             if (result == 0L) throw new IllegalStateException("VKEngine: shaderc compile returned null");
             if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
@@ -1231,14 +1293,39 @@ public final class VKEngine extends GFXEngine {
             final byte[] bytes = new byte[spv.remaining()];
             spv.duplicate().get(bytes);
             return bytes;
+        } catch (final RuntimeException | LinkageError e) {
+            // A MISSING shaderc OR A BROKEN SHADER NEVER RECOVERS: DECLINE CONVERSION LAYOUTS FOR THE REST OF THE PROCESS
+            convertBroken = true;
+            throw e;
         } finally {
             if (result != 0L) shaderc_result_release(result);
-            shaderc_compiler_release(compiler);
+            if (compiler != 0L) shaderc_compiler_release(compiler);
         }
     }
 
     private static void check(final int result, final String op) {
         if (result != VK_SUCCESS) throw new IllegalStateException("VKEngine: " + op + " failed (VkResult " + result + ")");
+    }
+
+    // FENCE WAIT THAT PARKS THE ENGINE ON A TIMEOUT OR DEVICE LOSS INSTEAD OF RESETTING A FENCE STILL IN FLIGHT
+    private boolean await(final long fence, final String what) {
+        final int result = vkWaitForFences(this.device, fence, true, WAIT_TIMEOUT_NS);
+        if (result == VK_SUCCESS) return true;
+        this.fail(what, result);
+        return false;
+    }
+
+    // PARKS THE ENGINE AFTER A DRIVER FAILURE: FRAMES ARE DROPPED UNTIL THE NEXT LAYOUT AND THE LAST VIEW STAYS EXPOSED
+    private void fail(final String op, final int result) {
+        this.failed = true;
+        LogTool.throttled(LOGGER, Level.ERROR, IT, this.failureReports,
+                "{} failed (VkResult {}); frames are dropped until the next format", op, result);
+    }
+
+    private void fail(final String op, final Throwable cause) {
+        this.failed = true;
+        LogTool.throttled(LOGGER, Level.ERROR, IT, this.failureReports,
+                "{} failed; frames are dropped until the next format", op, cause);
     }
 
     // ==========================================================================

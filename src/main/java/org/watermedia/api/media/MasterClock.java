@@ -2,6 +2,7 @@ package org.watermedia.api.media;
 
 import org.watermedia.api.media.MediaPlayer.Status;
 
+import java.util.ArrayDeque;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Map;
@@ -9,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
 
 /**
  * Single source of truth for time, status, seek requests, and inter-thread coordination.
@@ -26,16 +28,18 @@ final class MasterClock {
     // STATE MACHINE — VALID TRANSITIONS
     private static final Map<Status, Set<Status>> TRANSITIONS = new EnumMap<>(Status.class);
     static {
-        // WAITING/LOADING ALLOW STOPPED: A stop() OR ABORTED RESTART CAN LAND BEFORE PLAYBACK BEGINS
+        // WAITING/LOADING ALLOW STOPPED (A stop() OR ABORTED RESTART CAN LAND BEFORE PLAYBACK BEGINS); LOADING
+        // LEAVES ONLY THROUGH start() OR A TERMINAL STATE, SO awaitNotStatus(LOADING) MEANS "PIPELINE OPENED"
         TRANSITIONS.put(Status.WAITING,   EnumSet.of(Status.LOADING, Status.STOPPED));
-        TRANSITIONS.put(Status.LOADING,   EnumSet.of(Status.PLAYING, Status.PAUSED, Status.STOPPED, Status.ERROR));
+        TRANSITIONS.put(Status.LOADING,   EnumSet.of(Status.STOPPED, Status.ERROR));
         TRANSITIONS.put(Status.PLAYING,   EnumSet.of(Status.PAUSED, Status.BUFFERING, Status.ENDED, Status.STOPPED, Status.ERROR));
         // PAUSED ALLOWS ENDED: A PIPELINE FULLY DRAINED WHILE PAUSED STILL REACHES ITS END
         TRANSITIONS.put(Status.PAUSED,    EnumSet.of(Status.PLAYING, Status.BUFFERING, Status.ENDED, Status.STOPPED, Status.ERROR));
         TRANSITIONS.put(Status.BUFFERING, EnumSet.of(Status.PLAYING, Status.PAUSED, Status.LOADING, Status.ENDED, Status.STOPPED, Status.ERROR));
-        TRANSITIONS.put(Status.ENDED,     EnumSet.of(Status.BUFFERING, Status.STOPPED));
+        // ENDED HAS NO PIPELINE LEFT: A SEEK THERE IS A PAUSED RESTART OWNED BY THE PLAYER, NOT A CLOCK TRANSITION
+        TRANSITIONS.put(Status.ENDED,     EnumSet.of(Status.STOPPED));
         TRANSITIONS.put(Status.STOPPED,   EnumSet.noneOf(Status.class)); // TERMINAL
-        TRANSITIONS.put(Status.ERROR,     EnumSet.noneOf(Status.class)); // TERMINAL
+        TRANSITIONS.put(Status.ERROR,     EnumSet.of(Status.STOPPED)); // ONLY stop()/release() LEAVE A FAILURE
     }
 
     // LOCK + CONDITION
@@ -56,6 +60,12 @@ final class MasterClock {
 
     // PIPELINE STATE
     private volatile boolean demuxFinished;
+
+    // STATUS LISTENER — TRANSITIONS ARE QUEUED UNDER THE LOCK AND DELIVERED AFTER IT IS RELEASED, IN ORDER
+    // AND BY ONE THREAD AT A TIME (draining), SO A LISTENER RUNS UNDER NO LOCK AND MAY RE-ENTER THE CLOCK
+    private volatile BiConsumer<Status, Status> listener;
+    private final ArrayDeque<Status[]> events = new ArrayDeque<>();
+    private boolean draining;
 
     // CLOCK RECALIBRATION THRESHOLD (SECONDS) — ONLY RECALIBRATE ptsDrift
     // WHEN AUDIO PTS DRIFTS MORE THAN THIS FROM WALLCLOCK. PREVENTS VIDEO
@@ -134,10 +144,46 @@ final class MasterClock {
             // IF BUFFERING → FIRST VALID UPDATE → TRANSITION TO PLAYING/PAUSED
             if (this.status == Status.BUFFERING) {
                 this.status = this.pauseIntent ? Status.PAUSED : Status.PLAYING;
+                this.events.addLast(new Status[] { Status.BUFFERING, this.status });
                 this.condition.signalAll();
             }
         } finally {
             this.lock.unlock();
+        }
+        this.drain();
+    }
+
+    /** Registers the listener that receives every status transition, in order, outside the lock. */
+    public void listener(final BiConsumer<Status, Status> listener) {
+        this.listener = listener;
+    }
+
+    // DELIVERS QUEUED TRANSITIONS OUTSIDE THE LOCK. A MUTATOR ARRIVING WHILE ANOTHER THREAD DRAINS HANDS
+    // ITS EVENT TO THAT DRAINER; A THREAD STILL HOLDING THE LOCK (NESTED MUTATOR) LEAVES THE DELIVERY TO
+    // ITS OUTERMOST CALL, SO THE LISTENER NEVER RUNS UNDER THE LOCK
+    private void drain() {
+        if (this.lock.isHeldByCurrentThread()) return;
+        while (true) {
+            final Status[] event;
+            this.lock.lock();
+            try {
+                if (this.draining || this.events.isEmpty()) return;
+                event = this.events.pollFirst();
+                this.draining = true;
+            } finally {
+                this.lock.unlock();
+            }
+            try {
+                final BiConsumer<Status, Status> l = this.listener;
+                if (l != null) l.accept(event[0], event[1]);
+            } finally {
+                this.lock.lock();
+                try {
+                    this.draining = false;
+                } finally {
+                    this.lock.unlock();
+                }
+            }
         }
     }
 
@@ -161,14 +207,26 @@ final class MasterClock {
      * @return true if the transition was valid and applied
      */
     public boolean transition(final Status newStatus) {
+        return this.exchange(newStatus) != null;
+    }
+
+    /**
+     * Validated state transition that reports the status it left, so the caller can publish the
+     * exact pair that happened instead of a status read before or after the swap.
+     *
+     * @param newStatus the desired status to transition to
+     * @return the previous status when the transition applied, null when it was rejected
+     */
+    public Status exchange(final Status newStatus) {
+        final Status current;
         this.lock.lock();
         try {
-            final Status current = this.status;
-            if (current == newStatus) return false; // NO-OP — ALREADY IN THAT STATE
+            current = this.status;
+            if (current == newStatus) return null; // NO-OP — ALREADY IN THAT STATE
 
             // VALIDATE AGAINST STATE MACHINE
             final Set<Status> allowed = TRANSITIONS.get(current);
-            if (allowed == null || !allowed.contains(newStatus)) return false;
+            if (allowed == null || !allowed.contains(newStatus)) return null;
 
             // ADJUST CLOCK WHEN LEAVING PLAYING — FREEZE PTS
             if (current == Status.PLAYING) {
@@ -181,18 +239,47 @@ final class MasterClock {
                 this.ptsDrift = this.pts - now;
                 this.lastUpdated = now;
             }
+            // STOPPED MEANS "BACK AT THE BEGINNING" FOR EVERY PLAYER
+            if (newStatus == Status.STOPPED) this.pts = 0;
 
             this.status = newStatus;
+            this.events.addLast(new Status[] { current, newStatus });
             this.condition.signalAll();
-            return true;
         } finally {
             this.lock.unlock();
         }
+        this.drain();
+        return current;
     }
 
     /**
-     * Starts the pipeline — transition from loading to playing or paused.
-     * Calibrates the clock from time 0.
+     * Forces the terminal stopped state regardless of the state machine, for a release that tears
+     * the pipeline down from any status (including error).
+     *
+     * @return the previous status, or null when the clock was already stopped
+     */
+    public Status halt() {
+        final Status current;
+        this.lock.lock();
+        try {
+            current = this.status;
+            if (current == Status.STOPPED) return null;
+            this.pts = 0;
+            this.pendingSeek = null;
+            this.status = Status.STOPPED;
+            this.events.addLast(new Status[] { current, Status.STOPPED });
+            this.condition.signalAll();
+        } finally {
+            this.lock.unlock();
+        }
+        this.drain();
+        return current;
+    }
+
+    /**
+     * Starts the pipeline — transition from loading to playing or paused. Calibrates the clock
+     * from time 0, or lands in buffering at the target when a seek was requested while loading
+     * (the demuxer consumes it right away and the first decoded frame settles the status).
      *
      * @param paused if true, start in the paused state instead of playing
      */
@@ -200,22 +287,29 @@ final class MasterClock {
         this.lock.lock();
         try {
             final double now = wallclock();
-            this.pts = 0;
-            this.ptsDrift = -now;
+            final SeekRequest pending = this.pendingSeek;
+            final Status prev = this.status;
+            // A RUN THAT WAS STOPPED OR FAILED WHILE OPENING MUST NOT COME BACK TO LIFE
+            if (prev != Status.LOADING && prev != Status.WAITING) return;
+            this.pts = pending != null ? pending.targetMs() / 1_000.0 : 0;
+            this.ptsDrift = this.pts - now;
             this.lastUpdated = now;
-            this.status = paused ? Status.PAUSED : Status.PLAYING;
+            this.status = pending != null ? Status.BUFFERING : paused ? Status.PAUSED : Status.PLAYING;
             this.pauseIntent = paused;
+            if (prev != this.status) this.events.addLast(new Status[] { prev, this.status });
             this.condition.signalAll();
         } finally {
             this.lock.unlock();
         }
+        this.drain();
     }
 
     // SEEK (UNDER LOCK, SIGNALS CONDITION)
     /**
      * Requests a seek. Stores the request atomically, freezes the clock at the target
-     * position, transitions to buffering, and wakes all waiting threads. Rejected if the
-     * status is terminal.
+     * position, transitions to buffering, and wakes all waiting threads. Rejected when no
+     * pipeline can serve it (waiting, ended, stopped or error); while loading the request is
+     * kept for {@link #start(boolean)} and the status stays loading.
      *
      * @param targetMs target position in milliseconds
      * @param precise  if true, request a precise (frame-exact) seek
@@ -224,18 +318,24 @@ final class MasterClock {
     public boolean requestSeek(final long targetMs, final boolean precise) {
         this.lock.lock();
         try {
-            if (this.status == Status.STOPPED || this.status == Status.ERROR) return false;
+            final Status current = this.status;
+            if (current == Status.WAITING || current == Status.ENDED || current == Status.STOPPED || current == Status.ERROR)
+                return false;
             this.pendingSeek = new SeekRequest(targetMs, precise);
-            this.pts = targetMs / 1000.0; // FREEZE CLOCK AT TARGET
+            this.pts = targetMs / 1_000.0; // FREEZE CLOCK AT TARGET
             this.serial++; // INVALIDATE ALL CURRENT FRAMES — PREVENTS update() FROM
                            // AUTO-TRANSITIONING BUFFERING→PLAYING WITH STALE AUDIO
-            this.status = Status.BUFFERING;
+            if (current != Status.LOADING && current != Status.BUFFERING) {
+                this.status = Status.BUFFERING;
+                this.events.addLast(new Status[] { current, Status.BUFFERING });
+            }
             this.demuxFinished = false; // CLEAR EOF FLAG FOR SEEK AFTER EOF
             this.condition.signalAll(); // WAKE ALL THREADS
-            return true;
         } finally {
             this.lock.unlock();
         }
+        this.drain();
+        return true;
     }
 
     /**
@@ -263,30 +363,36 @@ final class MasterClock {
 
     /**
      * Sets the paused state. Convenience method that delegates to {@link #transition(Status)}.
-     * Also stores the pause intent for buffering resolution.
+     * Also stores the pause intent for buffering resolution; while loading only the intent
+     * changes and {@link #start(boolean)} applies it.
      *
      * @param paused true to pause, false to resume
-     * @return true if the state changed
+     * @return true if the state (or the latched intent while loading) changed
      */
     public boolean paused(final boolean paused) {
+        final boolean changed;
         this.lock.lock();
         try {
+            // NO RUN YET: THERE IS NOTHING TO LATCH INTO (reset() WOULD WIPE IT ANYWAY)
+            if (this.status == Status.WAITING) return false;
+            final boolean was = this.pauseIntent;
             this.pauseIntent = paused;
+            if (this.status == Status.LOADING) return was != paused;
             if (paused) {
                 // PAUSE IS ALWAYS ALLOWED (BUFFERING→PAUSED, PLAYING→PAUSED)
-                return this.transition(Status.PAUSED);
+                changed = this.transition(Status.PAUSED);
             } else {
                 // RESUME: IF WE WERE PAUSED DURING BUFFERING, GO BACK TO BUFFERING
                 // (NOT PLAYING) — THE SEEK HASN'T RESOLVED YET.
                 // update() WILL TRANSITION BUFFERING→PLAYING WHEN DATA ARRIVES.
-                if (this.status == Status.PAUSED && this.pendingSeek != null) {
-                    return this.transition(Status.BUFFERING);
-                }
-                return this.transition(Status.PLAYING);
+                changed = this.status == Status.PAUSED && this.pendingSeek != null
+                        ? this.transition(Status.BUFFERING) : this.transition(Status.PLAYING);
             }
         } finally {
             this.lock.unlock();
         }
+        this.drain(); // THE NESTED TRANSITION QUEUED ITS EVENT WHILE THE LOCK WAS HELD
+        return changed;
     }
 
     /** Stored pause intent for buffering to playing/paused resolution. */
@@ -308,9 +414,9 @@ final class MasterClock {
         try {
             final Status initial = this.status;
             final SeekRequest initialSeek = this.pendingSeek;
-            final long deadline = timeoutMs > 0 ? System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
+            final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
             while (this.status == initial && this.pendingSeek == initialSeek) {
-                final long remaining = deadline - System.currentTimeMillis();
+                final long remaining = timeoutMs > 0 ? TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()) : Long.MAX_VALUE;
                 if (remaining <= 0) break;
                 // KEEP A COARSE SAFETY CAP: consumeSeek() CLEARS pendingSeek WITHOUT SIGNALLING,
                 // SO A pure-signal WAIT COULD MISS THAT ONE TRANSITION.
@@ -333,9 +439,9 @@ final class MasterClock {
     public Status awaitNotStatus(final Status current, final long timeoutMs) throws InterruptedException {
         this.lock.lock();
         try {
-            final long deadline = timeoutMs > 0 ? System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
+            final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
             while (this.status == current) {
-                final long remaining = deadline - System.currentTimeMillis();
+                final long remaining = timeoutMs > 0 ? TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()) : Long.MAX_VALUE;
                 if (remaining <= 0) break;
                 // EVERY STATUS MUTATION SIGNALS THIS CONDITION, SO AWAIT THE FULL REMAINDER — NO POLLING CAP
                 this.condition.await(remaining, TimeUnit.MILLISECONDS);
@@ -347,24 +453,26 @@ final class MasterClock {
     }
 
     // PIPELINE LIFECYCLE
-    /** Resets all state to its initial values. */
+    /** Resets the pipeline state for a new run; the playback speed is a player setting and survives. */
     public void reset() {
         this.lock.lock();
         try {
             final double now = wallclock();
+            final Status prev = this.status;
             this.pts = 0;
             this.ptsDrift = -now;
             this.lastUpdated = now;
             this.status = Status.WAITING;
             this.serial = 0;
-            this.speed = 1.0;
             this.pendingSeek = null;
             this.pauseIntent = false;
             this.demuxFinished = false;
+            if (prev != Status.WAITING) this.events.addLast(new Status[] { prev, Status.WAITING });
             this.condition.signalAll();
         } finally {
             this.lock.unlock();
         }
+        this.drain();
     }
 
     /** Signals that the demuxer has reached end-of-stream. */

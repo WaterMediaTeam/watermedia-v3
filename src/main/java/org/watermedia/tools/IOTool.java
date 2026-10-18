@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -85,6 +86,8 @@ public class IOTool {
         final byte[] buffer = new byte[BUFFER_SIZE];
         long total = 0L;
         while (true) {
+            // SOCKET READS ARE NOT INTERRUPTIBLE, SO A CANCELLED CALLER (A STOPPED PLAYER) IS HONOURED BETWEEN CHUNKS
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Read cancelled after " + total + " bytes");
             final int read = in.read(buffer);
             if (read < 0) break;
             total += read;

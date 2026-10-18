@@ -1,0 +1,86 @@
+package org.watermedia.api.media;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.watermedia.api.util.PixelFormat;
+import org.watermedia.test.support.MediaBootstrap;
+
+import java.nio.ByteBuffer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Verifies the headless capture engine honors the shared {@link GFXEngine} contract: sentinel
+ * texture, refused layouts, preload gating and an idempotent release that drops later uploads.
+ */
+@DisplayName("HeadlessGFXEngine")
+public class HeadlessGFXEngineTest {
+
+    @BeforeAll
+    static void boot() {
+        MediaBootstrap.client();
+    }
+
+    @Nested
+    @DisplayName("Lifecycle")
+    class Lifecycle {
+
+        @Test
+        @DisplayName("Frames flip the sentinel texture; release zeroes it and refuses formats")
+        void releaseLeavesTheEngineInert() {
+            final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
+            assertEquals(0L, gfx.texture());
+            assertTrue(gfx.format(PixelFormat.BGRA, 2, 2, 8));
+            gfx.upload(new ByteBuffer[] { ByteBuffer.allocateDirect(16) }, new int[] { 0 });
+            assertNotEquals(0L, gfx.texture());
+            assertEquals(1L, gfx.uploadCount());
+
+            gfx.release();
+            assertTrue(gfx.released());
+            assertEquals(0L, gfx.texture());
+            assertFalse(gfx.format(PixelFormat.BGRA, 2, 2, 8));
+            gfx.upload(new ByteBuffer[] { ByteBuffer.allocateDirect(16) }, new int[] { 0 });
+            assertEquals(1L, gfx.uploadCount(), "uploads are dropped after release");
+            gfx.release(); // IDEMPOTENT
+        }
+
+        @Test
+        @DisplayName("Empty sizes, odd depths and compressed layouts are refused before reaching the backend")
+        void refusedLayouts() {
+            final HeadlessGFXEngine gfx = MediaAPI.headlessEngine();
+            assertFalse(gfx.format(PixelFormat.BGRA, 0, 2, 8));
+            assertFalse(gfx.format(PixelFormat.BGRA, 2, 2, 9));
+            assertFalse(gfx.format(PixelFormat.BC7, 2, 2, 8));
+            assertNull(gfx.format(), "a refused layout leaves the engine unconfigured");
+            assertTrue(gfx.format(PixelFormat.GRAY, 3, 3, 16));
+            assertEquals(16, gfx.bits());
+        }
+    }
+
+    @Nested
+    @DisplayName("Preloaded frame sets")
+    class Preload {
+
+        @Test
+        @DisplayName("preload(frames) follows the advertised capability and never aliases the producer's array")
+        void preloadGating() {
+            assertFalse(MediaAPI.headlessEngine().preload(new ByteBuffer[] { ByteBuffer.allocateDirect(4) }, 0),
+                    "an engine without the capability refuses frame sets");
+            final HeadlessGFXEngine gfx = MediaAPI.headlessEngine(true);
+            final ByteBuffer[] frames = { ByteBuffer.allocateDirect(4) };
+            assertFalse(gfx.preload(new ByteBuffer[0], 0));
+            assertFalse(gfx.preload(null, 0));
+            assertTrue(gfx.preload(frames, 0));
+            assertNotSame(frames, gfx.preloadedFrames());
+            assertNotSame(gfx.preloadedFrames(), gfx.preloadedFrames());
+            assertNotEquals(0L, gfx.texture());
+        }
+    }
+}

@@ -101,6 +101,8 @@ La resolución es asíncrona. En un juego, consulta `mrl.status()` desde el tick
 
 Para código de aplicación o tareas de fondo puedes usar `mrl.await(timeoutMillis)`. Devuelve `true` cuando la carga ya no está pendiente, incluso si terminó con un error; `false` cuando se agota la espera o se interrumpe el hilo mientras espera. No bloquees el hilo del juego para resolver una URL.
 
+`MediaAPI.mrl(String)` trata una cadena que nombra un archivo existente como una ruta relativa al directorio de trabajo con el que arrancó WaterMedia; cualquier otra cadena se interpreta como URI. Una entrada malformada, relativa o vacía devuelve un MRL sin caché nacido en `ERROR` cuyo `reload()` se devuelve a sí mismo. Un enlace directo sólo se rechaza cuando el servidor responde con un tipo de documento (HTML, CSS, JavaScript, JSON, XHTML); cualquier otro tipo de contenido pasa sin importar mayúsculas o parámetros, y los ambiguos se clasifican leyendo los primeros bytes. Cada fuente conserva una URL por nivel de calidad: la variante más ancha, luego la más alta, luego la de mayor cuadros por segundo y, en empate, la primera que listó la plataforma; sus cabeceras quedan congeladas.
+
 ### Fuentes e índices
 
 Los índices empiezan en cero. Las colecciones de fuentes son listas:
@@ -178,6 +180,10 @@ player.scale(1280, 720);
 
 Los tiempos se expresan en milisegundos y el volumen del reproductor es un porcentaje de 0 a 100. Consulta `canSeek()` antes de ofrecer desplazamiento en transmisiones que no lo permiten. Para diagnóstico usa `status()`, `time()`, `duration()`, `buffered()` y `exception()`.
 
+Cada control booleano responde una sola pregunta: ¿esta llamada cambió el estado propio del reproductor? `false` cubre una llamada reenviada a la autoridad de sincronización, descartada por una sesión bloqueada, rechazada por el contenido o hecha después de `release()`; `repeat(boolean)` sigue la misma regla. Los tres reproductores comparten el contrato: una pausa durante la carga queda registrada y se aplica al abrir la tubería; `pause()` y `resume()` devuelven `false` en un reproductor terminado, detenido o fallido; `stop()` desmonta la tubería, deja `STOPPED` con `time()` en 0 y devuelve `true` sólo si hubo transición; `seek(...)` sobre un reproductor terminado o detenido lo reinicia pausado en la posición pedida, y `togglePlay()` ahí lo vuelve a iniciar; `nextFrame()` y `previousFrame()` sólo funcionan en pausa. `canPlay()` es verdadero desde la primera carga exitosa hasta que el reproductor falla o se libera, `canSeek()` y `live()` son falsos hasta que la fuente abre, `fps()` es 0 hasta conocer la tasa y `status()` es `STOPPED` tras `release()`. Una imagen fija que cae en FFmpeg respeta `displayTime(ms)` como el reproductor de imágenes y nunca repite; sin tiempo de exhibición se muestra hasta detenerla.
+
+`onStatus(listener)` recibe toda transición real, incluidas las que provocan un reinicio, `stop()` y `release()`. Corre en el hilo que causó el cambio (un hilo de reproducción, el ticker compartido de sincronización, o quien llama a `status()`, `time()` o `texture()` en reproductores de imagen cuyo reloj resuelve el final de forma diferida), así que mantenlo corto y nunca llames a `release()` desde él. `release()` es idempotente.
+
 ### Estados del reproductor
 
 | Estado | Significado |
@@ -209,6 +215,8 @@ El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundar
 | `MediaAPI.jsEngine()` | Disponer de una línea de salida Java Sound; no admite posicionamiento espacial. |
 
 Los motores administran sus propios recursos de reproducción, como texturas, fuentes de audio y buffers. Sus clases base son selladas: la integración proporciona contextos y ejecutores, no implementaciones arbitrarias de esos motores.
+
+Todos los motores siguen el mismo ciclo de vida. `release()` es idempotente, nunca debe ejecutarse al mismo tiempo que el reproductor que alimenta al motor, y lo deja inerte: `released()` devuelve `true` y `texture()` devuelve 0. El reproductor consulta `supports(format, bits)` antes de subir cuadros y convierte a BGRA de 8 bits cuando el motor rechaza una disposición; las subidas nunca lanzan excepciones, así que una falla del controlador sólo detiene el motor con un error en el registro mientras la última textura sigue expuesta, y un cambio de resolución en Vulkan conserva la vista anterior hasta que llega el primer cuadro de la nueva disposición. Los motores de software y el sin pantalla exponen un valor distinto de cero en lugar de un identificador de GPU: compara el identificador sólo contra 0. OpenAL necesita que su contexto original esté activo en cada hilo que opera el reproductor, incluido el temporizador de sincronización; Java Sound es seguro entre hilos y reabre su línea cuando un bloque de audio supera el buffer de la línea.
 
 El audio espacial se configura con `SpatialAudio` y un procesador opcional del entorno. La [guía de audio espacial y Sound Physics Remastered](#audio-espacial-y-sound-physics-remastered) incluye el adaptador, los requisitos de OpenAL, la frecuencia de actualización y las opciones del mod que pueden impedir que se apliquen efectos. La posición y los efectos pertenecen al oyente local y no viajan por el protocolo de sincronización.
 
@@ -372,14 +380,14 @@ Los bridges y proveedores del ejemplo los construye la aplicación anfitriona. U
 1. El seguidor se anuncia y entra como un miembro que todavía está cargando. Su llegada no pausa inmediatamente a los demás.
 2. La autoridad responde con los permisos de la sesión y una instantánea del estado actual.
 3. El seguidor reporta sus transiciones y mantiene su registro mediante mensajes periódicos. La autoridad adopta la duración o condición de transmisión en vivo informada por un seguidor que ya dispone de esos datos. Mientras no haya duración ni una transmisión en vivo identificada, su reloj permanece en cero.
-4. La autoridad difunde cambios y repite una instantánea aproximadamente cada cinco segundos. Los seguidores descartan revisiones anteriores; una revisión igual puede actualizar la referencia temporal.
+4. La autoridad difunde cambios y repite una instantánea aproximadamente cada cinco segundos. Los seguidores descartan revisiones anteriores (comparadas por distancia con signo, así que una autoridad de reemplazo, cuya revisión arranca de su reloj, toma el mando); una revisión igual puede actualizar la referencia temporal.
 5. Al liberarse, el seguidor envía su despedida. La autoridad descarta a quienes dejan de reportarse según `followerTimeout(ms)`, con 15 segundos por defecto.
 
 El tiempo de desconexión debe estar entre 1 y `Long.MAX_VALUE / 1_000_000` milisegundos. Los valores fuera de ese rango se rechazan sin cambiar el tiempo configurado.
 
 La autoridad conserva la primera duración positiva recibida durante su sesión. Cuando los reportes identifican una transmisión en vivo, un reporte posterior con `live=false` no elimina esa clasificación.
 
-`sync(...)` valida y consume el mensaje en el hilo que lo invoca. El seguidor aplica el estado recibido en su ciclo de sincronización de 50 ms. La autoridad puede procesar controles y enviar respuestas durante la llamada: no supongas que todo el trabajo se difiere a ese ciclo. Los callbacks del bridge también pueden ejecutarse desde el hilo de una llamada de control.
+`sync(...)` valida y consume el mensaje en el hilo que lo invoca; un reloj simple sin bridge ignora el tráfico de sesión, y un seguidor que acaba de despedirse (`Unwatch`) no vuelve a registrarse por un reporte que seguía en vuelo. El seguidor aplica el estado recibido en su ciclo de sincronización de 50 ms. La autoridad puede procesar controles y enviar respuestas durante la llamada: no supongas que todo el trabajo se difiere a ese ciclo. Los callbacks del bridge también pueden ejecutarse desde el hilo de una llamada de control.
 
 ### Permisos
 
@@ -399,7 +407,7 @@ Consulta `player.granted(capability)` para adaptar la interfaz a los permisos re
 
 ### Formato de los mensajes
 
-Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media`. `Packet.read(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales.
+Los mensajes son records de tamaño fijo y orden big-endian en el paquete `org.watermedia.api.media`. `Packet.read(ByteBuffer)` consume sólo los bytes del mensaje, dejando intactos los bytes posteriores para que tu transporte pueda incluir campos adicionales; el orden de bytes del buffer no importa y un mensaje rechazado deja la posición intacta.
 
 | Mensaje | Tamaño | Dirección |
 | --- | ---: | --- |
