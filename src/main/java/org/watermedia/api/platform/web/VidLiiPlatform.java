@@ -8,6 +8,7 @@ import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -26,8 +27,9 @@ public final class VidLiiPlatform implements Platform {
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(NAME, uri);
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
@@ -39,7 +41,7 @@ public final class VidLiiPlatform implements Platform {
 
             // VIDLII EMITS A ROOT-RELATIVE PATH, BUT TOLERATE AN ABSOLUTE URL IN CASE THE MARKUP CHANGES
             final String videoPath = matcher.group(1);
-            final URI videoUri = videoPath.startsWith("http") ? new URI(videoPath) : new URI(ORIGIN + videoPath);
+            final URI videoUri = URI.create(videoPath.startsWith("http") ? videoPath : ORIGIN + videoPath);
             LOGGER.debug(IT, "VidLii resolved video source {} for {}", videoUri, uri);
 
             final var entry = new Source(MediaType.VIDEO, null, null,
@@ -47,6 +49,10 @@ public final class VidLiiPlatform implements Platform {
                     List.of(new Quality(videoUri, 0, 0)),
                     null, null);
             return new Resolution(null, entry);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
 }

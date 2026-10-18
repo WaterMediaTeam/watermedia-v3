@@ -3,17 +3,18 @@ package org.watermedia.tools;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.net.URI;
 import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Unit tests for the pure byte/string helpers in {@link DataTool}.
- */
+/** Verifies the pure byte/string helpers in {@link DataTool}. */
 @DisplayName("DataTool")
 public class DataToolTest {
 
@@ -32,6 +33,18 @@ public class DataToolTest {
         assertEquals("", q.get("c"));
         assertTrue(DataTool.parseQuery("").isEmpty());
         assertTrue(DataTool.parseQuery(null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("expiry reads a signed URL's lifetime in seconds or milliseconds and ignores the rest")
+    void expiry() {
+        assertEquals(Instant.ofEpochSecond(1_700_000_000L), DataTool.expiry(URI.create("https://cdn.test/x?a=1&expire=1700000000")));
+        assertEquals(Instant.ofEpochMilli(1_700_000_000_000L), DataTool.expiry(URI.create("https://cdn.test/x?validto=1700000000000")));
+        assertEquals(Instant.ofEpochSecond(1_700_000_000L), DataTool.expiry(URI.create("https://cdn.test/x?X-Expires=1700000000")));
+        assertNull(DataTool.expiry(URI.create("https://cdn.test/x?expires=soon")));
+        assertNull(DataTool.expiry(URI.create("https://cdn.test/x?expires=3600")), "a relative lifetime is not an epoch");
+        assertNull(DataTool.expiry(URI.create("https://cdn.test/x")));
+        assertNull(DataTool.expiry(null));
     }
 
     @Test

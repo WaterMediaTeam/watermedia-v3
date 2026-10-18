@@ -51,7 +51,6 @@ public final class M3UTool {
     private static final Pattern ATTR = Pattern.compile("([A-Za-z0-9-]+)=(?:\"([^\"]*)\"|([^,\\s]+))");
     private static final Pattern RES = Pattern.compile("(\\d+)x(\\d+)");
 
-    private static final int FETCH_TIMEOUT_MS = 10_000;
     // A BROKEN IPTV CATALOG MAY CARRY THOUSANDS OF MALFORMED ENTRIES, SO THEY ARE REPORTED PER WINDOW
     private static final long MALFORMED_REPORT_NS = 10_000_000_000L;
     private static final LogTool.Throttle MALFORMED_URIS = new LogTool.Throttle(MALFORMED_REPORT_NS);
@@ -81,11 +80,8 @@ public final class M3UTool {
      *                     or the body is not a recognizable playlist (see {@link #parse}).
      */
     public static Playlist fetch(final URI uri, final HttpHeaders headers) throws IOException {
-        final NetRequest.Builder builder = NetRequest.create(uri)
-                .method("GET")
-                .headers(headers)
-                .connectTimeout(FETCH_TIMEOUT_MS)
-                .readTimeout(FETCH_TIMEOUT_MS);
+        // THE CONFIGURED network.timeout APPLIES, LIKE EVERY OTHER REQUEST
+        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
         if (headers == null || !headers.has("Accept")) builder.accept(NetRequest.ACCEPT_ANY);
         try (final NetRequest req = builder.send()) {
             final int code = req.statusCode();
@@ -154,7 +150,7 @@ public final class M3UTool {
             // MEDIA PLAYLIST, OR MASTER WITH NO USABLE VARIANTS: THE URL ITSELF IS THE ONLY QUALITY
             return List.of(Variant.self(source));
         } catch (final IOException e) {
-            LOGGER.warn(IT, "Failed to resolve HLS qualities for {}: {}; falling back to the raw URL", source, e.getMessage());
+            LOGGER.warn(IT, "Failed to resolve HLS qualities for {}; falling back to the raw URL", source, e);
             return List.of(Variant.self(source));
         }
     }
@@ -303,11 +299,13 @@ public final class M3UTool {
                         if (r != null) name = r.name();
                     }
 
+                    // A NEGATIVE OR NaN FRAME-RATE IS GARBAGE THE QUALITY RECORDS DOWNSTREAM WOULD REJECT
+                    final double fps = DataTool.parseDouble(a.get("FRAME-RATE"), 30d);
                     variants.add(new Variant(
                             uri,
                             DataTool.parseLong(a.get("BANDWIDTH"), 0),
                             w, h,
-                            DataTool.parseDouble(a.get("FRAME-RATE"), 30d),
+                            fps >= 0d ? fps : 0d,
                             a.get("CODECS"),
                             videoGroup,
                             a.get("AUDIO"),

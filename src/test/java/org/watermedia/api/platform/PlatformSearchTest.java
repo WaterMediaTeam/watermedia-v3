@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.tools.ThreadTool;
 
 import java.lang.reflect.Field;
 import java.net.URI;
@@ -34,21 +35,26 @@ public class PlatformSearchTest {
     @BeforeAll
     static void clientBootstrap() { MediaBootstrap.client(); }
 
-    private List<Platform> savedPlatforms;
+    private List<Platform> savedBuiltin;
+    private List<Platform> savedCustom;
 
     @BeforeEach
     void isolate() throws Exception {
-        // SNAPSHOT + CLEAR THE REGISTRY SO ONLY THIS TEST'S STUBS ARE PROBED (NO REAL PLATFORM NETWORKING)
-        this.savedPlatforms = new ArrayList<>(PlatformAPI.PLATFORMS);
-        PlatformAPI.PLATFORMS.clear();
+        // SNAPSHOT + CLEAR BOTH REGISTRIES SO ONLY THIS TEST'S STUBS ARE PROBED (NO REAL PLATFORM NETWORKING)
+        this.savedBuiltin = new ArrayList<>(PlatformAPI.BUILTIN);
+        this.savedCustom = new ArrayList<>(PlatformAPI.CUSTOM);
+        PlatformAPI.BUILTIN.clear();
+        PlatformAPI.CUSTOM.clear();
         resetSearchState();
     }
 
     @AfterEach
     void restore() throws Exception {
         cancelSearchTask();
-        PlatformAPI.PLATFORMS.clear();
-        PlatformAPI.PLATFORMS.addAll(this.savedPlatforms);
+        PlatformAPI.BUILTIN.clear();
+        PlatformAPI.CUSTOM.clear();
+        PlatformAPI.BUILTIN.addAll(this.savedBuiltin);
+        PlatformAPI.CUSTOM.addAll(this.savedCustom);
         resetSearchState();
     }
 
@@ -118,6 +124,49 @@ public class PlatformSearchTest {
         assertFalse(first.done(), "A superseded handle must stay frozen (never marked done)");
     }
 
+    @Test
+    @DisplayName("A blank query leaves the running search alone")
+    void testBlankQueryDoesNotSupersede() throws Exception {
+        PlatformAPI.register(new StubPlatform(1, 300)); // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
+
+        final PlatformSearch first = PlatformAPI.search("slow-c", 2);
+        Thread.sleep(100); // LET THE PROBE START
+        assertTrue(PlatformAPI.search("   ", 2).done(), "The blank query is a no-op handle");
+        awaitDone(first, 3000);
+        assertTrue(first.done(), "The in-flight search must complete instead of being cancelled by a no-op");
+        assertEquals(1, first.results().size());
+    }
+
+    @Test
+    @DisplayName("A registration during a search keeps that search out of the cache")
+    void testRegistrationDuringSearchIsNotCached() throws Exception {
+        PlatformAPI.register(new StubPlatform(1, 300)); // BLOCKS SO THE REGISTRY CHANGES WHILE THE SEARCH RUNS
+        final PlatformSearch first = PlatformAPI.search("race", 2);
+        Thread.sleep(100);
+        PlatformAPI.register(new StubPlatform(1, null));
+        awaitDone(first, 3000);
+        assertEquals(1, first.results().size(), "The running search keeps its snapshot of the registry");
+
+        final PlatformSearch again = PlatformAPI.search("race", 2);
+        awaitDone(again, 3000);
+        assertEquals(2, again.results().size(), "The query is probed again with the new handler instead of served from cache");
+    }
+
+    @Test
+    @DisplayName("Registering a handler drops the cached searches")
+    void testRegistrationInvalidatesCache() throws Exception {
+        final StubPlatform stub = new StubPlatform(1, null);
+        PlatformAPI.register(stub);
+        awaitDone(PlatformAPI.search("birds", 2), 3000);
+        awaitCacheKey("2 birds", 2000);
+
+        PlatformAPI.register(new StubPlatform(1, null));
+        final PlatformSearch again = PlatformAPI.search("birds", 2);
+        awaitDone(again, 3000);
+        assertEquals(2, stub.probes.get(), "A new handler must force the query to be probed again");
+        assertEquals(2, again.results().size(), "Both handlers answer the re-probed query");
+    }
+
     // ==========================================================================
     // STUBS + REFLECTION HELPERS
     // ==========================================================================
@@ -137,9 +186,9 @@ public class PlatformSearchTest {
         @Override public Resolution resolve(final URI uri) { return null; }
 
         @Override
-        public List<PlatformResult> search(final String query, final int limit) throws Exception {
+        public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
             this.probes.incrementAndGet();
-            if (this.blockMs != null) Thread.sleep(this.blockMs);
+            if (this.blockMs != null && !ThreadTool.sleep(this.blockMs)) throw new PlatformException("STUB", "interrupted");
             final List<PlatformResult> out = new ArrayList<>(this.count);
             for (int i = 0; i < this.count; i++) {
                 out.add(new PlatformResult(this, query + "#" + i, null, URI.create("https://stub.test/" + i)));

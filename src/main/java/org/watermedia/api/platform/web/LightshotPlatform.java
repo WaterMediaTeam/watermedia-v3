@@ -8,6 +8,7 @@ import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -25,8 +26,9 @@ public final class LightshotPlatform implements Platform {
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(NAME, uri);
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
@@ -41,9 +43,13 @@ public final class LightshotPlatform implements Platform {
 
             final var entry = new Source(MediaType.IMAGE, null, null,
                     HttpHeaders.defaults(uri),
-                    List.of(new Quality(new URI(imageUrl), 0, 0)),
+                    List.of(new Quality(URI.create(imageUrl), 0, 0)),
                     null, null);
             return new Resolution(null, entry);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
 }

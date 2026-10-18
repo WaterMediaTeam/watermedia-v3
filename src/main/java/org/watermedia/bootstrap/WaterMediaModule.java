@@ -166,7 +166,12 @@ public abstract class WaterMediaModule {
                 this.select(-1);
                 this.state(this.ownsResources() ? State.FAILED : State.STOPPED);
             }
-            if (this.ownsResources()) throw new IllegalStateException("WaterMedia shutdown has unfinished resources; retry stop after inspecting status()");
+            if (this.ownsResources()) {
+                // THE LAST REPORTED FAILURE IS THE SHUTDOWN ONE THAT KEPT A MODULE ALIVE
+                final List<Failure> failures = this.status.failures();
+                throw new IllegalStateException("WaterMedia shutdown has unfinished resources; retry stop after inspecting status()",
+                        failures.isEmpty() ? null : failures.get(failures.size() - 1).cause());
+            }
         }
 
         /** Whether any module instance is still retained by this session. */

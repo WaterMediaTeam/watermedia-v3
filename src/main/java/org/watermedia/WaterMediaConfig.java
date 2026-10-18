@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 /** WaterMedia configuration: the TOML-backed settings of the decoders, the network, the media players and the platforms. */
 @Spec(value = WaterMedia.ID, format = WaterConfig.FORMAT_TOML)
 public final class WaterMediaConfig {
-    private static final int DEFAULT_NETWORK_SERVER_PORT = 25572;
+    private static final int DEFAULT_NETWORK_SERVER_PORT = 25_572;
     /** Upload token shipped by default; a file server reachable from other machines refuses to start with it. */
     public static final String DEFAULT_NETWORK_TOKEN = "watermedia_default_token_change_it";
 
@@ -226,7 +226,7 @@ public final class WaterMediaConfig {
         public int maxServerRequests = 8;
 
         @Spec.Field(suffix = "ms")
-        @Comment("Maximum total time for a file-server request, including headers and transfer")
+        @Comment("Maximum idle time of a file-server request: it is cut once this long passes without headers or transfer progress")
         @NumberConditions(minInt = 1000, maxInt = 600_000)
         public int serverTimeout = 30_000;
 
@@ -244,7 +244,7 @@ public final class WaterMediaConfig {
         public int maxUploadSize = 8;
 
         @Spec.Field
-        @NumberConditions(minInt = 1, maxInt = 65535)
+        @NumberConditions(minInt = 1, maxInt = 65_535)
         @Comment("Sets file storage server port, ask to your provider if the port is open worldwide before start the server or blame the lib")
         @Comment("Used by the file server: on the server, or on a client with server = ALWAYS")
         public int serverPort = DEFAULT_NETWORK_SERVER_PORT;
@@ -255,7 +255,7 @@ public final class WaterMediaConfig {
         @StringConditions(value = "^https?://([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?)(\\.([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?))*(:\\d{1,5})?(/.*)?$", regexFlags = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE, mode = StringField.Mode.REGEX)
         @Comment("Sets the remote file server to upload and download files, it must match your game server IP or domain with the given port")
         @Comment("Include the scheme and port, e.g. http://your-host:25572/")
-        @Comment("Used only on client-side")
+        @Comment("Used by every host that uploads through NetworkAPI, clients included")
         public String remoteUrl = "http://localhost:" + DEFAULT_NETWORK_SERVER_PORT + "/";
 
         @Spec.Field(control = Control.PASSWORD)

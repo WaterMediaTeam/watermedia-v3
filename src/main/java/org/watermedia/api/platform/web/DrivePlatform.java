@@ -8,9 +8,12 @@ import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -28,40 +31,58 @@ public final class DrivePlatform implements Platform {
     private static final String LUCK = new String(Base64.getDecoder().decode(new String(Base64.getDecoder().decode("UVVsNllWTjVRVTVpVFhkWGQyWnhiSE5QWWtoVlEwODFjbUZ6TjBGcmNXaE5UWEphUVZWWg=="), StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
     private static final Pattern HTML_PATTERN = Pattern.compile("<input[^>]*name=\"([^\"]+)\"[^>]*value=\"([^\"]+)\"", Pattern.DOTALL | Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
     private static final String[] HOSTS = { "drive.google.com" };
+    private static final String FILE_PREFIX = "/file/d/";
+    // A CONFIRMED DOWNLOAD URL CARRIES SESSION TOKENS (uuid, at) WHOSE LIFETIME GOOGLE DOES NOT PUBLISH
+    private static final Duration CONFIRMED_TTL = Duration.ofMinutes(30);
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
-        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || uri.getPath() == null || !uri.getPath().startsWith("/file/d/"))
-            return null;
-
-        final String fileId = extractFileId(uri.getPath());
+    public Resolution resolve(final URI uri) throws PlatformException {
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+        // THE ID TRAVELS IN THE PATH OF A VIEWER LINK (/file/d/<id>/view) OR IN THE id PARAMETER OF /uc AND /open LINKS
+        final String path = uri.getPath() == null ? "" : uri.getPath();
+        String fileId = "";
+        if (path.startsWith(FILE_PREFIX)) {
+            final int end = path.indexOf('/', FILE_PREFIX.length());
+            fileId = path.substring(FILE_PREFIX.length(), end < 0 ? path.length() : end);
+        } else if (path.equals("/uc") || path.equals("/open")) {
+            for (final String param: (uri.getRawQuery() == null ? "" : uri.getRawQuery()).split("&")) {
+                if (param.startsWith("id=")) fileId = param.substring(3);
+            }
+        }
+        if (fileId.isEmpty()) throw PlatformException.unsupported(NAME, uri);
         LOGGER.debug(IT, "Google Drive resolving fileId '{}' from {}", fileId, uri);
 
-        // TRY API APPROACH FIRST
-        final URI apiUri = new URI(String.format(API_URL, fileId, LUCK));
-        try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
-            if (req.statusCode() == HttpURLConnection.HTTP_OK) {
-                final MediaType type = MediaType.of(req.contentType());
-                LOGGER.debug(IT, "Google Drive resolved fileId '{}' via API (content-type {})", fileId, req.contentType());
-                final var entry = new Source(type, null, null,
-                        HttpHeaders.defaults(uri),
-                        List.of(new Quality(apiUri, 0, 0)),
-                        null, null);
-                return new Resolution(null, entry);
+        try {
+            // TRY API APPROACH FIRST
+            final URI apiUri = URI.create(String.format(API_URL, fileId, LUCK));
+            try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
+                if (req.statusCode() == HttpURLConnection.HTTP_OK) {
+                    final MediaType type = MediaType.of(req.contentType());
+                    LOGGER.debug(IT, "Google Drive resolved fileId '{}' via API (content-type {})", fileId, req.contentType());
+                    final var entry = new Source(type, null, null,
+                            HttpHeaders.defaults(uri),
+                            List.of(new Quality(apiUri, 0, 0)),
+                            null, null);
+                    return new Resolution(null, entry);
+                }
+                LOGGER.debug(IT, "Google Drive API returned HTTP {} for fileId '{}', trying download fallback", req.statusCode(), fileId);
+            } catch (final IOException e) {
+                LOGGER.debug(IT, "Google Drive API approach failed for fileId '{}', trying download fallback", fileId, e);
             }
-            LOGGER.debug(IT, "Google Drive API returned HTTP {} for fileId '{}', trying download fallback", req.statusCode(), fileId);
-        } catch (final Exception e) {
-            LOGGER.debug(IT, "Google Drive API approach failed for fileId '{}', trying download fallback", fileId, e);
-        }
 
-        // FALLBACK: DIRECT DOWNLOAD URL
-        return this.getDownloadData(fileId, uri);
+            // FALLBACK: DIRECT DOWNLOAD URL
+            return this.getDownloadData(fileId, uri);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
+        }
     }
 
-    private Resolution getDownloadData(final String fileId, final URI original) throws Exception {
+    private Resolution getDownloadData(final String fileId, final URI original) throws IOException {
         String url = String.format(DOWNLOAD_URL, fileId);
 
         try (final NetRequest req = NetRequest.create(URI.create(url)).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
@@ -92,16 +113,17 @@ public final class DrivePlatform implements Platform {
 
                 // THE ORIGINAL RESPONSE WAS THE HTML FORM, NOT THE FILE — RE-REQUEST THE REBUILT URL SO THE
                 // THE Source CARRIES THE REAL FILE CONTENT-TYPE INSTEAD OF "text/html" (WHICH TYPES AS UNKNOWN)
-                try (final NetRequest confirm = NetRequest.create(new URI(url)).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
+                final URI confirmed = URI.create(url);
+                try (final NetRequest confirm = NetRequest.create(confirmed).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
                     if (confirm.statusCode() != 200)
                         throw new PlatformException(NAME, "Confirmed download for fileId '" + fileId + "' returned HTTP " + confirm.statusCode() + " (" + original + ")");
                     final MediaType type = MediaType.of(confirm.contentType());
                     LOGGER.debug(IT, "Google Drive resolved fileId '{}' via confirmed download (content-type {})", fileId, confirm.contentType());
                     final var entry = new Source(type, null, null,
                             HttpHeaders.defaults(original),
-                            List.of(new Quality(new URI(url), 0, 0)),
+                            List.of(new Quality(confirmed, 0, 0)),
                             null, null);
-                    return new Resolution(null, entry);
+                    return new Resolution(Instant.now().plus(CONFIRMED_TTL), entry);
                 }
             }
 
@@ -109,16 +131,9 @@ public final class DrivePlatform implements Platform {
             LOGGER.debug(IT, "Google Drive resolved fileId '{}' via download (content-type {})", fileId, req.contentType());
             final var entry = new Source(type, null, null,
                     HttpHeaders.defaults(original),
-                    List.of(new Quality(new URI(url), 0, 0)),
+                    List.of(new Quality(URI.create(url), 0, 0)),
                     null, null);
             return new Resolution(null, entry);
         }
-    }
-
-    private static String extractFileId(final String path) {
-        final int start = path.indexOf("/file/d/") + 8;
-        int end = path.indexOf('/', start);
-        if (end == -1) end = path.length();
-        return path.substring(start, end);
     }
 }

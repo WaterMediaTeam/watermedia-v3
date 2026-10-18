@@ -3,7 +3,10 @@ package org.watermedia.api.platform.web;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
@@ -13,12 +16,15 @@ import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.Track;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.binaries.YtDlpBinary;
+import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.DateTimeException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -32,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.tools.JSONTool.bool;
 import static org.watermedia.tools.JSONTool.dbl;
 import static org.watermedia.tools.JSONTool.intOr;
@@ -58,6 +65,7 @@ import static org.watermedia.tools.JSONTool.uri;
  */
 public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     public static final String NAME = "yt-dlp";
+    private static final Marker IT = MarkerManager.getMarker(YtDlpPlatform.class.getSimpleName());
     // HOST SUFFIXES, MATCHED CASE-INSENSITIVELY WITH endsWith SO SUBDOMAINS (www./m./web.) ARE COVERED
     private static final String[] HOSTS = {
             "soundcloud.com", "snd.sc",     // SOUNDCLOUD
@@ -67,8 +75,10 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     };
 
     private static final long PROCESS_TIMEOUT_SECONDS = 120; // SINGLE VIDEO ~SECONDS; PLAYLISTS CAN BE SLOWER
-    private static final long LIVE_TTL_SECONDS = 30 * 60;
-    private static final long FALLBACK_TTL_SECONDS = 4 * 3600;
+    private static final int RETRIES = 3; // yt-dlp'S OWN PER-REQUEST RETRIES
+    // LIVE MANIFESTS ROTATE QUICKLY; A CDN URL WITHOUT AN expire PARAMETER IS KEPT FOR A FEW HOURS
+    private static final Duration LIVE_TTL = Duration.ofMinutes(30);
+    private static final Duration FALLBACK_TTL = Duration.ofHours(4);
     private static final Pattern RESOLUTION = Pattern.compile("(\\d+)p");
     private static final Pattern HEIGHT_IN_RES = Pattern.compile("\\d+x(\\d+)");
 
@@ -91,11 +101,11 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         // NONE OF OUR HOSTS → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
-        if (!hostMatches(uri.getHost(), HOSTS)) {
-            return null;
-        }
+        if (!hostMatches(uri.getHost(), HOSTS)) return null;
+        // A BARE HOST NAMES NOTHING TO PLAY; SPAWNING yt-dlp TO FIND THAT OUT WOULD COST TWO MINUTES
+        if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(this.name(), uri);
         final JsonObject info;
         try {
             info = this.info(uri.toString(), List.of());
@@ -132,19 +142,18 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         command.add("--ignore-config");          // HERMETIC: IGNORE THE USER'S yt-dlp.conf
         command.add("--cache-dir");
         command.add(WaterMedia.tmp().resolve(WaterMediaBinaries.YTDLP_ID).resolve("cache").toString());
+        // THE SAME network.timeout EVERY OTHER REQUEST USES, IN THE WHOLE SECONDS yt-dlp TAKES
         command.add("--socket-timeout");
-        command.add("30");
+        command.add(String.valueOf(Math.max(1, WaterMediaConfig.network.timeout / 1_000)));
         command.add("--retries");
-        command.add("3");
-        if (extraArgs != null) {
-            command.addAll(extraArgs);
-        }
+        command.add(String.valueOf(RETRIES));
+        if (extraArgs != null) command.addAll(extraArgs);
         command.add(url);
 
         final String stdout = runProcess(command, PROCESS_TIMEOUT_SECONDS, "yt-dlp");
         try {
             return JsonParser.parseString(stdout).getAsJsonObject();
-        } catch (final Exception e) {
+        } catch (final JsonParseException | IllegalStateException e) {
             throw new IOException("yt-dlp produced unparseable JSON", e);
         }
     }
@@ -204,7 +213,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
     private static String readAll(final InputStream in) {
         try (in) {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (final Exception e) {
+        } catch (final IOException e) {
             return "";
         }
     }
@@ -218,43 +227,49 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
      * playlist ({@code entries[]}) becomes several. Resolution exceptions reference {@link #getClass()},
      * so the actual handler (yt-dlp or YouTube) names itself.
      */
-    protected Resolution extract(final JsonObject info) throws Exception {
-        final JsonArray entries = info.getAsJsonArray("entries");
-        if (entries == null) {
-            final Result r = this.single(info);
-            return new Resolution(r.expires(), r.source());
-        }
-
-        final List<Source> sources = new ArrayList<>();
-        Instant earliest = null;
-        for (final JsonElement e: entries) {
-            if (e == null || e.isJsonNull()) continue; // yt-dlp NULLS OUT UNAVAILABLE PLAYLIST ITEMS
-            try {
-                final Result r = this.single(e.getAsJsonObject());
-                sources.add(r.source());
-                if (earliest == null || (r.expires() != null && r.expires().isBefore(earliest))) {
-                    earliest = r.expires();
-                }
-            } catch (final Exception ignored) {
-                // SKIP UNRESOLVABLE PLAYLIST ITEMS
+    protected Resolution extract(final JsonObject info) throws PlatformException {
+        try {
+            final JsonArray entries = info.getAsJsonArray("entries");
+            if (entries == null) {
+                final Result r = this.single(info);
+                return new Resolution(r.expires(), r.source());
             }
+
+            // ONE BAD ITEM MUST NOT TAKE THE PLAYLIST DOWN; A PLAYLIST WITH NOTHING LEFT REPORTS ITS FIRST
+            // FAILURE, SO A FULLY AGE-RESTRICTED ONE STAYS BLOCKED
+            final List<Source> sources = new ArrayList<>();
+            PlatformException skipped = null;
+            Instant earliest = null;
+            for (final JsonElement e: entries) {
+                if (e == null || e.isJsonNull()) continue; // yt-dlp NULLS OUT UNAVAILABLE PLAYLIST ITEMS
+                try {
+                    final Result r = this.single(e.getAsJsonObject());
+                    sources.add(r.source());
+                    if (earliest == null || (r.expires() != null && r.expires().isBefore(earliest))) {
+                        earliest = r.expires();
+                    }
+                } catch (final PlatformException | RuntimeException failure) {
+                    LOGGER.warn(IT, "{} skipped a playlist entry", this.name(), failure);
+                    if (skipped == null) skipped = failure instanceof final PlatformException platform ? platform
+                            : new PlatformException(this.name(), "Unexpected yt-dlp JSON for a playlist entry", failure);
+                }
+            }
+            if (sources.isEmpty()) throw skipped != null ? skipped : new PlatformException(this.name(), "No playable entries in playlist");
+            return new Resolution(earliest, sources);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final RuntimeException e) { // A JSON SHAPE yt-dlp NEVER DOCUMENTED
+            throw new PlatformException(this.name(), "Unexpected yt-dlp JSON", e);
         }
-        if (sources.isEmpty()) {
-            throw new PlatformException(this.name(), "No playable entries in playlist");
-        }
-        return new Resolution(earliest, sources);
     }
 
-    private Result single(final JsonObject media) throws Exception {
+    private Result single(final JsonObject media) throws PlatformException {
         // RESPECT THE MATURE-CONTENT GATE (yt-dlp REPORTS age_limit; >=18 IS AGE-RESTRICTED)
-        if (intOr(media, "age_limit", 0) >= 18 && !WaterMediaConfig.platforms.allowMatureContent) {
+        if (intOr(media, "age_limit", 0) >= 18 && !WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(this.name(), "Age-restricted: " + str(media, "webpage_url"));
-        }
 
         final JsonArray formats = media.getAsJsonArray("formats");
-        if (formats == null || formats.isEmpty()) {
-            throw new PlatformException(this.name(), "No formats for " + str(media, "webpage_url"));
-        }
+        if (formats == null || formats.isEmpty()) throw new PlatformException(this.name(), "No formats for " + str(media, "webpage_url"));
 
         final URI sourceUri = uri(str(media, "webpage_url"));
         final boolean live = bool(media, "is_live") || "is_live".equals(str(media, "live_status"));
@@ -290,8 +305,8 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
                 final URI url = uri(str(f, "url"));
                 if (url == null) continue; // MALFORMED FORMAT URL — SKIP THIS VARIANT
                 // PER Quality'S CONTRACT, PASS 0 FOR AN UNKNOWN DIMENSION — NEVER FABRICATE A 16:9 WIDTH
-                final int width = intOr(f, "width", 0);
-                variants.add(new Quality(url, width, height, (float) dbl(f, "fps")));
+                final int width = Math.max(0, intOr(f, "width", 0));
+                variants.add(new Quality(url, width, height, (float) Math.max(0d, dbl(f, "fps"))));
                 if (headerSource == null) headerSource = f;
             }
         }
@@ -337,41 +352,28 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
 
     private static int heightOf(final JsonObject f) {
         final Integer h = intOrNull(f, "height");
-        if (h != null) return h;
+        if (h != null) return Math.max(0, h);
         final String res = str(f, "resolution");
         if (res != null) {
             final Matcher m = HEIGHT_IN_RES.matcher(res);
-            if (m.find()) return parsePixels(m.group(1));
+            if (m.find()) return DataTool.parseInt(m.group(1), 0);
         }
         final String note = str(f, "format_note");
         if (note != null) {
             final Matcher m = RESOLUTION.matcher(note);
-            if (m.find()) return parsePixels(m.group(1));
+            if (m.find()) return DataTool.parseInt(m.group(1), 0);
         }
         return 0;
-    }
-
-    // PARSES A REGEX-CAPTURED RESOLUTION TOKEN; AN OUT-OF-int-RANGE RUN OF DIGITS IS GARBAGE → 0 (UNKNOWN)
-    private static int parsePixels(final String digits) {
-        try {
-            return Integer.parseInt(digits);
-        } catch (final NumberFormatException e) {
-            return 0;
-        }
     }
 
     // COPIES yt-dlp'S PER-FORMAT http_headers (User-Agent ETC.) INTO HttpHeaders SO THE PLAYER SENDS
     // THEM — THE GOOGLEVIDEO URLS 403 WITHOUT THE MATCHING UA. FALLS BACK TO WATERMEDIA DEFAULTS.
     private static HttpHeaders headers(final JsonObject format, final URI sourceUri) {
         final JsonObject hh = format == null ? null : format.getAsJsonObject("http_headers");
-        if (hh == null || hh.size() == 0) {
-            return sourceUri == null ? new HttpHeaders() : HttpHeaders.defaults(sourceUri);
-        }
+        if (hh == null || hh.size() == 0) return sourceUri == null ? new HttpHeaders() : HttpHeaders.defaults(sourceUri);
         final HttpHeaders headers = new HttpHeaders();
         for (final Map.Entry<String, JsonElement> e: hh.entrySet()) {
-            if (!e.getValue().isJsonNull()) {
-                headers.set(e.getKey(), e.getValue().getAsString());
-            }
+            if (!e.getValue().isJsonNull()) headers.set(e.getKey(), e.getValue().getAsString());
         }
         return headers;
     }
@@ -381,7 +383,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
         String author = str(media, "uploader");
         if (author == null) author = str(media, "channel");
         final String description = str(media, "description");
-        final long durationMs = (long) (dbl(media, "duration") * 1000);
+        final long durationMs = (long) Math.max(0d, dbl(media, "duration") * 1000d);
 
         Instant publishedAt = null;
         final JsonElement ts = media.get("timestamp");
@@ -394,7 +396,7 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
                     publishedAt = LocalDate.of(Integer.parseInt(date.substring(0, 4)),
                             Integer.parseInt(date.substring(4, 6)), Integer.parseInt(date.substring(6, 8)))
                             .atStartOfDay(ZoneOffset.UTC).toInstant();
-                } catch (final Exception ignored) {
+                } catch (final DateTimeException | NumberFormatException ignored) {
                     // LEAVE UNSET
                 }
             }
@@ -420,33 +422,20 @@ public sealed class YtDlpPlatform implements Platform permits YouTubePlatform {
             final JsonArray tracks = e.getValue().getAsJsonArray();
             if (tracks.isEmpty()) continue;
             final JsonObject track = tracks.get(0).getAsJsonObject();
-            final String url = str(track, "url");
-            if (url == null) continue;
+            final URI url = uri(str(track, "url"));
+            if (url == null) continue; // A TRACK WITHOUT A USABLE URL IS NOTHING TO OFFER
             String name = str(track, "name");
             if (name == null) name = lang;
             if (auto) name = name + " (auto-generated)";
-            out.add(new Track(name, lang, uri(url)));
+            out.add(new Track(name, lang, url));
         }
     }
 
     // READS THE expire=<epoch> PARAM FROM A GOOGLEVIDEO/CDN URL; LIVE OR MISSING → SHORT/FALLBACK TTL
     private static Instant expiry(final URI uri, final boolean live) {
-        if (live) return Instant.now().plusSeconds(LIVE_TTL_SECONDS);
-        if (uri != null) {
-            final String query = uri.getRawQuery();
-            if (query != null) {
-                for (final String param: query.split("&")) {
-                    if (param.startsWith("expire=")) {
-                        try {
-                            return Instant.ofEpochSecond(Long.parseLong(param.substring(7)));
-                        } catch (final NumberFormatException ignored) {
-                            // FALL THROUGH
-                        }
-                    }
-                }
-            }
-        }
-        return Instant.now().plusSeconds(FALLBACK_TTL_SECONDS);
+        if (live) return Instant.now().plus(LIVE_TTL);
+        final Instant signed = DataTool.expiry(uri);
+        return signed != null ? signed : Instant.now().plus(FALLBACK_TTL);
     }
 
     // PAIRS A RESOLVED SOURCE WITH ITS EXPIRATION

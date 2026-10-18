@@ -1,6 +1,8 @@
 package org.watermedia;
 
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.network.NetworkAPI;
@@ -22,6 +24,7 @@ import org.watermedia.WaterMedia.BootStatus.State;
 
 /** Coordinates WaterMedia services and exposes immutable bootstrap diagnostics. */
 public final class WaterMedia {
+    private static final Marker IT = MarkerManager.getMarker(WaterMedia.class.getSimpleName());
     public static final String ID = "watermedia";
     public static final String NAME = "WaterMedia";
     public static final String VERSION = IOTool.jarVersion();
@@ -51,6 +54,8 @@ public final class WaterMedia {
     /**
      * Starts configured services. Client-only factories are never invoked on a server.
      * Optional failures produce DEGRADED; essential failures throw and retain their diagnostics.
+     * A failed start that retained no module leaves no session behind, so the next {@code start}
+     * needs no {@link #stop()}; one that did keeps the session until {@code stop} releases it.
      */
     public static void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
         if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host lifecycle thread, not a managed worker");
@@ -67,20 +72,26 @@ public final class WaterMedia {
                 transitioning = true;
             }
         }
-        LOGGER.info("Starting {} {} for {} ({})", NAME, VERSION, name, clientSide ? "client" : "server");
+        LOGGER.info(IT, "Starting {} {} for {} ({})", NAME, VERSION, name, clientSide ? "client" : "server");
         try {
             session.start(clientSide);
-            LOGGER.info("{} startup completed: {}", NAME, session.status().state());
+            LOGGER.info(IT, "{} startup completed: {}", NAME, session.status().state());
         } finally {
-            synchronized (LIFECYCLE) { transitioning = false; }
+            synchronized (LIFECYCLE) {
+                // A FAILED START THAT RETAINED NO MODULE LEAVES NO SESSION BEHIND, EXACTLY LIKE A COMPLETED STOP
+                if (session.status().state() == State.FAILED && !session.ownsResources()) instance = null;
+                transitioning = false;
+            }
             for (final BootStatus.Failure failure: session.status().failures())
-                LOGGER.error("Service {} failed during {}", failure.id(), failure.task(), failure.cause());
+                LOGGER.error(IT, "Service {} failed during {}", failure.id(), failure.task(), failure.cause());
         }
     }
 
     /**
      * Stops services in reverse order. Release all players on their owning host contexts first.
-     * Incomplete shutdown retains the session and must be retried before another start.
+     * Incomplete shutdown retains the session and must be retried before another start; every
+     * shutdown failure is logged and the last one is the cause of the thrown exception. Stopping
+     * without a session is a no-op.
      */
     public static void stop() {
         if (ThreadTool.workerThread()) throw new IllegalStateException("Stop WaterMedia from a host lifecycle thread, not a managed worker");
@@ -97,14 +108,19 @@ public final class WaterMedia {
                 transitioning = true;
             }
         }
+        final int reported = session.status().failures().size();
         try {
             session.stop();
-            LOGGER.info("{} stopped", NAME);
+            LOGGER.info(IT, "{} stopped", NAME);
         } finally {
             synchronized (LIFECYCLE) {
                 if (session.status().state() == State.STOPPED && !session.ownsResources()) instance = null;
                 transitioning = false;
             }
+            // START FAILURES ARE LOGGED BY start(); THIS REPORTS THE SHUTDOWN ONES
+            final List<BootStatus.Failure> failures = session.status().failures();
+            for (int i = reported; i < failures.size(); i++)
+                LOGGER.error(IT, "Service {} failed during {}", failures.get(i).id(), failures.get(i).task(), failures.get(i).cause());
         }
     }
 
@@ -166,6 +182,11 @@ public final class WaterMedia {
         /** Whether this snapshot contains a successfully initialized service. */
         public boolean ready(final Id id) {
             return this.services.stream().anyMatch(service -> service.id() == id && service.outcome() == Outcome.READY);
+        }
+
+        /** Whether the session is up (ready or degraded) and the service {@code id} started, so its API accepts calls. */
+        public boolean running(final Id id) {
+            return (this.state == State.READY || this.state == State.DEGRADED) && this.ready(id);
         }
 
         public enum State { STOPPED, STARTING, READY, DEGRADED, FAILED, STOPPING }

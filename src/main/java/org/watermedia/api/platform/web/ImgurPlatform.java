@@ -39,15 +39,12 @@ public final class ImgurPlatform implements Platform {
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         // i.imgur.com IS EXCLUDED, THOSE ARE ALREADY STATIC
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         final var path = uri.getPath();
-        if (path == null || path.length() <= 1) {
-            LOGGER.warn(IT, "Imgur URL {} has no media path, ignoring it", uri);
-            return null;
-        }
+        if (path == null || path.length() <= 1) throw PlatformException.unsupported(NAME, uri);
 
         // REMOVE FIRST SLASH AND SPLIT
         final var pathSplit = path.substring(1).split("/");
@@ -64,48 +61,55 @@ public final class ImgurPlatform implements Platform {
         if (dot > 0) last = last.substring(0, dot);
         final var idSplit = last.split("-");
         final var id = idSplit[idSplit.length - 1];
-        if (id.isEmpty()) {
-            LOGGER.warn(IT, "Imgur URL {} has no media id, ignoring it", uri);
-            return null;
-        }
+        if (id.isEmpty()) throw PlatformException.unsupported(NAME, uri);
         LOGGER.debug(IT, "Imgur parsed id='{}', album={}, gallery={} from {}", id, isAlbum, isGallery, uri);
 
-        if (isAlbum || isGallery) {
-            final String requestUrl = String.format(isAlbum ? ALBUM_URL : GALLERY_URL, id);
+        try {
+            if (isAlbum || isGallery) {
+                final String requestUrl = String.format(isAlbum ? ALBUM_URL : GALLERY_URL, id);
 
-            // GALLERY POSTS COME IN TWO SHAPES: ALBUMS CARRY data.images[] WHILE SINGLE-IMAGE
-            // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
-            final JsonObject root = NetRequest.fetchJson(NAME, requestUrl, JsonObject.class);
-            final GalleryResponse res = JSONTool.parse(root, GalleryResponse.class);
-            if (!res.success() || res.data() == null) {
-                throw new PlatformException(NAME, "Post '" + id + "' response was empty or unsuccessful (status "
-                        + res.status() + ")");
+                // GALLERY POSTS COME IN TWO SHAPES: ALBUMS CARRY data.images[] WHILE SINGLE-IMAGE
+                // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
+                final JsonObject root = NetRequest.fetchJson(NAME, requestUrl, JsonObject.class);
+                final GalleryResponse res = JSONTool.parse(root, GalleryResponse.class);
+                if (!res.success() || res.data() == null) {
+                    throw new PlatformException(NAME, "Post '" + id + "' response was empty or unsuccessful (status "
+                            + res.status() + ")");
+                }
+
+                final Gallery data = res.data();
+                if (Boolean.TRUE.equals(data.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
+                    throw new MatureContentException(NAME, "Post '" + id + "' is marked as mature content");
+
+                // SINGLE-IMAGE POST: data IS THE IMAGE ITSELF
+                if (data.images() == null && !data.isAlbum()) {
+                    final Image img = JSONTool.parse(root.get("data"), Image.class);
+                    LOGGER.debug(IT, "Imgur resolved single-image post '{}' ({})", id, img.type());
+                    return new Resolution(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
+                }
+
+                if (data.images() == null || data.images().length == 0)
+                    throw new PlatformException(NAME, "Post '" + id + "' contains no images");
+
+                // ONE BAD ITEM MUST NOT TAKE THE ALBUM DOWN; AN ALBUM WITH NOTHING LEFT REPORTS ITS FIRST FAILURE,
+                // SO A FULLY MATURE ONE STAYS BLOCKED
+                final List<Source> entries = new ArrayList<>(data.images().length);
+                PlatformException skipped = null;
+                for (final Image img: data.images()) {
+                    try {
+                        entries.add(this.buildEntry(img, data.title(), data.accountUrl(), uri));
+                    } catch (final PlatformException | RuntimeException e) {
+                        LOGGER.warn(IT, "Imgur skipped item '{}' of post '{}'", img == null ? null : img.id(), id, e);
+                        if (skipped == null) skipped = e instanceof final PlatformException platform ? platform
+                                : new PlatformException(NAME, "Unexpected item in post '" + id + "'", e);
+                    }
+                }
+                if (entries.isEmpty()) throw skipped;
+
+                LOGGER.debug(IT, "Imgur resolved post '{}' with {} entry(es)", id, entries.size());
+                return new Resolution(null, entries);
             }
 
-            final Gallery data = res.data();
-            if (Boolean.TRUE.equals(data.nsfw()) && !WaterMediaConfig.platforms.allowMatureContent)
-                throw new MatureContentException(NAME, "Post '" + id + "' is marked as mature content");
-
-            // SINGLE-IMAGE POST: data IS THE IMAGE ITSELF
-            if (data.images() == null && !data.isAlbum()) {
-                final Image img = JSONTool.parse(root.get("data"), Image.class);
-                LOGGER.info(IT, "Imgur resolved single-image post '{}' ({})", id, img.type());
-                return new Resolution(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
-            }
-
-            if (data.images() == null || data.images().length == 0)
-                throw new PlatformException(NAME, "Post '" + id + "' contains no images");
-
-            final List<Source> entries = new ArrayList<>(data.images().length);
-            // ITERATE OVER ALBUM IMAGES
-            for (final Image img: data.images()) {
-                entries.add(this.buildEntry(img, data.title(), data.accountUrl(), uri));
-            }
-
-            LOGGER.info(IT, "Imgur resolved post '{}' with {} entry(es)", id, entries.size());
-            return new Resolution(null, entries);
-
-        } else {
             // SIMPLE IMAGE
             final String requestUrl = String.format(IMAGE_URL, id);
             final ImageResponse res = NetRequest.fetchJson(NAME, requestUrl, ImageResponse.class);
@@ -115,13 +119,17 @@ public final class ImgurPlatform implements Platform {
             }
 
             final Image img = res.data();
-            LOGGER.info(IT, "Imgur resolved image '{}' ({})", id, img.type());
+            LOGGER.debug(IT, "Imgur resolved image '{}' ({})", id, img.type());
             return new Resolution(null, this.buildEntry(img, img.title(), img.accountUrl(), uri));
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final RuntimeException e) {
+            throw new PlatformException(NAME, "Unexpected API response for " + uri, e);
         }
     }
 
     @Override
-    public List<PlatformResult> search(final String query, final int limit) throws Exception {
+    public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
         final SearchResponse res = NetRequest.fetchJson(NAME, String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
         if (!res.success() || res.data() == null) return List.of();
 
@@ -132,9 +140,9 @@ public final class ImgurPlatform implements Platform {
             // ALBUM POSTS HAVE NO IMAGE OF THEIR OWN — THUMBNAIL THE COVER; SINGLE IMAGES THUMBNAIL THEMSELVES.
             // THE 'm' SUFFIX (MEDIUM, 320px) GOES BEFORE THE EXTENSION AND RETURNS A STATIC FRAME EVEN FOR GIFS.
             final String thumbId = item.isAlbum() && item.cover() != null ? item.cover() : item.id();
-            out.add(new PlatformResult(this, item.title(),
-                    URI.create("https://i.imgur.com/" + thumbId + "m.jpg"),
-                    URI.create("https://imgur.com/gallery/" + item.id())));
+            final URI page = JSONTool.uri("https://imgur.com/gallery/" + item.id());
+            if (page == null) continue;
+            out.add(new PlatformResult(this, item.title(), JSONTool.uri("https://i.imgur.com/" + thumbId + "m.jpg"), page));
         }
         return out;
     }
@@ -156,24 +164,19 @@ public final class ImgurPlatform implements Platform {
             }
         };
 
-        // BUILD METADATA
+        // BUILD METADATA: account_url IS THE UPLOADER'S USERNAME, NOT A LINK
         final String title = img.title() != null ? img.title() : fallbackTitle;
-        final String desc = img.description();
-        final Instant date = Instant.ofEpochSecond(img.datetime());
+        final Instant date = img.datetime() > 0 ? Instant.ofEpochSecond(img.datetime()) : null;
+        final Metadata metadata = new Metadata(title, img.description(), date, 0, accountUrl);
 
-        final Metadata metadata = new Metadata(title, desc, date, 0, accountUrl);
+        final URI target = JSONTool.uri(link);
+        if (target == null)
+            throw new PlatformException(NAME, "Item '" + img.id() + "' (" + img.type() + ") has no usable link: " + link);
 
-        if (link == null)
-            throw new PlatformException(NAME, "Item '" + img.id() + "' (" + img.type() + ") has no usable link");
-
-        try {
-            return new Source(type, null, metadata,
-                    HttpHeaders.defaults(uri),
-                    List.of(new Quality(new URI(link), img.width(), img.height())),
-                    null, null);
-        } catch (final Exception e) {
-            throw new PlatformException(NAME, "Item '" + img.id() + "' has a malformed link URI: " + link, e);
-        }
+        return new Source(type, null, metadata,
+                HttpHeaders.defaults(uri),
+                List.of(new Quality(target, Math.max(0, img.width()), Math.max(0, img.height()))),
+                null, null);
     }
 
     // DATA RECORDS — BIND ONLY THE CONSUMED FIELDS: IMGUR SENDS null FOR MANY NUMERIC FIELDS

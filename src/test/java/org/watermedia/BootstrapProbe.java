@@ -45,6 +45,11 @@ public final class BootstrapProbe {
                 }
                 if (WaterMediaBinaries.pathOf(WaterMediaBinaries.FFMPEG_ID) != null)
                     throw new AssertionError("Failed installation published a native path");
+                // NOTHING WAS RETAINED, SO THE FAILED START LEFT NO SESSION BEHIND
+                try {
+                    WaterMedia.cwd();
+                    throw new AssertionError("A failed start kept its session alive");
+                } catch (final IllegalStateException released) {}
             } finally {
                 WaterMedia.stop();
             }

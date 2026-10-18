@@ -17,12 +17,13 @@ import org.watermedia.tools.JSONTool;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,63 +40,62 @@ public final class TikTokPlatform implements Platform {
     private static final Pattern UNIVERSAL_DATA_PATTERN = Pattern.compile("<script[^>]+id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\"[^>]*>\\s*(\\{.*?})\\s*</script>", Pattern.DOTALL);
     private static final Pattern URL_KEY_PATTERN = Pattern.compile("v[^_]+_([^_]+)_(\\d+)p_(\\d+)");
     private static final String[] HOSTS = { "www.tiktok.com", "tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com" };
+    private static final String[] SHORT_HOSTS = { "vm.tiktok.com", "vt.tiktok.com" };
+    private static final String WAF_MARKER = "Please wait...";
+    // THE CHALLENGE IS A PROOF OF WORK; THE INTERRUPT FLAG IS CHECKED EVERY FEW THOUSAND HASHES
+    private static final int CHALLENGE_ATTEMPTS = 1_000_000;
+    private static final int CHALLENGE_CHECK_MASK = 0x3FFF;
+    // PLAY URLS ARE SIGNED; WHEN THEY CARRY NO expire PARAMETER THIS IS THE FALLBACK
+    private static final Duration TTL = Duration.ofMinutes(30);
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI link) throws Exception {
+    public Resolution resolve(final URI link) throws PlatformException {
         final String host = link.getHost();
         if (!DataTool.equalsAnyIgnoreCase(host, HOSTS)) return null;
 
-        // SHORT LINKS (vm/vt HOSTS OR /t/ PATHS) REDIRECT TO THE CANONICAL VIDEO PAGE
-        final URI shortLink = "vm.tiktok.com".equals(host) || "vt.tiktok.com".equals(host) ? resolveRedirect(link) : link;
-        final String path = shortLink.getPath();
-        final URI uri = path != null && path.startsWith("/t/") ? resolveRedirect(shortLink) : shortLink;
+        try {
+            // SHORT LINKS (vm/vt HOSTS OR /t/ PATHS) REDIRECT TO THE CANONICAL VIDEO PAGE
+            final URI shortLink = DataTool.equalsAnyIgnoreCase(host, SHORT_HOSTS) ? resolveRedirect(link) : link;
+            final String path = shortLink.getPath();
+            final URI uri = path != null && path.startsWith("/t/") ? resolveRedirect(shortLink) : shortLink;
 
-        String videoId = null;
-        Matcher matcher = VIDEO_ID_PATTERN.matcher(uri.toString());
-        if (matcher.find()) {
-            videoId = matcher.group(1);
-        } else {
-            matcher = EMBED_ID_PATTERN.matcher(uri.toString());
-            if (matcher.find()) {
-                videoId = matcher.group(1);
-            }
-        }
+            Matcher matcher = VIDEO_ID_PATTERN.matcher(uri.toString());
+            if (!matcher.find()) matcher = EMBED_ID_PATTERN.matcher(uri.toString());
+            if (!matcher.find()) throw PlatformException.unsupported(NAME, uri);
+            final String videoId = matcher.group(1);
 
-        if (videoId == null) {
-            throw new PlatformException(NAME, "No video ID found in URL: " + uri);
-        }
-
-        // THREAD THE CAPTURED WAF COOKIES THROUGH INSTEAD OF A STATIC FIELD — CONCURRENT RESOLUTIONS
-        // ON THE SEARCH POOL WOULD OTHERWISE STAMP EACH OTHER'S COOKIES ONTO THEIR SOURCES.
-        String cookies = null;
-        Webpage page = fetchWebpage(uri, null);
-        if (page.cookies() != null) cookies = page.cookies();
-        JsonObject videoData = this.extractVideoData(page.html(), videoId);
-
-        if (videoData == null && page.html().contains("Please wait...")) {
-            LOGGER.debug(IT, "TikTok WAF challenge detected for video {}, solving...", videoId);
-            final String challengeCookies = solveChallenge(page.html());
-            page = fetchWebpage(uri, challengeCookies);
+            // THREAD THE CAPTURED WAF COOKIES THROUGH INSTEAD OF A STATIC FIELD — CONCURRENT RESOLUTIONS
+            // ON THE SEARCH POOL WOULD OTHERWISE STAMP EACH OTHER'S COOKIES ONTO THEIR SOURCES.
+            String cookies = null;
+            Webpage page = fetchWebpage(uri, null);
             if (page.cookies() != null) cookies = page.cookies();
-            videoData = this.extractVideoData(page.html(), videoId);
-        }
+            JsonObject videoData = this.extractVideoData(page.html(), videoId);
 
-        if (videoData == null) {
-            throw new PlatformException(NAME, "No video data found in page for video " + videoId);
-        }
+            if (videoData == null && page.html().contains(WAF_MARKER)) {
+                LOGGER.debug(IT, "TikTok WAF challenge detected for video {}, solving...", videoId);
+                final String challengeCookies = solveChallenge(page.html());
+                page = fetchWebpage(uri, challengeCookies);
+                if (page.cookies() != null) cookies = page.cookies();
+                videoData = this.extractVideoData(page.html(), videoId);
+            }
 
-        return this.buildResult(videoData, videoId, cookies);
+            if (videoData == null) throw new PlatformException(NAME, "No video data found in page for video " + videoId);
+
+            return this.buildResult(videoData, videoId, cookies);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + link, e);
+        }
     }
 
     // WAF CHALLENGE SOLVER (PORTED FROM yt-dlp _solve_challenge_and_set_cookies)
-    private static String solveChallenge(final String html) throws Exception {
+    private static String solveChallenge(final String html) throws PlatformException {
         final String csData = extractElementClass(html, "cs");
-        if (csData == null || csData.isEmpty()) {
-            throw new PlatformException(NAME, "Unable to extract WAF challenge data");
-        }
+        if (csData == null || csData.isEmpty()) throw new PlatformException(NAME, "Unable to extract WAF challenge data");
 
         final JsonObject challengeData = JsonParser.parseString(
                 new String(base64Decode(csData), StandardCharsets.UTF_8)
@@ -105,25 +105,28 @@ public final class TikTokPlatform implements Platform {
         final byte[] seed = Base64.getDecoder().decode(v.get("a").getAsString());
         final byte[] expectedDigest = Base64.getDecoder().decode(v.get("c").getAsString());
 
-        final MessageDigest baseDigest = MessageDigest.getInstance("SHA-256");
-        baseDigest.update(seed);
-
         boolean solved = false;
-        for (int i = 0; i <= 1_000_000; i++) {
-            final MessageDigest testDigest = (MessageDigest) baseDigest.clone();
-            testDigest.update(String.valueOf(i).getBytes(StandardCharsets.UTF_8));
-            if (MessageDigest.isEqual(testDigest.digest(), expectedDigest)) {
-                challengeData.addProperty("d",
-                        Base64.getEncoder().encodeToString(String.valueOf(i).getBytes(StandardCharsets.UTF_8)));
-                solved = true;
-                LOGGER.debug(IT, "TikTok WAF challenge solved at iteration {}", i);
-                break;
+        try {
+            final MessageDigest baseDigest = MessageDigest.getInstance("SHA-256");
+            baseDigest.update(seed);
+            for (int i = 0; i <= CHALLENGE_ATTEMPTS; i++) {
+                if ((i & CHALLENGE_CHECK_MASK) == 0 && Thread.currentThread().isInterrupted())
+                    throw new PlatformException(NAME, "Interrupted while solving the WAF challenge");
+                final MessageDigest testDigest = (MessageDigest) baseDigest.clone();
+                testDigest.update(String.valueOf(i).getBytes(StandardCharsets.UTF_8));
+                if (MessageDigest.isEqual(testDigest.digest(), expectedDigest)) {
+                    challengeData.addProperty("d",
+                            Base64.getEncoder().encodeToString(String.valueOf(i).getBytes(StandardCharsets.UTF_8)));
+                    solved = true;
+                    LOGGER.debug(IT, "TikTok WAF challenge solved at iteration {}", i);
+                    break;
+                }
             }
+        } catch (final NoSuchAlgorithmException | CloneNotSupportedException e) { // SHA-256 IS MANDATED BY THE JVM SPEC
+            throw new IllegalStateException("SHA-256 is unavailable", e);
         }
 
-        if (!solved) {
-            throw new PlatformException(NAME, "Unable to solve WAF challenge");
-        }
+        if (!solved) throw new PlatformException(NAME, "Unable to solve WAF challenge");
 
         final String cookieValue = Base64.getEncoder().encodeToString(
                 challengeData.toString().getBytes(StandardCharsets.UTF_8));
@@ -136,9 +139,8 @@ public final class TikTokPlatform implements Platform {
 
         final String rciName = extractElementClass(html, "rci");
         final String rciValue = extractElementClass(html, "rs");
-        if (rciName != null && !rciName.isEmpty() && rciValue != null && !rciValue.isEmpty()) {
+        if (rciName != null && !rciName.isEmpty() && rciValue != null && !rciValue.isEmpty())
             cookies.append("; ").append(rciName).append('=').append(rciValue);
-        }
 
         return cookies.toString();
     }
@@ -162,9 +164,7 @@ public final class TikTokPlatform implements Platform {
     // RESULT BUILDING
     private Resolution buildResult(final JsonObject awemeDetail, final String videoId, final String cookies) throws PlatformException {
         final JsonObject video = awemeDetail.getAsJsonObject("video");
-        if (video == null) {
-            throw new PlatformException(NAME, "No video object found for video " + videoId);
-        }
+        if (video == null) throw new PlatformException(NAME, "No video object found for video " + videoId);
 
         final String desc = str(awemeDetail, "desc");
         final String title = (desc != null && !desc.isEmpty()) ? desc : "TikTok video #" + videoId;
@@ -174,10 +174,7 @@ public final class TikTokPlatform implements Platform {
                 : null;
 
         // TIKTOK REPORTS video duration IN SECONDS; Metadata IS MILLISECONDS
-        long durationMs = 0;
-        if (video.has("duration") && !video.get("duration").isJsonNull() && video.get("duration").getAsInt() > 0) {
-            durationMs = video.get("duration").getAsLong() * 1000L;
-        }
+        final long durationMs = Math.max(0L, intOr(video, "duration", 0)) * 1000L;
 
         final URI thumbnail = findThumbnail(awemeDetail, video);
         final String author = extractAuthor(awemeDetail);
@@ -185,24 +182,22 @@ public final class TikTokPlatform implements Platform {
         final Metadata metadata = new Metadata(title, desc, publishedAt, durationMs, author);
         final List<Quality> variants = new ArrayList<>();
 
-        if (video.has("bitrateInfo") && video.get("bitrateInfo").isJsonArray()) {
-            this.parseBitrateInfo(variants, video.getAsJsonArray("bitrateInfo"), video);
-        }
+        if (video.has("bitrateInfo") && video.get("bitrateInfo").isJsonArray()) this.parseBitrateInfo(variants, video.getAsJsonArray("bitrateInfo"), video);
 
         if (variants.isEmpty()) {
             URI fallback = extractAddrUri(video, "playAddr");
             if (fallback == null) fallback = extractAddrUri(video, "downloadAddr");
-            if (fallback == null) {
+            if (fallback == null)
                 throw new PlatformException(NAME, "Video '" + videoId + "' exposed no playable URLs (bitrateInfo, playAddr, and downloadAddr all empty)");
-            }
             // NO RELIABLE DIMENSIONS ON THIS FALLBACK, FFMediaPlayer PROBES AND RE-BUCKETS IT
             LOGGER.debug(IT, "TikTok video '{}' had no usable bitrateInfo, falling back to {}", videoId, fallback);
             variants.add(new Quality(fallback, 0, 0));
         }
 
         if (author == null) LOGGER.warn(IT, "TikTok video '{}' has no resolvable author", videoId);
-        LOGGER.info(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
-        return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES),
+        LOGGER.debug(IT, "TikTok resolved video '{}' with {} variant(s)", videoId, variants.size());
+        final Instant signed = DataTool.expiry(variants.get(0).uri());
+        return new Resolution(signed != null ? signed : Instant.now().plus(TTL),
                 new Source(MediaType.VIDEO, thumbnail, metadata,
                         cdnHeaders(cookies), variants, null, null));
     }
@@ -221,8 +216,8 @@ public final class TikTokPlatform implements Platform {
     // FORMAT PARSING: PlayAddr.Width/Height FIRST, THEN THE HEIGHT ENCODED IN UrlKey ("..._720p_..."),
     // FINALLY THE PARENT VIDEO'S SIZE; MRL MAPS THE BUCKETS, NOTHING IS PRE-COLLAPSED HERE
     private void parseBitrateInfo(final List<Quality> out, final JsonArray bitrateInfos, final JsonObject video) {
-        final int playWidth = video.has("width") ? video.get("width").getAsInt() : 0;
-        final int playHeight = video.has("height") ? video.get("height").getAsInt() : 0;
+        final int playWidth = Math.max(0, intOr(video, "width", 0));
+        final int playHeight = Math.max(0, intOr(video, "height", 0));
 
         for (int i = 0; i < bitrateInfos.size(); i++) {
             final JsonObject info = bitrateInfos.get(i).getAsJsonObject();
@@ -238,15 +233,12 @@ public final class TikTokPlatform implements Platform {
                 if (keyMatcher.find() && "bytevc2".equals(keyMatcher.group(1))) continue;
             }
 
-            int w = playAddr.has("Width") ? playAddr.get("Width").getAsInt() : 0;
-            int h = playAddr.has("Height") ? playAddr.get("Height").getAsInt() : 0;
+            int w = Math.max(0, intOr(playAddr, "Width", 0));
+            int h = Math.max(0, intOr(playAddr, "Height", 0));
 
             if (h <= 0 && urlKey != null) {
                 final Matcher keyMatcher = URL_KEY_PATTERN.matcher(urlKey);
-                if (keyMatcher.find()) {
-                    try { h = Integer.parseInt(keyMatcher.group(2)); }
-                    catch (final NumberFormatException ignored) {}
-                }
+                if (keyMatcher.find()) h = Math.max(0, DataTool.parseInt(keyMatcher.group(2), 0));
             }
             if (w <= 0 && h <= 0) { w = playWidth; h = playHeight; }
 
@@ -262,15 +254,10 @@ public final class TikTokPlatform implements Platform {
         URI fallback = null;
 
         for (int i = 0; i < urlList.size(); i++) {
-            final String urlStr = urlList.get(i).getAsString();
-            if (urlStr == null || urlStr.isEmpty()) continue;
-            try {
-                final URI candidate = URI.create(urlStr.startsWith("//") ? "https:" + urlStr : urlStr);
-                if (!"www.tiktok.com".equals(candidate.getHost())) {
-                    return candidate;
-                }
-                if (fallback == null) fallback = candidate;
-            } catch (final Exception ignored) {}
+            final URI candidate = JSONTool.uri(urlList.get(i).getAsString());
+            if (candidate == null) continue;
+            if (!"www.tiktok.com".equalsIgnoreCase(candidate.getHost())) return candidate;
+            if (fallback == null) fallback = candidate;
         }
 
         return fallback;
@@ -281,9 +268,7 @@ public final class TikTokPlatform implements Platform {
 
         final JsonElement element = video.get(key);
 
-        if (element.isJsonPrimitive()) {
-            return uri(element.getAsString());
-        }
+        if (element.isJsonPrimitive()) return uri(element.getAsString());
 
         if (element.isJsonArray()) {
             for (final JsonElement item: element.getAsJsonArray()) {
@@ -334,11 +319,12 @@ public final class TikTokPlatform implements Platform {
         return null;
     }
 
-    // DATA EXTRACTION
+    // DATA EXTRACTION: null MEANS THE PAGE CARRIED NO VIDEO DATA, WHICH IS NORMAL FOR THE FIRST FETCH OF A
+    // WAF-CHALLENGED REQUEST; THE CALLER DECIDES WHETHER TO SOLVE THE CHALLENGE OR FAIL
     private JsonObject extractVideoData(final String html, final String videoId) throws PlatformException {
         final Matcher matcher = UNIVERSAL_DATA_PATTERN.matcher(html);
         if (!matcher.find()) {
-            LOGGER.warn(IT, "No __UNIVERSAL_DATA_FOR_REHYDRATION__ found for TikTok video {}", videoId);
+            LOGGER.debug(IT, "No __UNIVERSAL_DATA_FOR_REHYDRATION__ found for TikTok video {}", videoId);
             return null;
         }
 
@@ -352,12 +338,8 @@ public final class TikTokPlatform implements Platform {
 
         if (videoDetail.has("statusCode") && videoDetail.get("statusCode").getAsInt() != 0) {
             final int status = videoDetail.get("statusCode").getAsInt();
-            if (status == 10216 || status == 10222) {
-                throw new PlatformException(NAME, "Video " + videoId + " is private or requires login");
-            }
-            if (status == 10204) {
-                throw new PlatformException(NAME, "IP address is blocked from accessing video " + videoId);
-            }
+            if (status == 10_216 || status == 10_222) throw new PlatformException(NAME, "Video " + videoId + " is private or requires login");
+            if (status == 10_204) throw new PlatformException(NAME, "IP address is blocked from accessing video " + videoId);
             LOGGER.warn(IT, "TikTok video {} returned status code {}", videoId, status);
         }
 
@@ -403,16 +385,14 @@ public final class TikTokPlatform implements Platform {
         return sb.toString();
     }
 
+    // THE REQUEST FOLLOWS THE SHORT LINK'S REDIRECTS ITSELF AND REPORTS WHERE IT LANDED
     private static URI resolveRedirect(final URI shortUri) throws IOException {
         try (final NetRequest req = NetRequest.create(shortUri)
                 .method("GET")
                 .accept(NetRequest.ACCEPT_ANY)
                 .userAgent(NetRequest.UserAgent.GENERIC)
-                .maxRedirects(0)
                 .send()) {
-            final String location = req.header("Location");
-            // RFC 7231 ALLOWS A RELATIVE Location; RESOLVE IT AGAINST THE ORIGINAL SO THE HOST SURVIVES
-            return location != null ? shortUri.resolve(location) : shortUri;
+            return req.uri();
         }
     }
 }

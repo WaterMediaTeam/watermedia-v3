@@ -12,6 +12,7 @@ import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JSONTool;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,25 +26,26 @@ public final class PornHubPlatform implements Platform {
     public static final String NAME = "PornHub";
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");
+    private static final Pattern VIEWKEY_PATTERN = Pattern.compile("(?:^|&)viewkey=([^&]+)");
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         // VALIDATE THE HOST WITH A DOT BOUNDARY (pornhub.com OR *.pornhub.com) SO LOOKALIKES LIKE
-        // "notpornhub.com" ARE REJECTED, AND REQUIRE A viewkey QUERY PARAM (e.g. ?viewkey=6a159015e4470).
-        // A NULL HOST (e.g. file:// URIs) IS NOT OURS — GUARD IT INSTEAD OF NPEing THE RESOLUTION CHAIN.
+        // "notpornhub.com" ARE REJECTED. A NULL HOST (e.g. file:// URIs) IS NOT OURS
         final String raw = uri.getHost();
         final String host = raw == null ? null : raw.toLowerCase(Locale.ROOT);
-        if (host == null || !(host.equals("pornhub.com") || host.endsWith(".pornhub.com"))
-                || !DataTool.contains(uri.getQuery(), "viewkey="))
-            return null;
+        if (host == null || !(host.equals("pornhub.com") || host.endsWith(".pornhub.com"))) return null;
+
+        // ONLY A VIDEO PAGE CARRIES A viewkey (e.g. ?viewkey=6a159015e4470)
+        final Matcher viewkeyMatcher = VIEWKEY_PATTERN.matcher(uri.getRawQuery() == null ? "" : uri.getRawQuery());
+        if (!viewkeyMatcher.find()) throw PlatformException.unsupported(NAME, uri);
+        final String viewkey = viewkeyMatcher.group(1);
 
         if (!WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(NAME, "Mature content is disabled in config (this platform serves mature content exclusively)");
-
-        final String viewkey = DataTool.parseQuery(uri.getQuery()).get("viewkey");
 
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for viewkey '" + viewkey + "' returned HTTP " + req.statusCode());
@@ -62,14 +64,15 @@ public final class PornHubPlatform implements Platform {
             int skipped = 0;
 
             for (final MediaDefinition def: flashVars.mediaDefinitions) {
-                if (def.videoUrl == null || def.videoUrl.isEmpty()) { skipped++; continue; }
+                final URI rendition = JSONTool.uri(def.videoUrl);
+                if (rendition == null) { skipped++; continue; }
                 // A LINK POINTING BACK TO pornhub.com IS A QUALITY-SELECTOR (E.G. 4K) ENDPOINT, NOT A CDN FILE
                 if (def.videoUrl.contains("pornhub.com")) {
                     LOGGER.debug(IT, "PornHub skipping non-CDN rendition {}p ({})", def.height, def.format);
                     skipped++;
                     continue;
                 }
-                variants.add(new Quality(new URI(def.videoUrl), def.width, def.height));
+                variants.add(new Quality(rendition, Math.max(0, def.width), Math.max(0, def.height)));
             }
 
             if (variants.isEmpty())
@@ -79,18 +82,23 @@ public final class PornHubPlatform implements Platform {
             URI thumbnail = null;
             Metadata metadata = null;
             if (flashVars.title != null) {
-                thumbnail = flashVars.thumbnail != null ? URI.create(flashVars.thumbnail) : null;
-                metadata = new Metadata(flashVars.title, null, null, flashVars.duration * 1_000L, null);
+                thumbnail = JSONTool.uri(flashVars.thumbnail);
+                metadata = new Metadata(flashVars.title, null, null, Math.max(0, flashVars.duration) * 1_000L, null);
             } else {
                 LOGGER.warn(IT, "PornHub viewkey '{}' has no video_title; emitting source without metadata", viewkey);
             }
 
-            LOGGER.info(IT, "PornHub resolved viewkey '{}' with {} CDN variant(s) ({} skipped)", viewkey, variants.size(), skipped);
+            LOGGER.debug(IT, "PornHub resolved viewkey '{}' with {} CDN variant(s) ({} skipped)", viewkey, variants.size(), skipped);
             final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
                     HttpHeaders.defaults(uri),
                     variants,
                     null, null);
-            return new Resolution(null, entry);
+            // THE CDN LINKS ARE SIGNED WITH A validto PARAMETER; HONOR IT WHEN PRESENT
+            return new Resolution(DataTool.expiry(variants.get(0).uri()), entry);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
 

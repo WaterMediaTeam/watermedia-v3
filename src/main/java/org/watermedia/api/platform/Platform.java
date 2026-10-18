@@ -18,9 +18,7 @@ import java.util.List;
  */
 public interface Platform {
 
-    /**
-     * Provides the human-readable platform name (e.g. "Kick", "BiliBili").
-     */
+    /** Provides the human-readable platform name (e.g. "Kick", "BiliBili"). */
     String name();
 
     /**
@@ -31,20 +29,24 @@ public interface Platform {
      * <p>
      * The contract has three outcomes:
      * <ul>
-     *   <li>{@code null} — the URI does not belong to this platform; the caller
-     *       must keep probing other handlers.</li>
-     *   <li>a thrown exception — the URI belongs to this platform but resolution
-     *       failed (parse error, network error, or mature content disabled for
-     *       platforms that gate it).</li>
+     *   <li>{@code null} — the URI does not belong to this platform (foreign host or scheme); the
+     *       caller must keep probing other handlers.</li>
+     *   <li>a thrown {@link PlatformException} — the URI belongs to this platform but cannot be
+     *       resolved: a URL shape the handler does not support ({@link PlatformException#unsupported}),
+     *       a parse or network failure, or mature content while {@code platforms.allowMatureContent}
+     *       is off ({@link MatureContentException}).</li>
      *   <li>a {@link Resolution} instance — the URI was resolved successfully.</li>
      * </ul>
+     * The call blocks on network I/O and may run on several loader threads at once, so an
+     * implementation must be thread-safe. It translates every failure it meets, an interrupted wait
+     * included, into a {@link PlatformException} instead of letting other exceptions escape.
      *
      * @param uri the URI to resolve
      * @return the sources with their qualities and expiration, or {@code null}
      *         when the URI is not handled by this platform
-     * @throws Exception if the URI belongs to this platform but the lookup fails
+     * @throws PlatformException if the URI belongs to this platform but the lookup fails
      */
-    Resolution resolve(URI uri) throws Exception;
+    Resolution resolve(URI uri) throws PlatformException;
 
     /**
      * Searches this platform for {@code query} and returns up to {@code limit} raw results — a
@@ -61,9 +63,9 @@ public interface Platform {
      * @param limit the maximum number of results to return
      * @return up to {@code limit} hits, or an empty list when this platform has no match or no
      *         search support; never {@code null}
-     * @throws Exception if this platform supports search but the lookup failed
+     * @throws PlatformException if this platform supports search but the lookup failed
      */
-    default List<PlatformResult> search(final String query, final int limit) throws Exception {
+    default List<PlatformResult> search(final String query, final int limit) throws PlatformException {
         return List.of();
     }
 
@@ -77,6 +79,7 @@ public interface Platform {
     record Resolution(Instant expires, List<Source> sources) {
 
         public Resolution {
+            if (sources == null) throw new IllegalArgumentException("Resolution requires a source list");
             // DEFENSIVE COPY: RECORD COMPONENT MUST NOT EXPOSE A MUTABLE LIST SHARED WITH THE PLATFORM
             sources = List.copyOf(sources);
         }
@@ -96,11 +99,14 @@ public interface Platform {
      * A single media item carrying every available quality (different resolutions or bitrates)
      * plus the metadata needed to display it without downloading. Devs can read
      * {@link Quality#width()}, {@link Quality#height()} and {@link #metadata()} directly to pick a link.
+     * Every source names its {@link MediaType} and lists at least one quality; the thumbnail, the
+     * metadata and the track lists are optional.
      */
     record Source(MediaType type, URI thumbnail, Metadata metadata, HttpHeaders headers, List<Quality> qualities,
                   List<Track> audioTracks, List<Track> subtitleTracks) {
 
         public Source {
+            if (type == null) throw new IllegalArgumentException("Source requires a media type");
             if (qualities == null || qualities.isEmpty()) throw new IllegalArgumentException("Source constructed with no qualities");
             headers = new HttpHeaders(headers).freeze(); // SHARED WITH PLAYER THREADS ONCE RESOLVED: NEVER MUTABLE
 
@@ -120,8 +126,14 @@ public interface Platform {
      * is known (typical for HLS rendition tags that only report height), pass {@code 0} for the other.
      * {@code fps} is the frame rate when the platform reports one (0 otherwise); it breaks ties
      * between renditions of the same size when {@link MRL} keeps one URL per quality bucket.
+     * The URI is mandatory and no dimension may be negative.
      */
     record Quality(URI uri, int width, int height, float fps) {
+
+        public Quality {
+            if (uri == null) throw new IllegalArgumentException("Quality requires a URI");
+            if (width < 0 || height < 0 || fps < 0f) throw new IllegalArgumentException("Quality dimensions cannot be negative");
+        }
 
         /** Creates a quality whose frame rate is unknown. */
         public Quality(final URI uri, final int width, final int height) {

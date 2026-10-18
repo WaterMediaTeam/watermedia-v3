@@ -2,6 +2,7 @@ package org.watermedia.tools;
 
 import org.watermedia.api.util.PixelFormat;
 
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -9,8 +10,10 @@ import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -43,6 +46,24 @@ public class DataTool {
             result.put(key, value);
         }
         return result;
+    }
+
+    // EXPIRY CARRIED BY A SIGNED CDN URL: THE FIRST expire/expires/validto/x-expires QUERY VALUE, IN EPOCH SECONDS
+    // OR MILLISECONDS, OR NULL WHEN THE URL CARRIES NONE
+    public static Instant expiry(final URI uri) {
+        final String query = uri == null ? null : uri.getRawQuery();
+        if (query == null) return null;
+        for (final String param: query.split("&")) {
+            final int eq = param.indexOf('=');
+            if (eq < 0) continue;
+            final String key = param.substring(0, eq).toLowerCase(Locale.ROOT);
+            if (!key.equals("expire") && !key.equals("expires") && !key.equals("validto") && !key.equals("x-expires")) continue;
+            // BELOW 2001 IN SECONDS IT IS A RELATIVE LIFETIME OR GARBAGE, NOT AN EPOCH; ABOVE 100 BILLION IT IS MILLISECONDS
+            final long value = parseLong(param.substring(eq + 1), -1L);
+            if (value < 1_000_000_000L) continue;
+            return value > 100_000_000_000L ? Instant.ofEpochMilli(value) : Instant.ofEpochSecond(value);
+        }
+        return null;
     }
 
     public static <T> Map<T, T> arrayMapper(final T[] keyValue) {

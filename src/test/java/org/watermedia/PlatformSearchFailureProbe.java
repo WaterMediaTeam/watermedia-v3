@@ -3,10 +3,10 @@ package org.watermedia;
 import org.watermedia.api.platform.Platform;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.Platform.Resolution;
+import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.test.support.PlayerWait;
 
-import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -23,10 +23,15 @@ final class PlatformSearchFailureProbe {
         PlatformAPI.register(new Platform() {
             @Override public String name() { return "Slow fixture"; }
             @Override public Resolution resolve(final URI uri) { return null; }
-            @Override public List<PlatformResult> search(final String query, final int limit) throws Exception {
+            @Override public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
                 successfulProbes.incrementAndGet();
                 slowEntered.countDown();
-                if (!releaseSlow.await(5, TimeUnit.SECONDS)) throw new IOException("Slow fixture was not released");
+                try {
+                    if (!releaseSlow.await(5, TimeUnit.SECONDS)) throw new PlatformException("Slow fixture", "not released");
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new PlatformException("Slow fixture", "interrupted");
+                }
                 return List.of(new PlatformResult(this, "late success", null, URI.create("https://fixture.invalid/success")));
             }
         });
@@ -37,8 +42,8 @@ final class PlatformSearchFailureProbe {
                 return "Failing fixture";
             }
             @Override public Resolution resolve(final URI uri) { return null; }
-            @Override public List<PlatformResult> search(final String query, final int limit) throws Exception {
-                throw new IOException("Fixture probe failed");
+            @Override public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
+                throw new PlatformException("Failing fixture", "Fixture probe failed");
             }
         });
         final var field = PlatformAPI.class.getDeclaredField("searchPool");

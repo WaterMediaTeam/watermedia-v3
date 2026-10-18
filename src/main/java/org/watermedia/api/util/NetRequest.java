@@ -164,7 +164,10 @@ public final class NetRequest implements AutoCloseable {
      * @throws PlatformException when the request fails for any reason
      */
     public static <T> T fetchJson(final String platform, final String uri, final Class<T> type) throws PlatformException {
-        return fetchJson(platform, URI.create(uri), type);
+        final URI target;
+        try { target = URI.create(uri); }
+        catch (final IllegalArgumentException malformed) { throw new PlatformException(platform, "Malformed API URL " + uri, malformed); }
+        return fetchJson(platform, target, type);
     }
 
     /**
@@ -229,7 +232,7 @@ public final class NetRequest implements AutoCloseable {
 
     private String readJsonBody() throws IOException {
         final String ct = this.contentType();
-        if (ct == null || !ct.toLowerCase().contains(MIMETYPE_JSON)) return null;
+        if (ct == null || !ct.toLowerCase(Locale.ROOT).contains(MIMETYPE_JSON)) return null;
         try (final InputStream is = this.inputStream()) {
             return new String(IOTool.readLimited(is, WaterMediaConfig.network.maxTextBytes, -1L), StandardCharsets.UTF_8);
         }
@@ -264,7 +267,7 @@ public final class NetRequest implements AutoCloseable {
         }
 
         /** Sets the HTTP method, uppercased; the connection validates it on {@link #send()}. */
-        public Builder method(final String method) { this.method = method.toUpperCase(); return this; }
+        public Builder method(final String method) { this.method = method.toUpperCase(Locale.ROOT); return this; }
         /** Replaces the {@code Content-Type} header. */
         public Builder contentType(final String contentType) { this.headers.set("Content-Type", contentType); return this; }
         /** Replaces the {@code Accept} header. */

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.api.platform.Platform.Resolution;
 import org.watermedia.api.platform.internal.WaterPlatform;
 
@@ -66,6 +67,13 @@ public class WaterPlatformTest {
             final String resolved = WaterPlatform.location(URI.create("water://global/x"));
             assertEquals(WaterPlatform.GLOBAL_SERVER + "x", resolved,
                     "water://global/x must concatenate after WaterPlatform.GLOBAL_SERVER");
+        }
+
+        @Test
+        @DisplayName("water://remote keeps the raw path against the configured remote URL")
+        void testRemoteKeepsRawPath() throws IOException {
+            assertEquals(NetworkAPI.remoteUrl() + "/a%20b", WaterPlatform.location(URI.create("water://remote/a%20b")),
+                    "A percent-encoded path must reach the remote server unchanged");
         }
 
         @Test

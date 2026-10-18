@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
@@ -20,10 +21,12 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,68 +40,97 @@ public final class BlueskyPlatform implements Platform {
     private static final String PLC_DIRECTORY_URL = "https://plc.directory/%s";
     private static final String DEFAULT_PDS = "https://bsky.social";
     private static final Pattern WEB_PATTERN = Pattern.compile("/profile/([\\w.:%-]+)/post/(\\w+)");
-    private static final Pattern AT_PATTERN = Pattern.compile("at://([\\w.:%-]+)/app\\.bsky\\.feed\\.post/(\\w+)");
+    private static final Pattern AT_PATTERN = Pattern.compile("at://([\\w.:%-]+)/app\\.bsky\\.feed\\.post/(\\w+)", Pattern.CASE_INSENSITIVE);
     private static final String[] HOSTS = { "bsky.app", "www.bsky.app", "main.bsky.dev", "www.main.bsky.dev" };
+    // LABELS THE NETWORK APPLIES TO ADULT AND GRAPHIC POSTS
+    private static final Set<String> MATURE_LABELS = Set.of("porn", "sexual", "nudity", "graphic-media");
+    private static final int TITLE_LENGTH = 72;
+    // VIDEO PLAYLISTS ARE SERVED THROUGH A CDN WITH SHORT-LIVED SESSION TOKENS
+    private static final Duration TTL = Duration.ofMinutes(30);
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
-        final String uriStr = uri.toString();
-        if (uriStr.startsWith("at://")) {
-            if (!AT_PATTERN.matcher(uriStr).matches()) return null;
+    public Resolution resolve(final URI uri) throws PlatformException {
+        final String handle, postId;
+        if ("at".equalsIgnoreCase(uri.getScheme())) {
+            final Matcher m = AT_PATTERN.matcher(uri.toString());
+            if (!m.matches()) throw PlatformException.unsupported(NAME, uri);
+            handle = m.group(1);
+            postId = m.group(2);
         } else {
-            final boolean validHost = DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS);
-            if (!validHost || uri.getPath() == null || !WEB_PATTERN.matcher(uri.getPath()).find()) return null;
+            if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+            final Matcher m = WEB_PATTERN.matcher(uri.getPath() == null ? "" : uri.getPath());
+            if (!m.find()) throw PlatformException.unsupported(NAME, uri);
+            handle = m.group(1);
+            postId = m.group(2);
         }
-
-        final String[] parsed = parseUri(uri);
-        final String handle = parsed[0];
-        final String postId = parsed[1];
 
         LOGGER.debug(IT, "Fetching Bluesky post '{}' by '{}'", postId, handle);
-        final JsonObject post = this.fetchPost(handle, postId);
-        final HttpHeaders headers = HttpHeaders.defaults(uri);
+        try {
+            final JsonObject post = this.fetchPost(handle, postId);
+            ensureNotMature(post, postId);
+            final HttpHeaders headers = HttpHeaders.defaults(uri);
 
-        final List<Source> entries = new ArrayList<>(2);
-        final JsonObject embed = obj(post, "embed");
-        final JsonObject record = obj(post, "record");
+            final List<Source> entries = new ArrayList<>(2);
+            final JsonObject embed = obj(post, "embed");
+            final JsonObject record = obj(post, "record");
 
-        // DIRECT EMBED (app.bsky.embed.video#view OR app.bsky.embed.images#view)
-        this.extractVideo(entries, post, embed, obj(record, "embed"), postId, headers);
-        this.extractImages(entries, post, embed, postId, headers);
+            // DIRECT EMBED (app.bsky.embed.video#view OR app.bsky.embed.images#view)
+            this.extractVideo(entries, post, embed, obj(record, "embed"), postId, headers);
+            this.extractImages(entries, post, embed, postId, headers);
 
-        // RECORD WITH MEDIA (app.bsky.embed.recordWithMedia#view): THE MEDIA LIVES IN embed.media
-        if (embed != null && embed.has("media")) {
-            final JsonObject mediaEmbed = obj(embed, "media");
-            this.extractVideo(entries, post, mediaEmbed, obj(record, "embed", "media"), postId, headers);
-            this.extractImages(entries, post, mediaEmbed, postId, headers);
-        }
+            // RECORD WITH MEDIA (app.bsky.embed.recordWithMedia#view): THE MEDIA LIVES IN embed.media
+            if (embed != null && embed.has("media")) {
+                final JsonObject mediaEmbed = obj(embed, "media");
+                this.extractVideo(entries, post, mediaEmbed, obj(record, "embed", "media"), postId, headers);
+                this.extractImages(entries, post, mediaEmbed, postId, headers);
+            }
 
-        // QUOTED POST (app.bsky.embed.record#view): THE MEDIA LIVES IN THE NESTED POST'S EMBEDS
-        if (embed != null && embed.has("record")) {
-            final JsonObject nestedPost = resolveNestedPost(obj(embed, "record"));
-            if (nestedPost != null) {
-                final JsonElement embedsEl = nestedPost.get("embeds");
-                if (embedsEl != null && embedsEl.isJsonArray()) {
-                    final JsonArray embeds = embedsEl.getAsJsonArray();
-                    if (!embeds.isEmpty() && embeds.get(0).isJsonObject()) {
-                        final JsonObject nestedEmbed = embeds.get(0).getAsJsonObject();
-                        this.extractVideo(entries, nestedPost, nestedEmbed,
-                                obj(nestedPost, "value", "embed"), postId, headers);
-                        this.extractImages(entries, nestedPost, nestedEmbed, postId, headers);
+            // QUOTED POST (app.bsky.embed.record#view): THE MEDIA LIVES IN THE NESTED POST'S EMBEDS
+            if (embed != null && embed.has("record")) {
+                final JsonObject nestedPost = resolveNestedPost(obj(embed, "record"));
+                if (nestedPost != null) {
+                    ensureNotMature(nestedPost, postId);
+                    final JsonElement embedsEl = nestedPost.get("embeds");
+                    if (embedsEl != null && embedsEl.isJsonArray()) {
+                        final JsonArray embeds = embedsEl.getAsJsonArray();
+                        if (!embeds.isEmpty() && embeds.get(0).isJsonObject()) {
+                            final JsonObject nestedEmbed = embeds.get(0).getAsJsonObject();
+                            this.extractVideo(entries, nestedPost, nestedEmbed,
+                                    obj(nestedPost, "value", "embed"), postId, headers);
+                            this.extractImages(entries, nestedPost, nestedEmbed, postId, headers);
+                        }
                     }
                 }
             }
-        }
 
-        if (entries.isEmpty()) {
-            throw new PlatformException(NAME, "Post '" + postId + "' has no playable media (text-only, external link, or unsupported embed): " + uri);
-        }
+            if (entries.isEmpty())
+                throw new PlatformException(NAME, "Post '" + postId + "' has no playable media (text-only, external link, or unsupported embed): " + uri);
 
-        LOGGER.info(IT, "Bluesky resolved {} media entry(es) for post '{}'", entries.size(), postId);
-        return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES), entries);
+            LOGGER.debug(IT, "Bluesky resolved {} media entry(es) for post '{}'", entries.size(), postId);
+            return new Resolution(Instant.now().plus(TTL), entries);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
+        }
+    }
+
+    // THE NETWORK'S LABELS TRAVEL ON THE POST VIEW AND ON ITS AUTHOR; THE GATE RUNS BEFORE ANY MEDIA IS TOUCHED, FOR
+    // THE POST ITSELF AND FOR THE POST IT QUOTES
+    private static void ensureNotMature(final JsonObject post, final String postId) throws MatureContentException {
+        if (WaterMediaConfig.platforms.allowMatureContent) return;
+        final JsonObject author = obj(post, "author");
+        for (final JsonElement labels: new JsonElement[] { post.get("labels"), author == null ? null : author.get("labels") }) {
+            if (labels == null || !labels.isJsonArray()) continue;
+            for (final JsonElement label: labels.getAsJsonArray()) {
+                final String value = label.isJsonObject() ? str(label.getAsJsonObject(), "val") : null;
+                if (value != null && MATURE_LABELS.contains(value))
+                    throw new MatureContentException(NAME, "Post '" + postId + "' is labelled '" + value + "'");
+            }
+        }
     }
 
     private void extractVideo(final List<Source> entries, final JsonObject postCtx,
@@ -106,10 +138,11 @@ public final class BlueskyPlatform implements Platform {
                               final HttpHeaders headers) {
         if (embedView == null || !embedView.has("playlist")) return;
 
-        final String playlist = str(embedView, "playlist");
-        if (playlist == null) return;
-
-        final URI playlistUri = URI.create(playlist);
+        final URI playlistUri = JSONTool.uri(str(embedView, "playlist"));
+        if (playlistUri == null) {
+            LOGGER.warn(IT, "Bluesky post '{}' carries a video without a usable playlist URL; skipping it", postId);
+            return;
+        }
         final List<Quality> variants = new ArrayList<>();
 
         try {
@@ -123,12 +156,10 @@ public final class BlueskyPlatform implements Platform {
                 }
                 LOGGER.debug(IT, "Bluesky parsed {} HLS rendition(s) for '{}'", variants.size(), postId);
             }
-        } catch (final Exception e) {
-            LOGGER.warn(IT, "Bluesky failed to fetch HLS for '{}': {} — falling back to raw playlist URL", postId, e.getMessage());
+        } catch (final IOException e) {
+            LOGGER.warn(IT, "Bluesky failed to fetch HLS for '{}'; falling back to the raw playlist URL", postId, e);
         }
-        if (variants.isEmpty()) {
-            variants.add(new Quality(playlistUri, 0, 0));
-        }
+        if (variants.isEmpty()) variants.add(new Quality(playlistUri, 0, 0));
 
         // SUBTITLE TRACKS THROUGH THE BLOB ENDPOINT
         final List<Track> subtitleTracks = new ArrayList<>();
@@ -148,25 +179,23 @@ public final class BlueskyPlatform implements Platform {
                         subtitleTracks.add(new Track(lang, lang, URI.create(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)))));
                     }
                 }
-            } catch (final Exception e) {
-                LOGGER.warn(IT, "Bluesky failed to extract subtitles for '{}': {}", postId, e.getMessage());
+            } catch (final RuntimeException e) {
+                LOGGER.warn(IT, "Bluesky failed to extract subtitles for '{}'", postId, e);
             }
         }
 
         // METADATA
         final String displayName = str(postCtx, "author", "displayName");
         final String authorHandle = str(postCtx, "author", "handle");
-        final String thumbnailUrl = str(embedView, "thumbnail");
         final String indexedAt = str(postCtx, "indexedAt");
 
         String text = str(postCtx, "record", "text");
         if (text == null) text = str(postCtx, "value", "text");
 
         final String title = text != null && !text.isBlank()
-                ? truncateTitle(text, 72)
+                ? truncateTitle(text)
                 : "Bluesky video #" + postId;
 
-        final URI thumbnail = thumbnailUrl != null ? URI.create(thumbnailUrl) : null;
         final Metadata metadata = new Metadata(
                 title, text,
                 indexedAt != null ? parseInstant(indexedAt) : null,
@@ -174,7 +203,7 @@ public final class BlueskyPlatform implements Platform {
                 displayName != null ? displayName : authorHandle
         );
 
-        entries.add(new Source(MediaType.VIDEO, thumbnail, metadata, headers,
+        entries.add(new Source(MediaType.VIDEO, JSONTool.uri(str(embedView, "thumbnail")), metadata, headers,
                 variants,
                 null, subtitleTracks.isEmpty() ? null : subtitleTracks));
     }
@@ -194,31 +223,32 @@ public final class BlueskyPlatform implements Platform {
         if (text == null) text = str(postCtx, "value", "text");
 
         final String title = text != null && !text.isBlank()
-                ? truncateTitle(text, 72)
+                ? truncateTitle(text)
                 : "Bluesky image #" + postId;
 
         for (final JsonElement imgEl: imagesEl.getAsJsonArray()) {
             if (!imgEl.isJsonObject()) continue;
             final JsonObject img = imgEl.getAsJsonObject();
 
-            final String fullsize = str(img, "fullsize");
-            if (fullsize == null) continue;
+            // ONE BROKEN PICTURE MUST NOT TAKE THE REST OF THE POST DOWN
+            final URI fullsize = JSONTool.uri(str(img, "fullsize"));
+            if (fullsize == null) {
+                LOGGER.warn(IT, "Bluesky post '{}' carries an image without a usable URL; skipping it", postId);
+                continue;
+            }
 
             final JsonObject aspectRatio = obj(img, "aspectRatio");
-            final int width = aspectRatio != null ? JSONTool.intOr(aspectRatio, "width", 0) : 0;
-            final int height = aspectRatio != null ? JSONTool.intOr(aspectRatio, "height", 0) : 0;
+            final int width = aspectRatio != null ? Math.max(0, JSONTool.intOr(aspectRatio, "width", 0)) : 0;
+            final int height = aspectRatio != null ? Math.max(0, JSONTool.intOr(aspectRatio, "height", 0)) : 0;
 
-            final String thumb = str(img, "thumb");
-
-            final URI imgThumb = thumb != null ? URI.create(thumb) : null;
             final Metadata imgMetadata = new Metadata(
                     title, text,
                     indexedAt != null ? parseInstant(indexedAt) : null,
                     0,
                     displayName != null ? displayName : authorHandle
             );
-            entries.add(new Source(MediaType.IMAGE, imgThumb, imgMetadata, headers,
-                    List.of(new Quality(URI.create(fullsize), width, height)),
+            entries.add(new Source(MediaType.IMAGE, JSONTool.uri(str(img, "thumb")), imgMetadata, headers,
+                    List.of(new Quality(fullsize, width, height)),
                     null, null));
         }
     }
@@ -261,41 +291,26 @@ public final class BlueskyPlatform implements Platform {
                     }
                 }
             }
-        } catch (final Exception e) {
-            LOGGER.warn(IT, "Bluesky failed to resolve service endpoint for '{}': {}", did, e.getMessage());
+        } catch (final IOException | RuntimeException e) {
+            LOGGER.warn(IT, "Bluesky failed to resolve the service endpoint for '{}'; using the default PDS", did, e);
         }
         return DEFAULT_PDS;
     }
 
     private static JsonObject resolveNestedPost(final JsonObject quotedRef) {
         if (quotedRef == null) return null;
-        if (quotedRef.has("record") && quotedRef.get("record").isJsonObject()) {
-            return quotedRef.getAsJsonObject("record");
-        }
+        if (quotedRef.has("record") && quotedRef.get("record").isJsonObject()) return quotedRef.getAsJsonObject("record");
         return quotedRef;
     }
 
-    private static String[] parseUri(final URI uri) throws PlatformException {
-        final String raw = uri.toString();
-        Matcher m = AT_PATTERN.matcher(raw);
-        if (m.matches()) return new String[]{ m.group(1), m.group(2) };
-
-        final String path = uri.getPath();
-        if (path != null) {
-            m = WEB_PATTERN.matcher(path);
-            if (m.find()) return new String[]{ m.group(1), m.group(2) };
-        }
-        throw new PlatformException(NAME, "Cannot parse URL: " + uri);
-    }
-
-    private static String truncateTitle(final String text, final int maxLen) {
+    private static String truncateTitle(final String text) {
         final String oneLine = text.replace('\n', ' ');
-        return oneLine.length() > maxLen ? oneLine.substring(0, maxLen) + "..." : oneLine;
+        return oneLine.length() > TITLE_LENGTH ? oneLine.substring(0, TITLE_LENGTH) + "..." : oneLine;
     }
 
     private static Instant parseInstant(final String iso) {
         try { return Instant.parse(iso); }
-        catch (final Exception e) { return null; }
+        catch (final DateTimeParseException e) { return null; }
     }
 
     private static String enc(final String value) {

@@ -6,10 +6,13 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.platform.MatureContentException;
 import org.watermedia.api.platform.PlatformException;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.binaries.BotGuardBinary;
+import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.net.URI;
@@ -39,8 +42,10 @@ public final class YouTubePlatform extends YtDlpPlatform {
     public static final String NAME = "YouTube";
     private static final Marker IT = MarkerManager.getMarker(YouTubePlatform.class.getSimpleName());
     private static final String[] HOSTS = { "youtube.com", "youtu.be" };
+    // SITE PAGES WITHOUT MEDIA; CHANNELS AND PLAYLISTS STAY PLAYABLE AS PLAYLISTS
+    private static final String[] UNPLAYABLE_PATHS = { "/results", "/feed/", "/account", "/premium", "/t/", "/howyoutubeworks" };
     // VIDEO SHAPES (vs a pure playlist link) — DECIDES WHETHER TO PASS --no-playlist
-    private static final Pattern YOUTUBE_VIDEO_ID = Pattern.compile("(?:youtu\\.be/|youtube\\.com/(?:embed/|v/|shorts/|feeds/api/videos/|watch\\?v=|watch\\?.+&v=))([^/?&#]+)");
+    private static final Pattern YOUTUBE_VIDEO_ID = Pattern.compile("(?:youtu\\.be/|youtube\\.com/(?:embed/|v/|shorts/|feeds/api/videos/|watch\\?v=|watch\\?.+&v=))([^/?&#]+)", Pattern.CASE_INSENSITIVE);
 
     private static final long BOTGUARD_TIMEOUT_SECONDS = 60; // COLD START RUNS THE BOTGUARD VM + NETWORK
 
@@ -60,35 +65,42 @@ public final class YouTubePlatform extends YtDlpPlatform {
     }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         // NOT A YOUTUBE URL → LET PlatformAPI KEEP PROBING OTHER HANDLERS (HOSTS ARE CASE-INSENSITIVE)
-        if (!hostMatches(uri.getHost(), HOSTS)) {
-            return null;
-        }
+        if (!hostMatches(uri.getHost(), HOSTS)) return null;
+        // A BARE HOST, A SEARCH PAGE OR A FEED NAMES NOTHING TO PLAY; SPAWNING yt-dlp TO FIND THAT OUT WOULD COST TWO MINUTES
+        final String path = uri.getPath() == null ? "" : uri.getPath();
+        if (path.length() < 2 || DataTool.startsWith(path, UNPLAYABLE_PATHS)) throw PlatformException.unsupported(NAME, uri);
 
         // A VIDEO LINK PLAYS THE VIDEO (EVEN IF IT CARRIES &list=); A PURE PLAYLIST LINK PLAYS THE PLAYLIST
         final List<String> args = new ArrayList<>();
-        if (YOUTUBE_VIDEO_ID.matcher(uri.toString()).find()) {
-            args.add("--no-playlist");
-        }
+        if (YOUTUBE_VIDEO_ID.matcher(uri.toString()).find()) args.add("--no-playlist");
 
         final JsonObject info;
         try {
             info = this.info(uri.toString(), args);
         } catch (final IOException e) {
-            if (isBotCheck(e.getMessage())) {
-                return this.retryWithPoToken(uri, args);
-            }
+            final PlatformException gate = ageGate(uri, e);
+            if (gate != null) throw gate;
+            if (isBotCheck(e.getMessage())) return this.retryWithPoToken(uri, args);
             throw new PlatformException(NAME, "yt-dlp could not resolve " + uri + ": " + e.getMessage(), e);
         }
         return this.extract(info); // EXTRACTION EXCEPTIONS (Mature/Platform) PROPAGATE AS-IS
     }
 
-    // RETRIES WITH A PO_TOKEN BOUND TO A FRESH visitorData, SUPPLIED TO EVERY WEB-FAMILY gvs CONTEXT
-    // (THE BotGuard WEB TOKEN COVERS web/web_safari/mweb/tv). NO player_client OVERRIDE: yt-dlp KEEPS ITS
-    // BOT-RESISTANT DEFAULTS (android_vr, web_safari) AND THE TOKEN UNBLOCKS THE WEB CLIENT'S GATED STREAMS
-    // — FORCING ONLY THE WEB CLIENTS YIELDS NO FORMATS. SURFACES THE ORIGINAL ERROR IF THE RETRY ALSO FAILS.
-    private Resolution retryWithPoToken(final URI uri, final List<String> baseArgs) throws Exception {
+    // THE AGE GATE NEEDS A SIGNED-IN SESSION NO TOKEN CAN REPLACE: A MATURE BLOCK WHEN MATURE CONTENT IS OFF, A PLAIN
+    // FAILURE OTHERWISE, AND null WHEN THE FAILURE IS SOMETHING ELSE
+    private static PlatformException ageGate(final URI uri, final IOException e) {
+        if (!isAgeGate(e.getMessage())) return null;
+        if (!WaterMediaConfig.platforms.allowMatureContent) return new MatureContentException(NAME, "Age-restricted: " + uri, e);
+        return new PlatformException(NAME, "Age-restricted video " + uri + " needs a signed-in session, which WaterMedia cannot provide", e);
+    }
+
+    // RETRIES WITH A po_token BOUND TO A FRESH visitorData FOR EVERY WEB-FAMILY gvs CONTEXT; yt-dlp KEEPS ITS DEFAULT
+    // CLIENTS (FORCING THE WEB ONES YIELDS NO FORMATS). A FAILED RETRY REPORTS ITS CAUSE; AN EXTRACTION VERDICT PASSES THROUGH
+    private Resolution retryWithPoToken(final URI uri, final List<String> baseArgs) throws PlatformException {
+        LOGGER.warn(IT, "YouTube bot check hit for '{}'; retrying with a BotGuard po_token", uri);
+        final JsonObject info;
         try {
             final String visitorData = fetchVisitorData();
             final String token = this.mintToken(visitorData);
@@ -99,16 +111,19 @@ public final class YouTubePlatform extends YtDlpPlatform {
                     + ";visitor_data=" + visitorData + ";player_skip=webpage,configs");
             args.add("--extractor-args");
             args.add("youtubetab:skip=webpage");
-            LOGGER.info(IT, "Retrying '{}' with a BotGuard po_token", uri);
-            return this.extract(this.info(uri.toString(), args));
-        } catch (final Exception retry) {
-            throw new PlatformException(NAME,
-                    "YouTube blocked this request and the po_token retry failed: " + retry.getMessage(), retry);
+            info = this.info(uri.toString(), args);
+        } catch (final IOException retry) {
+            final PlatformException gate = ageGate(uri, retry);
+            if (gate != null) throw gate;
+            throw new PlatformException(NAME, "YouTube blocked this request and the po_token retry failed: " + retry.getMessage(), retry);
+        } catch (final RuntimeException retry) {
+            throw new PlatformException(NAME, "YouTube blocked this request and the po_token retry failed: " + retry.getMessage(), retry);
         }
+        return this.extract(info);
     }
 
     @Override
-    public List<PlatformResult> search(final String query, final int limit) throws Exception {
+    public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
         // ytsearchN: HITS ONLY YOUTUBE'S SEARCH ENDPOINT; --flat-playlist KEEPS IT TO RAW RESULT METADATA
         // (NO PER-VIDEO STREAM EXTRACTION), SO IT IS FAST AND NEEDS NO PO_TOKEN/BOTGUARD RETRY.
         final JsonObject info;
@@ -147,10 +162,8 @@ public final class YouTubePlatform extends YtDlpPlatform {
         return out;
     }
 
-    // MINTS A po_token FOR visitorData BY DRIVING rustypipe-botguard. ITS SINGLE OUTPUT LINE IS
-    // "<token> valid_until=<unix> from_snapshot=<bool>", SO THE FIRST WHITESPACE FIELD IS THE TOKEN.
-    // SERIALISED: CONCURRENT RUNS WOULD RACE ON THE SHARED --snapshot-file. FRESH visitorData PER CALL
-    // MAKES CACHING POINTLESS, SO WE JUST MINT ON DEMAND (THE SNAPSHOT FILE ALREADY SPEEDS COLD STARTS).
+    // MINTS A po_token FOR visitorData WITH rustypipe-botguard, WHOSE ONLY OUTPUT LINE STARTS WITH THE TOKEN. RUNS ARE
+    // SERIALISED (THEY SHARE --snapshot-file) AND NEVER CACHED: EVERY CALL BRINGS A FRESH visitorData
     private String mintToken(final String visitorData) throws IOException {
         final Path exe;
         final Path snapshot;
@@ -186,19 +199,23 @@ public final class YouTubePlatform extends YtDlpPlatform {
                 .header("X-YouTube-Client-Version", CLIENT_VERSION)
                 .body(VISITOR_BODY)
                 .send()) {
-            if (request.statusCode() != 200) {
-                throw new IOException("visitor_id endpoint returned HTTP " + request.statusCode());
-            }
+            if (request.statusCode() != 200) throw new IOException("visitor_id endpoint returned HTTP " + request.statusCode());
             final JsonObject json = JsonParser.parseString(request.text()).getAsJsonObject();
             return json.getAsJsonObject("responseContext").get("visitorData").getAsString();
         }
     }
 
-    // yt-dlp'S MESSAGES FOR THE BOT/AGE GATE THAT A PO_TOKEN CAN BYPASS
+    // yt-dlp'S MESSAGES FOR THE BOT GATE THAT A PO_TOKEN CAN BYPASS
     private static boolean isBotCheck(final String message) {
         if (message == null) return false;
         final String m = message.toLowerCase(Locale.ROOT);
-        return m.contains("not a bot") || m.contains("sign in to confirm") || m.contains("po_token")
-                || m.contains("confirm your age");
+        return m.contains("not a bot") || m.contains("sign in to confirm") || m.contains("po_token");
+    }
+
+    // yt-dlp'S MESSAGES FOR THE AGE GATE, WHICH ONLY A SIGNED-IN SESSION PASSES
+    private static boolean isAgeGate(final String message) {
+        if (message == null) return false;
+        final String m = message.toLowerCase(Locale.ROOT);
+        return m.contains("confirm your age") || m.contains("age-restricted") || m.contains("inappropriate for some users");
     }
 }

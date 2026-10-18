@@ -2,6 +2,7 @@ package org.watermedia.api.network;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.watermedia.WaterMedia;
@@ -32,10 +33,22 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.watermedia.test.support.MediaBootstrap.runProbe;
 
+/**
+ * Verifies the limits of {@link NetworkServer}: configuration refusals, token snapshots, aggregated
+ * rejection warnings, storage accounting, incomplete-upload cleanup, the idle timeout and ownership
+ * across an incomplete shutdown.
+ */
+@DisplayName("NetworkServer limits")
 public class NetworkServerLimitsTest {
     private static final String TOKEN = "local-test-upload-token";
     @TempDir Path directory;
@@ -103,11 +116,11 @@ public class NetworkServerLimitsTest {
         NetworkServer.stop();
         WaterMediaConfig.network.serverBindAddress = "0.0.0.0";
         WaterMediaConfig.network.token = "watermedia_default_token_change_it";
-        assertThrows(IllegalArgumentException.class, () -> NetworkServer.start(0, this.directory));
+        assertThrows(IllegalStateException.class, () -> NetworkServer.start(0, this.directory));
         assertNull(NetworkServer.address());
         WaterMediaConfig.network.serverBindAddress = "127.0.0.1";
         WaterMediaConfig.network.token = " ";
-        assertThrows(IllegalArgumentException.class, () -> NetworkServer.start(0, this.directory));
+        assertThrows(IllegalStateException.class, () -> NetworkServer.start(0, this.directory));
         WaterMediaConfig.network.token = TOKEN;
         try (final ServerSocket occupied = new ServerSocket(0)) {
             assertThrows(IOException.class, () -> NetworkServer.start(occupied.getLocalPort(), this.directory));
@@ -279,6 +292,24 @@ public class NetworkServerLimitsTest {
             try { return this.get().getResponseCode() == 200; }
             catch (final IOException rejected) { return false; }
         }, 3000));
+    }
+
+    @Test
+    void trickledUploadOutlivesTheIdleTimeout() throws Exception {
+        // THREE CHUNKS 400 MS APART TAKE LONGER THAN THE 1 S TIMEOUT, BUT NEVER LEAVE THE REQUEST IDLE THAT LONG
+        final byte[] chunk = new byte[1_000];
+        try (final Socket slow = this.request("POST /upload HTTP/1.1\r\nHost: localhost\r\nX-WaterMedia-Token: " + TOKEN
+                + "\r\nX-WaterMedia-Filename: trickle.bin\r\nContent-Length: 3000\r\n\r\n")) {
+            final long started = System.nanoTime();
+            for (int i = 0; i < 3; i++) {
+                Thread.sleep(400);
+                slow.getOutputStream().write(chunk);
+                slow.getOutputStream().flush();
+            }
+            final String status = new BufferedReader(new InputStreamReader(slow.getInputStream(), StandardCharsets.US_ASCII)).readLine();
+            assertTrue(System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(1_000), "the transfer outlasted the timeout");
+            assertTrue(status.contains("200"), status);
+        }
     }
 
     @Test

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.tools.IOTool;
 
@@ -17,12 +18,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spins {@link NetworkServer} on an ephemeral loopback port and drives it over real HTTP.
- * Covers the upload auth/size/traversal guards, ID download (GET/HEAD) and the malformed
- * Range path that previously threw an uncaught {@code NumberFormatException}.
+ * Verifies {@link NetworkServer} over real HTTP on an ephemeral loopback port: the upload
+ * auth/size/traversal guards, ID downloads (GET/HEAD), the Range handling and the root answer.
  */
 @DisplayName("NetworkServer")
 public class NetworkServerTest {
@@ -74,7 +76,7 @@ public class NetworkServerTest {
     }
 
     @Test
-    @DisplayName("a malformed Range answers 416 instead of crashing the exchange")
+    @DisplayName("a malformed Range is ignored and the whole file answered")
     void malformedRange() throws IOException {
         final HttpURLConnection up = postUpload(TOKEN, "range.bin", "payload".getBytes(StandardCharsets.UTF_8));
         assertEquals(200, up.getResponseCode());
@@ -82,10 +84,13 @@ public class NetworkServerTest {
 
         final HttpURLConnection ranged = open("/" + id, "GET");
         ranged.setRequestProperty("Range", "bytes=abc-");
-        assertEquals(416, ranged.getResponseCode());
+        assertEquals(200, ranged.getResponseCode());
+        assertNull(ranged.getHeaderField("Content-Range"));
+        assertEquals("payload", new String(ranged.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
     }
 
     @Test
+    @DisplayName("ranges clip at EOF, unsatisfiable ones answer 416, malformed or multipart ones are ignored and HEAD honours them")
     void clipsRangesAtEofAndHandlesEmptyResources() throws IOException {
         final HttpURLConnection upload = postUpload(TOKEN, "bounds.bin", "payload".getBytes(StandardCharsets.UTF_8));
         assertEquals(200, upload.getResponseCode());
@@ -97,16 +102,36 @@ public class NetworkServerTest {
             assertEquals("bytes 0-6/7", request.getHeaderField("Content-Range"));
             assertEquals("payload", new String(request.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
         }
-        for (final String range: new String[] { "bytes=7-", "bytes=5-3", "bytes=-0", "bytes=-", "bytes=+1-2", "bytes=0-1,3-4" }) {
+        for (final String range: new String[] { "bytes=2-", "BYTES=2-6" }) {
+            final HttpURLConnection request = open("/" + id, "GET");
+            request.setRequestProperty("Range", range);
+            assertEquals(206, request.getResponseCode(), range);
+            assertEquals("bytes 2-6/7", request.getHeaderField("Content-Range"));
+            assertEquals("yload", new String(request.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        }
+        for (final String range: new String[] { "bytes=7-", "bytes=-0", "bytes=99999999999999999999-" }) {
             final HttpURLConnection request = open("/" + id, "GET");
             request.setRequestProperty("Range", range);
             assertEquals(416, request.getResponseCode(), range);
             assertEquals("bytes */7", request.getHeaderField("Content-Range"));
         }
+        for (final String range: new String[] { "bytes=5-3", "bytes=-", "bytes=+1-2", "bytes=0-1,3-4" }) {
+            final HttpURLConnection request = open("/" + id, "GET");
+            request.setRequestProperty("Range", range);
+            assertEquals(200, request.getResponseCode(), range);
+            assertNull(request.getHeaderField("Content-Range"), range);
+            assertEquals("payload", new String(request.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        }
         final HttpURLConnection suffix = open("/" + id, "GET");
         suffix.setRequestProperty("Range", "bytes=-3");
         assertEquals(206, suffix.getResponseCode());
         assertEquals("oad", new String(suffix.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+
+        final HttpURLConnection head = open("/" + id, "HEAD");
+        head.setRequestProperty("Range", "bytes=0-2");
+        assertEquals(206, head.getResponseCode());
+        assertEquals("bytes 0-2/7", head.getHeaderField("Content-Range"));
+        assertEquals("3", head.getHeaderField("Content-Length"));
 
         final HttpURLConnection empty = postUpload(TOKEN, "empty.bin", new byte[0]);
         assertEquals(200, empty.getResponseCode());
@@ -115,17 +140,21 @@ public class NetworkServerTest {
         assertEquals(200, get.getResponseCode());
         assertEquals(0, get.getInputStream().readAllBytes().length);
         assertEquals("0", get.getHeaderField("Content-Length"));
-        final HttpURLConnection range = open("/" + emptyId, "GET");
-        range.setRequestProperty("Range", "bytes=0-");
-        assertEquals(416, range.getResponseCode());
+        for (final String range: new String[] { "bytes=0-", "bytes=-1" }) {
+            final HttpURLConnection request = open("/" + emptyId, "GET");
+            request.setRequestProperty("Range", range);
+            assertEquals(416, request.getResponseCode(), range);
+        }
     }
 
     @Test
-    @DisplayName("GET / reports server info and an unknown ID is 404")
+    @DisplayName("GET / reports the server name without its version and an unknown ID is 404")
     void infoAndMissing() throws IOException {
         final HttpURLConnection root = open("/", "GET");
         assertEquals(200, root.getResponseCode());
-        assertTrue(new String(root.getInputStream().readAllBytes(), StandardCharsets.UTF_8).contains("WaterMedia"));
+        final String info = new String(root.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertTrue(info.contains("WaterMedia"));
+        assertFalse(info.contains(WaterMedia.VERSION), "An unauthenticated answer must not reveal the version");
 
         assertEquals(404, open("/zzzzzzzz", "GET").getResponseCode());
     }

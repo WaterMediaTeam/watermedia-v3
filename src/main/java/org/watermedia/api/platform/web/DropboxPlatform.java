@@ -8,6 +8,7 @@ import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 
@@ -17,26 +18,30 @@ public final class DropboxPlatform implements Platform {
     public static final String NAME = "Dropbox";
     private static final Marker IT = MarkerManager.getMarker(DropboxPlatform.class.getSimpleName());
     private static final String[] HOSTS = { "dropbox.com", "www.dropbox.com" };
+    // SHARE LINKS: /s/<id>/<name>, /sh/<id>/<key>/<name> AND /scl/fi/<id>/<name>?rlkey=...; FOLDERS AND APP PAGES ARE NOT PLAYABLE
+    private static final String[] SHARE_PREFIXES = { "/s/", "/sh/", "/scl/fi/" };
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
-        final String query = uri.getRawQuery();
-        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || query == null) return null;
+    public Resolution resolve(final URI uri) throws PlatformException {
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+        final String path = uri.getRawPath() == null ? "" : uri.getRawPath();
+        if (!DataTool.startsWith(path, SHARE_PREFIXES)) throw PlatformException.unsupported(NAME, uri);
 
-        // dl=0 OPENS THE PREVIEW PAGE AND dl=1 SERVES THE RAW FILE THROUGH THE CDN; ONLY THE WHOLE
-        // PARAMETER COUNTS, A dl=01 OR xdl=0 LOOKALIKE IS NOT A SHARE LINK
-        final String[] params = query.split("&");
-        boolean preview = false;
+        // dl=0 OPENS THE PREVIEW PAGE WHILE dl=1 AND raw=1 SERVE THE FILE THROUGH THE CDN; ONLY A WHOLE PARAMETER
+        // COUNTS (dl=01 OR xdl=0 ARE NOT IT) AND A SHARE LINK WITHOUT ONE GETS dl=1 APPENDED
+        final String query = uri.getRawQuery();
+        final String[] params = query == null || query.isEmpty() ? new String[0] : query.split("&");
+        boolean direct = false;
         for (int i = 0; i < params.length; i++) {
-            if (!params[i].equals("dl=0")) continue;
-            params[i] = "dl=1";
-            preview = true;
+            if (params[i].equals("dl=0")) params[i] = "dl=1";
+            if (params[i].equals("dl=1") || params[i].equals("raw=1")) direct = true;
         }
-        if (!preview) return null;
-        final URI directUri = URI.create(uri.toString().replace("?" + query, "?" + String.join("&", params)));
+        String rebuilt = String.join("&", params);
+        if (!direct) rebuilt = rebuilt.isEmpty() ? "dl=1" : rebuilt + "&dl=1";
+        final URI directUri = URI.create(uri.getScheme() + "://" + uri.getRawAuthority() + path + "?" + rebuilt);
 
         try (final NetRequest req = NetRequest.create(directUri).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
             if (req.statusCode() != 200)
@@ -50,6 +55,10 @@ public final class DropboxPlatform implements Platform {
                     List.of(new Quality(directUri, 0, 0)),
                     null, null);
             return new Resolution(null, entry);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
 }

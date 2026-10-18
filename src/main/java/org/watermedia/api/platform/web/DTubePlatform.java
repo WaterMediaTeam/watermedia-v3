@@ -8,12 +8,14 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.M3UTool;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -34,26 +36,34 @@ public final class DTubePlatform implements Platform {
     private static final Pattern CREATED_AT = Pattern.compile("created_at:\\s*\"([^\"]+)\"");
     private static final Pattern USERNAME = Pattern.compile("username:\\s*\"([^\"]+)\"");
     private static final String[] HOSTS = { "d.tube", "www.d.tube" };
+    // THE CDN LINKS ARE SIGNED WITH A LIFETIME D.tube DOES NOT PUBLISH
+    private static final Duration TTL = Duration.ofMinutes(30);
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(NAME, uri);
 
+        // D.tube CDN demands a browser UA + d.tube origin/referer
+        final HttpHeaders headers = HttpHeaders.defaults(uri)
+                .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
+                .set("Referer", ORIGIN + "/")
+                .set("Origin", ORIGIN);
         try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
             final String html = req.text();
 
-            final String videoUrl = extractRequired(html, VIDEO_URL, "video_url", uri);
-            final URI hlsUri = new URI(videoUrl);
+            final String videoUrl = extract(html, VIDEO_URL);
+            if (videoUrl == null) throw new PlatformException(NAME, "No video_url found in page: " + uri);
+            final URI hlsUri = URI.create(videoUrl);
             LOGGER.debug(IT, "D.tube extracted video_url {} from {}", hlsUri, uri);
 
             final String title = extract(html, TITLE);
             final String description = extract(html, DESCRIPTION);
-            final String thumbnailUrl = extract(html, THUMBNAIL_URL);
-            final URI thumbnail = thumbnailUrl != null ? new URI(thumbnailUrl) : null;
+            final URI thumbnail = JSONTool.uri(extract(html, THUMBNAIL_URL));
             if (title == null) LOGGER.warn(IT, "D.tube page has no title for {}", uri);
 
             // METADATA IS BEST-EFFORT: A MALFORMED TIMESTAMP MUST NOT ABORT AN OTHERWISE PLAYABLE VIDEO
@@ -61,79 +71,40 @@ public final class DTubePlatform implements Platform {
             final String createdAt = extract(html, CREATED_AT);
             if (createdAt != null) {
                 try { publishedAt = Instant.parse(createdAt); }
-                catch (final Exception e) { LOGGER.warn(IT, "D.tube unparseable created_at '{}' for {}", createdAt, uri); }
+                catch (final DateTimeParseException e) { LOGGER.warn(IT, "D.tube unparseable created_at '{}' for {}", createdAt, uri, e); }
             }
-
-            long duration = 0;
-            final String durationStr = extract(html, DURATION);
-            if (durationStr != null) {
-                duration = Long.parseLong(durationStr) * 1000L;
-            }
-
-            final String author = extract(html, USERNAME);
-            final Metadata metadata = new Metadata(title, description, publishedAt, duration, author);
+            final long duration = DataTool.parseLong(extract(html, DURATION), 0L) * 1000L;
+            final Metadata metadata = new Metadata(title, description, publishedAt, duration, extract(html, USERNAME));
 
             final List<Quality> variants = new ArrayList<>();
             try {
                 // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY M3UTool)
-                final M3UTool.Playlist r = fetchHls(hlsUri);
+                final M3UTool.Playlist r = M3UTool.fetch(hlsUri, new HttpHeaders(headers).set("Accept", "application/vnd.apple.mpegurl"));
                 if (r instanceof final M3UTool.Master master) {
                     for (final M3UTool.Variant variant: master.variants()) {
                         variants.add(new Quality(variant.uri(), variant.width(), variant.height(), (float) variant.fps()));
                     }
                     LOGGER.debug(IT, "D.tube parsed {} HLS rendition(s) for {}", master.variants().size(), uri);
                 } else {
-                    LOGGER.warn(IT, "D.tube HLS response for {} was not a master playlist — falling back to direct URL", uri);
+                    LOGGER.warn(IT, "D.tube HLS response for {} was not a master playlist; falling back to the direct URL", uri);
                 }
             } catch (final IOException e) {
-                LOGGER.warn(IT, "D.tube failed to parse HLS playlist for {}: {} — falling back to direct URL", uri, e.getMessage());
+                LOGGER.warn(IT, "D.tube failed to parse the HLS playlist for {}; falling back to the direct URL", uri, e);
             }
-            if (variants.isEmpty()) {
-                variants.add(new Quality(hlsUri, 0, 0));
-            }
+            if (variants.isEmpty()) variants.add(new Quality(hlsUri, 0, 0));
 
-            // D.tube CDN demands a browser UA + d.tube origin/referer
-            final HttpHeaders headers = HttpHeaders.defaults(uri)
-                    .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
-                    .set("Referer", ORIGIN + "/")
-                    .set("Origin", ORIGIN);
-
-            LOGGER.info(IT, "D.tube resolved '{}' with {} variant(s) for {}", title, variants.size(), uri);
-            final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
-                    headers,
-                    variants,
-                    null, null);
-            return new Resolution(Instant.now().plus(30, ChronoUnit.MINUTES), entry);
-        }
-    }
-
-    // FETCHES THE HLS PLAYLIST WITH D.tube CDN HEADERS (BROWSER UA + d.tube ORIGIN/REFERER).
-    // KEPT SEPARATE FROM M3UTool.fetch BECAUSE THAT HELPER CANNOT CARRY THE Origin/Referer HEADERS THE CDN DEMANDS.
-    private static M3UTool.Playlist fetchHls(final URI uri) throws IOException {
-        try (final NetRequest req = NetRequest.create(uri)
-                .method("GET")
-                .accept("application/vnd.apple.mpegurl")
-                .userAgent(NetRequest.UserAgent.GENERIC)
-                .referer(ORIGIN + "/")
-                .header("Origin", ORIGIN)
-                .connectTimeout(10_000)
-                .readTimeout(10_000)
-                .send()) {
-            if (req.statusCode() != 200) throw new IOException("HTTP " + req.statusCode() + " for " + uri);
-            return M3UTool.parse(req.text(), uri);
+            LOGGER.debug(IT, "D.tube resolved '{}' with {} variant(s) for {}", title, variants.size(), uri);
+            final var entry = new Source(MediaType.VIDEO, thumbnail, metadata, headers, variants, null, null);
+            return new Resolution(Instant.now().plus(TTL), entry);
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
 
     private static String extract(final String html, final Pattern pattern) {
         final Matcher m = pattern.matcher(html);
         return m.find() ? m.group(1) : null;
-    }
-
-    private static String extractRequired(final String html, final Pattern pattern, final String field, final URI uri) throws PlatformException {
-        final String value = extract(html, pattern);
-        if (value == null) {
-            throw new PlatformException(NAME, "No " + field + " found in page: " + uri);
-        }
-        return value;
     }
 }

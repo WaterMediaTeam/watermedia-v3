@@ -189,7 +189,7 @@ public final class ServiceLifecycleProbe {
         final CountDownLatch resolveResume = new CountDownLatch(1);
         final AtomicBoolean callbackGuard = new AtomicBoolean();
         try {
-            PlatformAPI.register(new Platform() {
+            final Platform controlled = new Platform() {
                 @Override public String name() { return "Controlled search"; }
                 @Override public Resolution resolve(final URI uri) {
                     if (!"fixture".equals(uri.getScheme())) return null;
@@ -219,7 +219,8 @@ public final class ServiceLifecycleProbe {
                     }
                     return List.of(new PlatformResult(this, query, null, URI.create("https://fixture.invalid/" + query)));
                 }
-            });
+            };
+            PlatformAPI.register(controlled);
             final var old = PlatformAPI.search("old");
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Old probe did not enter");
             final var fresh = PlatformAPI.search("fresh");
@@ -241,11 +242,16 @@ public final class ServiceLifecycleProbe {
                     throw new AssertionError("Search admitted work while an earlier service was still closing");
                 } catch (final IllegalStateException expected) {}
                 resolveResume.countDown();
-                if (!PlayerWait.awaitCondition(() -> PlatformAPI.platforms().isEmpty(), 3000))
-                    throw new AssertionError("Shutdown did not close search admission");
+                // THE PLATFORM RELEASE DROPS THE BUILT-IN HANDLERS FIRST AND ONLY THEN WAITS FOR THE HELD PROBE
+                if (!PlayerWait.awaitCondition(() -> PlatformAPI.platforms().equals(List.of(controlled)), 3000))
+                    throw new AssertionError("Shutdown did not release the built-in handlers");
                 try {
                     PlatformAPI.search("stopped");
                     throw new AssertionError("A stopped search service admitted a query");
+                } catch (final IllegalStateException expected) {}
+                try {
+                    PlatformAPI.fetch(URI.create("fixture:stopped"));
+                    throw new AssertionError("A stopped platform service resolved a URI");
                 } catch (final IllegalStateException expected) {}
                 resume.countDown();
                 stop.get(5, TimeUnit.SECONDS);
@@ -256,6 +262,9 @@ public final class ServiceLifecycleProbe {
             }
             if (!old.results().isEmpty() || old.done()) throw new AssertionError("Late old results escaped their generation");
             WaterMedia.start("SERVICE_TEST", root.resolve("second"), root, true);
+            // THE APPLICATION HANDLER OUTLIVES THE SESSION AND STAYS AHEAD OF THE BUILT-IN ONES THE RESTART REGISTERED
+            if (PlatformAPI.platforms().indexOf(controlled) != 0 || PlatformAPI.platforms().size() < 2)
+                throw new AssertionError("Application handler did not survive the restart ahead of the built-in handlers");
             for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
             PlatformAPI.register(new Platform() {
                 @Override public String name() { return "Replacement search"; }
@@ -294,6 +303,10 @@ public final class ServiceLifecycleProbe {
             catch (final IOException closed) { exchange.close(); }
         }, handlers)) {
             WaterMediaConfig.network.remoteUrl = origin.uri("").toString();
+            try {
+                NetworkAPI.upload(root.resolve("missing.bin").toFile());
+                throw new AssertionError("A missing file was accepted for upload");
+            } catch (final IllegalArgumentException expected) {}
             final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[12];
             for (int i = 0; i < statuses.length; i++) statuses[i] = NetworkAPI.upload(file.toFile());
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Upload workers did not start");
@@ -301,7 +314,10 @@ public final class ServiceLifecycleProbe {
             for (final var status: statuses) {
                 if (!status.failed() || status.completed()) throw new AssertionError("Shutdown left an upload nonterminal or completed");
             }
-            if (!NetworkAPI.upload(file.toFile()).failed()) throw new AssertionError("Stopped service accepted an upload");
+            try {
+                NetworkAPI.upload(file.toFile());
+                throw new AssertionError("Stopped service accepted an upload");
+            } catch (final IllegalStateException expected) {}
             respond.countDown();
             immediate.set(true);
             WaterMedia.start("SERVICE_TEST", root.resolve("second"), root, false);

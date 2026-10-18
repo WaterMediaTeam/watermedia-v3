@@ -105,8 +105,8 @@ public enum MediaType {
         if (mimeType == null || mimeType.isEmpty()) return UNKNOWN;
 
         final String[] type = mimeType.split("/");
-        final String subtype = type.length == 2 ? type[1].toLowerCase() : "";
-        return switch (type[0].toLowerCase()) {
+        final String subtype = type.length == 2 ? type[1].toLowerCase(Locale.ROOT) : "";
+        return switch (type[0].toLowerCase(Locale.ROOT)) {
             case "image" -> IMAGE;
             case "video" -> VIDEO;
             case "audio" -> AUDIO;

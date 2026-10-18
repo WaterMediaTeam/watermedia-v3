@@ -16,6 +16,18 @@ import static org.watermedia.WaterMedia.BootStatus.*;
 
 class BootstrapTest {
     @Test
+    void runningNeedsAnActiveSessionAndAReadyService() {
+        final List<Service> services = List.of(new Service(Id.NETWORK, Outcome.READY, null, ""),
+                new Service(Id.PLATFORMS, Outcome.SKIPPED, null, "Client service"));
+        assertTrue(new BootStatus(State.READY, 0, 0, null, Progress.NONE, services, List.of()).running(Id.NETWORK));
+        assertTrue(new BootStatus(State.DEGRADED, 0, 0, null, Progress.NONE, services, List.of()).running(Id.NETWORK));
+        assertFalse(new BootStatus(State.READY, 0, 0, null, Progress.NONE, services, List.of()).running(Id.PLATFORMS));
+        assertFalse(new BootStatus(State.STARTING, 0, 0, null, Progress.NONE, services, List.of()).running(Id.NETWORK));
+        assertFalse(new BootStatus(State.STOPPING, 0, 0, null, Progress.NONE, services, List.of()).running(Id.NETWORK));
+        assertFalse(new BootStatus(State.FAILED, 0, 0, null, Progress.NONE, services, List.of()).running(Id.NETWORK));
+    }
+
+    @Test
     void presentBinariesFinishBeforeNetworkAndAbsentBinariesAreSkipped() throws Exception {
         final CountDownLatch entered = new CountDownLatch(1), resume = new CountDownLatch(1);
         final List<Id> started = new ArrayList<>();

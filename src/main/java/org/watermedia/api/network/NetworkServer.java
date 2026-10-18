@@ -2,12 +2,14 @@ package org.watermedia.api.network;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.BufferedInputStream;
@@ -28,6 +30,8 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -39,11 +43,15 @@ import static org.watermedia.api.network.NetworkAPI.*;
 /** Local HTTP file server: token-gated uploads into a bounded storage folder and range-capable downloads. */
 public final class NetworkServer {
     private static final Marker IT = MarkerManager.getMarker(NetworkServer.class.getSimpleName());
-    private static final String ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    // LOWERCASE ONLY, SO AN ID NAMES THE SAME FILE ON CASE-INSENSITIVE AND CASE-SENSITIVE FILE SYSTEMS ALIKE
+    private static final String ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
     private static final int ID_LENGTH = 8;
+    private static final long INVALID_RANGE = -1L;
     private static final SecureRandom RANDOM = new SecureRandom();
-    // UNAUTHORIZED UPLOADS ARE AGGREGATED INTO ONE WARNING PER WINDOW
+    // UNAUTHORIZED UPLOADS AND REFUSALS OF A FULL STORAGE ARE AGGREGATED INTO ONE WARNING PER WINDOW
     private static final long REJECT_REPORT_NS = TimeUnit.SECONDS.toNanos(10);
+    // THE IDLE WATCHDOG OF THE REQUEST THE CURRENT WORKER IS SERVING; TRANSFERS TOUCH IT PER CHUNK
+    private static final ThreadLocal<Watchdog> WATCHDOG = new ThreadLocal<>();
     private static volatile Running running;
     private static boolean shutdownHook;
 
@@ -51,15 +59,16 @@ public final class NetworkServer {
     static synchronized void start(final int port, final Path cwd) throws IOException {
         if (running != null) throw new IllegalStateException("The file server is already running");
         final var config = WaterMediaConfig.network;
+        // THE CONFIGURATION IS STATE OF THE SESSION, NOT AN ARGUMENT OF THIS CALL
         if (config.serverBindAddress == null || config.serverBindAddress.isBlank())
-            throw new IllegalArgumentException("The file server requires an explicit bind address");
+            throw new IllegalStateException("The file server requires an explicit bind address");
         final InetAddress bind = InetAddress.getByName(config.serverBindAddress);
         final String token = config.token;
-        if (token == null || token.isBlank()) throw new IllegalArgumentException("The file server requires an upload token");
+        if (token == null || token.isBlank()) throw new IllegalStateException("The file server requires an upload token");
         if (!bind.isLoopbackAddress() && WaterMediaConfig.DEFAULT_NETWORK_TOKEN.equals(token.trim()))
-            throw new IllegalArgumentException("A non-loopback file server requires a custom upload token");
+            throw new IllegalStateException("A non-loopback file server requires a custom upload token");
         if (config.maxServerRequests < 1 || config.serverTimeout < 1 || config.maxStorageSize < 1 || config.maxUploadSize < 0)
-            throw new IllegalArgumentException("File server concurrency, deadline and storage limits must be positive");
+            throw new IllegalStateException("File server concurrency, idle timeout and storage limits must be positive");
         final Path storage = cwd.resolve("watermedia").resolve("files").toAbsolutePath().normalize();
         Files.createDirectories(storage);
         // OWN THE STORAGE BEFORE CLEANUP, AND KEEP THE LOCK UNTIL ALL WORKERS EXIT.
@@ -127,20 +136,14 @@ public final class NetworkServer {
                 server.createContext("/", exchange -> handleRoot(exchange, state));
                 // REJECTED WORK CLOSES ITS CONNECTION IN HTTPSERVER'S DISPATCHER; NO REQUEST QUEUE GROWS.
                 server.setExecutor(command -> state.executor.execute(() -> {
-                    final Thread worker = Thread.currentThread();
-                    final Object lock = new Object();
-                    final boolean[] finished = { false };
-                    final var timeout = state.deadlines.schedule(() -> {
-                        synchronized (lock) {
-                            if (!finished[0]) worker.interrupt();
-                        }
-                    }, state.timeout, TimeUnit.MILLISECONDS);
+                    final Watchdog watchdog = new Watchdog(Thread.currentThread(), state.deadlines, TimeUnit.MILLISECONDS.toNanos(state.timeout));
+                    WATCHDOG.set(watchdog);
                     try {
+                        watchdog.arm();
                         command.run();
                     } finally {
-                        // INTERRUPTING THE JDK'S SOCKETCHANNEL CLOSES BLOCKED HEADER/BODY IO AND WRITES.
-                        synchronized (lock) { finished[0] = true; }
-                        timeout.cancel(false);
+                        watchdog.finish();
+                        WATCHDOG.remove();
                         Thread.interrupted();
                     }
                 }));
@@ -273,11 +276,16 @@ public final class NetworkServer {
                 return;
             }
             final boolean admitted;
+            final long occupied;
             synchronized (state) {
-                admitted = length <= state.maxStorage - state.used - state.reserved;
+                occupied = state.used + state.reserved;
+                admitted = length <= state.maxStorage - occupied;
                 if (admitted) state.reserved += length;
             }
             if (!admitted) {
+                // NOTHING EVICTS STORED FILES: THE OPERATOR MUST REMOVE FILES BY HAND OR RAISE THE BUDGET
+                LogTool.throttled(LOGGER, Level.WARN, IT, state.fullReports,
+                        "Storage is full: refused '{}' ({} bytes) with {} of {} bytes in use under {}", filename, length, occupied, state.maxStorage, state.storage);
                 exchange.sendResponseHeaders(507, -1);
                 return;
             }
@@ -295,16 +303,18 @@ public final class NetworkServer {
                     catch (final FileAlreadyExistsException ignored) {}
                 }
                 target = temporary.resolve(filename);
+                final Watchdog watchdog = WATCHDOG.get();
                 try (final var input = new BufferedInputStream(exchange.getRequestBody());
                      final var output = new BufferedOutputStream(Files.newOutputStream(target, StandardOpenOption.CREATE_NEW))) {
                     final byte[] buffer = new byte[8192];
                     long remaining = length;
                     while (remaining > 0) {
-                        if (Thread.currentThread().isInterrupted()) throw new IOException("Upload deadline reached");
+                        if (Thread.currentThread().isInterrupted()) throw new IOException("Upload idle for too long");
                         final int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
                         if (read < 0) throw new IOException("Upload ended before Content-Length");
                         output.write(buffer, 0, read);
                         remaining -= read;
+                        watchdog.touch();
                     }
                 }
                 if (state.stopping || Thread.currentThread().isInterrupted()) throw new IOException("Upload stopped before publication");
@@ -345,7 +355,8 @@ public final class NetworkServer {
             final boolean head = "HEAD".equals(method);
             final String path = exchange.getRequestURI().getPath();
             if ("/".equals(path)) {
-                final byte[] info = (WaterMedia.NAME + " v" + WaterMedia.VERSION).getBytes(StandardCharsets.UTF_8);
+                // A REACHABILITY LINE FOR ANYONE; THE VERSION STAYS OUT OF AN UNAUTHENTICATED ANSWER
+                final byte[] info = WaterMedia.NAME.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
                 exchange.getResponseHeaders().set("Content-Length", String.valueOf(info.length));
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, head ? -1 : info.length);
@@ -373,42 +384,43 @@ public final class NetworkServer {
             final String filename = file.getFileName().toString();
             final String contentType = URLConnection.guessContentTypeFromName(filename);
             final long size = Files.size(file);
-            exchange.getResponseHeaders().set("Content-Type", contentType == null ? NetRequest.MIMETYPE_OCTET_STREAM : contentType);
-            exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
-            if (head) {
-                exchange.getResponseHeaders().set("Content-Length", String.valueOf(size));
-                exchange.sendResponseHeaders(HttpURLConnection.HTTP_OK, -1);
-                return;
-            }
             long start = 0;
             long end = size - 1;
+            boolean partial = false;
+            // ONE SATISFIABLE bytes RANGE IS SERVED, FOR HEAD TOO; A MALFORMED OR MULTIPART ONE IS IGNORED AND THE WHOLE
+            // FILE ANSWERED, AS RFC 9110 ALLOWS. ONLY A WELL-FORMED RANGE OUTSIDE THE FILE IS A 416
             final String range = exchange.getRequestHeaders().getFirst("Range");
-            final boolean partial = range != null && range.startsWith("bytes=");
-            if (partial) {
-                try {
-                    final String[] bounds = range.substring(6).split("-", -1);
-                    if (bounds.length != 2 || size == 0) throw new IllegalArgumentException("Invalid range");
-                    if (bounds[0].isEmpty()) {
-                        final long suffix = rangeValue(bounds[1]);
-                        if (suffix == 0) throw new IllegalArgumentException("Empty suffix");
-                        start = Math.max(0, size - suffix);
-                    } else {
-                        start = rangeValue(bounds[0]);
-                        if (!bounds[1].isEmpty()) end = Math.min(end, rangeValue(bounds[1]));
+            if (range != null && range.regionMatches(true, 0, "bytes=", 0, 6) && range.indexOf(',') < 0 && range.indexOf('-') > 0) {
+                final String spec = range.substring(6);
+                final int dash = spec.indexOf('-');
+                final boolean suffix = dash == 0;
+                final long first = suffix ? 0 : rangeValue(spec.substring(0, dash));
+                final long last = spec.length() == dash + 1 ? (suffix ? INVALID_RANGE : Long.MAX_VALUE) : rangeValue(spec.substring(dash + 1));
+                if (first != INVALID_RANGE && last != INVALID_RANGE && first <= last) {
+                    if (suffix ? last == 0 || size == 0 : first >= size) {
+                        exchange.getResponseHeaders().set("Content-Range", "bytes */" + size);
+                        exchange.sendResponseHeaders(416, -1);
+                        return;
                     }
-                    if (start >= size || start > end) throw new IllegalArgumentException("Unsatisfiable range");
-                } catch (final IllegalArgumentException invalid) {
-                    exchange.getResponseHeaders().set("Content-Range", "bytes */" + size);
-                    exchange.sendResponseHeaders(416, -1);
-                    return;
+                    start = suffix ? Math.max(0, size - last) : first;
+                    end = suffix ? size - 1 : Math.min(last, size - 1);
+                    partial = true;
                 }
             }
             final long length = size == 0 ? 0 : end - start + 1;
+            exchange.getResponseHeaders().set("Content-Type", contentType == null ? NetRequest.MIMETYPE_OCTET_STREAM : contentType);
+            exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
             if (partial) exchange.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + size);
             else exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename.replace('"', '_') + "\"");
             exchange.getResponseHeaders().set("Content-Length", String.valueOf(length));
-            exchange.sendResponseHeaders(partial ? HttpURLConnection.HTTP_PARTIAL : HttpURLConnection.HTTP_OK, length == 0 ? -1 : length);
-            if (length == 0) return;
+            final int status = partial ? HttpURLConnection.HTTP_PARTIAL : HttpURLConnection.HTTP_OK;
+            if (head || length == 0) {
+                // NO BODY FOLLOWS; -1 KEEPS THE Content-Length SET ABOVE INSTEAD OF A CHUNKED ENCODING
+                exchange.sendResponseHeaders(status, -1);
+                return;
+            }
+            exchange.sendResponseHeaders(status, length);
+            final Watchdog watchdog = WATCHDOG.get();
             try (final var channel = Files.newByteChannel(file, StandardOpenOption.READ);
                  final var input = Channels.newInputStream(channel);
                  final var output = exchange.getResponseBody()) {
@@ -416,19 +428,20 @@ public final class NetworkServer {
                 final byte[] buffer = new byte[8192];
                 long remaining = length;
                 while (remaining > 0) {
-                    if (Thread.currentThread().isInterrupted()) throw new IOException("Download deadline reached");
+                    if (Thread.currentThread().isInterrupted()) throw new IOException("Download idle for too long");
                     final int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
                     if (read < 0) throw new IOException("Stored file was truncated during download");
                     output.write(buffer, 0, read);
                     remaining -= read;
+                    watchdog.touch();
                 }
             }
         }
     }
 
+    // A RANGE OFFSET: DIGITS ONLY, SATURATING ABOVE Long.MAX_VALUE; ANYTHING ELSE IS INVALID_RANGE
     private static long rangeValue(final String value) {
-        if (value.isEmpty() || !value.chars().allMatch(c -> c >= '0' && c <= '9'))
-            throw new IllegalArgumentException("Invalid range offset");
+        if (value.isEmpty() || !value.chars().allMatch(c -> c >= '0' && c <= '9')) return INVALID_RANGE;
         final BigInteger number = new BigInteger(value);
         return number.bitLength() > 63 ? Long.MAX_VALUE : number.longValue();
     }
@@ -443,6 +456,7 @@ public final class NetworkServer {
         private final long maxUpload;
         private final long maxStorage;
         private final int timeout;
+        private final LogTool.Throttle fullReports = new LogTool.Throttle(REJECT_REPORT_NS);
         private long used;
         private long reserved;
         private long rejectedUploads;
@@ -462,6 +476,49 @@ public final class NetworkServer {
             this.maxStorage = maxStorage;
             this.used = used;
             this.timeout = timeout;
+        }
+    }
+
+    // IDLE WATCHDOG OF ONE REQUEST: INTERRUPTS ITS WORKER ONCE THE TIMEOUT PASSES WITHOUT A touch(), WHICH EVERY
+    // TRANSFERRED CHUNK ISSUES, SO ONLY STALLED HEADERS OR BODIES ARE CUT. THE INTERRUPT CLOSES THE JDK'S SOCKETCHANNEL
+    private static final class Watchdog implements Runnable {
+        private final Thread worker;
+        private final ScheduledThreadPoolExecutor deadlines;
+        private final long timeoutNs;
+        private volatile long touched = System.nanoTime();
+        private boolean finished;
+        private ScheduledFuture<?> check;
+
+        private Watchdog(final Thread worker, final ScheduledThreadPoolExecutor deadlines, final long timeoutNs) {
+            this.worker = worker;
+            this.deadlines = deadlines;
+            this.timeoutNs = timeoutNs;
+        }
+
+        void touch() { this.touched = System.nanoTime(); }
+
+        synchronized void arm() {
+            this.schedule(this.timeoutNs);
+        }
+
+        synchronized void finish() {
+            this.finished = true;
+            if (this.check != null) this.check.cancel(false);
+        }
+
+        @Override
+        public synchronized void run() {
+            if (this.finished) return;
+            final long idle = System.nanoTime() - this.touched;
+            if (idle >= this.timeoutNs) this.worker.interrupt();
+            else this.schedule(this.timeoutNs - idle);
+        }
+
+        // A STOPPING SERVER HAS SHUT ITS SCHEDULER DOWN AND INTERRUPTS EVERY WORKER ITSELF
+        private void schedule(final long delayNs) {
+            if (this.finished) return;
+            try { this.check = this.deadlines.schedule(this, delayNs, TimeUnit.NANOSECONDS); }
+            catch (final RejectedExecutionException stopping) { this.finished = true; }
         }
     }
 

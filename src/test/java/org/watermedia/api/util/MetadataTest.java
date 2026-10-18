@@ -8,11 +8,11 @@ import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Smoke tests for the {@link Metadata} record: confirms accessor wiring and null
- * tolerance. The record carries no logic, so the test surface is intentionally
- * minimal.
+ * Verifies the {@link Metadata} record: accessor wiring, null tolerance and the rejection of a
+ * negative duration, the only validation it carries.
  */
 @DisplayName("Metadata record")
 public class MetadataTest {
@@ -40,6 +40,12 @@ public class MetadataTest {
         assertNull(md.postedAt());
         assertEquals(0L, md.durationMs());
         assertNull(md.author());
+    }
+
+    @Test
+    @DisplayName("a negative duration is rejected")
+    void testNegativeDuration() {
+        assertThrows(IllegalArgumentException.class, () -> new Metadata("t", null, null, -1L, null));
     }
 
     @Test

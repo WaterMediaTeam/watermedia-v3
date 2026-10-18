@@ -9,6 +9,7 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.JSONTool;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -29,53 +30,45 @@ public final class StreamablePlatform implements Platform {
 
     @Override
     public Resolution resolve(final URI uri) throws PlatformException {
-        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS) || uri.getPath() == null || uri.getPath().length() < 2) return null;
+        if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
+        if (uri.getPath() == null || uri.getPath().length() < 2) throw PlatformException.unsupported(NAME, uri);
 
-        // SHARE LINKS ARE /<id>, EMBEDS /e/<id> OR /o/<id> AND /s/<id>/<slug> CARRIES A TITLE; ANY OTHER SHAPE IS FOREIGN
+        // SHARE LINKS ARE /<id>, EMBEDS /e/<id> OR /o/<id> AND /s/<id>/<slug> CARRIES A TITLE; ANY OTHER SHAPE IS UNSUPPORTED
         final String[] segments = uri.getPath().substring(1).split("/");
         final boolean prefixed = segments.length > 1 && DataTool.equalsAnyIgnoreCase(segments[0], "e", "o", "s");
-        if (segments.length > (prefixed ? ("s".equalsIgnoreCase(segments[0]) ? 3 : 2) : 1)) return null;
+        if (segments.length > (prefixed ? ("s".equalsIgnoreCase(segments[0]) ? 3 : 2) : 1)) throw PlatformException.unsupported(NAME, uri);
         final String videoId = prefixed ? segments[1] : segments[0];
-        if (videoId.isEmpty()) return null;
+        if (videoId.isEmpty()) throw PlatformException.unsupported(NAME, uri);
 
-        try {
-            final VideoData video = NetRequest.fetchJson(NAME, API_URL + videoId, VideoData.class);
-            LOGGER.debug(IT, "Streamable video '{}' raw status={} percent={}", videoId, video.status, video.percent);
+        final VideoData video = NetRequest.fetchJson(NAME, API_URL + videoId, VideoData.class);
+        LOGGER.debug(IT, "Streamable video '{}' raw status={} percent={}", videoId, video.status, video.percent);
 
-            // GATE ON READINESS BEFORE TOUCHING files — A PROCESSING VIDEO HAS NO RENDITIONS YET
-            if (video.status != STATUS_READY)
-                throw new PlatformException(NAME, "Video '" + videoId + "' is not ready (status=" + video.status
-                        + ", " + video.percent + "%" + (video.message != null ? ", message: " + video.message : "") + ")");
+        // GATE ON READINESS BEFORE TOUCHING files — A PROCESSING VIDEO HAS NO RENDITIONS YET
+        if (video.status != STATUS_READY)
+            throw new PlatformException(NAME, "Video '" + videoId + "' is not ready (status=" + video.status
+                    + ", " + video.percent + "%" + (video.message != null ? ", message: " + video.message : "") + ")");
 
-            if (video.files == null || video.files.mp4 == null || video.files.mp4.url == null)
-                throw new PlatformException(NAME, "Video '" + videoId + "' is marked ready but exposes no mp4 rendition");
+        final URI main = video.files == null || video.files.mp4 == null ? null : JSONTool.uri(video.files.mp4.url);
+        if (main == null) throw new PlatformException(NAME, "Video '" + videoId + "' is marked ready but exposes no mp4 rendition");
 
-            final List<Quality> variants = new ArrayList<>(2);
-            variants.add(new Quality(URI.create(video.files.mp4.url), video.files.mp4.width, video.files.mp4.height));
-            if (video.files.mp4Small != null && video.files.mp4Small.url != null) {
-                variants.add(new Quality(URI.create(video.files.mp4Small.url), video.files.mp4Small.width, video.files.mp4Small.height));
-            }
+        final List<Quality> variants = new ArrayList<>(2);
+        variants.add(new Quality(main, Math.max(0, video.files.mp4.width), Math.max(0, video.files.mp4.height)));
+        final URI small = video.files.mp4Small == null ? null : JSONTool.uri(video.files.mp4Small.url);
+        if (small != null) variants.add(new Quality(small, Math.max(0, video.files.mp4Small.width), Math.max(0, video.files.mp4Small.height)));
 
-            final URI thumbnailUri = video.thumbnail != null
-                    ? URI.create(video.thumbnail.startsWith("http") ? video.thumbnail : "http:" + video.thumbnail)
-                    : null;
-            if (video.thumbnail == null) LOGGER.warn(IT, "Streamable video '{}' has no thumbnail", videoId);
+        // THE THUMBNAIL IS PROTOCOL-RELATIVE; JSONTool PROMOTES IT TO https
+        final URI thumbnailUri = JSONTool.uri(video.thumbnail);
+        if (thumbnailUri == null) LOGGER.warn(IT, "Streamable video '{}' has no thumbnail", videoId);
 
-            final long durationMs = video.files.original != null ? (long) (video.files.original.duration * 1000L) : 0L;
-            final Metadata metadata = new Metadata(video.title, videoId, null, durationMs, null);
+        final long durationMs = video.files.original != null ? (long) Math.max(0f, video.files.original.duration * 1000f) : 0L;
+        final Metadata metadata = new Metadata(video.title, null, null, durationMs, null);
 
-            LOGGER.info(IT, "Streamable resolved video '{}' with {} variant(s)", videoId, variants.size());
-            final var entry = new Source(MediaType.VIDEO, thumbnailUri, metadata,
-                    HttpHeaders.defaults(uri),
-                    variants,
-                    null, null);
-            return new Resolution(null, entry);
-        } catch (final PlatformException e) {
-            throw e; // ALREADY CARRIES A PRECISE DIAGNOSTIC (NOT-READY, NO-RENDITION, ...)
-        } catch (final Exception e) {
-            // HTTP/IO, JSON, OR URI FAILURES — ADD THE VIDEO CONTEXT AND KEEP THE ROOT CAUSE
-            throw new PlatformException(NAME, "Failed to resolve video '" + videoId + "' from " + uri, e);
-        }
+        LOGGER.debug(IT, "Streamable resolved video '{}' with {} variant(s)", videoId, variants.size());
+        final var entry = new Source(MediaType.VIDEO, thumbnailUri, metadata,
+                HttpHeaders.defaults(uri),
+                variants,
+                null, null);
+        return new Resolution(null, entry);
     }
 
     private record VideoData(String title, int status, int percent, String message, @SerializedName("thumbnail_url") String thumbnail, VideoFiles files) {

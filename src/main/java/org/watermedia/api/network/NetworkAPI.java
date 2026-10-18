@@ -46,10 +46,15 @@ public final class NetworkAPI {
 
     /**
      * Uploads multiple files to the remote WaterMedia server on a shared background thread pool.
+     * Every file is checked before the first upload starts, so a bad entry submits nothing.
      * @param files the files to upload
      * @return one status tracker per file
+     * @throws IllegalArgumentException when an entry is not an existing regular file
+     * @throws IllegalStateException when the network service is not running
      */
     public static NetworkServer.UploadStatus[] upload(final File... files) {
+        if (files == null) throw new IllegalArgumentException("Files cannot be null");
+        for (final File file: files) if (file == null || !file.isFile()) throw new IllegalArgumentException("Not a file: " + file);
         final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[files.length];
         for (int i = 0; i < files.length; i++) statuses[i] = upload(files[i]);
         return statuses;
@@ -57,19 +62,20 @@ public final class NetworkAPI {
 
     /**
      * Uploads a file to the remote WaterMedia server in a background thread.
-     * The returned {@link NetworkServer.UploadStatus} is updated as the upload progresses.
+     * The returned {@link NetworkServer.UploadStatus} is updated as the upload progresses; an
+     * unreachable or misconfigured remote server fails the status instead of throwing.
      * @param file the file to upload
      * @return status tracker for the upload (poll for progress)
+     * @throws IllegalArgumentException when {@code file} is not an existing regular file
+     * @throws IllegalStateException when the network service is not running
      */
     public static NetworkServer.UploadStatus upload(final File file) {
+        if (file == null || !file.isFile()) throw new IllegalArgumentException("Not a file: " + file);
+        if (!WaterMedia.status().running(BootStatus.Id.NETWORK)) throw new IllegalStateException("The network service is not running");
         final NetworkServer.UploadStatus status = new NetworkServer.UploadStatus(file.length());
         synchronized (NetworkAPI.class) {
             final Uploads current = uploads;
-            final BootStatus.State state = WaterMedia.status().state();
-            if (current == null || !current.active || state == BootStatus.State.STOPPING || state == BootStatus.State.FAILED) {
-                status.fail("Network service is not running");
-                return status;
-            }
+            if (current == null || !current.active) throw new IllegalStateException("The network service is not running");
             current.pending.add(status);
             current.executor.execute(() -> {
                 try {
@@ -88,19 +94,29 @@ public final class NetworkAPI {
      * Validated base URL of the remote file server ({@code network.remoteUrl}) without the
      * trailing slash. Fails fast on a blank or non-absolute http(s) value instead of producing
      * a scheme-less URL that only breaks much later, far from the actual cause.
+     *
+     * @throws IllegalStateException when the configured value is not an absolute http(s) URL
      */
-    public static String remoteUrl() throws IOException {
+    public static String remoteUrl() {
         final String base = WaterMediaConfig.network.remoteUrl;
         if (base == null || base.isBlank() || !(base.startsWith("http://") || base.startsWith("https://")))
-            throw new IOException("network.remoteUrl is not configured (expected an absolute http(s) URL): " + base);
+            throw new IllegalStateException("network.remoteUrl is not an absolute http(s) URL: " + base);
         return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
     private static void upload(final File file, final NetworkServer.UploadStatus status, final Uploads owner) {
+        final String remote;
+        try {
+            remote = remoteUrl();
+        } catch (final IllegalStateException misconfigured) { // A WRONG network.remoteUrl IS AN EXPECTED CONDITION, NOT A BUG: NO TRACE
+            LOGGER.warn(IT, "Could not upload '{}': {}", file.getName(), misconfigured.getMessage());
+            status.fail(misconfigured.toString());
+            return;
+        }
         HttpURLConnection conn = null;
         try {
             // STREAMING UPLOADS WITH BYTE-LEVEL PROGRESS ARE OUT OF SCOPE FOR NetRequest, SO THIS DRIVES HttpURLConnection
-            final URL url = URI.create(remoteUrl() + "/upload").toURL();
+            final URL url = URI.create(remote + "/upload").toURL();
             conn = (HttpURLConnection) url.openConnection();
             if (!owner.active) throw new IOException("Upload session stopped");
             conn.setConnectTimeout(WaterMediaConfig.network.timeout);
@@ -154,6 +170,10 @@ public final class NetworkAPI {
             } else {
                 status.fail("Server returned HTTP " + code);
             }
+        } catch (final ConnectException | UnknownHostException | SocketTimeoutException unreachable) {
+            // A REMOTE SERVER THAT IS DOWN OR UNRESOLVABLE IS AN EXPECTED CONDITION, NOT A BUG: NO TRACE
+            LOGGER.warn(IT, "Could not reach the remote file server to upload '{}': {}", file.getName(), unreachable.getMessage());
+            status.fail(unreachable.toString());
         } catch (final Exception e) {
             // e.getMessage() IS OFTEN null (E.G. NPE); e.toString() KEEPS THE EXCEPTION TYPE FOR DIAGNOSIS
             LOGGER.error(IT, "Failed to upload '{}' to remote server", file.getName(), e);

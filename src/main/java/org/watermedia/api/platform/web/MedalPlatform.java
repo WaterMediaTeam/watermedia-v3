@@ -41,17 +41,18 @@ public final class MedalPlatform implements Platform {
     // MEDAL SWAPS THE REAL CLIP FOR THIS PLACEHOLDER FILE WHEN A GUEST IS NOT ALLOWED TO WATCH IT
     private static final String PRIVACY_PROTECTED = "video/privacy-protected-guest";
     private static final String[] HOSTS = { "medal.tv", "www.medal.tv" };
+    private static final String CONTENT_PARAM = "contentId=";
 
     @Override
     public String name() { return NAME; }
 
     @Override
-    public Resolution resolve(final URI uri) throws Exception {
+    public Resolution resolve(final URI uri) throws PlatformException {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
 
         // MEDAL HAS MANY PAGE TYPES (PROFILES, GAME HUBS, THE HOME FEED); ONLY A CLIP URL CARRIES AN ID WE CAN RESOLVE
         final String clipId = clipId(uri);
-        if (clipId == null) return null;
+        if (clipId == null) throw PlatformException.unsupported(NAME, uri);
 
         LOGGER.debug(IT, "Medal resolving clip '{}' from {}", clipId, uri);
         // A REMOVED, PRIVATE OR MALFORMED ID ANSWERS 4xx (BAD IDS COME BACK AS 400, NOT 404)
@@ -76,7 +77,7 @@ public final class MedalPlatform implements Platform {
         if (variants.isEmpty()) {
             final URI progressive = JSONTool.uri(content.contentUrl);
             if (progressive != null && !privacyProtected(progressive))
-                variants.add(new Quality(progressive, content.sourceWidth, content.sourceHeight));
+                variants.add(new Quality(progressive, Math.max(0, content.sourceWidth), Math.max(0, content.sourceHeight)));
         }
         // LAST RESORT: THE PRE-RENDERED SOCIAL-SHARE MP4 (NO RELIABLE DIMENSIONS — LET FFMediaPlayer PROBE)
         if (variants.isEmpty()) {
@@ -90,7 +91,7 @@ public final class MedalPlatform implements Platform {
         final String title = content.contentTitle != null && !content.contentTitle.isBlank() ? content.contentTitle : null;
         final String desc = content.contentDescription != null && !content.contentDescription.isBlank() ? content.contentDescription : null;
         final Instant postedAt = content.created > 0 ? Instant.ofEpochMilli(content.created) : null;
-        final long durationMs = (long) (content.videoLengthSeconds * 1000L);
+        final long durationMs = (long) Math.max(0d, content.videoLengthSeconds * 1000d);
         final String author = content.poster != null
                 ? (content.poster.displayName != null ? content.poster.displayName : content.poster.userName)
                 : null;
@@ -102,7 +103,7 @@ public final class MedalPlatform implements Platform {
         // MEDAL SIGNS EVERY CDN URL WITH ONE SHARED EXPIRY; HONOR IT SO MRL RE-RESOLVES BEFORE THE LINKS DIE
         final Instant expires = content.urlsExpireAt > 0 ? Instant.ofEpochMilli(content.urlsExpireAt) : null;
 
-        LOGGER.info(IT, "Medal resolved clip '{}' with {} variant(s)", clipId, variants.size());
+        LOGGER.debug(IT, "Medal resolved clip '{}' with {} variant(s)", clipId, variants.size());
         final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
                 HttpHeaders.defaults(uri),
                 variants,
@@ -124,8 +125,8 @@ public final class MedalPlatform implements Platform {
         final String query = uri.getQuery();
         if (query != null) {
             for (final String part: query.split("&")) {
-                if (part.startsWith("contentId=") && part.length() > "contentId=".length())
-                    return part.substring("contentId=".length());
+                if (part.regionMatches(true, 0, CONTENT_PARAM, 0, CONTENT_PARAM.length()) && part.length() > CONTENT_PARAM.length())
+                    return part.substring(CONTENT_PARAM.length());
             }
         }
         return null;

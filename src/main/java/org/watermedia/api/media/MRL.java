@@ -2,6 +2,8 @@ package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.WaterMedia;
+import org.watermedia.WaterMedia.BootStatus.Id;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
@@ -228,7 +230,8 @@ public final class MRL {
             LOGGER.error(IT, "Failed to dispose forgotten MRLs", ex);
         }
         try {
-            Platform.Resolution data = PlatformAPI.fetch(this.uri);
+            // A DEGRADED SESSION WITHOUT THE PLATFORM SERVICE STILL PLAYS DIRECT LINKS THROUGH THE PROBE BELOW
+            Platform.Resolution data = WaterMedia.status().running(Id.PLATFORMS) ? PlatformAPI.fetch(this.uri) : null;
             if (data == null) {
                 try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug(IT, "Connected to {} with content type {}", this.uri, req.contentType());
@@ -280,7 +283,8 @@ public final class MRL {
                                     } catch (final
                                     IllegalArgumentException ignored) { /* TVG-LOGO IS BEST-EFFORT, BAD ENTRIES STAY UNILLUSTRATED */ }
                                 }
-                                final Metadata md = new Metadata(e.title(), null, null, 0, e.tvgGroup());
+                                // THE IPTV GROUP IS A CATEGORY ("Sports"), NOT WHO PUBLISHED THE CHANNEL
+                                final Metadata md = new Metadata(e.title(), e.tvgGroup(), null, 0, null);
                                 sources.add(new Platform.Source(MediaType.UNKNOWN, logoUri, md,
                                         HttpHeaders.defaults(childUri),
                                         List.of(new Platform.Quality(childUri, 0, 0)),

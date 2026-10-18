@@ -13,13 +13,13 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Asserts that an IPTV-style M3U playlist (flat list of channels) loaded via
- * {@link MRL} expands into multiple {@link MRL.Source}s instead of collapsing
- * into one — the regression fix for the previous behaviour where MRL handed
- * the URL straight to the player as if it were HLS.
+ * Verifies that an IPTV-style M3U playlist (a flat list of channels) loaded through {@link MRL}
+ * expands into one {@link MRL.Source} per channel, carrying the channel metadata, instead of
+ * collapsing into a single HLS-like source.
  */
 @DisplayName("MRL IPTV M3U expansion")
 public class MrlIptvM3uTest {
@@ -63,7 +63,9 @@ public class MrlIptvM3uTest {
         assertNotNull(first);
         assertNotNull(first.metadata());
         assertEquals("Channel One", first.metadata().title());
-        assertEquals("USA", first.metadata().author());
+        // THE IPTV GROUP IS A CATEGORY, SO IT TRAVELS AS THE DESCRIPTION AND NOBODY IS CREDITED AS AUTHOR
+        assertEquals("USA", first.metadata().description());
+        assertNull(first.metadata().author());
 
         assertNotNull(first.thumbnail());
         assertEquals("https://logo.example/one.png", first.thumbnail().toString());
