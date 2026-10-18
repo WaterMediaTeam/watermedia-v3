@@ -12,6 +12,9 @@ import org.watermedia.tools.IOTool;
 import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,7 +22,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BiConsumer;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -132,9 +134,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // BACK UPSTREAM. ONLY HONOURED ON THE TICKER THREAD: A USER CALL RACING THE PASS STILL FORWARDS
     private volatile boolean applying;
 
-    // OPTIONAL STATUS-TRANSITION LISTENER — LETS CONSUMERS REACT TO EVERY STATUS CHANGE WITHOUT
-    // POLLING status() EVERY TICK. INVOKED FROM INTERNAL THREADS.
-    private volatile BiConsumer<Status, Status> statusListener;
+    // STATUS LISTENERS, CONSUMED BY A TERMINAL TRANSITION; TRANSITIONS QUEUE UP AND ONE THREAD DRAINS THEM IN ORDER, SO
+    // A CONTROL ISSUED FROM A CALLBACK NEVER DELIVERS ITS TRANSITION AHEAD OF THE REPORTED ONE. GUARDED BY statusEvents
+    private final List<StatusListener> statusListeners = new ArrayList<>();
+    private final ArrayDeque<Transition> statusEvents = new ArrayDeque<>();
+    private boolean statusDraining;
 
     // FAILURE BEHIND THE CURRENT ERROR STATE — SET BY SUBCLASSES, CLEARED ON EVERY LOCAL start()
     private volatile Throwable exception;
@@ -962,16 +966,25 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public abstract Status status();
 
     /**
-     * Registers a status-transition listener, replacing any previous one. The listener receives
-     * the previous and the new status on every real transition, including the ones a restart,
-     * {@link #stop()} and {@link #release()} cause, so playlist consumers advance without polling
-     * {@link #status()}. It runs on whichever thread drove the transition: a playback thread, the
-     * shared sync ticker, or the caller of {@link #status()}, {@link #time()} or {@link #texture()}
-     * on image players whose clock resolves the end lazily. Keep it short, never block, and never
-     * call {@link #release()} from it.
-     * @param listener the listener to notify, or {@code null} to clear it
+     * Adds a status listener; adding one twice keeps it once. Listeners hear every real transition,
+     * including the ones a restart, {@link #stop()} and {@link #release()} cause, so playlist
+     * consumers advance without polling {@link #status()}; the transition into
+     * {@link Status#STOPPED}, {@link Status#ENDED} or {@link Status#ERROR} consumes them, so a
+     * consumer registers once per playback and, when it restarts the player from that terminal
+     * callback, registers again from the callback itself. Transitions are delivered one at a time
+     * and in order, on whichever thread drove the first of them: a playback thread, the shared sync
+     * ticker, or the caller of {@link #status()}, {@link #time()} or {@link #texture()} on image
+     * players whose clock resolves the end lazily. Keep it short, never block, and never call
+     * {@link #release()} from it.
+     * @param listener the listener to add
+     * @throws IllegalArgumentException when {@code listener} is null
      */
-    public void onStatus(final BiConsumer<Status, Status> listener) { this.statusListener = listener; }
+    public void onStatus(final StatusListener listener) {
+        if (listener == null) throw new IllegalArgumentException("Listener cannot be null");
+        synchronized (this.statusEvents) {
+            if (!this.statusListeners.contains(listener)) this.statusListeners.add(listener);
+        }
+    }
 
     /**
      * The failure behind the current {@link Status#ERROR ERROR} state, useful to surface the real
@@ -986,17 +999,54 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (this.exception == null) this.exception = t;
     }
 
-    // NOTIFIES THE STATUS LISTENER OF A REAL TRANSITION. SWALLOWS LISTENER FAILURES SO A BROKEN
-    // CONSUMER NEVER TEARS DOWN THE PLAYBACK THREAD.
+    // QUEUES A REAL TRANSITION AND, UNLESS ANOTHER THREAD IS ALREADY DRAINING, DELIVERS THE QUEUE IN ORDER. A TERMINAL
+    // TRANSITION CONSUMES THE LISTENERS BEFORE FIRING, SO ONE ADDED FROM ITS CALLBACK SURVIVES; FAILURES ARE SWALLOWED
     protected void invokeStatus(final Status prev, final Status next) {
-        final BiConsumer<Status, Status> l = this.statusListener;
-        if (l != null && prev != next) {
-            try {
-                l.accept(prev, next);
-            } catch (final Throwable t) {
-                LOGGER.error(IT, "Status listener failed", t);
+        if (prev == next) return;
+        synchronized (this.statusEvents) {
+            this.statusEvents.add(new Transition(prev, next));
+            if (this.statusDraining) return;
+            this.statusDraining = true;
+        }
+        while (true) {
+            final Transition transition;
+            final StatusListener[] listeners;
+            synchronized (this.statusEvents) {
+                transition = this.statusEvents.poll();
+                if (transition == null) {
+                    this.statusDraining = false;
+                    return;
+                }
+                listeners = this.statusListeners.toArray(new StatusListener[0]);
+                if (transition.terminal()) this.statusListeners.clear();
+            }
+            for (final StatusListener listener: listeners) {
+                try {
+                    listener.onStatus(this, transition.previous(), transition.current());
+                } catch (final Throwable t) {
+                    LOGGER.error(IT, "Status listener failed", t);
+                }
             }
         }
+    }
+
+    // LEAVES THE BRIDGE BEFORE A RELEASE PUBLISHES STOPPED, SO A CONTROL A LISTENER ISSUES NEVER REACHES THE AUTHORITY
+    protected final void disarm() {
+        synchronized (this.bridgeLock) {
+            this.armed = false;
+            TICKING.remove(this);
+        }
+    }
+
+    // A STATUS TRANSITION WAITING FOR DELIVERY; THE TERMINAL ONES CONSUME THE LISTENERS
+    private record Transition(Status previous, Status current) {
+        boolean terminal() { return this.current == Status.STOPPED || this.current == Status.ENDED || this.current == Status.ERROR; }
+    }
+
+    /** Hears a real status transition of a player; see {@link #onStatus(StatusListener)} for the threading and lifetime rules. */
+    @FunctionalInterface
+    public interface StatusListener {
+        void onStatus(MediaPlayer player, Status previous, Status current);
     }
 
     /**
@@ -1115,10 +1165,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * method, the media player should not be used again.
      */
     public void release() {
-        synchronized (this.bridgeLock) {
-            this.armed = false;
-            TICKING.remove(this);
-        }
+        this.disarm();
         Throwable failure = null;
         // ATTEMPT EVERY OWNED RESOURCE EVEN WHEN A HOST CALLBACK OR ANOTHER ENGINE FAILS.
         final Runnable[] cleanup = {

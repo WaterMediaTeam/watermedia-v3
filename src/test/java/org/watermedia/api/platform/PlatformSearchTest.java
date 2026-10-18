@@ -112,16 +112,19 @@ public class PlatformSearchTest {
     }
 
     @Test
-    @DisplayName("Superseding a search freezes the old handle — it is never marked done")
-    void testSupersedeFreezesOldHandle() throws Exception {
+    @DisplayName("Superseding a search ends the old handle at once, marked superseded and empty")
+    void testSupersedeEndsOldHandle() throws Exception {
         PlatformAPI.register(new StubPlatform(1, 2000)); // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
 
         final PlatformSearch first = PlatformAPI.search("slow-a", 2);
         Thread.sleep(150); // LET THE PROBE START
+        assertFalse(first.done());
+        assertFalse(first.superseded());
         PlatformAPI.search("slow-b", 2); // SUPERSEDES: CANCELS THE FIRST COORDINATOR + ITS PROBE
+        assertTrue(first.done(), "A superseded handle ends as soon as the newer search starts");
+        assertTrue(first.superseded());
         Thread.sleep(400);
-
-        assertFalse(first.done(), "A superseded handle must stay frozen (never marked done)");
+        assertTrue(first.results().isEmpty(), "A superseded handle never gains the hits of its cancelled probes");
     }
 
     @Test
@@ -134,6 +137,7 @@ public class PlatformSearchTest {
         assertTrue(PlatformAPI.search("   ", 2).done(), "The blank query is a no-op handle");
         awaitDone(first, 3000);
         assertTrue(first.done(), "The in-flight search must complete instead of being cancelled by a no-op");
+        assertFalse(first.superseded());
         assertEquals(1, first.results().size());
     }
 

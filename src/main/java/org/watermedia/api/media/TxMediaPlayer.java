@@ -208,7 +208,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (this.released) return false;
         final Future<?> oldTask = this.lifecycleTask;
         if ((this.lifecycleThread != null && this.lifecycleThread.isAlive()) || (oldTask != null && !oldTask.isDone())) {
-            this.teardown();
+            this.teardown(true);
         }
         final Thread old = this.lifecycleThread;
         final Status prev;
@@ -253,20 +253,23 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
-        return super.stop() && this.teardown();
+        return super.stop() && this.teardown(false);
     }
 
     // CANCELS THE PIPELINE, DROPS THE TIMELINE AND REWINDS TO 0; SHARED BY stop() AND THE LOCAL RESTART IN
     // launch() (NEVER REACHES THE SYNC AUTHORITY). ANSWERS WHETHER A TRANSITION TO STOPPED HAPPENED
-    private boolean teardown() {
+    private boolean teardown(final boolean restart) {
         final Status prev;
+        final boolean quiet;
         synchronized (this.signals) {
             // A NEW SERIAL ORPHANS THE PREPARE PASS IN FLIGHT: ITS LATE STATUS WRITES ARE REJECTED.
             // A PLAYER THAT NEVER RAN STAYS WAITING — THERE IS NOTHING TO STOP
             this.lifecycleSerial++;
             this.triggerStop = true;
             prev = this.status;
-            if (prev != Status.WAITING) this.status = Status.STOPPED;
+            // A RESTART OF A RUN THAT ALREADY ENDED OR FAILED PUBLISHES NO STOPPED: ITS LISTENERS JUST MOVED ON
+            quiet = restart && (prev == Status.ENDED || prev == Status.ERROR);
+            if (prev != Status.WAITING && !quiet) this.status = Status.STOPPED;
         }
         this.texTimeline = null;
         this.texDelays = null;
@@ -282,7 +285,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.clockBase = 0L;
             this.wallBase = nowMs();
         }
-        if (prev != Status.WAITING) this.invokeStatus(prev, Status.STOPPED);
+        if (prev != Status.WAITING && !quiet) this.invokeStatus(prev, Status.STOPPED);
         return prev != Status.STOPPED && prev != Status.WAITING;
     }
 
@@ -340,6 +343,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.playable = false;
             this.resetAfterRelease();
             this.releaseDone = true;
+            this.disarm();
             this.invokeStatus(prev, Status.STOPPED);
             super.release();
         }

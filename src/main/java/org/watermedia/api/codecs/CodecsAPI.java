@@ -251,7 +251,7 @@ public final class CodecsAPI {
 
     /**
      * Opens an experimental {@link ImageWriter} that encodes frames as VP9 inside a seekable WebM
-     * container through FFmpeg. Alpha is flattened; block-compressed and {@code GBRA} formats are rejected.
+     * container through FFmpeg. Alpha is flattened; block-compressed formats are rejected.
      *
      * @param fps frame rate used when a frame carries no explicit delay
      * @param crf VP9 constant-quality factor (0-63, lower is better)

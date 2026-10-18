@@ -67,6 +67,7 @@ public final class PlatformAPI {
     private static long searchGeneration;
     private static long registryVersion; // BUMPED UNDER SEARCH_LOCK ON EVERY REGISTRY CHANGE SO A STALE SEARCH NEVER CACHES
     private static Future<?> searchTask; // CURRENT SEARCH — GUARDED BY SEARCH_LOCK, CANCELLED WHEN A NEW ONE STARTS
+    private static PlatformSearch searchActive; // ITS HANDLE, ENDED AS SUPERSEDED AT THAT MOMENT — GUARDED BY SEARCH_LOCK
 
     static {
         // ONE HANDLER THAT CANNOT BE BUILT MUST NOT TAKE THE REGISTRY DOWN WITH IT: THE OTHERS STILL ENLIST
@@ -115,7 +116,8 @@ public final class PlatformAPI {
      * at most {@code limit} hits per platform.
      * <p>
      * There is one search slot per process: this call cancels (interrupts) any still-running previous
-     * search, whoever issued it, so only the latest handle keeps updating. The {@code query} is recorded
+     * search, whoever issued it, whose handle ends at once as {@link PlatformSearch#superseded()
+     * superseded} with the hits it gathered, so only the latest handle keeps updating. The {@code query} is recorded
      * in a {@value #HISTORY_LIMIT}-entry {@link PlatformSearch#history() history}; a {@code null} or blank
      * query is a no-op that returns an already-{@link PlatformSearch#done() done}, empty handle and leaves
      * a running search alone.
@@ -142,9 +144,11 @@ public final class PlatformAPI {
 
             final long generation = ++searchGeneration;
             final ExecutorService pool = searchPool;
-            // SUPERSEDE THE PREVIOUS SEARCH — ONLY ONE IS EVER ACTIVE
+            // SUPERSEDE THE PREVIOUS SEARCH — ONLY ONE IS EVER ACTIVE; ITS HANDLE ENDS WITH WHATEVER IT GATHERED
             if (searchTask != null) searchTask.cancel(true);
+            if (searchActive != null) searchActive.supersede();
             searchTask = null;
+            searchActive = null;
 
             // RECORD IN HISTORY: DEDUP TO MOST-RECENT-FIRST, CAPPED AT HISTORY_LIMIT
             HISTORY.remove(query);
@@ -177,6 +181,7 @@ public final class PlatformAPI {
             coordinator.purge();
             searchPool.purge();
             searchTask = coordinator.submit(() -> runSearch(search, query, perPlatform, cacheKey, pool, generation, registry));
+            searchActive = search;
             return search;
         }
     }
@@ -214,7 +219,7 @@ public final class PlatformAPI {
                     LOGGER.warn(IT, "Search probe failed unexpectedly", e.getCause());
                 }
             }
-        } catch (final InterruptedException e) { // SUPERSEDED — CANCEL THE OUTSTANDING PROBES AND LEAVE THE HANDLE FROZEN
+        } catch (final InterruptedException e) { // SUPERSEDED — CANCEL THE OUTSTANDING PROBES; search() ALREADY ENDED THE HANDLE
             for (final Future<?> probe: probes) probe.cancel(true);
             Thread.currentThread().interrupt();
             LOGGER.debug(IT, "Search '{}' superseded before completing", query);

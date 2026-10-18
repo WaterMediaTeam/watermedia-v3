@@ -373,10 +373,11 @@ public class WaterMediaApp {
 
     /** Whether the JavaFX runtime is on this JVM's classpath (provisioned by the bootstrap). */
     public static boolean javafxAvailable() {
+        // THE SAME PROBE AS MediaAPI.jfxEngine: THE ENGINE NEEDS PixelBuffer, WHICH ONLY JAVAFX 13+ SHIPS
         try {
-            Class.forName("javafx.application.Platform", false, WaterMediaApp.class.getClassLoader());
+            Class.forName("javafx.scene.image.PixelBuffer", false, WaterMediaApp.class.getClassLoader());
             return true;
-        } catch (final Throwable ignored) {
+        } catch (final ClassNotFoundException | LinkageError absent) {
             return false;
         }
     }

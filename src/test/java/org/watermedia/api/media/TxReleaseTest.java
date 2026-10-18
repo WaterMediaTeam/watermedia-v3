@@ -12,6 +12,7 @@ import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -100,6 +101,18 @@ class TxReleaseTest {
                 final TxMediaPlayer active = player;
                 assertTrue(player.start());
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
+                // THE RELEASE MUST FIND THE PREPARATION INSIDE ITS SOCKET READ; A COLD JVM MAY STILL BE LOADING THE HTTP CLASSES
+                final Field prepareField = TxMediaPlayer.class.getDeclaredField("prepareThread");
+                prepareField.setAccessible(true);
+                assertTrue(PlayerWait.awaitCondition(() -> {
+                    final Thread prepare;
+                    try { prepare = (Thread) prepareField.get(active); }
+                    catch (final IllegalAccessException failure) { throw new AssertionError(failure); }
+                    if (prepare == null) return false;
+                    for (final StackTraceElement frame: prepare.getStackTrace())
+                        if (frame.getClassName().startsWith("sun.nio.ch.") || frame.getClassName().startsWith("java.net.Socket")) return true;
+                    return false;
+                }, 3000), "The preparation did not reach its socket read");
                 assertThrows(IllegalStateException.class, player::release);
                 assertFalse(gfx.released());
                 assertFalse(player.start());

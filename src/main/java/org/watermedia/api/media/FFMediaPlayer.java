@@ -300,7 +300,11 @@ public final class FFMediaPlayer extends MediaPlayer {
             }
             LOGGER.debug(IT, "Start requested (quality={}, paused={}, at={}ms)", this.quality, paused, seekMs);
             final Thread oldThread = this.lifecycleThread;
-            if (oldThread != null && oldThread.isAlive() && !oldThread.isInterrupted()) this.abort();
+            // A RUN THAT ALREADY ENDED OR FAILED IS ONLY TEARING DOWN: THE NEW RUN JOINS IT INSTEAD OF ABORTING IT, SO NO
+            // STRAY STOPPED CONSUMES THE LISTENERS A TERMINAL CALLBACK JUST REGISTERED
+            final Status current = this.clock.status();
+            if (oldThread != null && oldThread.isAlive() && !oldThread.isInterrupted() && current != Status.ENDED && current != Status.ERROR)
+                this.abort();
             final Thread thread = this.factory.apply("lifecycle", () -> {
                 // join RETURNS false WHEN THIS THREAD IS INTERRUPTED WHILE WAITING — THE RESTART WAS
                 // DROPPED, SO LEAVE A CLEAN TERMINAL STATE INSTEAD OF THE PREVIOUS RUN'S STALE STATUS
@@ -326,6 +330,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             throw new IllegalStateException("Release the player from its host thread, not from a playback callback");
         // ONE RELEASE AT A TIME: A CONCURRENT SECOND CALL WAITS AND THEN FINDS THE WORK DONE
         synchronized (this.releaseLock) {
+            this.disarm();
             final Thread lifecycle;
             synchronized (this.lifecycleLock) {
                 if (this.releaseDone) return;

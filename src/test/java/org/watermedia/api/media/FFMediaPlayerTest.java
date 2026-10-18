@@ -156,7 +156,13 @@ public class FFMediaPlayerTest {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
         final FFMediaPlayer player = open(gfx, Fixtures.MP4_H264, p -> {});
         final List<Status> seen = new CopyOnWriteArrayList<>();
-        player.onStatus((prev, next) -> seen.add(next));
+        // THE TERMINAL CALLBACK REGISTERS AGAIN, THE WAY A PLAYLIST CONSUMER STAYS FOR THE RESTART IT TRIGGERS
+        final MediaPlayer.StatusListener[] collector = new MediaPlayer.StatusListener[1];
+        collector[0] = (p, prev, next) -> {
+            seen.add(next);
+            if (next == Status.ENDED) p.onStatus(collector[0]);
+        };
+        player.onStatus(collector[0]);
         try {
             assertTrue(player.fps() > 0f, "a decoded video stream reports its rate");
             assertTrue(player.canPlay());
@@ -226,7 +232,7 @@ public class FFMediaPlayerTest {
         final CompletableFuture<Throwable> callback = new CompletableFuture<>();
         final Thread[] callbackThread = new Thread[1];
         final boolean[] retained = new boolean[1];
-        player.onStatus((previous, next) -> {
+        player.onStatus((p, previous, next) -> {
             if (next != terminal || callback.isDone()) return;
             callbackThread[0] = Thread.currentThread();
             Throwable failure = null;
@@ -246,11 +252,9 @@ public class FFMediaPlayerTest {
             assertNotSame(Thread.currentThread(), callbackThread[0]);
             assertTrue(retained[0], "Callback release must retain graphics");
             assertFalse(Thread.currentThread().isInterrupted(), "Only the playback thread was interrupted");
-            player.onStatus(null);
             player.release();
             assertTrue(graphics.released());
         } finally {
-            player.onStatus(null);
             player.release();
         }
     }

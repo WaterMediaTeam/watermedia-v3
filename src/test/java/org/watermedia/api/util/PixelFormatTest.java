@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Identity and intrinsic-data coverage for {@link PixelFormat}: every constant survives
+ * Verifies the identity and intrinsic data of {@link PixelFormat}: every constant survives
  * {@code valueOf}, and the planes/blockBytes/compressed data matches each layout family.
  */
 @DisplayName("PixelFormat")
@@ -18,8 +18,8 @@ public class PixelFormatTest {
     @Test
     @DisplayName("values() exposes every declared constant")
     void testValuesCount() {
-        // KEEP IN SYNC WITH THE ENUM: 15 RAW LAYOUTS ACROSS 4 PLANE FAMILIES + 5 BCn FORMATS
-        assertEquals(20, PixelFormat.values().length);
+        // KEEP IN SYNC WITH THE ENUM: 14 RAW LAYOUTS ACROSS 4 PLANE FAMILIES + 5 BCn FORMATS
+        assertEquals(19, PixelFormat.values().length);
     }
 
     @Test

@@ -23,10 +23,10 @@ public class TxDisplayTimeTest {
     private static final long DISPLAY_MS = 300L;
 
     // CAPTURES THE publishStatus TRANSITION FROM THE STATUS-QUERY THREAD; volatile FOR VISIBILITY.
-    private static final class StatusCapture {
+    private static final class StatusCapture implements MediaPlayer.StatusListener {
         private volatile Status from;
         private volatile Status to;
-        void accept(final Status prev, final Status next) { this.from = prev; this.to = next; }
+        @Override public void onStatus(final MediaPlayer player, final Status prev, final Status next) { this.from = prev; this.to = next; }
     }
 
     @Test
@@ -38,7 +38,7 @@ public class TxDisplayTimeTest {
         final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
         final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
         final StatusCapture cap = new StatusCapture();
-        player.onStatus(cap::accept);
+        player.onStatus(cap);
 
         try {
             player.displayTime(DISPLAY_MS);

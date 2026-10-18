@@ -30,7 +30,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * Media Resource Locator - Container for URIs and their various qualities.
  * <p>
  * An MRL represents a "gallery" of sources that can contain multiple videos, images,
- * or combinations thereof. Each uri can have multiple qualities and optional
+ * or combinations thereof. Each source can have multiple qualities and optional
  * secondary tracks (audio, subtitles).
  * <p>
  * Thread-safe and cached to avoid duplicate requests from Platform implementations.
@@ -435,7 +435,7 @@ public final class MRL {
     /**
      * Gets the {@link Source} by index.
      *
-     * @param index uri index
+     * @param index the source index
      * @return the {@link Source}, or null if invalid index or not ready
      */
     public Source source(final int index) {

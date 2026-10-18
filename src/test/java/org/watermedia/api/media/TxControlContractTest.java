@@ -113,7 +113,7 @@ public class TxControlContractTest {
             final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
             final TxMediaPlayer player = open(Fixtures.GIF_ANIMATED, gfx);
             final List<Status> seen = new CopyOnWriteArrayList<>();
-            player.onStatus((prev, next) -> seen.add(next));
+            player.onStatus((p, prev, next) -> seen.add(next));
             try {
                 assertFalse(player.canPlay());
                 assertFalse(player.canSeek());

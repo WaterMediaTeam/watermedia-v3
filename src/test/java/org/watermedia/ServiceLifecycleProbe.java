@@ -154,10 +154,11 @@ public final class ServiceLifecycleProbe {
                 throw new AssertionError("A held resolution blocked the search service");
             resolveResume.countDown();
             if (!held.await(3000) || held.status() != MRL.Status.LOADED) throw new AssertionError("Held resolution did not finish");
-            // THE SUPERSEDED SEARCH NEVER PUBLISHES, EVEN ONCE ITS PROBE FINALLY RETURNS
+            // THE SUPERSEDED SEARCH ENDED AT ONCE AND NEVER PUBLISHES, EVEN ONCE ITS PROBE FINALLY RETURNS
+            if (!old.done() || !old.superseded() || !old.results().isEmpty()) throw new AssertionError("The superseded search did not end empty");
             resume.countDown();
             if (!returned.await(3, TimeUnit.SECONDS)) throw new AssertionError("Old probe did not return");
-            if (PlayerWait.awaitCondition(() -> !old.results().isEmpty() || old.done(), 250))
+            if (PlayerWait.awaitCondition(() -> !old.results().isEmpty(), 250))
                 throw new AssertionError("Late old results escaped their generation");
             // A REGISTRY CHANGE DROPS THE CACHED SEARCHES; THE HISTORY KEEPS EVERY QUERY, NEWEST FIRST
             for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);

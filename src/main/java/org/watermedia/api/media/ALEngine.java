@@ -330,21 +330,6 @@ public final class ALEngine extends SFXEngine {
         return Math.max(0L, (this.totalQueuedUs - playedUs) / 1000L);
     }
 
-    @Override
-    synchronized long playbackMs() {
-        if (this.source == 0) return -1;
-        this.requireContext();
-        final int state = AL10.alGetSourcei(this.source, AL10.AL_SOURCE_STATE);
-        if (state == AL10.AL_INITIAL) return -1;
-
-        if (this.latencySupported) {
-            SOFTSourceLatency.alGetSourcedvSOFT(this.source, SOFTSourceLatency.AL_SEC_OFFSET_LATENCY_SOFT, this.latencyValues);
-            // DEVICE LATENCY CAN EXCEED THE OFFSET RIGHT AFTER START — CLAMP SO -1 STAYS UNAMBIGUOUS
-            return Math.max(0L, (long) ((this.latencyValues[0] - this.latencyValues[1]) * 1000.0));
-        }
-        return (long) (AL10.alGetSourcef(this.source, AL11.AL_SEC_OFFSET) * 1000f);
-    }
-
     /** Returns a defensive copy of the AL buffer ids owned by this engine. */
     public int[] buffers() {
         return this.buffers.clone();

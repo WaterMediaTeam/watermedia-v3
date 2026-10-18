@@ -29,10 +29,10 @@ public class ServerMediaPlayerTest {
     private static final long TIMING_TOLERANCE_MS = 60L;
 
     // CAPTURES THE LAST publishStatus TRANSITION FROM THE SHARED TICKER THREAD; volatile FOR VISIBILITY.
-    private static final class StatusCapture {
+    private static final class StatusCapture implements MediaPlayer.StatusListener {
         private volatile Status from;
         private volatile Status to;
-        void accept(final Status prev, final Status next) { this.from = prev; this.to = next; }
+        @Override public void onStatus(final MediaPlayer player, final Status prev, final Status next) { this.from = prev; this.to = next; }
     }
 
     @Test
@@ -139,7 +139,7 @@ public class ServerMediaPlayerTest {
     void testEndedTransitionAndListener() {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         final StatusCapture cap = new StatusCapture();
-        player.onStatus(cap::accept);
+        player.onStatus(cap);
 
         player.syncDuration(150L);
         player.repeat(false);
@@ -160,7 +160,7 @@ public class ServerMediaPlayerTest {
     void testRepeatWrapsWithoutEnding() throws InterruptedException {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         final StatusCapture cap = new StatusCapture();
-        player.onStatus(cap::accept);
+        player.onStatus(cap);
 
         player.syncDuration(120L);
         player.repeat(true);
@@ -288,7 +288,7 @@ public class ServerMediaPlayerTest {
     void testListenerHearsEveryTransition() {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         final List<Status> seen = new CopyOnWriteArrayList<>();
-        player.onStatus((prev, next) -> seen.add(next));
+        player.onStatus((p, prev, next) -> seen.add(next));
         try {
             player.syncDuration(60_000L);
             player.start();

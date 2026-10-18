@@ -544,6 +544,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             this.departed.clear();
         }
         // OUTSIDE THE LOCK — A FOLLOWER'S super SENDS Unwatch THROUGH THE DEV'S BRIDGE
+        this.disarm();
         this.invokeStatus(prev, Status.STOPPED);
         super.release();
     }

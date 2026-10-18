@@ -236,10 +236,6 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     // PENDS. THE AUDIBLE POSITION IS endPtsOfLastUpload - pendingMs()
     abstract long pendingMs();
 
-    // POSITION OF THE SAMPLE REACHING THE LISTENER WITHIN THE QUEUED BUFFERS, LATENCY-COMPENSATED WHEN POSSIBLE; -1
-    // BEFORE PLAYBACK STARTS
-    abstract long playbackMs();
-
     /**
      * World position and attenuation for a mono sound source. Distances use the host's OpenAL distance model.
      * The host submits updates on its sound executor while the source's OpenAL context is current.

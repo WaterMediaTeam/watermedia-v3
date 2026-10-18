@@ -76,6 +76,7 @@ public final class VKEngine extends GFXEngine {
     private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
     private static final long WAIT_TIMEOUT_NS = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
     private static final long FAILURE_REPORT_NS = 10_000_000_000L;
+    private static final long UPLOAD_REPORT_NS = 10_000_000_000L;
 
     // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT), FILLED LAZILY
     // UNDER THE CLASS MONITOR ON THE FIRST CONVERSION FRAME. SEE compileSpirv().
@@ -243,6 +244,8 @@ public final class VKEngine extends GFXEngine {
     // A DRIVER FAILURE PARKS THE ENGINE: UPLOADS ARE DROPPED (REPORTED PER WINDOW) UNTIL THE NEXT LAYOUT
     private volatile boolean failed;
     private final LogTool.Throttle failureReports = new LogTool.Throttle(FAILURE_REPORT_NS);
+    // SEPARATE FROM failureReports SO A DROPPED FRAME NEVER DEMOTES THE ERROR THAT PARKS THE ENGINE
+    private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
 
     // THE CONTEXT AND EVERY VULKAN OBJECT IT EXPOSES MUST OUTLIVE THIS ENGINE, WHICH ONLY CREATES ITS OWN COMMAND POOL,
     // DESCRIPTORS, PIPELINES AND PER-SLOT IMAGES ON IT
@@ -394,14 +397,13 @@ public final class VKEngine extends GFXEngine {
 
     @Override
     public boolean supports(final PixelFormat format, final int bits) {
-        if (!super.supports(format, bits)) return false;
+        if (!super.supports(format, bits)) return false; // THE BASE DECLINES BCn: ITS SAMPLING IS NOT WIRED YET
         // WITHOUT A WORKING SHADER COMPILER ONLY THE PASSTHROUGH LAYOUTS REMAIN; THE PRODUCER CONVERTS THE REST TO BGRA
         if (convertBroken && format != PixelFormat.BGRA && format != PixelFormat.RGBA) return false;
         return switch (format) {
-            // RGB (3-BYTE, NO ALPHA) AND GBRA ARE DECLINED: 3-CHANNEL OPTIMAL-TILING SUPPORT IS
-            // OPTIONAL IN VULKAN, SO THE PRODUCER PRE-CONVERTS THEM TO BGRA UPSTREAM (ROBUST).
-            // BCn SAMPLING IS NOT WIRED YET — DECLINED UNTIL IT IS.
-            case RGB, GBRA -> false;
+            // RGB (3-BYTE, NO ALPHA) IS DECLINED: 3-CHANNEL OPTIMAL-TILING SUPPORT IS OPTIONAL IN VULKAN,
+            // SO THE PRODUCER PRE-CONVERTS IT TO BGRA UPSTREAM
+            case RGB -> false;
             // PASSTHROUGH COPIES FOUR BYTES PER PIXEL AND PACKED 4:2:2 IS FETCHED THROUGH AN RGBA8 PLANE
             case BGRA, RGBA, YUYV, UYVY -> bits == 8;
             // PLANAR AND GRAY SAMPLE R (AND RG FOR NV) PLANES THROUGH THE LINEAR SAMPLER: 16-BIT AND FLOAT
@@ -526,7 +528,7 @@ public final class VKEngine extends GFXEngine {
                 this.plane(0, VK_FORMAT_R8G8B8A8_UNORM, 4, (width + 1) / 2, height);
                 this.planeCount = 1;
             }
-            // RGB, GBRA AND BCn NEVER PASS supports(), SO THEY CANNOT REACH THIS TABLE
+            // RGB AND BCn NEVER PASS supports(), SO THEY CANNOT REACH THIS TABLE
             default -> throw new IllegalStateException("VKEngine: " + format + " has no upload path");
         }
         if (this.convert) {
@@ -651,7 +653,7 @@ public final class VKEngine extends GFXEngine {
                 final int effStride = strides[i] == 0 ? w * texelBytes : strides[i];
                 final long needed = (long) effStride * h;
                 if (bufs[i].remaining() < needed) {
-                    LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed);
+                    LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed);
                     return;
                 }
                 rowLen[i] = strides[i] == 0 ? 0 : strides[i] / texelBytes;
@@ -1140,7 +1142,7 @@ public final class VKEngine extends GFXEngine {
     // AND THE ARITHMETIC COMPUTE PATH ALREADY CONFIGURED BY THE CALLER REMAINS ACTIVE.
     private void tryYcbcr(final int fmt) {
         if (!this.ctx.ycbcrSampler()) {
-            LOGGER.info(IT, "YCbCr sampler path declined for {}: samplerYcbcrConversion feature off", this.format);
+            LOGGER.debug(IT, "YCbCr sampler path declined for {}: samplerYcbcrConversion feature off", this.format);
             return;
         }
         final int feats = this.formatFeatures(fmt);
@@ -1151,7 +1153,7 @@ public final class VKEngine extends GFXEngine {
         final boolean mid = (feats & VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT) != 0;
         final boolean cos = (feats & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT) != 0;
         if ((feats & need) != need || (!mid && !cos)) {
-            LOGGER.info(IT, "YCbCr sampler path declined for {}: format {} unsupported (optimalTilingFeatures=0x{})",
+            LOGGER.debug(IT, "YCbCr sampler path declined for {}: format {} unsupported (optimalTilingFeatures=0x{})",
                     this.format, fmt, Integer.toHexString(feats));
             return;
         }

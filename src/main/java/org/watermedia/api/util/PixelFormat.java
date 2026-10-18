@@ -19,8 +19,6 @@ public enum PixelFormat {
     RGBA(1),
     /** Packed BGRA. 4 bytes/pixel in [B, G, R, A] order. Same as {@link #RGBA} with R and B swapped — common on Windows/DirectX and Java's BufferedImage. Used as the fallback CPU format. */
     BGRA(1),
-    /** Packed GBRA. 4 bytes/pixel in [G, B, R, A] order. Variant of {@link #RGBA}/{@link #BGRA} with channels reshuffled to put green first. */
-    GBRA(1),
     /** Packed YUV 4:2:2 in [Y0, U, Y1, V] order — 4 bytes per 2 pixels (avg 2 bytes/pixel). Chroma horizontally subsampled, shared between pixel pairs. */
     YUYV(1),
     /** Packed YUV 4:2:2 in [U, Y0, V, Y1] order. Same layout as {@link #YUYV} with luma and chroma bytes swapped. */

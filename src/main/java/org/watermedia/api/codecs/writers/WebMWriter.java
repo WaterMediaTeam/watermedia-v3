@@ -38,8 +38,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  *
  * <p>Every frame is converted to {@code YUV420P} (VP9 profile 0) with {@code libswscale} before it
  * reaches the encoder, so any raw {@link PixelFormat} the writer accepts (packed RGB/BGRA,
- * grayscale, packed or planar YUV) is valid input; block-compressed and {@code GBRA} layouts are
- * not. Alpha is flattened — VP9-in-WebM alpha is out of scope.
+ * grayscale, packed or planar YUV) is valid input; block-compressed layouts are not. Alpha is
+ * flattened — VP9-in-WebM alpha is out of scope.
  *
  * <p>Frame timing follows the {@link #writeFrame(ByteBuffer, long) delay} of each frame when one is
  * given, otherwise the constructor frame rate; quality is a VP9 CRF (0-63, lower is better) in

@@ -255,7 +255,7 @@ public class DataTool {
             case GRAY -> pixels;
             case YUYV, UYVY -> pixels * 2L;
             case RGB, YUV444P -> pixels * 3L;
-            case BGRA, RGBA, GBRA, YUVA444P -> pixels * 4L;
+            case BGRA, RGBA, YUVA444P -> pixels * 4L;
             case NV12, NV21, YUV420P -> pixels + 2L * chromaW * chromaH;
             case YUV422P -> pixels + 2L * chromaW * h;
             case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
@@ -282,7 +282,7 @@ public class DataTool {
         switch (format) {
             case GRAY -> scalePlane(src, base, sw, sh, dst, dw, dh, 1);
             case RGB -> scalePlane(src, base, sw, sh, dst, dw, dh, 3);
-            case BGRA, RGBA, GBRA -> scalePlane(src, base, sw, sh, dst, dw, dh, 4);
+            case BGRA, RGBA -> scalePlane(src, base, sw, sh, dst, dw, dh, 4);
             case NV12, NV21 -> {
                 scalePlane(src, base, sw, sh, dst, dw, dh, 1);
                 scalePlane(src, base + sw * sh, (sw + 1) >> 1, (sh + 1) >> 1, dst, (dw + 1) >> 1, (dh + 1) >> 1, 2);

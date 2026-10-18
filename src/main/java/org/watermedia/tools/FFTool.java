@@ -79,7 +79,7 @@ public final class FFTool {
         };
     }
 
-    /** Maps an 8-bit engine layout to its FFmpeg pixel format; block-compressed and GBRA layouts have none. */
+    /** Maps an 8-bit engine layout to its FFmpeg pixel format; block-compressed layouts have none. */
     public static int avPixelFormat(final PixelFormat format) {
         return switch (format) {
             case GRAY -> AV_PIX_FMT_GRAY8;

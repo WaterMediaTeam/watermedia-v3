@@ -29,6 +29,7 @@ import org.watermedia.bootstrap.WaterMediaModule;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
+/** Media facade: resolves MRLs, creates players and engines, and reports the FFmpeg state. */
 public final class MediaAPI {
     private MediaAPI() {}
     private static final Marker IT = MarkerManager.getMarker(MediaAPI.class.getSimpleName());
@@ -257,8 +258,12 @@ public final class MediaAPI {
     /**
      * Creates a JavaFX software video engine; bind its {@code image()} to an {@code ImageView}.
      * @param onFrame hook run on the upload thread after each frame is published, or null
+     * @throws IllegalStateException when JavaFX 13 or newer is not on the class path
      */
     public static JFXEngine jfxEngine(final Runnable onFrame) {
+        // JFXEngine LINKS JAVAFX TYPES WHEN IT LOADS AND NEEDS PixelBuffer (JAVAFX 13+), SO A MISSING TOOLKIT FAILS HERE
+        try { Class.forName("javafx.scene.image.PixelBuffer", false, MediaAPI.class.getClassLoader()); }
+        catch (final ClassNotFoundException | LinkageError e) { throw new IllegalStateException("JavaFX 13 or newer is not on the class path", e); }
         return new JFXEngine(onFrame);
     }
 
@@ -420,7 +425,7 @@ public final class MediaAPI {
                 final BytePointer config = avformat.avformat_configuration();
                 LOGGER.info(IT, "Configuration: {}", FFTool.string(config, "unavailable"));
             } catch (final Exception e) {
-                LOGGER.warn(IT, "Configuration: unavailable");
+                LOGGER.warn(IT, "Configuration: unavailable", e);
             }
 
             LOGGER.info(IT, "Hardware Acceleration:");
@@ -454,8 +459,8 @@ public final class MediaAPI {
                         avutil.av_buffer_unref(ref);
                         vulkanDecode = true;
                     }
-                } catch (final Throwable t) {
-                    // NO VULKAN DEVICE — LEAVE THE PROBE NEGATIVE
+                } catch (final Exception | LinkageError e) {
+                    LOGGER.debug(IT, "Vulkan hardware decoding unavailable", e); // NO VULKAN DEVICE: THE PROBE STAYS NEGATIVE
                 }
             }
             vulkanHwDecode = vulkanDecode;

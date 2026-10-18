@@ -58,10 +58,8 @@ public final class JSEngine extends SFXEngine {
     private SourceDataLine line;
     private FloatControl gainControl;
     private float gain = 1.0f; // LAST REQUESTED LINEAR VOLUME, RE-APPLIED ON REOPEN
-    private boolean started;
     // PENDING-AUDIO BOOKKEEPING (pendingMs): framesWritten - line.getLongFramePosition() = FRAMES WRITTEN BUT NOT YET AUDIBLE
     private long framesWritten;
-    private long playedBaseUs; // PLAYBACK EPOCH BASE — REBASED ON flush() SO playbackMs() IS PER-QUEUE LIKE ALEngine
     private int bytesPerFrame;
     private byte[] scratch = new byte[0]; // REUSABLE COPY TARGET FOR ByteBuffer → line.write
 
@@ -82,7 +80,6 @@ public final class JSEngine extends SFXEngine {
         // A STARTED LINE RENDERS WHATEVER IS WRITTEN AND AUTO-RESUMES AFTER AN UNDERRUN, SO
         // START ONCE PER PAUSE CYCLE. isActive() IS true FROM start() UNTIL stop().
         if (!this.line.isActive()) this.line.start();
-        this.started = true;
     }
 
     @Override
@@ -102,9 +99,7 @@ public final class JSEngine extends SFXEngine {
     @Override
     synchronized void destroy() {
         this.closeLine();
-        // DROP THE CONTROL AND PLAYBACK FLAG SO A LATE volume()/playbackMs() CAN'T DRIVE A CLOSED LINE
-        this.gainControl = null;
-        this.started = false;
+        this.gainControl = null; // A LATE volume() CAN'T DRIVE A CLOSED LINE
     }
 
     @Override
@@ -174,10 +169,6 @@ public final class JSEngine extends SFXEngine {
         l.stop();
         l.flush();
         this.framesWritten = l.getLongFramePosition();
-        // NEW PLAYBACK EPOCH: playbackMs() MEASURES WITHIN THE POST-FLUSH QUEUE AND RETURNS -1
-        // UNTIL play() RESTARTS IT, MIRRORING ALEngine's REWOUND SOURCE
-        this.playedBaseUs = l.getMicrosecondPosition();
-        this.started = false;
     }
 
     @Override
@@ -186,15 +177,6 @@ public final class JSEngine extends SFXEngine {
         if (l == null || this.sampleRate <= 0) return 0;
         final long pendingFrames = this.framesWritten - l.getLongFramePosition();
         return pendingFrames <= 0 ? 0 : pendingFrames * 1000L / this.sampleRate;
-    }
-
-    @Override
-    synchronized long playbackMs() {
-        final SourceDataLine l = this.line;
-        if (l == null || !this.started) return -1;
-        // RENDERED (AUDIBLE) POSITION WITHIN THE CURRENT EPOCH (SINCE OPEN OR LAST flush()).
-        // JAVA SOUND EXPOSES NO DEVICE-LATENCY OFFSET, SO THIS IS NOT LATENCY-COMPENSATED.
-        return (l.getMicrosecondPosition() - this.playedBaseUs) / 1000L;
     }
 
     // OPENS A LINE FOR fmt WITH AT LEAST bytes OF BUFFER (FRAME-ALIGNED) AND INSTALLS IT IN PLACE OF THE CURRENT ONE;
@@ -214,8 +196,6 @@ public final class JSEngine extends SFXEngine {
         this.gainControl = fresh.isControlSupported(FloatControl.Type.MASTER_GAIN)
                 ? (FloatControl) fresh.getControl(FloatControl.Type.MASTER_GAIN) : null;
         this.framesWritten = 0L;
-        this.playedBaseUs = 0L; // FRESH LINE, FRESH PLAYBACK EPOCH
-        this.started = false;
         this.applyGain(); // RE-APPLY THE LAST REQUESTED VOLUME TO THE NEW LINE
         return true;
     }

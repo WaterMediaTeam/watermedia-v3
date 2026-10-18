@@ -200,7 +200,6 @@ class SpatialAudioTest {
                 assertThrows(IllegalStateException.class, () -> engine.upload(ByteBuffer.allocateDirect(16)));
                 assertThrows(IllegalStateException.class, engine::flush);
                 assertThrows(IllegalStateException.class, engine::pendingMs);
-                assertThrows(IllegalStateException.class, engine::playbackMs);
                 assertThrows(IllegalStateException.class, engine::release);
             } finally {
                 assertTrue(ALC10.alcMakeContextCurrent(this.context));

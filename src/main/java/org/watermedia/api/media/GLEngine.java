@@ -220,6 +220,7 @@ public final class GLEngine extends GFXEngine {
     private final Executor renderThreadEx;
     private final Hub hub;
     private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
+    private final LogTool.Throttle failureReports = new LogTool.Throttle(UPLOAD_REPORT_NS); // ERRORS KEEP THEIR OWN WINDOW
     private boolean hubQueued;            // GUARDED BY hub MONITOR
 
     // MANAGED TEXTURE (WHAT THE DEV BINDS)
@@ -331,9 +332,9 @@ public final class GLEngine extends GFXEngine {
      * Direct formats (BGRA, RGBA, RGB) alias plane 0, so their upload lands straight in this
      * texture. Planar and packed formats (YUV 420P/422P/444P, YUVA, NV12/NV21, YUYV/UYVY, GRAY)
      * are <em>not</em> RGBA on their own: their planes are uploaded to intermediate textures and
-     * resolved to RGBA through an FBO shader pass ({@link #convertToRGBA()}) during the engine's
-     * render cycle. The handle returned here is always that resolved RGBA texture, never a raw
-     * luma or chroma plane.
+     * resolved to RGBA by an internal framebuffer shader pass during the engine's render cycle.
+     * The handle returned here is always that resolved RGBA texture, never a raw luma or chroma
+     * plane.
      * <p>
      * <b>Pipeline caution.</b> The handle only holds the current frame once the engine's
      * upload/convert cycle has run on the render thread. Read it fresh on every draw and sample it
@@ -358,9 +359,8 @@ public final class GLEngine extends GFXEngine {
 
     @Override
     public boolean supports(final PixelFormat format, final int bits) {
-        // GBRA WOULD SAMPLE CHANNEL-SHUFFLED THROUGH THE GL_RGBA PLANE PATH — DECLINED SO THE
-        // PRODUCER PRE-CONVERTS TO BGRA; BCn SAMPLING IS NOT WIRED YET, DECLINED UNTIL IT IS.
-        if (!super.supports(format, bits) || format == PixelFormat.GBRA) return false;
+        // THE BASE DECLINES BCn: ITS SAMPLING IS NOT WIRED YET
+        if (!super.supports(format, bits)) return false;
         return switch (format) {
             // DIRECT LAYOUTS UPLOAD AS GL TYPES: PACKED 8_8_8_8_REV FOR BGRA/YUYV, BYTE OR SHORT FOR RGB/RGBA
             case BGRA, YUYV, UYVY -> bits == 8;
@@ -560,7 +560,7 @@ public final class GLEngine extends GFXEngine {
                 for (int i = 0; i < UNIFORMS.length; i++) locs[i] = GL20.glGetUniformLocation(prog, UNIFORMS[i]);
                 this.programs[this.conv] = prog;
                 this.uniforms[this.conv] = locs;
-                LOGGER.info(IT, "Successfully compiled conversion shader for {} (program={})", format, prog);
+                LOGGER.debug(IT, "Successfully compiled conversion shader for {} (program={})", format, prog);
             } else {
                 this.shaderFailKinds |= 1 << this.conv; // DECLINE THIS KIND GOING FORWARD (SEE supports)
             }
@@ -600,7 +600,7 @@ public final class GLEngine extends GFXEngine {
             this.hub.schedule(this);
         } catch (final RuntimeException e) {
             // A GL FAILURE OR A REJECTING EXECUTOR DROPS THE FRAME; UPLOADS NEVER THROW AT THE DECODER
-            LogTool.throttled(LOGGER, Level.ERROR, IT, this.uploadReports, "Upload failed; frame dropped", e);
+            LogTool.throttled(LOGGER, Level.ERROR, IT, this.failureReports, "Upload failed; frame dropped", e);
         }
     }
 
@@ -685,7 +685,7 @@ public final class GLEngine extends GFXEngine {
             final Plane p = this.planes[i];
             final long needed = (long) p.effStride(s.strides[i]) * p.h;
             if (s.sizes[i] < needed) {
-                LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, s.sizes[i], needed);
+                LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Plane {} buffer too small: {} < {}", i, s.sizes[i], needed);
                 return;
             }
             respec |= this.planeBytes[i] != needed;
@@ -730,7 +730,7 @@ public final class GLEngine extends GFXEngine {
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + readIdx]);
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, 0L);
-                if (GL_CHECKS) this.checkGLError("plane PBO texSub");
+                if (GL_CHECKS) this.checkGLErrorHot("plane PBO texSub");
             }
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
@@ -754,7 +754,7 @@ public final class GLEngine extends GFXEngine {
             final Plane p = this.planes[i];
             final long needed = (long) p.effStride(s.strides[i]) * p.h;
             if (s.sizes[i] < needed) {
-                LOGGER.warn(IT, "Ring plane {} too small: {} < {}", i, s.sizes[i], needed);
+                LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Ring plane {} too small: {} < {}", i, s.sizes[i], needed);
                 break;
             }
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
@@ -765,7 +765,7 @@ public final class GLEngine extends GFXEngine {
                 this.planeBytes[i] = needed;
             } else {
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, offset);
-                if (GL_CHECKS) this.checkGLError("ring plane texSub");
+                if (GL_CHECKS) this.checkGLErrorHot("ring plane texSub");
             }
             offset += s.sizes[i];
         }
@@ -797,7 +797,7 @@ public final class GLEngine extends GFXEngine {
         if (this.ringCapable == null) {
             final GLCapabilities caps = GL.getCapabilities();
             this.ringCapable = caps.GL_ARB_buffer_storage || caps.OpenGL44;
-            if (!this.ringCapable) LOGGER.info(IT, "ARB_buffer_storage unavailable — using legacy PBO uploads");
+            if (!this.ringCapable) LOGGER.debug(IT, "ARB_buffer_storage unavailable — using legacy PBO uploads");
         }
         if (!this.ringCapable || slotBytes <= 0L) return;
         this.destroyRing();
@@ -959,7 +959,7 @@ public final class GLEngine extends GFXEngine {
         GL30.glBindVertexArray(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
         GL30.glBindVertexArray(0);
-        if (GL_CHECKS) this.checkGLError("FBO convert quad");
+        if (GL_CHECKS) this.checkGLErrorHot("FBO convert quad");
     }
 
     // ==========================================================================
@@ -992,13 +992,13 @@ public final class GLEngine extends GFXEngine {
             case YUVA420P -> fourPlanes(w, h, w / 2, h / 2, this.glInternalR, this.glType, bps);
             case YUVA422P -> fourPlanes(w, h, w / 2, h, this.glInternalR, this.glType, bps);
             case YUVA444P -> fourPlanes(w, h, w, h, this.glInternalR, this.glType, bps);
-            default -> this.bits == 16 // RGBA / GBRA
+            default -> this.bits == 16 // RGBA
                     ? new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_SHORT, 8)}
                     : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
         };
     }
 
-    // CONVERSION KIND OF A LAYOUT: DIRECT FORMATS (BGRA, RGBA, GBRA, RGB) NEED NO SHADER PASS
+    // CONVERSION KIND OF A LAYOUT: DIRECT FORMATS (BGRA, RGBA, RGB) NEED NO SHADER PASS
     private static int kindOf(final PixelFormat format) {
         return switch (format) {
             case GRAY -> CONV_GRAY;
@@ -1080,7 +1080,7 @@ public final class GLEngine extends GFXEngine {
         final int effectiveStride = (stride == 0) ? this.width * bytesPerTexel : stride;
         final long dataSize = (long) effectiveStride * this.height;
         if (buffer.remaining() < dataSize) {
-            LOGGER.warn(IT, "Preloaded frame buffer too small: {} < {}", buffer.remaining(), dataSize);
+            LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Preloaded frame buffer too small: {} < {}", buffer.remaining(), dataSize);
             return false;
         }
 
@@ -1095,7 +1095,7 @@ public final class GLEngine extends GFXEngine {
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
         GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
-        this.checkGLError("preloaded frame glTexImage2D");
+        this.checkGLErrorHot("preloaded frame glTexImage2D");
         return true;
     }
 
@@ -1231,11 +1231,17 @@ public final class GLEngine extends GFXEngine {
         this.pboReady = false;
     }
 
+    // A BROKEN PATH REPEATS ITS GL ERROR EVERY FRAME (PRELOADED FRAMES, GL_CHECKS), SO REPORTS AGGREGATE PER WINDOW
+    // ONE-TIME SETUP CHECKS LOG EVERY ERROR; THE PER-FRAME ONES SHARE THE UPLOAD WINDOW
     private void checkGLError(final String op) {
         final int err = GL11.glGetError();
-        if (err != GL11.GL_NO_ERROR) {
-            LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
-        }
+        if (err != GL11.GL_NO_ERROR) LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
+    }
+
+    private void checkGLErrorHot(final String op) {
+        final int err = GL11.glGetError();
+        if (err != GL11.GL_NO_ERROR)
+            LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "GL error after '{}': {}", op, glErrorName(err));
     }
 
     private static String glErrorName(final int err) {
@@ -1344,7 +1350,7 @@ public final class GLEngine extends GFXEngine {
                         e.drainOne();
                     } catch (final RuntimeException ex) {
                         // ISOLATE FAILURES — ONE BROKEN ENGINE MUST NOT STARVE THE REST OF THE WAVE
-                        LOGGER.error(IT, "Engine drain failed", ex);
+                        LogTool.throttled(LOGGER, Level.ERROR, IT, e.failureReports, "Engine drain failed", ex);
                     }
                 }
             } finally {

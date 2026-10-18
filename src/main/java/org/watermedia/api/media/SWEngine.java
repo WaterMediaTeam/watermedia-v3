@@ -31,12 +31,14 @@ import static org.watermedia.WaterMedia.LOGGER;
 public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEngine {
     private static final Marker IT = MarkerManager.getMarker(SWEngine.class.getSimpleName());
     private static final long CALLBACK_REPORT_NS = 10_000_000_000L;
+    private static final long UPLOAD_REPORT_NS = 10_000_000_000L;
 
     // REUSABLE DIRECT BGRA SURFACE — width*height*4 BYTES, REALLOCATED ON RESIZE, NULL WHILE NO LAYOUT IS BACKED
     protected volatile ByteBuffer bgra;
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
     private final LogTool.Throttle callbackReports = new LogTool.Throttle(CALLBACK_REPORT_NS);
+    private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
     private volatile boolean framed;
 
     protected SWEngine(final Runnable onFrame) {
@@ -91,7 +93,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         // WARN-DROP LIKE THE GPU ENGINES INSTEAD OF THROWING FROM THE DECODE THREAD ON A SHORT BUFFER
         final long needed = (long) (h - 1) * srcStride + rowBytes;
         if (buffer.remaining() < needed) {
-            LOGGER.warn(IT, "Frame buffer too small: {} < {}", buffer.remaining(), needed);
+            LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Frame buffer too small: {} < {}", buffer.remaining(), needed);
             return;
         }
         final ByteBuffer src = buffer.duplicate();
