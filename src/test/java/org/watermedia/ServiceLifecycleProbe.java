@@ -2,7 +2,6 @@ package org.watermedia;
 
 import me.srrapero720.waterconfig.WaterConfig;
 import org.watermedia.api.network.NetworkAPI;
-import org.watermedia.api.network.NetworkServer;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.platform.Platform.Quality;
@@ -144,8 +143,8 @@ public final class ServiceLifecycleProbe {
             if (!PlayerWait.awaitCondition(fresh::done, 3000)) throw new AssertionError("New search was blocked behind a cancelled probe");
             if (!callbackGuard.get() || fresh.results().size() != 1 || !fresh.results().get(0).title().equals("fresh"))
                 throw new AssertionError("Fresh search has incorrect results");
-            if (!old.history().equals(List.of("old")) || !fresh.history().equals(List.of("fresh", "old")))
-                throw new AssertionError("Search history was not a submission snapshot");
+            if (!PlatformAPI.searchHistory().equals(List.of("fresh", "old")))
+                throw new AssertionError("Search history did not record the queries newest first");
             // A HELD RESOLUTION NEVER GATES THE SEARCH SERVICE: THERE IS NO SESSION TO CLOSE AROUND IT
             final MRL held = MediaAPI.mrl(URI.create("fixture:held"));
             if (!resolveEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Resolver did not enter");
@@ -171,7 +170,7 @@ public final class ServiceLifecycleProbe {
             });
             final var again = PlatformAPI.search("fresh");
             if (!PlayerWait.awaitCondition(again::done, 3000) || again.results().size() != 1
-                    || !again.results().get(0).title().equals("replacement") || !again.history().equals(List.of("fresh", "during-resolve", "old")))
+                    || !again.results().get(0).title().equals("replacement") || !PlatformAPI.searchHistory().equals(List.of("fresh", "during-resolve", "old")))
                 throw new AssertionError("Search cache survived the registry change or the history lost a query");
         } finally {
             resolveResume.countDown();
@@ -197,7 +196,7 @@ public final class ServiceLifecycleProbe {
         }, handlers)) {
             // A BAD REMOTE FAILS THE STATUS INSTEAD OF THROWING, SO A MISCONFIGURED HOST NEVER CRASHES ITS CALLER
             WaterMediaConfig.network.remoteUrl = "remote.invalid/upload";
-            final NetworkServer.UploadStatus misconfigured = NetworkAPI.upload(file.toFile());
+            final NetworkAPI.UploadStatus misconfigured = NetworkAPI.upload(file.toFile());
             if (!PlayerWait.awaitCondition(misconfigured::failed, 3000) || misconfigured.completed()
                     || misconfigured.error() == null || !misconfigured.error().contains("remoteUrl"))
                 throw new AssertionError("A misconfigured remote did not fail the upload: " + misconfigured.error());
@@ -206,7 +205,7 @@ public final class ServiceLifecycleProbe {
                 NetworkAPI.upload(root.resolve("missing.bin").toFile());
                 throw new AssertionError("A missing file was accepted for upload");
             } catch (final IllegalArgumentException expected) {}
-            final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[12];
+            final NetworkAPI.UploadStatus[] statuses = new NetworkAPI.UploadStatus[12];
             for (int i = 0; i < statuses.length; i++) statuses[i] = NetworkAPI.upload(file.toFile());
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Upload workers did not start");
             // FOUR WORKERS SERVE THE QUEUE; THE WAITING UPLOADS STAY PENDING INSTEAD OF FAILING

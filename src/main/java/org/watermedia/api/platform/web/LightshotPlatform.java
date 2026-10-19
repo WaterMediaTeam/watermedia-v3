@@ -38,12 +38,13 @@ public final class LightshotPlatform implements Platform {
             if (!matcher.find())
                 throw new PlatformException(NAME, "Screenshot image not found in page (expired, removed, or markup changed): " + uri);
 
-            final String imageUrl = matcher.group(1);
-            LOGGER.debug(IT, "Lightshot resolved screenshot image {} for {}", imageUrl, uri);
+            final URI image = DataTool.uri(matcher.group(1));
+            if (image == null) throw new PlatformException(NAME, "Screenshot image URL '" + matcher.group(1) + "' is malformed: " + uri);
+            LOGGER.debug(IT, "Lightshot resolved screenshot image {} for {}", image, uri);
 
             final var entry = new Source(MediaType.IMAGE, null, null,
                     HttpHeaders.defaults(uri),
-                    List.of(new Quality(URI.create(imageUrl), 0, 0)),
+                    List.of(new Quality(image, 0, 0)),
                     null, null);
             return new Resolution(null, entry);
         } catch (final PlatformException e) {

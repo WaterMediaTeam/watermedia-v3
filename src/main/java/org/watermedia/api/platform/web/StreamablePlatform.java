@@ -7,9 +7,7 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
-import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JSONTool;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -40,7 +38,7 @@ public final class StreamablePlatform implements Platform {
         final String videoId = prefixed ? segments[1] : segments[0];
         if (videoId.isEmpty()) throw PlatformException.unsupported(NAME, uri);
 
-        final VideoData video = NetRequest.fetchJson(NAME, API_URL + videoId, VideoData.class);
+        final VideoData video = WebRequests.fetchJson(NAME, API_URL + videoId, VideoData.class);
         LOGGER.debug(IT, "Streamable video '{}' raw status={} percent={}", videoId, video.status, video.percent);
 
         // GATE ON READINESS BEFORE TOUCHING files — A PROCESSING VIDEO HAS NO RENDITIONS YET
@@ -48,16 +46,16 @@ public final class StreamablePlatform implements Platform {
             throw new PlatformException(NAME, "Video '" + videoId + "' is not ready (status=" + video.status
                     + ", " + video.percent + "%" + (video.message != null ? ", message: " + video.message : "") + ")");
 
-        final URI main = video.files == null || video.files.mp4 == null ? null : JSONTool.uri(video.files.mp4.url);
+        final URI main = video.files == null || video.files.mp4 == null ? null : DataTool.uri(video.files.mp4.url);
         if (main == null) throw new PlatformException(NAME, "Video '" + videoId + "' is marked ready but exposes no mp4 rendition");
 
         final List<Quality> variants = new ArrayList<>(2);
         variants.add(new Quality(main, Math.max(0, video.files.mp4.width), Math.max(0, video.files.mp4.height)));
-        final URI small = video.files.mp4Small == null ? null : JSONTool.uri(video.files.mp4Small.url);
+        final URI small = video.files.mp4Small == null ? null : DataTool.uri(video.files.mp4Small.url);
         if (small != null) variants.add(new Quality(small, Math.max(0, video.files.mp4Small.width), Math.max(0, video.files.mp4Small.height)));
 
-        // THE THUMBNAIL IS PROTOCOL-RELATIVE; JSONTool PROMOTES IT TO https
-        final URI thumbnailUri = JSONTool.uri(video.thumbnail);
+        // THE THUMBNAIL IS PROTOCOL-RELATIVE; DataTool.uri PROMOTES IT TO https
+        final URI thumbnailUri = DataTool.uri(video.thumbnail);
         if (thumbnailUri == null) LOGGER.warn(IT, "Streamable video '{}' has no thumbnail", videoId);
 
         final long durationMs = video.files.original != null ? (long) Math.max(0f, video.files.original.duration * 1000f) : 0L;

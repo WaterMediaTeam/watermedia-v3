@@ -8,8 +8,6 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JSONTool;
-import org.watermedia.tools.M3UTool;
 
 import java.net.URI;
 import java.time.Instant;
@@ -41,7 +39,6 @@ public final class MedalPlatform implements Platform {
     // MEDAL SWAPS THE REAL CLIP FOR THIS PLACEHOLDER FILE WHEN A GUEST IS NOT ALLOWED TO WATCH IT
     private static final String PRIVACY_PROTECTED = "video/privacy-protected-guest";
     private static final String[] HOSTS = { "medal.tv", "www.medal.tv" };
-    private static final String CONTENT_PARAM = "contentId=";
 
     @Override
     public String name() { return NAME; }
@@ -56,7 +53,7 @@ public final class MedalPlatform implements Platform {
 
         LOGGER.debug(IT, "Medal resolving clip '{}' from {}", clipId, uri);
         // A REMOVED, PRIVATE OR MALFORMED ID ANSWERS 4xx (BAD IDS COME BACK AS 400, NOT 404)
-        final Content content = NetRequest.fetchJson(NAME, String.format(API_URL, clipId), Content.class);
+        final Content content = WebRequests.fetchJson(NAME, String.format(API_URL, clipId), Content.class);
 
         // GATE ON AVAILABILITY BEFORE TOUCHING URLS — A TAKEN-DOWN OR LOGIN-WALLED CLIP ONLY EXPOSES PLACEHOLDERS
         if (content.dmcaTakedown)
@@ -64,24 +61,21 @@ public final class MedalPlatform implements Platform {
         if (content.requireLogin)
             throw new PlatformException(NAME, "Clip '" + clipId + "' requires login (private or restricted)");
 
-        // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p). M3UTool NEVER THROWS —
+        // PREFERRED: THE HLS MASTER IS MEDAL'S ONLY REAL LADDER (source/540p/360p/240p). THE LADDER NEVER THROWS —
         // ON A FETCH/PARSE HICCUP IT FALLS BACK TO THE MASTER URL ITSELF SO FFmpeg CAN STILL PROBE IT.
-        final List<Quality> variants = new ArrayList<>();
-        final URI hls = JSONTool.uri(content.contentUrlHls);
-        if (hls != null) {
-            for (final M3UTool.Variant v: M3UTool.qualities(hls)) {
-                if (!privacyProtected(v.uri())) variants.add(new Quality(v.uri(), v.width(), v.height(), (float) v.fps()));
-            }
-        }
+        final HttpHeaders headers = HttpHeaders.defaults(uri);
+        final URI hls = DataTool.uri(content.contentUrlHls);
+        final List<Quality> variants = hls == null ? new ArrayList<>() : new ArrayList<>(WebRequests.hls(hls, headers));
+        variants.removeIf(q -> privacyProtected(q.uri()));
         // FALLBACK: A PROGRESSIVE SOURCE MP4 FOR CLIPS MEDAL NEVER PACKAGED AS HLS (CARRIES REAL SOURCE DIMENSIONS)
         if (variants.isEmpty()) {
-            final URI progressive = JSONTool.uri(content.contentUrl);
+            final URI progressive = DataTool.uri(content.contentUrl);
             if (progressive != null && !privacyProtected(progressive))
                 variants.add(new Quality(progressive, Math.max(0, content.sourceWidth), Math.max(0, content.sourceHeight)));
         }
         // LAST RESORT: THE PRE-RENDERED SOCIAL-SHARE MP4 (NO RELIABLE DIMENSIONS — LET FFMediaPlayer PROBE)
         if (variants.isEmpty()) {
-            final URI social = JSONTool.uri(content.socialMediaVideo);
+            final URI social = DataTool.uri(content.socialMediaVideo);
             if (social != null && !privacyProtected(social))
                 variants.add(new Quality(social, 0, 0));
         }
@@ -98,14 +92,14 @@ public final class MedalPlatform implements Platform {
         if (author == null) LOGGER.warn(IT, "Medal clip '{}' has no resolvable author", clipId);
 
         final Metadata metadata = new Metadata(title, desc, postedAt, durationMs, author);
-        final URI thumbnail = JSONTool.uri(content.thumbnailUrl);
+        final URI thumbnail = DataTool.uri(content.thumbnailUrl);
 
         // MEDAL SIGNS EVERY CDN URL WITH ONE SHARED EXPIRY; HONOR IT SO MRL RE-RESOLVES BEFORE THE LINKS DIE
         final Instant expires = content.urlsExpireAt > 0 ? Instant.ofEpochMilli(content.urlsExpireAt) : null;
 
         LOGGER.debug(IT, "Medal resolved clip '{}' with {} variant(s)", clipId, variants.size());
         final var entry = new Source(MediaType.VIDEO, thumbnail, metadata,
-                HttpHeaders.defaults(uri),
+                headers,
                 variants,
                 null, null);
         return new Resolution(expires, entry);
@@ -122,14 +116,8 @@ public final class MedalPlatform implements Platform {
                     return seg[i + 1];
             }
         }
-        final String query = uri.getQuery();
-        if (query != null) {
-            for (final String part: query.split("&")) {
-                if (part.regionMatches(true, 0, CONTENT_PARAM, 0, CONTENT_PARAM.length()) && part.length() > CONTENT_PARAM.length())
-                    return part.substring(CONTENT_PARAM.length());
-            }
-        }
-        return null;
+        final String contentId = NetRequest.query(uri).get("contentId");
+        return contentId == null || contentId.isEmpty() ? null : contentId;
     }
 
     private static boolean privacyProtected(final URI uri) {

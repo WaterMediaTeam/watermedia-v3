@@ -11,6 +11,8 @@ import org.watermedia.tools.DataTool;
 import java.io.IOException;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -20,6 +22,8 @@ public final class DropboxPlatform implements Platform {
     private static final String[] HOSTS = { "dropbox.com", "www.dropbox.com" };
     // SHARE LINKS: /s/<id>/<name>, /sh/<id>/<key>/<name> AND /scl/fi/<id>/<name>?rlkey=...; FOLDERS AND APP PAGES ARE NOT PLAYABLE
     private static final String[] SHARE_PREFIXES = { "/s/", "/sh/", "/scl/fi/" };
+    // A WHOLE dl PARAMETER OF THE RAW QUERY, WITH OR WITHOUT A VALUE
+    private static final Pattern DL_PARAM = Pattern.compile("(^|&)dl(?:=[^&]*)?(?=&|$)");
 
     @Override
     public String name() { return NAME; }
@@ -30,17 +34,13 @@ public final class DropboxPlatform implements Platform {
         final String path = uri.getRawPath() == null ? "" : uri.getRawPath();
         if (!DataTool.startsWith(path, SHARE_PREFIXES)) throw PlatformException.unsupported(NAME, uri);
 
-        // dl=0 OPENS THE PREVIEW PAGE WHILE dl=1 AND raw=1 SERVE THE FILE THROUGH THE CDN; ONLY A WHOLE PARAMETER
-        // COUNTS (dl=01 OR xdl=0 ARE NOT IT) AND A SHARE LINK WITHOUT ONE GETS dl=1 APPENDED
-        final String query = uri.getRawQuery();
-        final String[] params = query == null || query.isEmpty() ? new String[0] : query.split("&");
-        boolean direct = false;
-        for (int i = 0; i < params.length; i++) {
-            if (params[i].equals("dl=0")) params[i] = "dl=1";
-            if (params[i].equals("dl=1") || params[i].equals("raw=1")) direct = true;
-        }
-        String rebuilt = String.join("&", params);
-        if (!direct) rebuilt = rebuilt.isEmpty() ? "dl=1" : rebuilt + "&dl=1";
+        // dl=0 OPENS THE PREVIEW PAGE WHILE dl=1 AND raw=1 SERVE THE FILE THROUGH THE CDN; ANY OTHER dl VALUE IS
+        // REWRITTEN TO dl=1 AND A SHARE LINK WITHOUT ONE GETS dl=1 APPENDED, THE REST OF THE RAW QUERY KEPT AS IS
+        final Map<String, String> params = NetRequest.query(uri);
+        final String query = uri.getRawQuery() == null ? "" : uri.getRawQuery();
+        final String rebuilt = "1".equals(params.get("dl")) || "1".equals(params.get("raw")) ? query
+                : params.containsKey("dl") ? DL_PARAM.matcher(query).replaceAll("$1dl=1")
+                : query.isEmpty() ? "dl=1" : query + "&dl=1";
         final URI directUri = URI.create(uri.getScheme() + "://" + uri.getRawAuthority() + path + "?" + rebuilt);
 
         try (final NetRequest req = NetRequest.create(directUri).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {

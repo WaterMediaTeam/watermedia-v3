@@ -3,7 +3,6 @@ package org.watermedia.api.platform.web;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
@@ -58,9 +57,9 @@ public final class TikTokPlatform implements Platform {
 
         try {
             // SHORT LINKS (vm/vt HOSTS OR /t/ PATHS) REDIRECT TO THE CANONICAL VIDEO PAGE
-            final URI shortLink = DataTool.equalsAnyIgnoreCase(host, SHORT_HOSTS) ? resolveRedirect(link) : link;
+            final URI shortLink = DataTool.equalsAnyIgnoreCase(host, SHORT_HOSTS) ? WebRequests.follow(link) : link;
             final String path = shortLink.getPath();
-            final URI uri = path != null && path.startsWith("/t/") ? resolveRedirect(shortLink) : shortLink;
+            final URI uri = path != null && path.startsWith("/t/") ? WebRequests.follow(shortLink) : shortLink;
 
             Matcher matcher = VIDEO_ID_PATTERN.matcher(uri.toString());
             if (!matcher.find()) matcher = EMBED_ID_PATTERN.matcher(uri.toString());
@@ -97,13 +96,13 @@ public final class TikTokPlatform implements Platform {
         final String csData = extractElementClass(html, "cs");
         if (csData == null || csData.isEmpty()) throw new PlatformException(NAME, "Unable to extract WAF challenge data");
 
-        final JsonObject challengeData = JsonParser.parseString(
-                new String(base64Decode(csData), StandardCharsets.UTF_8)
-        ).getAsJsonObject();
-
-        final JsonObject v = challengeData.getAsJsonObject("v");
-        final byte[] seed = Base64.getDecoder().decode(v.get("a").getAsString());
-        final byte[] expectedDigest = Base64.getDecoder().decode(v.get("c").getAsString());
+        final JsonObject challengeData = JSONTool.parse(new String(base64Decode(csData), StandardCharsets.UTF_8), JsonObject.class);
+        final JsonObject v = obj(challengeData, "v");
+        final String a = str(v, "a");
+        final String c = str(v, "c");
+        if (a == null || c == null) throw new PlatformException(NAME, "WAF challenge data carries no seed or digest");
+        final byte[] seed = Base64.getDecoder().decode(a);
+        final byte[] expectedDigest = Base64.getDecoder().decode(c);
 
         boolean solved = false;
         try {
@@ -163,15 +162,14 @@ public final class TikTokPlatform implements Platform {
 
     // RESULT BUILDING
     private Resolution buildResult(final JsonObject awemeDetail, final String videoId, final String cookies) throws PlatformException {
-        final JsonObject video = awemeDetail.getAsJsonObject("video");
+        final JsonObject video = obj(awemeDetail, "video");
         if (video == null) throw new PlatformException(NAME, "No video object found for video " + videoId);
 
         final String desc = str(awemeDetail, "desc");
         final String title = (desc != null && !desc.isEmpty()) ? desc : "TikTok video #" + videoId;
 
-        final Instant publishedAt = awemeDetail.has("createTime") && !awemeDetail.get("createTime").isJsonNull()
-                ? Instant.ofEpochSecond(awemeDetail.get("createTime").getAsLong())
-                : null;
+        final long createTime = longOr(awemeDetail, "createTime", 0L);
+        final Instant publishedAt = createTime > 0 ? Instant.ofEpochSecond(createTime) : null;
 
         // TIKTOK REPORTS video duration IN SECONDS; Metadata IS MILLISECONDS
         final long durationMs = Math.max(0L, intOr(video, "duration", 0)) * 1000L;
@@ -182,7 +180,8 @@ public final class TikTokPlatform implements Platform {
         final Metadata metadata = new Metadata(title, desc, publishedAt, durationMs, author);
         final List<Quality> variants = new ArrayList<>();
 
-        if (video.has("bitrateInfo") && video.get("bitrateInfo").isJsonArray()) this.parseBitrateInfo(variants, video.getAsJsonArray("bitrateInfo"), video);
+        final JsonArray bitrateInfo = arr(video, "bitrateInfo");
+        if (bitrateInfo != null) this.parseBitrateInfo(variants, bitrateInfo, video);
 
         if (variants.isEmpty()) {
             URI fallback = extractAddrUri(video, "playAddr");
@@ -220,10 +219,7 @@ public final class TikTokPlatform implements Platform {
         final int playHeight = Math.max(0, intOr(video, "height", 0));
 
         for (int i = 0; i < bitrateInfos.size(); i++) {
-            final JsonObject info = bitrateInfos.get(i).getAsJsonObject();
-            if (!info.has("PlayAddr") || !info.get("PlayAddr").isJsonObject()) continue;
-
-            final JsonObject playAddr = info.getAsJsonObject("PlayAddr");
+            final JsonObject playAddr = obj(bitrateInfos.get(i), "PlayAddr");
             final URI url = pickBestUrl(playAddr);
             if (url == null) continue;
 
@@ -247,60 +243,45 @@ public final class TikTokPlatform implements Platform {
         LOGGER.debug(IT, "TikTok parsed {} variant(s) from {} bitrateInfo entry(es)", out.size(), bitrateInfos.size());
     }
 
+    // THE FIRST CDN LINK OF A UrlList; A www.tiktok.com LINK IS ONLY THE FALLBACK
     private static URI pickBestUrl(final JsonObject playAddr) {
-        if (!playAddr.has("UrlList") || !playAddr.get("UrlList").isJsonArray()) return null;
+        final JsonArray urlList = arr(playAddr, "UrlList");
+        if (urlList == null) return null;
 
-        final JsonArray urlList = playAddr.getAsJsonArray("UrlList");
         URI fallback = null;
-
-        for (int i = 0; i < urlList.size(); i++) {
-            final URI candidate = JSONTool.uri(urlList.get(i).getAsString());
+        for (final JsonElement element: urlList) {
+            final URI candidate = element.isJsonPrimitive() ? DataTool.uri(element.getAsString()) : null;
             if (candidate == null) continue;
             if (!"www.tiktok.com".equalsIgnoreCase(candidate.getHost())) return candidate;
             if (fallback == null) fallback = candidate;
         }
-
         return fallback;
     }
 
+    // playAddr/downloadAddr COME AS A BARE URL, AN ARRAY OF {src} OR AN OBJECT WITH A UrlList OR A src
     private static URI extractAddrUri(final JsonObject video, final String key) {
-        if (!video.has(key) || video.get(key).isJsonNull()) return null;
-
         final JsonElement element = video.get(key);
-
-        if (element.isJsonPrimitive()) return uri(element.getAsString());
+        if (element == null || element.isJsonNull()) return null;
+        if (element.isJsonPrimitive()) return DataTool.uri(element.getAsString());
 
         if (element.isJsonArray()) {
             for (final JsonElement item: element.getAsJsonArray()) {
-                if (item.isJsonObject()) {
-                    final URI src = uri(str(item.getAsJsonObject(), "src"));
-                    if (src != null) return src;
-                }
+                final URI src = DataTool.uri(str(obj(item), "src"));
+                if (src != null) return src;
             }
             return null;
         }
 
-        if (element.isJsonObject()) {
-            final JsonObject obj = element.getAsJsonObject();
-            if (obj.has("UrlList") && obj.get("UrlList").isJsonArray()) {
-                final JsonArray urls = obj.getAsJsonArray("UrlList");
-                for (int i = 0; i < urls.size(); i++) {
-                    final URI u = uri(urls.get(i).getAsString());
-                    if (u != null) return u;
-                }
-            }
-            return uri(str(obj, "src"));
-        }
-
-        return null;
+        final URI listed = pickBestUrl(obj(element));
+        return listed != null ? listed : DataTool.uri(str(obj(element), "src"));
     }
 
     // METADATA EXTRACTION
     private static URI findThumbnail(final JsonObject awemeDetail, final JsonObject video) {
         for (final String key: new String[]{"originCover", "cover", "thumbnail"}) {
-            URI uri = JSONTool.uri(video, key);
+            URI uri = DataTool.uri(str(video, key));
             if (uri != null) return uri;
-            uri = JSONTool.uri(awemeDetail, key);
+            uri = DataTool.uri(str(awemeDetail, key));
             if (uri != null) return uri;
         }
         return null;
@@ -308,13 +289,11 @@ public final class TikTokPlatform implements Platform {
 
     private static String extractAuthor(final JsonObject awemeDetail) {
         for (final String key: new String[]{"author", "authorInfo"}) {
-            if (awemeDetail.has(key) && awemeDetail.get(key).isJsonObject()) {
-                final JsonObject obj = awemeDetail.getAsJsonObject(key);
-                final String nickname = str(obj, "nickname");
-                if (nickname != null) return nickname;
-                final String uniqueId = str(obj, "uniqueId");
-                if (uniqueId != null) return uniqueId;
-            }
+            final JsonObject author = obj(awemeDetail, key);
+            final String nickname = str(author, "nickname");
+            if (nickname != null) return nickname;
+            final String uniqueId = str(author, "uniqueId");
+            if (uniqueId != null) return uniqueId;
         }
         return null;
     }
@@ -328,26 +307,15 @@ public final class TikTokPlatform implements Platform {
             return null;
         }
 
-        final JsonObject root = JsonParser.parseString(matcher.group(1)).getAsJsonObject();
-        if (!root.has("__DEFAULT_SCOPE__") || !root.get("__DEFAULT_SCOPE__").isJsonObject()) return null;
+        final JsonObject videoDetail = obj(JSONTool.parse(matcher.group(1), JsonObject.class), "__DEFAULT_SCOPE__", "webapp.video-detail");
+        if (videoDetail == null) return null;
 
-        final JsonObject defaultScope = root.getAsJsonObject("__DEFAULT_SCOPE__");
-        if (!defaultScope.has("webapp.video-detail") || !defaultScope.get("webapp.video-detail").isJsonObject()) return null;
+        final int status = intOr(videoDetail, "statusCode", 0);
+        if (status == 10_216 || status == 10_222) throw new PlatformException(NAME, "Video " + videoId + " is private or requires login");
+        if (status == 10_204) throw new PlatformException(NAME, "IP address is blocked from accessing video " + videoId);
+        if (status != 0) LOGGER.warn(IT, "TikTok video {} returned status code {}", videoId, status);
 
-        final JsonObject videoDetail = defaultScope.getAsJsonObject("webapp.video-detail");
-
-        if (videoDetail.has("statusCode") && videoDetail.get("statusCode").getAsInt() != 0) {
-            final int status = videoDetail.get("statusCode").getAsInt();
-            if (status == 10_216 || status == 10_222) throw new PlatformException(NAME, "Video " + videoId + " is private or requires login");
-            if (status == 10_204) throw new PlatformException(NAME, "IP address is blocked from accessing video " + videoId);
-            LOGGER.warn(IT, "TikTok video {} returned status code {}", videoId, status);
-        }
-
-        if (!videoDetail.has("itemInfo") || !videoDetail.get("itemInfo").isJsonObject()) return null;
-        final JsonObject itemInfo = videoDetail.getAsJsonObject("itemInfo");
-        if (!itemInfo.has("itemStruct") || !itemInfo.get("itemStruct").isJsonObject()) return null;
-
-        return itemInfo.getAsJsonObject("itemStruct");
+        return obj(videoDetail, "itemInfo", "itemStruct");
     }
 
     // FETCHED PAGE HTML PAIRED WITH THE WAF COOKIES CAPTURED FROM ITS Set-Cookie RESPONSE (null WHEN NONE)
@@ -383,16 +351,5 @@ public final class TikTokPlatform implements Platform {
         }
         if (sb.isEmpty()) return null;
         return sb.toString();
-    }
-
-    // THE REQUEST FOLLOWS THE SHORT LINK'S REDIRECTS ITSELF AND REPORTS WHERE IT LANDED
-    private static URI resolveRedirect(final URI shortUri) throws IOException {
-        try (final NetRequest req = NetRequest.create(shortUri)
-                .method("GET")
-                .accept(NetRequest.ACCEPT_ANY)
-                .userAgent(NetRequest.UserAgent.GENERIC)
-                .send()) {
-            return req.uri();
-        }
     }
 }

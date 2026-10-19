@@ -1,0 +1,65 @@
+package org.watermedia.api.platform.web;
+
+import org.watermedia.api.platform.Platform.Quality;
+import org.watermedia.api.platform.PlatformException;
+import org.watermedia.api.util.HttpHeaders;
+import org.watermedia.api.util.NetRequest;
+import org.watermedia.tools.M3UTool;
+
+import java.io.IOException;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+
+/** Request and playlist helpers shared by the web platform handlers. */
+final class WebRequests {
+    private WebRequests() {}
+
+    // GETS uri AS JSON; A MALFORMED uri FAILS LIKE ANY OTHER REQUEST, SO resolve() NEVER LEAKS IllegalArgumentException
+    static <T> T fetchJson(final String platform, final String uri, final Class<T> type) throws PlatformException {
+        final URI target;
+        try { target = URI.create(uri); }
+        catch (final IllegalArgumentException malformed) { throw new PlatformException(platform, "Malformed API URL " + uri, malformed); }
+        return fetchJson(platform, target, NetRequest.create(target).method("GET").accept(NetRequest.ACCEPT_JSON), type);
+    }
+
+    // SENDS request (BUILT FOR uri) AND BINDS ITS JSON BODY; A NON-200 STATUS, A NON-JSON OR EMPTY BODY AND ANY
+    // TRANSPORT OR PARSE FAILURE BECOME A PlatformException NAMING platform AND uri, KEEPING THE CAUSE
+    static <T> T fetchJson(final String platform, final URI uri, final NetRequest.Builder request, final Class<T> type) throws PlatformException {
+        try (final NetRequest req = request.send()) {
+            if (req.statusCode() != 200)
+                throw new PlatformException(platform, "API " + uri + " returned HTTP " + req.statusCode());
+            final T data = req.json(type);
+            if (data == null)
+                throw new PlatformException(platform, "API " + uri + " returned an empty or non-JSON body");
+            return data;
+        } catch (final PlatformException e) {
+            throw e;
+        } catch (final IOException | RuntimeException e) {
+            throw new PlatformException(platform, "Failed to fetch " + uri, e);
+        }
+    }
+
+    // FOLLOWS A SHORT LINK'S REDIRECTS WITH A BROWSER UA (SHORTENERS FILTER BOTS) AND RETURNS WHERE IT LANDED
+    static URI follow(final URI link) throws IOException {
+        try (final NetRequest req = NetRequest.create(link).method("GET").accept(NetRequest.ACCEPT_ANY)
+                .userAgent(NetRequest.UserAgent.GENERIC).send()) {
+            return req.uri();
+        }
+    }
+
+    // BEST-EFFORT HLS LADDER OF playlist, FETCHED WITH THE HEADERS ITS SOURCE CARRIES; NEVER THROWS
+    static List<Quality> hls(final URI playlist, final HttpHeaders headers) {
+        return qualities(playlist, M3UTool.qualities(playlist, headers));
+    }
+
+    // RENDITIONS WITHOUT A RESOLUTION (AUDIO-ONLY OR UNTAGGED) ARE DROPPED; A LADDER LEFT EMPTY FALLS BACK TO THE
+    // PLAYLIST ITSELF SO FFmpeg PICKS THE VARIANT
+    static List<Quality> qualities(final URI playlist, final List<M3UTool.Variant> variants) {
+        final List<Quality> out = new ArrayList<>(variants.size());
+        for (final M3UTool.Variant v: variants)
+            if (v.width() > 0 || v.height() > 0) out.add(new Quality(v.uri(), v.width(), v.height(), (float) v.fps()));
+        if (out.isEmpty()) out.add(new Quality(playlist, 0, 0));
+        return out;
+    }
+}

@@ -29,6 +29,7 @@ import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.AppBootstrap;
@@ -42,6 +43,7 @@ import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.ThreadTool;
@@ -1036,7 +1038,7 @@ public class WaterMediaApp {
                 entry.present = true;
                 entry.valid = true;
                 final long size = Files.size(path);
-                entry.sizeLabel = formatBytes(size);
+                entry.sizeLabel = MathUtil.displayBytes(size);
                 if (size > 10L * 1024L * 1024L || exceedsLineLimit(path, 25_000)) {
                     entry.valid = false;
                     entry.state = "INVALID";
@@ -1216,7 +1218,7 @@ public class WaterMediaApp {
                 int n;
                 while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
             }
-            return sanitizeUpload(sb.toString());
+            return DataTool.redact(sb.toString());
         } catch (final Exception e) {
             entry.state = "READ ERROR";
             entry.progress = 0;
@@ -1225,29 +1227,6 @@ public class WaterMediaApp {
         }
     }
 
-    // SECRET REDACTION — MASK APPLIED IN PLACE OF ANY TOKEN-LIKE VALUE
-    private static final String SECRET_MASK = "********";
-    // MINECRAFT/MSA ACCESS TOKENS ARE JWTS (eyJ<header>.<payload>.<signature>)
-    private static final Pattern JWT = Pattern.compile("eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{4,}");
-    // LAUNCH ARGS THAT CARRY THE SESSION/ACCESS TOKEN: --accessToken <v>, --session <v> (token:<token>:<uuid>)
-    private static final Pattern LAUNCH_ARG = Pattern.compile("(?i)(--(?:accessToken|session)\\s+)(\\S+)");
-    // BARE LEGACY SESSION STRING token:<accessToken>:<profileId>
-    private static final Pattern SESSION_TRIPLE = Pattern.compile("(?i)\\btoken:[^\\s:]+(?::[0-9a-fA-F-]+)?");
-    // Authorization: Bearer <token> / Authorization: <token>
-    private static final Pattern AUTH_HEADER = Pattern.compile("(?i)(authorization\\s*[:=]\\s*(?:bearer\\s+)?)(\\S+)");
-    // SENSITIVE KEY = VALUE / KEY: VALUE / "key":"value"
-    private static final Pattern SECRET_KV = Pattern.compile(
-            "(?i)(\"?\\b(?:access[_-]?token|session[_-]?token|sessionId|auth[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd|api[_-]?key|apikey)\\b\"?\\s*[:=]\\s*\"?)([^\\s\"',&}]+)");
-
-    private static String sanitizeUpload(final String content) {
-        if (content == null || content.isEmpty()) return content;
-        String out = JWT.matcher(content).replaceAll(SECRET_MASK);
-        out = LAUNCH_ARG.matcher(out).replaceAll("$1" + SECRET_MASK);
-        out = AUTH_HEADER.matcher(out).replaceAll("$1" + SECRET_MASK);
-        out = SECRET_KV.matcher(out).replaceAll("$1" + SECRET_MASK);
-        out = SESSION_TRIPLE.matcher(out).replaceAll("token:" + SECRET_MASK);
-        return out;
-    }
 
     private static String uploadedUrl(final String name) {
         for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
@@ -1273,13 +1252,6 @@ public class WaterMediaApp {
         return null;
     }
 
-    private static String formatBytes(final long bytes) {
-        if (bytes < 1024L) return bytes + " B";
-        final double kb = bytes / 1024.0;
-        if (kb < 1024.0) return String.format(Locale.ROOT, "%.1f KB", kb);
-        return String.format(Locale.ROOT, "%.1f MB", kb / 1024.0);
-    }
-
     // RUNS ON A WORKER THREAD (SEE navigateAction) — THE FULL-CACHE WALK MUST NOT BLOCK THE RENDER LOOP
     private static void scanCleanupCache() {
         try {
@@ -1290,7 +1262,7 @@ public class WaterMediaApp {
 
             final long[] stats = cleanupCacheStats();
             ctx.cleanup.fileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
-            ctx.cleanup.sizeLabel = formatBytes(stats[1]);
+            ctx.cleanup.sizeLabel = MathUtil.displayBytes(stats[1]);
             if (!ctx.cleanup.error) {
                 ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
             }
@@ -1417,6 +1389,12 @@ public class WaterMediaApp {
         return null;
     }
 
+    // BINARIES ARE OPTIONAL FOR THE APP: WITHOUT THEM THE REPORT SAYS SO INSTEAD OF FAILING ON THE MISSING CLASS
+    private static String binariesVersion() {
+        try { return IOTool.jarVersion(WaterMediaBinaries.class); }
+        catch (final LinkageError missing) { return "not installed"; }
+    }
+
     private static String generateIssueTemplate(final String latestUrl, final String wmUrl, final String crashUrl, final String hsErrUrl) {
         final Runtime rt = Runtime.getRuntime();
         return "This is an automated issue report generated by WATERMeDIA: Multimedia API.\n\n" +
@@ -1448,17 +1426,6 @@ public class WaterMediaApp {
     }
 
     // ENVIRONMENT / DIAGNOSTICS HELPERS FOR THE ISSUE TEMPLATE
-
-    private static String binariesVersion() {
-        // BINARIES SHIP AS THEIR OWN ARTIFACT; READ ITS JAR MANIFEST Implementation-Version WHEN NOT SHADED.
-        try {
-            final Package pkg = WaterMediaBinaries.class.getPackage();
-            final String v = pkg == null ? null : pkg.getImplementationVersion();
-            if (v != null && !v.isBlank()) return v;
-        } catch (final Throwable ignored) {
-        }
-        return "unknown";
-    }
 
     private static String ffmpegVersion() {
         if (!MediaAPI.ffmpegLoaded()) return "not loaded";
@@ -1544,8 +1511,7 @@ public class WaterMediaApp {
         // THREAD THE DRIVER SPAWNS INSIDE nvoglv64.dll WHEN IT IS ACTIVE. WINDOWS + OPENGL + NVIDIA ONLY.
         try {
             if (RenderSystem.engineKind() != RenderSystem.Engine.OPENGL) return null;
-            final String os = System.getProperty("os.name");
-            if (os == null || !os.toLowerCase(Locale.ROOT).contains("win")) return null;
+            if (!"windows".equals(IOTool.os())) return null;
             final String gpu = RenderSystem.deviceName();
             if (gpu == null || !gpu.toLowerCase(Locale.ROOT).contains("nvidia")) return null;
 
@@ -1555,7 +1521,7 @@ public class WaterMediaApp {
                             + "if($m){$b=[int64]$m.BaseAddress;$e=$b+$m.ModuleMemorySize;"
                             + "($p.Threads|?{$a=[int64]$_.StartAddress;$a -ge $b -and $a -lt $e}).Count}else{'nomodule'}");
             if (out == null) return null;
-            final int workers = parseIntOr(out.trim(), -1);
+            final int workers = DataTool.parseInt(out, -1);
             if (workers > 0) {
                 return "NVIDIA \"Threaded Optimization\" appears ENABLED (" + workers + " GL worker thread(s) inside nvoglv64.dll). "
                         + "It is a known cause of OpenGL crashes/stutter with LWJGL — turn it Off in "
@@ -1583,7 +1549,7 @@ public class WaterMediaApp {
     private static String osInfo() {
         final String name = System.getProperty("os.name");
         final String base = name + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")";
-        if (name != null && name.toLowerCase(Locale.ROOT).contains("win")) {
+        if ("windows".equals(IOTool.os())) {
             final String build = windowsBuild();
             if (build != null) return base + " [Build " + build + "]";
         }
@@ -1607,13 +1573,12 @@ public class WaterMediaApp {
         int cores = -1;
         int threads = logical;
 
-        final String os = System.getProperty("os.name");
-        if (os != null && os.toLowerCase(Locale.ROOT).contains("win")) {
+        if ("windows".equals(IOTool.os())) {
             final String[] cpu = queryWindowsCpu();
             if (cpu != null) {
                 if (!cpu[0].isBlank()) name = cleanCpuName(cpu[0]);
-                cores = parseIntOr(cpu[1], -1);
-                threads = parseIntOr(cpu[2], logical);
+                cores = DataTool.parseInt(cpu[1], -1);
+                threads = DataTool.parseInt(cpu[2], logical);
             }
         }
 
@@ -1666,14 +1631,6 @@ public class WaterMediaApp {
     private static String firstNonBlank(final String... values) {
         for (final String v: values) if (v != null && !v.isBlank()) return v;
         return "";
-    }
-
-    private static int parseIntOr(final String s, final int fallback) {
-        try {
-            return Integer.parseInt(s.trim());
-        } catch (final Exception e) {
-            return fallback;
-        }
     }
 
     private static String gpuInfo() {

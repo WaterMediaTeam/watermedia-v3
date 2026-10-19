@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
+import org.watermedia.api.util.MathUtil;
+
 final class Predictor {
 
     // SWAR PER-BYTE MASKS FOR ARGB ARITHMETIC
@@ -168,25 +170,21 @@ final class Predictor {
     }
 
     // CLAMP VALUE TO 0-255
-    private static int clamp(final int v) {
-        return Math.max(0, Math.min(255, v));
-    }
-
     // CLAMP_ADD_SUBTRACT_FULL
     private static int clampAddSubFull(final int a, final int b, final int c) {
-        final int aa = clamp(((a >> 24) & 0xFF) + ((b >> 24) & 0xFF) - ((c >> 24) & 0xFF));
-        final int ra = clamp(((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) - ((c >> 16) & 0xFF));
-        final int ga = clamp(((a >> 8) & 0xFF) + ((b >> 8) & 0xFF) - ((c >> 8) & 0xFF));
-        final int ba = clamp((a & 0xFF) + (b & 0xFF) - (c & 0xFF));
+        final int aa = MathUtil.clip255(((a >> 24) & 0xFF) + ((b >> 24) & 0xFF) - ((c >> 24) & 0xFF));
+        final int ra = MathUtil.clip255(((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) - ((c >> 16) & 0xFF));
+        final int ga = MathUtil.clip255(((a >> 8) & 0xFF) + ((b >> 8) & 0xFF) - ((c >> 8) & 0xFF));
+        final int ba = MathUtil.clip255((a & 0xFF) + (b & 0xFF) - (c & 0xFF));
         return (aa << 24) | (ra << 16) | (ga << 8) | ba;
     }
 
     // CLAMP_ADD_SUBTRACT_HALF
     private static int clampAddSubHalf(final int a, final int b) {
-        final int aa = clamp(((a >> 24) & 0xFF) + (((a >> 24) & 0xFF) - ((b >> 24) & 0xFF)) / 2);
-        final int ra = clamp(((a >> 16) & 0xFF) + (((a >> 16) & 0xFF) - ((b >> 16) & 0xFF)) / 2);
-        final int ga = clamp(((a >> 8) & 0xFF) + (((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)) / 2);
-        final int ba = clamp((a & 0xFF) + ((a & 0xFF) - (b & 0xFF)) / 2);
+        final int aa = MathUtil.clip255(((a >> 24) & 0xFF) + (((a >> 24) & 0xFF) - ((b >> 24) & 0xFF)) / 2);
+        final int ra = MathUtil.clip255(((a >> 16) & 0xFF) + (((a >> 16) & 0xFF) - ((b >> 16) & 0xFF)) / 2);
+        final int ga = MathUtil.clip255(((a >> 8) & 0xFF) + (((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)) / 2);
+        final int ba = MathUtil.clip255((a & 0xFF) + ((a & 0xFF) - (b & 0xFF)) / 2);
         return (aa << 24) | (ra << 16) | (ga << 8) | ba;
     }
 }

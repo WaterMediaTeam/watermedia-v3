@@ -1,6 +1,5 @@
 package org.watermedia.api.codecs.readers;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.CodecException;
@@ -15,7 +14,6 @@ import org.watermedia.api.codecs.common.gif.ImageDescriptor;
 import org.watermedia.api.codecs.common.gif.ScreenDescriptor;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -51,7 +49,6 @@ public final class GifReader extends ImageReader {
     private static final int MAX_METADATA_RECORDS = 1_024;
     private static final int MAX_METADATA_BYTES = 8 << 20;
     private static final int MAX_SUBBLOCK_BYTES = Integer.MAX_VALUE - 8; // JAVA ARRAY-SIZE SAFE UPPER BOUND
-    private static final long METADATA_REPORT_NS = 10_000_000_000L;
 
     // BLOCK INTRODUCERS AND EXTENSION LABELS
     private static final int IMAGE_SEPARATOR = 0x2C;
@@ -78,7 +75,6 @@ public final class GifReader extends ImageReader {
     private static final long BROWSER_DELAY_MS = 100L;
     private static final int OPAQUE_BLACK = 0xFF000000;
 
-    private static final LogTool.Throttle METADATA_DROPS = new LogTool.Throttle(METADATA_REPORT_NS);
 
     // PARSED HEADER STATE
     private final ScreenDescriptor lsd;
@@ -516,8 +512,7 @@ public final class GifReader extends ImageReader {
         }
 
         if (dropped > 0)
-            LogTool.throttled(LOGGER, Level.WARN, IT, METADATA_DROPS, "Skipped {} GIF metadata records past the cap of {} records or {} bytes",
-                    dropped, MAX_METADATA_RECORDS, MAX_METADATA_BYTES);
+            LOGGER.warn(IT, "Skipped {} GIF metadata records past the cap of {} records or {} bytes", dropped, MAX_METADATA_RECORDS, MAX_METADATA_BYTES);
         if (loops >= 0) this.metadata.put(CodecsAPI.METAKEY_LOOP_COUNT, loops);
         extensions.replaceAll((identifier, payloads) -> List.copyOf(payloads));
         this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, Collections.unmodifiableMap(extensions));

@@ -5,6 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder;
+import org.watermedia.api.util.MathUtil;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -90,7 +91,7 @@ public final class AlphaDecoder {
             } else {
                 for (int pos = row + 1; pos < row + w; pos++) {
                     final int pred = (alpha[pos - 1] & 0xFF) + (alpha[pos - w] & 0xFF) - (alpha[pos - w - 1] & 0xFF);
-                    alpha[pos] += (byte) Math.max(0, Math.min(255, pred));
+                    alpha[pos] += (byte) MathUtil.clip255(pred);
                 }
             }
         }

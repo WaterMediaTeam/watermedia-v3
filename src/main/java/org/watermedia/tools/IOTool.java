@@ -6,8 +6,6 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -16,21 +14,17 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.jar.Manifest;
 
-public class IOTool {
+public final class IOTool {
     public static final int BUFFER_SIZE = 1024 * 64; // 64 KB
     private static final int MAX_PREALLOCATED_BYTES = 4 * 1024 * 1024; // FIRST BUFFER readLimited SIZES FROM A DECLARED LENGTH
-    // VERIFIED HTTPS TRANSFERS: WHOLE-TRANSFER DEADLINE, PER-CONNECTION TIMEOUT, HOP CAP AND THE BOOTSTRAP UA
-    private static final long TRANSFER_DEADLINE_NS = 180_000_000_000L;
-    private static final int TRANSFER_TIMEOUT_MS = 15_000;
-    private static final int MAX_REDIRECTS = 8;
-    private static final String USER_AGENT = "WaterMedia";
+    private IOTool() {}
 
     public static String platformClassifier() {
         final String system = os();
@@ -104,79 +98,6 @@ public class IOTool {
         return out.toByteArray();
     }
 
-    /** Reads bounded UTF-8 text through HTTPS, including every redirect. */
-    public static String httpsText(final URI uri, final long maxBytes) throws IOException {
-        if (maxBytes < 1) throw new IllegalArgumentException("HTTPS text limit must be positive");
-        final ByteArrayOutputStream output = new ByteArrayOutputStream();
-        transferHttps(uri, output, maxBytes);
-        return output.toString(StandardCharsets.UTF_8);
-    }
-
-    /** Downloads a bounded HTTPS file and verifies its publisher-provided SHA-256. */
-    public static void downloadVerified(final URI uri, final Path destination, final String expected, final long maxBytes) throws IOException {
-        if (maxBytes < 1) throw new IllegalArgumentException("HTTPS download limit must be positive");
-        final String digest = requireSha256(expected);
-        boolean created = false;
-        try {
-            try (final OutputStream output = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
-                created = true;
-                transferHttps(uri, output, maxBytes);
-            }
-            verifySha256(destination, digest);
-        } catch (final IOException failure) {
-            if (created) {
-                try { Files.deleteIfExists(destination); }
-                catch (final IOException cleanup) { failure.addSuppressed(cleanup); }
-            }
-            throw failure;
-        }
-    }
-
-    // CHECK HTTPS ON EVERY HOP SO A REDIRECT CANNOT DOWNGRADE A VERIFIED DOWNLOAD.
-    private static void transferHttps(final URI origin, final OutputStream output, final long limit) throws IOException {
-        URI uri = origin;
-        final long deadline = System.nanoTime() + TRANSFER_DEADLINE_NS;
-        for (int redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null)
-                throw new IOException("Verified downloads require HTTPS without credentials: " + uri);
-            if (System.nanoTime() > deadline) throw new IOException("HTTPS transfer deadline exceeded: " + uri);
-            final HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
-            connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(TRANSFER_TIMEOUT_MS);
-            connection.setReadTimeout(TRANSFER_TIMEOUT_MS);
-            connection.setRequestProperty("User-Agent", USER_AGENT);
-            try {
-                final int status = connection.getResponseCode();
-                if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-                    final String location = connection.getHeaderField("Location");
-                    if (location == null) throw new IOException("Redirect without a location: " + uri);
-                    try { uri = uri.resolve(location); }
-                    catch (final IllegalArgumentException invalid) { throw new IOException("Invalid HTTPS redirect: " + uri, invalid); }
-                    continue;
-                }
-                if (status != 200) throw new IOException("Download returned HTTP " + status + ": " + uri);
-                final long expected = connection.getContentLengthLong();
-                if (expected > limit) throw new IOException("HTTPS response exceeds its size limit: " + uri);
-                long total = 0;
-                try (final InputStream input = connection.getInputStream()) {
-                    final byte[] buffer = new byte[BUFFER_SIZE];
-                    int count;
-                    while ((count = input.read(buffer)) != -1) {
-                        total += count;
-                        if (total > limit || System.nanoTime() > deadline)
-                            throw new IOException("HTTPS transfer budget exceeded: " + uri);
-                        output.write(buffer, 0, count);
-                    }
-                }
-                if (expected >= 0 && total != expected) throw new IOException("Truncated HTTPS download: " + uri);
-                return;
-            } finally {
-                connection.disconnect();
-            }
-        }
-        throw new IOException("Too many HTTPS redirects: " + origin);
-    }
-
     public static void move(final Path from, final Path to) throws IOException {
         try {
             Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -247,7 +168,7 @@ public class IOTool {
                 digest.update(buffer, 0, read);
             }
         }
-        return DataTool.hex(digest.digest());
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     /** Validates and normalizes a SHA-256 digest from a manifest or release index. */
@@ -263,12 +184,15 @@ public class IOTool {
             throw new IOException("File SHA-256 mismatch: " + file.getFileName());
     }
 
-    public static String jarVersion() {
-        // MANIFEST OF THE JAR THAT LOADED THIS CLASS: A PLAIN CLASSLOADER LOOKUP WOULD RETURN THE FIRST
-        // MANIFEST OF THE WHOLE CLASSPATH (E.G. LOG4J'S) AND REPORT A FOREIGN VERSION. CLASSES-DIR RUNS
-        // (IDE) SHIP NO MANIFEST AND REPORT AN UNKNOWN VERSION RATHER THAN A FAKE ONE
-        final String cls = IOTool.class.getName().replace('.', '/') + ".class";
-        final URL url = IOTool.class.getClassLoader().getResource(cls);
+    /** Returns the Implementation-Version of the jar that ships WaterMedia, or "unknown" outside a jar. */
+    public static String jarVersion() { return jarVersion(IOTool.class); }
+
+    /** Returns the Implementation-Version of the jar that loaded {@code anchor}, or "unknown" outside a jar. */
+    public static String jarVersion(final Class<?> anchor) {
+        // THE MANIFEST OF THE JAR THAT LOADED THE CLASS, NOT THE FIRST ONE ON THE CLASSPATH (E.G. LOG4J'S);
+        // A CLASSES-DIR RUN (IDE) SHIPS NO MANIFEST AND REPORTS AN UNKNOWN VERSION RATHER THAN A FAKE ONE
+        final String cls = anchor.getName().replace('.', '/') + ".class";
+        final URL url = anchor.getClassLoader().getResource(cls);
         if (url != null) {
             final String base = url.toString();
             try (final var in = URI.create(base.substring(0, base.length() - cls.length()) + "META-INF/MANIFEST.MF").toURL().openStream()) {
@@ -277,20 +201,6 @@ public class IOTool {
             } catch (final Exception ignored) {}
         }
         return "unknown";
-    }
-
-    /** Combines cleanup failures without hiding a fatal VM error behind an ordinary exception. */
-    public static Throwable mergeFailure(final Throwable previous, final Throwable next) {
-        if (next == null) throw new IllegalArgumentException("The next failure is required");
-        if (previous == null || previous == next) return next;
-        final boolean previousFatal = previous instanceof VirtualMachineError;
-        final boolean nextFatal = next instanceof VirtualMachineError;
-        if ((nextFatal && !previousFatal) || (next instanceof Error && !(previous instanceof Error))) {
-            next.addSuppressed(previous);
-            return next;
-        }
-        previous.addSuppressed(next);
-        return previous;
     }
 
     /** Reads a bundled UTF-8 resource; a missing one throws {@link FileNotFoundException}. */

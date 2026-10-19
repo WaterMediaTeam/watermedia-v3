@@ -26,7 +26,6 @@ public final class PornHubPlatform implements Platform {
     public static final String NAME = "PornHub";
     private static final Marker IT = MarkerManager.getMarker(PornHubPlatform.class.getSimpleName());
     private static final Pattern FLASHVARS_PATTERN = Pattern.compile("\\bvar\\s+flashvars_\\d+\\s*=\\s*(\\{[\\s\\S]*?\\});");
-    private static final Pattern VIEWKEY_PATTERN = Pattern.compile("(?:^|&)viewkey=([^&]+)");
 
     @Override
     public String name() { return NAME; }
@@ -40,9 +39,8 @@ public final class PornHubPlatform implements Platform {
         if (host == null || !(host.equals("pornhub.com") || host.endsWith(".pornhub.com"))) return null;
 
         // ONLY A VIDEO PAGE CARRIES A viewkey (e.g. ?viewkey=6a159015e4470)
-        final Matcher viewkeyMatcher = VIEWKEY_PATTERN.matcher(uri.getRawQuery() == null ? "" : uri.getRawQuery());
-        if (!viewkeyMatcher.find()) throw PlatformException.unsupported(NAME, uri);
-        final String viewkey = viewkeyMatcher.group(1);
+        final String viewkey = NetRequest.query(uri).get("viewkey");
+        if (viewkey == null || viewkey.isEmpty()) throw PlatformException.unsupported(NAME, uri);
 
         if (!WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(NAME, "Mature content is disabled in config (this platform serves mature content exclusively)");
@@ -64,7 +62,7 @@ public final class PornHubPlatform implements Platform {
             int skipped = 0;
 
             for (final MediaDefinition def: flashVars.mediaDefinitions) {
-                final URI rendition = JSONTool.uri(def.videoUrl);
+                final URI rendition = DataTool.uri(def.videoUrl);
                 if (rendition == null) { skipped++; continue; }
                 // A LINK POINTING BACK TO pornhub.com IS A QUALITY-SELECTOR (E.G. 4K) ENDPOINT, NOT A CDN FILE
                 if (def.videoUrl.contains("pornhub.com")) {
@@ -82,7 +80,7 @@ public final class PornHubPlatform implements Platform {
             URI thumbnail = null;
             Metadata metadata = null;
             if (flashVars.title != null) {
-                thumbnail = JSONTool.uri(flashVars.thumbnail);
+                thumbnail = DataTool.uri(flashVars.thumbnail);
                 metadata = new Metadata(flashVars.title, null, null, Math.max(0, flashVars.duration) * 1_000L, null);
             } else {
                 LOGGER.warn(IT, "PornHub viewkey '{}' has no video_title; emitting source without metadata", viewkey);

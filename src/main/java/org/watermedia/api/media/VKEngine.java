@@ -1,13 +1,11 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 import org.watermedia.api.util.PixelFormat;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
@@ -75,8 +73,6 @@ public final class VKEngine extends GFXEngine {
     private static final int PUSH_BYTES = 16; // { int mode; float bitScale; int width; int height; }
     private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
     private static final long WAIT_TIMEOUT_NS = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
-    private static final long FAILURE_REPORT_NS = 10_000_000_000L;
-    private static final long UPLOAD_REPORT_NS = 10_000_000_000L;
 
     // PROCESS-WIDE CACHES OF THE COMPILED SHADERS (SPIR-V IS DEVICE-INDEPENDENT), FILLED LAZILY
     // UNDER THE CLASS MONITOR ON THE FIRST CONVERSION FRAME. SEE compileSpirv().
@@ -241,11 +237,11 @@ public final class VKEngine extends GFXEngine {
     private volatile long lastView;
     private volatile long lastSeq;
     private final List<Runnable> retiring = new ArrayList<>();
-    // A DRIVER FAILURE PARKS THE ENGINE: UPLOADS ARE DROPPED (REPORTED PER WINDOW) UNTIL THE NEXT LAYOUT
+    // A DRIVER FAILURE PARKS THE ENGINE: UPLOADS ARE DROPPED UNTIL THE NEXT LAYOUT
     private volatile boolean failed;
-    private final LogTool.Throttle failureReports = new LogTool.Throttle(FAILURE_REPORT_NS);
-    // SEPARATE FROM failureReports SO A DROPPED FRAME NEVER DEMOTES THE ERROR THAT PARKS THE ENGINE
-    private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
+    // ANOMALY LATCHES: EACH REPEATABLE UPLOAD ANOMALY IS LOGGED ONCE PER ENGINE
+    private volatile boolean failWarned;
+    private volatile boolean shortWarned;
 
     // THE CONTEXT AND EVERY VULKAN OBJECT IT EXPOSES MUST OUTLIVE THIS ENGINE, WHICH ONLY CREATES ITS OWN COMMAND POOL,
     // DESCRIPTORS, PIPELINES AND PER-SLOT IMAGES ON IT
@@ -653,7 +649,8 @@ public final class VKEngine extends GFXEngine {
                 final int effStride = strides[i] == 0 ? w * texelBytes : strides[i];
                 final long needed = (long) effStride * h;
                 if (bufs[i].remaining() < needed) {
-                    LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed);
+                    if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed);
+                    this.shortWarned = true;
                     return;
                 }
                 rowLen[i] = strides[i] == 0 ? 0 : strides[i] / texelBytes;
@@ -1320,14 +1317,14 @@ public final class VKEngine extends GFXEngine {
     // PARKS THE ENGINE AFTER A DRIVER FAILURE: FRAMES ARE DROPPED UNTIL THE NEXT LAYOUT AND THE LAST VIEW STAYS EXPOSED
     private void fail(final String op, final int result) {
         this.failed = true;
-        LogTool.throttled(LOGGER, Level.ERROR, IT, this.failureReports,
-                "{} failed (VkResult {}); frames are dropped until the next format", op, result);
+        if (!this.failWarned) LOGGER.error(IT, "{} failed (VkResult {}); frames are dropped until the next format", op, result);
+        this.failWarned = true;
     }
 
     private void fail(final String op, final Throwable cause) {
         this.failed = true;
-        LogTool.throttled(LOGGER, Level.ERROR, IT, this.failureReports,
-                "{} failed; frames are dropped until the next format", op, cause);
+        if (!this.failWarned) LOGGER.error(IT, "{} failed; frames are dropped until the next format", op, cause);
+        this.failWarned = true;
     }
 
     // ==========================================================================

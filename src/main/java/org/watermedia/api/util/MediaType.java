@@ -1,8 +1,8 @@
 package org.watermedia.api.util;
 
 import org.watermedia.api.media.MRL;
-import org.watermedia.tools.DataTool;
 
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -22,7 +22,7 @@ public enum MediaType {
      * {@link NetRequest#contentTypeOf(String)} consults it before the JDK's table — the bundled
      * {@code content-types.properties} misses most of these.
      */
-    private static final Map<String, String> MIMES = DataTool.arrayMapper(new String[] {
+    private static final Map<String, String> MIMES = table(new String[] {
             // IMAGE
             "png",  "image/png",
             "apng", "image/apng",
@@ -95,6 +95,13 @@ public enum MediaType {
             "ssa",  "text/x-ssa",
             "sub",  "text/x-microdvd",
     });
+
+    // PAIRS EACH EXTENSION WITH ITS MIME TYPE FROM THE FLAT TABLE ABOVE
+    private static Map<String, String> table(final String[] keyValue) {
+        final Map<String, String> map = new HashMap<>(keyValue.length / 2);
+        for (int i = 0; i < keyValue.length; i += 2) map.put(keyValue[i], keyValue[i + 1]);
+        return Map.copyOf(map);
+    }
 
     /**
      * Parses a MIME type string into MediaType, ignoring parameters such as {@code ; charset=utf-8}

@@ -1,9 +1,7 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.Map;
@@ -43,8 +41,6 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private static final long FOLLOWER_TTL_NS = 15_000_000_000L;  // 3 MISSED FOLLOWER KEEPALIVES
     private static final long DEPARTED_TTL_NS = 10_000_000_000L;  // 2 KEEPALIVES: A REPORT IN FLIGHT BEHIND AN Unwatch LANDS WITHIN THIS
     private static final int MAX_FOLLOWERS = 4_096;                // BOUNDS THE PER-TICK SWEEP AGAINST A FLOOD OF FORGED HELLOS
-    private static final long FLOOD_REPORT_NS = 10_000_000_000L;
-    private static final LogTool.Throttle FLOOD_REPORTS = new LogTool.Throttle(FLOOD_REPORT_NS);
 
     // TIME TRACKING — MUTATORS ARE synchronized (CALLER THREAD vs SHARED TICKER), READS STAY VOLATILE
     // LOCK-FREE. time() MAY PAIR accumulatedMs/segmentStartNanos ACROSS A CONCURRENT REBASE: THE GLITCH
@@ -66,6 +62,9 @@ public final class ServerMediaPlayer extends MediaPlayer {
     private final Map<Long, Long> departed = new ConcurrentHashMap<>();
     private volatile boolean gated;
     private volatile long followerTtlNanos = FOLLOWER_TTL_NS;
+    // ANOMALY LATCHES: A FULL REGISTRY AND A DIVERGENT DURATION ARE LOGGED ONCE PER PLAYER
+    private volatile boolean fullWarned;
+    private boolean divergentWarned; // GUARDED BY THIS
     // BROADCAST STATE — TOUCHED ONLY FROM THE SHARED TICKER THREAD
     private int lastCastRevision = this.revision.get() - 1;
     private long lastCastNanos;
@@ -101,14 +100,16 @@ public final class ServerMediaPlayer extends MediaPlayer {
     /**
      * Synchronizes the total media duration reported by a client.
      * The first non-zero report wins for the player lifetime; later divergent reports are
-     * ignored (and logged), keeping the loop modulo stable across mixed-quality clients.
+     * ignored (the first one is logged), keeping the loop modulo stable across mixed-quality clients.
      * @param durationMs total duration in milliseconds (values {@code <= 0} are ignored)
      */
     public synchronized void syncDuration(final long durationMs) {
         if (durationMs <= 0) return;
         if (this.duration > 0) {
-            if (Math.abs(durationMs - this.duration) > DURATION_DIVERGENCE_MS)
+            if (!this.divergentWarned && Math.abs(durationMs - this.duration) > DURATION_DIVERGENCE_MS) {
+                this.divergentWarned = true;
                 LOGGER.warn(IT, "Ignored divergent duration report: {}ms vs synced {}ms", durationMs, this.duration);
+            }
             return;
         }
         this.duration = durationMs;
@@ -171,7 +172,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
     // --- AUTHORITY PROTOCOL ---
 
     @Override
-    protected void upstream(final Packet packet) {
+    void upstream(final Packet packet) {
         if (packet instanceof final Watch watch) {
             // A HELLO IS AN EXPLICIT (RE)JOIN — IT OVERRIDES ANY EARLIER DEPARTURE
             this.departed.remove(watch.watcherId());
@@ -234,7 +235,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
     // RUNS, EVERY FOLLOWER GATES THE INITIAL LOCKSTEP START. A FULL REGISTRY ENROLLS NOBODY (NULL)
     private Follower enroll() {
         if (this.registry.size() >= MAX_FOLLOWERS) {
-            LogTool.throttled(LOGGER, Level.WARN, IT, FLOOD_REPORTS, "Follower registry is full ({}); ignoring new followers", MAX_FOLLOWERS);
+            if (!this.fullWarned) LOGGER.warn(IT, "Follower registry is full ({}); ignoring new followers", MAX_FOLLOWERS);
+            this.fullWarned = true;
             return null;
         }
         final Follower f = new Follower();
@@ -267,7 +269,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
     }
 
     @Override
-    protected void tick() {
+    void tick() {
         // A HEADLESS FOLLOWER HAS NO MEDIA TO LEARN THE TIMELINE FROM — ADOPT THE SESSION'S
         // DURATION AND LIVE FLAG SO ITS OWN CLOCK RUNS, WRAPS AND ENDS ON THE REAL TIMELINE
         if (this.role() == Role.FOLLOWER && this.duration <= 0 && !this.live) {

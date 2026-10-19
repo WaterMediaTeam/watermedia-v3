@@ -1,11 +1,11 @@
 package org.watermedia.api.codecs.readers;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.common.Limits;
@@ -13,7 +13,6 @@ import org.watermedia.api.codecs.common.Tiff;
 import org.watermedia.api.codecs.common.Xmp;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.LogTool;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -77,7 +76,6 @@ public final class JpegReader extends ImageReader {
     // WHAT FALLS PAST EITHER CAP IS SKIPPED, NEVER A DECODE FAILURE
     private static final int MAX_COMMENTS = 64;
     private static final int MAX_ICC_BYTES = 8 << 20;
-    private static final long METADATA_REPORT_NS = 10_000_000_000L;
     // WORKING-SET CAP FOR ONE FRAME (COEFFICIENTS + SAMPLE PLANES + OUTPUT BUFFER). DELIBERATELY AN
     // ABSOLUTE FIGURE RATHER THAN A MULTIPLE OF ImageReader.MAX_DECODED_BYTES: THAT ONE TRACKS WHAT
     // REAL ANIMATIONS RETAIN AND MOVES WITH THEM, WHICH HAS NO BEARING ON ONE FRAME'S DECODE COST.
@@ -138,7 +136,6 @@ public final class JpegReader extends ImageReader {
         }
     }
 
-    private static final LogTool.Throttle COMMENT_DROPS = new LogTool.Throttle(METADATA_REPORT_NS);
 
     private final int[][] quantTables = new int[4][];
     private final HuffmanTable[][] huffmanTables = new HuffmanTable[2][4];
@@ -171,7 +168,7 @@ public final class JpegReader extends ImageReader {
         super(data, requestedFormat);
         this.parse();
         if (this.comments > MAX_COMMENTS)
-            LogTool.throttled(LOGGER, Level.WARN, IT, COMMENT_DROPS, "Skipped {} JPEG comments past the cap of {}", this.comments - MAX_COMMENTS, MAX_COMMENTS);
+            LOGGER.warn(IT, "Skipped {} JPEG comments past the cap of {}", this.comments - MAX_COMMENTS, MAX_COMMENTS);
         this.buildFrame();
     }
 
@@ -817,7 +814,7 @@ public final class JpegReader extends ImageReader {
                              final int[] tmp, final byte[] dst, final int dstOff, final int dstStride) {
         // FAST PATH: ENTIRE BLOCK IS DC ONLY (FLAT 8x8)
         if (isDcOnly(coef, block)) {
-            final int dc = clamp(((coef[block] * quant[0] + 4) >> 3) + 128);
+            final int dc = MathUtil.clip255(((coef[block] * quant[0] + 4) >> 3) + 128);
             final byte b = (byte) dc;
             for (int y = 0; y < 8; y++) {
                 final int row = dstOff + y * dstStride;
@@ -944,14 +941,14 @@ public final class JpegReader extends ImageReader {
             tmp3 += z1 + z4;
 
             final int base = dstOff + col;
-            dst[base]                 = (byte) clamp(((tmp10 + tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride * 7] = (byte) clamp(((tmp10 - tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride]     = (byte) clamp(((tmp11 + tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride * 6] = (byte) clamp(((tmp11 - tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride * 2] = (byte) clamp(((tmp12 + tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride * 5] = (byte) clamp(((tmp12 - tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride * 3] = (byte) clamp(((tmp13 + tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
-            dst[base + dstStride * 4] = (byte) clamp(((tmp13 - tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base]                 = (byte) MathUtil.clip255(((tmp10 + tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 7] = (byte) MathUtil.clip255(((tmp10 - tmp3 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride]     = (byte) MathUtil.clip255(((tmp11 + tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 6] = (byte) MathUtil.clip255(((tmp11 - tmp2 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 2] = (byte) MathUtil.clip255(((tmp12 + tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 5] = (byte) MathUtil.clip255(((tmp12 - tmp1 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 3] = (byte) MathUtil.clip255(((tmp13 + tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
+            dst[base + dstStride * 4] = (byte) MathUtil.clip255(((tmp13 - tmp0 + PASS2_ROUND) >> PASS2_SHIFT) + 128);
         }
     }
 
@@ -1021,9 +1018,9 @@ public final class JpegReader extends ImageReader {
                     g = c1;
                     b = c2;
                 } else {
-                    r = clamp(c0 + CR_TO_R[c2]);
-                    g = clamp(c0 + ((CB_TO_G[c1] + CR_TO_G[c2]) >> 16));
-                    b = clamp(c0 + CB_TO_B[c1]);
+                    r = MathUtil.clip255(c0 + CR_TO_R[c2]);
+                    g = MathUtil.clip255(c0 + ((CB_TO_G[c1] + CR_TO_G[c2]) >> 16));
+                    b = MathUtil.clip255(c0 + CB_TO_B[c1]);
                 }
                 out.putInt(0xFF000000 | (r << 16) | (g << 8) | b);
             }
@@ -1089,10 +1086,6 @@ public final class JpegReader extends ImageReader {
 
     private static int ceilDiv(final int value, final int divisor) {
         return (value + divisor - 1) / divisor;
-    }
-
-    private static int clamp(final int value) {
-        return value < 0 ? 0 : Math.min(value, 255);
     }
 
     private static String hex(final int value) {

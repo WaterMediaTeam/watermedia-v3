@@ -64,7 +64,7 @@ public class PlatformSearchTest {
         final PlatformSearch search = PlatformAPI.search("   ", 2);
         assertTrue(search.done(), "A blank query must return an already-done handle");
         assertTrue(search.results().isEmpty(), "A blank query must yield no results");
-        assertTrue(search.history().isEmpty(), "History is empty after isolation, so the handle carries none");
+        assertTrue(PlatformAPI.searchHistory().isEmpty(), "A blank query is not worth remembering");
     }
 
     @Test

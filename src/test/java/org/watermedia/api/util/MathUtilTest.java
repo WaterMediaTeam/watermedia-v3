@@ -59,27 +59,20 @@ public class MathUtilTest {
         void clip255Lower() {
             assertEquals(0, MathUtil.clip255(-1));
         }
+
+        @Test
+        @DisplayName("clamp works on floats and doubles with the same inverted-bounds rule")
+        void clampFloating() {
+            assertEquals(0.5f, MathUtil.clamp(0.5f, 0f, 1f));
+            assertEquals(1f, MathUtil.clamp(7f, 0f, 1f));
+            assertEquals(0d, MathUtil.clamp(-3d, 0d, 1d));
+            assertEquals(1d, MathUtil.clamp(0.5d, 2d, 1d), "inverted bounds return max");
+        }
     }
 
     @Nested
-    @DisplayName("scaled / minutesToMs")
+    @DisplayName("minutesToMs")
     class SizingTests {
-
-        @Test
-        @DisplayName("scaled keeps the native size when nothing reduces it")
-        void scaledKeepsNative() {
-            assertEquals(1081, MathUtil.scaled(1081, 0, 100));
-            assertEquals(1081, MathUtil.scaled(1081, 4096, 100));
-        }
-
-        @Test
-        @DisplayName("scaled caps, applies the percentage and keeps the result even")
-        void scaledCapsAndEvens() {
-            assertEquals(720, MathUtil.scaled(1080, 720, 100));
-            assertEquals(540, MathUtil.scaled(1080, 0, 50));
-            assertEquals(10, MathUtil.scaled(1080, 0, 1));
-            assertEquals(2, MathUtil.scaled(100, 0, 1));
-        }
 
         @Test
         @DisplayName("minutesToMs keeps fractional minutes down to the millisecond")

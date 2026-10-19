@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.util.MathUtil;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -273,7 +274,7 @@ final class SvgDocument {
         int c = parsed == SvgColor.INVALID ? 0xFF000000 : (int) parsed;
         final String so = stop.attr("stop-opacity");
         if (so != null) {
-            final double a = Math.max(0, Math.min(1, SvgParser.ratioOrNumber(so, 1)));
+            final double a = MathUtil.clamp(SvgParser.ratioOrNumber(so, 1), 0, 1);
             final int alpha = (int) Math.round(((c >>> 24) & 0xFF) * a);
             c = (alpha << 24) | (c & 0x00FFFFFF);
         }

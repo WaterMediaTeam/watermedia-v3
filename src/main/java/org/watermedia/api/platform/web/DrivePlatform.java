@@ -11,6 +11,7 @@ import org.watermedia.tools.DataTool;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -43,16 +44,12 @@ public final class DrivePlatform implements Platform {
         if (!DataTool.equalsAnyIgnoreCase(uri.getHost(), HOSTS)) return null;
         // THE ID TRAVELS IN THE PATH OF A VIEWER LINK (/file/d/<id>/view) OR IN THE id PARAMETER OF /uc AND /open LINKS
         final String path = uri.getPath() == null ? "" : uri.getPath();
-        String fileId = "";
-        if (path.startsWith(FILE_PREFIX)) {
-            final int end = path.indexOf('/', FILE_PREFIX.length());
-            fileId = path.substring(FILE_PREFIX.length(), end < 0 ? path.length() : end);
-        } else if (path.equals("/uc") || path.equals("/open")) {
-            for (final String param: (uri.getRawQuery() == null ? "" : uri.getRawQuery()).split("&")) {
-                if (param.startsWith("id=")) fileId = param.substring(3);
-            }
-        }
-        if (fileId.isEmpty()) throw PlatformException.unsupported(NAME, uri);
+        final int end = path.startsWith(FILE_PREFIX) ? path.indexOf('/', FILE_PREFIX.length()) : -1;
+        final String decoded = path.startsWith(FILE_PREFIX) ? path.substring(FILE_PREFIX.length(), end < 0 ? path.length() : end)
+                : path.equals("/uc") || path.equals("/open") ? NetRequest.query(uri).get("id") : null;
+        if (decoded == null || decoded.isEmpty()) throw PlatformException.unsupported(NAME, uri);
+        // THE ID ARRIVES DECODED, SO IT IS RE-ENCODED BEFORE GOING INTO A URL
+        final String fileId = URLEncoder.encode(decoded, StandardCharsets.UTF_8);
         LOGGER.debug(IT, "Google Drive resolving fileId '{}' from {}", fileId, uri);
 
         try {

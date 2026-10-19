@@ -1,5 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
+import org.watermedia.api.util.MathUtil;
+
 import java.util.Locale;
 import java.util.Map;
 
@@ -184,7 +186,7 @@ final class SvgColor {
     private static double pct(final String v) {
         final String t = v.trim();
         final double d = t.endsWith("%") ? Double.parseDouble(t.substring(0, t.length() - 1)) : Double.parseDouble(t);
-        return Math.max(0, Math.min(1, d / 100.0));
+        return MathUtil.clamp(d / 100.0, 0, 1);
     }
 
     private static int clamp255(final double v) {

@@ -1,6 +1,5 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
@@ -8,7 +7,6 @@ import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
-import org.watermedia.tools.LogTool;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -26,6 +24,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -50,8 +49,6 @@ final class NetworkCache {
     private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
     // LEFTOVERS YOUNGER THAN THIS MAY BELONG TO ANOTHER PROCESS SHARING THE FOLDER, SO THE STARTUP SWEEP SPARES THEM
     private static final long SWEEP_GRACE_MS = 60_000L;
-    private static final long WRITE_REPORT_NS = 10_000_000_000L;
-    private static final LogTool.Throttle WRITE_REPORTS = new LogTool.Throttle(WRITE_REPORT_NS);
     private static volatile Store active;
 
     private NetworkCache() {}
@@ -87,7 +84,7 @@ final class NetworkCache {
         final Store store = active;
         if (!enabled || !isHttp(uri) || store == null) return fetch(uri, headers, accept, maxBytes, false);
         final byte[] hash = keyHash(uri, headers, accept);
-        final String hex = DataTool.hex(hash);
+        final String hex = HexFormat.of().formatHex(hash);
         final Entry entry;
         synchronized (store) {
             entry = stored(store, hex);
@@ -129,7 +126,7 @@ final class NetworkCache {
         final Store store = active;
         if (!enabled || !isHttp(uri) || store == null) return null;
         final byte[] hash = keyHash(uri, headers, accept);
-        final String hex = DataTool.hex(hash);
+        final String hex = HexFormat.of().formatHex(hash);
         synchronized (store) {
             final Entry entry = stored(store, hex);
             if (entry != null) {
@@ -214,7 +211,7 @@ final class NetworkCache {
 
     // A CACHE FAILURE NEVER FAILS THE DOWNLOAD THAT ALREADY SUCCEEDED: THE CALLER JUST GETS NO CACHED FILE
     private static Path store(final Store store, final String hex, final byte[] hash, final CachedBytes body) {
-        final long budget = Math.max(1L, WaterMediaConfig.media.cacheBudget) * 1024L * 1024L;
+        final long budget = DataTool.megabytes(Math.max(1L, WaterMediaConfig.media.cacheBudget));
         final long size = body.bytes.length;
         if (size > budget) return null;
         final Path file = file(store, hex);
@@ -248,7 +245,8 @@ final class NetworkCache {
                 Files.deleteIfExists(partial);
             }
         } catch (final IOException failure) {
-            LogTool.throttled(LOGGER, Level.WARN, IT, WRITE_REPORTS, "Media cache write failed for {}", file, failure);
+            if (!store.writeWarned) LOGGER.warn(IT, "Media cache write failed for {}", file, failure);
+            store.writeWarned = true;
             return null;
         }
     }
@@ -279,7 +277,7 @@ final class NetworkCache {
                 final long expiresAt = in.readLong();
                 final long size = in.readLong();
                 final String contentType = in.readUTF();
-                final String hex = DataTool.hex(hash);
+                final String hex = HexFormat.of().formatHex(hash);
                 final Path file = file(store, hex);
                 // AN ENTRY IS TRUSTED ONLY WHILE ITS PAYLOAD IS WHOLE; THE REST IS LEFT FOR THE STARTUP SWEEP
                 if (expiresAt > now && size >= 0 && Files.isRegularFile(file) && Files.size(file) == size) {
@@ -326,13 +324,7 @@ final class NetworkCache {
             for (final String raw: cacheControl.split(",")) {
                 final String directive = raw.trim().toLowerCase(Locale.ROOT);
                 if (directive.equals("no-store") || directive.equals("no-cache")) return -1L;
-                if (directive.startsWith("max-age=")) {
-                    try {
-                        maxAge = Long.parseLong(directive.substring("max-age=".length()).replace("\"", ""));
-                    } catch (final NumberFormatException ignored) {
-                        maxAge = -1L;
-                    }
-                }
+                if (directive.startsWith("max-age=")) maxAge = DataTool.parseLong(directive.substring("max-age=".length()).replace("\"", ""), -1L);
             }
             if (maxAge >= 0L) {
                 if (maxAge >= Long.MAX_VALUE / 1000L) return Long.MAX_VALUE;
@@ -392,6 +384,7 @@ final class NetworkCache {
         private final Map<String, Entry> index = new LinkedHashMap<>(64, 0.75f, true);
         private final Map<String, CompletableFuture<CachedBytes>> inflight = new ConcurrentHashMap<>();
         private long totalBytes;
+        private volatile boolean writeWarned; // A FAILING WRITE IS LOGGED ONCE PER STORE
 
         private Store(final Path dir) {
             this.dir = dir;

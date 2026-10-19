@@ -3,7 +3,6 @@ package org.watermedia.api.platform.web;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
@@ -11,13 +10,9 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
-import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.Track;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JSONTool;
-import org.watermedia.tools.M3UTool;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -26,11 +21,16 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.tools.JSONTool.arr;
+import static org.watermedia.tools.JSONTool.intOr;
+import static org.watermedia.tools.JSONTool.obj;
+import static org.watermedia.tools.JSONTool.str;
 
 public final class BlueskyPlatform implements Platform {
     public static final String NAME = "Bluesky";
@@ -69,7 +69,11 @@ public final class BlueskyPlatform implements Platform {
 
         LOGGER.debug(IT, "Fetching Bluesky post '{}' by '{}'", postId, handle);
         try {
-            final JsonObject post = this.fetchPost(handle, postId);
+            // RESPONSE SHAPE: { thread: { post: {...} } } — A BLOCKED/NOT-FOUND THREAD OMITS "post"
+            final String atUri = "at://" + handle + "/app.bsky.feed.post/" + postId;
+            final JsonObject post = obj(WebRequests.fetchJson(NAME, API_URL + "?uri=" + enc(atUri) + "&depth=0&parentHeight=0", JsonObject.class), "thread", "post");
+            if (post == null)
+                throw new PlatformException(NAME, "Post '" + postId + "' by '" + handle + "' was not found, blocked, or deleted");
             ensureNotMature(post, postId);
             final HttpHeaders headers = HttpHeaders.defaults(uri);
 
@@ -78,31 +82,27 @@ public final class BlueskyPlatform implements Platform {
             final JsonObject record = obj(post, "record");
 
             // DIRECT EMBED (app.bsky.embed.video#view OR app.bsky.embed.images#view)
-            this.extractVideo(entries, post, embed, obj(record, "embed"), postId, headers);
-            this.extractImages(entries, post, embed, postId, headers);
+            extractVideo(entries, post, embed, obj(record, "embed"), postId, headers);
+            extractImages(entries, post, embed, postId, headers);
 
             // RECORD WITH MEDIA (app.bsky.embed.recordWithMedia#view): THE MEDIA LIVES IN embed.media
-            if (embed != null && embed.has("media")) {
-                final JsonObject mediaEmbed = obj(embed, "media");
-                this.extractVideo(entries, post, mediaEmbed, obj(record, "embed", "media"), postId, headers);
-                this.extractImages(entries, post, mediaEmbed, postId, headers);
+            final JsonObject mediaEmbed = obj(embed, "media");
+            if (mediaEmbed != null) {
+                extractVideo(entries, post, mediaEmbed, obj(record, "embed", "media"), postId, headers);
+                extractImages(entries, post, mediaEmbed, postId, headers);
             }
 
-            // QUOTED POST (app.bsky.embed.record#view): THE MEDIA LIVES IN THE NESTED POST'S EMBEDS
-            if (embed != null && embed.has("record")) {
-                final JsonObject nestedPost = resolveNestedPost(obj(embed, "record"));
-                if (nestedPost != null) {
-                    ensureNotMature(nestedPost, postId);
-                    final JsonElement embedsEl = nestedPost.get("embeds");
-                    if (embedsEl != null && embedsEl.isJsonArray()) {
-                        final JsonArray embeds = embedsEl.getAsJsonArray();
-                        if (!embeds.isEmpty() && embeds.get(0).isJsonObject()) {
-                            final JsonObject nestedEmbed = embeds.get(0).getAsJsonObject();
-                            this.extractVideo(entries, nestedPost, nestedEmbed,
-                                    obj(nestedPost, "value", "embed"), postId, headers);
-                            this.extractImages(entries, nestedPost, nestedEmbed, postId, headers);
-                        }
-                    }
+            // QUOTED POST (app.bsky.embed.record#view): THE MEDIA LIVES IN THE NESTED POST'S EMBEDS; A recordWithMedia
+            // WRAPS THE QUOTED VIEW ONE LEVEL DEEPER
+            final JsonObject quoted = obj(embed, "record");
+            final JsonObject nestedPost = quoted == null ? null : Objects.requireNonNullElse(obj(quoted, "record"), quoted);
+            if (nestedPost != null) {
+                ensureNotMature(nestedPost, postId);
+                final JsonArray embeds = arr(nestedPost, "embeds");
+                final JsonObject nestedEmbed = embeds == null || embeds.isEmpty() ? null : obj(embeds.get(0));
+                if (nestedEmbed != null) {
+                    extractVideo(entries, nestedPost, nestedEmbed, obj(nestedPost, "value", "embed"), postId, headers);
+                    extractImages(entries, nestedPost, nestedEmbed, postId, headers);
                 }
             }
 
@@ -113,7 +113,7 @@ public final class BlueskyPlatform implements Platform {
             return new Resolution(Instant.now().plus(TTL), entries);
         } catch (final PlatformException e) {
             throw e;
-        } catch (final IOException | RuntimeException e) {
+        } catch (final RuntimeException e) {
             throw new PlatformException(NAME, "Failed to resolve " + uri, e);
         }
     }
@@ -122,221 +122,118 @@ public final class BlueskyPlatform implements Platform {
     // THE POST ITSELF AND FOR THE POST IT QUOTES
     private static void ensureNotMature(final JsonObject post, final String postId) throws MatureContentException {
         if (WaterMediaConfig.platforms.allowMatureContent) return;
-        final JsonObject author = obj(post, "author");
-        for (final JsonElement labels: new JsonElement[] { post.get("labels"), author == null ? null : author.get("labels") }) {
-            if (labels == null || !labels.isJsonArray()) continue;
-            for (final JsonElement label: labels.getAsJsonArray()) {
-                final String value = label.isJsonObject() ? str(label.getAsJsonObject(), "val") : null;
+        for (final JsonArray labels: new JsonArray[] { arr(post, "labels"), arr(obj(post, "author"), "labels") }) {
+            if (labels == null) continue;
+            for (final JsonElement label: labels) {
+                final String value = str(obj(label), "val");
                 if (value != null && MATURE_LABELS.contains(value))
                     throw new MatureContentException(NAME, "Post '" + postId + "' is labelled '" + value + "'");
             }
         }
     }
 
-    private void extractVideo(final List<Source> entries, final JsonObject postCtx,
-                              final JsonObject embedView, final JsonObject recordEmbed, final String postId,
-                              final HttpHeaders headers) {
-        if (embedView == null || !embedView.has("playlist")) return;
+    private static void extractVideo(final List<Source> entries, final JsonObject postCtx, final JsonObject embedView,
+                                     final JsonObject recordEmbed, final String postId, final HttpHeaders headers) {
+        final String playlist = str(embedView, "playlist");
+        if (playlist == null) return;
 
-        final URI playlistUri = JSONTool.uri(str(embedView, "playlist"));
+        final URI playlistUri = DataTool.uri(playlist);
         if (playlistUri == null) {
             LOGGER.warn(IT, "Bluesky post '{}' carries a video without a usable playlist URL; skipping it", postId);
             return;
         }
-        final List<Quality> variants = new ArrayList<>();
 
-        try {
-            // VARIANT URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST playlistUri BY M3UTool);
-            // ONLY KEEP RENDITIONS THAT ADVERTISE A REAL RESOLUTION, RAW-URL FALLBACK HANDLES THE REST.
-            final M3UTool.Playlist hlsResult = M3UTool.fetch(playlistUri);
-            if (hlsResult instanceof final M3UTool.Master master) {
-                for (final M3UTool.Variant variant: master.variants()) {
-                    if (variant.width() <= 0 || variant.height() <= 0) continue;
-                    variants.add(new Quality(variant.uri(), variant.width(), variant.height(), (float) variant.fps()));
-                }
-                LOGGER.debug(IT, "Bluesky parsed {} HLS rendition(s) for '{}'", variants.size(), postId);
-            }
-        } catch (final IOException e) {
-            LOGGER.warn(IT, "Bluesky failed to fetch HLS for '{}'; falling back to the raw playlist URL", postId, e);
-        }
-        if (variants.isEmpty()) variants.add(new Quality(playlistUri, 0, 0));
-
-        // SUBTITLE TRACKS THROUGH THE BLOB ENDPOINT
+        // SUBTITLE TRACKS THROUGH THE BLOB ENDPOINT OF THE AUTHOR'S PDS
         final List<Track> subtitleTracks = new ArrayList<>();
-        final String did = str(postCtx, "author", "did");
-        if (did != null && recordEmbed != null && recordEmbed.has("captions")) {
-            try {
-                final String endpoint = this.resolveServiceEndpoint(did);
-                final JsonElement captionsEl = recordEmbed.get("captions");
-                if (captionsEl.isJsonArray()) {
-                    for (final JsonElement capEl: captionsEl.getAsJsonArray()) {
-                        if (!capEl.isJsonObject()) continue;
-                        final JsonObject cap = capEl.getAsJsonObject();
-                        final String lang = cap.has("lang") && !cap.get("lang").isJsonNull()
-                                ? cap.get("lang").getAsString() : "und";
-                        final String fileCid = str(cap, "file", "ref", "$link");
-                        if (fileCid == null) continue;
-                        subtitleTracks.add(new Track(lang, lang, URI.create(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)))));
-                    }
+        final String did = str(obj(postCtx, "author"), "did");
+        final JsonArray captions = arr(recordEmbed, "captions");
+        if (did != null && captions != null && !captions.isEmpty()) {
+            final String endpoint = serviceEndpoint(did);
+            for (final JsonElement element: captions) {
+                final JsonObject cap = obj(element);
+                final String fileCid = str(obj(cap, "file", "ref"), "$link");
+                if (fileCid == null) continue;
+                // THE ENDPOINT COMES FROM A REMOTE DID DOCUMENT, SO ONLY A WEB URL IS ACCEPTED
+                final URI blob = DataTool.uri(String.format(BLOB_URL_TMPL, endpoint, enc(did), enc(fileCid)));
+                if (blob == null) {
+                    LOGGER.warn(IT, "Bluesky post '{}' names an unusable PDS endpoint '{}'; skipping its captions", postId, endpoint);
+                    break;
                 }
-            } catch (final RuntimeException e) {
-                LOGGER.warn(IT, "Bluesky failed to extract subtitles for '{}'", postId, e);
+                final String lang = Objects.requireNonNullElse(str(cap, "lang"), "und");
+                subtitleTracks.add(new Track(lang, lang, blob));
             }
         }
 
-        // METADATA
-        final String displayName = str(postCtx, "author", "displayName");
-        final String authorHandle = str(postCtx, "author", "handle");
-        final String indexedAt = str(postCtx, "indexedAt");
-
-        String text = str(postCtx, "record", "text");
-        if (text == null) text = str(postCtx, "value", "text");
-
-        final String title = text != null && !text.isBlank()
-                ? truncateTitle(text)
-                : "Bluesky video #" + postId;
-
-        final Metadata metadata = new Metadata(
-                title, text,
-                indexedAt != null ? parseInstant(indexedAt) : null,
-                0,
-                displayName != null ? displayName : authorHandle
-        );
-
-        entries.add(new Source(MediaType.VIDEO, JSONTool.uri(str(embedView, "thumbnail")), metadata, headers,
-                variants,
-                null, subtitleTracks.isEmpty() ? null : subtitleTracks));
+        entries.add(new Source(MediaType.VIDEO, DataTool.uri(str(embedView, "thumbnail")), metadata(postCtx, "Bluesky video #" + postId),
+                headers, WebRequests.hls(playlistUri, headers), null, subtitleTracks.isEmpty() ? null : subtitleTracks));
     }
 
-    private void extractImages(final List<Source> entries, final JsonObject postCtx,
-                               final JsonObject embedView, final String postId,
-                               final HttpHeaders headers) {
-        if (embedView == null || !embedView.has("images")) return;
+    private static void extractImages(final List<Source> entries, final JsonObject postCtx, final JsonObject embedView,
+                                      final String postId, final HttpHeaders headers) {
+        final JsonArray images = arr(embedView, "images");
+        if (images == null) return;
 
-        final JsonElement imagesEl = embedView.get("images");
-        if (!imagesEl.isJsonArray()) return;
-
-        final String displayName = str(postCtx, "author", "displayName");
-        final String authorHandle = str(postCtx, "author", "handle");
-        final String indexedAt = str(postCtx, "indexedAt");
-        String text = str(postCtx, "record", "text");
-        if (text == null) text = str(postCtx, "value", "text");
-
-        final String title = text != null && !text.isBlank()
-                ? truncateTitle(text)
-                : "Bluesky image #" + postId;
-
-        for (final JsonElement imgEl: imagesEl.getAsJsonArray()) {
-            if (!imgEl.isJsonObject()) continue;
-            final JsonObject img = imgEl.getAsJsonObject();
+        final Metadata metadata = metadata(postCtx, "Bluesky image #" + postId);
+        for (final JsonElement element: images) {
+            final JsonObject img = obj(element);
+            if (img == null) continue;
 
             // ONE BROKEN PICTURE MUST NOT TAKE THE REST OF THE POST DOWN
-            final URI fullsize = JSONTool.uri(str(img, "fullsize"));
+            final URI fullsize = DataTool.uri(str(img, "fullsize"));
             if (fullsize == null) {
                 LOGGER.warn(IT, "Bluesky post '{}' carries an image without a usable URL; skipping it", postId);
                 continue;
             }
 
             final JsonObject aspectRatio = obj(img, "aspectRatio");
-            final int width = aspectRatio != null ? Math.max(0, JSONTool.intOr(aspectRatio, "width", 0)) : 0;
-            final int height = aspectRatio != null ? Math.max(0, JSONTool.intOr(aspectRatio, "height", 0)) : 0;
-
-            final Metadata imgMetadata = new Metadata(
-                    title, text,
-                    indexedAt != null ? parseInstant(indexedAt) : null,
-                    0,
-                    displayName != null ? displayName : authorHandle
-            );
-            entries.add(new Source(MediaType.IMAGE, JSONTool.uri(str(img, "thumb")), imgMetadata, headers,
-                    List.of(new Quality(fullsize, width, height)),
+            entries.add(new Source(MediaType.IMAGE, DataTool.uri(str(img, "thumb")), metadata, headers,
+                    List.of(new Quality(fullsize, Math.max(0, intOr(aspectRatio, "width", 0)), Math.max(0, intOr(aspectRatio, "height", 0)))),
                     null, null));
         }
     }
 
-    private JsonObject fetchPost(final String handle, final String postId) throws IOException {
-        final String atUri = "at://" + handle + "/app.bsky.feed.post/" + postId;
-        final URI apiUri = URI.create(API_URL + "?uri=" + enc(atUri) + "&depth=0&parentHeight=0");
+    // ONE METADATA PER POST: ITS TEXT (A QUOTED POST KEEPS IT UNDER value) TITLES IT AND ITS AUTHOR SIGNS IT
+    private static Metadata metadata(final JsonObject postCtx, final String fallbackTitle) {
+        String text = str(obj(postCtx, "record"), "text");
+        if (text == null) text = str(obj(postCtx, "value"), "text");
+        final String oneLine = text == null ? null : text.replace('\n', ' ');
+        final String title = oneLine == null || oneLine.isBlank() ? fallbackTitle
+                : oneLine.length() > TITLE_LENGTH ? oneLine.substring(0, TITLE_LENGTH) + "..." : oneLine;
 
-        try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept(NetRequest.ACCEPT_JSON).send()) {
-            if (req.statusCode() != 200) throw new PlatformException(NAME, "getPostThread for '" + atUri + "' returned HTTP " + req.statusCode());
-
-            // RESPONSE SHAPE: { thread: { post: {...} } } — A BLOCKED/NOT-FOUND THREAD OMITS "post"
-            final JsonObject thread = obj(JsonParser.parseString(req.text()).getAsJsonObject(), "thread");
-            final JsonObject post = obj(thread, "post");
-            if (post == null)
-                throw new PlatformException(NAME, "Post '" + postId + "' by '" + handle + "' was not found, blocked, or deleted");
-            return post;
+        Instant indexedAt = null;
+        final String indexed = str(postCtx, "indexedAt");
+        if (indexed != null) {
+            try { indexedAt = Instant.parse(indexed); }
+            catch (final DateTimeParseException e) { LOGGER.warn(IT, "Bluesky unparseable indexedAt '{}'", indexed, e); }
         }
+
+        final JsonObject author = obj(postCtx, "author");
+        final String displayName = str(author, "displayName");
+        return new Metadata(title, text, indexedAt, 0, displayName != null ? displayName : str(author, "handle"));
     }
 
-    private String resolveServiceEndpoint(final String did) {
+    // PDS HOSTING THE AUTHOR'S BLOBS, READ FROM ITS DID DOCUMENT; ANY FAILURE FALLS BACK TO THE DEFAULT PDS
+    private static String serviceEndpoint(final String did) {
+        final String url = did.startsWith("did:web:")
+                ? "https://" + did.substring(8) + "/.well-known/did.json"
+                : String.format(PLC_DIRECTORY_URL, did);
         try {
-            final String url = did.startsWith("did:web:")
-                    ? "https://" + did.substring(8) + "/.well-known/did.json"
-                    : String.format(PLC_DIRECTORY_URL, did);
-
-            try (final NetRequest req = NetRequest.create(URI.create(url)).method("GET").accept(NetRequest.ACCEPT_JSON).send()) {
-                if (req.statusCode() != 200) return DEFAULT_PDS;
-
-                final JsonObject doc = JsonParser.parseString(req.text()).getAsJsonObject();
-
-                if (doc.has("service") && doc.get("service").isJsonArray()) {
-                    for (final JsonElement el: doc.getAsJsonArray("service")) {
-                        if (!el.isJsonObject()) continue;
-                        final JsonObject svc = el.getAsJsonObject();
-                        if ("AtprotoPersonalDataServer".equals(str(svc, "type"))) {
-                            final String ep = str(svc, "serviceEndpoint");
-                            if (ep != null) return ep;
-                        }
-                    }
+            final JsonArray services = arr(WebRequests.fetchJson(NAME, url, JsonObject.class), "service");
+            if (services != null) {
+                for (final JsonElement element: services) {
+                    final JsonObject svc = obj(element);
+                    final String endpoint = str(svc, "serviceEndpoint");
+                    if (endpoint != null && "AtprotoPersonalDataServer".equals(str(svc, "type"))) return endpoint;
                 }
             }
-        } catch (final IOException | RuntimeException e) {
+            LOGGER.warn(IT, "Bluesky DID document of '{}' names no PDS; using the default one", did);
+        } catch (final PlatformException e) {
             LOGGER.warn(IT, "Bluesky failed to resolve the service endpoint for '{}'; using the default PDS", did, e);
         }
         return DEFAULT_PDS;
     }
 
-    private static JsonObject resolveNestedPost(final JsonObject quotedRef) {
-        if (quotedRef == null) return null;
-        if (quotedRef.has("record") && quotedRef.get("record").isJsonObject()) return quotedRef.getAsJsonObject("record");
-        return quotedRef;
-    }
-
-    private static String truncateTitle(final String text) {
-        final String oneLine = text.replace('\n', ' ');
-        return oneLine.length() > TITLE_LENGTH ? oneLine.substring(0, TITLE_LENGTH) + "..." : oneLine;
-    }
-
-    private static Instant parseInstant(final String iso) {
-        try { return Instant.parse(iso); }
-        catch (final DateTimeParseException e) { return null; }
-    }
-
     private static String enc(final String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
-    }
-
-    // WALKS A NESTED-KEY PATH TO THE OBJECT AT ITS END, OR null IF ANY SEGMENT IS ABSENT/NON-OBJECT
-    private static JsonObject obj(final JsonObject root, final String... keys) {
-        JsonObject current = root;
-        for (final String key: keys) {
-            if (current == null || !current.has(key) || !current.get(key).isJsonObject()) return null;
-            current = current.getAsJsonObject(key);
-        }
-        return current;
-    }
-
-    // WALKS A NESTED-KEY PATH TO THE STRING AT ITS END, OR null IF ANY SEGMENT IS ABSENT/NULL
-    private static String str(final JsonObject root, final String... keys) {
-        if (keys.length == 0 || root == null) return null;
-        JsonObject current = root;
-        for (int i = 0; i < keys.length - 1; i++) {
-            if (current == null || !current.has(keys[i]) || !current.get(keys[i]).isJsonObject()) return null;
-            current = current.getAsJsonObject(keys[i]);
-        }
-        final String last = keys[keys.length - 1];
-        if (!current.has(last) || current.get(last).isJsonNull()) return null;
-        return current.get(last).getAsString();
     }
 }

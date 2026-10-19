@@ -1,22 +1,36 @@
 package org.watermedia.tools;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.PixelFormat;
 
 import java.net.URI;
-import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-public class DataTool {
+public final class DataTool {
+    // SENSITIVE ELEMENTS: URIS, JWTS (eyJ<header>.<payload>.<signature>), MINECRAFT SESSION ARGUMENTS AND TRIPLES,
+    // Authorization VALUES AND SECRET-LOOKING key=value, key: value OR "key":"value" PAIRS
+    // THE SCHEME AND THE JWT PREFIX ARE BOUNDED SO A LONG RUN OF DOTS OR "eyJ" CANNOT MAKE THE SCAN QUADRATIC
+    private static final Pattern URI_TEXT = Pattern.compile("(?i)(?<![\\w/])(?:[a-z][a-z0-9+.-]{0,31}://|file:|//)[^\\s<>]+");
+    private static final Pattern JWT = Pattern.compile("(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{4,}");
+    private static final Pattern LAUNCH_ARG = Pattern.compile("(?i)(--(?:accessToken|session)\\s+)(\\S+)");
+    private static final Pattern SESSION_TRIPLE = Pattern.compile("(?i)\\btoken:[^\\s:]+(?::[0-9a-fA-F-]+)?");
+    private static final Pattern AUTH_HEADER = Pattern.compile("(?i)(authorization\\s*[:=]\\s*(?:[a-z]+\\s+)?)(\\S+)");
+    private static final Pattern COOKIE_HEADER = Pattern.compile("(?i)((?:set-)?cookie\\s*[:=]\\s*)([^\\r\\n]+)");
+    private static final Pattern SECRET_KV = Pattern.compile(
+            "(?i)(\"?\\b(?:access[_-]?token|session[_-]?token|sessionId|auth[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|secret|password|passwd|pwd|api[_-]?key|apikey)\\b\"?\\s*[:=]\\s*\"?)([^\\s\"',&}]+)");
+    private static final String SECRET_MASK = "********";
+
+    private DataTool() {}
+
     public static boolean startsWith(final ByteBuffer buffer, final int offset, final byte[] header) {
         if (buffer.limit() - offset < header.length) return false;
         for (int i = 0; i < header.length; i++) {
@@ -33,27 +47,57 @@ public class DataTool {
         return false;
     }
 
-    /**
-     * Parses a RAW query ({@link URI#getRawQuery()}, never the decoded {@link URI#getQuery()}) into an
-     * unmodifiable map, decoding each key and value exactly once. A pair with a malformed escape keeps its
-     * raw text instead of failing; a repeated key keeps its last value and a key without {@code =} maps to "".
-     */
-    public static Map<String, String> parseQuery(final String query) {
-        if (query == null || query.isEmpty()) return Map.of();
-
-        final Map<String, String> result = new HashMap<>();
-        for (final String param: query.split("&")) {
-            if (param.isEmpty()) continue;
-            final int eq = param.indexOf('=');
-            final String key = eq < 0 ? param : param.substring(0, eq);
-            final String value = eq < 0 ? "" : param.substring(eq + 1);
-            try {
-                result.put(URLDecoder.decode(key, StandardCharsets.UTF_8), URLDecoder.decode(value, StandardCharsets.UTF_8));
-            } catch (final IllegalArgumentException malformed) {
-                result.put(key, value);
-            }
+    /** Parses a web URL leniently: a scheme-relative value gets https and anything malformed or not http(s) yields null. */
+    public static URI uri(final String uri) {
+        if (uri == null || uri.isEmpty()) return null;
+        try {
+            final URI parsed = URI.create(uri.startsWith("//") ? "https:" + uri : uri);
+            return IOTool.web(parsed) ? parsed : null;
+        } catch (final IllegalArgumentException e) {
+            return null;
         }
-        return Map.copyOf(result);
+    }
+
+    /** Masks every sensitive element in a text: URIs down to their network origin, bare JWTs, session arguments, Authorization values and secret-looking pairs. */
+    public static String redact(final String text) {
+        if (text == null || text.isEmpty()) return text;
+        String out = text;
+        final Matcher uris = URI_TEXT.matcher(out);
+        if (uris.find()) {
+            final StringBuilder result = new StringBuilder();
+            do {
+                String value = uris.group();
+                int end = value.length();
+                while (end > 0 && ").,;]}'\"`".indexOf(value.charAt(end - 1)) >= 0) end--;
+                final String suffix = value.substring(end);
+                value = value.substring(0, end);
+                String replacement = "[redacted-uri]";
+                try {
+                    final boolean relative = value.startsWith("//");
+                    final URI uri = URI.create(relative ? "https:" + value : value);
+                    // PATHS CAN CARRY PRIVATE IDS TOO; ONLY THE ORIGIN IS USEFUL WITHOUT DISCLOSING THE RESOURCE
+                    if (uri.getHost() != null && !"file".equalsIgnoreCase(uri.getScheme())) {
+                        replacement = (relative ? "//" : uri.getScheme() + "://") + uri.getHost()
+                                + (uri.getPort() == -1 ? "" : ":" + uri.getPort()) + "/REDACTED";
+                    }
+                } catch (final IllegalArgumentException ignored) {
+                    // A MALFORMED URL STILL NEEDS REDACTION WHEN A PARSER QUOTES IT IN AN EXCEPTION
+                }
+                uris.appendReplacement(result, Matcher.quoteReplacement(replacement + suffix));
+            } while (uris.find());
+            out = uris.appendTail(result).toString();
+        }
+        out = JWT.matcher(out).replaceAll(SECRET_MASK);
+        out = LAUNCH_ARG.matcher(out).replaceAll("$1" + SECRET_MASK);
+        out = AUTH_HEADER.matcher(out).replaceAll("$1" + SECRET_MASK);
+        out = COOKIE_HEADER.matcher(out).replaceAll("$1" + SECRET_MASK);
+        out = SECRET_KV.matcher(out).replaceAll("$1" + SECRET_MASK);
+        return SESSION_TRIPLE.matcher(out).replaceAll("token:" + SECRET_MASK);
+    }
+
+    /** Converts a configuration value in megabytes (MiB) to bytes. */
+    public static long megabytes(final long megabytes) {
+        return megabytes << 20;
     }
 
     // UNSIGNED FIELD READS AT AN ABSOLUTE OFFSET IN EITHER BYTE ORDER; THE JIT INLINES THEM INTO THE PARSERS
@@ -96,17 +140,6 @@ public class DataTool {
         return null;
     }
 
-    public static <T> Map<T, T> arrayMapper(final T[] keyValue) {
-        if (keyValue.length % 2 != 0)
-            throw new IllegalArgumentException("Not all keys have values");
-
-        final var map = new HashMap<T, T>(keyValue.length / 2);
-        for (int i = 0; i < keyValue.length; i+=2) {
-            map.put(keyValue[i], keyValue[i + 1]);
-        }
-        return map;
-    }
-
     public static boolean equalsAnyIgnoreCase(final String o, final String... arr) {
         for (final String element: arr)
             if (element != null && element.equalsIgnoreCase(o)) return true; // CASE-INSENSITIVE EQUALITY CHECK
@@ -135,9 +168,9 @@ public class DataTool {
                 int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
                 int b = (298 * c + 516 * d + 128) >> 8;
 
-                if (r < 0) r = 0; else if (r > 255) r = 255;
-                if (g < 0) g = 0; else if (g > 255) g = 255;
-                if (b < 0) b = 0; else if (b > 255) b = 255;
+                r = MathUtil.clip255(r);
+                g = MathUtil.clip255(g);
+                b = MathUtil.clip255(b);
 
                 bgra[dstRow + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
             }
@@ -233,15 +266,6 @@ public class DataTool {
         if (s == null) return def;
         try { return Double.parseDouble(s.trim()); }
         catch (final NumberFormatException e) { return def; }
-    }
-
-    // LOWERCASE HEX ENCODING OF bytes
-    public static String hex(final byte[] bytes) {
-        final StringBuilder out = new StringBuilder(bytes.length * 2);
-        for (final byte b: bytes) {
-            out.append(Character.forDigit((b >>> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
-        }
-        return out.toString();
     }
 
     // ONE-SHOT SHA-256 OF data; SHA-256 IS MANDATED BY THE JVM SPEC, SO ABSENCE MEANS A BROKEN RUNTIME

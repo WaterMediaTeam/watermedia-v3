@@ -11,12 +11,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * answers — a caller (typically a client UI) can poll it every frame and draw hits as they land,
  * without ever blocking. Platforms are probed concurrently on a shared daemon pool, and a newer
  * search supersedes this one: when that happens this handle ends at once, {@link #done() done} and
- * {@link #superseded() superseded}, with the hits gathered so far. The handle also carries the
- * {@link #history() recent-query history} captured at the moment it was issued.
+ * {@link #superseded() superseded}, with the hits gathered so far.
  */
 public final class PlatformSearch {
     private final String query;
-    private final List<String> history;
     // WRITTEN BY THE SEARCH THREADS, READ BY THE CALLER (UI) THREAD — COPY-ON-WRITE KEEPS BOTH SAFE WITHOUT LOCKS
     private final List<PlatformResult> results = new CopyOnWriteArrayList<>();
     // GROW-ONLY UNMODIFIABLE VIEW: LETS results() BE POLLED PER FRAME WITHOUT COPYING THE WHOLE LIST EACH CALL
@@ -24,9 +22,8 @@ public final class PlatformSearch {
     private volatile boolean done;
     private volatile boolean superseded;
 
-    PlatformSearch(final String query, final List<String> history) {
+    PlatformSearch(final String query) {
         this.query = query;
-        this.history = history;
     }
 
     /**
@@ -44,15 +41,6 @@ public final class PlatformSearch {
      */
     public List<PlatformResult> results() {
         return this.resultsView;
-    }
-
-    /**
-     * Returns the recent-query history (at most {@code 10} entries), most recent first and
-     * including this search's own query. The list is an immutable snapshot taken when the search
-     * was issued.
-     */
-    public List<String> history() {
-        return this.history;
     }
 
     /**

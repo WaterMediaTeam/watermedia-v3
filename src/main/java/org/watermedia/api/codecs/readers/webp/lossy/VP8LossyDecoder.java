@@ -1,6 +1,5 @@
 package org.watermedia.api.codecs.readers.webp.lossy;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
@@ -8,7 +7,6 @@ import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -26,17 +24,14 @@ public final class VP8LossyDecoder {
     private static final byte[] TOP_BORDER_8 = fillBorder(8, 127);
     private static final byte[] LEFT_BORDER_8 = fillBorder(8, 129);
     private static final byte[] LEFT_BORDER_4 = fillBorder(4, 129);
-    // REPAIR NOTICES AGGREGATE PER WINDOW: AN ANIMATED WEBP WITH BROKEN PARTITIONS WOULD OTHERWISE WARN PER FRAME
-    private static final long REPAIR_REPORT_NS = 10_000_000_000L;
-    private static final LogTool.Throttle REPAIRS = new LogTool.Throttle(REPAIR_REPORT_NS);
 
-    /** Converts an opaque VP8 key frame into a newly allocated direct BGRA buffer. */
-    public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH) throws CodecException {
-        return DataTool.bgraToBuffer(decode(data, expW, expH));
+    /** Converts an opaque VP8 key frame into a new direct BGRA buffer; {@code warned} latches the repair notice. */
+    public static ByteBuffer decodeToBgra(final ByteBuffer data, final int expW, final int expH, final boolean[] warned) throws CodecException {
+        return DataTool.bgraToBuffer(decode(data, expW, expH, warned));
     }
 
-    /** Decodes an opaque VP8 key frame into packed ARGB pixels, requiring the declared dimensions to match. */
-    public static int[] decode(final ByteBuffer data, final int expW, final int expH) throws CodecException {
+    /** Decodes an opaque VP8 key frame of the declared size into packed ARGB pixels; {@code warned} latches the repair notice. */
+    public static int[] decode(final ByteBuffer data, final int expW, final int expH, final boolean[] warned) throws CodecException {
         final ByteBuffer buf = data.slice().order(ByteOrder.LITTLE_ENDIAN);
 
         // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
@@ -53,7 +48,7 @@ public final class VP8LossyDecoder {
         if (frm.hdrSz + frm.p0Sz > buf.limit()) {
             if (!WaterMediaConfig.decoders.vp8.brokenTokens)
                 throw new CodecException("Broken VP8 partition 0: declared " + frm.p0Sz + " bytes, chunk has " + (buf.limit() - frm.hdrSz));
-            repaired("Broken VP8 partition 0: declared {} bytes, only {} available; clamping", frm.p0Sz, buf.limit() - frm.hdrSz);
+            repaired(warned, "Broken VP8 partition 0: declared {} bytes, only {} available; clamping", frm.p0Sz, buf.limit() - frm.hdrSz);
             frm.p0Sz = buf.limit() - frm.hdrSz;
         }
         final ByteBuffer p0 = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN);
@@ -71,7 +66,7 @@ public final class VP8LossyDecoder {
 
         // RFC6386 SECTION 9.5 - TOKEN PARTITION SIZES AND DECODERS
         buf.position(frm.hdrSz + frm.p0Sz);
-        final VP8BoolDecoder[] tokBr = readTokenParts(buf, st.numParts);
+        final VP8BoolDecoder[] tokBr = readTokenParts(buf, st.numParts, warned);
 
         // ALLOCATE YUV PLANES
         final int mbW = (frm.w + 15) >> 4;
@@ -110,7 +105,7 @@ public final class VP8LossyDecoder {
     // decoders.vp8.brokenTokens ENABLED THE SIZES ARE CLAMPED TO THE BYTES ACTUALLY AVAILABLE AND
     // UNUSABLE PARTITIONS ARE REPLACED WITH A DUPLICATE OF THE PREVIOUS ONE OR WITH FAKE ZEROED
     // DATA SO THE MACROBLOCK LOOP CAN STILL RUN BEST-EFFORT.
-    private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts) throws CodecException {
+    private static VP8BoolDecoder[] readTokenParts(final ByteBuffer buf, final int numParts, final boolean[] warned) throws CodecException {
         final boolean repair = WaterMediaConfig.decoders.vp8.brokenTokens;
 
         // SIZE TABLE: 3 BYTES PER PARTITION EXCEPT THE LAST ONE (IMPLICIT REMAINDER)
@@ -118,7 +113,7 @@ public final class VP8LossyDecoder {
         if (buf.remaining() < tableLen) {
             if (!repair)
                 throw new CodecException("Truncated VP8 partition size table: " + buf.remaining() + " of " + tableLen + " bytes");
-            repaired("Truncated VP8 partition size table ({} of {} bytes); missing sizes assumed 0", buf.remaining(), tableLen);
+            repaired(warned, "Truncated VP8 partition size table ({} of {} bytes); missing sizes assumed 0", buf.remaining(), tableLen);
         }
         final int[] partSz = new int[numParts];
         for (int i = 0; i < numParts - 1; i++)
@@ -132,7 +127,7 @@ public final class VP8LossyDecoder {
             if (partSz[i] > avail) {
                 if (!repair)
                     throw new CodecException("Broken VP8 token partition " + i + ": declared " + partSz[i] + " bytes, only " + avail + " available");
-                repaired("Broken VP8 token partition {}: declared {} bytes, only {} available; clamping", i, partSz[i], avail);
+                repaired(warned, "Broken VP8 token partition {}: declared {} bytes, only {} available; clamping", i, partSz[i], avail);
                 partSz[i] = avail;
             }
             avail -= partSz[i];
@@ -152,7 +147,7 @@ public final class VP8LossyDecoder {
             if (partSz[i] < 2) {
                 if (!repair)
                     throw new CodecException("Broken VP8 token partition " + i + ": only " + partSz[i] + " bytes");
-                repaired("Empty VP8 token partition {}; {}", i, prev != null ? "duplicating previous partition" : "faking zeroed data");
+                repaired(warned, "Empty VP8 token partition {}; {}", i, prev != null ? "duplicating previous partition" : "faking zeroed data");
                 pb = prev != null ? prev.duplicate() : ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN);
             }
             prev = pb;
@@ -161,8 +156,11 @@ public final class VP8LossyDecoder {
         return tokBr;
     }
 
-    private static void repaired(final String pattern, final Object... args) {
-        LogTool.throttled(LOGGER, Level.WARN, IT, REPAIRS, pattern, args);
+    // ONE NOTICE PER READER: AN ANIMATED WEBP WITH BROKEN PARTITIONS WOULD OTHERWISE WARN ON EVERY FRAME
+    private static void repaired(final boolean[] warned, final String pattern, final Object... args) {
+        if (warned[0]) return;
+        warned[0] = true;
+        LOGGER.warn(IT, pattern, args);
     }
 
     // RFC6386 SECTION 9 - FRAME HEADER

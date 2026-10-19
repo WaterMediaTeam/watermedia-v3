@@ -1,19 +1,29 @@
 package org.watermedia;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.apache.logging.log4j.message.Message;
+import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.message.SimpleMessage;
+import org.apache.logging.log4j.spi.ExtendedLogger;
+import org.apache.logging.log4j.spi.ExtendedLoggerWrapper;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.network.NetworkAPI;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.bootstrap.WaterMediaModule;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
-import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 import org.watermedia.WaterMedia.Status.Failure;
@@ -26,7 +36,7 @@ public final class WaterMedia {
     public static final String NAME = "WaterMedia";
     public static final String VERSION = IOTool.jarVersion();
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
-    public static final Logger LOGGER = LogTool.logger(ID);
+    public static final Logger LOGGER = logger(ID);
     private static final Path DEFAULT_TEMP = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().resolve(ID);
     private static final Path DEFAULT_CWD = Path.of("").toAbsolutePath();
 
@@ -115,6 +125,40 @@ public final class WaterMedia {
 
     /** Prefixes a resource path with this library's identifier, as {@code watermedia:path}. */
     public static String toId(final String path) { return ID + ":" + path; }
+
+    /** Creates a project logger that redacts secrets from messages, parameters and traces before appenders see them. */
+    public static Logger logger(final String name) {
+        final ExtendedLogger logger = LogManager.getContext(false).getLogger(name);
+        return new ExtendedLoggerWrapper(logger, name, logger.getMessageFactory()) {
+            @Override
+            public void logMessage(final String caller, final Level level, final Marker marker, final Message message, final Throwable failure) {
+                final String originalText = message == null ? "null" : message.getFormattedMessage();
+                String text = DataTool.redact(originalText);
+                boolean changed = message == null || !Objects.equals(text, originalText);
+                final Object[] parameters = message == null ? null : message.getParameters();
+                if (parameters != null) {
+                    for (final Object parameter: parameters) {
+                        final String value = ParameterizedMessage.deepToString(parameter);
+                        changed |= !Objects.equals(value, DataTool.redact(value));
+                    }
+                }
+                final Throwable embedded = message == null ? null : message.getThrowable();
+                Throwable cause = failure != null ? failure : embedded;
+                for (final Throwable thrown: new Throwable[] { cause, embedded == cause ? null : embedded }) {
+                    if (thrown == null) continue;
+                    final StringWriter trace = new StringWriter();
+                    thrown.printStackTrace(new PrintWriter(trace));
+                    final String safe = DataTool.redact(trace.toString());
+                    if (safe.contentEquals(trace.getBuffer())) continue;
+                    // AN UNSAFE TRACE BECOMES TEXT: TYPES, FRAMES AND CAUSES STAY READABLE, THE THROWABLE NEVER REACHES APPENDERS
+                    text += System.lineSeparator() + safe;
+                    if (thrown == cause) cause = null;
+                    changed = true;
+                }
+                super.logMessage(caller, level, marker, changed ? new SimpleMessage(text) : message, cause);
+            }
+        };
+    }
 
     /** Returns the process's absolute working directory; throws before {@link #start}. */
     public static Path cwd() { return context().cwd; }

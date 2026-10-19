@@ -126,9 +126,10 @@
     * Write lifecycle hooks as nested `static final class Module extends WaterMediaModule`, and utility classes as `final` with `private X() {}`.
 * Guard shared counters with the owning state monitor; read them under the lock and log outside it.
 * Logging
-    * `api` and `tools` static-import `LOGGER` from `WaterMedia`; `bootstrap/app` uses `WaterMedia.LOGGER`; project loggers come from `LogTool.logger(id)`.
+    * `api` and `tools` static-import `LOGGER` from `WaterMedia`; `bootstrap/app` uses `WaterMedia.LOGGER`; project loggers come from `WaterMedia.logger(id)`, which redacts every message through `DataTool.redact`.
     * Always pass `IT`, use `{}` parameters and the throwable as last argument, never `e.toString()`.
-    * DEBUG for routine progress, INFO for lifecycle summaries, WARN for fallbacks and repeated anomalies aggregated per window (`*_REPORT_NS`), ERROR for failures.
+    * DEBUG for routine progress, INFO for lifecycle summaries, WARN for fallbacks and anomalies, ERROR for failures.
+    * Never aggregate logs per time window; an anomaly that can repeat logs its first occurrence once per instance through a `xWarned` boolean.
 * Throw `IllegalArgumentException` or `IllegalStateException` with short sentences, `CodecException` at codec parse boundaries and `IOException` with the operation and native reason.
     * Records validate in static `read()` or `validate()` methods, because canonical constructors cannot throw `CodecException`.
 * Group trivially similar one-line members without blank lines.
@@ -143,11 +144,10 @@
 
 # WATERMEDIA UTILITY
 - src\main\java\org\watermedia\tools: General utility classes
-    - DataTool: Data handling tools, byte manipulation, pixel premultiplication and data conversion
+    - DataTool: Data handling tools, byte manipulation, pixel premultiplication, data conversion and log redaction of URIs and credentials
     - FFTool: FFmpeg helpers shared by MediaAPI, FFMediaPlayer and WebMWriter (pixel format mapping, native errors and strings)
     - IOTool: System information and system file handling
     - JSONTool: JSON handling and parsing using GSON
-    - LogTool: Project loggers that redact URIs and credentials before appenders receive events
     - M3UTool: Parses the M3U family (HLS master and media playlists, IPTV catalogs).
     - ThreadTool: Creation, synchronization and handling of Threads, factories and executors
 

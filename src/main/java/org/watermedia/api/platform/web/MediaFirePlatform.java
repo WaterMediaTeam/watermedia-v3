@@ -47,17 +47,18 @@ public final class MediaFirePlatform implements Platform {
 
             // MEDIAFIRE EXPOSES THE DIRECT LINK EITHER AS A PLAIN "popsok" ANCHOR OR, WHEN OBFUSCATED,
             // AS A BASE64 "data-scrambled-url" ATTRIBUTE — TRY THE PLAIN ONE FIRST
-            final URI downloadUri;
+            final String link;
             if (popsokMatcher.find()) {
-                downloadUri = URI.create(popsokMatcher.group(1));
-                LOGGER.debug(IT, "MediaFire resolved direct link via popsok anchor: {}", downloadUri);
+                link = popsokMatcher.group(1);
+                LOGGER.debug(IT, "MediaFire resolved direct link via popsok anchor: {}", link);
             } else if (dataScrambledMatcher.find()) {
-                final byte[] decoded = Base64.getDecoder().decode(dataScrambledMatcher.group(1));
-                downloadUri = URI.create(new String(decoded, StandardCharsets.UTF_8));
-                LOGGER.debug(IT, "MediaFire resolved direct link via scrambled attribute: {}", downloadUri);
+                link = new String(Base64.getDecoder().decode(dataScrambledMatcher.group(1)), StandardCharsets.UTF_8);
+                LOGGER.debug(IT, "MediaFire resolved direct link via scrambled attribute: {}", link);
             } else {
                 throw new PlatformException(NAME, "Download link not found in page (private, removed, or markup changed): " + uri);
             }
+            final URI downloadUri = DataTool.uri(link);
+            if (downloadUri == null) throw new PlatformException(NAME, "Download link '" + link + "' is not a web URL: " + uri);
 
             final var entry = new Source(MediaType.UNKNOWN, null, null,
                     HttpHeaders.defaults(uri),

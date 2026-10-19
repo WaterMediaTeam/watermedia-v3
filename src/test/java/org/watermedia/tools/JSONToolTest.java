@@ -1,23 +1,25 @@
 package org.watermedia.tools;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.net.URI;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link JSONTool}: Gson binding, the lenient accessors that never throw on missing,
- * null or mistyped values, and the web-only lenient URL parsing.
+ * Verifies {@link JSONTool}: Gson binding and the lenient accessors and path walks that never
+ * throw on missing, null or mistyped values.
  */
 @DisplayName("JSONTool")
 public class JSONToolTest {
@@ -40,9 +42,43 @@ public class JSONToolTest {
         }
 
         @Test
-        @DisplayName("parse throws JsonSyntaxException on malformed text")
+        @DisplayName("parse throws JsonSyntaxException on malformed text or a tree of another shape")
         void parseMalformed() {
             assertThrows(JsonSyntaxException.class, () -> JSONTool.parse("{\"a\":", JsonObject.class));
+            assertThrows(JsonSyntaxException.class, () -> JSONTool.parse("[1,2]", JsonObject.class));
+            assertEquals(2, JSONTool.parse("[1,2]", JsonArray.class).size());
+        }
+    }
+
+    @Nested
+    @DisplayName("paths")
+    class PathTests {
+
+        @Test
+        @DisplayName("obj walks a key path to an object and arr reads an array")
+        void walk() {
+            final JsonObject o = JSONTool.parse("{\"a\":{\"b\":{\"c\":\"x\"}}}", JsonObject.class);
+            assertEquals("x", JSONTool.str(JSONTool.obj(o, "a", "b"), "c"));
+            assertSame(o, JSONTool.obj(o));
+            assertEquals(1, JSONTool.intOr(JSONTool.obj(sample(), "obj"), "k", 0));
+            assertEquals(2, JSONTool.arr(sample(), "arr").size());
+            assertEquals(o, JSONTool.obj(JSONTool.parse("[" + o + "]", JsonArray.class).get(0)));
+        }
+
+        @Test
+        @DisplayName("a missing, JSON-null or mistyped step yields null instead of throwing")
+        void mismatches() {
+            final JsonObject o = sample();
+            for (final String key: new String[] { "missing", "nil", "arr", "s" })
+                assertNull(JSONTool.obj(o, key), key);
+            for (final String key: new String[] { "missing", "nil", "obj", "s" })
+                assertNull(JSONTool.arr(o, key), key);
+            assertNull(JSONTool.obj(o, "obj", "k"));
+            assertNull(JSONTool.obj(o, "missing", "k"));
+            assertNull(JSONTool.obj(null, "obj"));
+            assertNull(JSONTool.obj(JsonNull.INSTANCE));
+            assertNull(JSONTool.arr(null, "arr"));
+            assertNull(JSONTool.str(JSONTool.obj(o, "missing"), "k"));
         }
     }
 
@@ -103,34 +139,6 @@ public class JSONToolTest {
             assertEquals(-1L, JSONTool.longOr(o, "word", -1L));
             assertEquals(0d, JSONTool.num(o, "b"));
             assertFalse(JSONTool.bool(o, "word"));
-        }
-    }
-
-    @Nested
-    @DisplayName("uri")
-    class UriTests {
-
-        @Test
-        @DisplayName("uri promotes protocol-relative URLs and swallows malformed input")
-        void lenientUri() {
-            assertEquals(URI.create("https://host/x"), JSONTool.uri("//host/x"));
-            assertEquals(URI.create("http://a.com"), JSONTool.uri("http://a.com"));
-            assertEquals(URI.create("HTTPS://a.com/x"), JSONTool.uri("HTTPS://a.com/x"));
-            assertNull(JSONTool.uri("bad uri with spaces"));
-            assertNull(JSONTool.uri((String) null));
-            assertNull(JSONTool.uri(""));
-        }
-
-        @Test
-        @DisplayName("uri rejects every scheme other than http and https")
-        void webOnly() {
-            assertNull(JSONTool.uri("file:///etc/passwd"));
-            assertNull(JSONTool.uri("jar:file:///x.zip!/y"));
-            assertNull(JSONTool.uri("ftp://host/x"));
-            assertNull(JSONTool.uri("relative/path.png"));
-            final JsonObject o = JSONTool.parse("{\"u\":\"file:///C:/secret.txt\",\"w\":\"https://cdn.test/a.png\"}", JsonObject.class);
-            assertNull(JSONTool.uri(o, "u"));
-            assertEquals(URI.create("https://cdn.test/a.png"), JSONTool.uri(o, "w"));
         }
     }
 }

@@ -118,7 +118,7 @@ public final class PlatformAPI {
      * There is one search slot per process: this call cancels (interrupts) any still-running previous
      * search, whoever issued it, whose handle ends at once as {@link PlatformSearch#superseded()
      * superseded} with the hits it gathered, so only the latest handle keeps updating. The {@code query} is recorded
-     * in a {@value #HISTORY_LIMIT}-entry {@link PlatformSearch#history() history}; a {@code null} or blank
+     * in the {@value #HISTORY_LIMIT}-entry {@link #searchHistory() history}; a {@code null} or blank
      * query is a no-op that returns an already-{@link PlatformSearch#done() done}, empty handle and leaves
      * a running search alone.
      *
@@ -137,7 +137,7 @@ public final class PlatformAPI {
 
             // BLANK QUERY: NOTHING TO SEARCH, NOTHING WORTH REMEMBERING AND NOTHING TO SUPERSEDE
             if (query == null || query.isBlank()) {
-                final PlatformSearch empty = new PlatformSearch(query, List.copyOf(HISTORY));
+                final PlatformSearch empty = new PlatformSearch(query);
                 empty.complete();
                 return empty;
             }
@@ -154,7 +154,6 @@ public final class PlatformAPI {
             HISTORY.remove(query);
             HISTORY.addFirst(query);
             while (HISTORY.size() > HISTORY_LIMIT) HISTORY.removeLast();
-            final List<String> historySnapshot = List.copyOf(HISTORY);
 
             // GENERAL CACHE SWEEP: ONCE THE INTERVAL ELAPSES, DROP EVERYTHING SO RESULTS NEVER GO TOO STALE
             final long now = System.currentTimeMillis();
@@ -170,13 +169,13 @@ public final class PlatformAPI {
             final List<PlatformResult> cached = SEARCH_CACHE.get(cacheKey);
             if (cached != null) {
                 LOGGER.debug(IT, "Search '{}' served from cache ({} result(s))", query, cached.size());
-                final PlatformSearch hit = new PlatformSearch(query, historySnapshot);
+                final PlatformSearch hit = new PlatformSearch(query);
                 hit.add(cached);
                 hit.complete();
                 return hit;
             }
 
-            final PlatformSearch search = new PlatformSearch(query, historySnapshot);
+            final PlatformSearch search = new PlatformSearch(query);
             final long registry = registryVersion;
             coordinator.purge();
             searchPool.purge();
@@ -187,9 +186,8 @@ public final class PlatformAPI {
     }
 
     /**
-     * Snapshot of the recent-query {@link PlatformSearch#history() history} (most recent first,
-     * at most {@value #HISTORY_LIMIT} entries) — the same list a {@link PlatformSearch} exposes.
-     * Lets a UI surface recent searches before a new {@link #search(String) search} is even issued.
+     * Snapshot of the recent-query history (most recent first, at most {@value #HISTORY_LIMIT}
+     * entries), the single list every {@link #search(String, int) search} records its query in.
      *
      * @return an immutable snapshot of the recent queries, newest first
      */

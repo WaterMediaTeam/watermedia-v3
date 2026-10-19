@@ -2,19 +2,15 @@ package org.watermedia.api.network;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
-import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.NetRequest;
-import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.HttpURLConnection;
@@ -47,8 +43,6 @@ public final class NetworkServer {
     private static final int ID_LENGTH = 8;
     private static final long INVALID_RANGE = -1L;
     private static final SecureRandom RANDOM = new SecureRandom();
-    // UNAUTHORIZED UPLOADS AND REFUSALS OF A FULL STORAGE ARE AGGREGATED INTO ONE WARNING PER WINDOW
-    private static final long REJECT_REPORT_NS = TimeUnit.SECONDS.toNanos(10);
     // THE IDLE WATCHDOG OF THE REQUEST THE CURRENT WORKER IS SERVING; TRANSFERS TOUCH IT PER CHUNK
     private static final ThreadLocal<Watchdog> WATCHDOG = new ThreadLocal<>();
     private static volatile Running running;
@@ -210,9 +204,6 @@ public final class NetworkServer {
             throw new IllegalStateException("File server storage lock could not be released", failure);
         }
         running = null;
-        final long rejected;
-        synchronized (state) { rejected = state.rejectedUploads; }
-        if (rejected > 0) LOGGER.warn(IT, "Rejected {} additional unauthorized uploads before shutdown", rejected);
         LOGGER.info(IT, "Stopped file server");
     }
 
@@ -229,17 +220,8 @@ public final class NetworkServer {
             }
             final String token = exchange.getRequestHeaders().getFirst(X_WATERMEDIA_TOKEN);
             if (token == null || !MessageDigest.isEqual(state.token, token.getBytes(StandardCharsets.UTF_8))) {
-                long rejected = 0;
-                synchronized (state) {
-                    state.rejectedUploads++;
-                    final long now = System.nanoTime();
-                    if (state.rejectedAt == 0 || now - state.rejectedAt >= REJECT_REPORT_NS) {
-                        rejected = state.rejectedUploads;
-                        state.rejectedUploads = 0;
-                        state.rejectedAt = now;
-                    }
-                }
-                if (rejected > 0) LOGGER.warn(IT, "Rejected {} unauthorized uploads; further warnings are aggregated for 10 seconds", rejected);
+                if (!state.rejectWarned) LOGGER.warn(IT, "Rejected an unauthorized upload from {}", exchange.getRemoteAddress());
+                state.rejectWarned = true;
                 exchange.sendResponseHeaders(HttpURLConnection.HTTP_UNAUTHORIZED, -1);
                 return;
             }
@@ -283,8 +265,9 @@ public final class NetworkServer {
             }
             if (!admitted) {
                 // NOTHING EVICTS STORED FILES: THE OPERATOR MUST REMOVE FILES BY HAND OR RAISE THE BUDGET
-                LogTool.throttled(LOGGER, Level.WARN, IT, state.fullReports,
-                        "Storage is full: refused '{}' ({} bytes) with {} of {} bytes in use under {}", filename, length, occupied, state.maxStorage, state.storage);
+                if (!state.fullWarned)
+                    LOGGER.warn(IT, "Storage is full: refused '{}' ({} bytes) with {} of {} bytes in use under {}", filename, length, occupied, state.maxStorage, state.storage);
+                state.fullWarned = true;
                 exchange.sendResponseHeaders(507, -1);
                 return;
             }
@@ -455,12 +438,12 @@ public final class NetworkServer {
         private final long maxUpload;
         private final long maxStorage;
         private final int timeout;
-        private final LogTool.Throttle fullReports = new LogTool.Throttle(REJECT_REPORT_NS);
         private long used;
         private long reserved;
-        private long rejectedUploads;
-        private long rejectedAt;
         private volatile boolean stopping;
+        // ANOMALY LATCHES: AN UNAUTHORIZED UPLOAD AND A FULL STORAGE ARE LOGGED ONCE PER SERVER
+        private volatile boolean rejectWarned;
+        private volatile boolean fullWarned;
 
         private Running(final HttpServer server, final ThreadPoolExecutor executor, final ScheduledThreadPoolExecutor deadlines,
                         final Path storage, final FileChannel storageChannel, final byte[] token,
@@ -521,69 +504,4 @@ public final class NetworkServer {
         }
     }
 
-    /**
-     * Tracks the progress of a file upload to a WaterMedia server.
-     * Returned by {@link NetworkAPI#upload(File)} methods.
-     * All accessors are thread-safe and can be polled from any thread.
-     */
-    public static final class UploadStatus {
-        private final long totalBytes;
-        private volatile long uploadedBytes;
-        private volatile long speed;
-        private volatile String id;
-        private volatile boolean complete;
-        private volatile boolean failed;
-        private volatile String error;
-
-        UploadStatus(final long totalBytes) {
-            this.totalBytes = totalBytes;
-        }
-
-        /** Expected upload size in bytes */
-        public long totalBytes() { return this.totalBytes; }
-
-        /** Bytes written to the connection so far, confirmed by the server only once {@link #completed()} */
-        public long uploadedBytes() { return this.uploadedBytes; }
-
-        /** Current upload speed in bytes per second */
-        public long speed() { return this.speed; }
-
-        /** Server-assigned ID, null until upload completes */
-        public String id() { return this.id; }
-
-        /** Whether the server accepted the upload and assigned its ID */
-        public boolean completed() { return this.complete; }
-
-        /** Whether the upload ended without completing */
-        public boolean failed() { return this.failed; }
-
-        /** Failure detail, null until the upload fails */
-        public String error() { return this.error; }
-
-        /** Upload progress from 0.0 to 100.0 */
-        public double percentage() {
-            return this.totalBytes > 0 ? (this.uploadedBytes * 100.0) / this.totalBytes : 0;
-        }
-
-        /** Formatted speed string (e.g. "1.5 MB/s") */
-        public String displaySpeed() {
-            return MathUtil.displayBytes(this.speed) + "/s";
-        }
-
-        synchronized void uploadedBytes(final long bytes) { if (!this.complete && !this.failed) this.uploadedBytes = bytes; }
-        synchronized void speed(final long speed) { if (!this.complete && !this.failed) this.speed = speed; }
-
-        synchronized void complete(final String id) {
-            if (this.complete || this.failed) return;
-            this.id = id;
-            this.uploadedBytes = this.totalBytes;
-            this.complete = true;
-        }
-
-        synchronized void fail(final String error) {
-            if (this.complete || this.failed) return;
-            this.error = error;
-            this.failed = true;
-        }
-    }
 }

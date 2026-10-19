@@ -41,7 +41,7 @@ public final class JFXEngine extends SWEngine {
     }
 
     @Override
-    protected void allocSurface(final int width, final int height, final ByteBuffer bgra) {
+    void allocSurface(final int width, final int height, final ByteBuffer bgra) {
         // A FAILURE PROPAGATES TO SWEngine, WHICH REFUSES THE FORMAT AND LEAVES NO SURFACE BEHIND
         final PixelBuffer<ByteBuffer> buffer = new PixelBuffer<>(width, height, bgra, PixelFormat.getByteBgraPreInstance());
         this.image = new WritableImage(buffer);
@@ -58,7 +58,7 @@ public final class JFXEngine extends SWEngine {
     }
 
     @Override
-    protected void present() {
+    void present() {
         final PixelBuffer<ByteBuffer> pb = this.pixelBuffer;
         final ByteBuffer bgra = this.bgra;
         if (pb == null || bgra == null) return;
@@ -73,7 +73,7 @@ public final class JFXEngine extends SWEngine {
     }
 
     @Override
-    protected void disposeSurface() {
+    void disposeSurface() {
         this.image = null;
         this.pixelBuffer = null;
     }

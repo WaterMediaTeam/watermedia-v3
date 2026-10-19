@@ -1,10 +1,8 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.util.PixelFormat;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -23,25 +21,24 @@ import static org.watermedia.WaterMedia.LOGGER;
  * is the surface the subclass exposes.
  * <p>
  * A frame arrives on the player's decode thread: {@code upload(ByteBuffer[], int[])} writes the buffer
- * and calls {@link #present()} to publish it, then fires the optional {@code onFrame} callback so a
+ * and calls {@code present()} to publish it, then fires the optional {@code onFrame} callback so a
  * UI can repaint; a callback that throws is logged and never reaches the decoder. The surface is
  * reallocated on every {@code format(PixelFormat, int, int, int)} (resolution change), and a size
  * the backend cannot allocate refuses the format and leaves no surface.
  */
 public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEngine {
     private static final Marker IT = MarkerManager.getMarker(SWEngine.class.getSimpleName());
-    private static final long CALLBACK_REPORT_NS = 10_000_000_000L;
-    private static final long UPLOAD_REPORT_NS = 10_000_000_000L;
 
     // REUSABLE DIRECT BGRA SURFACE — width*height*4 BYTES, REALLOCATED ON RESIZE, NULL WHILE NO LAYOUT IS BACKED
-    protected volatile ByteBuffer bgra;
+    volatile ByteBuffer bgra;
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
-    private final LogTool.Throttle callbackReports = new LogTool.Throttle(CALLBACK_REPORT_NS);
-    private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
     private volatile boolean framed;
+    // ANOMALY LATCHES: A SHORT BUFFER AND A FAILING CALLBACK ARE LOGGED ONCE PER ENGINE
+    private boolean shortWarned;
+    private boolean callbackWarned;
 
-    protected SWEngine(final Runnable onFrame) {
+    SWEngine(final Runnable onFrame) {
         this.onFrame = onFrame;
     }
 
@@ -93,7 +90,8 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         // WARN-DROP LIKE THE GPU ENGINES INSTEAD OF THROWING FROM THE DECODE THREAD ON A SHORT BUFFER
         final long needed = (long) (h - 1) * srcStride + rowBytes;
         if (buffer.remaining() < needed) {
-            LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Frame buffer too small: {} < {}", buffer.remaining(), needed);
+            if (!this.shortWarned) LOGGER.warn(IT, "Frame buffer too small: {} < {}", buffer.remaining(), needed);
+            this.shortWarned = true;
             return;
         }
         final ByteBuffer src = buffer.duplicate();
@@ -126,7 +124,10 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         if (this.onFrame == null) return;
         // THE HOST CALLBACK RUNS ON THE DECODE THREAD: ITS FAILURES ARE REPORTED HERE, NEVER THROWN AT THE DECODER
         try { this.onFrame.run(); }
-        catch (final RuntimeException e) { LogTool.throttled(LOGGER, Level.ERROR, IT, this.callbackReports, "Frame callback failed", e); }
+        catch (final RuntimeException e) {
+            if (!this.callbackWarned) LOGGER.error(IT, "Frame callback failed", e);
+            this.callbackWarned = true;
+        }
     }
 
     @Override
@@ -136,11 +137,11 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     }
 
     // CREATES THE NATIVE SURFACE FOR A NEW SIZE; jfx WRAPS bgra ZERO-COPY, awt KEEPS ITS OWN IMAGE. A THROW REFUSES THE FORMAT
-    protected abstract void allocSurface(int width, int height, ByteBuffer bgra);
+    abstract void allocSurface(final int width, final int height, final ByteBuffer bgra);
 
     // PUBLISHES THE FRAME JUST WRITTEN INTO bgra (FX-THREAD updateBuffer / AWT PIXEL CONVERSION)
-    protected abstract void present();
+    abstract void present();
 
     // DROPS THE NATIVE SURFACE BEFORE A REALLOCATION AND ON release()
-    protected abstract void disposeSurface();
+    abstract void disposeSurface();
 }

@@ -41,18 +41,10 @@ public class ThreadToolTest {
         }
 
         @Test
-        @DisplayName("group identity survives allocation of later groups")
-        void groupIdentitySurvivesAllocationOfLaterGroups() {
-            final ThreadTool.ThreadGroupFactory groups = ThreadTool.groupFactory("ThreadToolTest-decode", Thread.MAX_PRIORITY + 1);
-            final var first = groups.newFactory();
-            final var second = groups.newFactory();
-            final Thread firstThread = first.apply("audio", () -> {});
-            assertEquals("ThreadToolTest-decode-0-audio", firstThread.getName());
-            assertEquals("ThreadToolTest-decode-1-video", second.apply("video", () -> {}).getName());
-            assertEquals("ThreadToolTest-decode-0-demux", first.apply("demux", () -> {}).getName());
-            assertTrue(firstThread.isDaemon());
-            assertEquals(Thread.MAX_PRIORITY, firstThread.getPriority());
+        @DisplayName("factory clamps the priority into the thread range")
+        void factoryClampsPriority() {
             assertEquals(Thread.MIN_PRIORITY, ThreadTool.factory("ThreadToolTest-low", Thread.MIN_PRIORITY - 5).newThread(() -> {}).getPriority());
+            assertEquals(Thread.MAX_PRIORITY, ThreadTool.factory("ThreadToolTest-high", Thread.MAX_PRIORITY + 1).newThread(() -> {}).getPriority());
         }
     }
 
@@ -86,10 +78,10 @@ public class ThreadToolTest {
         }
 
         @Test
-        @DisplayName("group factory threads are owned workers while ThreadTool.thread stays a host thread")
+        @DisplayName("worker factory threads are owned workers while ThreadTool.thread stays a host thread")
         void groupThreadsAreOwned() throws Exception {
             final FutureTask<Boolean> grouped = new FutureTask<>(ThreadTool::workerThread);
-            final Thread groupThread = ThreadTool.groupFactory("ThreadToolTest-group", Thread.NORM_PRIORITY).newFactory().apply("probe", grouped);
+            final Thread groupThread = ThreadTool.workerFactory("ThreadToolTest-group", Thread.NORM_PRIORITY).newThread(grouped);
             groupThread.start();
             assertTrue(grouped.get(2, TimeUnit.SECONDS));
             groupThread.join(2_000);

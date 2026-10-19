@@ -25,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
@@ -225,7 +226,7 @@ public class AppBootstrapDependenciesTest {
     @DisplayName("Downloads")
     class Downloads {
         private static final byte[] PAYLOAD = "complete dependency".getBytes(StandardCharsets.UTF_8);
-        private static final String PAYLOAD_PIN = DataTool.hex(DataTool.sha256(PAYLOAD));
+        private static final String PAYLOAD_PIN = HexFormat.of().formatHex(DataTool.sha256(PAYLOAD));
 
         @Test
         @DisplayName("Verified downloads replace the cache with or without a content length")
@@ -255,7 +256,7 @@ public class AppBootstrapDependenciesTest {
                     exchange.getResponseBody().write(PAYLOAD);
                 }
             })) {
-                final String pin = DataTool.hex(DataTool.sha256("expected dependency".getBytes(StandardCharsets.UTF_8)));
+                final String pin = HexFormat.of().formatHex(DataTool.sha256("expected dependency".getBytes(StandardCharsets.UTF_8)));
                 final var failure = assertThrows(InvocationTargetException.class, () -> download(server.uri("/library.jar"), destination, pin));
                 assertInstanceOf(IOException.class, failure.getCause());
                 assertTrue(failure.getCause().getMessage().contains("SHA-256"), failure.getCause().getMessage());

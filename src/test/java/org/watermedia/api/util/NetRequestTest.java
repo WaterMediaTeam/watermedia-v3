@@ -4,8 +4,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.watermedia.api.platform.PlatformException;
 import org.watermedia.test.support.LocalHttp;
+import org.watermedia.tools.DataTool;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -14,6 +14,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -22,9 +23,9 @@ import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -37,6 +38,76 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("NetRequest")
 public class NetRequestTest {
+
+    @Nested
+    @DisplayName("Query")
+    class QueryTests {
+        @Test
+        @DisplayName("query decodes pairs once, tolerates value-less keys and keeps malformed pairs raw")
+        void queryDecodesOnce() {
+            final Map<String, String> q = NetRequest.query(URI.create("https://cdn.test/x?a=1&b=%20&c&&d=x=y"));
+            assertEquals("1", q.get("a"));
+            assertEquals(" ", q.get("b"));
+            assertEquals("", q.get("c"));
+            assertEquals("x=y", q.get("d"));
+            assertEquals(4, q.size());
+            final Map<String, String> raw = NetRequest.query(URI.create("https://cdn.test/x?sig=a%2Bb%253D&bad=100%25&tail=%E2%82%AC"));
+            assertEquals("a+b%3D", raw.get("sig"), "the raw query is decoded exactly once");
+            assertEquals("100%", raw.get("bad"));
+            assertEquals("€", raw.get("tail"));
+            assertThrows(UnsupportedOperationException.class, () -> raw.put("x", "y"));
+            assertEquals("a b", NetRequest.query(URI.create("https://cdn.test/x?q=a+b")).get("q"), "form encoding: plus is a space");
+            assertEquals("last", NetRequest.query(URI.create("https://cdn.test/x?q=first&q=last")).get("q"), "the last value wins");
+            assertTrue(NetRequest.query(URI.create("https://cdn.test/x")).isEmpty());
+            assertTrue(NetRequest.query(null).isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("Budgets")
+    class BudgetTests {
+        @Test
+        @DisplayName("httpsOnly refuses a plain http origin before sending anything")
+        void httpsOnlyRefusesHttp(@TempDir final Path directory) {
+            final int[] hits = { 0 };
+            try (final LocalHttp server = LocalHttp.start("/binary", exchange -> {
+                hits[0]++;
+                LocalHttp.respond(exchange, "application/octet-stream", new byte[] { 1 }, 0);
+            })) {
+                final URI uri = server.uri("/binary");
+                assertThrows(IOException.class, () -> NetRequest.create(uri).httpsOnly().send());
+                final Path output = directory.resolve("binary");
+                assertThrows(IOException.class, () -> {
+                    try (final NetRequest request = NetRequest.create(uri).httpsOnly().maxBytes(128).send()) { request.download(output, "0".repeat(64)); }
+                });
+                assertFalse(Files.exists(output));
+                assertEquals(0, hits[0]);
+            }
+        }
+
+        @Test
+        @DisplayName("maxBytes caps text and downloads, and a digest mismatch deletes the file")
+        void maxBytesAndDigest(@TempDir final Path directory) throws IOException {
+            final byte[] body = "0123456789".repeat(20).getBytes(StandardCharsets.UTF_8);
+            try (final LocalHttp server = LocalHttp.start("/data", exchange -> LocalHttp.respond(exchange, "text/plain", body, 0))) {
+                final URI uri = server.uri("/data");
+                try (final NetRequest request = NetRequest.create(uri).maxBytes(64).send()) { assertThrows(IOException.class, request::text); }
+                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).send()) { assertEquals(200, body.length == request.text().length() ? 200 : 0); }
+                final Path output = directory.resolve("data");
+                try (final NetRequest request = NetRequest.create(uri).maxBytes(64).send()) {
+                    assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)));
+                }
+                assertFalse(Files.exists(output));
+                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).send()) {
+                    assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)), "a wrong digest fails");
+                }
+                assertFalse(Files.exists(output), "a failed download leaves no file behind");
+                final String digest = HexFormat.of().formatHex(DataTool.sha256(body));
+                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).deadline(10_000L).send()) { request.download(output, digest); }
+                assertArrayEquals(body, Files.readAllBytes(output));
+            }
+        }
+    }
 
     @Nested
     @DisplayName("Redirects")
@@ -294,18 +365,13 @@ public class NetRequestTest {
         }
 
         @Test
-        @DisplayName("Malformed JSON throws IOException and fetchJson keeps it as the cause")
+        @DisplayName("Malformed JSON throws IOException")
         void malformedJson() throws IOException {
             try (final LocalHttp server = LocalHttp.start("/broken",
-                    ex -> LocalHttp.respond(ex, "application/json", "{\"a\":".getBytes(StandardCharsets.UTF_8), 0))) {
-                try (final NetRequest req = NetRequest.create(server.uri("/broken")).send()) {
-                    final IOException failure = assertThrows(IOException.class, () -> req.json(Map.class));
-                    assertTrue(failure.getMessage().startsWith("Malformed JSON"), failure.getMessage());
-                }
-                final PlatformException failure = assertThrows(PlatformException.class,
-                        () -> NetRequest.fetchJson("Test", server.uri("/broken"), Map.class));
-                assertInstanceOf(IOException.class, failure.getCause());
-                assertTrue(failure.getCause().getMessage().startsWith("Malformed JSON"), failure.getCause().getMessage());
+                    ex -> LocalHttp.respond(ex, "application/json", "{\"a\":".getBytes(StandardCharsets.UTF_8), 0));
+                 final NetRequest req = NetRequest.create(server.uri("/broken")).send()) {
+                final IOException failure = assertThrows(IOException.class, () -> req.json(Map.class));
+                assertTrue(failure.getMessage().startsWith("Malformed JSON"), failure.getMessage());
             }
         }
 

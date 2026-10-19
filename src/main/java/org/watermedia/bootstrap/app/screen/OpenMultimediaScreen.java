@@ -590,7 +590,7 @@ public class OpenMultimediaScreen extends Screen {
 
         final boolean searching = this.search != null && !this.search.done();
         final List<PlatformResult> results = this.search != null ? this.search.results() : List.of();
-        final List<String> history = this.search != null ? this.search.history() : PlatformAPI.searchHistory();
+        final List<String> history = PlatformAPI.searchHistory();
         if (this.rowsBuilt && this.search == this.rowsSearch && results.size() == this.rowsResults
                 && history.size() == this.rowsHistory && searching == this.rowsSearching) {
             return;

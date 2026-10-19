@@ -7,7 +7,7 @@ import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.platform.*;
 import org.watermedia.api.util.*;
-import org.watermedia.tools.JSONTool;
+import org.watermedia.tools.DataTool;
 import org.watermedia.tools.M3UTool;
 import org.watermedia.tools.ThreadTool;
 
@@ -243,7 +243,7 @@ public final class MRL {
                                 // CHANNEL URLS ARE ALREADY ABSOLUTE AND VALIDATED BY M3UTool (MALFORMED ONES WERE DROPPED DURING PARSE)
                                 final URI childUri = e.uri();
                                 // THE LOGO IS BEST-EFFORT AND MUST STAY ON THE WEB: A BAD OR LOCAL ONE LEAVES THE CHANNEL UNILLUSTRATED
-                                final URI logoUri = JSONTool.uri(e.tvgLogo());
+                                final URI logoUri = DataTool.uri(e.tvgLogo());
                                 // THE IPTV GROUP IS A CATEGORY ("Sports"), NOT WHO PUBLISHED THE CHANNEL
                                 final Metadata md = new Metadata(e.title(), e.tvgGroup(), null, 0, null);
                                 sources.add(new Platform.Source(MediaType.UNKNOWN, logoUri, md,

@@ -1,6 +1,5 @@
 package org.watermedia.api.codecs.readers;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.CodecException;
@@ -18,7 +17,6 @@ import org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder;
 import org.watermedia.api.codecs.readers.webp.lossy.VP8LossyDecoder;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.LogTool;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -58,7 +56,6 @@ public final class WebPReader extends ImageReader {
     private static final int MAX_FRAMES = 4_096;
     // METADATA LIVES AS LONG AS THE READER: A LARGER ICCP, EXIF OR XMP CHUNK IS SKIPPED, NOT REJECTED
     private static final int MAX_METADATA_BYTES = 8 << 20;
-    private static final long METADATA_REPORT_NS = 10_000_000_000L;
 
     // CONTAINER LAYOUT
     private static final int CHUNK_HEADER_BYTES = 8;
@@ -71,7 +68,6 @@ public final class WebPReader extends ImageReader {
     private static final int ALPHA_FLAG = 0x10;
     private static final byte[] EXIF_PREFIX = { 'E', 'x', 'i', 'f', 0, 0 };
 
-    private static final LogTool.Throttle METADATA_DROPS = new LogTool.Throttle(METADATA_REPORT_NS);
 
     private final int canvasWidth;
     private final int canvasHeight;
@@ -93,6 +89,7 @@ public final class WebPReader extends ImageReader {
     private ByteBuffer pendingFrame;       // BODY OF THE ANMF CHUNK hasMore() LOCATED
     private int frames;                    // FRAMES YIELDED IN THE CURRENT PASS
     private ByteBuffer oriented;           // EXIF-REMAPPED DELIVERY TARGET, ALLOCATED ON THE FIRST FRAME WHEN THE TAG IS NOT 1
+    private final boolean[] repairWarned = new boolean[1]; // VP8 PARTITION REPAIRS ARE LOGGED ONCE PER READER
 
     public WebPReader(final ByteBuffer data) throws IOException { this(data, null); }
 
@@ -198,7 +195,7 @@ public final class WebPReader extends ImageReader {
         if (this.bitstreamFourCC == FourCC.VP8L) {
             frame = DataTool.bgraToBuffer(VP8LosslessDecoder.decode(vp8lBody(this.bitstream, this.canvasWidth, this.canvasHeight), this.canvasWidth, this.canvasHeight));
         } else {
-            frame = VP8LossyDecoder.decodeToBgra(this.bitstream, this.canvasWidth, this.canvasHeight);
+            frame = VP8LossyDecoder.decodeToBgra(this.bitstream, this.canvasWidth, this.canvasHeight, this.repairWarned);
             if (this.alpha != null && this.alpha.hasRemaining())
                 AlphaDecoder.applyAlpha(frame, AlphaDecoder.decode(this.alpha, this.canvasWidth, this.canvasHeight));
         }
@@ -272,7 +269,7 @@ public final class WebPReader extends ImageReader {
         if (frameFourCC == FourCC.VP8L) {
             pixels = VP8LosslessDecoder.decode(vp8lBody(frameBits, frameW, frameH), frameW, frameH);
         } else {
-            pixels = VP8LossyDecoder.decode(frameBits, frameW, frameH);
+            pixels = VP8LossyDecoder.decode(frameBits, frameW, frameH, this.repairWarned);
             if (frameAlpha != null && frameAlpha.hasRemaining()) AlphaDecoder.applyAlpha(pixels, AlphaDecoder.decode(frameAlpha, frameW, frameH));
         }
 
@@ -344,8 +341,7 @@ public final class WebPReader extends ImageReader {
             // THE CHUNKS BEFORE THE DAMAGE STILL COUNT; THE STRICT WALKS REPORT THE DAMAGE WHEN THEY GET THERE
         }
 
-        if (dropped > 0)
-            LogTool.throttled(LOGGER, Level.WARN, IT, METADATA_DROPS, "Skipped {} WEBP metadata chunks larger than {} bytes", dropped, MAX_METADATA_BYTES);
+        if (dropped > 0) LOGGER.warn(IT, "Skipped {} WEBP metadata chunks larger than {} bytes", dropped, MAX_METADATA_BYTES);
         if (loops >= 0) this.metadata.put(CodecsAPI.METAKEY_LOOP_COUNT, loops);
         // ONE FRAME IS A STILL IMAGE WHATEVER ITS ANMF DURATION OR ANIM LOOP COUNT DECLARE
         if (!this.animated || delays.size() <= 1) return ImageData.Scan.EMPTY;

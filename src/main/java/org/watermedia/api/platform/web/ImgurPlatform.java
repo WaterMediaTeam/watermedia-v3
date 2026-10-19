@@ -9,7 +9,6 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
-import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.JSONTool;
 
@@ -70,7 +69,7 @@ public final class ImgurPlatform implements Platform {
 
                 // GALLERY POSTS COME IN TWO SHAPES: ALBUMS CARRY data.images[] WHILE SINGLE-IMAGE
                 // POSTS CARRY THE IMAGE FIELDS DIRECTLY ON data — BIND THE ENVELOPE FIRST, THEN PICK
-                final JsonObject root = NetRequest.fetchJson(NAME, requestUrl, JsonObject.class);
+                final JsonObject root = WebRequests.fetchJson(NAME, requestUrl, JsonObject.class);
                 final GalleryResponse res = JSONTool.parse(root, GalleryResponse.class);
                 if (!res.success() || res.data() == null) {
                     throw new PlatformException(NAME, "Post '" + id + "' response was empty or unsuccessful (status "
@@ -112,7 +111,7 @@ public final class ImgurPlatform implements Platform {
 
             // SIMPLE IMAGE
             final String requestUrl = String.format(IMAGE_URL, id);
-            final ImageResponse res = NetRequest.fetchJson(NAME, requestUrl, ImageResponse.class);
+            final ImageResponse res = WebRequests.fetchJson(NAME, requestUrl, ImageResponse.class);
             if (!res.success() || res.data() == null) {
                 throw new PlatformException(NAME, "Image '" + id + "' response was empty or unsuccessful (status "
                         + res.status() + ")");
@@ -130,7 +129,7 @@ public final class ImgurPlatform implements Platform {
 
     @Override
     public List<PlatformResult> search(final String query, final int limit) throws PlatformException {
-        final SearchResponse res = NetRequest.fetchJson(NAME, String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
+        final SearchResponse res = WebRequests.fetchJson(NAME, String.format(SEARCH_URL, URLEncoder.encode(query, StandardCharsets.UTF_8)), SearchResponse.class);
         if (!res.success() || res.data() == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(res.data().length, limit));
@@ -140,9 +139,9 @@ public final class ImgurPlatform implements Platform {
             // ALBUM POSTS HAVE NO IMAGE OF THEIR OWN — THUMBNAIL THE COVER; SINGLE IMAGES THUMBNAIL THEMSELVES.
             // THE 'm' SUFFIX (MEDIUM, 320px) GOES BEFORE THE EXTENSION AND RETURNS A STATIC FRAME EVEN FOR GIFS.
             final String thumbId = item.isAlbum() && item.cover() != null ? item.cover() : item.id();
-            final URI page = JSONTool.uri("https://imgur.com/gallery/" + item.id());
+            final URI page = DataTool.uri("https://imgur.com/gallery/" + item.id());
             if (page == null) continue;
-            out.add(new PlatformResult(this, item.title(), JSONTool.uri("https://i.imgur.com/" + thumbId + "m.jpg"), page));
+            out.add(new PlatformResult(this, item.title(), DataTool.uri("https://i.imgur.com/" + thumbId + "m.jpg"), page));
         }
         return out;
     }
@@ -169,7 +168,7 @@ public final class ImgurPlatform implements Platform {
         final Instant date = img.datetime() > 0 ? Instant.ofEpochSecond(img.datetime()) : null;
         final Metadata metadata = new Metadata(title, img.description(), date, 0, accountUrl);
 
-        final URI target = JSONTool.uri(link);
+        final URI target = DataTool.uri(link);
         if (target == null)
             throw new PlatformException(NAME, "Item '" + img.id() + "' (" + img.type() + ") has no usable link: " + link);
 

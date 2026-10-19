@@ -1,7 +1,6 @@
 package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.MarkerManager;
 import org.bytedeco.ffmpeg.avcodec.*;
 import org.bytedeco.ffmpeg.avformat.*;
@@ -19,7 +18,6 @@ import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.PixelFormat;
-import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.Track;
 import org.watermedia.tools.*;
@@ -40,7 +38,7 @@ import java.util.Base64;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.TreeSet;
-import java.util.function.BiFunction;
+import java.util.concurrent.ThreadFactory;
 
 import static org.bytedeco.ffmpeg.global.avcodec.*;
 import static org.bytedeco.ffmpeg.global.avutil.*;
@@ -62,13 +60,15 @@ import static org.watermedia.WaterMedia.LOGGER;
  */
 public final class FFMediaPlayer extends MediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(FFMediaPlayer.class.getSimpleName());
-    private static final ThreadTool.ThreadGroupFactory DEFAULT_THREAD_FACTORY = ThreadTool.groupFactory("FFThread", Thread.NORM_PRIORITY);
+    // PIPELINE THREADS ARE OWNED WORKERS (THEIR CALLBACKS CANNOT RUN LIFECYCLE OPERATIONS) NAMED FFThread-<PLAYER>-<ROLE>
+    private static final ThreadFactory THREADS = ThreadTool.workerFactory("FFThread", Thread.NORM_PRIORITY);
+    private static int players; // GUARDED BY THREADS
 
     // AUDIO OUTPUT FORMAT
     private static final int AUDIO_SAMPLES = 2048;
 
     // THREADING
-    private static final int MAX_DECODE_THREADS = ThreadTool.halfProcessors();
+    private static final int MAX_DECODE_THREADS = ThreadTool.processors() / 2;
 
     // QUEUE CAPACITIES
     private static final long VIDEO_PACKET_QUEUE_BYTES = 16L * 1024 * 1024;
@@ -91,11 +91,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     private static final int HW_TRANSFER_PERF_WINDOW = 120;     // FRAMES PER PERFORMANCE EVALUATION
     private static final double HW_TRANSFER_BUDGET_RATIO = 0.75; // MAX AVG TRANSFER TIME VS FRAME DURATION
 
-    // PERFORMANCE MONITORING: THE CLOCK RATE IS SAMPLED EVERY INTERVAL AND ITS DEVIATIONS, LIKE EVERY OTHER REPEATED
-    // ANOMALY OF THE PIPELINE, ARE REPORTED AT MOST ONCE PER WINDOW
+    // PERFORMANCE MONITORING: THE CLOCK RATE IS SAMPLED AND CHECKED EVERY INTERVAL; SLOW CONSUMPTION ITERATIONS ARE
+    // COUNTED AND REPORTED ONCE WHEN THE RUN ENDS
     private static final long PERF_CHECK_INTERVAL_MS = 2000;
     private static final double PERF_RATE_WARN_THRESHOLD = 0.90;
-    private static final long SLOW_REPORT_NS = 10_000_000_000L;
     private static final String SLOW_REPORT = "Slow consumption iterations: {} in {}ms (worst={}ms, audio={}ms, video={}ms, frame={}ms)";
 
     // STARVATION DETECTION
@@ -145,7 +144,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // THREADS — lifecycleLock SERIALIZES start()/stop()/release() AGAINST EACH OTHER; IT IS NEVER
     // HELD ACROSS A JOIN, SO A LIFECYCLE PUBLISHING ITS LAST STATUS CANNOT DEADLOCK A RELEASE
-    private final BiFunction<String, Runnable, Thread> factory = DEFAULT_THREAD_FACTORY.newFactory();
+    private final String group;
     private final Object lifecycleLock = new Object();
     private final Object decodeLock = new Object();
     private final Object releaseLock = new Object();
@@ -252,17 +251,20 @@ public final class FFMediaPlayer extends MediaPlayer {
     // ADAPTIVE FRAME DROPPING
     private double renderDebtSec;
 
-    // PERFORMANCE COUNTERS AND THE PER-WINDOW REPORT GATES OF THE REPEATED ANOMALIES
+    // PERFORMANCE COUNTERS
     private long perfLastCheckMs;
     private long perfLastClockMs;
     private double perfLastSpeed = 1.0;
     private int perfAudioUploads;
     private int perfVideoRenders;
-    private final LogTool.Throttle rateReports = new LogTool.Throttle(SLOW_REPORT_NS);
-    private final LogTool.Throttle starvationReports = new LogTool.Throttle(SLOW_REPORT_NS);
-    private final LogTool.Throttle audioSlotReports = new LogTool.Throttle(SLOW_REPORT_NS);
-    private final LogTool.Throttle audioFormatReports = new LogTool.Throttle(SLOW_REPORT_NS);
-    private final LogTool.Throttle gfxReports = new LogTool.Throttle(SLOW_REPORT_NS);
+
+    // ANOMALY LATCHES: EACH REPEATABLE ANOMALY IS LOGGED ONCE PER PLAYER
+    private boolean rateWarned;
+    private boolean refusedWarned;
+    private boolean starvationWarned;
+    private boolean slotWarned;
+    private boolean audioUnusableWarned;
+    private boolean audioChangeWarned;
 
     // NOTHING IS OPENED UNTIL start(); THE HEAVY FFMPEG SETUP RUNS ON THE INTERNAL THREADS SPAWNED THEN.
     // A NULL gfx MEANS AUDIO-ONLY AND A NULL sfx VIDEO-ONLY PLAYBACK
@@ -273,6 +275,9 @@ public final class FFMediaPlayer extends MediaPlayer {
     // A NON-NULL bridge FOLLOWS A SERVER-SIDE AUTHORITY (SEE MediaPlayer)
     FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx, final Bridge bridge) {
         super(mrl, sourceIndex, gfx, sfx, bridge);
+        synchronized (THREADS) {
+            this.group = "FFThread-" + players++;
+        }
         // EVERY CLOCK TRANSITION (INCLUDING THE ONES THE PIPELINE MAKES INTERNALLY) REACHES THE LISTENER
         this.clock.listener(this::invokeStatus);
         this.arm();
@@ -305,7 +310,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             final Status current = this.clock.status();
             if (oldThread != null && oldThread.isAlive() && !oldThread.isInterrupted() && current != Status.ENDED && current != Status.ERROR)
                 this.abort();
-            final Thread thread = this.factory.apply("lifecycle", () -> {
+            final Thread thread = this.thread("lifecycle", () -> {
                 // join RETURNS false WHEN THIS THREAD IS INTERRUPTED WHILE WAITING — THE RESTART WAS
                 // DROPPED, SO LEAVE A CLEAN TERMINAL STATE INSTEAD OF THE PREVIOUS RUN'S STALE STATUS
                 if (oldThread != null && !ThreadTool.join(oldThread)) {
@@ -315,7 +320,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                 }
                 this.lifecycle(paused, seekMs);
             });
-            thread.setDaemon(true);
             this.lifecycleThread = thread;
             thread.start();
         }
@@ -808,7 +812,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // LIFECYCLE (SUPERVISOR THREAD). paused LATCHES THE startPaused() INTENT; seekMs >= 0 IS THE POSITION A
     // RESTART FROM ENDED/STOPPED RESUMES AT (PAUSED), -1 STARTS FROM THE BEGINNING
     private void lifecycle(final boolean paused, final long seekMs) {
-        long slowWindowStart = System.nanoTime();
+        final long started = System.nanoTime();
         long slowCount = 0;
         long slowWorstMs = 0;
         long slowAudioMs = 0;
@@ -847,8 +851,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.videoFrameQueue = new FrameQueue(VIDEO_FRAME_QUEUE_SLOTS);
             this.audioFrameQueue = new FrameQueue(AUDIO_FRAME_QUEUE_SLOTS);
 
-            this.demuxThread = this.factory.apply("demux", this::demuxLoop);
-            this.demuxThread.setDaemon(true);
+            this.demuxThread = this.thread("demux", this::demuxLoop);
             this.demuxThread.start();
 
             final Status postInit = this.clock.awaitNotStatus(Status.LOADING, 0);
@@ -950,9 +953,9 @@ public final class FFMediaPlayer extends MediaPlayer {
                     // THE CLOCK ADVANCES AT speed TIMES WALL TIME BY DESIGN, SO THE DEVIATION IS MEASURED AGAINST THAT;
                     // A SPEED CHANGE INSIDE THE WINDOW MAKES THE SAMPLE MEANINGLESS, SO IT IS SKIPPED
                     final double rate = clockElapsed / (wallElapsed * speed);
-                    if (speed == this.perfLastSpeed && (rate < PERF_RATE_WARN_THRESHOLD || rate > (2.0 - PERF_RATE_WARN_THRESHOLD))) {
-                        LogTool.throttled(LOGGER, Level.WARN, IT, this.rateReports,
-                                "Playback rate {} (clock {}ms over {}ms at {}x, vQ={}, aQ={}, aUploads={}, vRenders={})",
+                    if (!this.rateWarned && speed == this.perfLastSpeed && (rate < PERF_RATE_WARN_THRESHOLD || rate > (2.0 - PERF_RATE_WARN_THRESHOLD))) {
+                        this.rateWarned = true;
+                        LOGGER.warn(IT, "Playback rate {} (clock {}ms over {}ms at {}x, vQ={}, aQ={}, aUploads={}, vRenders={})",
                                 String.format("%.3f", rate), clockElapsed, wallElapsed, speed,
                                 this.videoFrameQueue != null ? this.videoFrameQueue.remaining() : -1,
                                 this.audioFrameQueue != null ? this.audioFrameQueue.remaining() : -1,
@@ -1029,8 +1032,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                         // ENGINE CAN'T TAKE THIS PLANAR FORMAT DIRECTLY (E.G. VULKAN WITHOUT GPU YUV CONVERSION) —
                         // DROP TO null SO THE BLOCK BELOW CONVERTS TO BGRA VIA sws BEFORE UPLOAD
                         if (mapping != null && !this.gfx.supports(mapping.format(), mapping.bits())) mapping = null;
-                        final int targetW = MathUtil.scaled(slot.width, this.scaleWidth, this.lod.percent());
-                        final int targetH = MathUtil.scaled(slot.height, this.scaleHeight, this.lod.percent());
+                        final int targetW = scaled(slot.width, this.scaleWidth, this.lod.percent());
+                        final int targetH = scaled(slot.height, this.scaleHeight, this.lod.percent());
 
                         AVFrame uploadFrame = slot.frame;
                         int uploadW = slot.width;
@@ -1086,12 +1089,14 @@ public final class FFMediaPlayer extends MediaPlayer {
                             this.lastBitsPerComponent = mapping.bits();
                             this.lastFrameWidth = uploadW;
                             this.lastFrameHeight = uploadH;
-                            if (this.uploadRefused)
-                                LogTool.throttled(LOGGER, Level.ERROR, IT, this.gfxReports, "Graphics engine refused {} {}x{} {}bit; frames are dropped until the layout changes",
-                                        mapping.format(), uploadW, uploadH, mapping.bits());
-                            else
+                            if (!this.uploadRefused)
                                 LOGGER.debug(IT, "GFX format: {} {}x{} {}bit (source={}x{})",
                                         mapping.format(), uploadW, uploadH, mapping.bits(), slot.width, slot.height);
+                            else if (!this.refusedWarned) {
+                                this.refusedWarned = true;
+                                LOGGER.error(IT, "Graphics engine refused {} {}x{} {}bit; frames are dropped until the layout changes",
+                                        mapping.format(), uploadW, uploadH, mapping.bits());
+                            }
                         }
                         // A REFUSED LAYOUT SKIPS ONLY THE UPLOAD: THE FRAME IS STILL CONSUMED AND THE CLOCK ADVANCES, SO
                         // PLAYBACK AND LOOPING KEEP THEIR PACE (COUNTED AS SKIPPED FOR THE ZERO-FRAME → ERROR CHECK)
@@ -1140,13 +1145,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                         slowVideoMs = videoMs;
                         slowFrameMs = this.clock.frameDurationMs();
                     }
-                }
-                if (afterWork - slowWindowStart >= SLOW_REPORT_NS) {
-                    if (slowCount > 0)
-                        LOGGER.warn(IT, SLOW_REPORT, slowCount, (afterWork - slowWindowStart) / 1_000_000, slowWorstMs, slowAudioMs, slowVideoMs, slowFrameMs);
-                    slowWindowStart = afterWork;
-                    slowCount = 0;
-                    slowWorstMs = 0;
                 }
 
                 // TRACK BUFFERING→PLAYING RECOVERY FOR STARVATION COOLDOWN
@@ -1198,7 +1196,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                             if (starvationStartMs == 0) {
                                 starvationStartMs = starvNowMs;
                             } else if (starvNowMs - starvationStartMs > STARVATION_THRESHOLD_MS) {
-                                LogTool.throttled(LOGGER, Level.WARN, IT, this.starvationReports, "Starvation — BUFFERING (clock={}ms)", this.clock.timeMs());
+                                if (!this.starvationWarned) LOGGER.warn(IT, "Starvation — BUFFERING (clock={}ms)", this.clock.timeMs());
+                                this.starvationWarned = true;
                                 this.clock.transition(Status.BUFFERING);
                                 starvationStartMs = 0;
                             }
@@ -1238,7 +1237,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.publishTransition(Status.ERROR);
         } finally {
             if (slowCount > 0)
-                LOGGER.warn(IT, SLOW_REPORT, slowCount, (System.nanoTime() - slowWindowStart) / 1_000_000, slowWorstMs, slowAudioMs, slowVideoMs, slowFrameMs);
+                LOGGER.warn(IT, SLOW_REPORT, slowCount, (System.nanoTime() - started) / 1_000_000, slowWorstMs, slowAudioMs, slowVideoMs, slowFrameMs);
             this.freeQueues();
             this.cleanup();
         }
@@ -1790,7 +1789,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         slot.frame.nb_samples(AUDIO_SAMPLES);
 
         if (av_frame_get_buffer(slot.frame, 0) < 0) {
-            LogTool.throttled(LOGGER, Level.WARN, IT, this.audioSlotReports, "Failed to allocate audio buffer in slot");
+            if (!this.slotWarned) LOGGER.warn(IT, "Failed to allocate audio buffer in slot");
+            this.slotWarned = true;
             return true;
         }
 
@@ -1872,13 +1872,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             return true;
         }
         if (rate <= 0 || channels <= 0 || format == AV_SAMPLE_FMT_NONE) {
-            LOGGER.warn(IT, "Audio frame with unusable parameters: {}ch {}Hz fmt={}", channels, rate, format);
+            if (!this.audioUnusableWarned) LOGGER.warn(IT, "Audio frame with unusable parameters: {}ch {}Hz fmt={}", channels, rate, format);
+            this.audioUnusableWarned = true;
             return false;
         }
 
-        LogTool.throttled(LOGGER, Level.WARN, IT, this.audioFormatReports,
-                "Audio parameters changed mid-stream: {}ch {}Hz fmt={} -> {}ch {}Hz fmt={} — rebuilding resampler",
-                this.audioInputChannels, this.audioInputSampleRate, this.audioInputAvFormat, channels, rate, format);
+        if (!this.audioChangeWarned)
+            LOGGER.warn(IT, "Audio parameters changed mid-stream: {}ch {}Hz fmt={} -> {}ch {}Hz fmt={} — rebuilding resampler",
+                    this.audioInputChannels, this.audioInputSampleRate, this.audioInputAvFormat, channels, rate, format);
+        this.audioChangeWarned = true;
 
         final SwrContext fresh = swresample.swr_alloc();
         if (fresh == null) return false;
@@ -1958,13 +1960,11 @@ public final class FFMediaPlayer extends MediaPlayer {
     private void ensureDecodeThreads() {
         synchronized (this.decodeLock) {
             if ((this.videoDecodeThread == null || !this.videoDecodeThread.isAlive()) && this.gfx != null && this.videoStreamIndex >= 0 && this.videoCodecContext != null) {
-                this.videoDecodeThread = this.factory.apply("video", this::videoDecodeLoop);
-                this.videoDecodeThread.setDaemon(true);
+                this.videoDecodeThread = this.thread("video", this::videoDecodeLoop);
                 this.videoDecodeThread.start();
             }
             if ((this.audioDecodeThread == null || !this.audioDecodeThread.isAlive()) && this.sfx != null && this.audioStreamIndex >= 0 && this.audioCodecContext != null) {
-                this.audioDecodeThread = this.factory.apply("audio", this::audioDecodeLoop);
-                this.audioDecodeThread.setDaemon(true);
+                this.audioDecodeThread = this.thread("audio", this::audioDecodeLoop);
                 this.audioDecodeThread.start();
             }
         }
@@ -2085,8 +2085,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         this.clock.transition(Status.LOADING);
 
         this.ioAbortRequested = false; // stopThreads() RAISED IT TO DRAIN THE OLD DEMUXER; THE NEW ONE MUST OPEN
-        this.demuxThread = this.factory.apply("demux", this::demuxLoop);
-        this.demuxThread.setDaemon(true);
+        this.demuxThread = this.thread("demux", this::demuxLoop);
         this.demuxThread.start();
 
         try {
@@ -2129,7 +2128,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                         uri,
                         this.source.headers(),
                         "video/*,audio/*,application/octet-stream,*/*",
-                        Math.max(1L, WaterMediaConfig.media.ffmpeg.cacheMaxResponse) * 1024L * 1024L,
+                        DataTool.megabytes(Math.max(1L, WaterMediaConfig.media.ffmpeg.cacheMaxResponse)),
                         WaterMediaConfig.media.ffmpeg.cache);
                 if (cached != null) {
                     LOGGER.debug(IT, "{} FFMediaPlayer cache entry for {}", cached.cached() ? "Using" : "Stored", uri);
@@ -2313,7 +2312,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (analyzeMs > 0) {
             av_dict_set(options, "analyzeduration", String.valueOf(analyzeMs * 1000L), 0);
         }
-        av_dict_set(options, "probesize", String.valueOf((long) WaterMediaConfig.media.ffmpeg.probeSize * 1024L * 1024L), 0);
+        av_dict_set(options, "probesize", String.valueOf(DataTool.megabytes(WaterMediaConfig.media.ffmpeg.probeSize)), 0);
         av_dict_set(options, "buffer_size", "33554432", 0);
         av_dict_set(options, "rtbufsize", "15000000", 0);
         av_dict_set(options, "http_persistent", "1", 0);
@@ -2372,7 +2371,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 // IT FETCHES WITH THE SOURCE'S OWN HEADERS (AN AUTHENTICATED PLAYLIST IS COMMON) AND
                 // ONLY WRITES INTO THE RUN THAT STARTED IT; A FAILED PROBE LEAVES THE HEURISTIC IN CHARGE
                 final int run = this.runSerial;
-                final Thread probe = this.factory.apply("hls-probe", () -> {
+                final Thread probe = this.thread("hls-probe", () -> {
                     try {
                         M3UTool.Playlist hlsResult = M3UTool.fetch(uri, this.source.headers());
                         // MASTER PLAYLIST: FOLLOW THE FIRST VARIANT (URL ALREADY ABSOLUTE) DOWN TO A REAL MEDIA PLAYLIST
@@ -2390,7 +2389,6 @@ public final class FFMediaPlayer extends MediaPlayer {
                         LOGGER.warn(IT, "HLS probe failed, keeping the duration heuristic", e);
                     }
                 });
-                probe.setDaemon(true);
                 probe.start();
             }
 
@@ -2617,8 +2615,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         if (initialMapping != null) {
             // PRE-CONFIGURE THE ENGINE WITH THE UPLOAD TARGET (maxSize/LOD APPLIED) SO
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
-            final int targetW = MathUtil.scaled(w, this.scaleWidth, this.lod.percent());
-            final int targetH = MathUtil.scaled(h, this.scaleHeight, this.lod.percent());
+            final int targetW = scaled(w, this.scaleWidth, this.lod.percent());
+            final int targetH = scaled(h, this.scaleHeight, this.lod.percent());
             this.uploadRefused = !this.gfx.format(initialMapping.format(), targetW, targetH, initialMapping.bits());
             this.lastFormat = initialMapping.format();
             this.lastBitsPerComponent = initialMapping.bits();
@@ -3021,6 +3019,13 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // UTILITY
+    // AN UNSTARTED PIPELINE THREAD OF THIS PLAYER'S GROUP, SO A CALLER CAN PUBLISH IT IN ITS FIELD BEFORE IT RUNS
+    private Thread thread(final String role, final Runnable task) {
+        final Thread thread = THREADS.newThread(task);
+        thread.setName(this.group + "-" + role);
+        return thread;
+    }
+
     // LOGS THE FIRST UNEXPECTED send/receive FAILURE OF A DECODE LOOP WITH ITS CODEC AND NATIVE DETAIL
     private static void logCodecError(final String media, final String operation, final AVCodecContext codec, final int stream, final int code) {
         LOGGER.warn(IT, "{} decoder {} failed: codec={}, stream={}, code={} ({})",

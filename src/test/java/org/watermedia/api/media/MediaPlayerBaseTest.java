@@ -12,9 +12,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exercises the pure-Java control surface {@link MediaPlayer} implements for every subclass:
+ * Verifies the pure-Java control surface {@link MediaPlayer} implements for every subclass:
  * volume clamp/round-trip, mute orthogonality, speed bounds and the {@link MediaPlayer#canSpeed()}
- * gate, repeat, maxSize/lod validation and {@link Status#of(int)}. {@link ServerMediaPlayer} is the
+ * gate, repeat, maxSize/lod validation, the LOD sizing rule and {@link Status#of(int)}. {@link ServerMediaPlayer} is the
  * headless concrete instance (the class is sealed, so no test-only stub is possible).
  */
 @DisplayName("MediaPlayer base surface")
@@ -156,6 +156,24 @@ public class MediaPlayerBaseTest {
             assertEquals(100, LodLevel.MAX.percent());
             assertEquals(50, LodLevel.NEAR.percent());
             assertEquals(10, LodLevel.FAR_AWAY.percent());
+        }
+
+        @Test
+        @DisplayName("scaled keeps the native size when nothing reduces it")
+        void scaledKeepsNative() {
+            assertEquals(1081, MediaPlayer.scaled(1081, 0, 100));
+            assertEquals(1081, MediaPlayer.scaled(1081, 4096, 100));
+            assertEquals(0, MediaPlayer.scaled(0, 720, 50), "an unknown size stays unknown");
+        }
+
+        @Test
+        @DisplayName("scaled caps, applies the percentage and keeps the result even")
+        void scaledCapsAndEvens() {
+            assertEquals(720, MediaPlayer.scaled(1080, 720, 100));
+            assertEquals(540, MediaPlayer.scaled(1080, 0, 50));
+            assertEquals(10, MediaPlayer.scaled(1080, 0, 1));
+            assertEquals(2, MediaPlayer.scaled(100, 0, 1));
+            assertEquals(360, MediaPlayer.scaled(1080, 720, 50), "the percentage applies to the capped size");
         }
     }
 

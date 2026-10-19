@@ -3,6 +3,7 @@ package org.watermedia.api.codecs.readers;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
@@ -577,9 +578,9 @@ public final class PngReader extends ImageReader {
                 // CLAMP EACH CHANNEL: AN OUT-OF-RANGE LUT ENTRY (Math.round SATURATES Infinity TO
                 // 0x7FFFFFFF) WOULD OTHERWISE SHIFT STRAIGHT OVER THE ALPHA BYTE AND TURN A FULLY
                 // TRANSPARENT PIXEL OPAQUE — A SILENT MASK BYPASS, WITH NO EXCEPTION ANYWHERE
-                final int cr = Math.min(255, Math.max(0, Math.round(lut[r] * 255)));
-                final int cg = Math.min(255, Math.max(0, Math.round(lut[g] * 255)));
-                final int cb = Math.min(255, Math.max(0, Math.round(lut[b] * 255)));
+                final int cr = MathUtil.clip255(Math.round(lut[r] * 255));
+                final int cg = MathUtil.clip255(Math.round(lut[g] * 255));
+                final int cb = MathUtil.clip255(Math.round(lut[b] * 255));
                 pixels[rowBase + x] = (a << 24) | (cr << 16) | (cg << 8) | cb;
             }
         }

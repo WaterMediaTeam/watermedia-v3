@@ -8,9 +8,7 @@ import org.watermedia.api.platform.*;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
-import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JSONTool;
 
 import java.net.URI;
 import java.time.Instant;
@@ -46,7 +44,7 @@ public final class TwitterPlatform implements Platform {
         final String tweetId = m.group(1);
         LOGGER.debug(IT, "Twitter fetching tweet '{}'", tweetId);
 
-        final Tweet tweet = NetRequest.fetchJson(NAME, String.format(API_URL, tweetId, API_TOKEN), Tweet.class);
+        final Tweet tweet = WebRequests.fetchJson(NAME, String.format(API_URL, tweetId, API_TOKEN), Tweet.class);
 
         if ("TweetTombstone".equals(tweet.typename)) {
             // THE TOMBSTONE TEXT SAYS WHY: AN AGE GATE IS A MATURE BLOCK, THE REST IS GONE FOR GOOD
@@ -89,7 +87,7 @@ public final class TwitterPlatform implements Platform {
 
     private Source buildEntry(final Tweet tweet, final MediaDetail media, final String title, final String author, final Instant postedAt, final HttpHeaders headers) {
         if ("photo".equals(media.type)) {
-            final URI photo = JSONTool.uri(media.mediaUrlHttps);
+            final URI photo = DataTool.uri(media.mediaUrlHttps);
             if (photo == null) {
                 LOGGER.warn(IT, "Twitter photo without a usable URL, skipping");
                 return null;
@@ -107,16 +105,16 @@ public final class TwitterPlatform implements Platform {
                 LOGGER.warn(IT, "Twitter media type '{}' has no video_info/variants, skipping", media.type);
                 return null;
             }
-            final URI thumbnail = JSONTool.uri(media.mediaUrlHttps);
+            final URI thumbnail = DataTool.uri(media.mediaUrlHttps);
             final Metadata metadata = new Metadata(title, tweet.text, postedAt, Math.max(0, media.videoInfo.durationMillis), author);
 
             final List<Quality> variants = new ArrayList<>(media.videoInfo.variants.length);
             for (final var variant: media.videoInfo.variants) {
-                final URI rendition = JSONTool.uri(variant.url);
+                final URI rendition = DataTool.uri(variant.url);
                 if (rendition == null) continue;
                 final var resMatcher = RESOLUTION_PATTERN.matcher(variant.url);
                 if (!resMatcher.find()) continue; // SKIP NON-PROGRESSIVE RENDITIONS (E.G. THE m3u8 PLAYLIST ENTRY)
-                variants.add(new Quality(rendition, Integer.parseInt(resMatcher.group(1)), Integer.parseInt(resMatcher.group(2))));
+                variants.add(new Quality(rendition, DataTool.parseInt(resMatcher.group(1), 0), DataTool.parseInt(resMatcher.group(2), 0)));
             }
 
             if (variants.isEmpty()) {

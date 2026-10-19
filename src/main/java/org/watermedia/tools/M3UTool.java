@@ -1,6 +1,5 @@
 package org.watermedia.tools;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.util.HttpHeaders;
@@ -30,7 +29,7 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p><b>Error contract.</b> {@link #parse} and {@link #fetch} are strict: anything that is
  * not a usable playlist throws {@link IOException}, and every message states <i>where</i>
  * (the source {@link URI}), <i>what</i> failed, and <i>why</i> it cannot continue. Use the
- * convenience {@link #qualities(URI)} when you instead want a best-effort result that never
+ * convenience {@link #qualities(URI, HttpHeaders)} when you instead want a best-effort result that never
  * fails — it absorbs those exceptions and falls back to the raw URL so FFmpeg can still probe.
  *
  * <p><b>URIs are resolved here.</b> Every {@link Variant}, {@link Segment}, {@link Rendition}
@@ -51,10 +50,6 @@ public final class M3UTool {
     // AND IPTV (LOWERCASE tvg-* KEYS, ALWAYS QUOTED VALUES)
     private static final Pattern ATTR = Pattern.compile("([A-Za-z0-9-]+)=(?:\"([^\"]*)\"|([^,\\s]+))");
     private static final Pattern RES = Pattern.compile("(\\d+)x(\\d+)");
-
-    // A BROKEN IPTV CATALOG MAY CARRY THOUSANDS OF MALFORMED ENTRIES, SO THEY ARE REPORTED PER WINDOW
-    private static final long MALFORMED_REPORT_NS = 10_000_000_000L;
-    private static final LogTool.Throttle MALFORMED_URIS = new LogTool.Throttle(MALFORMED_REPORT_NS);
 
     private M3UTool() {}
 
@@ -138,10 +133,12 @@ public final class M3UTool {
      *   <li>IPTV / fetch / parse failure → a single variant pointing at {@code source}, logged,
      *       so FFmpeg can still probe the raw URL.</li>
      * </ul>
+     *
+     * @param headers the request headers the stream itself is played with (see {@link #fetch(URI, HttpHeaders)}), or {@code null}
      */
-    public static List<Variant> qualities(final URI source) {
+    public static List<Variant> qualities(final URI source, final HttpHeaders headers) {
         try {
-            final Playlist playlist = fetch(source);
+            final Playlist playlist = fetch(source, headers);
             if (playlist instanceof final Master master && !master.variants().isEmpty()) {
                 LOGGER.debug(IT, "Successfully resolved {} HLS rendition(s) from master {}", master.variants().size(), source);
                 return master.variants();
@@ -227,6 +224,7 @@ public final class M3UTool {
         final List<Variant> variants = new ArrayList<>();
         final List<Rendition> renditions = new ArrayList<>();
         final Map<String, Rendition> videoGroups = new HashMap<>();
+        final boolean[] warned = new boolean[1];
         int version = 1;
 
         final int len = content.length();
@@ -253,7 +251,7 @@ public final class M3UTool {
                             type, groupId,
                             a.getOrDefault("NAME", ""),
                             a.get("LANGUAGE"),
-                            resolve(source, a.get("URI")),
+                            resolve(source, a.get("URI"), warned),
                             "YES".equalsIgnoreCase(a.get("DEFAULT")),
                             "YES".equalsIgnoreCase(a.get("AUTOSELECT")));
                     renditions.add(r);
@@ -276,7 +274,7 @@ public final class M3UTool {
                     peeked = pl;
                     break;
                 }
-                final URI uri = resolve(source, peeked);
+                final URI uri = resolve(source, peeked, warned);
                 if (uri != null) {
                     // PARSE KEY=VALUE / KEY="VALUE" PAIRS FROM THE TAG BODY (KEYS KEPT AS-IS)
                     final Map<String, String> a = new HashMap<>();
@@ -320,6 +318,7 @@ public final class M3UTool {
 
     private static Media parseMedia(final String content, final URI source) {
         final List<Segment> segments = new ArrayList<>();
+        final boolean[] warned = new boolean[1];
         double targetDuration = 0;
         long sequence = 0;
         int version = 1;
@@ -365,7 +364,7 @@ public final class M3UTool {
                 segTitle = comma >= 0 ? extinf.substring(comma + 1).trim() : "";
             }
             else if (line.charAt(0) != '#' && segDuration > 0) {
-                final URI uri = resolve(source, line);
+                final URI uri = resolve(source, line, warned);
                 if (uri != null) {
                     segments.add(new Segment(uri, segDuration, segTitle, sequence + segments.size(), dateTime));
                     totalDuration += segDuration;
@@ -381,6 +380,7 @@ public final class M3UTool {
 
     private static Iptv parseIptv(final String content, final URI source) {
         final List<Channel> channels = new ArrayList<>();
+        final boolean[] warned = new boolean[1];
         String title = null;
         Map<String, String> attrs = null;
 
@@ -419,7 +419,7 @@ public final class M3UTool {
             if (line.charAt(0) == '#') continue;
 
             // PAYLOAD LINE — FLUSH THE PENDING ENTRY (OR A BARE-URL ONE)
-            final URI url = resolve(source, line);
+            final URI url = resolve(source, line, warned);
             if (url != null) {
                 final Map<String, String> a = attrs != null ? attrs : Map.of();
                 final String name = title != null && !title.isEmpty() ? title : a.getOrDefault("tvg-name", line);
@@ -442,11 +442,9 @@ public final class M3UTool {
     // UTILITIES
     // ================================================================================================
 
-    // RESOLVES spec AGAINST base; NULL/BLANK, MALFORMED OR NON-HTTP(S) RESULTS YIELD NULL (LOGGED), SO A REMOTE
-    // PLAYLIST CAN NEVER POINT A PLAYER AT LOCAL FILES OR ARCHIVES
-    // ANY STREAMING SCHEME FFMPEG SPEAKS IS FINE (rtsp, rtmp, udp, srt); A REMOTE PLAYLIST NEVER REACHES LOCAL FILES
-    // OR ARCHIVES, AND ONLY A LOCAL ONE MAY LIST LOCAL FILES
-    private static URI resolve(final URI base, final String spec) {
+    // RESOLVES spec AGAINST base: ANY STREAMING SCHEME FFMPEG SPEAKS PASSES, BUT ONLY A LOCAL PLAYLIST MAY LIST LOCAL
+    // FILES AND NONE MAY LIST ARCHIVES. A SKIPPED ENTRY YIELDS NULL; warned LOGS ONLY THE FIRST ONE OF A PLAYLIST
+    private static URI resolve(final URI base, final String spec, final boolean[] warned) {
         if (spec == null || spec.isEmpty()) return null;
         try {
             final URI resolved = base.resolve(spec);
@@ -454,10 +452,11 @@ public final class M3UTool {
             final boolean allowed = IOTool.web(resolved) || (!scheme.isEmpty() && !scheme.equals("jar") && !scheme.equals("water")
                     && (!scheme.equals("file") || "file".equalsIgnoreCase(base.getScheme())));
             if (allowed) return resolved;
-            LogTool.throttled(LOGGER, Level.WARN, IT, MALFORMED_URIS, "Skipping local or relative URI '{}' in {}", spec, base);
+            if (!warned[0]) LOGGER.warn(IT, "Skipping local or relative URI '{}' in {}", spec, base);
         } catch (final IllegalArgumentException e) {
-            LogTool.throttled(LOGGER, Level.WARN, IT, MALFORMED_URIS, "Skipping malformed URI '{}' relative to {}", spec, base);
+            if (!warned[0]) LOGGER.warn(IT, "Skipping malformed URI '{}' relative to {}", spec, base);
         }
+        warned[0] = true;
         return null;
     }
 }

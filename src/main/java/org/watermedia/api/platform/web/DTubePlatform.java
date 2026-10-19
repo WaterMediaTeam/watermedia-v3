@@ -8,15 +8,12 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JSONTool;
-import org.watermedia.tools.M3UTool;
 
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -58,12 +55,13 @@ public final class DTubePlatform implements Platform {
 
             final String videoUrl = extract(html, VIDEO_URL);
             if (videoUrl == null) throw new PlatformException(NAME, "No video_url found in page: " + uri);
-            final URI hlsUri = URI.create(videoUrl);
+            final URI hlsUri = DataTool.uri(videoUrl);
+            if (hlsUri == null) throw new PlatformException(NAME, "The video_url '" + videoUrl + "' of " + uri + " is not a web URL");
             LOGGER.debug(IT, "D.tube extracted video_url {} from {}", hlsUri, uri);
 
             final String title = extract(html, TITLE);
             final String description = extract(html, DESCRIPTION);
-            final URI thumbnail = JSONTool.uri(extract(html, THUMBNAIL_URL));
+            final URI thumbnail = DataTool.uri(extract(html, THUMBNAIL_URL));
             if (title == null) LOGGER.warn(IT, "D.tube page has no title for {}", uri);
 
             // METADATA IS BEST-EFFORT: A MALFORMED TIMESTAMP MUST NOT ABORT AN OTHERWISE PLAYABLE VIDEO
@@ -75,23 +73,8 @@ public final class DTubePlatform implements Platform {
             }
             final long duration = DataTool.parseLong(extract(html, DURATION), 0L) * 1000L;
             final Metadata metadata = new Metadata(title, description, publishedAt, duration, extract(html, USERNAME));
-
-            final List<Quality> variants = new ArrayList<>();
-            try {
-                // RENDITION URLS COME BACK ALREADY ABSOLUTE (RESOLVED AGAINST hlsUri BY M3UTool)
-                final M3UTool.Playlist r = M3UTool.fetch(hlsUri, new HttpHeaders(headers).set("Accept", "application/vnd.apple.mpegurl"));
-                if (r instanceof final M3UTool.Master master) {
-                    for (final M3UTool.Variant variant: master.variants()) {
-                        variants.add(new Quality(variant.uri(), variant.width(), variant.height(), (float) variant.fps()));
-                    }
-                    LOGGER.debug(IT, "D.tube parsed {} HLS rendition(s) for {}", master.variants().size(), uri);
-                } else {
-                    LOGGER.warn(IT, "D.tube HLS response for {} was not a master playlist; falling back to the direct URL", uri);
-                }
-            } catch (final IOException e) {
-                LOGGER.warn(IT, "D.tube failed to parse the HLS playlist for {}; falling back to the direct URL", uri, e);
-            }
-            if (variants.isEmpty()) variants.add(new Quality(hlsUri, 0, 0));
+            // THE CDN CHECKS THE PLAYLIST REQUEST WITH THE SAME BROWSER HEADERS AS THE MEDIA ONE
+            final List<Quality> variants = WebRequests.hls(hlsUri, headers);
 
             LOGGER.debug(IT, "D.tube resolved '{}' with {} variant(s) for {}", title, variants.size(), uri);
             final var entry = new Source(MediaType.VIDEO, thumbnail, metadata, headers, variants, null, null);

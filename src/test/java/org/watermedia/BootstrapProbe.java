@@ -7,7 +7,6 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.ServerMediaPlayer;
 import org.watermedia.api.media.TLSLifecycleProbe;
 import org.watermedia.api.network.NetworkAPI;
-import org.watermedia.api.network.NetworkServer;
 import org.watermedia.binaries.WaterMediaBinaries;
 import org.watermedia.test.support.LocalHttp;
 import org.watermedia.test.support.PlayerWait;
@@ -81,7 +80,7 @@ public final class BootstrapProbe {
         // THE REST OF THE MODULE WORKS: AN UPLOAD IS ACCEPTED AND FAILS ON ITS OWN, NEVER WITH AN ILLEGAL STATE
         WaterMediaConfig.network.remoteUrl = "remote.invalid/upload";
         final Path file = Files.writeString(root.resolve("upload.bin"), "payload");
-        final NetworkServer.UploadStatus upload = NetworkAPI.upload(file.toFile());
+        final NetworkAPI.UploadStatus upload = NetworkAPI.upload(file.toFile());
         if (!PlayerWait.awaitCondition(upload::failed, 5000) || upload.completed())
             throw new AssertionError("The upload worker did not fail the misconfigured upload");
         requireFinal(root);

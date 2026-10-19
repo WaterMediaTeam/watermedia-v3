@@ -28,14 +28,14 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     static final long SENTINEL_TEXTURE = -1L;
 
     // CONFIGURED LAYOUT, WRITTEN BY THE PRODUCER (THE RENDER THREAD IN GL) AND READ FROM ANY HOST THREAD
-    protected volatile PixelFormat format;
-    protected volatile int width;
-    protected volatile int height;
-    protected volatile int bits = 8;
-    protected volatile boolean released;
+    volatile PixelFormat format;
+    volatile int width;
+    volatile int height;
+    volatile int bits = 8;
+    volatile boolean released;
 
     // SINGLE ENFORCEMENT POINT: EVERY ENGINE CONSTRUCTION PASSES THROUGH HERE, HEADLESS CAPTURE INCLUDED.
-    protected GFXEngine() {
+    GFXEngine() {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
     }
 

@@ -41,7 +41,8 @@ public final class VidLiiPlatform implements Platform {
 
             // VIDLII EMITS A ROOT-RELATIVE PATH, BUT TOLERATE AN ABSOLUTE URL IN CASE THE MARKUP CHANGES
             final String videoPath = matcher.group(1);
-            final URI videoUri = URI.create(videoPath.startsWith("http") ? videoPath : ORIGIN + videoPath);
+            final URI videoUri = DataTool.uri(videoPath.startsWith("http") ? videoPath : ORIGIN + videoPath);
+            if (videoUri == null) throw new PlatformException(NAME, "<video> source '" + videoPath + "' is malformed: " + uri);
             LOGGER.debug(IT, "VidLii resolved video source {} for {}", videoUri, uri);
 
             final var entry = new Source(MediaType.VIDEO, null, null,

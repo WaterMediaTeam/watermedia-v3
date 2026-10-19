@@ -6,12 +6,10 @@ import org.junit.jupiter.api.Test;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.time.Instant;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies the pure byte/string helpers in {@link DataTool}. */
@@ -19,35 +17,91 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class DataToolTest {
 
     @Test
-    @DisplayName("hex renders lowercase two-digit bytes")
-    void hex() {
-        assertEquals("00ff0a", DataTool.hex(new byte[]{0x00, (byte) 0xFF, 0x0A}));
+    @DisplayName("redact masks URIs, protocol-relative links and malformed URLs down to their origin")
+    void redactUris() {
+        final String text = "[https://first.test/secret?key=one] -> //second.test/secret?key=two "
+                + "ftp://name:password@files.test/private file:/private/file "
+                + "https://bad.test/%not-hex";
+        final String safe = DataTool.redact(text);
+        assertFalse(safe.contains("secret"), safe);
+        assertFalse(safe.contains("private"), safe);
+        assertFalse(safe.contains("password"), safe);
+        assertFalse(safe.contains("key="), safe);
+        assertFalse(safe.contains("not-hex"), safe);
+        assertTrue(safe.contains("https://first.test/REDACTED]"), safe);
+        assertTrue(safe.contains("//second.test/REDACTED"), safe);
+        assertEquals(safe, DataTool.redact(safe));
+        assertEquals("Source 'https://host.test/REDACTED' failed",
+                DataTool.redact("Source 'https://name'part:password@host.test/path?token=first'second' failed"));
     }
 
     @Test
-    @DisplayName("parseQuery decodes pairs and tolerates value-less keys")
-    void parseQuery() {
-        final Map<String, String> q = DataTool.parseQuery("a=1&b=%20&c&&d=x=y");
-        assertEquals("1", q.get("a"));
-        assertEquals(" ", q.get("b"));
-        assertEquals("", q.get("c"));
-        assertEquals("x=y", q.get("d"));
-        assertEquals(4, q.size());
-        assertTrue(DataTool.parseQuery("").isEmpty());
-        assertTrue(DataTool.parseQuery(null).isEmpty());
+    @DisplayName("uri parses web URLs leniently: scheme-relative gets https, anything else yields null")
+    void uri() {
+        assertEquals(URI.create("https://cdn.test/a"), DataTool.uri("https://cdn.test/a"));
+        assertEquals(URI.create("https://cdn.test/b"), DataTool.uri("//cdn.test/b"));
+        assertEquals(URI.create("HTTPS://cdn.test/c"), DataTool.uri("HTTPS://cdn.test/c"), "schemes compare case-insensitively");
+        assertNull(DataTool.uri("file:///etc/passwd"));
+        assertNull(DataTool.uri("jar:file:///x.jar!/y"));
+        assertNull(DataTool.uri("ftp://files.test/a"));
+        assertNull(DataTool.uri("/relative/path"));
+        assertNull(DataTool.uri("not a url"));
+        assertNull(DataTool.uri(""));
+        assertNull(DataTool.uri(null));
     }
 
     @Test
-    @DisplayName("parseQuery decodes a raw query once and keeps malformed pairs raw")
-    void parseQueryRaw() {
-        assertEquals("a+b%3D", DataTool.parseQuery(URI.create("https://cdn.test/x?sig=a%2Bb%253D").getRawQuery()).get("sig"));
-        final Map<String, String> q = DataTool.parseQuery("sig=a%2Bb%253D&bad=100%&tail=%E2%82%AC&k%zz=v");
-        assertEquals("a+b%3D", q.get("sig"));
-        assertEquals("100%", q.get("bad"));
-        assertEquals("€", q.get("tail"));
-        assertEquals("v", q.get("k%zz"));
-        assertThrows(UnsupportedOperationException.class, () -> q.put("x", "y"));
-        assertThrows(UnsupportedOperationException.class, () -> DataTool.parseQuery("a=1").put("x", "y"));
+    @DisplayName("redact stays linear on hostile runs and masks cookies and every Authorization scheme")
+    void redactBounded() {
+        for (final String run: new String[] { "a.".repeat(40_000), "a-".repeat(40_000), "eyJ".repeat(40_000) }) {
+            final long started = System.nanoTime();
+            DataTool.redact(run);
+            final long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
+            assertTrue(elapsedMs < 2_000L, "a 80k run must redact in well under two seconds, took " + elapsedMs + " ms");
+        }
+        final String safe = DataTool.redact("Authorization: Basic dXNlcjpwYXNz\nAuthorization: OAuth abc\nCookie: session=private; theme=dark\nSet-Cookie: id=1");
+        assertFalse(safe.contains("dXNlcjpwYXNz"), safe);
+        assertFalse(safe.contains("abc"), safe);
+        assertFalse(safe.contains("private"), safe);
+        assertFalse(safe.contains("id=1"), safe);
+        assertTrue(safe.contains("Authorization: Basic ********"), safe);
+        assertTrue(safe.contains("Cookie: ********"), safe);
+    }
+
+    @Test
+    @DisplayName("megabytes converts configuration values and the lenient parsers fall back")
+    void unitsAndParsers() {
+        assertEquals(8L << 20, DataTool.megabytes(8));
+        assertEquals(0L, DataTool.megabytes(0));
+        assertEquals(7, DataTool.parseInt(" 7 ", -1));
+        assertEquals(-1, DataTool.parseInt("seven", -1));
+        assertEquals(-1, DataTool.parseInt(null, -1));
+        assertEquals(1_700_000_000L, DataTool.parseLong("1700000000", 0L));
+        assertEquals(0L, DataTool.parseLong("", 0L));
+    }
+
+    @Test
+    @DisplayName("redact masks bare tokens, session arguments, Authorization values and secret pairs")
+    void redactSecrets() {
+        final String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXZhbHVl";
+        final String safe = DataTool.redact("token " + jwt + " --accessToken abc123 --session token:deadbeef:0123-4567 "
+                + "Authorization: Bearer secret-bearer apiKey=plain-key \"password\":\"hunter2\" plain=visible");
+        assertFalse(safe.contains(jwt), safe);
+        assertFalse(safe.contains("abc123"), safe);
+        assertFalse(safe.contains("deadbeef"), safe);
+        assertFalse(safe.contains("secret-bearer"), safe);
+        assertFalse(safe.contains("plain-key"), safe);
+        assertFalse(safe.contains("hunter2"), safe);
+        assertTrue(safe.contains("plain=visible"), safe);
+        assertTrue(safe.contains("Authorization: Bearer ********"), safe);
+        assertFalse(DataTool.redact("accessToken=" + jwt + " loaded").contains(jwt), "a token behind a key is masked too");
+        assertFalse(DataTool.redact("\"api_key\":\"AIzaSyExampleKey\"").contains("AIzaSyExampleKey"));
+        assertFalse(DataTool.redact("client_secret = mySuperSecret").contains("mySuperSecret"));
+        assertFalse(DataTool.redact("authorization=Zm9vYmFyQmF6").contains("Zm9vYmFyQmF6"));
+        final String clean = "This is a normal log line with no secrets at timestamp 12:34:56.";
+        assertEquals(clean, DataTool.redact(clean), "ordinary text passes untouched");
+        assertEquals("", DataTool.redact(""));
+        assertNull(DataTool.redact(null));
     }
 
     @Test
@@ -60,15 +114,6 @@ public class DataToolTest {
         assertNull(DataTool.expiry(URI.create("https://cdn.test/x?expires=3600")), "a relative lifetime is not an epoch");
         assertNull(DataTool.expiry(URI.create("https://cdn.test/x")));
         assertNull(DataTool.expiry(null));
-    }
-
-    @Test
-    @DisplayName("arrayMapper pairs keys with values and rejects odd counts")
-    void arrayMapper() {
-        final Map<String, String> m = DataTool.arrayMapper(new String[]{"k1", "v1", "k2", "v2"});
-        assertEquals("v1", m.get("k1"));
-        assertEquals("v2", m.get("k2"));
-        assertThrows(IllegalArgumentException.class, () -> DataTool.arrayMapper(new String[]{"lonely"}));
     }
 
     @Test

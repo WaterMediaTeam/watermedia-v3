@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.util.MathUtil;
 
 import java.util.Arrays;
 import java.util.List;
@@ -311,7 +312,7 @@ final class SvgRasterizer {
         final int dst = this.canvas[idx];
         final int da = (dst >>> 24) & 0xFF;
         if (da == 0) {
-            this.canvas[idx] = (clamp8(Math.round(aeff * 255f)) << 24) | (sr << 16) | (sg << 8) | sb;
+            this.canvas[idx] = (MathUtil.clip255(Math.round(aeff * 255f)) << 24) | (sr << 16) | (sg << 8) | sb;
             return;
         }
         final int dr = (dst >>> 16) & 0xFF, dg = (dst >>> 8) & 0xFF, db = dst & 0xFF;
@@ -322,11 +323,7 @@ final class SvgRasterizer {
         final int or = Math.round((sr * aeff + dr * inv) / outA);
         final int og = Math.round((sg * aeff + dg * inv) / outA);
         final int ob = Math.round((sb * aeff + db * inv) / outA);
-        this.canvas[idx] = (clamp8(Math.round(outA * 255f)) << 24) | (clamp8(or) << 16) | (clamp8(og) << 8) | clamp8(ob);
-    }
-
-    private static int clamp8(final int v) {
-        return v < 0 ? 0 : Math.min(255, v);
+        this.canvas[idx] = (MathUtil.clip255(Math.round(outA * 255f)) << 24) | (MathUtil.clip255(or) << 16) | (MathUtil.clip255(og) << 8) | MathUtil.clip255(ob);
     }
 
     private void growEdges() {

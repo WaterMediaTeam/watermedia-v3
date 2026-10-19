@@ -1,15 +1,13 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
+import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
-import org.watermedia.tools.IOTool;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -59,10 +57,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // NEVER MOVE A PLAYBACK POSITION. ANCHORED AT CLASS LOAD SO VALUES START NEAR ZERO AND GROW
     private static final long EPOCH_NS = System.nanoTime();
 
-    // A PLAYER WHOSE TICK KEEPS FAILING WOULD OTHERWISE LOG AN ERROR EVERY 50 MS
-    private static final long TICK_REPORT_NS = 10_000_000_000L;
-    private static final LogTool.Throttle TICK_REPORTS = new LogTool.Throttle(TICK_REPORT_NS);
-
     static {
         TICKER.scheduleAtFixedRate(MediaPlayer::tickAll, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
     }
@@ -76,9 +70,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             try {
                 if (player.armed) player.tick();
             } catch (final Throwable t) {
+                if (player.tickWarned) continue;
+                player.tickWarned = true;
                 // SERVER PLAYERS AND FOLLOWER CLOCKS CARRY NO MRL
                 final Object subject = player.mrl != null ? player.mrl.uri() : player.getClass().getSimpleName();
-                LogTool.throttled(LOGGER, Level.ERROR, IT, TICK_REPORTS, "Sync tick failed for {}", subject, t);
+                LOGGER.error(IT, "Sync tick failed for {}", subject, t);
             }
         }
     }
@@ -89,13 +85,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private static final long SKIP_STEP_MS = 5_000L;             // forward()/rewind() DISTANCE FOR VIDEO AND MUSIC
 
     // BASIC PROPERTIES
-    protected final MRL mrl;
-    protected final int sourceIndex;
-    protected final MRL.Source source;
-    protected final GFXEngine gfx;
-    protected final SFXEngine sfx;
+    final MRL mrl;
+    final int sourceIndex;
+    final MRL.Source source;
+    final GFXEngine gfx;
+    final SFXEngine sfx;
     // WRITTEN BY THE CALLER AND BY THE PIPELINE THREADS WHEN THEY RESOLVE THE REAL RENDITION
-    protected volatile MediaQuality quality = WaterMediaConfig.media.defaultQuality;
+    volatile MediaQuality quality = WaterMediaConfig.media.defaultQuality;
 
     // AUDIO PROPERTIES
     private volatile boolean repeat;
@@ -120,11 +116,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private volatile long watchNanos; // NON-ZERO WHILE THE Watch HELLO AWAITS ITS Config ECHO
     private volatile Sync target;     // LAST SNAPSHOT HEARD FROM THE SESSION, NULL UNTIL THE FIRST ONE
     private volatile long targetNanos;// WHEN IT ARRIVED, SO IT CAN BE AGED INTO A CURRENT POSITION
+    private volatile boolean sendWarned; // A FAILING BRIDGE IS LOGGED ONCE PER PLAYER
 
     // FOLLOWER TUNABLE — HOW FAR PLAYBACK MAY DRIFT BEFORE IT IS PULLED BACK
     private volatile long toleranceMs = 1_000;
 
     // FOLLOWER CORRECTION STATE — TOUCHED ONLY FROM THE SINGLE TICKER THREAD
+    private boolean tickWarned; // A FAILING TICK IS LOGGED ONCE PER PLAYER
     private boolean startIssued;
     private long lastSeekNanos;
     private Status lastReport;
@@ -142,20 +140,17 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // FAILURE BEHIND THE CURRENT ERROR STATE — SET BY SUBCLASSES, CLEARED ON EVERY LOCAL start()
     private volatile Throwable exception;
 
-    // VIDEO UPLOAD SCALING — WRITTEN BY THE CALLER (OR A SUBCLASS), READ BY THE PLAYBACK
-    // THREADS. EACH SUBCLASS RESOLVES ITS UPLOAD SIZE FROM THESE VIA MathUtil.scaled(native,
-    // scale, lod.percent()): THE SCALE IS THE PER-AXIS CEILING (NO_SIZE = NO CAP, NEVER
-    // UPSCALES) AND lod SHRINKS IT FURTHER BY A PERCENTAGE. PROTECTED SO THE EXTENDER OWNS THE
-    // VALUES AND MediaPlayer ONLY CENTRALIZES THE SETTER/GETTER PLUMBING.
-    protected volatile int scaleWidth = NO_SIZE;
-    protected volatile int scaleHeight = NO_SIZE;
-    protected volatile LodLevel lod = LodLevel.MAX;
+    // VIDEO UPLOAD SCALING, WRITTEN BY THE CALLER AND READ BY THE PLAYBACK THREADS THROUGH scaled(native, scale, lod.percent()):
+    // THE SCALE CAPS EACH AXIS (NO_SIZE = NO CAP, NEVER UPSCALES) AND lod SHRINKS IT FURTHER BY A PERCENTAGE
+    volatile int scaleWidth = NO_SIZE;
+    volatile int scaleHeight = NO_SIZE;
+    volatile LodLevel lod = LodLevel.MAX;
 
     // NATIVE SOURCE FRAME SIZE BEFORE ANY SCALING — UPDATED BY THE SUBCLASS WHEN IT LEARNS
     // THE DECODED DIMENSIONS, READ BY CALLERS THAT NEED THE UNCAPPED RESOLUTION (e.g. A UI
     // CLAMPING A CUSTOM maxSize TO THE SOURCE).
-    protected volatile int sourceWidth = NO_SIZE;
-    protected volatile int sourceHeight = NO_SIZE;
+    volatile int sourceWidth = NO_SIZE;
+    volatile int sourceHeight = NO_SIZE;
 
     // A NON-NULL bridge MAKES THIS PLAYER A FOLLOWER OF A SERVER-SIDE ServerMediaPlayer AUTHORITY (SEE THE CLASS DOCS).
     // MEDIA PLAYERS DECODE AND RENDER, SO THEY ARE CLIENT-ONLY; THE HEADLESS CLOCK BELOW IS THE SERVER-SIDE PLAYER
@@ -184,13 +179,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.watcherId = bridge != null ? ThreadLocalRandom.current().nextLong() : 0L;
     }
 
-    /**
-     * Headless constructor for players that don't require audio or video output.
-     * Used by {@link ServerMediaPlayer} which only tracks time progression.
-     * @param bridge byte carrier, or {@code null} when unbridged
-     * @param role what this player is within the session
-     */
-    protected MediaPlayer(final Bridge bridge, final Role role) {
+    // HEADLESS CONSTRUCTOR FOR ServerMediaPlayer, WHICH ONLY TRACKS TIME PROGRESSION; bridge IS NULL WHEN UNBRIDGED
+    MediaPlayer(final Bridge bridge, final Role role) {
         if (role != Role.SOLO && bridge == null) throw new IllegalArgumentException(role + " requires a bridge");
         this.mrl = null;
         this.sourceIndex = -1;
@@ -211,7 +201,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // AND SENDS THE Watch HELLO. MUST BE THE LAST STATEMENT OF EVERY CONCRETE CONSTRUCTOR —
     // NEVER CALLED FROM THIS BASE CLASS, WHERE SUBCLASS FIELDS WOULD STILL BE UNINITIALIZED
     // WHEN THE TICKER FIRES.
-    protected final void arm() {
+    final void arm() {
         synchronized (this.bridgeLock) {
             if (this.armed) return;
             // A SERVER PLAYER NEEDS NO SESSION; A MEDIA PLAYER NEEDS THE LOADED MEDIA MODULE
@@ -237,7 +227,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // REGISTERS/DEREGISTERS A PLAYER ON THE SHARED TICKER. BRIDGED PLAYERS IGNORE DEREGISTRATION —
     // THEY TICK UNTIL release() — SO CLOCK STOP/START CYCLES NEVER SILENCE THE BRIDGE.
-    protected void ticking(final boolean on) {
+    void ticking(final boolean on) {
         synchronized (this.bridgeLock) {
             if (on && this.armed) TICKING.add(this);
             else if (this.role == Role.SOLO) TICKING.remove(this);
@@ -246,7 +236,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // SHARED-TICKER CALLBACK. THE BASE RUNS THE FOLLOWER ENGINE; ServerMediaPlayer LAYERS THE
     // AUTHORITY CLOCK AND BROADCAST ON TOP.
-    protected void tick() {
+    void tick() {
         if (!this.armed || this.role != Role.FOLLOWER) return;
         this.applying = true;
         try {
@@ -321,12 +311,12 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // AUTHORITY-SIDE PACKET HANDLING — OVERRIDDEN BY ServerMediaPlayer; EVERY OTHER PLAYER
     // HAS NO FOLLOWERS TO SERVE AND JUST DROPS IT.
-    protected void upstream(final Packet packet) {
+    void upstream(final Packet packet) {
         LOGGER.debug(IT, "Ignored packet on a non-authority player: {}", packet);
     }
 
     // SENDS A PACKET THROUGH THE DEV'S CARRIER. A BROKEN CARRIER NEVER TEARS DOWN PLAYBACK.
-    protected final void send(final Packet packet) {
+    final void send(final Packet packet) {
         final Bridge bridge = this.bridge;
         if (bridge == null) return;
         final boolean unwatch = packet instanceof Unwatch;
@@ -348,7 +338,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         try {
             bridge.send(packet.toBytes());
         } catch (final Throwable t) {
-            LOGGER.error(IT, "Bridge send failed", t);
+            if (!this.sendWarned) LOGGER.error(IT, "Bridge send failed", t);
+            this.sendWarned = true;
         } finally {
             if (!unwatch) {
                 final boolean finish;
@@ -578,7 +569,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // RESOLVES A STILL-UNKNOWN QUALITY TO THE REAL ONE ONCE THE DECODED DIMENSIONS ARE KNOWN,
     // RELOCATING THE URI INSIDE THE MRL SO LATER LOOKUPS FIND IT UNDER ITS TRUE QUALITY.
-    protected final void resolveQuality(final int width, final int height) {
+    final void resolveQuality(final int width, final int height) {
         if (this.quality != MediaQuality.UNKNOWN) return;
         final MediaQuality real = MediaQuality.of(width, height);
         this.mrl.moveQuality(this.sourceIndex, this.quality, real);
@@ -994,13 +985,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // RECORDS THE FAILURE BEHIND AN ERROR TRANSITION. FIRST FAILURE OF A RUN WINS — LATER ONES
     // ARE USUALLY CASCADE NOISE OF THE ROOT CAUSE. start() CLEARS IT FOR THE NEXT RUN.
-    protected final void exception(final Throwable t) {
+    final void exception(final Throwable t) {
         if (this.exception == null) this.exception = t;
     }
 
     // QUEUES A REAL TRANSITION AND, UNLESS ANOTHER THREAD IS ALREADY DRAINING, DELIVERS THE QUEUE IN ORDER. A TERMINAL
     // TRANSITION CONSUMES THE LISTENERS BEFORE FIRING, SO ONE ADDED FROM ITS CALLBACK SURVIVES; FAILURES ARE SWALLOWED
-    protected void invokeStatus(final Status prev, final Status next) {
+    void invokeStatus(final Status prev, final Status next) {
         if (prev == next) return;
         synchronized (this.statusEvents) {
             this.statusEvents.add(new Transition(prev, next));
@@ -1030,7 +1021,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     // LEAVES THE BRIDGE BEFORE A RELEASE PUBLISHES STOPPED, SO A CONTROL A LISTENER ISSUES NEVER REACHES THE AUTHORITY
-    protected final void disarm() {
+    final void disarm() {
         synchronized (this.bridgeLock) {
             this.armed = false;
             TICKING.remove(this);
@@ -1176,7 +1167,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             try {
                 step.run();
             } catch (final RuntimeException | Error problem) {
-                failure = IOTool.mergeFailure(failure, problem);
+                failure = WaterMediaModule.mergeFailure(failure, problem);
             }
         }
         if (failure instanceof final Error error) throw error;
@@ -1184,7 +1175,17 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     }
 
     // MONOTONIC MILLISECONDS SINCE CLASS LOAD (SEE EPOCH_NS)
-    protected static long nowMs() { return (System.nanoTime() - EPOCH_NS) / 1_000_000L; }
+    static long nowMs() { return (System.nanoTime() - EPOCH_NS) / 1_000_000L; }
+
+    // LOD SIZING: CAPS nativeSize AT max (0 = NO CAP, NEVER UPSCALING), THEN KEEPS percent OF IT. AN UNREDUCED SIZE STAYS
+    // EXACT (ODD SOURCES INCLUDED); A REDUCED ONE IS FORCED EVEN AND AT LEAST 2 SO CHROMA-SUBSAMPLED PLANES STAY ALIGNED
+    static int scaled(final int nativeSize, final int max, final int percent) {
+        if (nativeSize <= 0) return nativeSize;
+        int size = max > 0 ? Math.min(nativeSize, max) : nativeSize;
+        if (percent < 100) size = (int) Math.round(size * (percent / 100.0));
+        if (size >= nativeSize) return nativeSize;
+        return Math.max(2, size & ~1);
+    }
 
     /**
      * What a player is within a synchronized session. Not a client/server split: the axis is who

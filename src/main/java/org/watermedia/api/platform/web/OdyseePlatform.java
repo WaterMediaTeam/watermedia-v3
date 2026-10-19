@@ -2,7 +2,6 @@ package org.watermedia.api.platform.web;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.platform.*;
@@ -54,21 +53,19 @@ public final class OdyseePlatform implements Platform {
                 if (!matcher.find())
                     throw new PlatformException(NAME, "JSON-LD block not found in embed page (geo-blocked, removed, or markup changed): " + uri);
 
-                final JsonElement ld = JsonParser.parseString(matcher.group(1));
-                if (!ld.isJsonObject()) throw new PlatformException(NAME, "JSON-LD block is not an object (not a playable video): " + uri);
-                final JsonObject video = ld.getAsJsonObject();
+                final JsonObject video = obj(JSONTool.parse(matcher.group(1), JsonElement.class));
+                if (video == null) throw new PlatformException(NAME, "JSON-LD block is not an object (not a playable video): " + uri);
                 final String ldType = str(video, "@type");
                 if (!"VideoObject".equals(ldType))
                     throw new PlatformException(NAME, "JSON-LD is a '" + ldType + "', not a VideoObject (not a playable video): " + uri);
 
-                final String contentUrl = str(video, "contentUrl");
-                if (contentUrl == null)
-                    throw new PlatformException(NAME, "VideoObject is missing 'contentUrl' (stream not published yet?): " + uri);
-                final URI videoUri = URI.create(contentUrl);
+                final URI videoUri = DataTool.uri(str(video, "contentUrl"));
+                if (videoUri == null)
+                    throw new PlatformException(NAME, "VideoObject has no usable 'contentUrl' (stream not published yet?): " + uri);
 
                 final String title = str(video, "name");
                 final String description = str(video, "description");
-                final URI thumbnail = JSONTool.uri(video, "thumbnailUrl");
+                final URI thumbnail = DataTool.uri(str(video, "thumbnailUrl"));
                 if (title == null) LOGGER.warn(IT, "Odysee VideoObject has no 'name' (title) for {}", uri);
 
                 Instant publishedAt = null;
@@ -85,7 +82,7 @@ public final class OdyseePlatform implements Platform {
                     catch (final DateTimeParseException e) { LOGGER.warn(IT, "Odysee unparseable ISO-8601 duration '{}' for {}", durationStr, uri, e); }
                 }
 
-                final String author = video.has("author") && video.get("author").isJsonObject() ? str(video.getAsJsonObject("author"), "name") : null;
+                final String author = str(obj(video, "author"), "name");
 
                 LOGGER.debug(IT, "Odysee resolved contentUrl {} (title='{}', durationMs={}) for {}", videoUri, title, durationMs, uri);
                 final Metadata metadata = new Metadata(title, description, publishedAt, durationMs, author);

@@ -3,7 +3,6 @@ package org.watermedia.tools;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.watermedia.test.support.LocalHttp;
 
 import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
@@ -17,12 +16,12 @@ import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -100,22 +99,6 @@ public class IOToolTest {
     }
 
     @Test
-    void verifiedTransferRejectsHttpBeforeSendingRequests(@TempDir final Path directory) throws IOException {
-        final AtomicInteger hits = new AtomicInteger();
-        try (final LocalHttp server = LocalHttp.start("/binary", exchange -> {
-            hits.incrementAndGet();
-            LocalHttp.respond(exchange, "application/octet-stream", new byte[] { 1 }, 0);
-        })) {
-            final URI uri = server.uri("/binary");
-            assertThrows(IOException.class, () -> IOTool.httpsText(uri, 128));
-            final Path output = directory.resolve("binary");
-            assertThrows(IOException.class, () -> IOTool.downloadVerified(uri, output, "0".repeat(64), 128));
-            assertFalse(Files.exists(output));
-            assertEquals(0, hits.get());
-        }
-    }
-
-    @Test
     @DisplayName("readLimited returns the body when under the cap")
     void readLimitedUnderCap() throws IOException {
         final byte[] data = "hello".getBytes(StandardCharsets.UTF_8);
@@ -188,6 +171,13 @@ public class IOToolTest {
         assertTrue(closed[0]);
         IOTool.closeQuietly(() -> { throw new IOException("ignored"); });
         IOTool.closeQuietly(null);
+    }
+
+    @Test
+    @DisplayName("jarVersion reads the manifest of the jar that loaded the anchor class")
+    void jarVersionPerAnchor() {
+        assertEquals("unknown", IOTool.jarVersion(IOToolTest.class), "a classes-dir run ships no manifest");
+        assertNotNull(IOTool.jarVersion(Test.class), "a class from a jar reports that jar's version");
     }
 
     @Test

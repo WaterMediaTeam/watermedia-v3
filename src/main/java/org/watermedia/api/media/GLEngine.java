@@ -1,12 +1,11 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.opengl.*;
 import org.lwjgl.system.MemoryUtil;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.PixelFormat;
-import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -213,15 +212,12 @@ public final class GLEngine extends GFXEngine {
     // TEXTURE UNITS SCANNED BY THE ORPHAN SWEEP — COVERS MINECRAFT'S 12-UNIT BINDING CACHE
     // WITH MARGIN; HOSTS BINDING BEYOND THIS USE DSA OR UNCACHED PATHS
     private static final int ORPHAN_SCAN_UNITS = 32;
-    private static final long UPLOAD_REPORT_NS = 10_000_000_000L;
 
     // THREAD CONTEXT (OPENGL-SPECIFIC)
     private final Thread renderThread;
     private final Executor renderThreadEx;
     private final Hub hub;
-    private final LogTool.Throttle uploadReports = new LogTool.Throttle(UPLOAD_REPORT_NS);
-    private final LogTool.Throttle failureReports = new LogTool.Throttle(UPLOAD_REPORT_NS); // ERRORS KEEP THEIR OWN WINDOW
-    private boolean hubQueued;            // GUARDED BY hub MONITOR
+    private boolean hubQueued;           // GUARDED BY hub MONITOR
 
     // MANAGED TEXTURE (WHAT THE DEV BINDS)
     private int managedTexture = 0;
@@ -273,6 +269,11 @@ public final class GLEngine extends GFXEngine {
     private int activePlanes = 0;
     private final long[] planeBytes = new long[MAX_PLANES]; // CURRENTLY ALLOCATED BYTES PER PLANE
     private boolean firstFrame = true;
+
+    // ANOMALY LATCHES: EACH REPEATABLE UPLOAD ANOMALY IS LOGGED ONCE PER ENGINE
+    private volatile boolean failWarned; // PRODUCER AND RENDER THREADS
+    private boolean shortWarned;         // RENDER THREAD ONLY
+    private boolean glErrorWarned;       // RENDER THREAD ONLY
 
     // BIT DEPTH DERIVED STATE (SET IN format())
     private int bytesPerSample = 1;
@@ -472,7 +473,7 @@ public final class GLEngine extends GFXEngine {
         final int ready = this.frameTexReady;
         if (ready <= 0) return;
         // CLAMP TO THE UPLOADED PREFIX WHILE THE TAIL OF THE ANIMATION IS STILL UPLOADING
-        this.activeFrameTexture = Math.min(Math.max(index, 0), ready - 1);
+        this.activeFrameTexture = MathUtil.clamp(index, 0, ready - 1);
     }
 
     // RESETS THE PIPELINE FOR A NEW FORMAT (PLANE TEXTURES, PBOs, RING; SHADERS CACHED PER KIND, MANAGED TEXTURE REALLOCATED
@@ -600,7 +601,8 @@ public final class GLEngine extends GFXEngine {
             this.hub.schedule(this);
         } catch (final RuntimeException e) {
             // A GL FAILURE OR A REJECTING EXECUTOR DROPS THE FRAME; UPLOADS NEVER THROW AT THE DECODER
-            LogTool.throttled(LOGGER, Level.ERROR, IT, this.failureReports, "Upload failed; frame dropped", e);
+            if (!this.failWarned) LOGGER.error(IT, "Upload failed; frame dropped", e);
+            this.failWarned = true;
         }
     }
 
@@ -685,7 +687,8 @@ public final class GLEngine extends GFXEngine {
             final Plane p = this.planes[i];
             final long needed = (long) p.effStride(s.strides[i]) * p.h;
             if (s.sizes[i] < needed) {
-                LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Plane {} buffer too small: {} < {}", i, s.sizes[i], needed);
+                if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, s.sizes[i], needed);
+                this.shortWarned = true;
                 return;
             }
             respec |= this.planeBytes[i] != needed;
@@ -730,7 +733,7 @@ public final class GLEngine extends GFXEngine {
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + readIdx]);
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, 0L);
-                if (GL_CHECKS) this.checkGLErrorHot("plane PBO texSub");
+                if (GL_CHECKS) this.checkGLError("plane PBO texSub");
             }
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
@@ -754,7 +757,8 @@ public final class GLEngine extends GFXEngine {
             final Plane p = this.planes[i];
             final long needed = (long) p.effStride(s.strides[i]) * p.h;
             if (s.sizes[i] < needed) {
-                LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Ring plane {} too small: {} < {}", i, s.sizes[i], needed);
+                if (!this.shortWarned) LOGGER.warn(IT, "Ring plane {} too small: {} < {}", i, s.sizes[i], needed);
+                this.shortWarned = true;
                 break;
             }
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
@@ -765,7 +769,7 @@ public final class GLEngine extends GFXEngine {
                 this.planeBytes[i] = needed;
             } else {
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, offset);
-                if (GL_CHECKS) this.checkGLErrorHot("ring plane texSub");
+                if (GL_CHECKS) this.checkGLError("ring plane texSub");
             }
             offset += s.sizes[i];
         }
@@ -959,7 +963,7 @@ public final class GLEngine extends GFXEngine {
         GL30.glBindVertexArray(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
         GL30.glBindVertexArray(0);
-        if (GL_CHECKS) this.checkGLErrorHot("FBO convert quad");
+        if (GL_CHECKS) this.checkGLError("FBO convert quad");
     }
 
     // ==========================================================================
@@ -1080,7 +1084,8 @@ public final class GLEngine extends GFXEngine {
         final int effectiveStride = (stride == 0) ? this.width * bytesPerTexel : stride;
         final long dataSize = (long) effectiveStride * this.height;
         if (buffer.remaining() < dataSize) {
-            LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "Preloaded frame buffer too small: {} < {}", buffer.remaining(), dataSize);
+            if (!this.shortWarned) LOGGER.warn(IT, "Preloaded frame buffer too small: {} < {}", buffer.remaining(), dataSize);
+            this.shortWarned = true;
             return false;
         }
 
@@ -1095,7 +1100,7 @@ public final class GLEngine extends GFXEngine {
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
         GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
-        this.checkGLErrorHot("preloaded frame glTexImage2D");
+        this.checkGLError("preloaded frame glTexImage2D");
         return true;
     }
 
@@ -1231,17 +1236,11 @@ public final class GLEngine extends GFXEngine {
         this.pboReady = false;
     }
 
-    // A BROKEN PATH REPEATS ITS GL ERROR EVERY FRAME (PRELOADED FRAMES, GL_CHECKS), SO REPORTS AGGREGATE PER WINDOW
-    // ONE-TIME SETUP CHECKS LOG EVERY ERROR; THE PER-FRAME ONES SHARE THE UPLOAD WINDOW
     private void checkGLError(final String op) {
         final int err = GL11.glGetError();
-        if (err != GL11.GL_NO_ERROR) LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
-    }
-
-    private void checkGLErrorHot(final String op) {
-        final int err = GL11.glGetError();
-        if (err != GL11.GL_NO_ERROR)
-            LogTool.throttled(LOGGER, Level.WARN, IT, this.uploadReports, "GL error after '{}': {}", op, glErrorName(err));
+        if (err == GL11.GL_NO_ERROR || this.glErrorWarned) return;
+        this.glErrorWarned = true;
+        LOGGER.warn(IT, "GL error after '{}': {}", op, glErrorName(err));
     }
 
     private static String glErrorName(final int err) {
@@ -1350,7 +1349,8 @@ public final class GLEngine extends GFXEngine {
                         e.drainOne();
                     } catch (final RuntimeException ex) {
                         // ISOLATE FAILURES — ONE BROKEN ENGINE MUST NOT STARVE THE REST OF THE WAVE
-                        LogTool.throttled(LOGGER, Level.ERROR, IT, e.failureReports, "Engine drain failed", ex);
+                        if (!e.failWarned) LOGGER.error(IT, "Engine drain failed", ex);
+                        e.failWarned = true;
                     }
                 }
             } finally {

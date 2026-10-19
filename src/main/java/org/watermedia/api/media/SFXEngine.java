@@ -75,15 +75,15 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     }
 
     // CONFIGURED LAYOUT, WRITTEN BY THE PRODUCER THREAD AND READ FROM ANY HOST THREAD
-    protected volatile int source;
-    protected volatile SampleType sampleType;
-    protected volatile int channels;
-    protected volatile int sampleRate;
-    protected volatile float speed = 1.0f;
-    protected volatile boolean released;
+    volatile int source;
+    volatile SampleType sampleType;
+    volatile int channels;
+    volatile int sampleRate;
+    volatile float speed = 1.0f;
+    volatile boolean released;
 
     // SINGLE ENFORCEMENT POINT: EVERY AUDIO ENGINE CONSTRUCTION PASSES THROUGH HERE.
-    protected SFXEngine() {
+    SFXEngine() {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
     }
 

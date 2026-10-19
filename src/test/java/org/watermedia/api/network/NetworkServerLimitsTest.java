@@ -45,9 +45,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.watermedia.test.support.MediaBootstrap.runProbe;
 
 /**
- * Verifies the limits of {@link NetworkServer}: configuration refusals, token snapshots, aggregated
- * rejection warnings, storage accounting, incomplete-upload cleanup, the idle timeout and ownership
- * across an incomplete shutdown.
+ * Verifies the limits of {@link NetworkServer}: configuration refusals, token snapshots, the
+ * once-per-server rejection warning, storage accounting, incomplete-upload cleanup, the idle timeout
+ * and ownership across an incomplete shutdown.
  */
 @DisplayName("NetworkServer limits")
 public class NetworkServerLimitsTest {
@@ -145,7 +145,8 @@ public class NetworkServerLimitsTest {
     }
 
     @Test
-    void aggregatesUnauthorizedWarningsAndReportsPendingRejectionsOnStop() throws Exception {
+    @DisplayName("Every unauthorized upload is refused, each server logs the first one and the secret never reaches the log")
+    void warnsOnceOnUnauthorizedUploads() throws Exception {
         try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
             for (int request = 0; request < 12; request++) {
                 final HttpURLConnection connection = this.upload("untrusted-secret", new byte[1]);
@@ -153,15 +154,17 @@ public class NetworkServerLimitsTest {
                 finally { connection.disconnect(); }
             }
             final var warnings = capture.events().stream()
-                    .filter(event -> event.getMessage().getFormattedMessage().contains("unauthorized uploads")).toList();
-            assertEquals(1, warnings.size());
+                    .filter(event -> event.getMessage().getFormattedMessage().contains("unauthorized upload")).toList();
+            assertEquals(1, warnings.size(), "a repeated refusal is logged once per server");
             assertEquals("NetworkServer", warnings.get(0).getMarker().getName());
-            assertTrue(warnings.get(0).getMessage().getFormattedMessage().contains("Rejected 1 unauthorized uploads"));
             NetworkServer.stop();
-            final var finalWarnings = capture.events().stream()
-                    .map(event -> event.getMessage().getFormattedMessage()).filter(text -> text.contains("unauthorized uploads")).toList();
-            assertEquals(2, finalWarnings.size());
-            assertTrue(finalWarnings.get(1).contains("Rejected 11 additional unauthorized uploads"));
+            NetworkServer.start(0, this.directory);
+            final HttpURLConnection connection = this.upload("untrusted-secret", new byte[1]);
+            try { assertEquals(401, connection.getResponseCode()); }
+            finally { connection.disconnect(); }
+            assertEquals(2, capture.events().stream()
+                    .filter(event -> event.getMessage().getFormattedMessage().contains("unauthorized upload")).count(),
+                    "a restarted server logs its own first refusal");
             assertTrue(capture.events().stream().noneMatch(event -> event.getMessage().getFormattedMessage().contains("untrusted-secret")));
         }
     }

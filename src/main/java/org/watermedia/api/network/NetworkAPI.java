@@ -4,6 +4,8 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.platform.internal.WaterPlatform;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
@@ -41,28 +43,28 @@ public final class NetworkAPI {
      * @throws IllegalArgumentException when an entry is not an existing regular file
      * @throws IllegalStateException before WaterMedia loads
      */
-    public static NetworkServer.UploadStatus[] upload(final File... files) {
+    public static UploadStatus[] upload(final File... files) {
         if (files == null) throw new IllegalArgumentException("Files cannot be null");
         for (final File file: files) if (file == null || !file.isFile()) throw new IllegalArgumentException("Not a file: " + file);
-        final NetworkServer.UploadStatus[] statuses = new NetworkServer.UploadStatus[files.length];
+        final UploadStatus[] statuses = new UploadStatus[files.length];
         for (int i = 0; i < files.length; i++) statuses[i] = upload(files[i]);
         return statuses;
     }
 
     /**
      * Uploads a file to the remote WaterMedia server in a background thread.
-     * The returned {@link NetworkServer.UploadStatus} is updated as the upload progresses; an
+     * The returned {@link UploadStatus} is updated as the upload progresses; an
      * unreachable or misconfigured remote server fails the status instead of throwing.
      * @param file the file to upload
      * @return status tracker for the upload (poll for progress)
      * @throws IllegalArgumentException when {@code file} is not an existing regular file
      * @throws IllegalStateException before WaterMedia loads
      */
-    public static NetworkServer.UploadStatus upload(final File file) {
+    public static UploadStatus upload(final File file) {
         if (file == null || !file.isFile()) throw new IllegalArgumentException("Not a file: " + file);
         final ExecutorService workers = uploads;
         if (!WaterMedia.loaded() || workers == null) throw new IllegalStateException("The network module is not loaded");
-        final NetworkServer.UploadStatus status = new NetworkServer.UploadStatus(file.length());
+        final UploadStatus status = new UploadStatus(file.length());
         workers.execute(() -> {
             try {
                 upload(file, status);
@@ -87,7 +89,9 @@ public final class NetworkAPI {
         return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
-    private static void upload(final File file, final NetworkServer.UploadStatus status) {
+    private static void upload(final File file, final UploadStatus status) {
+        status.worker = Thread.currentThread();
+        if (status.failed()) return; // CANCELLED BEFORE IT STARTED: NOTHING IS SENT, NOT EVEN THE TOKEN
         final String remote;
         try {
             remote = remoteUrl();
@@ -120,6 +124,7 @@ public final class NetworkAPI {
                 int read;
 
                 while ((read = fis.read(buffer)) != -1) {
+                    if (status.cancelled) throw new IOException("Upload cancelled");
                     os.write(buffer, 0, read);
                     uploaded += read;
                     status.uploadedBytes(uploaded);
@@ -135,6 +140,7 @@ public final class NetworkAPI {
                 }
             }
 
+            if (status.cancelled) throw new IOException("Upload cancelled");
             final int code = conn.getResponseCode();
             if (code == 200) {
                 final String id;
@@ -147,10 +153,15 @@ public final class NetworkAPI {
                 status.fail("Server returned HTTP " + code);
             }
         } catch (final ConnectException | UnknownHostException | SocketTimeoutException unreachable) {
+            if (status.cancelled) return;
             // A REMOTE SERVER THAT IS DOWN OR UNRESOLVABLE IS AN EXPECTED CONDITION, NOT A BUG: NO TRACE
             LOGGER.warn(IT, "Could not reach the remote file server to upload '{}': {}", file.getName(), unreachable.getMessage());
             status.fail(unreachable.toString());
         } catch (final Exception e) {
+            if (status.cancelled) {
+                Thread.interrupted(); // THE CANCEL INTERRUPT MUST NOT LEAK INTO THE NEXT UPLOAD ON THIS WORKER
+                return;
+            }
             // e.getMessage() IS OFTEN null (E.G. NPE); e.toString() KEEPS THE EXCEPTION TYPE FOR DIAGNOSIS
             LOGGER.error(IT, "Failed to upload '{}' to remote server", file.getName(), e);
             status.fail(e.toString());
@@ -158,6 +169,67 @@ public final class NetworkAPI {
             if (conn != null) {
                 conn.disconnect();
             }
+        }
+    }
+
+    /** Tracks a file upload to the remote WaterMedia server; every accessor is thread-safe and can be polled from any thread. */
+    public static final class UploadStatus {
+        private final long totalBytes;
+        private volatile long uploadedBytes;
+        private volatile long speed;
+        private volatile String id;
+        private volatile boolean complete;
+        private volatile boolean failed;
+        private volatile boolean cancelled;
+        private volatile String error;
+        volatile Thread worker;
+
+        UploadStatus(final long totalBytes) { this.totalBytes = totalBytes; }
+
+        /** Expected upload size in bytes. */
+        public long totalBytes() { return this.totalBytes; }
+        /** Bytes written to the connection so far, confirmed by the server only once {@link #completed()}. */
+        public long uploadedBytes() { return this.uploadedBytes; }
+        /** Current upload speed in bytes per second. */
+        public long speed() { return this.speed; }
+        /** Server-assigned ID, null until the upload completes. */
+        public String id() { return this.id; }
+        /** The {@code water://remote/<id>} address of the uploaded file, null until the upload completes. */
+        public URI uri() { return this.complete ? URI.create(PROTOCOL_WATER + "://" + WaterPlatform.HOST_REMOTE + "/" + this.id) : null; }
+        /** Whether the server accepted the upload and assigned its ID. */
+        public boolean completed() { return this.complete; }
+        /** Whether the upload ended without completing, cancellation included. */
+        public boolean failed() { return this.failed; }
+        /** Failure detail, null until the upload fails. */
+        public String error() { return this.error; }
+        /** Upload progress from 0.0 to 100.0. */
+        public double percentage() { return this.totalBytes > 0 ? (this.uploadedBytes * 100.0) / this.totalBytes : 0; }
+        /** Formatted speed such as "1.5 MB/s". */
+        public String displaySpeed() { return MathUtil.displayBytes(this.speed) + "/s"; }
+
+        /** Stops an upload still in flight: the worker aborts its transfer and the status ends failed as "Cancelled". */
+        public synchronized void cancel() {
+            if (this.complete || this.failed) return;
+            this.cancelled = true;
+            this.fail("Cancelled");
+            final Thread thread = this.worker;
+            if (thread != null) thread.interrupt();
+        }
+
+        synchronized void uploadedBytes(final long bytes) { if (!this.complete && !this.failed) this.uploadedBytes = bytes; }
+        synchronized void speed(final long speed) { if (!this.complete && !this.failed) this.speed = speed; }
+
+        synchronized void complete(final String id) {
+            if (this.complete || this.failed) return;
+            this.id = id;
+            this.uploadedBytes = this.totalBytes;
+            this.complete = true;
+        }
+
+        synchronized void fail(final String error) {
+            if (this.complete || this.failed) return;
+            this.error = error;
+            this.failed = true;
         }
     }
 

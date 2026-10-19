@@ -6,7 +6,6 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.network.NetworkAPI;
-import org.watermedia.api.platform.PlatformException;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.JSONTool;
 
@@ -15,6 +14,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -58,6 +60,25 @@ public final class NetRequest implements AutoCloseable {
     // A TRICKLING SERVER CAN KEEP EVERY READ UNDER THE SOCKET TIMEOUT, SO A TEXT BODY GETS THIS MANY READ TIMEOUTS IN TOTAL
     private static final int TEXT_DEADLINE_READ_TIMEOUTS = 4;
 
+    /** Splits the raw query into an unmodifiable map decoded once: a malformed pair stays raw, a repeated key keeps its last value, a bare key maps to "". */
+    public static Map<String, String> query(final URI uri) {
+        final String query = uri == null ? null : uri.getRawQuery();
+        if (query == null || query.isEmpty()) return Map.of();
+        final Map<String, String> result = new HashMap<>();
+        for (final String param: query.split("&")) {
+            if (param.isEmpty()) continue;
+            final int eq = param.indexOf('=');
+            final String key = eq < 0 ? param : param.substring(0, eq);
+            final String value = eq < 0 ? "" : param.substring(eq + 1);
+            try {
+                result.put(URLDecoder.decode(key, StandardCharsets.UTF_8), URLDecoder.decode(value, StandardCharsets.UTF_8));
+            } catch (final IllegalArgumentException malformed) {
+                result.put(key, value);
+            }
+        }
+        return Map.copyOf(result);
+    }
+
     /**
      * Content type for a file name: WaterMedia's own extension table first, then the JDK's, else
      * {@link #MIMETYPE_OCTET_STREAM}. A local lookup, so no global JDK state is ever replaced.
@@ -95,13 +116,17 @@ public final class NetRequest implements AutoCloseable {
     private final URI uri;
     private final URLConnection connection;
     private final int statusCode;
+    private final long maxBytes;
+    private final long deadlineNs;
     private final HttpHeaders responseHeaders;
     private boolean consumed;
 
-    private NetRequest(final URI uri, final URLConnection connection, final int statusCode) {
+    private NetRequest(final URI uri, final URLConnection connection, final int statusCode, final long maxBytes, final long deadlineNs) {
         this.uri = uri;
         this.connection = connection;
         this.statusCode = statusCode;
+        this.maxBytes = maxBytes;
+        this.deadlineNs = deadlineNs;
         this.responseHeaders = HttpHeaders.fromResponse(connection);
     }
 
@@ -113,54 +138,6 @@ public final class NetRequest implements AutoCloseable {
     /** Creates a request builder for URI text; invalid syntax throws {@link IllegalArgumentException}. */
     public static Builder create(final String uri) {
         return new Builder(URI.create(uri));
-    }
-
-    /**
-     * Fetches {@code uri} with a JSON GET request and binds the response body to {@code type}
-     * through the shared Gson tooling ({@link JSONTool}). This is the common REST resolver for
-     * platform handlers: one identical implementation instead of a private copy per handler.
-     * Every failure — non-200 status, empty/non-JSON body, malformed JSON, transport or parse
-     * error — surfaces as a {@link PlatformException} tagged with {@code platform}, keeping the
-     * root cause. Handlers needing extra headers, another method or a custom user agent should
-     * build their own request via {@link #create(URI)} instead.
-     *
-     * @param platform the handler the request belongs to, used to tag failures
-     * @param uri the API endpoint to request
-     * @param type the class the JSON body binds to
-     * @param <T> the bound type
-     * @return the bound response, never {@code null}
-     * @throws PlatformException when the request fails for any reason
-     */
-    public static <T> T fetchJson(final String platform, final URI uri, final Class<T> type) throws PlatformException {
-        try (final NetRequest req = create(uri).method("GET").accept(ACCEPT_JSON).send()) {
-            if (req.statusCode() != 200)
-                throw new PlatformException(platform, "API " + uri + " returned HTTP " + req.statusCode());
-            final T data = req.json(type);
-            if (data == null)
-                throw new PlatformException(platform, "API " + uri + " returned an empty or non-JSON body");
-            return data;
-        } catch (final PlatformException e) {
-            throw e; // ALREADY CARRIES THE PLATFORM CONTEXT
-        } catch (final Exception e) {
-            throw new PlatformException(platform, "Failed to fetch " + uri, e);
-        }
-    }
-
-    /**
-     * Convenience overload of {@link #fetchJson(String, URI, Class)} taking the endpoint as a string.
-     *
-     * @param platform the handler the request belongs to, used to tag failures
-     * @param uri the API endpoint to request
-     * @param type the class the JSON body binds to
-     * @param <T> the bound type
-     * @return the bound response, never {@code null}
-     * @throws PlatformException when the request fails for any reason
-     */
-    public static <T> T fetchJson(final String platform, final String uri, final Class<T> type) throws PlatformException {
-        final URI target;
-        try { target = URI.create(uri); }
-        catch (final IllegalArgumentException malformed) { throw new PlatformException(platform, "Malformed API URL " + uri, malformed); }
-        return fetchJson(platform, target, type);
     }
 
     /**
@@ -212,8 +189,8 @@ public final class NetRequest implements AutoCloseable {
 
     /**
      * Reads the entire response as a UTF-8 string, the error body of a failed status included.
-     * Throws when the body exceeds {@link WaterMediaConfig.Network#maxTextBytes} or takes longer
-     * than four read timeouts in total; a read timeout of zero sets no total deadline.
+     * Throws when the body exceeds the builder's {@code maxBytes} (else {@link WaterMediaConfig.Network#maxTextBytes})
+     * or outlives the builder's {@code deadline} (else four read timeouts; a read timeout of zero sets no deadline).
      *
      * @return the response body text
      * @throws IOException when the transfer fails or exceeds its size or time budget
@@ -221,8 +198,50 @@ public final class NetRequest implements AutoCloseable {
      */
     public String text() throws IOException {
         try (final InputStream in = this.inputStream()) {
-            final long deadlineMs = (long) TEXT_DEADLINE_READ_TIMEOUTS * this.connection.getReadTimeout();
-            return new String(IOTool.readLimited(in, WaterMediaConfig.network.maxTextBytes, this.contentLength(), deadlineMs), StandardCharsets.UTF_8);
+            final long limit = this.maxBytes > 0 ? this.maxBytes : WaterMediaConfig.network.maxTextBytes;
+            final long deadlineMs = this.deadlineNs > 0 ? Math.max(1L, (this.deadlineNs - System.nanoTime()) / 1_000_000L)
+                    : (long) TEXT_DEADLINE_READ_TIMEOUTS * this.connection.getReadTimeout();
+            return new String(IOTool.readLimited(in, limit, this.contentLength(), deadlineMs), StandardCharsets.UTF_8);
+        }
+    }
+
+    /**
+     * Streams a 200 body into a new file within the size and time budgets of the builder and verifies its SHA-256;
+     * the file is deleted again on any failure.
+     *
+     * @param destination the file to create; it must not exist
+     * @param expectedSha256 the publisher-provided lowercase or uppercase hex digest
+     * @throws IOException when the status is not 200, the budget is exceeded, the file exists or the digest differs
+     * @throws IllegalStateException when the body was already read
+     */
+    public void download(final Path destination, final String expectedSha256) throws IOException {
+        final String digest = IOTool.requireSha256(expectedSha256);
+        if (this.statusCode != HttpURLConnection.HTTP_OK) throw new IOException("Download returned HTTP " + this.statusCode + ": " + this.uri);
+        final long limit = this.maxBytes > 0 ? this.maxBytes : Long.MAX_VALUE;
+        final long expected = this.contentLength();
+        if (expected > limit) throw new IOException("Download exceeds its size limit: " + this.uri);
+        boolean created = false;
+        try (final InputStream in = this.inputStream()) {
+            try (final OutputStream out = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
+                created = true;
+                final byte[] buffer = new byte[IOTool.BUFFER_SIZE];
+                long total = 0;
+                int count;
+                while ((count = in.read(buffer)) != -1) {
+                    total += count;
+                    if (total > limit || (this.deadlineNs > 0 && System.nanoTime() > this.deadlineNs))
+                        throw new IOException("Download budget exceeded: " + this.uri);
+                    out.write(buffer, 0, count);
+                }
+                if (expected >= 0 && total != expected) throw new IOException("Truncated download: " + this.uri);
+            }
+            IOTool.verifySha256(destination, digest);
+        } catch (final IOException failure) {
+            if (created) {
+                try { Files.deleteIfExists(destination); }
+                catch (final IOException cleanup) { failure.addSuppressed(cleanup); }
+            }
+            throw failure;
         }
     }
 
@@ -275,6 +294,9 @@ public final class NetRequest implements AutoCloseable {
         private int connectTimeout = WaterMediaConfig.network.timeout;
         private int readTimeout = WaterMediaConfig.network.timeout;
         private int maxRedirects = WaterMediaConfig.network.maxRedirects;
+        private boolean httpsOnly;
+        private long maxBytes = -1L;
+        private long deadlineMs;
 
         Builder(final URI uri) {
             if (uri == null) throw new IllegalArgumentException("URI cannot be null");
@@ -320,6 +342,20 @@ public final class NetRequest implements AutoCloseable {
         public Builder readTimeout(final int ms) { this.readTimeout = ms; return this; }
         /** Sets how many redirects {@link #send()} may follow; zero or less rejects the first one. */
         public Builder maxRedirects(final int n) { this.maxRedirects = n; return this; }
+        /** Requires https without credentials on the request and on every redirect hop. */
+        public Builder httpsOnly() { this.httpsOnly = true; return this; }
+        /** Caps the body {@link NetRequest#text()}, {@link NetRequest#json(Class)} and {@link NetRequest#download(Path, String)} accept. */
+        public Builder maxBytes(final long bytes) {
+            if (bytes < 1) throw new IllegalArgumentException("The byte limit must be positive");
+            this.maxBytes = bytes;
+            return this;
+        }
+        /** Sets a total deadline in milliseconds covering the redirect chain and the body transfer. */
+        public Builder deadline(final long ms) {
+            if (ms < 1) throw new IllegalArgumentException("The deadline must be positive");
+            this.deadlineMs = ms;
+            return this;
+        }
 
         /**
          * Opens the connection, writes the body if any, and follows redirects manually,
@@ -334,8 +370,13 @@ public final class NetRequest implements AutoCloseable {
             byte[] body = this.body;
             final List<URI> trace = new ArrayList<>();
             trace.add(current);
+            final long deadline = this.deadlineMs > 0 ? System.nanoTime() + this.deadlineMs * 1_000_000L : 0L;
 
             while (true) {
+                // EVERY HOP IS CHECKED, SO A REDIRECT CAN NEITHER DOWNGRADE A VERIFIED TRANSFER NOR OUTLIVE ITS DEADLINE
+                if (this.httpsOnly && (!"https".equalsIgnoreCase(current.getScheme()) || current.getHost() == null || current.getUserInfo() != null))
+                    throw new IOException("HTTPS without credentials is required: " + current);
+                if (deadline > 0 && System.nanoTime() > deadline) throw new IOException("Transfer deadline exceeded: " + this.uri);
                 final HttpHeaders effective = this.materializeHeaders(current);
                 final URLConnection conn = this.openConnection(current, effective, method, body);
 
@@ -345,12 +386,12 @@ public final class NetRequest implements AutoCloseable {
                     // TOUCHES THE UNDERLYING RESOURCE — WITHOUT THIS CALL A NONEXISTENT file://
                     // URI WOULD SILENTLY LOOK LIKE A VALID MEDIA RESPONSE TO CALLERS LIKE MRL.
                     conn.connect();
-                    return new NetRequest(current, conn, HttpURLConnection.HTTP_OK);
+                    return new NetRequest(current, conn, HttpURLConnection.HTTP_OK, this.maxBytes, deadline);
                 }
 
                 final int code = http.getResponseCode();
                 if (!isRedirect(code)) {
-                    return new NetRequest(current, http, code);
+                    return new NetRequest(current, http, code, this.maxBytes, deadline);
                 }
 
                 if (trace.size() - 1 >= this.maxRedirects) {
@@ -367,14 +408,14 @@ public final class NetRequest implements AutoCloseable {
 
                 final String location = http.getHeaderField("Location");
                 if (location == null || location.isEmpty()) {
-                    return new NetRequest(current, http, code);
+                    return new NetRequest(current, http, code, this.maxBytes, deadline);
                 }
 
                 final URI next;
                 try {
                     next = current.resolve(new URI(location));
                 } catch (final URISyntaxException e) {
-                    return new NetRequest(current, http, code);
+                    return new NetRequest(current, http, code, this.maxBytes, deadline);
                 }
 
                 http.disconnect();

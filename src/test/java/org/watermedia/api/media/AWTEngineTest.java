@@ -90,12 +90,13 @@ public class AWTEngineTest {
     }
 
     @Test
-    @DisplayName("A frame callback that throws is logged, not thrown at the decoder")
+    @DisplayName("A frame callback that throws is logged once per engine, never thrown at the decoder")
     void callbackFailuresAreIsolated() {
         final AWTEngine engine = MediaAPI.awtEngine(() -> { throw new IllegalStateException("host repaint failed"); });
         engine.format(PixelFormat.BGRA, 1, 1, 8);
         try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
-            engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
+            for (int frame = 0; frame < 3; frame++) engine.upload(new ByteBuffer[]{direct(1, 2, 3, 4)}, new int[]{0});
+            assertEquals(1, capture.events().size(), "a repeated failure is logged once per engine");
             assertEquals(Level.ERROR, capture.events().get(0).getLevel());
         }
         assertNotEquals(0L, engine.texture(), "the frame was published before the callback failed");

@@ -1,6 +1,5 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
@@ -12,7 +11,6 @@ import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
-import org.watermedia.tools.LogTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -88,7 +86,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     // A TIMED-OUT RELEASE RETAINS ENGINE OWNERSHIP UNTIL THE HOST RETRIES AFTER I/O FINISHES.
     private static final long RELEASE_WAIT_TIMEOUT_MS = 5_000L;
     private static final long SKIP_STEP_MS = 1_000L;
-    private static final long REFUSED_REPORT_NS = 10_000_000_000L;
     private static final ExecutorService SINGLE_FRAME_POOL = Executors.newFixedThreadPool(
             Math.max(1, ThreadTool.baseThreads()),
             ThreadTool.workerFactory("TxPlayer-SingleFrame", Thread.NORM_PRIORITY - 1));
@@ -110,14 +107,14 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile long knownDuration;       // 0 = UNKNOWN / STATIC. SET BY READER METADATA OR EOF.
     private volatile PixelFormat pixelFormat = PixelFormat.BGRA;
 
-    // UPLOAD TARGET — SOURCE DIMENSIONS SHRUNK BY scale/LOD (SEE MathUtil#scaled).
+    // UPLOAD TARGET — SOURCE DIMENSIONS SHRUNK BY scale/LOD (SEE MediaPlayer#scaled).
     // WRITTEN ONLY BY THE PREPARE/LIFECYCLE THREAD THAT DECODES AND UPLOADS FRAMES.
     private int outWidth;
     private int outHeight;
     // SIZE THE ENGINE WAS LAST CONFIGURED WITH: GL APPLIES format() ON ITS RENDER THREAD, SO gfx.width() LAGS BEHIND
     private int uploadWidth;
     private int uploadHeight;
-    private final LogTool.Throttle refusedReports = new LogTool.Throttle(REFUSED_REPORT_NS);
+    private boolean refusedWarned; // A REFUSED SIZE IS LOGGED ONCE PER PLAYER
 
     // STATUS
     private volatile Status status = Status.WAITING;
@@ -484,7 +481,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private boolean shouldUseFrameTextures(final ImageReader reader) {
         final int frames = reader.frameCount();
         if (frames <= 1 || frames > MAX_FRAME_TEXTURES || !this.gfx.preload()) return false;
-        final long budget = Math.max(0L, WaterMediaConfig.media.tx.texturesBudget) * 1024L * 1024L;
+        final long budget = DataTool.megabytes(Math.max(0L, WaterMediaConfig.media.tx.texturesBudget));
         // RGBA8 PER FRAME AT THE UPLOAD TARGET REGARDLESS OF THE SOURCE LAYOUT; prepareTextures DECODES THE SET THROUGH
         // A DownscaleFilter, SO ITS MEMORY PEAK FOLLOWS THE SAME TARGET AND ONE GATE COVERS VRAM AND DECODE ALIKE.
         return (long) frames * this.outWidth * this.outHeight * 4L <= budget;
@@ -588,7 +585,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (timeline == null) return false;
         synchronized (this.clock) {
             final int idx = frameAt(timeline, Math.min(this.clockBase, this.knownDuration - 1L));
-            final int target = Math.max(0, Math.min(timeline.length - 1, idx + direction));
+            final int target = MathUtil.clamp(idx + direction, 0, timeline.length - 1);
             if (target == idx) return false; // ALREADY AT THE FIRST/LAST FRAME — NOTHING TO STEP TO
             this.clockBase = timeline[target];
             this.wallBase = nowMs();
@@ -602,7 +599,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private static int frameAt(final long[] timeline, final long time) {
         int idx = Arrays.binarySearch(timeline, time);
         if (idx < 0) idx = -idx - 2;
-        return Math.max(0, Math.min(idx, timeline.length - 1));
+        return MathUtil.clamp(idx, 0, timeline.length - 1);
     }
 
     @Override
@@ -849,7 +846,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private ImageReader openSource() throws IOException {
         final URI uri = this.source.uri(this.quality);
         super.quality(this.source.qualityOf(uri));
-        final long maxBytes = this.maxSourceBytes();
+        final long maxBytes = DataTool.megabytes(Math.max(1L, WaterMediaConfig.decoders.maxImageSourceSize));
         try {
             final NetworkCache.CachedBytes sourceBytes = NetworkCache.read(uri, this.source.headers(), IMAGE_ACCEPT, maxBytes,
                     WaterMediaConfig.media.tx.cache);
@@ -952,11 +949,6 @@ public final class TxMediaPlayer extends MediaPlayer {
         return frame;
     }
 
-    private long maxSourceBytes() {
-        final long limitMb = Math.max(1L, WaterMediaConfig.decoders.maxImageSourceSize);
-        return limitMb * 1024L * 1024L;
-    }
-
     // RESOLVES THE PLAYBACK STATUS AFTER THE FIRST FRAME GOES LIVE, RESPECTING
     // A PENDING PAUSE TRIGGER LEFT BY startPaused().
     private void resolveInitialStatus(final int serial) {
@@ -1023,8 +1015,8 @@ public final class TxMediaPlayer extends MediaPlayer {
         // SIZE FLIP (HOT scale/LOD CHANGE) — RECONFIGURE THE ENGINE FOR THIS FRAME; A REFUSED SIZE DROPS THE FRAME
         if (this.uploadWidth != w || this.uploadHeight != h) {
             if (!this.gfx.format(this.pixelFormat, w, h)) {
-                LogTool.throttled(LOGGER, Level.ERROR, IT, this.refusedReports, "Graphics engine refused {} {}x{}; frame dropped",
-                        this.pixelFormat, w, h);
+                if (!this.refusedWarned) LOGGER.error(IT, "Graphics engine refused {} {}x{}; frame dropped", this.pixelFormat, w, h);
+                this.refusedWarned = true;
                 this.returnBuffer(buffer);
                 return;
             }
@@ -1065,8 +1057,8 @@ public final class TxMediaPlayer extends MediaPlayer {
         int w = this.sourceWidth;
         int h = this.sourceHeight;
         if (DataTool.scalable(this.pixelFormat)) {
-            w = MathUtil.scaled(this.sourceWidth, this.scaleWidth, this.lod.percent());
-            h = MathUtil.scaled(this.sourceHeight, this.scaleHeight, this.lod.percent());
+            w = scaled(this.sourceWidth, this.scaleWidth, this.lod.percent());
+            h = scaled(this.sourceHeight, this.scaleHeight, this.lod.percent());
         }
         if (w == this.outWidth && h == this.outHeight) return;
         final long byteSize = DataTool.frameBytes(this.pixelFormat, w, h);

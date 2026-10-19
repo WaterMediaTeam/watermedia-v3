@@ -1,9 +1,7 @@
 package org.watermedia.api.media;
 
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
-import org.watermedia.tools.LogTool;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -39,7 +37,6 @@ public final class JSEngine extends SFXEngine {
     // FOLLOWS THE AUDIBLE POSITION VIA pendingMs() (SAME RATIONALE AS ALEngine's BUFFER POOL).
     /** Default internal line buffer depth used by {@code MediaAPI.jsEngine()}. */
     public static final int DEFAULT_BUFFER_MS = 300;
-    private static final long DROP_REPORT_NS = 10_000_000_000L;
 
     // CAPABILITY TABLES: JAVA SOUND SUPPORTS U8/S16 PCM MONO/STEREO ON EVERY PLATFORM; IT
     // DOESN'T SUPPORT FLOAT, S32 NOR MULTICHANNEL THROUGH THE DEFAULT MIXER, SO NEGOTIATION
@@ -52,7 +49,6 @@ public final class JSEngine extends SFXEngine {
     };
 
     private final int bufferMs;
-    private final LogTool.Throttle dropReports = new LogTool.Throttle(DROP_REPORT_NS);
     // LINE + CONTROL ARE REPLACED ON RECONFIGURE (apply) FROM THE PLAYER'S LIFECYCLE THREAD AND READ FROM
     // THE CONTROL THREAD (volume/pause) — EVERY ACCESS HOLDS THE ENGINE MONITOR
     private SourceDataLine line;
@@ -62,6 +58,7 @@ public final class JSEngine extends SFXEngine {
     private long framesWritten;
     private int bytesPerFrame;
     private byte[] scratch = new byte[0]; // REUSABLE COPY TARGET FOR ByteBuffer → line.write
+    private boolean dropWarned; // A DROPPED CHUNK IS LOGGED ONCE PER ENGINE
 
     JSEngine(final int bufferMs) {
         if (bufferMs <= 0) throw new IllegalArgumentException("bufferMs must be positive, got " + bufferMs);
@@ -144,7 +141,8 @@ public final class JSEngine extends SFXEngine {
             final boolean active = this.line.isActive();
             LOGGER.debug(IT, "Audio chunk of {} bytes exceeds the {}-byte line buffer; reopening wider", len, this.line.getBufferSize());
             if (!this.openLine(this.line.getFormat(), 2 * len)) {
-                LogTool.throttled(LOGGER, Level.WARN, IT, this.dropReports, "Dropped a {}-byte audio chunk: no wider Java Sound line", len);
+                if (!this.dropWarned) LOGGER.warn(IT, "Dropped a {}-byte audio chunk: no wider Java Sound line", len);
+                this.dropWarned = true;
                 return true;
             }
             if (active) this.play();

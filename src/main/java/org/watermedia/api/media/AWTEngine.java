@@ -27,14 +27,14 @@ public final class AWTEngine extends SWEngine {
     }
 
     @Override
-    protected void allocSurface(final int width, final int height, final ByteBuffer bgra) {
+    void allocSurface(final int width, final int height, final ByteBuffer bgra) {
         final BufferedImage img = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         this.argb = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
         this.image = img;
     }
 
     @Override
-    protected void present() {
+    void present() {
         final int[] px = this.argb;
         final ByteBuffer b = this.bgra;
         if (px == null || b == null) return;
@@ -52,7 +52,7 @@ public final class AWTEngine extends SWEngine {
     }
 
     @Override
-    protected void disposeSurface() {
+    void disposeSurface() {
         this.image = null;
         this.argb = null;
     }

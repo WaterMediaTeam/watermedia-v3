@@ -3,7 +3,6 @@ package org.watermedia.api.platform.web;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
@@ -23,8 +22,9 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.tools.JSONTool.arr;
+import static org.watermedia.tools.JSONTool.obj;
 import static org.watermedia.tools.JSONTool.str;
-import static org.watermedia.tools.JSONTool.uri;
 
 /**
  * YouTube platform backed by yt-dlp. Extends {@link YtDlpPlatform} to reuse its yt-dlp engine (binary
@@ -50,7 +50,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
     private static final long BOTGUARD_TIMEOUT_SECONDS = 60; // COLD START RUNS THE BOTGUARD VM + NETWORK
 
     // INNERTUBE visitor_id ENDPOINT — A po_token MUST BE BOUND TO THE visitorData THEN HANDED TO yt-dlp
-    private static final String VISITOR_ENDPOINT = "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false";
+    private static final URI VISITOR_ENDPOINT = URI.create("https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false");
     private static final String CLIENT_VERSION = "2.20250601.01.00"; // WEB client; the endpoint is lenient
     private static final String VISITOR_BODY =
             "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"" + CLIENT_VERSION
@@ -133,13 +133,12 @@ public final class YouTubePlatform extends YtDlpPlatform {
             throw new PlatformException(NAME, "yt-dlp could not search '" + query + "': " + e.getMessage(), e);
         }
 
-        final JsonArray entries = info.getAsJsonArray("entries");
+        final JsonArray entries = arr(info, "entries");
         if (entries == null) return List.of();
 
         final List<PlatformResult> out = new ArrayList<>(Math.min(entries.size(), limit));
         for (final JsonElement element: entries) {
-            if (element == null || element.isJsonNull()) continue;
-            final JsonObject entry = element.getAsJsonObject();
+            final JsonObject entry = obj(element);
             // A SEARCH ALSO SURFACES PLAYLISTS/CHANNELS (ie_key YoutubeTab) — KEEP ONLY PLAYABLE VIDEOS
             if (!"Youtube".equals(str(entry, "ie_key"))) continue;
 
@@ -149,12 +148,12 @@ public final class YouTubePlatform extends YtDlpPlatform {
 
             // DERIVE THE THUMBNAIL FROM THE VIDEO ID: hqdefault EXISTS FOR EVERY VIDEO, UNLIKE THE
             // VERSION-DEPENDENT (AND OFTEN EXPIRING) thumbnails[] URLS yt-dlp EMITS IN FLAT MODE
-            final URI thumbnail = id != null ? uri("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg") : null;
-            // yt-dlp'S FLAT-PLAYLIST url CAN BE A BARE VIDEO ID (NO SCHEME); ONLY USE IT WHEN ABSOLUTE,
-            // ELSE BUILD THE WATCH URL FROM THE ID SO SELECTING THE RESULT PLAYS IT INSTEAD OF RE-SEARCHING
-            final URI parsed = uri(url);
-            final URI page = parsed != null && parsed.isAbsolute() ? parsed
-                    : id != null ? uri("https://www.youtube.com/watch?v=" + id) : null;
+            final URI thumbnail = id != null ? DataTool.uri("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg") : null;
+            // yt-dlp'S FLAT-PLAYLIST url CAN BE A BARE VIDEO ID (NO SCHEME, WHICH DataTool.uri REJECTS);
+            // THEN THE WATCH URL IS BUILT FROM THE ID SO SELECTING THE RESULT PLAYS IT INSTEAD OF RE-SEARCHING
+            final URI parsed = DataTool.uri(url);
+            final URI page = parsed != null ? parsed
+                    : id != null ? DataTool.uri("https://www.youtube.com/watch?v=" + id) : null;
             if (page == null) continue; // NEITHER AN ABSOLUTE url NOR AN id — NOTHING PLAYABLE TO LINK
             out.add(new PlatformResult(this, str(entry, "title"), thumbnail, page));
             if (out.size() >= limit) break;
@@ -192,17 +191,16 @@ public final class YouTubePlatform extends YtDlpPlatform {
     // FETCHES A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT; THE po_token MUST BE
     // BOUND TO THE SAME visitorData HANDED TO yt-dlp
     private static String fetchVisitorData() throws IOException {
-        try (final NetRequest request = NetRequest.create(VISITOR_ENDPOINT)
+        final JsonObject json = WebRequests.fetchJson(NAME, VISITOR_ENDPOINT, NetRequest.create(VISITOR_ENDPOINT)
                 .method("POST")
+                .accept(NetRequest.ACCEPT_JSON)
                 .contentType(NetRequest.MIMETYPE_JSON)
                 .header("X-YouTube-Client-Name", "1")
                 .header("X-YouTube-Client-Version", CLIENT_VERSION)
-                .body(VISITOR_BODY)
-                .send()) {
-            if (request.statusCode() != 200) throw new IOException("visitor_id endpoint returned HTTP " + request.statusCode());
-            final JsonObject json = JsonParser.parseString(request.text()).getAsJsonObject();
-            return json.getAsJsonObject("responseContext").get("visitorData").getAsString();
-        }
+                .body(VISITOR_BODY), JsonObject.class);
+        final String visitorData = str(obj(json, "responseContext"), "visitorData");
+        if (visitorData == null) throw new IOException("visitor_id endpoint answered without visitorData");
+        return visitorData;
     }
 
     // yt-dlp'S MESSAGES FOR THE BOT GATE THAT A PO_TOKEN CAN BYPASS

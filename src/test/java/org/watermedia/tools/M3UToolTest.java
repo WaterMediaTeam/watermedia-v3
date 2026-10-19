@@ -3,9 +3,11 @@ package org.watermedia.tools;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.watermedia.WaterMedia;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.test.support.LocalHttp;
+import org.watermedia.test.support.LogCapture;
 import org.watermedia.tools.M3UTool.Channel;
 import org.watermedia.tools.M3UTool.Iptv;
 import org.watermedia.tools.M3UTool.Master;
@@ -904,6 +906,17 @@ public class M3UToolTest {
                     local.stream().map(Segment::uri).toList());
             assertEquals(List.of("Local", "Stream", "Web"), ((Iptv) M3UTool.parse(iptv, URI.create("file:///C:/videos/iptv.m3u"))).channels().stream()
                     .map(Channel::title).toList());
+        }
+
+        @Test
+        @DisplayName("Each playlist logs only its first skipped entry")
+        void testLogsFirstSkipPerPlaylist() throws IOException {
+            final String iptv = "#EXTM3U\n#EXTINF:-1,Local\nfile:///etc/passwd\n#EXTINF:-1,Archive\njar:file:///tmp/x.zip!/y\n#EXTINF:-1,Web\nhttps://x.example/x\n";
+            try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+                M3UTool.parse(iptv, URI.create(BASE + "first.m3u"));
+                M3UTool.parse(iptv, URI.create(BASE + "second.m3u"));
+                assertEquals(2, capture.events().stream().filter(event -> event.getMessage().getFormattedMessage().startsWith("Skipping")).count());
+            }
         }
 
         @Test

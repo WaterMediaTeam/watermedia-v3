@@ -9,7 +9,6 @@ import org.watermedia.api.util.Metadata;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.api.util.NetRequest;
 import org.watermedia.tools.DataTool;
-import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.IOException;
@@ -48,13 +47,13 @@ public final class SendvidPlatform implements Platform {
         LOGGER.debug(IT, "Sendvid resolving video '{}'", videoId);
 
         try {
-            final URI statusUri = URI.create(String.format(STATUS_API, videoId));
-            final StatusResponse status = NetRequest.fetchJson(NAME, statusUri, StatusResponse.class);
+            final String statusUrl = String.format(STATUS_API, videoId);
+            final StatusResponse status = WebRequests.fetchJson(NAME, statusUrl, StatusResponse.class);
             if (!"done".equals(status.state())) {
                 LOGGER.debug(IT, "Sendvid video '{}' not ready yet (state={}, queue={})", videoId, status.state(), status.placeInQueue());
                 if (status.placeInQueue() > MAX_QUEUE)
                     throw new PlatformException(NAME, "Video '" + videoId + "' is in queue position " + status.placeInQueue() + " (> " + MAX_QUEUE + "), too far to wait");
-                this.waitForReady(statusUri, videoId);
+                this.waitForReady(statusUrl, videoId);
             }
 
             try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
@@ -66,10 +65,12 @@ public final class SendvidPlatform implements Platform {
                 if (!sourceMatcher.find())
                     throw new PlatformException(NAME, "video_source not found in page for video '" + videoId + "' (removed or markup changed): " + uri);
 
-                final URI videoUri = URI.create(sourceMatcher.group(1));
+                final URI videoUri = DataTool.uri(sourceMatcher.group(1));
+                if (videoUri == null)
+                    throw new PlatformException(NAME, "video_source '" + sourceMatcher.group(1) + "' of video '" + videoId + "' is not a web URL");
 
                 final Matcher posterMatcher = PATTERN_POSTER.matcher(html);
-                final URI thumbnailUri = posterMatcher.find() ? JSONTool.uri(posterMatcher.group(1)) : null;
+                final URI thumbnailUri = posterMatcher.find() ? DataTool.uri(posterMatcher.group(1)) : null;
                 if (thumbnailUri == null) LOGGER.warn(IT, "Sendvid video '{}' has no usable video_poster (thumbnail)", videoId);
 
                 // PREFER THE PAGE'S video_duration; FALL BACK TO THE STATUS API VALUE
@@ -93,11 +94,11 @@ public final class SendvidPlatform implements Platform {
         }
     }
 
-    private void waitForReady(final URI statusUri, final String videoId) throws PlatformException {
+    private void waitForReady(final String statusUrl, final String videoId) throws PlatformException {
         for (int i = 0; i < MAX_POLLS; i++) {
             // THE SLEEP RESTORES THE INTERRUPT FLAG ITSELF; A CANCELLED RESOLUTION STOPS POLLING AT ONCE
             if (!ThreadTool.sleep(POLL_DELAY_MS)) throw new PlatformException(NAME, "Interrupted while waiting for video '" + videoId + "'");
-            final StatusResponse status = NetRequest.fetchJson(NAME, statusUri, StatusResponse.class);
+            final StatusResponse status = WebRequests.fetchJson(NAME, statusUrl, StatusResponse.class);
             LOGGER.debug(IT, "Sendvid {} status: {} ({}%)", videoId, status.state(), status.progress());
             if ("done".equals(status.state())) return;
             if (status.placeInQueue() > MAX_QUEUE)
