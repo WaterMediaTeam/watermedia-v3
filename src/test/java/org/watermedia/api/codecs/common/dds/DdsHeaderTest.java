@@ -8,7 +8,6 @@ import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.DdsFixture;
-import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -81,7 +80,7 @@ public class DdsHeaderTest {
             // 64x32 FORMS 16x8 BLOCKS; 61x30 PADS UP TO THE SAME GRID
             assertEquals(128 * 16, DdsHeader.read(ByteBuffer.wrap(DdsFixture.write(64, 32, CodecsAPI.CODEC_BC7, 1))).frameBytes());
             assertEquals(128 * 8, DdsHeader.read(ByteBuffer.wrap(DdsFixture.write(61, 30, CodecsAPI.CODEC_BC1, 1))).frameBytes());
-            assertEquals(128 * 16, DataTool.frameBytes(PixelFormat.BC3, 61, 30));
+            assertEquals(128 * 16, PixelFormat.BC3.frameBytes(61, 30, 8));
         }
     }
 

@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import org.watermedia.api.codecs.common.dds.DdsHeader;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.DdsFixture;
-import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -25,7 +24,7 @@ public class BcReaderTest {
     @DisplayName("Compressed slices, the BC identity and footer delays read back without a native encoder")
     void readsCompressedSlicesWithoutNativeEncoder() throws Exception {
         for (final String codec: List.of(CodecsAPI.CODEC_BC1, CodecsAPI.CODEC_BC3, CodecsAPI.CODEC_BC7)) {
-            final int size = (int) DataTool.frameBytes(PixelFormat.valueOf(codec), 5, 7);
+            final int size = (int) PixelFormat.valueOf(codec).frameBytes(5, 7, 8);
             final ByteBuffer file = ByteBuffer.allocate(3 + DdsHeader.BYTES + size * 2 + 28);
             file.position(3);
             file.put(DdsFixture.write(5, 7, codec, 2));

@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PlayerWait;
-import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 
@@ -44,7 +43,7 @@ public class TxFrameTexturesTest {
             assertTrue(player.width() <= CAP && player.height() <= CAP);
             assertTrue(player.width() < player.sourceWidth() || player.height() < player.sourceHeight());
             // THE FILTER SHRANK EVERY FRAME WHILE DECODING: EACH BUFFER HOLDS EXACTLY THE TARGET-SIZE FRAME
-            final long bytes = DataTool.frameBytes(gfx.format(), player.width(), player.height());
+            final long bytes = gfx.format().frameBytes(player.width(), player.height(), 8);
             for (final ByteBuffer frame: frames) assertEquals(bytes, frame.remaining());
         } finally {
             player.stop();

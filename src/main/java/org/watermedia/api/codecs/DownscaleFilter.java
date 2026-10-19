@@ -45,7 +45,7 @@ public final class DownscaleFilter implements ReaderFilter {
         final int dh = Math.min(src.height(), this.scale > 0f ? Math.max(1, Math.round(src.height() * this.scale)) : this.outHeight);
         // NOTHING TO DO WHEN THE FORMAT CAN'T BE AREA-AVERAGED OR THE TARGET ALREADY MATCHES THE SOURCE
         if (!DataTool.scalable(src.format()) || (dw == src.width() && dh == src.height())) return src;
-        final ByteBuffer dst = ByteBuffer.allocateDirect((int) DataTool.frameBytes(src.format(), dw, dh)).order(src.buffer().order());
+        final ByteBuffer dst = ByteBuffer.allocateDirect((int) src.format().frameBytes(dw, dh, 8)).order(src.buffer().order());
         DataTool.scaleArea(src.buffer(), src.width(), src.height(), dst, dw, dh, src.format());
         dst.flip();
         return new Frame(dst, dw, dh, src.format());

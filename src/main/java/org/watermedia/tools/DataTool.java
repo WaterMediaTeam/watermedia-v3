@@ -281,76 +281,24 @@ public final class DataTool {
     // PIXEL-PLANE AREA SCALING — SHARED BY TxMediaPlayer AND DownscaleFilter
     // ============================================================
 
-    // TIGHTLY-PACKED BYTE SIZE OF ONE FRAME IN THE GIVEN FORMAT AT w x h.
-    public static long frameBytes(final PixelFormat format, final int w, final int h) {
-        final long pixels = (long) w * h;
-        final long chromaW = (w + 1L) >> 1;
-        final long chromaH = (h + 1L) >> 1;
-        return switch (format) {
-            case GRAY -> pixels;
-            case YUYV, UYVY -> pixels * 2L;
-            case RGB, YUV444P -> pixels * 3L;
-            case BGRA, RGBA, YUVA444P -> pixels * 4L;
-            case NV12, NV21, YUV420P -> pixels + 2L * chromaW * chromaH;
-            case YUV422P -> pixels + 2L * chromaW * h;
-            case YUVA420P -> pixels * 2L + 2L * chromaW * chromaH;
-            case YUVA422P -> pixels * 2L + 2L * chromaW * h;
-            // BCn: ONE PLANE OF 4x4 BLOCKS
-            case BC1, BC2, BC3, BC5, BC7 -> ((w + 3L) >> 2) * ((h + 3L) >> 2) * format.blockBytes();
-        };
-    }
-
     // FORMATS THE AREA SCALER UNDERSTANDS — PACKED YUYV (PIXEL PAIRS SHARE CHROMA) AND
     // COMPRESSED BCn (GPU-SIDE BLOCKS) CANNOT BE AVERAGED BYTE-WISE.
     public static boolean scalable(final PixelFormat format) {
-        return switch (format) {
-            case YUYV, UYVY, BC1, BC2, BC3, BC5, BC7 -> false;
-            default -> true;
-        };
+        return !format.compressed() && format != PixelFormat.YUYV && format != PixelFormat.UYVY;
     }
 
-    // AREA-AVERAGE SCALE OF A FULL FRAME (TIGHTLY-PACKED PLANES) FROM sw x sh INTO dst AT dw x dh.
-    // MIRRORS THE PLANE LAYOUT OF frameBytes; EACH OUTPUT PIXEL AVERAGES ITS WHOLE SOURCE BLOCK.
+    // AREA-AVERAGE SCALE OF AN 8-BIT FRAME OF TIGHTLY PACKED PLANES (PixelFormat GEOMETRY) FROM sw x sh INTO dst AT
+    // dw x dh; EACH OUTPUT TEXEL AVERAGES ITS WHOLE SOURCE BLOCK, A CHROMA PAIR OR PIXEL KEEPING ITS COMPONENTS APART
     public static void scaleArea(final ByteBuffer src, final int sw, final int sh,
                                  final ByteBuffer dst, final int dw, final int dh, final PixelFormat format) {
-        final int base = src.position();
-        switch (format) {
-            case GRAY -> scalePlane(src, base, sw, sh, dst, dw, dh, 1);
-            case RGB -> scalePlane(src, base, sw, sh, dst, dw, dh, 3);
-            case BGRA, RGBA -> scalePlane(src, base, sw, sh, dst, dw, dh, 4);
-            case NV12, NV21 -> {
-                scalePlane(src, base, sw, sh, dst, dw, dh, 1);
-                scalePlane(src, base + sw * sh, (sw + 1) >> 1, (sh + 1) >> 1, dst, (dw + 1) >> 1, (dh + 1) >> 1, 2);
-            }
-            case YUV420P, YUVA420P -> {
-                final int scw = (sw + 1) >> 1;
-                final int sch = (sh + 1) >> 1;
-                final int dcw = (dw + 1) >> 1;
-                final int dch = (dh + 1) >> 1;
-                scalePlane(src, base, sw, sh, dst, dw, dh, 1);
-                scalePlane(src, base + sw * sh, scw, sch, dst, dcw, dch, 1);
-                scalePlane(src, base + sw * sh + scw * sch, scw, sch, dst, dcw, dch, 1);
-                if (format == PixelFormat.YUVA420P) {
-                    scalePlane(src, base + sw * sh + 2 * scw * sch, sw, sh, dst, dw, dh, 1);
-                }
-            }
-            case YUV422P, YUVA422P -> {
-                final int scw = (sw + 1) >> 1;
-                final int dcw = (dw + 1) >> 1;
-                scalePlane(src, base, sw, sh, dst, dw, dh, 1);
-                scalePlane(src, base + sw * sh, scw, sh, dst, dcw, dh, 1);
-                scalePlane(src, base + sw * sh + scw * sh, scw, sh, dst, dcw, dh, 1);
-                if (format == PixelFormat.YUVA422P) {
-                    scalePlane(src, base + sw * sh + 2 * scw * sh, sw, sh, dst, dw, dh, 1);
-                }
-            }
-            case YUV444P, YUVA444P -> {
-                final int planes = format == PixelFormat.YUVA444P ? 4 : 3;
-                for (int p = 0; p < planes; p++) {
-                    scalePlane(src, base + p * sw * sh, sw, sh, dst, dw, dh, 1);
-                }
-            }
-            default -> dst.put(src.duplicate()); // YUYV/BCn ARE UNSCALABLE — COPY VERBATIM SO dst IS ALWAYS FILLED
+        if (!scalable(format)) throw new IllegalArgumentException(format + " cannot be area-scaled");
+        int offset = src.position();
+        for (int p = 0; p < format.planes(); p++) {
+            final int pw = format.planeWidth(p, sw);
+            final int ph = format.planeHeight(p, sh);
+            final int components = format.texelBytes(p, 8);
+            scalePlane(src, offset, pw, ph, dst, format.planeWidth(p, dw), format.planeHeight(p, dh), components);
+            offset += pw * ph * components;
         }
     }
 

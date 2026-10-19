@@ -1061,7 +1061,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             h = scaled(this.sourceHeight, this.scaleHeight, this.lod.percent());
         }
         if (w == this.outWidth && h == this.outHeight) return;
-        final long byteSize = DataTool.frameBytes(this.pixelFormat, w, h);
+        final long byteSize = this.pixelFormat.frameBytes(w, h, 8);
         if (byteSize > Integer.MAX_VALUE) {
             throw new IOException("Image dimensions exceed upload buffer limit: " + w + "x" + h);
         }

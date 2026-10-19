@@ -132,6 +132,25 @@ public class AWTEngineTest {
     }
 
     @Test
+    @DisplayName("A padded frame may end on its last tight row, and a stride shorter than a row drops the frame once logged")
+    void lastRowAndShortStride() {
+        final AWTEngine engine = MediaAPI.awtEngine(null);
+        engine.format(PixelFormat.BGRA, 2, 2, 8);
+        // 12-BYTE STRIDE, BUT THE BUFFER STOPS RIGHT AFTER THE 8 BYTES OF THE LAST ROW
+        engine.upload(new ByteBuffer[]{direct(
+                10, 20, 30, 255,  40, 50, 60, 255,  1, 2, 3, 4,
+                70, 80, 90, 255, 100, 110, 120, 255)}, new int[]{12});
+        assertEquals(0xFF786E64, engine.image().getRGB(1, 1));
+        try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
+            for (int frame = 0; frame < 2; frame++)
+                engine.upload(new ByteBuffer[]{direct(new int[16])}, new int[]{4});
+            assertEquals(1, capture.events().size(), "the refused stride is logged once per engine");
+            assertEquals(Level.WARN, capture.events().get(0).getLevel());
+        }
+        assertEquals(0xFF786E64, engine.image().getRGB(1, 1), "the dropped frames left the last one in place");
+    }
+
+    @Test
     @DisplayName("A resolution change reallocates the image")
     void resizeReallocates() {
         final AWTEngine engine = MediaAPI.awtEngine(null);

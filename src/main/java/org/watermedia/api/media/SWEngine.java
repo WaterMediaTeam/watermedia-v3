@@ -34,8 +34,9 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     // OPTIONAL "FRAME READY" HOOK, RUN ON THE UPLOAD THREAD AFTER EACH present()
     private final Runnable onFrame;
     private volatile boolean framed;
-    // ANOMALY LATCHES: A SHORT BUFFER AND A FAILING CALLBACK ARE LOGGED ONCE PER ENGINE
+    // ANOMALY LATCHES: A SHORT BUFFER OR ROW AND A FAILING CALLBACK ARE LOGGED ONCE PER ENGINE
     private boolean shortWarned;
+    private boolean strideWarned;
     private boolean callbackWarned;
 
     SWEngine(final Runnable onFrame) {
@@ -87,8 +88,13 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
         final int h = this.height;
         final int rowBytes = w * 4;
         final int srcStride = stride == 0 ? rowBytes : stride;
-        // WARN-DROP LIKE THE GPU ENGINES INSTEAD OF THROWING FROM THE DECODE THREAD ON A SHORT BUFFER
-        final long needed = (long) (h - 1) * srcStride + rowBytes;
+        // WARN-DROP LIKE THE GPU ENGINES INSTEAD OF THROWING FROM THE DECODE THREAD ON A SHORT BUFFER OR ROW
+        final long needed = minBytes(stride, rowBytes, h);
+        if (needed < 0L) {
+            if (!this.strideWarned) LOGGER.warn(IT, "Stride {} cannot hold a {}-byte row; frame dropped", stride, rowBytes);
+            this.strideWarned = true;
+            return;
+        }
         if (buffer.remaining() < needed) {
             if (!this.shortWarned) LOGGER.warn(IT, "Frame buffer too small: {} < {}", buffer.remaining(), needed);
             this.shortWarned = true;

@@ -2,6 +2,7 @@ package org.watermedia.tools;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.watermedia.api.util.PixelFormat;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -10,6 +11,7 @@ import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies the pure byte/string helpers in {@link DataTool}. */
@@ -159,6 +161,29 @@ public class DataToolTest {
         }
         assertEquals(0x7F, pixels.get(0) & 0xFF);
         assertEquals(0x7F, pixels.get(pixels.capacity() - 1) & 0xFF);
+    }
+
+    @Test
+    @DisplayName("scaleArea walks every plane at its own size and refuses layouts it cannot average")
+    void scaleAreaPlanes() {
+        // 5x3 YUV420P: Y 5x3, U/V 3x2 EACH, ROUNDED UP; EVERY PLANE IS UNIFORM SO ANY AVERAGE KEEPS ITS VALUE
+        final ByteBuffer src = ByteBuffer.allocateDirect((int) PixelFormat.YUV420P.frameBytes(5, 3, 8));
+        for (int i = 0; i < 15; i++) src.put((byte) 200);
+        for (int i = 0; i < 6; i++) src.put((byte) 60);
+        for (int i = 0; i < 6; i++) src.put((byte) 90);
+        src.flip();
+        final ByteBuffer dst = ByteBuffer.allocateDirect((int) PixelFormat.YUV420P.frameBytes(3, 1, 8));
+        DataTool.scaleArea(src, 5, 3, dst, 3, 1, PixelFormat.YUV420P);
+        assertEquals(dst.capacity(), dst.position(), "Y 3x1 plus U and V 2x1 fill the target exactly");
+        for (int i = 0; i < 3; i++) assertEquals(200, dst.get(i) & 0xFF);
+        assertEquals(60, dst.get(3) & 0xFF);
+        assertEquals(60, dst.get(4) & 0xFF);
+        assertEquals(90, dst.get(5) & 0xFF);
+        assertEquals(90, dst.get(6) & 0xFF);
+        assertFalse(DataTool.scalable(PixelFormat.YUYV));
+        assertFalse(DataTool.scalable(PixelFormat.BC1));
+        assertTrue(DataTool.scalable(PixelFormat.NV12));
+        assertThrows(IllegalArgumentException.class, () -> DataTool.scaleArea(src, 5, 3, dst, 3, 1, PixelFormat.YUYV));
     }
 
     @Test

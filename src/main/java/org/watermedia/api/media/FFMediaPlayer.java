@@ -616,64 +616,17 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.planePool[this.planePoolIdx] = planes;
         }
         this.planePoolIdx = (this.planePoolIdx + 1) % PLANE_POOL_SETS;
-        switch (cs) {
-            case BGRA, RGBA, RGB, GRAY, YUYV, UYVY -> {
-                final int yStride = frame.linesize(0);
-                final long ySize = (long) yStride * height;
-                planes[0] = this.ensurePlane(planes[0], ySize);
-                copyPlane(frame.data(0), ySize, planes[0]);
-                this.gfx.upload(new ByteBuffer[]{planes[0]}, new int[]{yStride});
-            }
-            case NV12, NV21 -> {
-                final int yStride = frame.linesize(0);
-                final int uvStride = frame.linesize(1);
-                final long ySize = (long) yStride * height;
-                final long uvSize = (long) uvStride * ((height + 1) / 2); // ROUND UP — ODD HEIGHTS HAVE AN EXTRA CHROMA ROW
-                planes[0] = this.ensurePlane(planes[0], ySize);
-                planes[1] = this.ensurePlane(planes[1], uvSize);
-                copyPlane(frame.data(0), ySize, planes[0]);
-                copyPlane(frame.data(1), uvSize, planes[1]);
-                this.gfx.upload(new ByteBuffer[]{planes[0], planes[1]}, new int[]{yStride, uvStride});
-            }
-            case YUV420P, YUV422P, YUV444P -> {
-                final int chromaH = (cs == PixelFormat.YUV420P) ? (height + 1) / 2 : height;
-                final int yStride = frame.linesize(0);
-                final int uStride = frame.linesize(1);
-                final int vStride = frame.linesize(2);
-                final long ySize = (long) yStride * height;
-                final long uSize = (long) uStride * chromaH;
-                final long vSize = (long) vStride * chromaH;
-                planes[0] = this.ensurePlane(planes[0], ySize);
-                planes[1] = this.ensurePlane(planes[1], uSize);
-                planes[2] = this.ensurePlane(planes[2], vSize);
-                copyPlane(frame.data(0), ySize, planes[0]);
-                copyPlane(frame.data(1), uSize, planes[1]);
-                copyPlane(frame.data(2), vSize, planes[2]);
-                this.gfx.upload(new ByteBuffer[]{planes[0], planes[1], planes[2]}, new int[]{yStride, uStride, vStride});
-            }
-            case YUVA420P, YUVA422P, YUVA444P -> {
-                final int chromaH = (cs == PixelFormat.YUVA420P) ? (height + 1) / 2 : height;
-                final int yStride = frame.linesize(0);
-                final int uStride = frame.linesize(1);
-                final int vStride = frame.linesize(2);
-                final int aStride = frame.linesize(3);
-                final long ySize = (long) yStride * height;
-                final long uSize = (long) uStride * chromaH;
-                final long vSize = (long) vStride * chromaH;
-                final long aSize = (long) aStride * height;
-                planes[0] = this.ensurePlane(planes[0], ySize);
-                planes[1] = this.ensurePlane(planes[1], uSize);
-                planes[2] = this.ensurePlane(planes[2], vSize);
-                planes[3] = this.ensurePlane(planes[3], aSize);
-                copyPlane(frame.data(0), ySize, planes[0]);
-                copyPlane(frame.data(1), uSize, planes[1]);
-                copyPlane(frame.data(2), vSize, planes[2]);
-                copyPlane(frame.data(3), aSize, planes[3]);
-                this.gfx.upload(new ByteBuffer[]{planes[0], planes[1], planes[2], planes[3]}, new int[]{yStride, uStride, vStride, aStride});
-            }
-            // FFTool NEVER MAPS A NATIVE FRAME TO ANY OTHER FORMAT, SO REACHING THIS BRANCH IS A PROGRAMMING ERROR
-            default -> throw new IllegalStateException("Unsupported native upload: " + cs);
+        // EACH PLANE COPIES ITS linesize TIMES ITS ROWS; PixelFormat ROUNDS SUBSAMPLED ROWS UP LIKE FFMPEG ALLOCATES THEM
+        final ByteBuffer[] bufs = new ByteBuffer[cs.planes()];
+        final int[] strides = new int[bufs.length];
+        for (int i = 0; i < bufs.length; i++) {
+            strides[i] = frame.linesize(i);
+            final long size = (long) strides[i] * cs.planeHeight(i, height);
+            planes[i] = this.ensurePlane(planes[i], size);
+            copyPlane(frame.data(i), size, planes[i]);
+            bufs[i] = planes[i];
         }
+        this.gfx.upload(bufs, strides);
     }
 
     private ByteBuffer ensurePlane(final ByteBuffer buf, final long needed) {

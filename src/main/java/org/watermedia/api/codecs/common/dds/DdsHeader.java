@@ -4,7 +4,6 @@ import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.common.Limits;
 import org.watermedia.api.util.PixelFormat;
-import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -140,7 +139,7 @@ public final class DdsHeader {
     public record Info(int width, int height, PixelFormat format, int arraySize) {
         /** Compressed byte size of one frame, edges padded up to the 4x4 block grid. */
         public long frameBytes() {
-            return DataTool.frameBytes(this.format, this.width, this.height);
+            return this.format.frameBytes(this.width, this.height, 8);
         }
     }
 }

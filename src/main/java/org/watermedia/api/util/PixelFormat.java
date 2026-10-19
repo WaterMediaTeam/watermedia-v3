@@ -5,6 +5,11 @@ package org.watermedia.api.util;
  * <p>
  * Each constant carries its intrinsic layout data: {@link #planes()} for raw formats and
  * {@link #blockBytes()} for compressed ones, so producers and engines never hardcode either.
+ * <p>
+ * Plane 0 holds the luma or the packed pixels, planes 1 and 2 the chroma and plane 3 the alpha. A texel is
+ * the smallest addressable unit of a plane row: a pixel, a chroma sample or pair, a two-pixel packed
+ * {@link #YUYV} group or a 4x4 compressed block. Subsampled planes round up like FFmpeg, so odd sizes keep
+ * their last chroma column and row.
  */
 public enum PixelFormat {
     // ===============
@@ -90,4 +95,55 @@ public enum PixelFormat {
 
     /** Whether this is a block-compressed (BCn) format the GPU samples without decoding. */
     public boolean compressed() { return this.blockBytes > 0; }
+
+    /** Returns the width in texels of {@code plane} for a frame {@code width} pixels wide. */
+    public int planeWidth(final int plane, final int width) {
+        this.check(plane, width);
+        return switch (this) {
+            case YUYV, UYVY -> (int) ((width + 1L) >> 1);
+            case NV12, NV21, YUV420P, YUV422P, YUVA420P, YUVA422P -> plane == 1 || plane == 2 ? (int) ((width + 1L) >> 1) : width;
+            case BC1, BC2, BC3, BC5, BC7 -> (int) ((width + 3L) >> 2);
+            default -> width;
+        };
+    }
+
+    /** Returns the height in texel rows of {@code plane} for a frame {@code height} pixels tall. */
+    public int planeHeight(final int plane, final int height) {
+        this.check(plane, height);
+        return switch (this) {
+            case NV12, NV21, YUV420P, YUVA420P -> plane == 1 || plane == 2 ? (int) ((height + 1L) >> 1) : height;
+            case BC1, BC2, BC3, BC5, BC7 -> (int) ((height + 3L) >> 2);
+            default -> height;
+        };
+    }
+
+    /** Returns the bytes of one texel of {@code plane} at {@code bits} per sample; compressed formats ignore the depth. */
+    public int texelBytes(final int plane, final int bits) {
+        this.check(plane, 0);
+        if (bits < 1 || bits > 32) throw new IllegalArgumentException("Bits per sample must be within [1, 32], got " + bits);
+        if (this.compressed()) return this.blockBytes;
+        final int sample = bits <= 8 ? 1 : bits <= 16 ? 2 : 4;
+        return switch (this) {
+            case RGB -> 3 * sample;
+            case RGBA, BGRA, YUYV, UYVY -> 4 * sample;
+            case NV12, NV21 -> plane == 1 ? 2 * sample : sample;
+            default -> sample;
+        };
+    }
+
+    /** Returns the tightly packed bytes of every plane of a {@code width} by {@code height} frame at {@code bits} per sample, throwing {@link ArithmeticException} past a {@code long}. */
+    public long frameBytes(final int width, final int height, final int bits) {
+        long total = 0L;
+        for (int p = 0; p < this.planes; p++) {
+            // A ROW FITS A long (2^31 TEXELS OF AT MOST 16 BYTES); ROWS TIMES HEIGHT MAY NOT, SO IT THROWS INSTEAD OF WRAPPING
+            final long row = (long) this.planeWidth(p, width) * this.texelBytes(p, bits);
+            total = Math.addExact(total, Math.multiplyExact(row, this.planeHeight(p, height)));
+        }
+        return total;
+    }
+
+    private void check(final int plane, final int size) {
+        if (plane < 0 || plane >= this.planes) throw new IllegalArgumentException(this + " has no plane " + plane);
+        if (size < 0) throw new IllegalArgumentException("Plane size cannot be negative, got " + size);
+    }
 }

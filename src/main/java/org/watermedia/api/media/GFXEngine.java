@@ -131,8 +131,8 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     // SINCE DESTROYING AN IMPORT AFTER ITS HOST MEMORY IS GONE CRASHES THE DRIVER. NEVER CONCURRENT WITH upload
     void release(final ByteBuffer buffer) {}
 
-    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(); STRIDES IN BYTES, 0 = TIGHT): READS [position,
-    // limit) WITHOUT MOVING position AND MAY KEEP READING UNTIL THE SECOND LATER upload RETURNS, SO CALLERS PASS FRESH ARRAYS
+    // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(), EACH OF minBytes; STRIDES IN BYTES, 0 = TIGHT): READS
+    // [position, limit) WITHOUT MOVING position AND MAY KEEP READING UNTIL THE SECOND LATER upload RETURNS, SO CALLERS PASS FRESH ARRAYS
     final void upload(final ByteBuffer[] planes, final int[] strides) {
         if (planes == null || strides == null || strides.length < planes.length)
             throw new IllegalArgumentException("Every plane needs a buffer and a stride");
@@ -159,4 +159,22 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
 
     // BACKEND TEARDOWN, RUN EXACTLY ONCE AFTER released IS SET; GL DEFERS ITS GPU WORK TO THE RENDER THREAD
     abstract void destroy();
+
+    // UTILITY
+
+    // BYTES A PLANE OF rows ROWS OF rowBytes EACH NEEDS WHEN ITS ROWS START stride APART (0 = TIGHT): THE LAST ROW
+    // CARRIES NO PADDING. -1 WHEN THE STRIDE CANNOT HOLD ONE ROW
+    static long minBytes(final int stride, final long rowBytes, final int rows) {
+        if (stride == 0) return rowBytes * rows;
+        return stride < rowBytes ? -1L : (long) (rows - 1) * stride + rowBytes;
+    }
+
+    // SHADER FACTOR THAT STRETCHES 10 AND 12-BIT SAMPLES STORED IN 16-BIT TEXELS TO THE FULL [0, 1] RANGE
+    static float bitScale(final int bits) {
+        return switch (bits) {
+            case 10 -> 65_535.0f / 1_023.0f;
+            case 12 -> 65_535.0f / 4_095.0f;
+            default -> 1.0f;
+        };
+    }
 }

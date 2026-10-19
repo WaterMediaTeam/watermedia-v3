@@ -164,8 +164,8 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // YUYV/UYVY PACKED YUV422 → RGB
-    // PACKED TEXTURE IS RGBA8 AT (WIDTH/2, HEIGHT): EACH TEXEL = ONE PIXEL PAIR
+    // YUYV/UYVY PACKED YUV422 → RGB. THE RGBA8 TEXTURE HOLDS ONE PIXEL PAIR PER TEXEL, ceil(WIDTH/2) WIDE; EACH PIXEL
+    // FETCHES ITS PAIR BY INDEX, SINCE NORMALIZED SAMPLING DRIFTS TO THE NEXT PAIR ON ODD WIDTHS
     private static final String FRAGMENT_YUYV = """
             #version 150 core
             in vec2 texCoord;
@@ -174,13 +174,13 @@ public final class GLEngine extends GFXEngine {
             uniform float outputWidth;
             uniform float uvSwap;
             void main() {
-                vec4 packed = texture(plane0, texCoord);
-                float pixelX = texCoord.x * outputWidth;
-                float isOdd = mod(floor(pixelX), 2.0);
-                float Y0 = mix(packed.r, packed.g, uvSwap);
-                float Cb = mix(packed.g, packed.r, uvSwap);
-                float Y1 = mix(packed.b, packed.a, uvSwap);
-                float Cr = mix(packed.a, packed.b, uvSwap);
+                int px = int(texCoord.x * outputWidth);
+                vec4 pair = texelFetch(plane0, ivec2(px >> 1, int(texCoord.y * float(textureSize(plane0, 0).y))), 0);
+                float isOdd = float(px & 1);
+                float Y0 = mix(pair.r, pair.g, uvSwap);
+                float Cb = mix(pair.g, pair.r, uvSwap);
+                float Y1 = mix(pair.b, pair.a, uvSwap);
+                float Cr = mix(pair.a, pair.b, uvSwap);
                 float Y = mix(Y0, Y1, isOdd) * 1.16438 - 0.07306;
                 Cb = Cb * 1.13839 - 0.57143;
                 Cr = Cr * 1.13839 - 0.57143;
@@ -273,10 +273,10 @@ public final class GLEngine extends GFXEngine {
     // ANOMALY LATCHES: EACH REPEATABLE UPLOAD ANOMALY IS LOGGED ONCE PER ENGINE
     private volatile boolean failWarned; // PRODUCER AND RENDER THREADS
     private boolean shortWarned;         // RENDER THREAD ONLY
+    private boolean strideWarned;        // RENDER THREAD ONLY
     private boolean glErrorWarned;       // RENDER THREAD ONLY
 
     // BIT DEPTH DERIVED STATE (SET IN format())
-    private int bytesPerSample = 1;
     private float bitScale = 1.0f;
     private int glInternalR = GL30.GL_R8;    // R8 / R16 / R32F
     private int glInternalRG = GL30.GL_RG8;  // RG8 / RG16
@@ -508,39 +508,20 @@ public final class GLEngine extends GFXEngine {
         this.pboReady = false;
         this.firstFrame = true;
 
-        // DERIVE BIT DEPTH STATE
+        // DERIVE BIT DEPTH STATE: 10 AND 12-BIT SAMPLES LIVE IN 16-BIT TEXELS, STRETCHED BY bitScale IN THE SHADER
+        this.bitScale = bitScale(bits);
         switch (bits) {
-            case 10 -> {
-                this.bytesPerSample = 2;
-                this.bitScale = 65535.0f / 1023.0f;
-                this.glInternalR = GL30.GL_R16;
-                this.glInternalRG = GL30.GL_RG16;
-                this.glType = GL11.GL_UNSIGNED_SHORT;
-            }
-            case 12 -> {
-                this.bytesPerSample = 2;
-                this.bitScale = 65535.0f / 4095.0f;
-                this.glInternalR = GL30.GL_R16;
-                this.glInternalRG = GL30.GL_RG16;
-                this.glType = GL11.GL_UNSIGNED_SHORT;
-            }
-            case 16 -> {
-                this.bytesPerSample = 2;
-                this.bitScale = 1.0f;
+            case 10, 12, 16 -> {
                 this.glInternalR = GL30.GL_R16;
                 this.glInternalRG = GL30.GL_RG16;
                 this.glType = GL11.GL_UNSIGNED_SHORT;
             }
             case 32 -> {
-                this.bytesPerSample = 4;
-                this.bitScale = 1.0f;
                 this.glInternalR = GL30.GL_R32F;
                 this.glInternalRG = GL30.GL_RG16F; // CLOSEST FOR 32-BIT FLOAT PAIRS
                 this.glType = GL11.GL_FLOAT;
             }
             default -> { // 8-BIT
-                this.bytesPerSample = 1;
-                this.bitScale = 1.0f;
                 this.glInternalR = GL30.GL_R8;
                 this.glInternalRG = GL30.GL_RG8;
                 this.glType = GL11.GL_UNSIGNED_BYTE;
@@ -661,18 +642,19 @@ public final class GLEngine extends GFXEngine {
         if (this.frameTextures.length > 0) this.releaseFrameTextures();
         this.ensureTargets();
 
-        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
 
+        final boolean uploaded;
         if (s.slot >= 0L) {
-            // FREE SLOTS THE LATEST-WINS POLICY SKIPPED, THEN CONSUME THIS ONE
+            // FREE SLOTS THE LATEST-WINS POLICY SKIPPED, THEN CONSUME THIS ONE (A REFUSED ONE CARRIES NO FENCE)
             this.retireRing(s.slot);
-            this.uploadRing(s);
+            uploaded = this.uploadRing(s);
             this.ringConsumed = s.slot + 1;
         } else {
-            this.uploadClient(s);
+            uploaded = this.uploadClient(s);
         }
+        if (!uploaded) return; // A REFUSED FRAME IS NEITHER CONVERTED NOR PUBLISHED: THE LAST ONE STAYS EXPOSED
 
         this.firstFrame = false;
         if (this.conv != CONV_NONE) this.convertToRGBA();
@@ -680,17 +662,14 @@ public final class GLEngine extends GFXEngine {
 
     // UPLOAD FROM CLIENT MEMORY: RESPEC ON FIRST FRAME/SIZE CHANGE, LEGACY DOUBLE-BUFFERED PBOS
     // IN STEADY STATE; AFTERWARDS THE RING IS ARMED (OR REGROWN) SO LATER FRAMES SKIP THIS PATH.
-    private void uploadClient(final Submission s) {
+    private boolean uploadClient(final Submission s) {
         long total = 0L;
         boolean respec = this.firstFrame || !this.pboReady;
+        final long[] needs = new long[this.planes.length];
         for (int i = 0; i < this.planes.length; i++) {
-            final Plane p = this.planes[i];
-            final long needed = (long) p.effStride(s.strides[i]) * p.h;
-            if (s.sizes[i] < needed) {
-                if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, s.sizes[i], needed);
-                this.shortWarned = true;
-                return;
-            }
+            final long needed = this.required(this.planes[i], i, s.strides[i], s.sizes[i]);
+            if (needed < 0L) return false;
+            needs[i] = needed;
             respec |= this.planeBytes[i] != needed;
             // RING SLOTS ARE SIZED FOR WHAT PRODUCERS ACTUALLY COPY (remaining()), WHICH MAY
             // EXCEED THE TIGHT PLANE BYTES WHEN BUFFERS CARRY ALIGNMENT PADDING
@@ -713,14 +692,14 @@ public final class GLEngine extends GFXEngine {
             GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
-                final long needed = (long) p.effStride(s.strides[i]) * p.h;
                 final long addr = s.addrs[i];
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+                GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(s.strides[i]));
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, addr);
                 this.checkGLError("plane texImage");
-                this.seedPBO(i * NUM_PBOS, needed, addr);
-                this.planeBytes[i] = needed;
+                this.seedPBO(i * NUM_PBOS, needs[i], addr);
+                this.planeBytes[i] = needs[i];
             }
             this.pboWriteIdx = 0;
             this.pboReady = true;
@@ -730,6 +709,7 @@ public final class GLEngine extends GFXEngine {
             for (int i = 0; i < this.planes.length; i++) {
                 final Plane p = this.planes[i];
                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+                GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(s.strides[i]));
                 GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
                 GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.pbos[i * NUM_PBOS + readIdx]);
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, 0L);
@@ -746,27 +726,29 @@ public final class GLEngine extends GFXEngine {
         if (this.ringAddr == 0L || total > this.ringSlotBytes) {
             this.armRing(total);
         }
+        return true;
     }
 
     // UPLOAD FROM A RING SLOT: PIXELS ARE ALREADY GPU-VISIBLE, SO ONLY texSub FROM OFFSETS
     // PLUS A FENCE; PLANE SIZE CHANGES RE-SPEC VIA texImage FROM THE SAME OFFSETS.
-    private void uploadRing(final Submission s) {
+    private boolean uploadRing(final Submission s) {
+        // EVERY PLANE IS CHECKED BEFORE THE FIRST ONE UPLOADS, SO A REFUSED FRAME NEVER MIXES NEW AND OLD PLANES
+        final long[] needs = new long[this.planes.length];
+        for (int i = 0; i < this.planes.length; i++) {
+            needs[i] = this.required(this.planes[i], i, s.strides[i], s.sizes[i]);
+            if (needs[i] < 0L) return false;
+        }
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, this.ringBufferId);
         long offset = (s.slot % RING_SLOTS) * this.ringSlotBytes;
         for (int i = 0; i < this.planes.length; i++) {
             final Plane p = this.planes[i];
-            final long needed = (long) p.effStride(s.strides[i]) * p.h;
-            if (s.sizes[i] < needed) {
-                if (!this.shortWarned) LOGGER.warn(IT, "Ring plane {} too small: {} < {}", i, s.sizes[i], needed);
-                this.shortWarned = true;
-                break;
-            }
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, p.tex);
+            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(s.strides[i]));
             GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(s.strides[i]));
-            if (this.planeBytes[i] != needed) {
+            if (this.planeBytes[i] != needs[i]) {
                 GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, offset);
                 this.checkGLError("ring plane texImage");
-                this.planeBytes[i] = needed;
+                this.planeBytes[i] = needs[i];
             } else {
                 GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, p.w, p.h, p.format, p.type, offset);
                 if (GL_CHECKS) this.checkGLError("ring plane texSub");
@@ -774,6 +756,7 @@ public final class GLEngine extends GFXEngine {
             offset += s.sizes[i];
         }
         this.ringFences[(int) (s.slot % RING_SLOTS)] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        return true;
     }
 
     // RETIRES RING SLOTS STRICTLY IN ORDER UP TO cap. SKIPPED SLOTS (NO FENCE) RETIRE
@@ -972,34 +955,29 @@ public final class GLEngine extends GFXEngine {
     // BUILDS THE PER-PLANE LAYOUT: DIRECT FORMATS (BGRA/RGBA/RGB) TARGET managedTexture WITHOUT
     // A SHADER PASS; EVERYTHING ELSE RENDERS PLANE TEXTURES THROUGH THE FBO CONVERT.
     private void buildPlanes() {
-        final int w = this.width;
-        final int h = this.height;
-        final int bps = this.bytesPerSample;
-        this.conv = kindOf(this.format);
-        this.planes = switch (this.format) {
-            case BGRA -> new Plane[]{
-                    new Plane(w, h, GL11.GL_RGBA, GL12.GL_BGRA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
-            case RGB -> this.bits > 8
-                    ? new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGB, GL11.GL_UNSIGNED_SHORT, 6)}
-                    : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGB, GL11.GL_UNSIGNED_BYTE, 3)};
-            case GRAY -> new Plane[]{
-                    new Plane(w, h, this.glInternalR, GL11.GL_RED, this.glType, bps)};
-            case YUYV, UYVY -> new Plane[]{
-                    // CEIL: ODD WIDTHS NEED THE LAST PACKED TEXEL (w/2) — MATCHES VKEngine
-                    new Plane((w + 1) / 2, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 4)};
-            case NV12, NV21 -> new Plane[]{
-                    new Plane(w, h, this.glInternalR, GL11.GL_RED, this.glType, bps),
-                    new Plane(w / 2, h / 2, this.glInternalRG, GL30.GL_RG, this.glType, 2 * bps)};
-            case YUV420P -> threePlanes(w, h, w / 2, h / 2, this.glInternalR, this.glType, bps);
-            case YUV422P -> threePlanes(w, h, w / 2, h, this.glInternalR, this.glType, bps);
-            case YUV444P -> threePlanes(w, h, w, h, this.glInternalR, this.glType, bps);
-            case YUVA420P -> fourPlanes(w, h, w / 2, h / 2, this.glInternalR, this.glType, bps);
-            case YUVA422P -> fourPlanes(w, h, w / 2, h, this.glInternalR, this.glType, bps);
-            case YUVA444P -> fourPlanes(w, h, w, h, this.glInternalR, this.glType, bps);
-            default -> this.bits == 16 // RGBA
-                    ? new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL11.GL_UNSIGNED_SHORT, 8)}
-                    : new Plane[]{new Plane(w, h, GL11.GL_RGBA, GL11.GL_RGBA, GL12.GL_UNSIGNED_INT_8_8_8_8_REV, 4)};
-        };
+        final PixelFormat f = this.format;
+        this.conv = kindOf(f);
+        final Plane[] planes = new Plane[f.planes()];
+        for (int i = 0; i < planes.length; i++) {
+            // SIZES AND TEXEL BYTES COME FROM PixelFormat; ONLY THE GL TEXEL TYPE IS DECIDED HERE
+            final int internal;
+            final int glFormat;
+            final int type;
+            switch (f) {
+                case BGRA -> { internal = GL11.GL_RGBA; glFormat = GL12.GL_BGRA; type = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; }
+                case RGB -> { internal = GL11.GL_RGBA; glFormat = GL11.GL_RGB; type = this.bits > 8 ? GL11.GL_UNSIGNED_SHORT : GL11.GL_UNSIGNED_BYTE; }
+                case RGBA -> { internal = GL11.GL_RGBA; glFormat = GL11.GL_RGBA; type = this.bits > 8 ? GL11.GL_UNSIGNED_SHORT : GL12.GL_UNSIGNED_INT_8_8_8_8_REV; }
+                case YUYV, UYVY -> { internal = GL11.GL_RGBA; glFormat = GL11.GL_RGBA; type = GL11.GL_UNSIGNED_BYTE; }
+                default -> { // GRAY, NV AND PLANAR YUV: ONE SAMPLE PER TEXEL, TWO ON THE INTERLEAVED NV CHROMA
+                    final boolean pair = i == 1 && (f == PixelFormat.NV12 || f == PixelFormat.NV21);
+                    internal = pair ? this.glInternalRG : this.glInternalR;
+                    glFormat = pair ? GL30.GL_RG : GL11.GL_RED;
+                    type = this.glType;
+                }
+            }
+            planes[i] = new Plane(f.planeWidth(i, this.width), f.planeHeight(i, this.height), internal, glFormat, type, f.texelBytes(i, this.bits));
+        }
+        this.planes = planes;
     }
 
     // CONVERSION KIND OF A LAYOUT: DIRECT FORMATS (BGRA, RGBA, RGB) NEED NO SHADER PASS
@@ -1012,23 +990,6 @@ public final class GLEngine extends GFXEngine {
             case YUYV, UYVY -> CONV_YUYV;
             default -> CONV_NONE;
         };
-    }
-
-    private static Plane[] threePlanes(final int w, final int h, final int cw, final int ch,
-                                       final int internal, final int type, final int texelBytes) {
-        return new Plane[]{
-                new Plane(w, h, internal, GL11.GL_RED, type, texelBytes),
-                new Plane(cw, ch, internal, GL11.GL_RED, type, texelBytes),
-                new Plane(cw, ch, internal, GL11.GL_RED, type, texelBytes)};
-    }
-
-    private static Plane[] fourPlanes(final int w, final int h, final int cw, final int ch,
-                                      final int internal, final int type, final int texelBytes) {
-        return new Plane[]{
-                new Plane(w, h, internal, GL11.GL_RED, type, texelBytes),
-                new Plane(cw, ch, internal, GL11.GL_RED, type, texelBytes),
-                new Plane(cw, ch, internal, GL11.GL_RED, type, texelBytes),
-                new Plane(w, h, internal, GL11.GL_RED, type, texelBytes)};
     }
 
     // CREATES TARGET TEXTURES LAZILY. DIRECT FORMATS ALIAS PLANE 0 TO managedTexture; PACKED
@@ -1058,50 +1019,40 @@ public final class GLEngine extends GFXEngine {
         return format == PixelFormat.BGRA || format == PixelFormat.RGBA || format == PixelFormat.RGB;
     }
 
+    // A DIRECT FORMAT HAS ONE PLANE, ALREADY LAID OUT BY buildPlanes(), SO A PRELOADED FRAME UPLOADS THROUGH IT
     private boolean uploadDirectTexture(final int texture, final ByteBuffer buffer, final int stride) {
-        final int glFormat;
-        final int glType;
-        final int bytesPerTexel;
-        switch (this.format) {
-            case BGRA -> { glFormat = GL12.GL_BGRA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4; }
-            case RGB -> {
-                if (this.bits > 8) {
-                    glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 6;
-                } else {
-                    glFormat = GL11.GL_RGB; glType = GL11.GL_UNSIGNED_BYTE; bytesPerTexel = 3;
-                }
-            }
-            default -> {
-                if (this.bits == 16) {
-                    glFormat = GL11.GL_RGBA; glType = GL11.GL_UNSIGNED_SHORT; bytesPerTexel = 8;
-                } else {
-                    glFormat = GL11.GL_RGBA; glType = GL12.GL_UNSIGNED_INT_8_8_8_8_REV; bytesPerTexel = 4;
-                }
-            }
-        }
-
-        final int rowLengthPixels = (stride == 0) ? 0 : stride / bytesPerTexel;
-        final int effectiveStride = (stride == 0) ? this.width * bytesPerTexel : stride;
-        final long dataSize = (long) effectiveStride * this.height;
-        if (buffer.remaining() < dataSize) {
-            if (!this.shortWarned) LOGGER.warn(IT, "Preloaded frame buffer too small: {} < {}", buffer.remaining(), dataSize);
-            this.shortWarned = true;
-            return false;
-        }
-
+        final Plane p = this.planes[0];
+        if (this.required(p, 0, stride, buffer.remaining()) < 0L) return false;
         final long addr = MemoryUtil.memAddress(buffer);
         if (addr == 0L) return false;
 
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
-        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
-        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, rowLengthPixels);
+        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, p.align(stride));
+        GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, p.rowLen(stride));
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
 
-        GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, this.width, this.height, 0, glFormat, glType, addr);
+        GL11.nglTexImage2D(GL11.GL_TEXTURE_2D, 0, p.internal, p.w, p.h, 0, p.format, p.type, addr);
         this.checkGLError("preloaded frame glTexImage2D");
         return true;
+    }
+
+    // BYTES PLANE i READS FROM size BYTES WHOSE ROWS START stride APART, OR -1 AFTER A LATCHED WARNING WHEN GL CANNOT
+    // EXPRESS THE STRIDE OR THE BUFFER IS SHORT
+    private long required(final Plane p, final int i, final int stride, final long size) {
+        final long needed = minBytes(stride, (long) p.w * p.texelBytes, p.h);
+        if (needed < 0L || p.align(stride) == 0) {
+            if (!this.strideWarned) LOGGER.warn(IT, "Plane {} stride {} cannot hold rows of {} {}-byte texels; frame dropped", i, stride, p.w, p.texelBytes);
+            this.strideWarned = true;
+            return -1L;
+        }
+        if (size < needed) {
+            if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, size, needed);
+            this.shortWarned = true;
+            return -1L;
+        }
+        return needed;
     }
 
     // ==========================================================================
@@ -1276,6 +1227,7 @@ public final class GLEngine extends GFXEngine {
         final int format;
         final int type;
         final int texelBytes;
+        final int elementBytes; // ONE GL ELEMENT: A COMPONENT, OR THE WHOLE PACKED 8_8_8_8 PIXEL
         int tex;
 
         Plane(final int w, final int h, final int internal, final int format, final int type, final int texelBytes) {
@@ -1285,14 +1237,21 @@ public final class GLEngine extends GFXEngine {
             this.format = format;
             this.type = type;
             this.texelBytes = texelBytes;
+            this.elementBytes = type == GL11.GL_UNSIGNED_BYTE ? 1 : type == GL11.GL_UNSIGNED_SHORT ? 2 : 4;
         }
 
         int rowLen(final int stride) {
             return stride == 0 ? 0 : stride / this.texelBytes;
         }
 
-        int effStride(final int stride) {
-            return stride == 0 ? this.w * this.texelBytes : stride;
+        // GL_UNPACK_ALIGNMENT THAT LANDS ROWS OF rowLen(stride) TEXELS ON stride: GL PADS A ROW UP TO AN ALIGNMENT LARGER
+        // THAN ONE ELEMENT, SO A STRIDE OF NO WHOLE TEXEL COUNT NEEDS ONE DIVIDING IT. 0 WHEN NONE FITS
+        int align(final int stride) {
+            final int rest = stride == 0 ? 0 : stride % this.texelBytes;
+            if (rest == 0) return 1;
+            for (int a = 8; a > this.elementBytes; a >>= 1)
+                if (stride % a == 0 && rest < a) return a;
+            return 0;
         }
     }
 

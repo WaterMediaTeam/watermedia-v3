@@ -147,7 +147,7 @@ public final class VKEngine extends GFXEngine {
                     float A  = textureLod(plane3, uv, 0.0).r * bs;
                     rgba = vec4(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb, A);
                 } else {
-                    // PACKED YUV422: ONE RGBA TEXEL COVERS A PIXEL PAIR AT (width/2, height)
+                    // PACKED YUV422: ONE RGBA TEXEL COVERS A PIXEL PAIR AT (ceil(width/2), height)
                     ivec2 t = ivec2(gid.x >> 1, gid.y);
                     vec4 p = texelFetch(plane0, t, 0);
                     float Y0, Cb, Y1, Cr;
@@ -209,9 +209,8 @@ public final class VKEngine extends GFXEngine {
     private int mode;            // COMPUTE MODE WHEN convert
     private int outFormat;       // MANAGED IMAGE FORMAT
     private int outUsage;        // MANAGED IMAGE USAGE
-    private int outTexelBytes;   // BYTES PER PIXEL FOR THE PASSTHROUGH COPY
     private float bitScale = 1.0f;
-    private int planeCount;
+    private int planeCount;      // SOURCE PLANES PER FRAME; PASSTHROUGH HAS ONE, COPIED STRAIGHT INTO THE MANAGED IMAGE
     private final PlaneSpec[] planeSpecs = new PlaneSpec[MAX_PLANES];
     private int formatGen;       // BUMPED ON EVERY FORMAT CHANGE; SLOTS REBUILD WHEN STALE
 
@@ -242,6 +241,7 @@ public final class VKEngine extends GFXEngine {
     // ANOMALY LATCHES: EACH REPEATABLE UPLOAD ANOMALY IS LOGGED ONCE PER ENGINE
     private volatile boolean failWarned;
     private volatile boolean shortWarned;
+    private volatile boolean strideWarned;
 
     // THE CONTEXT AND EVERY VULKAN OBJECT IT EXPOSES MUST OUTLIVE THIS ENGINE, WHICH ONLY CREATES ITS OWN COMMAND POOL,
     // DESCRIPTORS, PIPELINES AND PER-SLOT IMAGES ON IT
@@ -451,51 +451,39 @@ public final class VKEngine extends GFXEngine {
 
         // BUILD THE FORMAT TABLE IN ONE PASS: PER-PLANE SPECS, OUTPUT FORMAT/USAGE, COMPUTE MODE
         // AND THE OPTIONAL SAMPLER-YCBCR ROUTE, ALL DERIVED FROM THE NEW FORMAT.
-        final int bps = bits == 32 ? 4 : (bits > 8 ? 2 : 1);
-        this.bitScale = switch (bits) {
-            case 10 -> 65535.0f / 1023.0f;
-            case 12 -> 65535.0f / 4095.0f;
-            default -> 1.0f; // 8, 16, 32
-        };
+        this.bitScale = bitScale(bits);
         final int rF = redFormat(bits);
-        final int rgF = redGreenFormat(bits);
 
         this.convert = true;
-        this.planeCount = 0;
+        this.planeCount = format.planes();
         this.ycbcrFmt = 0;
         switch (format) {
-            case BGRA -> { this.convert = false; this.outFormat = VK_FORMAT_B8G8R8A8_UNORM; this.outTexelBytes = 4; }
-            case RGBA -> { this.convert = false; this.outFormat = VK_FORMAT_R8G8B8A8_UNORM; this.outTexelBytes = 4; }
+            case BGRA -> { this.convert = false; this.outFormat = VK_FORMAT_B8G8R8A8_UNORM; this.plane(0, this.outFormat); }
+            case RGBA -> { this.convert = false; this.outFormat = VK_FORMAT_R8G8B8A8_UNORM; this.plane(0, this.outFormat); }
             case GRAY -> {
                 // GRAY IS NOT A YCBCR FORMAT AT ALL — THE SINGLE-PLANE COMPUTE BROADCAST STAYS.
                 this.mode = MODE_GRAY;
-                this.plane(0, rF, bps, width, height);
-                this.planeCount = 1;
+                this.plane(0, rF);
             }
             case NV12, NV21 -> {
                 this.mode = format == PixelFormat.NV21 ? MODE_NV21 : MODE_NV12;
-                this.plane(0, rF, bps, width, height);
-                this.plane(1, rgF, 2 * bps, width / 2, height / 2);
-                this.planeCount = 2;
+                this.plane(0, rF);
+                this.plane(1, redGreenFormat(bits));
                 // ONLY 8-BIT EVEN-SIZED NV12 TAKES THE YCBCR PATH: VULKAN HAS NO VU-ORDER PLANE (NV21),
                 // 10/12-BIT PLANAR IS LSB-ALIGNED VS VULKAN'S MSB-ALIGNED G10X6/G12X4, AND 420
                 // MULTIPLANAR NEEDS EVEN WxH (VUID-VkImageCreateInfo-format-04712/04713).
-                if (format == PixelFormat.NV12 && bps == 1 && (width & 1) == 0 && (height & 1) == 0) {
+                if (format == PixelFormat.NV12 && bits == 8 && (width & 1) == 0 && (height & 1) == 0)
                     this.tryYcbcr(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
-                }
             }
             case YUV420P, YUV422P, YUV444P -> {
                 this.mode = MODE_YUV3;
-                final int cw = format == PixelFormat.YUV444P ? width : width / 2;
-                final int ch = format == PixelFormat.YUV420P ? height / 2 : height;
-                this.plane(0, rF, bps, width, height);
-                this.plane(1, rF, bps, cw, ch);
-                this.plane(2, rF, bps, cw, ch);
-                this.planeCount = 3;
+                this.plane(0, rF);
+                this.plane(1, rF);
+                this.plane(2, rF);
                 // 8-BIT ONLY (SEE THE NV12 NOTE ON 10/12-BIT ALIGNMENT). SUBSAMPLED MULTIPLANAR
                 // IMAGES REQUIRE EVEN EXTENTS ALONG THE SUBSAMPLED AXES: 420 NEEDS EVEN WxH,
                 // 422 NEEDS EVEN W, 444 HAS NO RESTRICTION.
-                if (bps == 1) {
+                if (bits == 8) {
                     switch (format) {
                         case YUV420P -> { if ((width & 1) == 0 && (height & 1) == 0) this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM); }
                         case YUV422P -> { if ((width & 1) == 0) this.tryYcbcr(VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM); }
@@ -506,23 +494,17 @@ public final class VKEngine extends GFXEngine {
             case YUVA420P, YUVA422P, YUVA444P -> {
                 // YUVA STAYS ON COMPUTE: NO VULKAN MULTIPLANAR FORMAT CARRIES AN ALPHA PLANE.
                 this.mode = MODE_YUVA;
-                final int cw = format == PixelFormat.YUVA444P ? width : width / 2;
-                final int ch = format == PixelFormat.YUVA420P ? height / 2 : height;
-                this.plane(0, rF, bps, width, height);
-                this.plane(1, rF, bps, cw, ch);
-                this.plane(2, rF, bps, cw, ch);
-                this.plane(3, rF, bps, width, height);
-                this.planeCount = 4;
+                this.plane(0, rF);
+                this.plane(1, rF);
+                this.plane(2, rF);
+                this.plane(3, rF);
             }
             // PACKED YUYV/UYVY STAYS ON COMPUTE: THE EXACT PIXEL-PAIR texelFetch DECODE IS ILLEGAL
             // THROUGH A YCBCR SAMPLER (NO OpImageFetch), AND SINGLE-PLANE 422 PACKED FORMATS
             // (G8B8G8R8_422) HAVE SPOTTY OPTIMAL-TILING SUPPORT ACROSS DRIVERS.
             case YUYV, UYVY -> {
                 this.mode = format == PixelFormat.UYVY ? MODE_UYVY : MODE_YUYV;
-                // CEIL: FOR ODD WIDTHS THE SHADER FETCHES TEXEL gid.x>>1 == w/2 ON THE LAST COLUMN,
-                // SO A FLOOR-SIZED PLANE WOULD BE READ ONE TEXEL OUT OF BOUNDS.
-                this.plane(0, VK_FORMAT_R8G8B8A8_UNORM, 4, (width + 1) / 2, height);
-                this.planeCount = 1;
+                this.plane(0, VK_FORMAT_R8G8B8A8_UNORM); // ONE RGBA8 TEXEL PER PIXEL PAIR
             }
             // RGB AND BCn NEVER PASS supports(), SO THEY CANNOT REACH THIS TABLE
             default -> throw new IllegalStateException("VKEngine: " + format + " has no upload path");
@@ -609,10 +591,32 @@ public final class VKEngine extends GFXEngine {
     @Override
     synchronized void push(final ByteBuffer[] bufs, final int[] strides) {
         if (this.failed || this.width <= 0 || this.height <= 0) return;
-        final int sources = this.convert ? this.planeCount : 1;
+        final int sources = this.planeCount;
         if (bufs.length != sources) return; // STALE FORMAT / WRONG PLANE COUNT
-        for (final ByteBuffer b: bufs) {
-            if (b == null || !b.isDirect()) return;
+
+        // VALIDATE BEFORE TOUCHING A FENCE. THE LAST ROW CARRIES NO PADDING, SO THE COPY READS EXACTLY needed BYTES;
+        // bufferRowLength COUNTS TEXELS, SO A STRIDE SHORTER THAN A ROW OR NOT A WHOLE NUMBER OF TEXELS CANNOT BE EXPRESSED
+        final long[] needed = new long[sources];
+        final int[] rowLen = new int[sources];
+        for (int i = 0; i < sources; i++) {
+            final PlaneSpec spec = this.planeSpecs[i];
+            needed[i] = minBytes(strides[i], (long) spec.w * spec.texelBytes, spec.h);
+            if (needed[i] < 0L || strides[i] % spec.texelBytes != 0) {
+                if (!this.strideWarned) LOGGER.warn(IT, "Plane {} stride {} is shorter than its {}-texel row or not a multiple of its {}-byte texels; frame dropped",
+                        i, strides[i], spec.w, spec.texelBytes);
+                this.strideWarned = true;
+            } else if (bufs[i].remaining() < needed[i]) {
+                if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed[i]);
+                this.shortWarned = true;
+            } else if (bufs[i].isDirect()) {
+                rowLen[i] = strides[i] / spec.texelBytes; // A TIGHT STRIDE (0) IS ALSO VULKAN'S TIGHT ROW LENGTH
+                continue;
+            }
+            // A DROPPED UPLOAD STILL COUNTS FOR RETENTION: THE LAST SUBMITTED FRAME FINISHES READING THE PRODUCER'S
+            // BUFFERS BEFORE THIS CALL RETURNS, SO THE NEXT CALL'S head-2 WAIT CANNOT LEAVE IT IN FLIGHT
+            final Slot last = this.slots[(int) ((this.head + SLOTS - 1) % SLOTS)];
+            if (this.head >= 1 && last.submitted) this.await(last.fence, "Retention wait");
+            return;
         }
 
         final int cur = (int) (this.head % SLOTS);
@@ -641,20 +645,7 @@ public final class VKEngine extends GFXEngine {
             // BYTES NOW (SYNCHRONOUSLY), SO THE PRODUCER BUFFER IS FULLY READ ON RETURN; THE IMPORT
             // PATH DEFERS THE READ TO THE GPU (COVERED BY THE FENCE WAITS ABOVE).
             final long[] src = new long[sources];
-            final int[] rowLen = new int[sources];
             for (int i = 0; i < sources; i++) {
-                final int texelBytes = this.convert ? this.planeSpecs[i].texelBytes : this.outTexelBytes;
-                final int w = this.convert ? this.planeSpecs[i].w : this.width;
-                final int h = this.convert ? this.planeSpecs[i].h : this.height;
-                final int effStride = strides[i] == 0 ? w * texelBytes : strides[i];
-                final long needed = (long) effStride * h;
-                if (bufs[i].remaining() < needed) {
-                    if (!this.shortWarned) LOGGER.warn(IT, "Plane {} buffer too small: {} < {}", i, bufs[i].remaining(), needed);
-                    this.shortWarned = true;
-                    return;
-                }
-                rowLen[i] = strides[i] == 0 ? 0 : strides[i] / texelBytes;
-
                 // IMPORT ONLY POSITION-0 BUFFERS WHOSE CAPACITY IS A MULTIPLE OF minAlign:
                 // memAddress() INCLUDES position AND THE IMPORTED SIZE IS ROUNDED UP TO minAlign,
                 // SO ANYTHING ELSE COULD IMPORT PAST THE END OF THE UNDERLYING ALLOCATION.
@@ -665,7 +656,7 @@ public final class VKEngine extends GFXEngine {
                     buffer = this.importBuffer(ptr, bufs[i].capacity());
                 }
                 if (buffer == 0L) {
-                    buffer = this.stageInto(slot, i, bufs[i], needed);
+                    buffer = this.stageInto(slot, i, bufs[i], needed[i]);
                 }
                 src[i] = buffer;
             }
@@ -1098,13 +1089,15 @@ public final class VKEngine extends GFXEngine {
     // ==========================================================================
     // FORMAT TABLE HELPERS
     // ==========================================================================
-    private void plane(final int i, final int format, final int texelBytes, final int w, final int h) {
+    // SIZES PLANE i OF THE PUBLISHED LAYOUT. SUBSAMPLED PLANES ROUND UP LIKE THE PRODUCER'S, SO ON ODD SIZES THE
+    // LAST CHROMA COLUMN/ROW (AND THE PACKED gid.x >> 1 FETCH) STAYS INSIDE THE IMAGE
+    private void plane(final int i, final int vkFormat) {
         PlaneSpec spec = this.planeSpecs[i];
         if (spec == null) { spec = new PlaneSpec(); this.planeSpecs[i] = spec; }
-        spec.format = format;
-        spec.texelBytes = texelBytes;
-        spec.w = Math.max(1, w);
-        spec.h = Math.max(1, h);
+        spec.format = vkFormat;
+        spec.texelBytes = this.format.texelBytes(i, this.bits);
+        spec.w = Math.max(1, this.format.planeWidth(i, this.width));
+        spec.h = Math.max(1, this.format.planeHeight(i, this.height));
     }
 
     // PLANE FORMATS PER SAMPLE DEPTH: 8-BIT UNORM, 16-BIT UNORM FOR 10/12/16 (bitScale RESCALES), 32-BIT FLOAT
