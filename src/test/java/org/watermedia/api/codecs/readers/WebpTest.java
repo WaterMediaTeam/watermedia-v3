@@ -2,11 +2,14 @@ package org.watermedia.api.codecs.readers;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.readers.webp.FourCC;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PamImage;
@@ -17,6 +20,7 @@ import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -24,17 +28,19 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * WebP decoder verification, consolidating lossless, lossy and animated coverage.
+ * Verifies the WebP decoder, consolidating lossless, lossy, animated and container coverage.
  *
  * <p>Lossless fixtures are compared pixel-perfectly against {@code dwebp}-generated PAMs.
  * Lossy fixtures use relaxed similarity bounds because VP8 implementations legitimately
@@ -66,7 +72,8 @@ public class WebpTest {
             final int w = upright.width(), h = upright.height();
             final byte[] tagged = withExif(plain, exif, w, h);
             try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(tagged))) {
-                assertEquals(6, reader.metadata().value(CodecsAPI.WEBP_METAKEY_ORIENTATION), fixture + " orientation key");
+                assertEquals(6, reader.metadata().value(CodecsAPI.METAKEY_ORIENTATION), fixture + " orientation key");
+                assertArrayEquals(exif, (byte[]) reader.metadata().value(CodecsAPI.METAKEY_EXIF), fixture + " EXIF payload");
             }
             final ImageData turned = CodecsAPI.decode(tagged, PixelFormat.BGRA);
             assertEquals(h, turned.width(), fixture + " rotated width");
@@ -82,6 +89,130 @@ public class WebpTest {
                 }
             }
         }
+    }
+
+    @Nested
+    @DisplayName("Container and metadata")
+    class Container {
+
+        @Test
+        @DisplayName("Metadata is parsed once and survives reset() replays unchanged")
+        void metadataStableAcrossReplays() throws IOException {
+            final byte[] xmp = ("<x:xmpmeta><rdf:RDF><rdf:Description><dc:creator><rdf:Seq><rdf:li>WaterMedia</rdf:li></rdf:Seq>"
+                    + "</dc:creator><xmp:Label>animated</xmp:Label></rdf:Description></rdf:RDF></x:xmpmeta>").getBytes(StandardCharsets.UTF_8);
+            final byte[] icc = { 1, 2, 3 };
+            final byte[] tagged = append(append(Fixtures.readAll(Fixtures.WEBP_ANIMATED), FourCC.XMP, xmp, true), FourCC.ICCP, icc, true);
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(tagged))) {
+                final ImageMetadata before = reader.metadata();
+                assertEquals(List.of("WaterMedia"), before.authors(), "metadata after the frames is known at construction");
+                for (int pass = 0; pass < 3; pass++) {
+                    while (reader.hasNext()) reader.next();
+                    assertTrue(reader.reset());
+                }
+                final ImageMetadata after = reader.metadata();
+                assertEquals(List.of("WaterMedia"), after.authors());
+                assertEquals(List.of("animated"), after.comments());
+                assertEquals(before.values().keySet(), after.values().keySet());
+                assertArrayEquals(xmp, (byte[]) after.value(CodecsAPI.METAKEY_XMP));
+                assertArrayEquals(icc, (byte[]) after.value(CodecsAPI.METAKEY_ICC_PROFILE));
+            }
+        }
+
+        @Test
+        @DisplayName("The ANIM loop count maps straight to the play count and reaches the metadata")
+        void loopCount() throws IOException {
+            final byte[] plain = Fixtures.readAll(Fixtures.WEBP_ANIMATED);
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(plain))) {
+                assertEquals(0, reader.metadata().value(CodecsAPI.METAKEY_LOOP_COUNT));
+                assertEquals(ImageData.REPEAT_FOREVER, reader.repeat());
+            }
+            // ANIM BODY: BACKGROUND COLOR (4), THEN THE LITTLE-ENDIAN LOOP COUNT
+            final int anim = indexOf(plain, FourCC.ANIM);
+            final byte[] thrice = plain.clone();
+            thrice[anim + 12] = 3;
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(thrice))) {
+                assertEquals(3, reader.metadata().value(CodecsAPI.METAKEY_LOOP_COUNT));
+                assertEquals(3, reader.repeat());
+            }
+        }
+
+        @Test
+        @DisplayName("A single frame is a still image whatever its duration or loop count declare")
+        void singleFrameIsStill() throws IOException {
+            // THE ANIMATED FIXTURE CUT AFTER ITS FIRST ANMF (70 MS, LOOPING FOREVER) NEXT TO A SIMPLE LOSSLESS STILL
+            final byte[] plain = Fixtures.readAll(Fixtures.WEBP_ANIMATED);
+            final int anmf = indexOf(plain, FourCC.ANMF);
+            final int size = ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN).getInt(anmf + 4);
+            final byte[] single = Arrays.copyOf(plain, anmf + 8 + ((size + 1) & ~1));
+            ByteBuffer.wrap(single).order(ByteOrder.LITTLE_ENDIAN).putInt(4, single.length - 8);
+            for (final byte[] still: List.of(single, Fixtures.readAll(Fixtures.WEBP_LOSSLESS))) {
+                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(still))) {
+                    assertArrayEquals(new long[] { 0L }, reader.delays());
+                    assertEquals(0L, reader.duration());
+                    assertEquals(1, reader.repeat());
+                    assertFalse(reader.variableFrameRate());
+                    reader.next();
+                    assertEquals(0L, reader.delay());
+                    assertFalse(reader.hasNext());
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("Bytes past the RIFF size are not chunks")
+        void trailingBytesIgnored() throws IOException {
+            // AN EXTENDED FILE WALKS EVERY CHUNK TO ITS END, SO ONLY THE RIFF BOUND KEEPS THE JUNK OUT OF THE WALK
+            final byte[] plain = Fixtures.readAll(Fixtures.WEBP_ANIMATED);
+            final byte[] junk = Arrays.copyOf(plain, plain.length + 7);
+            Arrays.fill(junk, plain.length, junk.length, (byte) 0x5A);
+            final ImageData expected = CodecsAPI.decode(plain);
+            final ImageData actual = CodecsAPI.decode(junk);
+            assertTrue(expected.frames().length > 1);
+            assertEquals(expected.frames().length, actual.frames().length);
+            for (int f = 0; f < expected.frames().length; f++) assertEquals(expected.frames()[f], actual.frames()[f], "frame " + f);
+        }
+
+        @Test
+        @DisplayName("A final odd-sized chunk may end the file without its padding byte")
+        void unpaddedFinalChunk() throws IOException {
+            final byte[] xmp = "<x:xmpmeta/> ".getBytes(StandardCharsets.UTF_8); // 13 BYTES: ODD, SO A PAD BYTE WOULD FOLLOW
+            final byte[] tagged = append(Fixtures.readAll(Fixtures.WEBP_ANIMATED), FourCC.XMP, xmp, false);
+            final ImageData image = CodecsAPI.decode(tagged);
+            assertTrue(image.frames().length > 1);
+            // A READER BUILT DIRECTLY OVER THE CHUNKS SEES THE SAME BUFFER CodecsAPI HANDS IT
+            try (final WebPReader reader = new WebPReader(ByteBuffer.wrap(tagged, 12, tagged.length - 12))) {
+                assertArrayEquals(xmp, (byte[]) reader.metadata().value(CodecsAPI.METAKEY_XMP));
+                assertEquals(image.frames().length, reader.readAll().frames().length);
+            }
+        }
+
+        @Test
+        @DisplayName("next() past the last frame throws NoSuchElementException and a closed reader IllegalStateException")
+        void endAndClose() throws IOException {
+            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.WEBP_LOSSLESS)));
+            reader.next();
+            assertFalse(reader.hasNext());
+            assertThrows(NoSuchElementException.class, reader::next);
+            reader.close();
+            assertThrows(IllegalStateException.class, reader::hasNext);
+            assertThrows(IllegalStateException.class, reader::reset);
+        }
+    }
+
+    // APPENDS ONE CHUNK TO AN EXTENDED FILE AND RECOUNTS THE RIFF SIZE; WITHOUT pad AN ODD BODY ENDS THE FILE UNPADDED
+    private static byte[] append(final byte[] webp, final int fourCC, final byte[] body, final boolean pad) {
+        final ByteBuffer out = ByteBuffer.allocate(webp.length + 8 + body.length + (pad ? body.length & 1 : 0)).order(ByteOrder.LITTLE_ENDIAN);
+        out.put(webp).putInt(fourCC).putInt(body.length).put(body);
+        out.putInt(4, out.capacity() - 8);
+        return out.array();
+    }
+
+    // OFFSET OF THE FIRST CHUNK HEADER WITH THE GIVEN FOURCC, WALKING THE CHUNK LIST
+    private static int indexOf(final byte[] webp, final int fourCC) {
+        final ByteBuffer in = ByteBuffer.wrap(webp).order(ByteOrder.LITTLE_ENDIAN);
+        int at = 12;
+        while (in.getInt(at) != fourCC) at += 8 + ((in.getInt(at + 4) + 1) & ~1);
+        return at;
     }
 
     // APPENDS AN EXIF CHUNK: A SIMPLE FILE IS FIRST WRAPPED INTO A VP8X CONTAINER, AN EXTENDED ONE JUST GAINS THE EXIF FLAG

@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -26,40 +27,12 @@ public record FCTL(int sequence, int width, int height, int xOffset, int yOffset
     public static final byte BLEND_OP_SOURCE = 0;       // REPLACE ALL COMPONENTS INCLUDING ALPHA
     public static final byte BLEND_OP_OVER = 1;         // ALPHA COMPOSITE (PORTER-DUFF "OVER")
 
-    /**
-     * Reads fcTL chunk from buffer (legacy method, reads length/type from buffer)
-     */
-    public static FCTL read(final ByteBuffer buffer) throws CodecException {
-        // CHUNK HEADER: LENGTH (4 BYTES), TYPE (4 BYTES)
-        if (buffer.remaining() < 8) throw new CodecException("Truncated fcTL chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("fcTL chunk length must be 26, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated fcTL chunk");
-
-        final FCTL fctl = new FCTL(
-                buffer.getInt(),     // SEQUENCE NUMBER
-                buffer.getInt(),     // WIDTH
-                buffer.getInt(),     // HEIGHT
-                buffer.getInt(),     // X OFFSET
-                buffer.getInt(),     // Y OFFSET
-                buffer.getShort(),   // DELAY NUMERATOR
-                buffer.getShort(),   // DELAY DENOMINATOR
-                buffer.get(),        // DISPOSE OP
-                buffer.get()         // BLEND OP
-        );
-        fctl.validate();
-        return fctl;
+    /** Reads a complete fcTL chunk (length, type, data and CRC) from the buffer. */
+    public static FCTL read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to FCTL
-     */
+    /** Converts a generic chunk to fcTL. */
     public static FCTL convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for fcTL: 0x" + Integer.toHexString(chunk.type()));
@@ -90,7 +63,7 @@ public record FCTL(int sequence, int width, int height, int xOffset, int yOffset
      * Rejects dispose and blend operations outside the APNG specification
      */
     public void validate() throws CodecException {
-        // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException, SO read() AND convert() CALL THIS
+        // A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException, SO convert() CALLS THIS
         if ((this.dispose & 0xFF) > DISPOSE_OP_PREVIOUS || (this.blend & 0xFF) > BLEND_OP_OVER)
             throw new CodecException("Invalid fcTL operations: dispose " + (this.dispose & 0xFF) + ", blend " + (this.blend & 0xFF));
     }

@@ -8,6 +8,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.NoSuchElementException;
 
 /**
  * ByteBuffer-backed, frame-by-frame image decoder.
@@ -22,8 +23,13 @@ import java.util.Locale;
  * {@link ByteBuffer} laid out in {@link #pixelFormat()}; {@link ReaderFilter}s added through
  * {@link #addFilter(ReaderFilter)} transform it first, so {@link #frameWidth()} and
  * {@link #frameHeight()} carry the geometry of what {@code next()} actually returned.
- * The buffer is owned by the reader and reused across calls; if the caller needs to retain a
- * previous frame, it must copy the bytes out before the next {@code next()} call.
+ * The frame buffer is owned by the reader and reused across calls; a caller that needs to retain
+ * a frame copies it out before the next {@code next()}. The source buffer is shared, not copied:
+ * its contents must not change until the reader is closed.
+ *
+ * <p>A reader is used from one thread at a time. {@link #close()} is the only method safe to call
+ * from another thread: it is idempotent, and {@link #hasNext()}, {@link #next()}, {@link #reset()}
+ * and {@link #readAll()} then throw {@link IllegalStateException} while the descriptors stay readable.
  */
 public abstract class ImageReader implements Closeable {
     /**
@@ -37,6 +43,8 @@ public abstract class ImageReader implements Closeable {
 
     protected final ByteBuffer data;
     protected final PixelFormat requestedFormat;
+    // THE METADATA EVERY READER FILLS; metadata() HANDS OUT FROZEN COPIES SO A CONSUMER NEVER SEES IT CHANGE
+    protected final ImageMetadata metadata = new ImageMetadata();
     // ORDERED SO A POST-PROCESSOR CHAIN RUNS IN INSERTION ORDER (E.G. DOWNSCALE THEN RECOLOR)
     protected final List<ReaderFilter> filters = new ArrayList<>(2);
     protected long delayMs;
@@ -44,10 +52,14 @@ public abstract class ImageReader implements Closeable {
     private ByteBuffer frame;
     private int frameWidth, frameHeight;
     private boolean fresh;
+    private ByteBuffer converted; // REUSED OUTPUT OF THE FORMAT CONVERSION PASS
+    private volatile boolean closed;
 
     protected ImageReader(final ByteBuffer data) { this(data, null); }
 
     protected ImageReader(final ByteBuffer data, final PixelFormat requestedFormat) {
+        if (requestedFormat != null && requestedFormat != PixelFormat.BGRA && requestedFormat != PixelFormat.RGBA && requestedFormat != PixelFormat.GRAY)
+            throw new IllegalArgumentException("Readers deliver BGRA, RGBA or GRAY, not " + requestedFormat);
         this.data = data.slice();
         this.requestedFormat = requestedFormat;
     }
@@ -75,20 +87,18 @@ public abstract class ImageReader implements Closeable {
     public int frameHeight() { return this.frame == null ? this.height() : this.frameHeight; }
 
     /**
-     * Pixel layout of the single, tightly packed buffer returned by {@link #next()}. The reader
-     * chooses this layout based on the {@code requestedFormat} passed at construction time:
-     * <ul>
-     *   <li>If {@code requestedFormat} is non-null, the reader tries to honor it (converting
-     *       internally as needed).</li>
-     *   <li>If {@code requestedFormat} is {@code null}, the reader returns whatever layout is
-     *       cheapest for it to produce (its native format) without doing a color conversion.</li>
-     * </ul>
-     * Every built-in reader delivers {@link PixelFormat#BGRA}, except grayscale JPEG
-     * ({@link PixelFormat#GRAY} unless BGRA is requested) and SVG, which honors an
-     * {@link PixelFormat#RGBA} request. Callers must always read this method to know how to
-     * interpret the decoded bytes.
+     * Pixel layout of the single, tightly packed buffer returned by {@link #next()}: the layout
+     * requested at construction ({@link PixelFormat#BGRA}, {@link PixelFormat#RGBA} or
+     * {@link PixelFormat#GRAY}, converted by the reader when it is not its own), otherwise the
+     * reader's own layout, which is BGRA for every built-in reader except a grayscale JPEG, which
+     * stays GRAY.
      */
-    public abstract PixelFormat pixelFormat();
+    public final PixelFormat pixelFormat() {
+        return this.requestedFormat != null ? this.requestedFormat : this.decodedFormat();
+    }
+
+    // LAYOUT OF THE BUFFER decode() RETURNS; A READER THAT HONOURS requestedFormat ITSELF REPORTS IT HERE
+    protected abstract PixelFormat decodedFormat();
 
     /**
      * Pre-generated animation summary computed during construction. Animated formats walk the
@@ -97,26 +107,20 @@ public abstract class ImageReader implements Closeable {
      */
     public abstract ImageData.Scan scan();
 
-    /**
-     * Repeat count for animated images.
-     * {@link ImageData#NO_REPEAT} (-1) for single-shot, {@link ImageData#REPEAT_FOREVER} (0) for
-     * infinite loop, or a positive integer for explicit repeat count.
-     */
+    /** Total plays of an animation: {@link ImageData#REPEAT_FOREVER} (0) to loop forever, otherwise the count; a static image reports 1. */
     public int repeat() { return this.scan().repeat(); }
 
-    /** Total frame count if known, or {@code -1} if streaming/unknown. */
+    /** Total frame count; one for a static image. */
     public int frameCount() { return this.scan().frameCount(); }
 
-    /**
-     * Total playback duration in milliseconds. Static images return {@code 0}.
-     */
+    /** Total playback duration in milliseconds. Static images return {@code 0}. */
     public long duration() { return this.scan().duration(); }
 
-    /**
-     * Per-frame delays in milliseconds. Static images return a single {@code 0}. The array is owned
-     * by the reader and must be treated as read-only; callers that need to mutate it must copy first.
-     */
+    /** Per-frame delays in milliseconds, as a copy the caller owns. Static images return a single {@code 0}. */
     public long[] delays() { return this.scan().delays(); }
+
+    /** Delay in milliseconds of the frame the latest {@link #next()} returned; {@code 0} before the first frame. */
+    public long delay() { return this.delayMs; }
 
     /**
      * Average FPS when both duration and frame count are known. Animated image formats may be
@@ -128,18 +132,22 @@ public abstract class ImageReader implements Closeable {
         return duration > 0L && frames > 1 ? (frames * 1000f) / duration : 0f;
     }
 
-    /** True when per-frame delays may differ. */
+    /** True when per-frame delays may differ; a single frame never does. */
     public boolean variableFrameRate() {
-        return true;
+        return this.frameCount() > 1;
     }
 
-    /** Normalized image metadata. Empty readers return {@link ImageMetadata#EMPTY}. */
-    public ImageMetadata metadata() {
-        return ImageMetadata.EMPTY;
+    /** Normalized image metadata as a frozen snapshot, or {@link ImageMetadata#EMPTY} while nothing was read. */
+    public final ImageMetadata metadata() {
+        return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata.frozen();
     }
 
-    /** Appends a filter to the chain run on every frame produced by {@link #next()} and {@link #readAll()}. */
+    /**
+     * Appends a filter to the chain run on every frame produced by {@link #next()} and {@link #readAll()}.
+     * @throws IllegalArgumentException when {@code filter} is null
+     */
     public void addFilter(final ReaderFilter filter) {
+        if (filter == null) throw new IllegalArgumentException("Filter cannot be null");
         this.filters.add(filter);
     }
 
@@ -147,8 +155,10 @@ public abstract class ImageReader implements Closeable {
      * Decodes every available frame and returns a detached {@link ImageData} instance.
      * Frames the reader would reuse are copied, frames a filter allocated are retained as they are,
      * and the resulting geometry is the last filter's output.
+     * @throws IllegalStateException when the reader is closed
      */
     public ImageData readAll() throws IOException {
+        this.checkOpen();
         final List<ByteBuffer> frames = new ArrayList<>();
         final List<Long> frameDelays = new ArrayList<>();
         long retained = 0L;
@@ -170,21 +180,9 @@ public abstract class ImageReader implements Closeable {
             throw new CodecException("No frames decoded by " + this.name());
         }
         final long[] delayArray = new long[frameDelays.size()];
-        long total = 0L;
-        for (int i = 0; i < delayArray.length; i++) {
-            delayArray[i] = frameDelays.get(i);
-            total += delayArray[i];
-        }
-        return new ImageData(frames.toArray(ByteBuffer[]::new), this.frameWidth(), this.frameHeight(),
-                delayArray, total, this.repeat());
-    }
-
-    // COPIES A REUSED READER FRAME INTO AN INDEPENDENTLY-OWNED DIRECT BUFFER, READY TO READ.
-    private static ByteBuffer detach(final ByteBuffer src) {
-        final ByteBuffer copy = ByteBuffer.allocateDirect(src.remaining()).order(src.order());
-        copy.put(src.duplicate());
-        copy.flip();
-        return copy;
+        for (int i = 0; i < delayArray.length; i++) delayArray[i] = frameDelays.get(i);
+        return new ImageData(frames.toArray(ByteBuffer[]::new), this.pixelFormat(), this.frameWidth(), this.frameHeight(),
+                delayArray, this.repeat());
     }
 
     /**
@@ -194,42 +192,71 @@ public abstract class ImageReader implements Closeable {
      * frame and clear any inter-frame state (canvas, disposal, counters) so the next
      * {@link #next()} call decodes frame 0 again. Metadata accessors ({@link #scan()},
      * {@link #width()}, {@link #delays()}, ...) are unaffected.
-     * <p>
-     * The default implementation reports no support; callers must then dispose this reader and
-     * decode the source from scratch.
      *
      * @return {@code true} when the reader was rewound, {@code false} when rewinding is not
      *         supported by this implementation
+     * @throws IllegalStateException when the reader is closed
      */
-    public boolean reset() {
+    public final boolean reset() {
+        this.checkOpen();
+        if (!this.rewind()) return false;
+        this.frame = null;
+        this.delayMs = 0L;
+        return true;
+    }
+
+    // REPOSITIONS AT THE FIRST FRAME AND CLEARS THE INTER-FRAME STATE; FALSE WHEN THE READER CANNOT REWIND
+    protected boolean rewind() {
         return false;
     }
 
     /**
      * Returns whether another decoded frame can be produced. Implementations may validate and
      * skip non-frame container records while answering this.
+     * @throws IllegalStateException when the reader is closed
      */
-    public abstract boolean hasNext() throws IOException;
+    public final boolean hasNext() throws IOException {
+        this.checkOpen();
+        return this.hasMore();
+    }
+
+    // ANSWERS hasNext(): MAY VALIDATE AND SKIP NON-FRAME CONTAINER RECORDS ON THE WAY TO THE NEXT FRAME
+    protected abstract boolean hasMore() throws IOException;
 
     /**
-     * Decodes the next frame and runs it through the filter chain.
+     * Decodes the next frame, converts it to {@link #pixelFormat()} when a layout was requested and
+     * runs it through the filter chain.
      *
      * @return the frame buffer, positioned at zero and ready to read
+     * @throws NoSuchElementException when no frame remains
      * @throws IOException on I/O error or malformed bitstream
+     * @throws IllegalStateException when the reader is closed
      */
     public final ByteBuffer next() throws IOException {
-        final ByteBuffer decoded = this.decode();
-        ReaderFilter.Frame f = new ReaderFilter.Frame(decoded, this.width(), this.height(), this.pixelFormat());
+        this.checkOpen();
+        if (!this.hasMore()) throw new NoSuchElementException("No more " + this.name() + " frames");
+        final ByteBuffer decoded;
+        final ByteBuffer delivered;
+        try {
+            decoded = this.decode();
+            delivered = this.requestedFormat == null ? decoded : this.convert(decoded, this.decodedFormat(), this.requestedFormat);
+        } catch (final RuntimeException failure) {
+            // A CONCURRENT close() DROPS THE BUFFERS UNDER THE DECODER: THAT IS A STATE ERROR, NOT A CODEC FAULT
+            if (this.closed) throw new IllegalStateException(this.name() + " reader was closed while decoding", failure);
+            throw failure;
+        }
+        ReaderFilter.Frame f = new ReaderFilter.Frame(delivered, this.width(), this.height(), this.pixelFormat());
         // EACH FILTER CONSUMES THE PREVIOUS OUTPUT'S GEOMETRY; A NO-OP CHAIN HANDS BACK THE READER'S REUSED BUFFER
         for (final ReaderFilter filter: this.filters) f = filter.compute(f);
-        this.fresh = f.buffer() != decoded;
+        this.fresh = f.buffer() != decoded && f.buffer() != this.converted;
         this.frameWidth = f.width();
         this.frameHeight = f.height();
         return this.frame = f.buffer();
     }
 
     /**
-     * Decodes the next frame from the underlying buffer into the internal direct buffer.
+     * Decodes the next frame from the underlying buffer into the internal direct buffer, laid out
+     * in {@link #decodedFormat()}; the base class already verified that a frame remains.
      *
      * @return the decoded frame buffer, positioned at zero
      * @throws IOException on I/O error or malformed bitstream
@@ -237,8 +264,60 @@ public abstract class ImageReader implements Closeable {
     protected abstract ByteBuffer decode() throws IOException;
 
     @Override
-    public void close() {
-        // BYTEBUFFER-BACKED READERS OWN NO EXTERNAL RESOURCES; DROPPING THE LAST FRAME FREES ITS DIRECT MEMORY EARLY
+    public final void close() {
+        // THE TRANSITION IS ATOMIC SO TWO CLOSERS NEVER BOTH REACH dispose(); A next() IN FLIGHT FAILS AS A STATE ERROR
+        synchronized (this) {
+            if (this.closed) return;
+            this.closed = true;
+        }
         this.frame = null;
+        this.converted = null;
+        this.dispose();
+    }
+
+    // RELEASES WHAT THE READER HOLDS BEYOND ITS BUFFERS; RUNS ONCE, ON THE CLOSING THREAD
+    protected void dispose() {}
+
+    private void checkOpen() {
+        if (this.closed) throw new IllegalStateException(this.name() + " reader is closed");
+    }
+
+    // THE CONVERSION PASS BETWEEN THE READER'S LAYOUT AND THE REQUESTED ONE, ALWAYS INTO A REUSED BUFFER: A DECODER MAY
+    // HAND BACK THE SAME BYTES ON REPLAY, SO SWIZZLING IN PLACE WOULD FLIP THEM TWICE. GRAY EXPANDS, COLOUR REDUCES TO BT.601 LUMA
+    private ByteBuffer convert(final ByteBuffer decoded, final PixelFormat from, final PixelFormat to) {
+        if (from == to) return decoded;
+        final int pixels = this.width() * this.height();
+        final int bytes = to == PixelFormat.GRAY ? pixels : pixels * 4;
+        ByteBuffer out = this.converted;
+        if (out == null || out.capacity() < bytes) this.converted = out = ByteBuffer.allocateDirect(bytes).order(decoded.order());
+        out.clear().limit(bytes);
+        if (from != PixelFormat.GRAY && to != PixelFormat.GRAY) {
+            for (int o = 0; o < bytes; o += 4) {
+                out.put(o, decoded.get(o + 2)).put(o + 1, decoded.get(o + 1)).put(o + 2, decoded.get(o)).put(o + 3, decoded.get(o + 3));
+            }
+        } else if (from == PixelFormat.GRAY) {
+            for (int i = 0, o = 0; i < pixels; i++, o += 4) {
+                final byte luma = decoded.get(i);
+                out.put(o, luma).put(o + 1, luma).put(o + 2, luma).put(o + 3, (byte) 0xFF);
+            }
+        } else {
+            final int red = from == PixelFormat.BGRA ? 2 : 0;
+            final int blue = from == PixelFormat.BGRA ? 0 : 2;
+            for (int i = 0, o = 0; i < pixels; i++, o += 4) {
+                final int r = decoded.get(o + red) & 0xFF;
+                final int g = decoded.get(o + 1) & 0xFF;
+                final int b = decoded.get(o + blue) & 0xFF;
+                out.put(i, (byte) ((77 * r + 150 * g + 29 * b + 128) >> 8));
+            }
+        }
+        return out;
+    }
+
+    // COPIES A REUSED READER FRAME INTO AN INDEPENDENTLY-OWNED DIRECT BUFFER, READY TO READ.
+    private static ByteBuffer detach(final ByteBuffer src) {
+        final ByteBuffer copy = ByteBuffer.allocateDirect(src.remaining()).order(src.order());
+        copy.put(src.duplicate());
+        copy.flip();
+        return copy;
     }
 }

@@ -57,12 +57,29 @@ public class WebMWriterTest {
     }
 
     @Test
-    @DisplayName("Constructor rejects invalid fps and crf")
+    @DisplayName("Constructor rejects invalid fps, crf and block-compressed pixel formats before looking for FFmpeg")
     void rejectsInvalidArgs() {
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
         assertThrows(IllegalArgumentException.class, () -> new WebMWriter(out, 16, 16, PixelFormat.BGRA, 0, 31));
         assertThrows(IllegalArgumentException.class, () -> new WebMWriter(out, 16, 16, PixelFormat.BGRA, 30, 64));
         assertThrows(IllegalArgumentException.class, () -> new WebMWriter(out, 16, 16, PixelFormat.BGRA, 30, -1));
+        assertThrows(IllegalArgumentException.class, () -> new WebMWriter(out, 16, 16, PixelFormat.BC7));
+    }
+
+    @Test
+    @DisplayName("A null or wrongly sized frame and a negative delay are argument errors, a zero delay is accepted and writing after close is a state error")
+    void rejectsMisuse() throws IOException {
+        assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
+        final WebMWriter writer = new WebMWriter(new ByteArrayOutputStream(), 16, 16, PixelFormat.BGRA);
+        final ByteBuffer frame = ByteBuffer.allocateDirect(16 * 16 * 4);
+        try (writer) {
+            assertThrows(IllegalArgumentException.class, () -> writer.writeFrame(ByteBuffer.allocateDirect(16 * 16 * 4 - 1)));
+            assertThrows(IllegalArgumentException.class, () -> writer.writeFrame(frame.duplicate(), -1L));
+            assertThrows(IllegalArgumentException.class, () -> writer.writeFrame(null));
+            writer.writeFrame(frame.duplicate(), 0L);
+            assertEquals(1, writer.frameCount());
+        }
+        assertThrows(IllegalStateException.class, () -> writer.writeFrame(frame.duplicate()));
     }
 
     @Test
@@ -96,11 +113,15 @@ public class WebMWriterTest {
         final FFMediaPlayer player = (FFMediaPlayer) MediaAPI.player(mrl, () -> gfx, () -> null);
         try {
             player.start();
-            assertTrue(PlayerWait.awaitStatus(player, 15000L, Status.PLAYING, Status.BUFFERING, Status.PAUSED, Status.ENDED));
-            assertTrue(PlayerWait.awaitLoaded(player, 15000L));
+            assertTrue(PlayerWait.awaitStatus(player, 15_000L, Status.PLAYING, Status.BUFFERING, Status.PAUSED, Status.ENDED));
+            assertTrue(PlayerWait.awaitLoaded(player, 15_000L));
             // REGRESSION: THE CONTAINER MUST CARRY ITS DURATION UP FRONT (MATROSKA Duration + Cues), SO
             // A CLIENT CAN REPORT LENGTH AND SEEK RIGHT AFTER LOAD — NOT ONLY AFTER READING TO THE END
             assertTrue(player.duration() > 0, "duration must be known right after load");
+            // encode() WRITES EVERY FRAME WITH A ZERO DELAY, SO EACH ONE ADVANCES BY THE 30 FPS FRAME DURATION
+            final long expected = 20 * 1_000L / 30;
+            assertTrue(Math.abs(player.duration() - expected) <= 2 * 1_000L / 30,
+                    "duration " + player.duration() + " ms, expected about " + expected + " ms");
             assertTrue(player.canSeek(), "a finite WebM with a known duration must be seekable");
             // DECODED VP9 FRAMES MUST ACTUALLY REACH THE ENGINE
             assertTrue(PlayerWait.awaitCondition(() -> gfx.uploadCount() > 0, 8000L),

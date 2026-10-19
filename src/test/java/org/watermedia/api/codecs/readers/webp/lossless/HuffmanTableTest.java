@@ -5,7 +5,6 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.codecs.CodecException;
-import org.watermedia.api.codecs.common.webp.BitReader;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

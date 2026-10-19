@@ -1,7 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
 import org.watermedia.api.codecs.CodecException;
-import org.watermedia.api.codecs.common.webp.BitReader;
 
 final class LZ77 {
 

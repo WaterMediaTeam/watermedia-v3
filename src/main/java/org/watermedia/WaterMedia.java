@@ -14,7 +14,6 @@ import org.watermedia.tools.ThreadTool;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.function.Supplier;
 
 import org.watermedia.WaterMedia.Status.Failure;
@@ -60,7 +59,7 @@ public final class WaterMedia {
      */
     public static void start(final String name, final Path tmp, final Path cwd, final boolean clientSide) {
         if (ThreadTool.workerThread()) throw new IllegalStateException("Start WaterMedia from a host thread, not a managed worker");
-        if (Objects.requireNonNull(name).isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("Environment name cannot be empty");
         final List<Definition> modules = new ArrayList<>(MODULES.size());
         for (final Definition definition: MODULES) if (clientSide || !definition.client()) modules.add(definition);
         synchronized (LIFECYCLE) {

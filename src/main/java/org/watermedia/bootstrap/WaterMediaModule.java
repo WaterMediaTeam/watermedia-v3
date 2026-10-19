@@ -2,7 +2,6 @@ package org.watermedia.bootstrap;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 /** Internal module contract: a start hook that runs once, plus the optional failures it reports; only WaterMedia loads modules. */
 public abstract class WaterMediaModule {
@@ -20,7 +19,8 @@ public abstract class WaterMediaModule {
 
     // A PART THE MODULE CAN LIVE WITHOUT FAILED; THE MODULE KEEPS LOADING AND WaterMedia LISTS THE CAUSE
     protected final synchronized void failure(final Throwable cause) {
-        this.failures.add(Objects.requireNonNull(cause));
+        if (cause == null) throw new IllegalArgumentException("A failure needs its cause");
+        this.failures.add(cause);
     }
 
     /** Returns the optional failures the module reported while starting. */

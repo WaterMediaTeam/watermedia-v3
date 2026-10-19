@@ -10,7 +10,6 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -27,8 +26,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
 
     public record Entry(String name, String value) {
         public Entry {
-            Objects.requireNonNull(name, "name");
-            Objects.requireNonNull(value, "value");
+            if (name == null || value == null) throw new IllegalArgumentException("Header name and value are required");
             if (name.isEmpty()) throw new IllegalArgumentException("Header name cannot be empty");
             for (int i = 0; i < name.length(); i++) {
                 final char c = name.charAt(i);

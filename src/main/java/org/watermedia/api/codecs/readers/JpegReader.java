@@ -1,14 +1,19 @@
 package org.watermedia.api.codecs.readers;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
-import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.UnsupportedFormatException;
+import org.watermedia.api.codecs.common.Limits;
 import org.watermedia.api.codecs.common.Tiff;
 import org.watermedia.api.codecs.common.Xmp;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.LogTool;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -16,18 +21,24 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
+import static org.watermedia.WaterMedia.LOGGER;
+
 /**
  * ByteBuffer-backed JPEG reader.
  *
  * <p>The reader receives a buffer positioned immediately after the SOI marker ({@code FF D8}).
  * It parses JPEG interchange streams directly and decodes 8-bit Huffman-coded baseline and
- * progressive images. Color images are delivered as {@link PixelFormat#BGRA}, converted on the
- * CPU with the full-range BT.601 matrix JPEG uses (or copied as is when JFIF, Adobe APP14 or the
- * component ids declare RGB samples); grayscale images stay one luma byte per pixel
- * ({@link PixelFormat#GRAY}) unless BGRA output is requested. The frame comes out already rotated
- * into its EXIF orientation, and comments, EXIF, XMP and ICC segments reach {@link #metadata()}.
+ * progressive images with one (grayscale) or three (color) components. Color images are delivered
+ * as {@link PixelFormat#BGRA}, converted on the CPU with the full-range BT.601 matrix JPEG uses (or
+ * copied as is when JFIF, Adobe APP14 or the component ids declare RGB samples); grayscale images
+ * stay one luma byte per pixel ({@link PixelFormat#GRAY}) unless BGRA output is requested. The frame
+ * comes out already rotated into its EXIF orientation, and comments, EXIF, XMP and ICC segments
+ * reach {@link #metadata()}. Valid streams this decoder does not implement (lossless, hierarchical
+ * or arithmetic-coded processes, 12-bit samples, CMYK or other component counts) are refused with
+ * {@link UnsupportedFormatException}; malformed ones with {@link CodecException}.
  */
 public final class JpegReader extends ImageReader {
+    private static final Marker IT = MarkerManager.getMarker(JpegReader.class.getSimpleName());
 
     // DECODABLE FRAME TYPES. SOF1 IS BIT-IDENTICAL TO SOF0 FOR 8-BIT HUFFMAN DATA, SO IT SHARES readFrame()
     private static final int SOF0 = 0xC0;
@@ -62,16 +73,11 @@ public final class JpegReader extends ImageReader {
     private static final byte[] XMP_SIGNATURE = "http://ns.adobe.com/xap/1.0/\0".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] ICC_SIGNATURE = { 'I', 'C', 'C', '_', 'P', 'R', 'O', 'F', 'I', 'L', 'E', 0 };
     private static final byte[] ADOBE_SIGNATURE = { 'A', 'd', 'o', 'b', 'e' };
-    // METADATA IS RETAINED FOR THE READER'S LIFETIME, SO THE COMMENT COUNT AND THE ASSEMBLED ICC PROFILE ARE CAPPED
+    // METADATA IS RETAINED FOR THE READER'S LIFETIME, SO THE COMMENT COUNT AND THE ASSEMBLED ICC PROFILE ARE CAPPED;
+    // WHAT FALLS PAST EITHER CAP IS SKIPPED, NEVER A DECODE FAILURE
     private static final int MAX_COMMENTS = 64;
     private static final int MAX_ICC_BYTES = 8 << 20;
-
-    // SECURITY CAP: 16-BIT SOF WIDTH/HEIGHT OTHERWISE OVERFLOW THE coefficient/sample/BGRA INT MATH AND
-    // ALLOW MULTI-GB ALLOCATIONS FROM A FEW-BYTE HEADER. 16K PER AXIS (1:1) KEEPS EVERY PRODUCT WITHIN INT.
-    private static final int MAX_DIM = 16_384;
-    // TOTAL-PIXEL CAP (64 MPX, SAME VALUE AS WebPReader). MAX_DIM BOUNDS EACH AXIS BUT NOT THEIR PRODUCT:
-    // A 23-BYTE HEADER DECLARING 16384x16384x3 ASKS FOR 1 GiB OF COEFFICIENTS PER COMPONENT.
-    private static final int MAX_PIXELS = 1 << 26;
+    private static final long METADATA_REPORT_NS = 10_000_000_000L;
     // WORKING-SET CAP FOR ONE FRAME (COEFFICIENTS + SAMPLE PLANES + OUTPUT BUFFER). DELIBERATELY AN
     // ABSOLUTE FIGURE RATHER THAN A MULTIPLE OF ImageReader.MAX_DECODED_BYTES: THAT ONE TRACKS WHAT
     // REAL ANIMATIONS RETAIN AND MOVES WITH THEM, WHICH HAS NO BEARING ON ONE FRAME'S DECODE COST.
@@ -132,9 +138,10 @@ public final class JpegReader extends ImageReader {
         }
     }
 
+    private static final LogTool.Throttle COMMENT_DROPS = new LogTool.Throttle(METADATA_REPORT_NS);
+
     private final int[][] quantTables = new int[4][];
     private final HuffmanTable[][] huffmanTables = new HuffmanTable[2][4];
-    private final ImageMetadata metadata = new ImageMetadata();
 
     // COLOR MODEL EVIDENCE AND THE METADATA SEGMENTS, COLLECTED WHILE PARSING AND PUBLISHED ONCE THE FRAME IS BUILT
     private boolean jfif;
@@ -163,45 +170,38 @@ public final class JpegReader extends ImageReader {
     public JpegReader(final ByteBuffer data, final PixelFormat requestedFormat) throws IOException {
         super(data, requestedFormat);
         this.parse();
+        if (this.comments > MAX_COMMENTS)
+            LogTool.throttled(LOGGER, Level.WARN, IT, COMMENT_DROPS, "Skipped {} JPEG comments past the cap of {}", this.comments - MAX_COMMENTS, MAX_COMMENTS);
         this.buildFrame();
     }
 
     @Override public int width() { return this.width; }
     @Override public int height() { return this.height; }
-    @Override public PixelFormat pixelFormat() { return this.outputFormat; }
+    @Override protected PixelFormat decodedFormat() { return this.outputFormat; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
-    @Override public boolean variableFrameRate() { return false; }
-    @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
 
     @Override
-    public boolean hasNext() {
+    protected boolean hasMore() {
         return !this.delivered;
     }
 
     @Override
-    public boolean reset() {
+    protected boolean rewind() {
         // FULLY DECODED INTO directOut AT CONSTRUCTION; REPLAYING IS JUST CLEARING THE DELIVERY FLAG
-        if (this.directOut == null) return false;
         this.delivered = false;
-        this.delayMs = 0L;
         return true;
     }
 
     @Override
-    public void close() {
-        // THE DECODED FRAME LIVES OFF-HEAP (UP TO width*height*4 BYTES) AND ONLY THE Cleaner CAN FREE IT.
-        // DROPPING THE REFERENCE HERE RELEASES IT AS SOON AS THE CALLER IS DONE INSTEAD OF WHEN THE WHOLE
-        // READER BECOMES UNREACHABLE, WHICH MAY BE MUCH LATER.
-        super.close();
+    protected void dispose() {
+        // THE DECODED FRAME LIVES OFF-HEAP (UP TO width*height*4 BYTES) AND ONLY THE Cleaner CAN FREE IT; DROPPING
+        // THE REFERENCE RELEASES IT AS SOON AS THE CALLER IS DONE INSTEAD OF WHEN THE WHOLE READER BECOMES UNREACHABLE
         this.directOut = null;
-        this.delivered = true;
     }
 
     @Override
     protected ByteBuffer decode() throws IOException {
-        if (this.delivered) throw new CodecException("No more JPEG frames");
         this.delivered = true;
-        this.delayMs = 0L;
         this.directOut.position(0).limit(this.directOut.capacity());
         return this.directOut;
     }
@@ -221,11 +221,11 @@ public final class JpegReader extends ImageReader {
                     // WITHOUT A FRAME HEADER AND IT DIES LATER ON THE MISLEADING "scan before frame header"
                     final String process = switch (marker) {
                         case SOF3 -> "lossless";
-                        case SOF5, SOF6, SOF7 -> "differential";
+                        case SOF5, SOF6, SOF7 -> "hierarchical";
                         case SOF9, SOF10, SOF11 -> "arithmetic coding";
-                        default -> "differential arithmetic coding";
+                        default -> "hierarchical arithmetic coding";
                     };
-                    throw new CodecException("Unsupported JPEG frame type FF" + hex(marker) + " (" + process + ")");
+                    throw new UnsupportedFormatException("Unsupported JPEG frame type FF" + hex(marker) + " (" + process + ")");
                 }
                 case DQT -> this.readQuantTables();
                 case DHT -> this.readHuffmanTables();
@@ -242,20 +242,20 @@ public final class JpegReader extends ImageReader {
                     continue;
                 }
                 case COM -> {
-                    // METADATA NEVER FAILS A DECODE: COMMENTS PAST THE CAP ARE SKIPPED, NOT REJECTED
+                    // METADATA NEVER FAILS A DECODE: COMMENTS PAST THE CAP ARE SKIPPED, NOT REJECTED. NO continue HERE:
+                    // IT WOULD SKIP THE MARKER RESET BELOW AND PARSE THE NEXT MARKER'S BYTES AS ANOTHER COMMENT
                     final ByteBuffer segment = this.segment();
-                    if (++this.comments > MAX_COMMENTS) continue;
-                    final byte[] text = new byte[segment.remaining()];
-                    segment.get(text);
-                    final String comment = new String(text, StandardCharsets.ISO_8859_1);
-                    this.metadata.comment(comment);
-                    this.metadata.put(CodecsAPI.JPEG_METAKEY_COMMENT, comment);
+                    if (++this.comments <= MAX_COMMENTS) {
+                        final byte[] text = new byte[segment.remaining()];
+                        segment.get(text);
+                        this.metadata.comment(new String(text, StandardCharsets.ISO_8859_1));
+                    }
                 }
                 default -> {
                     // A SEGMENT WITHOUT A CONSUMER IS ONLY SKIPPED, SO ITS BODY IS DROPPED ON PURPOSE
                     if (isApp(marker)) this.readApp(marker);
                     else if (hasSegmentLength(marker)) this.segment();
-                    else if (!isRestart(marker)) throw new CodecException("Unsupported JPEG marker FF" + hex(marker));
+                    else if (!isRestart(marker)) throw new CodecException("Unknown JPEG marker FF" + hex(marker));
                 }
             }
             marker = -1;
@@ -314,19 +314,25 @@ public final class JpegReader extends ImageReader {
 
         final ByteBuffer segment = this.segment();
         if (segment.remaining() < 6) throw new CodecException("Truncated JPEG frame header");
+        // T.81 BASELINE (SOF0) IS 8-BIT ONLY; EXTENDED AND PROGRESSIVE ALSO ALLOW 12 BITS, VALID BUT NOT IMPLEMENTED
         final int precision = readU8(segment);
-        if (precision != 8) throw new CodecException("Unsupported JPEG precision: " + precision);
+        if (precision == 12 && marker != SOF0) throw new UnsupportedFormatException("Unsupported JPEG sample precision: 12 bits");
+        if (precision != 8) throw new CodecException("Invalid JPEG sample precision for frame type FF" + hex(marker) + ": " + precision + " bits");
 
         this.height = readU16(segment);
         this.width = readU16(segment);
-        if (this.width <= 0 || this.height <= 0) throw new CodecException("Invalid JPEG dimensions");
-        if (this.width > MAX_DIM || this.height > MAX_DIM)
-            throw new CodecException("JPEG dimensions too big: " + this.width + "x" + this.height + " (max " + MAX_DIM + ")");
-        if ((long) this.width * this.height > MAX_PIXELS)
-            throw new CodecException("JPEG frame too large: " + this.width + "x" + this.height + " (max " + MAX_PIXELS + " pixels)");
+        if (this.height == 0 && this.width > 0) throw new UnsupportedFormatException("Unsupported JPEG height defined by a DNL marker");
+        // 16-BIT SOF AXES OTHERWISE OVERFLOW THE COEFFICIENT, SAMPLE AND BGRA INT MATH: A 23-BYTE HEADER
+        // DECLARING 16384x16384x3 ASKS FOR 1 GiB OF COEFFICIENTS PER COMPONENT
+        if (!Limits.fits(this.width, this.height))
+            throw new CodecException("Invalid JPEG dimensions: " + this.width + "x" + this.height
+                    + " (max " + Limits.MAX_DIM + " per axis, " + Limits.MAX_PIXELS + " pixels)");
 
+        // ONE COMPONENT IS GRAYSCALE AND THREE ARE YCbCr OR RGB; TWO, FOUR (CMYK, YCCK) OR MORE ARE VALID BUT NOT IMPLEMENTED
         final int count = readU8(segment);
-        if (count != 1 && count != 3) throw new CodecException("Unsupported JPEG component count: " + count);
+        if (count == 0) throw new CodecException("JPEG frame header declares no components");
+        if (count != 1 && count != 3)
+            throw new UnsupportedFormatException("Unsupported JPEG component count: " + count + (count == 4 ? " (CMYK or YCCK)" : ""));
         // Lf MUST BE EXACTLY 8 + 3*Nf. WITHOUT THIS THE COMPONENT TRIPLETS BELOW ARE HAPPILY READ FROM
         // WHATEVER FOLLOWS THE SEGMENT (CVE-2013-6629 SHAPE); THE SLICE LIMIT TURNS THAT INTO A HARD ERROR
         if (segment.remaining() != count * 3)
@@ -343,9 +349,8 @@ public final class JpegReader extends ImageReader {
             final int h = sampling >>> 4;
             final int v = sampling & 0x0F;
             final int table = readU8(segment);
-            if (h <= 0 || v <= 0 || h > 4 || v > 4) {
-                throw new CodecException("Unsupported JPEG sampling factor " + h + "x" + v);
-            }
+            // T.81 SAMPLING FACTORS ARE 1..4 PER AXIS AND THE RESAMPLER HANDLES EVERY SUCH LAYOUT, SO ANY OTHER IS MALFORMED
+            if (h <= 0 || v <= 0 || h > 4 || v > 4) throw new CodecException("Invalid JPEG sampling factor " + h + "x" + v);
             if (table >= this.quantTables.length) throw new CodecException("Invalid JPEG quantization table " + table);
             this.components[i] = new Component(id, h, v, table);
             this.maxH = Math.max(this.maxH, h);
@@ -760,9 +765,9 @@ public final class JpegReader extends ImageReader {
         this.directOut.flip();
 
         if (this.exif != null) {
-            this.metadata.put(CodecsAPI.JPEG_METAKEY_EXIF, this.exif);
+            this.metadata.put(CodecsAPI.METAKEY_EXIF, this.exif);
             final int orientation = Tiff.orientation(this.exif);
-            this.metadata.put(CodecsAPI.JPEG_METAKEY_ORIENTATION, orientation);
+            this.metadata.put(CodecsAPI.METAKEY_ORIENTATION, orientation);
             if (orientation != 1) {
                 final ByteBuffer turned = ByteBuffer.allocateDirect(this.directOut.capacity()).order(ByteOrder.LITTLE_ENDIAN);
                 DataTool.orient(this.directOut, turned, this.width, this.height, this.outputFormat == PixelFormat.GRAY ? 1 : 4, orientation);
@@ -774,7 +779,7 @@ public final class JpegReader extends ImageReader {
             }
         }
         if (this.xmp != null) {
-            this.metadata.put(CodecsAPI.JPEG_METAKEY_XMP, this.xmp);
+            this.metadata.put(CodecsAPI.METAKEY_XMP, this.xmp);
             Xmp.read(this.metadata, this.xmp);
         }
         if (this.icc != null) {
@@ -785,13 +790,10 @@ public final class JpegReader extends ImageReader {
                 if (slice == null) { complete = false; break; }
                 profile.put(slice);
             }
-            if (complete) this.metadata.put(CodecsAPI.JPEG_METAKEY_ICC_PROFILE, profile.array());
+            if (complete) this.metadata.put(CodecsAPI.METAKEY_ICC_PROFILE, profile.array());
         }
     }
 
-    // REMAPS THE DECODED FRAME INTO ITS EXIF DISPLAY ORIENTATION (TAG 274: 2-4 MIRROR OR ROTATE 180, 5-8 THE
-    // TRANSPOSE FAMILY, WHICH SWAPS THE AXES) SO THE PICTURE COMES OUT AS A CAMERA VIEWER SHOWS IT. THE SOURCE
-    // INDEX OF OUTPUT PIXEL (x, y) IS a + y * b + x * step, SO THE INNER LOOP IS A PLAIN STRIDED COPY
     private void buildComponent(final Component component) throws CodecException {
         final int[] quant = this.quantTables[component.quantTable];
         if (quant == null) throw new CodecException("Missing JPEG quantization table " + component.quantTable);
@@ -1094,7 +1096,7 @@ public final class JpegReader extends ImageReader {
     }
 
     private static String hex(final int value) {
-        return Integer.toHexString(value).toUpperCase();
+        return String.format("%02X", value);
     }
 
     @FunctionalInterface

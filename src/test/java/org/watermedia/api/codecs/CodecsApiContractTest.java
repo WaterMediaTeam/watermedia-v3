@@ -3,10 +3,14 @@ package org.watermedia.api.codecs;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.watermedia.api.util.MediaType;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -22,9 +26,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Contract tests for {@link CodecsAPI}: format detection, header consumption on the
+ * Verifies the {@link CodecsAPI} contract: format detection, header consumption on the
  * caller's buffer, reader-level invariants ({@code width/height/frameCount/delays},
- * {@code readAll}), and {@link ImageMetadata} normalization for PNG and JPEG.
+ * {@code readAll}), the overloads and {@link ImageMetadata} normalization for PNG and JPEG.
  */
 @DisplayName("CodecsAPI contract")
 public class CodecsApiContractTest {
@@ -118,6 +122,57 @@ public class CodecsApiContractTest {
         }
 
         @Test
+        @DisplayName("decode accepts buffers and streams, sniff accepts buffers, and null arguments are rejected")
+        void testOverloadsAndArguments() throws Exception {
+            final byte[] bytes = Fixtures.readAll(Fixtures.PNG_STATIC);
+            final ImageData fromArray = CodecsAPI.decode(bytes);
+            final ImageData fromBuffer = CodecsAPI.decode(ByteBuffer.wrap(bytes));
+            final ImageData fromStream = CodecsAPI.decode(new ByteArrayInputStream(bytes));
+            assertEquals(fromArray.frames().length, fromBuffer.frames().length);
+            assertEquals(fromArray.width(), fromStream.width());
+            assertEquals(fromArray.format(), fromStream.format());
+
+            final ByteBuffer probe = ByteBuffer.wrap(bytes);
+            assertEquals(MediaType.IMAGE, CodecsAPI.sniff(probe));
+            assertEquals(0, probe.position(), "sniffing a buffer leaves its position alone");
+
+            assertThrows(IllegalArgumentException.class, () -> CodecsAPI.reader(null));
+            assertThrows(IllegalArgumentException.class, () -> CodecsAPI.decode((byte[]) null));
+            assertThrows(IllegalArgumentException.class, () -> CodecsAPI.decode((InputStream) null));
+            assertThrows(IllegalArgumentException.class, () -> CodecsAPI.sniff((ByteBuffer) null));
+            assertThrows(IllegalArgumentException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(bytes), PixelFormat.YUV420P));
+        }
+
+        @Test
+        @DisplayName("A requested RGBA layout survives reset() on every reader")
+        void testRequestedLayoutSurvivesReset() throws Exception {
+            for (final Path fixture: List.of(Fixtures.PNG_STATIC, Fixtures.GIF_ANIMATED, Fixtures.WEBP_LOSSLESS, Fixtures.JPEG_BASELINE, Fixtures.NETPBM_PPM)) {
+                final byte[] bytes = Fixtures.readAll(fixture);
+                final ByteBuffer bgra;
+                try (final ImageReader reference = CodecsAPI.reader(ByteBuffer.wrap(bytes), PixelFormat.BGRA)) { bgra = copy(reference.next()); }
+                try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(bytes), PixelFormat.RGBA)) {
+                    assertEquals(PixelFormat.RGBA, reader.pixelFormat(), fixture.toString());
+                    final ByteBuffer first = copy(reader.next());
+                    assertTrue(reader.reset(), fixture.toString());
+                    assertEquals(first, copy(reader.next()), fixture + " must deliver the same RGBA bytes after reset()");
+                    // THE SWIZZLE MUST HAVE HAPPENED: RED AND BLUE SWAP PLACES AGAINST THE BGRA DECODE
+                    assertEquals(bgra.get(0), first.get(2), fixture.toString());
+                    assertEquals(bgra.get(2), first.get(0), fixture.toString());
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("A reader that refuses its body leaves the buffer position untouched")
+        void testRefusedBodyRestoresPosition() {
+            // A PNG SIGNATURE FOLLOWED BY GARBAGE: THE HEADER MATCHES, THE BODY DOES NOT
+            final ByteBuffer source = ByteBuffer.wrap(new byte[] { (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4 });
+            source.position(0);
+            assertThrows(IOException.class, () -> CodecsAPI.reader(source));
+            assertEquals(0, source.position());
+        }
+
+        @Test
         @DisplayName("GIF quick read exposes duration, frame count and delays")
         void testGifQuickReadExposesDurationFrameCountAndDelays() throws Exception {
             final ByteBuffer data = ByteBuffer.wrap(Fixtures.readAll(Fixtures.GIF_ANIMATED));
@@ -178,6 +233,12 @@ public class CodecsApiContractTest {
                 assertTrue(metadata.values().isEmpty());
             }
         }
+    }
+
+    private static ByteBuffer copy(final ByteBuffer frame) {
+        final ByteBuffer heap = ByteBuffer.allocate(frame.remaining());
+        heap.put(frame.duplicate()).flip();
+        return heap;
     }
 
     private static byte[] pngText(final String key, final String value) throws IOException {

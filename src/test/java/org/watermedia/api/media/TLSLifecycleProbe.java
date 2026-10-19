@@ -66,9 +66,7 @@ public final class TLSLifecycleProbe {
                 try {
                     FFMediaPlayer.configureTLS(null);
                     throw new AssertionError("A null TLS dictionary reached the native boundary");
-                } catch (final NullPointerException expected) {
-                    if (!"options".equals(expected.getMessage())) throw expected;
-                }
+                } catch (final IllegalArgumentException expected) {}
                 av_dict_set(options, "tls_verify", "0", 0);
                 av_dict_set(options, "ca_file", "untrusted-fixture.pem", 0);
                 av_dict_set(options, "verify", "0", 0);

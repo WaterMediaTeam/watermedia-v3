@@ -2,11 +2,9 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
-import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.zip.DataFormatException;
-import java.util.zip.Inflater;
 
 /**
  * iTXt - International Textual Data Chunk
@@ -20,64 +18,15 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
     // CAP DECOMPRESSED TEXT: A FEW COMPRESSED BYTES CAN INFLATE TO GIGABYTES (DECOMPRESSION BOMB)
     private static final int MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024; // 2 MB
 
-    /**
-     * Reads iTXt chunk from buffer (reads length/type header first)
-     */
-    public static ITXT read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated iTXt chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(type));
-        if (length < 0 || buffer.remaining() < length)
-            throw new CodecException("Truncated iTXt chunk");
-
-        final int endPosition = buffer.position() + length;
-
-        // READ KEYWORD (1-79 BYTES + NULL). EVERY SCAN IS BOUNDED BY endPosition SO A MISSING
-        // TERMINATOR CANNOT EAT PAST THE CHUNK AND DRIVE textLength NEGATIVE
-        final StringBuilder keywordBuilder = new StringBuilder();
-        byte b;
-        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
-            keywordBuilder.append((char) (b & 0xFF));
-        }
-        final String keyword = keywordBuilder.toString();
-
-        // COMPRESSION FLAG + METHOD (2 BYTES)
-        if (endPosition - buffer.position() < 2) throw new CodecException("Truncated iTXt: missing compression flag/method");
-        final boolean compressed = buffer.get() != 0;
-        final int compressionMethod = buffer.get() & 0xFF;
-
-        // LANGUAGE TAG (0+ BYTES + NULL)
-        final StringBuilder langBuilder = new StringBuilder();
-        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
-            langBuilder.append((char) (b & 0xFF));
-        }
-        final String languageTag = langBuilder.toString();
-
-        // TRANSLATED KEYWORD (0+ BYTES + NULL)
-        final ByteArrayOutputStream translatedBytes = new ByteArrayOutputStream();
-        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
-            translatedBytes.write(b);
-        }
-        final String translatedKeyword = translatedBytes.toString(StandardCharsets.UTF_8);
-
-        // TEXT DATA (REMAINING BYTES)
-        final int textLength = endPosition - buffer.position();
-        final byte[] textData = new byte[textLength];
-        buffer.get(textData);
-
-        return new ITXT(keyword, compressed, compressionMethod, languageTag, translatedKeyword, textData);
+    /** Reads a complete iTXt chunk (length, type, data and CRC) from the buffer. */
+    public static ITXT read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to ITXT
-     */
+    /** Converts a generic chunk to iTXt. */
     public static ITXT convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new CodecException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(chunk.type()));
+            throw new IllegalArgumentException("Invalid chunk type for iTXt: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
@@ -95,8 +44,11 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
         if (data.length < offset + 2) {
             throw new CodecException("Truncated iTXt: missing compression flag/method");
         }
-        final boolean compressed = data[offset++] != 0;
+        final int compressionFlag = data[offset++] & 0xFF;
         final int compressionMethod = data[offset++] & 0xFF;
+        if (compressionFlag > 1 || compressionMethod != 0)
+            throw new CodecException("Invalid iTXt compression flag " + compressionFlag + " or method " + compressionMethod);
+        final boolean compressed = compressionFlag == 1;
 
         // LANGUAGE TAG (0+ BYTES + NULL)
         nullIndex = findNull(data, offset, data.length);
@@ -129,47 +81,13 @@ public record ITXT(String keyword, boolean compressed, int compressionMethod,
     }
 
     /** Returns the text content, decompressing it when necessary. */
-    public String text() throws CodecException {
-        if (!this.compressed) {
-            return new String(this.textData, StandardCharsets.UTF_8);
-        }
+    public String text() throws CodecException { return this.text(MAX_DECOMPRESSED_BYTES); }
 
-        if (this.compressionMethod != 0) {
-            throw new CodecException("Unknown compression method: " + this.compressionMethod);
-        }
-
-        final Inflater inflater = new Inflater();
-        inflater.setInput(this.textData);
-
-        final ByteArrayOutputStream output = new ByteArrayOutputStream();
-        final byte[] buffer = new byte[1024];
-
-        try {
-            // EVERY ITERATION EITHER PRODUCES BYTES OR LEAVES THE LOOP: A ZLIB HEADER WITH FDICT SET
-            // RETURNS Z_NEED_DICT (0 IN, 0 OUT, needsInput() FALSE) AND WOULD OTHERWISE SPIN FOREVER
-            while (true) {
-                final int length = inflater.inflate(buffer);
-                if (length > 0) {
-                    if (output.size() + length > MAX_DECOMPRESSED_BYTES) {
-                        throw new CodecException("iTXt exceeds " + MAX_DECOMPRESSED_BYTES + " bytes decompressed");
-                    }
-                    output.write(buffer, 0, length);
-                    continue;
-                }
-                if (inflater.finished()) break;
-                if (inflater.needsDictionary()) {
-                    throw new CodecException("iTXt uses an unsupported compression dictionary");
-                }
-                if (inflater.needsInput()) break; // TRUNCATED TEXT: KEEP WHAT DECOMPRESSED, THE IMAGE IS STILL USABLE
-                throw new CodecException("Invalid compressed text stream");
-            }
-        } catch (final DataFormatException e) {
-            throw new CodecException("Invalid compressed text: " + e.getMessage(), e);
-        } finally {
-            inflater.end();
-        }
-
-        return output.toString(StandardCharsets.UTF_8);
+    /** Returns the text content inflated within the given byte budget, which the 2 MiB chunk ceiling still caps. */
+    public String text(final int maxBytes) throws CodecException {
+        if (!this.compressed) return new String(this.textData, StandardCharsets.UTF_8);
+        // A TRUNCATED STREAM KEEPS WHAT DECOMPRESSED; THE IMAGE IS STILL USABLE
+        return new String(Zlib.inflate(this.textData, Math.min(maxBytes, MAX_DECOMPRESSED_BYTES), "iTXt", true), StandardCharsets.UTF_8);
     }
 
     @Override

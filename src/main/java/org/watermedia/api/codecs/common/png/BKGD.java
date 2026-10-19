@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -35,48 +36,12 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
         return new BKGD(-1, -1, -1, -1, paletteIndex);
     }
 
-    /**
-     * Reads bKGD chunk from buffer based on color type (reads length/type header first)
-     */
-    public static BKGD read(final ByteBuffer buffer, final int colorType) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated bKGD chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for bKGD: 0x" + Integer.toHexString(type));
-        if (length < 0 || buffer.remaining() < length)
-            throw new CodecException("Truncated bKGD chunk");
-
-        return switch (ColorType.of(colorType)) {
-            case GREYSCALE, GREYSCALE_ALPHA -> {
-                if (length != 2)
-                    throw new CodecException("bKGD for greyscale must be 2 bytes, got " + length);
-                final int gray = buffer.getShort() & 0xFFFF;
-                yield new BKGD(gray);
-            }
-            case TRUECOLOR, TRUECOLOR_ALPHA -> {
-                if (length != 6)
-                    throw new CodecException("bKGD for truecolor must be 6 bytes, got " + length);
-                final int red = buffer.getShort() & 0xFFFF;
-                final int green = buffer.getShort() & 0xFFFF;
-                final int blue = buffer.getShort() & 0xFFFF;
-                yield new BKGD(red, green, blue);
-            }
-            case INDEXED -> {
-                if (length != 1)
-                    throw new CodecException("bKGD for indexed must be 1 byte, got " + length);
-                final int index = buffer.get() & 0xFF;
-                yield BKGD.forPalette(index);
-            }
-            case FORBIDDEN_1, FORBIDDEN_5 -> throw new CodecException("Forbidden color type: " + colorType);
-        };
+    /** Reads a complete bKGD chunk (length, type, data and CRC) for the color type from the buffer. */
+    public static BKGD read(final ByteBuffer buffer, final int colorType) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE), colorType);
     }
 
-    /**
-     * Converts a generic PngChunk to BKGD based on color type
-     */
+    /** Converts a generic chunk to bKGD for the color type. */
     public static BKGD convert(final PngChunk chunk, final int colorType) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for bKGD: 0x" + Integer.toHexString(chunk.type()));
@@ -88,14 +53,14 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
         return switch (ColorType.of(colorType)) {
             case GREYSCALE, GREYSCALE_ALPHA -> {
                 if (data.length != 2) {
-                    throw new CodecException("bKGD for greyscale must be 2 bytes");
+                    throw new CodecException("bKGD for greyscale must be 2 bytes, got " + data.length);
                 }
                 final int gray = buffer.getShort() & 0xFFFF;
                 yield new BKGD(gray);
             }
             case TRUECOLOR, TRUECOLOR_ALPHA -> {
                 if (data.length != 6) {
-                    throw new CodecException("bKGD for truecolor must be 6 bytes");
+                    throw new CodecException("bKGD for truecolor must be 6 bytes, got " + data.length);
                 }
                 final int red = buffer.getShort() & 0xFFFF;
                 final int green = buffer.getShort() & 0xFFFF;
@@ -104,7 +69,7 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
             }
             case INDEXED -> {
                 if (data.length != 1) {
-                    throw new CodecException("bKGD for indexed must be 1 byte");
+                    throw new CodecException("bKGD for indexed must be 1 byte, got " + data.length);
                 }
                 final int index = data[0] & 0xFF;
                 yield BKGD.forPalette(index);
@@ -140,19 +105,19 @@ public record BKGD(int gray, int red, int green, int blue, int paletteIndex) imp
      */
     public int toRGB8(final int bitDepth) {
         if (this.isGreyscale()) {
-            final int g = this.scaleTo8Bit(this.gray, bitDepth);
+            final int g = scaleTo8Bit(this.gray, bitDepth);
             return (g << 16) | (g << 8) | g;
         } else if (this.isTruecolor()) {
-            final int r = this.scaleTo8Bit(this.red, bitDepth);
-            final int g = this.scaleTo8Bit(this.green, bitDepth);
-            final int b = this.scaleTo8Bit(this.blue, bitDepth);
+            final int r = scaleTo8Bit(this.red, bitDepth);
+            final int g = scaleTo8Bit(this.green, bitDepth);
+            final int b = scaleTo8Bit(this.blue, bitDepth);
             return (r << 16) | (g << 8) | b;
         }
         return 0;
     }
 
     /** Scales a 1, 2, 4, 8 or 16-bit PNG sample to eight bits; 16-bit samples keep their high byte. */
-    public int scaleTo8Bit(final int value, final int depth) {
+    public static int scaleTo8Bit(final int value, final int depth) {
         if (depth == 8) return value;
         if (depth == 16) return value >> 8;
         if (depth <= 8) return (value * 255) / ((1 << depth) - 1);

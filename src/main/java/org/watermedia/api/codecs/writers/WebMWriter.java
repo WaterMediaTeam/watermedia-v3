@@ -41,8 +41,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * grayscale, packed or planar YUV) is valid input; block-compressed layouts are not. Alpha is
  * flattened — VP9-in-WebM alpha is out of scope.
  *
- * <p>Frame timing follows the {@link #writeFrame(ByteBuffer, long) delay} of each frame when one is
- * given, otherwise the constructor frame rate; quality is a VP9 CRF (0-63, lower is better) in
+ * <p>Frame timing follows the {@link #writeFrame(ByteBuffer, long) delay} of each frame when it is
+ * positive, otherwise the constructor frame rate; quality is a VP9 CRF (0-63, lower is better) in
  * constant-quality mode. Availability is validated up front: the constructor throws when FFmpeg or
  * a VP9 encoder is missing, so a {@code WebMWriter} that exists is always usable.
  *
@@ -106,9 +106,10 @@ public final class WebMWriter extends ImageWriter {
         }
         if (fps <= 0) throw new IllegalArgumentException("fps must be positive: " + fps);
         if (crf < 0 || crf > MAX_CRF) throw new IllegalArgumentException("crf out of range [0," + MAX_CRF + "]: " + crf);
+        // THE MAPPING READS COMPILE-TIME CONSTANTS ONLY, SO A FORMAT WITHOUT AN FFMPEG LAYOUT FAILS EVEN WITHOUT THE NATIVES
+        this.srcFormat = FFTool.avPixelFormat(pixelFormat);
         if (!MediaAPI.ffmpegLoaded()) throw new IOException("FFmpeg is not available");
         this.frameDurMs = 1000.0 / fps;
-        this.srcFormat = FFTool.avPixelFormat(pixelFormat);
         this.timeBase = new AVRational().num(1).den(1000);
 
         try {
@@ -184,13 +185,22 @@ public final class WebMWriter extends ImageWriter {
         this.writeFrame(frame, 0L);
     }
 
+    /**
+     * Encodes one frame shown for {@code delayMs} milliseconds; {@code 0} advances by the constructor frame rate instead
+     * (unlike a reader's {@code 0}, which means "advance immediately").
+     *
+     * @throws IllegalArgumentException when the frame is null, its size does not match the writer or the delay is negative
+     * @throws IllegalStateException    when the writer is closed
+     * @throws IOException              when the encoder or the muxer fails
+     */
     @Override
     public void writeFrame(final ByteBuffer frame, final long delayMs) throws IOException {
-        if (this.closed) throw new IOException("WebMWriter is closed");
+        if (this.closed) throw new IllegalStateException("WebMWriter is closed");
         if (frame == null) throw new IllegalArgumentException("frame is null");
+        if (delayMs < 0) throw new IllegalArgumentException("Frame delay must not be negative: " + delayMs);
         final int expected = avutil.av_image_get_buffer_size(this.srcFormat, this.width, this.height, 1);
         if (frame.remaining() != expected)
-            throw new IOException("Frame has " + frame.remaining() + " bytes, expected " + expected
+            throw new IllegalArgumentException("Frame has " + frame.remaining() + " bytes, expected " + expected
                     + " for " + this.width + "x" + this.height + " " + this.pixelFormat);
 
         // BIND THE CALLER'S PIXELS AS A NATIVE POINTER — ZERO-COPY WHEN DIRECT, ELSE A REUSED DIRECT MIRROR
@@ -218,7 +228,7 @@ public final class WebMWriter extends ImageWriter {
         if (pts <= this.lastPts) pts = this.lastPts + 1;
         this.lastPts = pts;
         this.yuvFrame.pts(pts);
-        this.ptsMs += (delayMs > 0 ? delayMs : this.frameDurMs);
+        this.ptsMs += delayMs > 0 ? delayMs : this.frameDurMs;
 
         final int sent = avcodec.avcodec_send_frame(this.encoder, this.yuvFrame);
         if (sent < 0) throw FFTool.failure("avcodec_send_frame", sent);

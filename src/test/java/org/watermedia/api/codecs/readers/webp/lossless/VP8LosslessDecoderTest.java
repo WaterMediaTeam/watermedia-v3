@@ -5,8 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.codecs.common.webp.AlphaDecoder;
-import org.watermedia.api.codecs.common.webp.BitReader;
+import org.watermedia.api.codecs.readers.webp.AlphaDecoder;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -122,7 +121,7 @@ public class VP8LosslessDecoderTest {
             bits.put(0, 1).put(0, 1).group(new int[]{0xA5, 0x0F}, ZERO, ZERO, ZERO);
             bits.put(0, 1).put(1, 1);
 
-            final int[] pixels = VP8LosslessDecoder.decode(new BitReader(ByteBuffer.wrap(bits.bytes())), 3, 1);
+            final int[] pixels = VP8LosslessDecoder.decode(ByteBuffer.wrap(bits.bytes()), 3, 1);
             assertArrayEquals(new int[]{0xFF505050, 0xFFA0A0A0, 0xFFF0F0F0}, pixels);
         }
 

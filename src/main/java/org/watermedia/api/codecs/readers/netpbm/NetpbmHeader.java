@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs.readers.netpbm;
 
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.UnsupportedFormatException;
 
 import java.nio.ByteBuffer;
 
@@ -10,8 +11,7 @@ import java.nio.ByteBuffer;
  * are {@code null} when the variant does not declare them ({@code tuplType} follows the PAM
  * spec spelling).
  */
-public record NetpbmHeader(String versionString, int version, int width, int height,
-                           Integer depth, Integer maxVal, String tuplType) {
+public record NetpbmHeader(int version, int width, int height, Integer depth, Integer maxVal, String tuplType) {
 
     // TUPLTYPE IS THE ONLY FREE-FORM HEADER VALUE AND IT REACHES EXCEPTION MESSAGES — AND THE LOG —
     // VERBATIM. A REAL PAM HEADER IS UNDER 200 BYTES IN TOTAL, SO THIS IS ALREADY GENEROUS
@@ -20,10 +20,10 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
     /**
      * Parses an ASCII Netpbm header starting at the {@code Pn} version token and validates it.
      *
-     * @throws CodecException when the header is malformed or declares out-of-range values
+     * @throws UnsupportedFormatException when a PAM header names a tuple type outside the six the reader decodes
+     * @throws CodecException             when the header is malformed or declares out-of-range values
      */
     public static NetpbmHeader parse(final ByteBuffer data) throws CodecException {
-        String versionString = null;
         int version = 0;
         int width = 0;
         int height = 0;
@@ -40,7 +40,6 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
             tokenIndex++;
 
             if (tokenIndex == 1 && token.startsWith("P")) {
-                versionString = token;
                 version = parseInt(token.substring(1));
                 continue;
             }
@@ -75,8 +74,7 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
                         case "DEPTH" -> depth = nextTokenInt(data);
                         case "MAXVAL" -> maxVal = nextTokenInt(data);
                         case "TUPLTYPE" -> {
-                            // REPEATED TAGS USED TO CONCATENATE INSTEAD OF OVERWRITING, LETTING ONE
-                            // FILE GROW A SINGLE ATTACKER-CHOSEN STRING WITHOUT ANY BOUND
+                            // A REPEATED TUPLTYPE IS REJECTED: CONCATENATING THEM WOULD LET ONE FILE GROW AN UNBOUNDED STRING
                             if (tuplTypeSeen) throw new CodecException("Duplicate PAM TUPLTYPE");
                             tuplTypeSeen = true;
                             tuplType = readRestOfLine(data).trim();
@@ -86,40 +84,41 @@ public record NetpbmHeader(String versionString, int version, int width, int hei
                         }
                     }
                 }
-                default -> throw new CodecException("Unsupported Netpbm version: " + version);
+                default -> throw new CodecException("Unknown Netpbm version: " + version);
             }
         }
 
         if (width <= 0) throw new CodecException("Invalid WIDTH: " + width + ". Must be greater than 0.");
         if (height <= 0) throw new CodecException("Invalid HEIGHT: " + height + ". Must be greater than 0.");
+
+        // EVERYTHING BUT A BITMAP REQUIRES MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
+        if (version != 1 && version != 4 && maxVal == null)
+            throw new CodecException("Missing MAXVAL for P" + version);
+        if (maxVal != null && (maxVal <= 0 || maxVal > 65_535))
+            throw new CodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
+
         if (version == 7) {
             // ENFORCE THE UPPER BOUND THE MESSAGE ALREADY CLAIMS; AN UNBOUNDED DEPTH OVERFLOWS THE RASTER MATH
-            if (depth == null || depth <= 0 || depth > 65535)
+            if (depth == null || depth <= 0 || depth > 65_535)
                 throw new CodecException("Invalid DEPTH: " + depth + ". Must be between 1 and 65535.");
 
-            // DEPTH SIZES EVERY ROW BUFFER AND IS THE ONE RASTER DIMENSION THE READER'S MAX_DIM DOES
-            // NOT COVER, SO BIND IT TO THE TUPLE TYPE: "DEPTH 65535 / TUPLTYPE RGB" IS A 2 GiB ROW
-            // BUFFER DESCRIBED BY 69 BYTES. UNKNOWN TUPLE TYPES CARRY NO SAMPLE COUNT AND ARE REFUSED
-            // BY THE READER BEFORE ANY RASTER IS SIZED
+            // DEPTH SIZES EVERY ROW AND IS THE ONE RASTER DIMENSION THE PIXEL CAP DOES NOT COVER, SO IT IS BOUND TO
+            // THE TUPLE TYPE: "DEPTH 65535 / TUPLTYPE RGB" IS A 2 GiB ROW DESCRIBED BY 69 BYTES. ANY OTHER TUPLE TYPE
+            // (OR NONE) IS VALID PAM WITH NO SAMPLE LAYOUT THE READER KNOWS, SO IT IS REFUSED BEFORE A RASTER IS SIZED
             final int expectedDepth = switch (tuplType) {
                 case "BLACKANDWHITE", "GRAYSCALE" -> 1;
                 case "BLACKANDWHITE_ALPHA", "GRAYSCALE_ALPHA" -> 2;
                 case "RGB" -> 3;
                 case "RGB_ALPHA" -> 4;
-                default -> 0;
+                default -> throw new UnsupportedFormatException("Unsupported PAM tuple type: " + (tuplType.isEmpty() ? "(none)" : tuplType));
             };
-            if (expectedDepth != 0 && depth != expectedDepth)
+            if (depth != expectedDepth)
                 throw new CodecException("PAM DEPTH " + depth + " does not match TUPLTYPE " + tuplType);
+            if (tuplType.startsWith("BLACKANDWHITE") && maxVal != 1)
+                throw new CodecException("PAM " + tuplType + " requires MAXVAL 1, not " + maxVal);
         }
 
-        // EVERYTHING BUT A BITMAP REQUIRES MAXVAL; A TRUNCATED HEADER LEAVES IT NULL AND NPEs THE DECODER UNDER A BLANKET CATCH
-        if (version != 1 && version != 4 && maxVal == null)
-            throw new CodecException("Missing MAXVAL for P" + version);
-
-        if (maxVal != null && (maxVal <= 0 || maxVal > 65535))
-            throw new CodecException("Invalid MAXVAL: " + maxVal + ". Must be between 1 and 65535.");
-
-        return new NetpbmHeader(versionString, version, width, height, depth, maxVal, tuplType);
+        return new NetpbmHeader(version, width, height, depth, maxVal, tuplType);
     }
 
     /**

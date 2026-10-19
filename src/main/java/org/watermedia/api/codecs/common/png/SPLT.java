@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -32,72 +33,12 @@ public record SPLT(String paletteName, int sampleDepth, SPLTEntry[] entries) imp
         }
     }
 
-    /**
-     * Reads sPLT chunk from buffer (reads length/type header first)
-     */
-    public static SPLT read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated sPLT chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(type));
-        if (length < 0 || buffer.remaining() < length)
-            throw new CodecException("Truncated sPLT chunk");
-
-        final int startPosition = buffer.position();
-        final int endPosition = startPosition + length;
-
-        // READ PALETTE NAME (1-79 BYTES + NULL)
-        final StringBuilder nameBuilder = new StringBuilder();
-        byte b;
-        while (buffer.position() < endPosition && (b = buffer.get()) != 0) {
-            nameBuilder.append((char) (b & 0xFF));
-        }
-        final String paletteName = nameBuilder.toString();
-
-        // SAMPLE DEPTH (1 BYTE): THE NAME MAY HAVE EATEN THE WHOLE CHUNK, LEAVING NOTHING TO READ
-        if (buffer.position() >= endPosition) throw new CodecException("Truncated sPLT: missing sample depth");
-        final int sampleDepth = buffer.get() & 0xFF;
-        if (sampleDepth != 8 && sampleDepth != 16)
-            throw new CodecException("Invalid sPLT sample depth: " + sampleDepth);
-
-        // CALCULATE ENTRY SIZE AND COUNT
-        final int entrySize = (sampleDepth == 8) ? 6 : 10;
-        final int bytesRead = buffer.position() - startPosition;
-        final int entryDataLength = length - bytesRead;
-        if (entryDataLength % entrySize != 0)
-            throw new CodecException("Invalid sPLT entry data length");
-        final int entryCount = entryDataLength / entrySize;
-
-        final SPLTEntry[] entries = new SPLTEntry[entryCount];
-        for (int i = 0; i < entryCount; i++) {
-            final int red, green, blue, alpha, frequency;
-
-            if (sampleDepth == 8) {
-                red = buffer.get() & 0xFF;
-                green = buffer.get() & 0xFF;
-                blue = buffer.get() & 0xFF;
-                alpha = buffer.get() & 0xFF;
-                frequency = buffer.getShort() & 0xFFFF;
-            } else { // 16-BIT
-                red = buffer.getShort() & 0xFFFF;
-                green = buffer.getShort() & 0xFFFF;
-                blue = buffer.getShort() & 0xFFFF;
-                alpha = buffer.getShort() & 0xFFFF;
-                frequency = buffer.getShort() & 0xFFFF;
-            }
-
-            entries[i] = new SPLTEntry(red, green, blue, alpha, frequency);
-        }
-
-        return new SPLT(paletteName, sampleDepth, entries);
+    /** Reads a complete sPLT chunk (length, type, data and CRC) from the buffer. */
+    public static SPLT read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to SPLT
-     */
+    /** Converts a generic chunk to sPLT. */
     public static SPLT convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for sPLT: 0x" + Integer.toHexString(chunk.type()));

@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.LocalDateTime;
@@ -20,34 +21,12 @@ public record TIME(int year, int month, int day, int hour, int minute, int secon
     public static final int SIGNATURE = 0x74_49_4D_45; // "tIME"
     public static final int LENGTH = 7;
 
-    /**
-     * Reads tIME chunk from buffer (reads length/type header first)
-     */
-    public static TIME read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated tIME chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for tIME: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("tIME chunk length must be 7, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated tIME chunk");
-
-        return new TIME(
-                buffer.getShort() & 0xFFFF, // YEAR (2 BYTES)
-                buffer.get() & 0xFF,        // MONTH (1 BYTE, 1-12)
-                buffer.get() & 0xFF,        // DAY (1 BYTE, 1-31)
-                buffer.get() & 0xFF,        // HOUR (1 BYTE, 0-23)
-                buffer.get() & 0xFF,        // MINUTE (1 BYTE, 0-59)
-                buffer.get() & 0xFF         // SECOND (1 BYTE, 0-60, 60 FOR LEAP SECOND)
-        );
+    /** Reads a complete tIME chunk (length, type, data and CRC) from the buffer. */
+    public static TIME read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to TIME
-     */
+    /** Converts a generic chunk to tIME. */
     public static TIME convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for tIME: 0x" + Integer.toHexString(chunk.type()));

@@ -1,15 +1,12 @@
 package org.watermedia.api.codecs.common.gif;
 
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-/**
- * Represents the Graphic Control Extension block.
- * Used for animation and transparency.
- * Section 23 of the GIF89a Specification.
- */
+/** The GIF89a Graphic Control Extension (section 23): disposal, transparency and the delay of the next image. */
 public record GraphicExtension(
     int disposalMethod,
     boolean userInputFlag,
@@ -21,30 +18,22 @@ public record GraphicExtension(
     /** Full block body: block size + packed fields + delay + transparent index + terminator. */
     public static final int BODY_SIZE = 6;
 
-    /** Reads the {@value #BODY_SIZE}-byte body that follows the extension introducer and label; delay is in centiseconds. */
+    /** Reads the {@value #BODY_SIZE}-byte body after the introducer and label at the buffer position, advancing past it; delay is in centiseconds. */
     public static GraphicExtension read(final ByteBuffer buffer) throws CodecException {
         // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
-        if (buffer.remaining() < BODY_SIZE) {
-            throw new CodecException("Buffer does not contain enough data for Graphic Control Extension");
-        }
-
+        if (buffer.remaining() < BODY_SIZE) throw new CodecException("Truncated GIF graphic control extension");
+        final int at = buffer.position();
         // BLOCK SIZE AND TERMINATOR ARE FIXED BY THE SPEC. SKIPPING THEM MAKES THIS PARSER ACCEPT FILES
         // A STRICTER ONE REJECTS, AND TWO PARSERS DISAGREEING OVER ONE FILE IS A VALIDATION BYPASS
-        final int blockSize = Byte.toUnsignedInt(buffer.get());
+        final int blockSize = buffer.get(at) & 0xFF;
         if (blockSize != 4) throw new CodecException("Invalid GCE block size: " + blockSize + " (must be 4)");
-
-        final int packedFields = Byte.toUnsignedInt(buffer.get());
-        final int disposalMethod = (packedFields & 0b00011100) >> 2;
-        final boolean userInputFlag = (packedFields & 0b00000010) != 0;
-        final boolean transparentColorFlag = (packedFields & 0b00000001) != 0;
-
-        final int delayTime = Short.toUnsignedInt(buffer.getShort());
-        final int transparentColorIndex = Byte.toUnsignedInt(buffer.get());
-
-        final int terminator = Byte.toUnsignedInt(buffer.get());
+        final int terminator = buffer.get(at + 5) & 0xFF;
         if (terminator != 0) throw new CodecException("Invalid GCE block terminator: " + terminator + " (must be 0)");
 
-        return new GraphicExtension(disposalMethod, userInputFlag, transparentColorFlag, delayTime, transparentColorIndex);
+        final int packedFields = buffer.get(at + 1) & 0xFF;
+        buffer.position(at + BODY_SIZE);
+        return new GraphicExtension((packedFields & 0b0001_1100) >> 2, (packedFields & 0b0000_0010) != 0,
+                (packedFields & 0b0000_0001) != 0, DataTool.u16(buffer, at + 2, ByteOrder.LITTLE_ENDIAN), buffer.get(at + 4) & 0xFF);
     }
 
     @Override

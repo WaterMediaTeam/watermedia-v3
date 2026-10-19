@@ -6,7 +6,6 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 import org.apache.logging.log4j.Marker;
@@ -53,11 +52,11 @@ public final class MediaAPI {
      *
      * @param uri the media URI or file path
      * @return the MRL instance (may still be loading, or in ERROR for malformed input)
-     * @throws NullPointerException  when {@code uri} is null
+     * @throws IllegalArgumentException when {@code uri} is null
      * @throws IllegalStateException before WaterMedia loads, and on dedicated servers
      */
     public static MRL mrl(final String uri) {
-        Objects.requireNonNull(uri, "URI cannot be null");
+        if (uri == null) throw new IllegalArgumentException("URI cannot be null");
         try {
             final Path file = WaterMedia.cwd().resolve(uri);
             if (Files.isRegularFile(file)) return MRL.get(file.toAbsolutePath().normalize().toUri());
@@ -112,6 +111,7 @@ public final class MediaAPI {
      * @return the authority instance
      */
     public static ServerMediaPlayer serverPlayer(final Bridge bridge, final Config.Capability... capabilities) {
+        if (capabilities == null) throw new IllegalArgumentException("Capabilities cannot be null");
         return new ServerMediaPlayer(bridge, capabilities);
     }
 
@@ -185,9 +185,11 @@ public final class MediaAPI {
      * @param sfx supplier of the audio sink, invoked at most once
      * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
      * @return the player, or {@code null} when not ready or on failure
+     * @throws IllegalArgumentException when {@code mrl}, {@code gfx} or {@code sfx} is null
      * @see #player(MRL, int, Supplier, Supplier)
      */
     public static MediaPlayer player(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
+        if (mrl == null || gfx == null || sfx == null) throw new IllegalArgumentException("The MRL and both engine suppliers are required");
         final MRL.Source source = mrl.source(sourceIndex);
         if (source == null) {
             // STILL FETCHING IS A NORMAL TRANSIENT STATE — DON'T SPAM WARNINGS FOR IT

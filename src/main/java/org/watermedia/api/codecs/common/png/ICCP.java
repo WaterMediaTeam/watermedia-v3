@@ -2,11 +2,9 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
-import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.zip.DataFormatException;
-import java.util.zip.Inflater;
 
 /**
  * iCCP - Embedded ICC Profile Chunk
@@ -19,51 +17,15 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
     // CAP DECOMPRESSED PROFILE: A TINY iCCP CHUNK CAN INFLATE TO GIGABYTES (ZLIB BOMB); LEGIT ICC PROFILES ARE WELL UNDER THIS
     private static final int MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024; // 16 MB
 
-    /**
-     * Reads iCCP chunk from buffer (reads length/type header first)
-     */
-    public static ICCP read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated iCCP chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(type));
-        if (length < 0 || buffer.remaining() < length)
-            throw new CodecException("Truncated iCCP chunk");
-
-        // READ PROFILE NAME (1-79 BYTES + NULL)
-        final int endPosition = buffer.position() + length;
-        final StringBuilder nameBuilder = new StringBuilder();
-        byte b;
-        int bytesRead = 0;
-        while (bytesRead < 80 && buffer.position() < endPosition && (b = buffer.get()) != 0) {
-            nameBuilder.append((char) (b & 0xFF));
-            bytesRead++;
-        }
-        bytesRead++; // COUNT NULL TERMINATOR
-
-        final String profileName = nameBuilder.toString();
-        if (buffer.position() >= endPosition) throw new CodecException("Truncated iCCP: missing compression method");
-        final int compressionMethod = buffer.get() & 0xFF;
-        bytesRead++;
-
-        // REMAINING DATA IS COMPRESSED PROFILE: AN UNTERMINATED NAME OVERSHOOTS AND GOES NEGATIVE
-        final int profileLength = length - bytesRead;
-        if (profileLength < 0) throw new CodecException("Invalid iCCP: unterminated profile name");
-        final byte[] compressedProfile = new byte[profileLength];
-        buffer.get(compressedProfile);
-
-        return new ICCP(profileName, compressionMethod, compressedProfile);
+    /** Reads a complete iCCP chunk (length, type, data and CRC) from the buffer. */
+    public static ICCP read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to ICCP
-     */
+    /** Converts a generic chunk to iCCP. */
     public static ICCP convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
-            throw new CodecException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
+            throw new IllegalArgumentException("Invalid chunk type for iCCP: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
@@ -101,40 +63,9 @@ public record ICCP(String profileName, int compressionMethod, byte[] compressedP
         return new ICCP(profileName, compressionMethod, compressedProfile);
     }
 
-    /** Decompresses and returns the ICC profile data. */
+    /** Decompresses and returns the ICC profile data; a truncated profile is an error, a partial profile is useless. */
     public byte[] profile() throws CodecException {
-        final Inflater inflater = new Inflater();
-        inflater.setInput(this.compressedProfile);
-
-        final ByteArrayOutputStream output = new ByteArrayOutputStream();
-        final byte[] buffer = new byte[4096];
-
-        try {
-            // EVERY ITERATION EITHER PRODUCES BYTES OR LEAVES THE LOOP: A ZLIB HEADER WITH FDICT SET
-            // RETURNS Z_NEED_DICT (0 IN, 0 OUT, needsInput() FALSE) AND WOULD OTHERWISE SPIN FOREVER
-            while (true) {
-                final int length = inflater.inflate(buffer);
-                if (length > 0) {
-                    if (output.size() + length > MAX_DECOMPRESSED_BYTES) {
-                        throw new CodecException("iCCP exceeds " + MAX_DECOMPRESSED_BYTES + " bytes decompressed");
-                    }
-                    output.write(buffer, 0, length);
-                    continue;
-                }
-                if (inflater.finished()) break;
-                if (inflater.needsDictionary()) {
-                    throw new CodecException("iCCP uses an unsupported compression dictionary");
-                }
-                if (inflater.needsInput()) throw new CodecException("Incomplete compressed ICC profile");
-                throw new CodecException("Invalid compressed ICC profile stream");
-            }
-        } catch (final DataFormatException e) {
-            throw new CodecException("Invalid compressed ICC profile: " + e.getMessage(), e);
-        } finally {
-            inflater.end();
-        }
-
-        return output.toByteArray();
+        return Zlib.inflate(this.compressedProfile, MAX_DECOMPRESSED_BYTES, "iCCP", false);
     }
 
     @Override

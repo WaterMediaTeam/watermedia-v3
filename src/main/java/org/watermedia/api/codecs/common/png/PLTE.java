@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
@@ -15,48 +16,20 @@ public record PLTE(int[] colors) implements IChunk {
     // THE SPEC CAPS THE PALETTE AT 256 ENTRIES; WITHOUT IT A HUGE PLTE INFLATES TO A 1.33x int[] COPY
     public static final int MAX_LENGTH = 256 * 3;
 
-    /**
-     * Reads PLTE chunk from buffer (reads length/type header first)
-     */
-    public static PLTE read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated PLTE chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for PLTE: 0x" + Integer.toHexString(type));
-        if (length < 0 || length % 3 != 0)
-            throw new CodecException("PLTE data length must be divisible by 3, got " + Integer.toUnsignedString(length));
-        if (length > MAX_LENGTH)
-            throw new CodecException("PLTE holds more than 256 entries: " + (length / 3));
-        if (buffer.remaining() < length) throw new CodecException("Truncated PLTE chunk");
-
-        final int count = length / 3;
-        final int[] colors = new int[count];
-
-        for (int i = 0; i < count; i++) {
-            final int r = buffer.get() & 0xFF;
-            final int g = buffer.get() & 0xFF;
-            final int b = buffer.get() & 0xFF;
-            colors[i] = (r << 16) | (g << 8) | b;
-        }
-
-        return new PLTE(colors);
+    /** Reads a complete PLTE chunk (length, type, data and CRC) from the buffer. */
+    public static PLTE read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to PLTE
-     */
+    /** Converts a generic chunk to PLTE. */
     public static PLTE convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for PLTE: 0x" + Integer.toHexString(chunk.type()));
         }
 
         final byte[] data = chunk.data();
-        if (data.length % 3 != 0) {
-            throw new CodecException("PLTE data length must be divisible by 3");
-        }
+        if (data.length == 0 || data.length % 3 != 0)
+            throw new CodecException("PLTE data length must be a positive multiple of 3, got " + data.length);
         if (data.length > MAX_LENGTH) {
             throw new CodecException("PLTE holds more than 256 entries: " + (data.length / 3));
         }

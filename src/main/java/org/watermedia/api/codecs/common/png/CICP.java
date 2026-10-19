@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
@@ -25,32 +26,12 @@ public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficie
     public static final int TRANSFER_PQ = 16;    // HDR10
     public static final int TRANSFER_HLG = 18;   // HLG HDR
 
-    /**
-     * Reads cICP chunk from buffer (reads length/type header first)
-     */
-    public static CICP read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated cICP chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for cICP: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("cICP chunk length must be 4, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated cICP chunk");
-
-        return new CICP(
-                buffer.get() & 0xFF, // COLOR PRIMARIES
-                buffer.get() & 0xFF, // TRANSFER FUNCTION
-                buffer.get() & 0xFF, // MATRIX COEFFICIENTS
-                buffer.get() & 0xFF  // VIDEO FULL RANGE FLAG
-        );
+    /** Reads a complete cICP chunk (length, type, data and CRC) from the buffer. */
+    public static CICP read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to CICP
-     */
+    /** Converts a generic chunk to cICP. */
     public static CICP convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for cICP: 0x" + Integer.toHexString(chunk.type()));
@@ -62,10 +43,10 @@ public record CICP(int colorPrimaries, int transferFunction, int matrixCoefficie
         }
 
         return new CICP(
-                data[0] & 0xFF,
-                data[1] & 0xFF,
-                data[2] & 0xFF,
-                data[3] & 0xFF
+                data[0] & 0xFF, // COLOR PRIMARIES
+                data[1] & 0xFF, // TRANSFER FUNCTION
+                data[2] & 0xFF, // MATRIX COEFFICIENTS
+                data[3] & 0xFF  // VIDEO FULL RANGE FLAG
         );
     }
 

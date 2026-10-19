@@ -41,6 +41,24 @@ public class ChunkContractTest {
     }
 
     @Test
+    @DisplayName("Readers ignore the buffer byte order and advance exactly past their block")
+    void readsRelativeAndOrderFree() throws CodecException {
+        final ScreenDescriptor screen = new ScreenDescriptor(320, 240, true, 8, false, 1, 0, 0);
+        final GraphicExtension control = new GraphicExtension(2, false, true, 25, 1);
+        final ImageDescriptor image = new ImageDescriptor(1, 2, 16, 9, true, false, false, 7);
+        final ColorTable palette = new ColorTable(2, new int[] { 0xFF123456, 0xFFABCDEF });
+        final ByteBuffer stream = ByteBuffer.allocate(28).order(ByteOrder.BIG_ENDIAN)
+                .put(screen.toBytes()).put(control.toBytes()).put(image.toBytes()).put(palette.toBytes()).flip();
+        assertEquals(screen, ScreenDescriptor.read(stream));
+        assertEquals(ScreenDescriptor.LENGTH, stream.position());
+        assertEquals(control, GraphicExtension.read(stream));
+        assertEquals(image, ImageDescriptor.read(stream));
+        assertArrayEquals(palette.colors(), ColorTable.read(2, stream).colors());
+        assertFalse(stream.hasRemaining());
+        assertEquals(256, new ScreenDescriptor(1, 1, true, 8, false, 7, 0, 0).globalColorCount());
+    }
+
+    @Test
     @DisplayName("Rejects truncated descriptors and unencodable palette sizes")
     void rejectsInvalidDescriptors() throws CodecException {
         final ImageDescriptor valid = new ImageDescriptor(0, 0, 1, 1, true, false, false, 7);

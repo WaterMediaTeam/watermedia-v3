@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -17,27 +18,12 @@ public record GAMA(int gamma) implements IChunk {
     // GAMMA 100.0 — ORDERS OF MAGNITUDE ABOVE ANY REAL ENCODER (0.45455 AND 1.0 ARE THE COMMON ONES)
     public static final int MAX_GAMMA = 10_000_000;
 
-    /**
-     * Reads gAMA chunk from buffer (reads length/type header first)
-     */
-    public static GAMA read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated gAMA chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("gAMA chunk length must be 4, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated gAMA chunk");
-
-        return of(buffer.getInt());
+    /** Reads a complete gAMA chunk (length, type, data and CRC) from the buffer. */
+    public static GAMA read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to GAMA
-     */
+    /** Converts a generic chunk to gAMA. */
     public static GAMA convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for gAMA: 0x" + Integer.toHexString(chunk.type()));
@@ -48,13 +34,9 @@ public record GAMA(int gamma) implements IChunk {
             throw new CodecException("gAMA data must be 4 bytes, got " + data.length);
         }
 
-        final ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
-        return of(buffer.getInt());
-    }
-
-    // THE FIELD IS UNSIGNED gamma * 100000: 0x80000000 READS BACK NEGATIVE AND FEEDS A NEGATIVE EXPONENT
-    // TO Math.pow, WHOSE +Infinity SATURATES THE DECODER'S GAMMA LUT AND BLEEDS OVER THE ALPHA BYTE
-    private static GAMA of(final int gamma) throws CodecException {
+        // THE FIELD IS UNSIGNED gamma * 100000: 0x80000000 READS BACK NEGATIVE AND FEEDS A NEGATIVE EXPONENT
+        // TO Math.pow, WHOSE +Infinity SATURATES THE DECODER'S GAMMA LUT AND BLEEDS OVER THE ALPHA BYTE
+        final int gamma = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN).getInt();
         if (gamma <= 0 || gamma > MAX_GAMMA) {
             throw new CodecException("Invalid gAMA value: " + Integer.toUnsignedString(gamma));
         }

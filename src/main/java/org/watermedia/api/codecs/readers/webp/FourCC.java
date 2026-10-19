@@ -1,9 +1,7 @@
-package org.watermedia.api.codecs.readers.webp.riff;
+package org.watermedia.api.codecs.readers.webp;
 
-// WEBP RIFF FOURCC CONSTANTS AND FOURCC-TO-ASCII HELPER SHARED BY WebPReader
+/** WebP RIFF chunk identifiers as little-endian ints, plus their ASCII spelling. */
 public final class FourCC {
-
-    // FOURCC CONSTANTS
     public static final int VP8 = 0x20385056; // 'VP8 '
     public static final int VP8L = 0x4C385056; // 'VP8L'
     public static final int VP8X = 0x58385056; // 'VP8X'
@@ -14,12 +12,11 @@ public final class FourCC {
     public static final int EXIF = 0x46495845; // 'EXIF'
     public static final int XMP = 0x20504D58; // 'XMP '
 
-    private FourCC() {
-    }
+    private FourCC() {}
 
     /** Decodes the four little-endian ASCII bytes of a RIFF chunk identifier. */
     public static String fourCCString(final int fourCC) {
-        return new String(new char[]{
+        return new String(new char[] {
                 (char) (fourCC & 0xFF),
                 (char) ((fourCC >> 8) & 0xFF),
                 (char) ((fourCC >> 16) & 0xFF),

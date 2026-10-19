@@ -7,7 +7,6 @@ import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -80,7 +79,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     // A BROADCASTING AUTHORITY: THE WHOLE SERVER SIDE OF THE SYNC PROTOCOL RUNS OVER THE CARRIER (SEE THE CLASS DOCS)
     ServerMediaPlayer(final Bridge bridge, final Config.Capability... capabilities) {
-        super(Objects.requireNonNull(bridge, "Bridge cannot be null"), Role.AUTHORITY);
+        super(bridge, Role.AUTHORITY);
         this.capabilities = Config.Capability.mask(capabilities);
         this.arm();
     }
@@ -94,7 +93,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     // A HEADLESS FOLLOWER: A WALL CLOCK DRIVEN BY A REMOTE AUTHORITY THROUGH THE CARRIER, FED THROUGH sync(ByteBuffer)
     static ServerMediaPlayer follower(final Bridge bridge) {
-        return new ServerMediaPlayer(Objects.requireNonNull(bridge, "Bridge cannot be null"));
+        return new ServerMediaPlayer(bridge);
     }
 
     // --- CLIENT SYNC ---

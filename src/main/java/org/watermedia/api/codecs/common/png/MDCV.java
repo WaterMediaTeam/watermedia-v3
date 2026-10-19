@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -22,38 +23,12 @@ public record MDCV(
     public static final int SIGNATURE = 0x6D_44_43_76; // "mDCv"
     public static final int LENGTH = 24;
 
-    /**
-     * Reads mDCv chunk from buffer (reads length/type header first)
-     */
-    public static MDCV read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated mDCv chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for mDCv: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("mDCv chunk length must be 24, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated mDCv chunk");
-
-        return new MDCV(
-                buffer.getShort() & 0xFFFF, // RED X
-                buffer.getShort() & 0xFFFF, // RED Y
-                buffer.getShort() & 0xFFFF, // GREEN X
-                buffer.getShort() & 0xFFFF, // GREEN Y
-                buffer.getShort() & 0xFFFF, // BLUE X
-                buffer.getShort() & 0xFFFF, // BLUE Y
-                buffer.getShort() & 0xFFFF, // WHITE X
-                buffer.getShort() & 0xFFFF, // WHITE Y
-                buffer.getInt() & 0xFFFFFFFFL, // MAX LUMINANCE
-                buffer.getInt() & 0xFFFFFFFFL  // MIN LUMINANCE
-        );
+    /** Reads a complete mDCv chunk (length, type, data and CRC) from the buffer. */
+    public static MDCV read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to MDCV
-     */
+    /** Converts a generic chunk to mDCv. */
     public static MDCV convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for mDCv: 0x" + Integer.toHexString(chunk.type()));
@@ -79,7 +54,6 @@ public record MDCV(
         );
     }
 
-    // CHROMATICITY VALUES ARE STORED AS 0.00002 UNITS
     /** Returns the red primary CIE x chromaticity coordinate. */
     public float redPrimaryX() { return this.redX * 0.00002f; }
     /** Returns the red primary CIE y chromaticity coordinate. */
@@ -97,7 +71,6 @@ public record MDCV(
     /** Returns the white point CIE y chromaticity coordinate. */
     public float whitePointY() { return this.whiteY * 0.00002f; }
 
-    // LUMINANCE VALUES ARE STORED AS 0.0001 CD/M^2 UNITS
     /** Returns the mastering display maximum luminance in cd/m^2. */
     public float maxLuminanceCdm2() { return this.maxLuminance * 0.0001f; }
     /** Returns the mastering display minimum luminance in cd/m^2. */

@@ -277,7 +277,8 @@ public final class NetRequest implements AutoCloseable {
         private int maxRedirects = WaterMediaConfig.network.maxRedirects;
 
         Builder(final URI uri) {
-            this.uri = Objects.requireNonNull(uri, "uri cannot be null");
+            if (uri == null) throw new IllegalArgumentException("URI cannot be null");
+            this.uri = uri;
             // DEFAULTS LIVE IN THE BAG, SO header(), headers() AND THE PRESETS REPLACE THEM IN CALL ORDER
             this.headers.set("Accept", ACCEPT_ANY).set("User-Agent", UserAgent.WATERMEDIA.value);
         }

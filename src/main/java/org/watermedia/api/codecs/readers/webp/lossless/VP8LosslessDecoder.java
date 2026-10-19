@@ -3,9 +3,7 @@ package org.watermedia.api.codecs.readers.webp.lossless;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.api.codecs.CodecException;
-import org.watermedia.api.codecs.common.webp.BitReader;
-import org.watermedia.api.codecs.common.webp.ColorCache;
-import org.watermedia.tools.DataTool;
+import org.watermedia.api.codecs.common.Limits;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -22,9 +20,6 @@ public final class VP8LosslessDecoder {
     // MINIMUM BITS ONE GROUP CAN OCCUPY: 5 SIMPLE-CODE TABLES x 4 BITS (isSimple + numSymbols +
     // is8Bits + 1-BIT SYMBOL) EACH
     private static final int MIN_GROUP_BITS = 20;
-    // TOTAL-PIXEL CAP, MIRRORS WebPReader#MAX_PIXELS (64 MPX). SUB-IMAGES DERIVE THEIR SIZE FROM
-    // THE MAIN ONE, SO ONE CEILING COVERS EVERY decodeImageData ENTRY POINT
-    private static final int MAX_PIXELS = 1 << 26;
     // CEILING FOR IMAGES NO AMOUNT OF INPUT CAN BOUND (SEE THE FEASIBILITY GATE): A CONSTANT FILL
     // IS DECODED FROM ZERO BITS, SO ITS ONLY LIMIT IS ITS OWN DECLARED SIZE. 16 MPX STILL COVERS
     // EVERY REALISTIC SOLID IMAGE OR UNIFORM ALPHA PLANE WHILE KEEPING THE FILE-TO-HEAP RATIO OF A
@@ -36,9 +31,10 @@ public final class VP8LosslessDecoder {
     private VP8LosslessDecoder() {
     }
 
-    /** Decodes VP8L image data and inverse transforms into {@code width * height} packed ARGB pixels. */
-    public static int[] decode(final BitReader reader, final int width, final int height) throws CodecException {
+    /** Decodes VP8L image data that starts past the 5-byte header and inverse transforms it into {@code width * height} packed ARGB pixels. */
+    public static int[] decode(final ByteBuffer data, final int width, final int height) throws CodecException {
         LOGGER.trace(IT, "Starting decode: {}x{}", width, height);
+        final BitReader reader = new BitReader(data);
 
         // PARSE TRANSFORMS
         final List<Transform> transforms = new ArrayList<>();
@@ -136,12 +132,6 @@ public final class VP8LosslessDecoder {
         return pixels;
     }
 
-    /** Decodes VP8L pixels into a newly allocated direct buffer containing little-endian BGRA bytes. */
-    public static ByteBuffer decodeToBgra(final BitReader reader, final int width, final int height) throws CodecException {
-        final int[] bgra = decode(reader, width, height);
-        return DataTool.bgraToBuffer(bgra);
-    }
-
     private static Transform readTransform(final BitReader reader, final Transform.Type type, final int width, final int height) throws CodecException {
         return switch (type) {
             case PREDICTOR, COLOR -> {
@@ -178,9 +168,10 @@ public final class VP8LosslessDecoder {
                                          final HuffmanGroup[] groups, final int[] metaImage,
                                          final int metaBits, final int metaWidth,
                                          final ColorCache colorCache) throws CodecException {
+        // THE SHARED PIXEL CAP COVERS EVERY SUB-IMAGE TOO: THEIR SIZES DERIVE FROM THE MAIN IMAGE'S
         final long declared = (long) width * height;
-        if (width <= 0 || height <= 0 || declared > MAX_PIXELS)
-            throw new CodecException("Invalid VP8L image size: " + width + "x" + height + " (max " + MAX_PIXELS + " pixels)");
+        if (width <= 0 || height <= 0 || declared > Limits.MAX_PIXELS)
+            throw new CodecException("Invalid VP8L image size: " + width + "x" + height + " (max " + Limits.MAX_PIXELS + " pixels)");
 
         // PIXEL FEASIBILITY GATE, EVALUATED BEFORE THE ALLOCATION. RFC 9649 LETS A ONE-SYMBOL PREFIX
         // CODE COST ZERO BITS, SO A GROUP WHOSE ENTIRE TOKEN PATH IS ONE-SYMBOL EMITS PIXELS OUT OF

@@ -134,6 +134,9 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     // UPLOADS ONE FRAME AS ITS ORDERED PLANES (ONE PER PixelFormat.planes(); STRIDES IN BYTES, 0 = TIGHT): READS [position,
     // limit) WITHOUT MOVING position AND MAY KEEP READING UNTIL THE SECOND LATER upload RETURNS, SO CALLERS PASS FRESH ARRAYS
     final void upload(final ByteBuffer[] planes, final int[] strides) {
+        if (planes == null || strides == null || strides.length < planes.length)
+            throw new IllegalArgumentException("Every plane needs a buffer and a stride");
+        for (final ByteBuffer plane: planes) if (plane == null) throw new IllegalArgumentException("A plane buffer cannot be null");
         if (this.released) return;
         this.push(planes, strides);
     }

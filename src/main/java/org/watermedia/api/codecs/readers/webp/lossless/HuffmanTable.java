@@ -1,7 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
 import org.watermedia.api.codecs.CodecException;
-import org.watermedia.api.codecs.common.webp.BitReader;
 
 public final class HuffmanTable {
     private static final int LOOKUP_BITS = 7;
@@ -44,8 +43,8 @@ public final class HuffmanTable {
         return this.isSingleSymbol ? this.singleSymbolValue : -1;
     }
 
-    /** Decodes the next symbol from the LSB-first bitstream, or returns the sole symbol without consuming bits. */
-    public int read(final BitReader reader) throws CodecException {
+    // DECODES THE NEXT SYMBOL FROM THE LSB-FIRST BITSTREAM, OR RETURNS THE SOLE SYMBOL WITHOUT CONSUMING BITS
+    int read(final BitReader reader) throws CodecException {
         // CHECK FOR SINGLE SYMBOL TABLE (NO BITS NEEDED)
         if (this.isSingleSymbol) {
             return this.singleSymbolValue;

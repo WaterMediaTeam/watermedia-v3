@@ -1,17 +1,19 @@
 package org.watermedia.api.codecs.readers;
 
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
-import org.watermedia.api.codecs.UnsupportedFormatException;
-import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.common.Limits;
 import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
 import org.watermedia.api.codecs.readers.netpbm.NetpbmType;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.DataTool;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Streaming Netpbm reader: plain ASCII PBM/PGM/PPM ({@code P1}..{@code P3}), their binary variants
@@ -24,48 +26,35 @@ import java.nio.ByteOrder;
  * {@link #next()} reads the raster lazily and decodes into BGRA.
  */
 public final class NetpbmReader extends ImageReader {
-    private static final int MAX_DIM = 16_384;// 16K PER AXIS; KEEPS width*height*4 WITHIN INT
-    // TOTAL-PIXEL CAP (64 MPX, E.G. 8192x8192). MAX_DIM ALONE STILL ALLOWS 16K x 16K = 1 GiB OF
-    // DIRECT MEMORY RESERVED IN THE CONSTRUCTOR FROM A 15-BYTE HEADER, BEFORE ONE RASTER BYTE IS READ
-    private static final int MAX_PIXELS = 1 << 26;
     // HEADER CEILINGS. P1..P6 CARRY FOUR NUMERIC TOKENS AND P7 A HANDFUL OF KEY-VALUE LINES, BUT
     // NOTHING ENFORCED THAT: A FILE THAT NEVER TERMINATES ITS HEADER WAS BUFFERED WHOLE INTO SCRATCH
     private static final int MAX_PLAIN_HEADER_BYTES = 4_096;
     private static final int MAX_PAM_HEADER_BYTES = 65_536;
     // A PLAIN SAMPLE IS AT MOST MAXVAL (65535), SO FIVE DIGITS; LONGER RUNS ARE MALFORMED, NOT BIG NUMBERS
     private static final int MAX_SAMPLE_DIGITS = 5;
+    private static final byte[] ENDHDR = "ENDHDR".getBytes(StandardCharsets.US_ASCII);
 
     private final NetpbmType type;
     private final NetpbmHeader header;
     private final ByteBuffer directOut;
     private final int rasterStart;
-    private byte[] rowScratch = new byte[0];
-
     private boolean delivered;
 
-    public NetpbmReader(final ByteBuffer data, final int version) throws IOException {
-        super(data);
-        // RE-SYNTHESIZE "P<digit>" SO WE CAN REUSE NetpbmHeader.parse; IT CONSUMES THE "Pn" VERSION
-        // TOKEN FIRST. BUFFERING THE HEADER IS CHEAP BECAUSE readHeaderBytes CAPS IT.
-        final byte[] headerBytes = readHeaderBytes(this.data, version);
-        this.header = NetpbmHeader.parse(ByteBuffer.wrap(headerBytes));
+    public NetpbmReader(final ByteBuffer data, final int version) throws IOException { this(data, version, null); }
 
-        this.type = NetpbmType.fromVersion(this.header.versionString());
-        if (this.type == null) {
-            throw new UnsupportedFormatException("Unsupported Netpbm version: " + this.header.versionString());
-        }
+    /** Parses the header that follows the {@code P<version>} magic; a version outside 1 to 7 is an {@link IllegalArgumentException}. */
+    public NetpbmReader(final ByteBuffer data, final int version, final PixelFormat requestedFormat) throws IOException {
+        super(data, requestedFormat);
+        if (version < 1 || version > 7) throw new IllegalArgumentException("Netpbm version must be 1 to 7, not " + version);
+        // RE-SYNTHESIZE "P<digit>" SO NetpbmHeader.parse SEES THE WHOLE HEADER; readHeaderBytes CAPS THE BUFFERING
+        this.header = NetpbmHeader.parse(ByteBuffer.wrap(readHeaderBytes(this.data, version)));
+        this.type = NetpbmType.values()[this.header.version() - 1];
 
-        // SECURITY CAP: SIBLING READERS ALL ENFORCE 16384; WITHOUT IT A TINY HEADER FORCES A MULTI-GB DIRECT ALLOC (OR AN INT OVERFLOW)
-        if (this.header.width() > MAX_DIM || this.header.height() > MAX_DIM) {
-            throw new CodecException("Netpbm dimensions too big: " + this.header.width() + "x" + this.header.height() + " (max " + MAX_DIM + ")");
-        }
-        // A PER-AXIS CAP IS NOT A BUDGET: THE PRODUCT IS WHAT THE VERY NEXT STATEMENT RESERVES,
-        // AND 16384x16384 SITS EXACTLY AT THE PER-AXIS CAP WHILE COSTING 1 GiB
-        if ((long) this.header.width() * this.header.height() > MAX_PIXELS) {
-            throw new CodecException("Netpbm pixel count too big: " + this.header.width() + "x" + this.header.height()
-                    + " (max " + MAX_PIXELS + " pixels)");
-        }
-
+        // THE PIXEL BUDGET IS WHAT THE VERY NEXT STATEMENT RESERVES: A PER-AXIS CAP ALONE LETS A 15-BYTE
+        // HEADER RESERVE 1 GiB OF DIRECT MEMORY BEFORE ONE RASTER BYTE IS READ
+        if (!Limits.fits(this.header.width(), this.header.height()))
+            throw new CodecException("Netpbm dimensions too big: " + this.header.width() + "x" + this.header.height()
+                    + " (max " + Limits.MAX_DIM + " per axis, " + Limits.MAX_PIXELS + " pixels)");
         this.directOut = ByteBuffer.allocateDirect(this.header.width() * this.header.height() * 4).order(ByteOrder.LITTLE_ENDIAN);
         // SNAPSHOT THE RASTER START SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
         this.rasterStart = this.data.position();
@@ -73,28 +62,24 @@ public final class NetpbmReader extends ImageReader {
 
     @Override public int width() { return this.header.width(); }
     @Override public int height() { return this.header.height(); }
-    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
-    @Override public boolean variableFrameRate() { return false; }
 
     @Override
-    public boolean hasNext() {
+    protected boolean hasMore() {
         return !this.delivered;
     }
 
     @Override
-    public boolean reset() {
+    protected boolean rewind() {
         this.data.position(this.rasterStart);
         this.delivered = false;
-        this.delayMs = 0L;
         return true;
     }
 
     @Override
     protected ByteBuffer decode() throws IOException {
-        if (this.delivered) throw new CodecException("No more Netpbm frames");
         this.delivered = true;
-
         this.directOut.clear();
         final int pixels = this.header.width() * this.header.height();
         final int maxVal = this.header.maxVal() != null ? this.header.maxVal() : 1;
@@ -120,113 +105,83 @@ public final class NetpbmReader extends ImageReader {
                     this.directOut.putInt(0xFF000000 | (r << 16) | (g << 8) | b);
                 }
             }
-            case PBM -> this.decodePbmBits();
+            case PBM -> {
+                final int rowBytes = (this.header.width() + 7) >> 3;
+                int row = this.raster(rowBytes);
+                for (int y = 0; y < this.header.height(); y++, row += rowBytes) {
+                    for (int x = 0; x < this.header.width(); x++) {
+                        final int v = ((this.data.get(row + (x >> 3)) >> (7 - (x & 7))) & 1) == 1 ? 0 : 255;
+                        this.directOut.putInt(0xFF000000 | (v << 16) | (v << 8) | v);
+                    }
+                }
+            }
             case PGM -> this.decodeGrayscale(1, maxVal, false);
             case PPM -> this.decodeColor(3, maxVal, false);
             case PAM -> {
-                // THE HEADER ALREADY BOUND DEPTH TO THE TUPLE TYPE, SO EACH DECODER TRUSTS ITS SAMPLE COUNT
+                // THE HEADER ALREADY BOUND DEPTH AND MAXVAL TO A KNOWN TUPLE TYPE, SO EACH DECODER TRUSTS ITS SAMPLE COUNT
                 final int depth = this.header.depth();
-                final String tupleType = this.header.tuplType() != null ? this.header.tuplType() : "";
-                switch (tupleType) {
-                    case "BLACKANDWHITE" -> this.decodeBW(depth, maxVal, false);
-                    case "BLACKANDWHITE_ALPHA" -> this.decodeBW(depth, maxVal, true);
+                switch (this.header.tuplType()) {
+                    case "BLACKANDWHITE", "BLACKANDWHITE_ALPHA" -> {
+                        // MAXVAL 1 MEANS ONE BYTE PER SAMPLE; ANY NONZERO SAMPLE IS WHITE OR OPAQUE
+                        final boolean hasAlpha = depth == 2;
+                        int offset = this.raster((long) this.header.width() * depth);
+                        for (int i = 0; i < pixels; i++, offset += depth) {
+                            final int v = this.data.get(offset) == 0 ? 0 : 255;
+                            final int a = hasAlpha && this.data.get(offset + 1) == 0 ? 0 : 255;
+                            this.directOut.putInt((a << 24) | (v << 16) | (v << 8) | v);
+                        }
+                    }
                     case "GRAYSCALE" -> this.decodeGrayscale(depth, maxVal, false);
                     case "GRAYSCALE_ALPHA" -> this.decodeGrayscale(depth, maxVal, true);
                     case "RGB" -> this.decodeColor(depth, maxVal, false);
                     case "RGB_ALPHA" -> this.decodeColor(depth, maxVal, true);
-                    default -> throw new CodecException("Unsupported PAM tuple type: " + tupleType);
                 }
             }
         }
         this.directOut.flip();
-        this.delayMs = 0L;
         return this.directOut;
     }
 
-    private void decodePbmBits() throws CodecException {
-        final int rowBytes = (this.header.width() + 7) >> 3;
-        final byte[] row = this.rowBuffer(rowBytes);
-        for (int y = 0; y < this.header.height(); y++) {
-            readFully(this.data, row, rowBytes);
-            for (int x = 0; x < this.header.width(); x++) {
-                final int packed = row[x >> 3] & 0xFF;
-                final int bit = (packed >> (7 - (x & 7))) & 1;
-                final int v = bit == 1 ? 0 : 255;
-                this.directOut.putInt(0xFF000000 | (v << 16) | (v << 8) | v);
-            }
-        }
-    }
-
-    private void decodeBW(final int depth, final int maxVal, final boolean hasAlpha) throws CodecException {
-        if (maxVal != 1) throw new CodecException("black and white images must have maxVal of 1");
-        // MAXVAL 1 MEANS ONE BYTE PER SAMPLE
-        final int rowBytes = this.header.width() * depth;
-        final byte[] row = this.rowBuffer(rowBytes);
-        for (int y = 0; y < this.header.height(); y++) {
-            readFully(this.data, row, rowBytes);
-            int offset = 0;
-            for (int x = 0; x < this.header.width(); x++) {
-                final int v = row[offset] == 0 ? 0 : 255;
-                final int a = hasAlpha && row[offset + 1] == 0 ? 0 : 255;
-                offset += depth;
-                this.directOut.putInt((a << 24) | (v << 16) | (v << 8) | v);
-            }
-        }
-    }
-
     private void decodeGrayscale(final int depth, final int maxVal, final boolean hasAlpha) throws CodecException {
-        final int bytesPerSample = bytesPerSample(maxVal);
-        final int rowBytes = this.header.width() * depth * bytesPerSample;
-        final byte[] row = this.rowBuffer(rowBytes);
-        for (int y = 0; y < this.header.height(); y++) {
-            readFully(this.data, row, rowBytes);
-            int offset = 0;
-            for (int x = 0; x < this.header.width(); x++) {
-                final int sample = readSample(row, offset, bytesPerSample);
-                final int as = hasAlpha ? readSample(row, offset + bytesPerSample, bytesPerSample) : maxVal;
-                offset += depth * bytesPerSample;
-                // CLAMP: A MALFORMED SAMPLE ABOVE maxVal WOULD RESCALE PAST 8 BITS AND CORRUPT ADJACENT CHANNELS
-                final int gray = Math.min(255, (sample * 255) / maxVal);
-                final int a = Math.min(255, (as * 255) / maxVal);
-                this.directOut.putInt((a << 24) | (gray << 16) | (gray << 8) | gray);
-            }
+        final int bytes = maxVal < 256 ? 1 : 2;
+        int offset = this.raster((long) this.header.width() * depth * bytes);
+        for (int i = this.header.width() * this.header.height(); i > 0; i--, offset += depth * bytes) {
+            final int sample = this.sample(offset, bytes);
+            final int as = hasAlpha ? this.sample(offset + bytes, bytes) : maxVal;
+            // CLAMP: A MALFORMED SAMPLE ABOVE maxVal WOULD RESCALE PAST 8 BITS AND CORRUPT ADJACENT CHANNELS
+            final int gray = Math.min(255, (sample * 255) / maxVal);
+            final int a = Math.min(255, (as * 255) / maxVal);
+            this.directOut.putInt((a << 24) | (gray << 16) | (gray << 8) | gray);
         }
     }
 
     private void decodeColor(final int depth, final int maxVal, final boolean hasAlpha) throws CodecException {
-        final int bytesPerSample = bytesPerSample(maxVal);
-        final int rowBytes = this.header.width() * depth * bytesPerSample;
-        final byte[] row = this.rowBuffer(rowBytes);
-        for (int y = 0; y < this.header.height(); y++) {
-            readFully(this.data, row, rowBytes);
-            int offset = 0;
-            for (int x = 0; x < this.header.width(); x++) {
-                final int rs = readSample(row, offset, bytesPerSample);
-                final int gs = readSample(row, offset + bytesPerSample, bytesPerSample);
-                final int bs = readSample(row, offset + bytesPerSample * 2, bytesPerSample);
-                final int as = hasAlpha ? readSample(row, offset + bytesPerSample * 3, bytesPerSample) : maxVal;
-                offset += depth * bytesPerSample;
-
-                // CLAMP: A MALFORMED SAMPLE ABOVE maxVal WOULD RESCALE PAST 8 BITS AND BLEED INTO ADJACENT CHANNELS
-                final int r = Math.min(255, (rs * 255) / maxVal);
-                final int g = Math.min(255, (gs * 255) / maxVal);
-                final int b = Math.min(255, (bs * 255) / maxVal);
-                final int a = Math.min(255, (as * 255) / maxVal);
-                this.directOut.putInt((a << 24) | (r << 16) | (g << 8) | b);
-            }
+        final int bytes = maxVal < 256 ? 1 : 2;
+        int offset = this.raster((long) this.header.width() * depth * bytes);
+        for (int i = this.header.width() * this.header.height(); i > 0; i--, offset += depth * bytes) {
+            // CLAMP: A MALFORMED SAMPLE ABOVE maxVal WOULD RESCALE PAST 8 BITS AND BLEED INTO ADJACENT CHANNELS
+            final int r = Math.min(255, (this.sample(offset, bytes) * 255) / maxVal);
+            final int g = Math.min(255, (this.sample(offset + bytes, bytes) * 255) / maxVal);
+            final int b = Math.min(255, (this.sample(offset + bytes * 2, bytes) * 255) / maxVal);
+            final int a = hasAlpha ? Math.min(255, (this.sample(offset + bytes * 3, bytes) * 255) / maxVal) : 255;
+            this.directOut.putInt((a << 24) | (r << 16) | (g << 8) | b);
         }
     }
 
-    // RESERVES THE ROW BUFFER ONLY ONCE THE WHOLE RASTER IS PROVEN TO BE PRESENT. rowBytes IS DERIVED
-    // FROM HEADER FIELDS (WIDTH, DEPTH, MAXVAL), SO ALLOCATING BEFORE readFully CHECKS THE PAYLOAD
-    // TURNS A 69-BYTE FILE INTO A MULTI-GB new byte[]
-    private byte[] rowBuffer(final int rowBytes) throws CodecException {
-        final long need = (long) rowBytes * this.header.height();
-        if (need > this.data.remaining()) {
+    // PROVES THE WHOLE BINARY RASTER IS PRESENT BEFORE A PIXEL IS WRITTEN AND CONSUMES IT, RETURNING WHERE IT STARTS;
+    // THE ROW SIZE DERIVES FROM HEADER FIELDS, SO A 69-BYTE FILE CAN DECLARE GIGABYTES OF IT
+    private int raster(final long rowBytes) throws CodecException {
+        final long need = rowBytes * this.header.height();
+        if (need > this.data.remaining())
             throw new CodecException("Truncated Netpbm raster: need " + need + " bytes, have " + this.data.remaining());
-        }
-        if (this.rowScratch.length < rowBytes) this.rowScratch = new byte[rowBytes];
-        return this.rowScratch;
+        final int start = this.data.position();
+        this.data.position(start + (int) need);
+        return start;
+    }
+
+    // ONE BINARY SAMPLE: A BYTE, OR A BIG-ENDIAN SHORT WHEN MAXVAL EXCEEDS 255
+    private int sample(final int offset, final int bytes) {
+        return bytes == 1 ? this.data.get(offset) & 0xFF : DataTool.u16(this.data, offset, ByteOrder.BIG_ENDIAN);
     }
 
     // NEXT SAMPLE OF A PLAIN RASTER: WHITESPACE AND '#' COMMENTS MAY APPEAR ANYWHERE, A BITMAP BIT IS A SINGLE
@@ -259,24 +214,8 @@ public final class NetpbmReader extends ImageReader {
         return value;
     }
 
-    private static int bytesPerSample(final int maxVal) {
-        return maxVal < 256 ? 1 : 2;
-    }
-
-    private static int readSample(final byte[] row, final int offset, final int bytesPerSample) {
-        if (bytesPerSample == 1) return row[offset] & 0xFF;
-        return ((row[offset] & 0xFF) << 8) | (row[offset + 1] & 0xFF);
-    }
-
     private static int readUnsignedOrEnd(final ByteBuffer in) {
         return in.hasRemaining() ? in.get() & 0xFF : -1;
-    }
-
-    private static void readFully(final ByteBuffer in, final byte[] dst, final int length) throws CodecException {
-        if (in.remaining() < length) {
-            throw new CodecException("Truncated Netpbm raster: need " + length + " bytes, have " + in.remaining());
-        }
-        in.get(dst, 0, length);
     }
 
     // RE-EMITS "P<digit>" THEN DRAINS THE ASCII HEADER FROM THE STREAM UNTIL THE RASTER BEGINS. THE BOUNDARY
@@ -291,8 +230,7 @@ public final class NetpbmReader extends ImageReader {
         out.write('0' + version);
 
         if (version == 7) {
-            // READ UNTIL "\nENDHDR\n"
-            final byte[] sentinel = "ENDHDR".getBytes();
+            // READ UNTIL A LINE STARTING WITH "ENDHDR", THEN THROUGH ITS TERMINATOR
             int sentIdx = 0;
             boolean endhdrSeen = false;
             int last = -1;
@@ -307,10 +245,10 @@ public final class NetpbmReader extends ImageReader {
                     continue;
                 }
                 if (last == '\n' || last == -1) {
-                    sentIdx = b == sentinel[0] ? 1 : 0;
-                } else if (sentIdx > 0 && sentIdx < sentinel.length && b == sentinel[sentIdx]) {
+                    sentIdx = b == ENDHDR[0] ? 1 : 0;
+                } else if (sentIdx > 0 && sentIdx < ENDHDR.length && b == ENDHDR[sentIdx]) {
                     sentIdx++;
-                    if (sentIdx == sentinel.length) endhdrSeen = true;
+                    if (sentIdx == ENDHDR.length) endhdrSeen = true;
                 } else {
                     sentIdx = 0;
                 }

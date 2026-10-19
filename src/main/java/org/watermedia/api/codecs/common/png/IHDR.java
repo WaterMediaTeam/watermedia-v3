@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -15,35 +16,12 @@ public record IHDR(int width, int height, int depth, int colorType, int compress
     public static final int SIGNATURE = 0x49_48_44_52; // "IHDR"
     public static final int LENGTH = 13;
 
-    /**
-     * Reads IHDR chunk from buffer (reads length/type header first)
-     */
-    public static IHDR read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated IHDR chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("IHDR chunk length must be 13, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated IHDR chunk");
-
-        return new IHDR(
-                buffer.getInt(),    // WIDTH (4 BYTES)
-                buffer.getInt(),    // HEIGHT (4 BYTES)
-                buffer.get() & 0xFF, // BIT DEPTH (1 BYTE)
-                buffer.get() & 0xFF, // COLOR TYPE (1 BYTE)
-                buffer.get() & 0xFF, // COMPRESSION METHOD (1 BYTE)
-                buffer.get() & 0xFF, // FILTER METHOD (1 BYTE)
-                buffer.get() & 0xFF  // INTERLACE METHOD (1 BYTE)
-        );
+    /** Reads a complete IHDR chunk (length, type, data and CRC) from the buffer. */
+    public static IHDR read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to IHDR
-     */
+    /** Converts a generic chunk to IHDR. */
     public static IHDR convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for IHDR: 0x" + Integer.toHexString(chunk.type()));

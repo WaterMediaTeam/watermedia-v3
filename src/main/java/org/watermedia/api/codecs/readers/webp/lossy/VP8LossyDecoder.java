@@ -5,6 +5,7 @@ import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.LogTool;
@@ -40,7 +41,7 @@ public final class VP8LossyDecoder {
 
         // RFC6386 SECTION 9.1 - PARSE UNCOMPRESSED FRAME HEADER
         final FrameInfo frm = parseFrameHeader(buf);
-        if (!frm.keyFrame) throw new CodecException("Only VP8 key frames supported");
+        if (!frm.keyFrame) throw new UnsupportedFormatException("VP8 interframes are not supported, only key frames");
         if (frm.w <= 0 || frm.h <= 0)
             throw new CodecException("Invalid VP8 frame size: " + frm.w + "x" + frm.h);
         // THE CONTAINER (SIMPLE HEADER, VP8X CANVAS OR ANMF FRAME) AND THE BITSTREAM MUST AGREE:

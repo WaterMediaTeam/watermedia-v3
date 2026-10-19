@@ -87,7 +87,6 @@ public class DataToolTest {
         assertEquals(7, DataTool.parseInt("nope", 7));
         assertEquals(3L, DataTool.parseLong(null, 3L));
         assertEquals(1.5, DataTool.parseDouble("1.5", 0.0));
-        assertEquals(6L, DataTool.sumArray(1L, 2L, 3L));
     }
 
     @Test

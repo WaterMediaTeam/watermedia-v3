@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
+import java.util.zip.CRC32;
 
 /**
  * Generic PNG Chunk
@@ -17,25 +18,8 @@ import java.nio.ByteBuffer;
 public record PngChunk(int length, int type, byte[] data, int crc) {
 
     // HARD SANITY CAP FOR A SINGLE CHUNK READ FROM A STREAM (WHERE REMAINING LENGTH IS UNKNOWN)
+    // THE JDK CRC-32 IS AN INTRINSIC; NO HAND-ROLLED TABLE
     private static final int MAX_CHUNK_BYTES = 256 * 1024 * 1024;
-
-    // PRECALCULATED CRC TABLE (POLYNOMIAL: 0xEDB88320)
-    private static final int[] CRC_TABLE = new int[256];
-
-    static {
-        // PRECALCULATE CRC TABLE (IDENTICAL TO GZIP/ZIP)
-        for (int n = 0; n < 256; n++) {
-            int c = n;
-            for (int k = 0; k < 8; k++) {
-                if ((c & 1) != 0) {
-                    c = 0xEDB88320 ^ (c >>> 1);
-                } else {
-                    c = c >>> 1;
-                }
-            }
-            CRC_TABLE[n] = c;
-        }
-    }
 
     /**
      * Reads a complete chunk from the buffer
@@ -58,6 +42,14 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
         } catch (final BufferUnderflowException e) {
             throw new EOFException("Unexpected EOF while reading chunk");
         }
+    }
+
+    /** Reads a complete chunk from the buffer and fails when its type is not the expected one. */
+    public static PngChunk read(final ByteBuffer buffer, final int expectedType) throws IOException {
+        // THE TYPE COMES FROM FILE DATA, SO A MISMATCH IS A CODEC ERROR AND NOT A CALLER BUG
+        final PngChunk chunk = read(buffer);
+        if (chunk.type() != expectedType) throw new CodecException("Expected " + typeName(expectedType) + " chunk, got " + chunk.typeName());
+        return chunk;
     }
 
     /**
@@ -110,32 +102,27 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
      * Calculates the CRC-32 of the chunk type and data
      */
     public int calculateCRC() {
-        int crcCalc = 0xFFFFFFFF;
-
-        // CRC OVER TYPE (4 BYTES)
-        for (int i = 0; i < 4; i++) {
-            final int b = (this.type >> (24 - i * 8)) & 0xFF;
-            crcCalc = CRC_TABLE[(crcCalc ^ b) & 0xFF] ^ (crcCalc >>> 8);
-        }
-
-        // CRC OVER DATA
-        for (final byte b: this.data) {
-            crcCalc = CRC_TABLE[(crcCalc ^ b) & 0xFF] ^ (crcCalc >>> 8);
-        }
-
-        // FINAL XOR
-        return ~crcCalc;
+        // THE JDK CRC-32 IS AN INTRINSIC; THE TYPE IS BIG-ENDIAN AHEAD OF THE DATA
+        final CRC32 crc = new CRC32();
+        crc.update(new byte[] { (byte) (this.type >>> 24), (byte) (this.type >>> 16), (byte) (this.type >>> 8), (byte) this.type });
+        crc.update(this.data);
+        return (int) crc.getValue();
     }
 
     /**
      * Returns the chunk type as a 4-character string
      */
     public String typeName() {
+        return typeName(this.type);
+    }
+
+    // RENDERS THE FOUR BIG-ENDIAN ASCII BYTES OF A CHUNK TYPE
+    private static String typeName(final int type) {
         return String.valueOf(new char[]{
-                (char) ((this.type >> 24) & 0xFF),
-                (char) ((this.type >> 16) & 0xFF),
-                (char) ((this.type >> 8) & 0xFF),
-                (char) (this.type & 0xFF)
+                (char) ((type >> 24) & 0xFF),
+                (char) ((type >> 16) & 0xFF),
+                (char) ((type >> 8) & 0xFF),
+                (char) (type & 0xFF)
         });
     }
 
@@ -164,11 +151,9 @@ public record PngChunk(int length, int type, byte[] data, int crc) {
      * Calculates CRC-32 for arbitrary data (static utility method)
      */
     public static int crc32(final byte[] data, final int offset, final int length) {
-        int crc = 0xFFFFFFFF;
-        for (int i = offset; i < offset + length; i++) {
-            crc = CRC_TABLE[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
-        }
-        return ~crc;
+        final CRC32 crc = new CRC32();
+        crc.update(data, offset, length);
+        return (int) crc.getValue();
     }
 
     /** Creates a chunk with the CRC of its type and data; the data array is shared, not copied. */

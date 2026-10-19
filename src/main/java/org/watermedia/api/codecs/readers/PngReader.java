@@ -1,11 +1,15 @@
 package org.watermedia.api.codecs.readers;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.UnsupportedFormatException;
+import org.watermedia.api.codecs.common.Canvas;
+import org.watermedia.api.codecs.common.Xmp;
 import org.watermedia.api.codecs.common.png.ACTL;
 import org.watermedia.api.codecs.common.png.BKGD;
 import org.watermedia.api.codecs.common.png.CHRM;
@@ -36,11 +40,18 @@ import org.watermedia.api.codecs.common.png.ZTXT;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
 
+import static org.watermedia.WaterMedia.LOGGER;
+import static org.watermedia.api.codecs.common.Limits.MAX_DIM;
+import static org.watermedia.api.codecs.common.Limits.MAX_PIXELS;
+import static org.watermedia.api.codecs.common.png.BKGD.scaleTo8Bit;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -62,8 +73,12 @@ import java.util.zip.Inflater;
  */
 public final class PngReader extends ImageReader {
     // SECURITY CAPS
-    private static final int MAX_DIM = 16_384;                         // 16K PER AXIS (1:1); KEEPS width*height*4 WITHIN INT
-    private static final int MAX_PIXELS = 1 << 26;                     // 64 MEGAPIXEL CANVAS, SAME CEILING AS WebPReader
+    private static final Marker IT = MarkerManager.getMarker(PngReader.class.getSimpleName());
+    private static final int MAX_ANCILLARY_CHUNKS = 64;
+    private static final long MAX_ANCILLARY_BYTES = 4L << 20;
+    private static final int MAX_TEXT_ENTRIES = 256;
+    private static final long MAX_TEXT_BYTES = 4L << 20;
+    private static final String XMP_KEYWORD = "XML:com.adobe.xmp";
     private static final int MAX_INFLATED_IMAGE_BYTES = Integer.MAX_VALUE - 8; // JAVA ARRAY-SIZE SAFE UPPER BOUND
     private static final int MIN_INFLATE_BUFFER_BYTES = 64 * 1024;           // FLOOR FOR THE INPUT-DERIVED INFLATE BUFFER
     private static final int INFLATE_RATIO_GUESS = 32;                 // ASSUMED DEFLATE RATIO WHEN SIZING THAT BUFFER
@@ -94,12 +109,20 @@ public final class PngReader extends ImageReader {
     private GAMA gamma;
     private SRGB srgb;
     private CICP cicp;
-    private final ImageMetadata metadata = new ImageMetadata();
     private final Map<String, List<String>> texts = new HashMap<>();
     private final Map<String, List<String>> compressedTexts = new HashMap<>();
     private final Map<String, List<String>> internationalTexts = new HashMap<>();
     private final Map<String, List<byte[]>> ancillaryChunks = new HashMap<>();
+    private final Map<String, int[]> suggestedPalettes = new HashMap<>();
     private final float[] gammaLUT;
+    // METADATA BUDGETS AND THE ONE-TIME SKIP WARNING; metaMark IS THE FURTHEST POSITION WHOSE ANCILLARY CHUNKS WERE HANDLED
+    private int metaMark;
+    private int ancillaryRetained;
+    private long ancillaryBytes;
+    private int textEntries;
+    private long textBytes;
+    private boolean ancillaryWarned;
+    private boolean fctlSeen;
 
     // STREAMING STATE
     private PngChunk pendingChunk;     // NEXT CHUNK TO CONSUME AT START OF next()
@@ -126,8 +149,7 @@ public final class PngReader extends ImageReader {
     private byte[] passPreviousRow = new byte[0];
 
     // INFLATE
-    private final Inflater inflater = new Inflater();
-    private boolean inflaterClosed;
+    private Inflater inflater; // CREATED AT THE FIRST DECODE, SO A REJECTED STREAM NEVER ALLOCATES NATIVE STATE
     private byte[] decompressed = new byte[0]; // REUSED ACROSS FRAMES
 
     // PRECOMPUTED HOT-PATH INVARIANTS (COMPUTED IN THE CONSTRUCTOR)
@@ -137,13 +159,17 @@ public final class PngReader extends ImageReader {
     private int[] indexedARGB;       // 256-ENTRY PALETTE LUT (ARGB WITH tRNS ALPHA BAKED IN)
     private int trnsR8 = -1, trnsG8 = -1, trnsB8 = -1, trnsGray8 = -1;
 
-    public PngReader(final ByteBuffer data) throws IOException {
-        super(data);
+    public PngReader(final ByteBuffer data) throws IOException { this(data, null); }
+
+    public PngReader(final ByteBuffer data, final PixelFormat requestedFormat) throws IOException {
+        super(data, requestedFormat);
         this.data.order(ByteOrder.BIG_ENDIAN);
-        this.scan = scan(this.data.duplicate().order(ByteOrder.BIG_ENDIAN));
+        this.scan = this.scan(this.data.duplicate().order(ByteOrder.BIG_ENDIAN));
 
         this.parseUntilFirstFrame();
         if (this.ihdr == null) throw new CodecException("Missing IHDR chunk");
+        // AN IDAT AHEAD OF THE FIRST fcTL IS THE DEFAULT IMAGE OF AN ANIMATION, NOT ONE OF ITS FRAMES
+        if (this.fctlSeen && this.pendingChunk != null && this.pendingChunk.type() == IDAT.SIGNATURE) this.skipDefaultImage();
         // FAIL BEFORE THE CANVAS IS ALLOCATED: A STREAM THAT REACHES IEND OR EOF WITHOUT IDAT/fcTL HAS
         // NO FRAME TO DECODE, SO PAYING FOR THE BUFFERS FIRST WOULD ONLY BE A FREE ALLOCATION FOR AN ATTACKER
         if (this.pendingChunk == null) throw new CodecException("PNG stream contains no IDAT");
@@ -152,6 +178,7 @@ public final class PngReader extends ImageReader {
         this.resetPos = this.data.position();
         this.resetChunk = this.pendingChunk;
         this.resetDone = this.done;
+        this.metaMark = this.resetPos;
 
         this.gammaLUT = buildGammaLUT(this.gamma, this.srgb, this.cicp);
         this.canvasWidth = this.ihdr.width();
@@ -184,27 +211,20 @@ public final class PngReader extends ImageReader {
 
     @Override public int width() { return this.ihdr.width(); }
     @Override public int height() { return this.ihdr.height(); }
-    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
-    @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
-    @Override public boolean variableFrameRate() { return this.scan.frameCount() > 1; }
 
     @Override
-    public void close() {
-        super.close();
-        if (this.inflaterClosed) return;
-        this.inflater.end();
-        this.inflaterClosed = true;
+    protected void dispose() {
+        if (this.inflater != null) this.inflater.end();
     }
 
     @Override
-    public boolean reset() {
-        if (this.inflaterClosed) return false;
+    protected boolean rewind() {
         this.data.position(this.resetPos);
         this.pendingChunk = this.resetChunk;
         this.done = this.resetDone;
         this.animFrames = 0;
-        this.delayMs = 0L;
         // RE-INIT THE CANVAS EXACTLY AS THE CONSTRUCTOR LEAVES IT (BKGD COLOR OR TRANSPARENT);
         // frameBuffer AND previousBuffer NEED NO CLEARING BECAUSE EACH next() FULLY WRITES THE
         // REGIONS IT LATER READS
@@ -213,15 +233,12 @@ public final class PngReader extends ImageReader {
     }
 
     @Override
-    public boolean hasNext() throws CodecException {
-        // close() ENDS THE INFLATER; A LATER next() WOULD OTHERWISE NPE INSIDE inflater.reset()
-        if (this.inflaterClosed) throw new CodecException("PngReader is closed");
+    protected boolean hasMore() {
         return !this.done && this.pendingChunk != null;
     }
 
     @Override
     protected ByteBuffer decode() throws IOException {
-        if (!this.hasNext()) throw new CodecException("No more PNG frames");
 
         FCTL fctl = null;
         final List<ChunkSlice> compressed = new ArrayList<>();
@@ -241,15 +258,13 @@ public final class PngReader extends ImageReader {
 
         // READ CHUNKS UNTIL NEXT FRAME BOUNDARY (next fcTL) OR IEND / EOF
         while (true) {
-            try {
-                c = PngChunk.read(this.data);
-            } catch (final EOFException eof) {
+            try { c = PngChunk.read(this.data); }
+            catch (final EOFException eof) {
                 this.done = true;
                 break;
             }
-            if (c.corrupted() && WaterMediaConfig.decoders.png.failOnCorruptedData) {
+            if (WaterMediaConfig.decoders.png.failOnCorruptedData && c.corrupted())
                 throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
-            }
 
             final int t = c.type();
             if (t == IDAT.SIGNATURE) {
@@ -265,8 +280,9 @@ public final class PngReader extends ImageReader {
             } else if (t == IEND.SIGNATURE) {
                 this.done = true;
                 break;
-            } else {
-                // MID-STREAM METADATA OR UNKNOWN ANCILLARY — DISPATCH THROUGH THE ANCILLARY HANDLER
+            } else if (this.data.position() > this.metaMark) {
+                // MID-STREAM METADATA OR UNKNOWN ANCILLARY; A REPLAY AFTER rewind() HANDLED EVERYTHING BEHIND THE MARK
+                this.metaMark = this.data.position();
                 this.handleAncillary(c);
             }
         }
@@ -327,8 +343,7 @@ public final class PngReader extends ImageReader {
             this.applyBlendOp(this.outputBuffer, framePixels, fctl);
             this.delayMs = fctl.delayMs();
             this.writeBGRA(this.outputBuffer);
-            this.applyDispose(this.outputBuffer, this.previousBuffer, fctl,
-                    this.bkgd, this.depth, this.plte, this.canvasWidth, this.canvasHeight);
+            this.applyDispose(fctl);
         } else {
             this.delayMs = 0L;
             this.writeBGRA(this.outputBuffer);
@@ -337,19 +352,43 @@ public final class PngReader extends ImageReader {
         return this.directOut;
     }
 
+    // CONSUMES THE DEFAULT IMAGE'S IDAT CHUNKS UP TO THE FIRST fcTL, HANDLING THE METADATA IN BETWEEN
+    private void skipDefaultImage() throws IOException {
+        while (true) {
+            final PngChunk c;
+            try { c = PngChunk.read(this.data); }
+            catch (final EOFException eof) {
+                this.done = true;
+                this.pendingChunk = null;
+                return;
+            }
+            if (WaterMediaConfig.decoders.png.failOnCorruptedData && c.corrupted())
+                throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
+            final int t = c.type();
+            if (t == FCTL.SIGNATURE) {
+                this.pendingChunk = c;
+                return;
+            }
+            if (t == IEND.SIGNATURE) {
+                this.done = true;
+                this.pendingChunk = null;
+                return;
+            }
+            if (t != IDAT.SIGNATURE) this.handleAncillary(c);
+        }
+    }
+
     // PARSE CHUNKS UNTIL FIRST IDAT/fcTL (POPULATES pendingChunk OR SETS done)
     private void parseUntilFirstFrame() throws IOException {
         while (true) {
             final PngChunk c;
-            try {
-                c = PngChunk.read(this.data);
-            } catch (final EOFException eof) {
+            try { c = PngChunk.read(this.data); }
+            catch (final EOFException eof) {
                 this.done = true;
                 return;
             }
-            if (c.corrupted() && WaterMediaConfig.decoders.png.failOnCorruptedData) {
+            if (WaterMediaConfig.decoders.png.failOnCorruptedData && c.corrupted())
                 throw new CodecException("Chunk CRC mismatch on " + c.typeName() + " - data corrupted");
-            }
 
             final int t = c.type();
             if (t == IHDR.SIGNATURE) {
@@ -357,16 +396,6 @@ public final class PngReader extends ImageReader {
                 this.validateIHDR(this.ihdr);
             } else if (t == PLTE.SIGNATURE) {
                 this.plte = PLTE.convert(c);
-            } else if (t == TRNS.SIGNATURE) {
-                if (this.ihdr == null) throw new CodecException("tRNS before IHDR");
-                this.trns = TRNS.convert(c, this.ihdr.colorType());
-            } else if (t == BKGD.SIGNATURE) {
-                if (WaterMediaConfig.decoders.png.useBKGDChunk) {
-                    if (this.ihdr == null) throw new CodecException("bKGD before IHDR");
-                    this.bkgd = BKGD.convert(c, this.ihdr.colorType());
-                }
-            } else if (t == ACTL.SIGNATURE) {
-                ACTL.convert(c);
             } else if (t == FCTL.SIGNATURE || t == IDAT.SIGNATURE) {
                 this.pendingChunk = c;
                 return;
@@ -379,53 +408,116 @@ public final class PngReader extends ImageReader {
         }
     }
 
+    // ANCILLARY CHUNKS NEVER FAIL A DECODE: A MALFORMED OR OVERSIZED ONE IS SKIPPED AND THE FIRST SKIP IS LOGGED ONCE PER READER.
+    // AN UNKNOWN CRITICAL CHUNK IS A FEATURE THIS DECODER LACKS, NOT A BROKEN FILE
     private void handleAncillary(final PngChunk c) throws IOException {
         final int t = c.type();
-        if (t == GAMA.SIGNATURE) {
+        if (t == IHDR.SIGNATURE || t == PLTE.SIGNATURE || t == IDAT.SIGNATURE || t == IEND.SIGNATURE)
+            throw new CodecException("Misplaced critical chunk: " + c.typeName());
+        if (c.isCritical()) throw new UnsupportedFormatException("Unknown critical chunk: " + c.typeName());
+        try { this.storeAncillary(c); }
+        catch (final IOException | RuntimeException failure) {
+            if (this.ancillaryWarned) return;
+            this.ancillaryWarned = true;
+            LOGGER.warn(IT, "Skipping malformed {} chunk; later malformed chunks are skipped silently", c.typeName(), failure);
+        }
+    }
+
+    // PUBLISHES EVERY ANCILLARY VALUE AS A JDK TYPE, SO A HOST THAT CANNOT SEE THE CHUNK RECORDS STILL READS IT
+    private void storeAncillary(final PngChunk c) throws IOException {
+        final int t = c.type();
+        if (t == TRNS.SIGNATURE) {
+            this.trns = TRNS.convert(c, this.ihdr.colorType());
+        } else if (t == BKGD.SIGNATURE) {
+            if (WaterMediaConfig.decoders.png.useBKGDChunk) this.bkgd = BKGD.convert(c, this.ihdr.colorType());
+        } else if (t == ACTL.SIGNATURE) {
+            ACTL.convert(c);
+        } else if (t == GAMA.SIGNATURE) {
             this.gamma = GAMA.convert(c);
-            this.metadata.put(CodecsAPI.PNG_METAKEY_GAMMA, this.gamma);
-        }
-        else if (t == CHRM.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_CHROMATICITIES, CHRM.convert(c));
-        else if (t == SRGB.SIGNATURE) {
+            this.metadata.put(CodecsAPI.PNG_METAKEY_GAMMA, this.gamma.gamma() / 100_000.0);
+        } else if (t == CHRM.SIGNATURE) {
+            final CHRM chrm = CHRM.convert(c);
+            this.metadata.put(CodecsAPI.PNG_METAKEY_CHROMATICITIES, new double[] {
+                    chrm.whiteX() / 100_000.0, chrm.whiteY() / 100_000.0, chrm.redX() / 100_000.0, chrm.redY() / 100_000.0,
+                    chrm.greenX() / 100_000.0, chrm.greenY() / 100_000.0, chrm.blueX() / 100_000.0, chrm.blueY() / 100_000.0 });
+        } else if (t == SRGB.SIGNATURE) {
             this.srgb = SRGB.convert(c);
-            this.metadata.put(CodecsAPI.PNG_METAKEY_SRGB, this.srgb);
-        }
-        else if (t == ICCP.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_ICC_PROFILE, ICCP.convert(c));
-        else if (t == SBIT.SIGNATURE) {
-            if (this.ihdr == null) throw new CodecException("sBIT before IHDR");
-            this.metadata.put(CodecsAPI.PNG_METAKEY_SIGNIFICANT_BITS, SBIT.convert(c, this.ihdr.colorType()));
-        }
-        else if (t == CICP.SIGNATURE) {
+            this.metadata.put(CodecsAPI.PNG_METAKEY_SRGB, this.srgb.renderingIntent());
+        } else if (t == ICCP.SIGNATURE) {
+            this.metadata.put(CodecsAPI.METAKEY_ICC_PROFILE, ICCP.convert(c).profile());
+        } else if (t == SBIT.SIGNATURE) {
+            final SBIT sbit = SBIT.convert(c, this.ihdr.colorType());
+            this.metadata.put(CodecsAPI.PNG_METAKEY_SIGNIFICANT_BITS, switch (this.ihdr.colorType()) {
+                case 0 -> new int[] { sbit.gray() };
+                case 4 -> new int[] { sbit.gray(), sbit.alpha() };
+                case 6 -> new int[] { sbit.red(), sbit.green(), sbit.blue(), sbit.alpha() };
+                default -> new int[] { sbit.red(), sbit.green(), sbit.blue() };
+            });
+        } else if (t == CICP.SIGNATURE) {
             this.cicp = CICP.convert(c);
-            this.metadata.put(CodecsAPI.PNG_METAKEY_CICP, this.cicp);
-        }
-        else if (t == MDCV.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_MASTERING_DISPLAY_COLOR_VOLUME, MDCV.convert(c));
-        else if (t == CLLI.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_CONTENT_LIGHT_LEVEL, CLLI.convert(c));
-        else if (t == TEXT.SIGNATURE) {
+            this.metadata.put(CodecsAPI.PNG_METAKEY_CICP, new int[] {
+                    this.cicp.colorPrimaries(), this.cicp.transferFunction(), this.cicp.matrixCoefficients(), this.cicp.videoFullRangeFlag() });
+        } else if (t == MDCV.SIGNATURE) {
+            // CHROMATICITIES COME IN UNITS OF 0.00002, LUMINANCE IN UNITS OF 0.0001 cd/m²
+            final MDCV mdcv = MDCV.convert(c);
+            this.metadata.put(CodecsAPI.PNG_METAKEY_MASTERING_DISPLAY_COLOR_VOLUME, new double[] {
+                    mdcv.redX() / 50_000.0, mdcv.redY() / 50_000.0, mdcv.greenX() / 50_000.0, mdcv.greenY() / 50_000.0,
+                    mdcv.blueX() / 50_000.0, mdcv.blueY() / 50_000.0, mdcv.whiteX() / 50_000.0, mdcv.whiteY() / 50_000.0,
+                    mdcv.maxLuminance() / 10_000.0, mdcv.minLuminance() / 10_000.0 });
+        } else if (t == CLLI.SIGNATURE) {
+            final CLLI clli = CLLI.convert(c);
+            this.metadata.put(CodecsAPI.PNG_METAKEY_CONTENT_LIGHT_LEVEL, new double[] {
+                    clli.maxContentLightLevel() / 10_000.0, clli.maxFrameAverageLightLevel() / 10_000.0 });
+        } else if (t == TEXT.SIGNATURE) {
             final TEXT text = TEXT.convert(c);
             this.storePngText(this.texts, CodecsAPI.PNG_METAKEY_TEXT, text.keyword(), text.text());
-        }
-        else if (t == ZTXT.SIGNATURE) {
+        } else if (t == ZTXT.SIGNATURE && this.textEntries < MAX_TEXT_ENTRIES) {
+            // COMPRESSED TEXT INFLATES ONLY WITHIN THE REMAINING TEXT BUDGET; A BREACH IS SKIPPED LIKE ANY OTHER BAD CHUNK
             final ZTXT text = ZTXT.convert(c);
-            this.storePngText(this.compressedTexts, CodecsAPI.PNG_METAKEY_COMPRESSED_TEXT, text.keyword(), text.text());
-        }
-        else if (t == ITXT.SIGNATURE) {
+            this.storePngText(this.compressedTexts, CodecsAPI.PNG_METAKEY_COMPRESSED_TEXT, text.keyword(),
+                    text.text((int) Math.min(Integer.MAX_VALUE, MAX_TEXT_BYTES - this.textBytes)));
+        } else if (t == ITXT.SIGNATURE && this.textEntries < MAX_TEXT_ENTRIES) {
             final ITXT text = ITXT.convert(c);
-            this.storePngText(this.internationalTexts, CodecsAPI.PNG_METAKEY_INTERNATIONAL_TEXT, text.keyword(), text.text());
-        }
-        else if (t == PHYS.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_PHYSICAL_PIXEL_DIMENSIONS, PHYS.convert(c));
-        else if (t == HIST.SIGNATURE) {
+            final String value = text.text((int) Math.min(Integer.MAX_VALUE, MAX_TEXT_BYTES - this.textBytes));
+            if (XMP_KEYWORD.equals(text.keyword())) {
+                // THE XMP PACKET TRAVELS AS iTXt: PUBLISHED RAW AND MINED FOR THE NORMALIZED FIELDS LIKE JPEG AND WEBP DO
+                final byte[] packet = value.getBytes(StandardCharsets.UTF_8);
+                this.textBytes += packet.length;
+                this.metadata.put(CodecsAPI.METAKEY_XMP, packet);
+                Xmp.read(this.metadata, packet);
+            } else {
+                this.storePngText(this.internationalTexts, CodecsAPI.PNG_METAKEY_INTERNATIONAL_TEXT, text.keyword(), value);
+            }
+        } else if (t == PHYS.SIGNATURE) {
+            final PHYS phys = PHYS.convert(c);
+            this.metadata.put(CodecsAPI.PNG_METAKEY_PHYSICAL_PIXEL_DIMENSIONS, new long[] { phys.pixelsPerUnitX(), phys.pixelsPerUnitY(), phys.unit() });
+        } else if (t == HIST.SIGNATURE) {
             if (this.plte == null) throw new CodecException("hIST before PLTE");
-            this.metadata.put(CodecsAPI.PNG_METAKEY_HISTOGRAM, HIST.convert(c, this.plte.size()));
-        }
-        else if (t == SPLT.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_SUGGESTED_PALETTES, SPLT.convert(c));
-        else if (t == EXIF.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_EXIF, EXIF.convert(c));
-        else if (t == TIME.SIGNATURE) this.metadata.put(CodecsAPI.PNG_METAKEY_LAST_MODIFIED_TIME, TIME.convert(c));
-        else {
-            // UNKNOWN: AN ANCILLARY CHUNK IS RETAINED FOR THE CONSUMER, A CRITICAL ONE CANNOT BE SKIPPED
-            if (c.isCritical()) throw new CodecException("Unknown critical chunk: " + c.typeName());
+            this.metadata.put(CodecsAPI.PNG_METAKEY_HISTOGRAM, HIST.convert(c, this.plte.size()).frequencies());
+        } else if (t == SPLT.SIGNATURE) {
+            final SPLT splt = SPLT.convert(c);
+            final int[] flat = new int[splt.entries().length * 5];
+            for (int i = 0; i < splt.entries().length; i++) {
+                final SPLT.SPLTEntry entry = splt.entries()[i];
+                flat[i * 5] = entry.red();
+                flat[i * 5 + 1] = entry.green();
+                flat[i * 5 + 2] = entry.blue();
+                flat[i * 5 + 3] = entry.alpha();
+                flat[i * 5 + 4] = entry.frequency();
+            }
+            this.suggestedPalettes.put(splt.paletteName(), flat);
+            this.metadata.put(CodecsAPI.PNG_METAKEY_SUGGESTED_PALETTES, Collections.unmodifiableMap(this.suggestedPalettes));
+        } else if (t == EXIF.SIGNATURE) {
+            this.metadata.put(CodecsAPI.METAKEY_EXIF, EXIF.convert(c).data());
+        } else if (t == TIME.SIGNATURE) {
+            final TIME time = TIME.convert(c);
+            this.metadata.put(CodecsAPI.PNG_METAKEY_LAST_MODIFIED_TIME,
+                    LocalDateTime.of(time.year(), time.month(), time.day(), time.hour(), time.minute(), time.second()));
+        } else if (this.ancillaryRetained < MAX_ANCILLARY_CHUNKS && this.ancillaryBytes + c.data().length <= MAX_ANCILLARY_BYTES) {
+            // UNKNOWN ANCILLARY CHUNKS ARE RETAINED FOR THE CONSUMER UP TO A BUDGET; THE VIEW IS UNMODIFIABLE
+            this.ancillaryRetained++;
+            this.ancillaryBytes += c.data().length;
             this.ancillaryChunks.computeIfAbsent(c.typeName(), ignored -> new ArrayList<>()).add(c.data().clone());
-            // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL MAP
             this.metadata.put(CodecsAPI.PNG_METAKEY_ANCILLARY_CHUNK, Collections.unmodifiableMap(this.ancillaryChunks));
         }
     }
@@ -433,7 +525,10 @@ public final class PngReader extends ImageReader {
     // ----- DECODE HELPERS -----
 
     private void storePngText(final Map<String, List<String>> target, final String key, final String keyword, final String value) {
-        if (keyword == null || keyword.isBlank() || value == null || value.isBlank()) return;
+        if (keyword == null || keyword.isBlank() || value == null || value.isBlank() || this.textEntries >= MAX_TEXT_ENTRIES
+                || this.textBytes + value.length() > MAX_TEXT_BYTES) return;
+        this.textEntries++;
+        this.textBytes += value.length();
         target.computeIfAbsent(keyword, ignored -> new ArrayList<>()).add(value);
         // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL TEXT MAP
         this.metadata.put(key, Collections.unmodifiableMap(target));
@@ -592,6 +687,7 @@ public final class PngReader extends ImageReader {
 
     // INFLATES THE COMPRESSED CHUNKS INTO decompressed AND RETURNS THE NUMBER OF VALID BYTES
     private int inflate(final List<ChunkSlice> compressed, final IHDR ihdr) throws IOException {
+        if (this.inflater == null) this.inflater = new Inflater();
         final Inflater inflater = this.inflater;
         inflater.reset();
         // A WELL-FORMED PNG DECOMPRESSES TO EXACTLY THIS MANY FILTERED BYTES; ANYTHING PAST IT IS A
@@ -1012,48 +1108,21 @@ public final class PngReader extends ImageReader {
         return (row[byteOffset] >> bitInByte) & mask;
     }
 
-    private static int scaleTo8Bit(final int value, final int depth) {
-        if (depth == 8) return value;
-        if (depth == 16) return value >> 8;
-        if (depth == 1) return value * 255;
-        if (depth == 2) return (value * 255) / 3;
-        if (depth == 4) return (value * 255) / 15;
-        return value;
-    }
 
     private void writeBGRA(final int[] pixels) {
-        this.directOut.clear();
-        this.directOutInts.clear();
-        this.directOutInts.put(pixels, 0, this.canvasWidth * this.canvasHeight);
-        this.directOut.position(0).limit(this.canvasWidth * this.canvasHeight * 4);
+        Canvas.write(pixels, this.canvasWidth * this.canvasHeight, this.directOutInts, this.directOut);
     }
 
-    private void applyDispose(final int[] outputBuffer, final int[] previousBuffer, final FCTL fctl,
-                              final BKGD bkgd, final int depth, final PLTE plte,
-                              final int canvasWidth, final int canvasHeight) {
-        final int disposeOp = fctl.dispose() & 0xFF;
-        final int xOff = fctl.xOffset();
-        final int yOff = fctl.yOffset();
-        final int fw = Math.min(fctl.width(), canvasWidth - xOff);
-        final int fh = Math.min(fctl.height(), canvasHeight - yOff);
-        if (fw <= 0 || fh <= 0) return;
-
-        switch (disposeOp) {
-            case FCTL.DISPOSE_OP_NONE -> { /* LEAVE CANVAS AS-IS */ }
-            case FCTL.DISPOSE_OP_BACKGROUND -> {
-                final int bg = (bkgd != null) ? this.bkgdToARGB(bkgd, depth, plte) : 0x00000000;
-                for (int y = 0; y < fh; y++) {
-                    final int rowBase = (yOff + y) * canvasWidth + xOff;
-                    Arrays.fill(outputBuffer, rowBase, rowBase + fw, bg);
-                }
-            }
+    // DISPOSES THE FRAME RECTANGLE FOR THE NEXT ONE: LEFT ALONE, FILLED WITH THE BACKGROUND OR RESTORED FROM THE SNAPSHOT
+    private void applyDispose(final FCTL fctl) {
+        switch (fctl.dispose() & 0xFF) {
+            case FCTL.DISPOSE_OP_BACKGROUND -> Canvas.fill(this.outputBuffer, this.canvasWidth, this.canvasHeight, fctl.xOffset(), fctl.yOffset(),
+                    fctl.width(), fctl.height(), this.bkgd != null ? this.bkgdToARGB(this.bkgd, this.depth, this.plte) : 0);
             case FCTL.DISPOSE_OP_PREVIOUS -> {
-                if (previousBuffer == null) return;
-                for (int y = 0; y < fh; y++) {
-                    final int rowBase = (yOff + y) * canvasWidth + xOff;
-                    System.arraycopy(previousBuffer, rowBase, outputBuffer, rowBase, fw);
-                }
+                if (this.previousBuffer != null)
+                    Canvas.restore(this.outputBuffer, this.previousBuffer, this.canvasWidth, this.canvasHeight, fctl.xOffset(), fctl.yOffset(), fctl.width(), fctl.height());
             }
+            default -> { }
         }
     }
 
@@ -1094,11 +1163,11 @@ public final class PngReader extends ImageReader {
         }
     }
 
-    private static ImageData.Scan scan(final ByteBuffer source) {
+    private ImageData.Scan scan(final ByteBuffer source) {
         final ByteBuffer buffer = source.slice().order(ByteOrder.BIG_ENDIAN);
         final List<Long> delays = new ArrayList<>();
         int declaredFrameCount = 0;
-        int declaredRepeat = ImageData.NO_REPEAT;
+        int declaredRepeat = 1;
 
         while (buffer.remaining() >= 12) {
             final int length = buffer.getInt();
@@ -1130,6 +1199,7 @@ public final class PngReader extends ImageReader {
         final int frameCount = (declaredFrameCount > 0 && !delays.isEmpty())
                 ? Math.min(declaredFrameCount, delays.size())
                 : delays.size();
+        this.fctlSeen = !delays.isEmpty();
         if (frameCount <= 1) return ImageData.Scan.EMPTY;
 
         final long[] delayArray = new long[frameCount];

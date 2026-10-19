@@ -384,7 +384,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 throw new IOException("Invalid image dimensions: " + this.sourceWidth + "x" + this.sourceHeight);
             }
             this.resolveQuality(this.sourceWidth, this.sourceHeight);
-            this.animated = reader.frameCount() != 1;
+            this.animated = reader.frameCount() > 1;
             this.knownDuration = Math.max(0L, reader.duration());
             this.pixelFormat = reader.pixelFormat();
             this.applyTarget();
@@ -776,7 +776,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                     this.uploadFrame(reader.next());
                     this.time = 0L;
                     this.currentFrameIndex = 0;
-                    this.currentDelayMs = delayAt(reader, 0);
+                    this.currentDelayMs = reader.delay();
                     this.nextDecodedIndex = 1;
                     this.readerExhausted = false;
                     continue;
@@ -817,7 +817,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             return false;
         }
         final int idx = this.nextDecodedIndex++;
-        this.prefetchQueue.offerLast(this.snapshot(reader.next(), delayAt(reader, idx), idx));
+        this.prefetchQueue.offerLast(this.snapshot(reader.next(), reader.delay(), idx));
         return true;
     }
 
@@ -836,7 +836,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             final int idx = this.nextDecodedIndex++;
             this.uploadFrame(reader.next());
             this.time += this.currentDelayMs;
-            this.currentDelayMs = delayAt(reader, idx);
+            this.currentDelayMs = reader.delay();
             this.currentFrameIndex = idx;
         } else {
             this.readerExhausted = true;
@@ -895,7 +895,7 @@ public final class TxMediaPlayer extends MediaPlayer {
         final ByteBuffer first = this.copyFrame(reader.next());
         this.uploadBuffer(first, this.outWidth, this.outHeight);
         this.currentFrameIndex = 0;
-        this.currentDelayMs = delayAt(reader, 0);
+        this.currentDelayMs = reader.delay();
         this.time = 0L;
         this.loaded = true;
         this.playable = true;
@@ -914,13 +914,13 @@ public final class TxMediaPlayer extends MediaPlayer {
         ByteBuffer frame = reader.next();
         long accum = 0L;
         int idx = 0;
-        long delay = delayAt(reader, idx);
+        long delay = reader.delay();
         while (accum + delay <= targetMs) {
             if (!reader.hasNext()) break;
             frame = reader.next();
             accum += delay;
             idx++;
-            delay = delayAt(reader, idx);
+            delay = reader.delay();
         }
         this.currentFrameIndex = idx;
         this.time = accum;
@@ -938,13 +938,13 @@ public final class TxMediaPlayer extends MediaPlayer {
         ByteBuffer frame = reader.next();
         long accum = 0L;
         int idx = 0;
-        long delay = delayAt(reader, idx);
+        long delay = reader.delay();
         while (idx < targetIdx) {
             if (!reader.hasNext()) break;
             frame = reader.next();
             accum += delay;
             idx++;
-            delay = delayAt(reader, idx);
+            delay = reader.delay();
         }
         this.currentFrameIndex = idx;
         this.time = accum;
@@ -1147,10 +1147,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     // SHARED — DELAY HELPERS
     // ==========================================================================
-    private static long delayAt(final ImageReader reader, final int index) {
-        return delayAt(reader.delays(), index);
-    }
-
     private static long delayAt(final long[] delays, final int index) {
         if (delays == null || delays.length == 0) return 0L;
         if (index < delays.length) return delays[Math.max(0, index)];

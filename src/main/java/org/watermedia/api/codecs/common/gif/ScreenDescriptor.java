@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs.common.gif;
 
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.tools.DataTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -13,28 +14,23 @@ public record ScreenDescriptor(
 
     public static final int LENGTH = 7;
 
-    /** Reads the {@value #LENGTH}-byte logical screen descriptor that follows the GIF signature and version. */
+    /** Returns the global palette color count, {@code 2^(globalColorTableSize + 1)}, even when no palette is present. */
+    public int globalColorCount() {
+        return 1 << (this.globalColorTableSize + 1);
+    }
+
+    /** Reads the {@value #LENGTH}-byte descriptor that follows the GIF signature at the buffer position, advancing past it. */
     public static ScreenDescriptor read(final ByteBuffer buffer) throws CodecException {
         // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
-        if (buffer.remaining() < LENGTH) {
-            throw new CodecException("Buffer does not contain enough data for Screen Descriptor");
-        }
-
-        final int width = Short.toUnsignedInt(buffer.getShort());
-        final int height = Short.toUnsignedInt(buffer.getShort());
-        final int packedFields = Byte.toUnsignedInt(buffer.get());
-        final boolean globalColorTableFlag = (packedFields & 0b1000_0000) != 0;
-        final int colorResolution = ((packedFields & 0b0111_0000) >> 4) + 1;
-        final boolean sortFlag = (packedFields & 0b0000_1000) != 0;
-        final int globalColorTableSize = packedFields & 0b0000_0111;
-        final int backgroundColorIndex = Byte.toUnsignedInt(buffer.get());
-        final int pixelAspectRatio = Byte.toUnsignedInt(buffer.get());
-
-        if (width <= 0 || height <= 0)
-            throw new CodecException("Width and height must be positive integers");
-
-        return new ScreenDescriptor(width, height, globalColorTableFlag, colorResolution, sortFlag,
-                globalColorTableSize, backgroundColorIndex, pixelAspectRatio);
+        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated GIF screen descriptor");
+        final int at = buffer.position();
+        final int width = DataTool.u16(buffer, at, ByteOrder.LITTLE_ENDIAN);
+        final int height = DataTool.u16(buffer, at + 2, ByteOrder.LITTLE_ENDIAN);
+        final int packedFields = buffer.get(at + 4) & 0xFF;
+        if (width <= 0 || height <= 0) throw new CodecException("Width and height must be positive integers");
+        buffer.position(at + LENGTH);
+        return new ScreenDescriptor(width, height, (packedFields & 0b1000_0000) != 0, ((packedFields & 0b0111_0000) >> 4) + 1,
+                (packedFields & 0b0000_1000) != 0, packedFields & 0b0000_0111, buffer.get(at + 5) & 0xFF, buffer.get(at + 6) & 0xFF);
     }
 
     @Override

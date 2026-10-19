@@ -14,9 +14,7 @@ import java.nio.ByteOrder;
 public record FDAT(int sequence, byte[] data) implements IChunk {
     public static final int SIGNATURE = 0x66_64_41_54; // "fdAT"
 
-    /**
-     * Converts a generic PngChunk to FDAT
-     */
+    /** Converts a generic chunk to fdAT. */
     public static FDAT convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for fdAT: 0x" + Integer.toHexString(chunk.type()));

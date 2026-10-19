@@ -1,7 +1,6 @@
 package org.watermedia.api.codecs.readers.webp.lossless;
 
 import org.watermedia.api.codecs.CodecException;
-import org.watermedia.api.codecs.common.webp.BitReader;
 
 import static org.watermedia.WaterMedia.LOGGER;
 import static org.watermedia.api.codecs.readers.webp.lossless.VP8LosslessDecoder.IT;

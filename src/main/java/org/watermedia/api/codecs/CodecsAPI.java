@@ -10,6 +10,7 @@ import org.watermedia.api.codecs.writers.WebMWriter;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.tools.DataTool;
+import org.watermedia.tools.IOTool;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -45,40 +46,53 @@ public final class CodecsAPI {
     /** BC7: high-quality RGBA, 16 bytes per 4x4 block (4:1 vs RGBA8). */
     public static final String CODEC_BC7 = "BC7";
 
+    // ==========================================================================
+    // METADATA KEYS — VALUES ARE JDK TYPES ONLY, SO EVERY HOST CAN READ THEM
+    // ==========================================================================
+    /** ICC colour profile, decompressed, as {@code byte[]}; published by PNG, JPEG and WebP. */
+    public static final String METAKEY_ICC_PROFILE = "icc_profile";
+    /** EXIF payload as {@code byte[]} starting at its TIFF header; published by PNG, JPEG and WebP. */
+    public static final String METAKEY_EXIF = "exif";
+    /** XMP packet as {@code byte[]}; published by PNG, JPEG and WebP. */
+    public static final String METAKEY_XMP = "xmp";
+    /** EXIF orientation already applied to the delivered pixels, as {@code Integer}; published by JPEG and WebP. */
+    public static final String METAKEY_ORIENTATION = "orientation";
+    /** Loop count exactly as the container declares it, as {@code Integer}; {@link ImageData#repeat()} carries the normalized plays. */
+    public static final String METAKEY_LOOP_COUNT = "loop_count";
+
+    /** PNG tEXt entries as {@code Map<String, List<String>>}, keyword to values. */
     public static final String PNG_METAKEY_TEXT = "png.text";
+    /** PNG zTXt entries as {@code Map<String, List<String>>}, keyword to values. */
     public static final String PNG_METAKEY_COMPRESSED_TEXT = "png.compressed_text";
+    /** PNG iTXt entries as {@code Map<String, List<String>>}, keyword to values. */
     public static final String PNG_METAKEY_INTERNATIONAL_TEXT = "png.international_text";
+    /** PNG gAMA as {@code Double}, the encoding gamma. */
     public static final String PNG_METAKEY_GAMMA = "png.gamma";
+    /** PNG cHRM as {@code double[8]}: white point, red, green and blue x/y pairs. */
     public static final String PNG_METAKEY_CHROMATICITIES = "png.chromaticities";
+    /** PNG sRGB rendering intent as {@code Integer}. */
     public static final String PNG_METAKEY_SRGB = "png.srgb";
-    public static final String PNG_METAKEY_ICC_PROFILE = "png.icc_profile";
+    /** PNG sBIT as {@code int[]}, one entry per channel. */
     public static final String PNG_METAKEY_SIGNIFICANT_BITS = "png.significant_bits";
+    /** PNG cICP as {@code int[4]}: colour primaries, transfer function, matrix coefficients, full-range flag. */
     public static final String PNG_METAKEY_CICP = "png.cicp";
+    /** PNG mDCV as {@code double[10]}: red, green, blue and white x/y pairs, then maximum and minimum luminance. */
     public static final String PNG_METAKEY_MASTERING_DISPLAY_COLOR_VOLUME = "png.mastering_display_color_volume";
+    /** PNG cLLI as {@code double[2]} in cd/m²: maximum content light level and maximum frame-average light level. */
     public static final String PNG_METAKEY_CONTENT_LIGHT_LEVEL = "png.content_light_level";
+    /** PNG pHYs as {@code long[3]}: pixels per unit on x and y, then the unit specifier. */
     public static final String PNG_METAKEY_PHYSICAL_PIXEL_DIMENSIONS = "png.physical_pixel_dimensions";
+    /** PNG hIST as {@code int[]}, one frequency per palette entry. */
     public static final String PNG_METAKEY_HISTOGRAM = "png.histogram";
+    /** PNG sPLT entries as {@code Map<String, int[]>}, palette name to its entries flattened as R, G, B, A, frequency. */
     public static final String PNG_METAKEY_SUGGESTED_PALETTES = "png.suggested_palettes";
-    public static final String PNG_METAKEY_EXIF = "png.exif";
+    /** PNG tIME as {@code LocalDateTime}. */
     public static final String PNG_METAKEY_LAST_MODIFIED_TIME = "png.last_modified_time";
+    /** Unknown PNG ancillary chunks as {@code Map<String, List<byte[]>>}, chunk type to raw payloads. */
     public static final String PNG_METAKEY_ANCILLARY_CHUNK = "png.ancillary_chunk";
 
-    public static final String GIF_METAKEY_COMMENT = "gif.comment";
-    public static final String GIF_METAKEY_REPEAT = "gif.repeat";
+    /** GIF application extensions as {@code Map<String, List<byte[]>>}, identifier plus authentication code to payloads. */
     public static final String GIF_METAKEY_APPLICATION_EXTENSION = "gif.application_extension";
-
-    public static final String WEBP_METAKEY_ICC_PROFILE = "webp.icc_profile";
-    public static final String WEBP_METAKEY_EXIF = "webp.exif";
-    public static final String WEBP_METAKEY_XMP = "webp.xmp";
-    // WEBP PIXELS ARE DELIVERED ALREADY ROTATED INTO THEIR EXIF ORIENTATION; THE KEY REPORTS THE VALUE APPLIED
-    public static final String WEBP_METAKEY_ORIENTATION = "webp.orientation";
-
-    // JPEG PIXELS ARE DELIVERED ALREADY ROTATED INTO THEIR EXIF ORIENTATION; THE KEY REPORTS THE VALUE APPLIED
-    public static final String JPEG_METAKEY_COMMENT = "jpeg.comment";
-    public static final String JPEG_METAKEY_EXIF = "jpeg.exif";
-    public static final String JPEG_METAKEY_XMP = "jpeg.xmp";
-    public static final String JPEG_METAKEY_ICC_PROFILE = "jpeg.icc_profile";
-    public static final String JPEG_METAKEY_ORIENTATION = "jpeg.orientation";
 
     private static final byte[] PNG_HEADER = { (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
     private static final byte[] JPEG_HEADER = { (byte) 0xFF, (byte) 0xD8 };
@@ -156,58 +170,71 @@ public final class CodecsAPI {
 
     /**
      * Opens an {@link ImageReader} for the given source. The buffer is left positioned after the
-     * consumed format header. The reader returns frames in its native {@link PixelFormat} —
-     * whichever layout is cheapest for it to produce. For example, a grayscale JPEG returns GRAY.
-     * Use {@link #reader(ByteBuffer, PixelFormat)} to request a specific output layout.
+     * consumed format header. The reader returns frames in its own {@link PixelFormat}: BGRA for
+     * every format except a grayscale JPEG, which returns GRAY. Use
+     * {@link #reader(ByteBuffer, PixelFormat)} to request a specific output layout.
      *
      * @throws UnsupportedFormatException if the leading bytes don't match any supported format
      * @throws IOException                on malformed bitstream
+     * @throws IllegalArgumentException   when {@code source} is null
      */
     public static ImageReader reader(final ByteBuffer source) throws IOException {
         return reader(source, null);
     }
 
     /**
-     * Opens an {@link ImageReader} for the given source and asks it to deliver frames in the
-     * specified {@link PixelFormat}. When {@code requestedFormat} is {@code null} the reader picks
-     * its native format (no conversion). The reader may decline the request when the conversion
-     * is not supported, in which case {@link ImageReader#pixelFormat()} reports the actual layout
-     * it produced — callers must always consult that method.
+     * Opens an {@link ImageReader} for the given source that delivers frames in the specified
+     * {@link PixelFormat}: {@link PixelFormat#BGRA}, {@link PixelFormat#RGBA} or
+     * {@link PixelFormat#GRAY}, converted by the reader when it is not its own layout. When
+     * {@code requestedFormat} is {@code null} the reader delivers its own layout without converting.
+     * The source buffer is shared with the reader, not copied, so its contents must not change until
+     * the reader is closed; when the reader refuses the body the buffer position is left where it was.
      *
      * @throws UnsupportedFormatException if the leading bytes don't match any supported format
      * @throws IOException                on malformed bitstream
+     * @throws IllegalArgumentException   when {@code source} is null or {@code requestedFormat} is another layout
      */
     public static ImageReader reader(final ByteBuffer source, final PixelFormat requestedFormat) throws IOException {
-        if (source == null) throw new NullPointerException("source");
+        if (source == null) throw new IllegalArgumentException("Source cannot be null");
+        if (requestedFormat != null && requestedFormat != PixelFormat.BGRA && requestedFormat != PixelFormat.RGBA && requestedFormat != PixelFormat.GRAY)
+            throw new IllegalArgumentException("Readers deliver BGRA, RGBA or GRAY, not " + requestedFormat);
         final int start = source.position();
-
-        if (DataTool.startsWith(source, start, PNG_HEADER)) {
-            source.position(start + PNG_HEADER.length);
-            return new PngReader(source);
-        }
-        if (DataTool.startsWith(source, start, JPEG_HEADER)) {
-            source.position(start + JPEG_HEADER.length);
-            return new JpegReader(source, requestedFormat);
-        }
-        if (DataTool.startsWith(source, start, GIF87_HEADER) || DataTool.startsWith(source, start, GIF89_HEADER)) {
-            source.position(start + GIF89_HEADER.length);
-            return new GifReader(source);
-        }
-        if (DataTool.startsWith(source, start, RIFF_HEADER) && DataTool.startsWith(source, start + 8, WEBP_HEADER)) {
-            source.position(start + 12);
-            return new WebPReader(source);
-        }
-        if (source.limit() - start >= 2 && source.get(start) == 'P') {
-            final int version = source.get(start + 1) & 0xFF;
-            if (version >= '1' && version <= '7') {
-                source.position(start + 2);
-                return new NetpbmReader(source, version - '0');
+        try {
+            if (DataTool.startsWith(source, start, PNG_HEADER)) {
+                source.position(start + PNG_HEADER.length);
+                return new PngReader(source, requestedFormat);
             }
-        }
-        if (looksLikeSvg(probeText(source, start))) {
-            // SVG HAS NO FIXED HEADER — THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
+            if (DataTool.startsWith(source, start, JPEG_HEADER)) {
+                source.position(start + JPEG_HEADER.length);
+                return new JpegReader(source, requestedFormat);
+            }
+            if (DataTool.startsWith(source, start, GIF87_HEADER) || DataTool.startsWith(source, start, GIF89_HEADER)) {
+                source.position(start + GIF89_HEADER.length);
+                return new GifReader(source, requestedFormat);
+            }
+            if (DataTool.startsWith(source, start, RIFF_HEADER) && DataTool.startsWith(source, start + 8, WEBP_HEADER)) {
+                // THE RIFF SIZE BOUNDS THE FILE: BYTES BEYOND IT (TRAILING JUNK, A CONCATENATED FILE) ARE NOT CHUNKS
+                final long riffBytes = 8L + Integer.toUnsignedLong(Integer.reverseBytes(source.getInt(start + 4)));
+                final ByteBuffer webp = source.duplicate();
+                webp.limit((int) Math.min(source.limit(), start + riffBytes)).position(Math.min(webp.limit(), start + 12));
+                source.position(start + 12);
+                return new WebPReader(webp, requestedFormat);
+            }
+            if (source.limit() - start >= 2 && source.get(start) == 'P') {
+                final int version = source.get(start + 1) & 0xFF;
+                if (version >= '1' && version <= '7') {
+                    source.position(start + 2);
+                    return new NetpbmReader(source, version - '0', requestedFormat);
+                }
+            }
+            if (looksLikeSvg(probeText(source, start))) {
+                // SVG HAS NO FIXED HEADER — THE WHOLE DOCUMENT IS THE BODY, SO LEAVE THE POSITION AT start
+                source.position(start);
+                return new SvgReader(source, requestedFormat);
+            }
+        } catch (final IOException | RuntimeException refused) { // A READER THAT REFUSES ITS BODY LEAVES THE BUFFER UNTOUCHED
             source.position(start);
-            return new SvgReader(source, requestedFormat);
+            throw refused;
         }
 
         source.position(start);
@@ -215,12 +242,12 @@ public final class CodecsAPI {
     }
 
     /**
-     * Decodes every frame of an encoded image in the reader's native layout: BGRA for every
-     * format except grayscale JPEG, which stays one luma byte per pixel. Use
-     * {@link #decode(byte[], PixelFormat)} with {@link PixelFormat#BGRA} when a uniform layout matters.
+     * Decodes every frame of an encoded image in the reader's own layout: BGRA for every format
+     * except a grayscale JPEG, which stays one luma byte per pixel; {@link ImageData#format()}
+     * tells which. Use {@link #decode(byte[], PixelFormat)} when a uniform layout matters.
      *
      * @param data the whole encoded file
-     * @return the decoded frames, delays and repeat count
+     * @return the decoded frames, their layout, delays and repeat count
      * @throws IOException on unsupported format or malformed bitstream
      * @see #reader(ByteBuffer)
      */
@@ -233,15 +260,42 @@ public final class CodecsAPI {
      * underlying reader before returning.
      *
      * @param data            the whole encoded file
-     * @param requestedFormat desired output pixel format, or {@code null} for the reader's native layout
-     * @return the decoded frames, delays and repeat count
+     * @param requestedFormat {@link PixelFormat#BGRA}, {@link PixelFormat#RGBA} or {@link PixelFormat#GRAY}, or {@code null} for the reader's own layout
+     * @return the decoded frames, their layout, delays and repeat count
      * @throws IOException on unsupported format or malformed bitstream
+     * @throws IllegalArgumentException when {@code data} is null or {@code requestedFormat} is another layout
      * @see #reader(ByteBuffer, PixelFormat)
      */
     public static ImageData decode(final byte[] data, final PixelFormat requestedFormat) throws IOException {
-        try (final ImageReader reader = reader(ByteBuffer.wrap(data), requestedFormat)) {
+        if (data == null) throw new IllegalArgumentException("Data cannot be null");
+        return decode(ByteBuffer.wrap(data), requestedFormat);
+    }
+
+    /** Decodes every frame of an encoded image held in a buffer; see {@link #decode(byte[])}. */
+    public static ImageData decode(final ByteBuffer source) throws IOException {
+        return decode(source, null);
+    }
+
+    /** Decodes every frame of an encoded image held in a buffer into the requested layout; see {@link #decode(byte[], PixelFormat)}. */
+    public static ImageData decode(final ByteBuffer source, final PixelFormat requestedFormat) throws IOException {
+        try (final ImageReader reader = reader(source, requestedFormat)) {
             return reader.readAll();
         }
+    }
+
+    /** Decodes every frame of an encoded image read from a stream, which stays open; see {@link #decode(byte[])}. */
+    public static ImageData decode(final InputStream in) throws IOException {
+        return decode(in, null);
+    }
+
+    /**
+     * Decodes every frame of an encoded image read from a stream into the requested layout. The
+     * stream is read to its end, at most {@link ImageReader#MAX_DECODED_BYTES} encoded bytes, and
+     * stays open; see {@link #decode(byte[], PixelFormat)}.
+     */
+    public static ImageData decode(final InputStream in, final PixelFormat requestedFormat) throws IOException {
+        if (in == null) throw new IllegalArgumentException("Stream cannot be null");
+        return decode(ByteBuffer.wrap(IOTool.readLimited(in, ImageReader.MAX_DECODED_BYTES, -1L, 0L)), requestedFormat);
     }
 
     /** Opens an experimental VP9 WebM {@link ImageWriter} at 30 fps and CRF 31. */
@@ -277,10 +331,25 @@ public final class CodecsAPI {
      * @param in the stream to inspect; its leading bytes are consumed
      * @return the detected type, or {@link MediaType#UNKNOWN} when nothing matches
      * @throws IOException if reading the stream fails
+     * @throws IllegalArgumentException when {@code in} is null
      */
     public static MediaType sniff(final InputStream in) throws IOException {
-        if (in == null) throw new NullPointerException("in");
-        final byte[] h = in.readNBytes(PROBE_SIZE);
+        if (in == null) throw new IllegalArgumentException("Stream cannot be null");
+        return sniff(ByteBuffer.wrap(in.readNBytes(PROBE_SIZE)));
+    }
+
+    /**
+     * Sniffs the {@link MediaType} of buffered bytes by matching their leading bytes the same way
+     * {@link #sniff(InputStream)} does; the buffer position is left untouched.
+     *
+     * @param source the bytes to inspect, from their position
+     * @return the detected type, or {@link MediaType#UNKNOWN} when nothing matches
+     * @throws IllegalArgumentException when {@code source} is null
+     */
+    public static MediaType sniff(final ByteBuffer source) {
+        if (source == null) throw new IllegalArgumentException("Source cannot be null");
+        final byte[] h = new byte[Math.min(source.remaining(), PROBE_SIZE)];
+        source.get(source.position(), h);
         if (h.length < 2) return MediaType.UNKNOWN;
         final ByteBuffer b = ByteBuffer.wrap(h);
 

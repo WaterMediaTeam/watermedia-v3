@@ -13,7 +13,9 @@ import java.util.Map;
  * metadata is exposed through {@link #values()} using keys defined in {@link CodecsAPI}.
  * String accessors return {@code null} when the value does not exist or is blank; collection
  * accessors return an empty immutable collection so callers can iterate without null checks.
- * <p>Mutation is not synchronized. Fluent mutators return this instance and reject changes to {@link #EMPTY}.
+ * <p>Mutation is not synchronized. Fluent mutators return this instance and reject changes to {@link #EMPTY}
+ * and to the {@link #frozen()} snapshots readers hand out. Custom values use only JDK types (text, numbers,
+ * {@code byte[]}, arrays, lists and maps of those), so every host can read them.
  */
 public final class ImageMetadata {
     public static final ImageMetadata EMPTY = new ImageMetadata(true);
@@ -35,6 +37,35 @@ public final class ImageMetadata {
 
     private ImageMetadata(final boolean readOnly) {
         this.readOnly = readOnly;
+    }
+
+    // A READ-ONLY COPY; LISTS, THE VALUE MAP AND EVERY NESTED MAP OR LIST ARE COPIED, SCALARS AND ARRAYS ARE SHARED
+    private ImageMetadata(final ImageMetadata source) {
+        this.readOnly = true;
+        this.title = source.title;
+        this.description = source.description;
+        this.authors.addAll(source.authors);
+        this.copyright = source.copyright;
+        this.comments.addAll(source.comments);
+        this.creationTime = source.creationTime;
+        this.software = source.software;
+        this.source = source.source;
+        for (final Map.Entry<String, Object> entry: source.values.entrySet()) this.values.put(entry.getKey(), freeze(entry.getValue()));
+    }
+
+    // READERS PUBLISH LIVE VIEWS OVER THEIR OWN MAPS AND LISTS; A SNAPSHOT COPIES THEM SO NEITHER SIDE CAN CHANGE THE OTHER
+    private static Object freeze(final Object value) {
+        if (value instanceof final Map<?, ?> map) {
+            final Map<Object, Object> copy = new LinkedHashMap<>();
+            for (final Map.Entry<?, ?> entry: map.entrySet()) copy.put(entry.getKey(), freeze(entry.getValue()));
+            return Collections.unmodifiableMap(copy);
+        }
+        return value instanceof final List<?> list ? List.copyOf(list) : value;
+    }
+
+    /** Returns a read-only snapshot of this metadata; later changes to this instance never reach it. */
+    public ImageMetadata frozen() {
+        return new ImageMetadata(this);
     }
 
     /** Returns the trimmed image title, or null when absent. */
@@ -175,7 +206,7 @@ public final class ImageMetadata {
     }
 
     private void checkMutable() {
-        if (this.readOnly) throw new UnsupportedOperationException("ImageMetadata.EMPTY is read-only");
+        if (this.readOnly) throw new UnsupportedOperationException("This ImageMetadata is read-only");
     }
 
     private static String clean(final String value) {

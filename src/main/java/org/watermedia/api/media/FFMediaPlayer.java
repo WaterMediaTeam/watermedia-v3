@@ -2294,7 +2294,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // REQUIRES CERTIFICATE AND PEER-NAME VERIFICATION FOR THE INPUT AND ITS NESTED CONNECTIONS
     static void configureTLS(final AVDictionary options) {
-        Objects.requireNonNull(options, "options");
+        if (options == null) throw new IllegalArgumentException("Options are required");
         final Certificates current = certificates;
         if (current == null) throw new IllegalStateException("Native HTTPS verification has not initialized");
         if (av_dict_set(options, "verify", null, 0) < 0 || av_dict_set(options, "cafile", null, 0) < 0

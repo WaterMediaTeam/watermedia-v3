@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -37,49 +38,12 @@ public record TRNS(int gray, int red, int green, int blue, byte[] alphaPerPalett
         this(-1, -1, -1, -1, alphaPerPalette);
     }
 
-    /**
-     * Reads tRNS chunk from buffer based on color type (reads length/type header first)
-     */
-    public static TRNS read(final ByteBuffer buffer, final int colorType) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated tRNS chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for tRNS: 0x" + Integer.toHexString(type));
-        if (length < 0 || buffer.remaining() < length)
-            throw new CodecException("Truncated tRNS chunk");
-
-        return switch (ColorType.of(colorType)) {
-            case GREYSCALE -> {
-                if (length != 2)
-                    throw new CodecException("tRNS for greyscale must be 2 bytes, got " + length);
-                final int gray = buffer.getShort() & 0xFFFF;
-                yield new TRNS(gray);
-            }
-            case TRUECOLOR -> {
-                if (length != 6)
-                    throw new CodecException("tRNS for truecolor must be 6 bytes, got " + length);
-                final int red = buffer.getShort() & 0xFFFF;
-                final int green = buffer.getShort() & 0xFFFF;
-                final int blue = buffer.getShort() & 0xFFFF;
-                yield new TRNS(red, green, blue);
-            }
-            case INDEXED -> {
-                if (length > MAX_PALETTE_ALPHAS)
-                    throw new CodecException("tRNS holds more than 256 palette alphas: " + length);
-                final byte[] alphas = new byte[length];
-                buffer.get(alphas);
-                yield new TRNS(alphas);
-            }
-            default -> throw new CodecException("tRNS not allowed for color type " + colorType);
-        };
+    /** Reads a complete tRNS chunk (length, type, data and CRC) for the color type from the buffer. */
+    public static TRNS read(final ByteBuffer buffer, final int colorType) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE), colorType);
     }
 
-    /**
-     * Converts a generic PngChunk to TRNS based on color type
-     */
+    /** Converts a generic chunk to tRNS for the color type. */
     public static TRNS convert(final PngChunk chunk, final int colorType) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for tRNS: 0x" + Integer.toHexString(chunk.type()));

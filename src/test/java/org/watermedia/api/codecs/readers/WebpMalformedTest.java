@@ -4,7 +4,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.watermedia.api.codecs.CodecException;
-import org.watermedia.api.codecs.readers.webp.riff.FourCC;
+import org.watermedia.api.codecs.UnsupportedFormatException;
+import org.watermedia.api.codecs.readers.webp.FourCC;
 import org.watermedia.test.support.Fixtures;
 
 import java.io.IOException;
@@ -14,19 +15,21 @@ import java.nio.file.Path;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Regression tests for crafted/corrupted WebP files. Every malformed input must surface as a
- * clean {@link CodecException} (or complete harmlessly) — never as an unchecked exception,
- * an {@link OutOfMemoryError} or a hang.
+ * Verifies crafted and corrupted WebP files: every malformed input surfaces as a clean
+ * {@link CodecException} (or completes harmlessly) — never as an unchecked exception, an
+ * {@link OutOfMemoryError} or a hang — while valid features the decoder lacks surface as
+ * {@link UnsupportedFormatException}.
  */
 @DisplayName("WebP malformed inputs")
 public class WebpMalformedTest {
 
-    // VP8X CANVAS LARGER THAN THE EMBEDDED VP8 BITSTREAM PREVIOUSLY OVERRAN THE YUV PLANE COPY
-    // (IndexOutOfBoundsException) OR THE BGRA LIMIT (IllegalArgumentException)
+    // A VP8X CANVAS LARGER THAN THE EMBEDDED VP8 BITSTREAM FAILS AS A CODEC ERROR, NEVER AS AN INDEX OR ARGUMENT FAULT
     @Test
     @DisplayName("VP8X canvas mismatching VP8 bitstream dims is rejected")
     void vp8CanvasMismatch() {
@@ -74,7 +77,7 @@ public class WebpMalformedTest {
         assertThrows(CodecException.class, reader::next, "Negative sub-chunk size must fail cleanly");
     }
 
-    // ANMF FRAMES EXTENDING PAST THE CANVAS PREVIOUSLY DECODED A FULL OFF-CANVAS FRAME BUFFER
+    // AN ANMF FRAME EXTENDING PAST THE CANVAS IS REJECTED, NOT DECODED INTO AN OFF-CANVAS BUFFER
     @Test
     @DisplayName("ANMF frame outside the canvas is rejected")
     void anmfFrameOutsideCanvas() {
@@ -91,7 +94,7 @@ public class WebpMalformedTest {
     @Test
     @DisplayName("Canvas above the total-pixel cap is rejected at construction")
     void canvasPixelBomb() {
-        final byte[] forged = chunk(FourCC.VP8X, vp8xBody(0x02, 16384, 16384));
+        final byte[] forged = chunk(FourCC.VP8X, vp8xBody(0x02, 16_384, 16_384));
         assertThrows(CodecException.class, () -> new WebPReader(ByteBuffer.wrap(forged)),
                 "Pixel bomb must fail before allocating");
     }
@@ -110,7 +113,52 @@ public class WebpMalformedTest {
         assertFalse(reader.hasNext(), "Nothing to decode in a header-only file");
     }
 
+    @Test
+    @DisplayName("A VP8 interframe is unsupported, not malformed")
+    void vp8Interframe() {
+        // FRAME TAG BIT 0 SET MARKS AN INTERFRAME; THE REST IS A WELL-FORMED 1x1 KEY FRAME HEADER
+        final byte[] body = { 0x01, 0, 0, (byte) 0x9D, 0x01, 0x2A, 1, 0, 1, 0 };
+        assertThrows(UnsupportedFormatException.class, () -> new WebPReader(ByteBuffer.wrap(chunk(FourCC.VP8, body))));
+    }
+
+    @Test
+    @DisplayName("A VP8L bitstream of an unknown version is unsupported, not malformed")
+    void vp8lVersion() {
+        // THE TOP THREE BITS OF THE 32-BIT SIZE FIELD CARRY THE VERSION: 0x20 IN ITS LAST BYTE IS VERSION 1
+        final byte[] body = { 0x2F, 0, 0, 0, 0x20 };
+        assertThrows(UnsupportedFormatException.class, () -> new WebPReader(ByteBuffer.wrap(chunk(FourCC.VP8L, body))));
+        assertThrows(CodecException.class, () -> new WebPReader(ByteBuffer.wrap(chunk(FourCC.VP8L, new byte[] { 0x2E, 0, 0, 0, 0 }))));
+    }
+
+    @Test
+    @DisplayName("Frames are capped per pass and reset() starts a new pass")
+    void frameCap() throws IOException {
+        // A 1x1 VP8L FRAME: NO TRANSFORM, NO CACHE, ONE GROUP OF FIVE ONE-SYMBOL CODES, SO THE PIXEL COSTS NO BITS
+        final byte[] vp8l = { 0x2F, 0, 0, 0, 0, (byte) 0x88, (byte) 0x88, 0x08 };
+        final ByteBuffer anmf = ByteBuffer.allocate(16 + 8 + vp8l.length).order(ByteOrder.LITTLE_ENDIAN);
+        anmf.put(anmfHeader(0, 0, 1, 1)).putInt(FourCC.VP8L).putInt(vp8l.length).put(vp8l);
+        final byte[] frame = chunk(FourCC.ANMF, anmf.array());
+        try (final WebPReader reader = new WebPReader(ByteBuffer.wrap(animation(frame, 4_096)))) {
+            assertEquals(4_096, reader.frameCount());
+            assertEquals(4_096, reader.readAll().frames().length);
+            assertTrue(reader.reset());
+            assertEquals(4_096, reader.readAll().frames().length);
+        }
+        try (final WebPReader reader = new WebPReader(ByteBuffer.wrap(animation(frame, 4_097)))) {
+            assertTrue(assertThrows(CodecException.class, reader::readAll).getMessage().contains("frame count"));
+        }
+    }
+
     // ----- FORGING HELPERS -----
+
+    // A 1x1 ANIMATION REPEATING ONE ANMF CHUNK
+    private static byte[] animation(final byte[] frame, final int count) {
+        final byte[][] parts = new byte[count + 2][];
+        parts[0] = chunk(FourCC.VP8X, vp8xBody(0x02, 1, 1));
+        parts[1] = chunk(FourCC.ANIM, new byte[6]);
+        Arrays.fill(parts, 2, parts.length, frame);
+        return concat(parts);
+    }
 
     // CHUNK STREAM OF A REAL FIXTURE (EVERYTHING PAST THE 12-BYTE RIFF????WEBP PREAMBLE)
     private static byte[] fixtureChunks(final Path path) {

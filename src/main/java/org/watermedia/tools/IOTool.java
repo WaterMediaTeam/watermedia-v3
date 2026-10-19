@@ -21,7 +21,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.jar.Manifest;
 
 public class IOTool {
@@ -282,7 +281,7 @@ public class IOTool {
 
     /** Combines cleanup failures without hiding a fatal VM error behind an ordinary exception. */
     public static Throwable mergeFailure(final Throwable previous, final Throwable next) {
-        Objects.requireNonNull(next, "next");
+        if (next == null) throw new IllegalArgumentException("The next failure is required");
         if (previous == null || previous == next) return next;
         final boolean previousFatal = previous instanceof VirtualMachineError;
         final boolean nextFatal = next instanceof VirtualMachineError;

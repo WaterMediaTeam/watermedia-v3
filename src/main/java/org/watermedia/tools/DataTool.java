@@ -15,7 +15,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 
 public class DataTool {
     public static boolean startsWith(final ByteBuffer buffer, final int offset, final byte[] header) {
@@ -27,8 +26,7 @@ public class DataTool {
     }
 
     public static boolean startsWith(final String str, final String... prefixes) {
-        Objects.requireNonNull(str, "String cannot be null");
-        Objects.requireNonNull(prefixes, "Prefix array cannot be null");
+        if (str == null || prefixes == null) throw new IllegalArgumentException("String and prefixes are required");
         for (final var prefix: prefixes) {
             if (str.startsWith(prefix)) return true;
         }
@@ -56,6 +54,28 @@ public class DataTool {
             }
         }
         return Map.copyOf(result);
+    }
+
+    // UNSIGNED FIELD READS AT AN ABSOLUTE OFFSET IN EITHER BYTE ORDER; THE JIT INLINES THEM INTO THE PARSERS
+    public static int u16(final ByteBuffer buffer, final int offset, final ByteOrder order) {
+        final int a = buffer.get(offset) & 0xFF;
+        final int b = buffer.get(offset + 1) & 0xFF;
+        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) : (a << 8) | b;
+    }
+
+    public static int u24(final ByteBuffer buffer, final int offset, final ByteOrder order) {
+        final int a = buffer.get(offset) & 0xFF;
+        final int b = buffer.get(offset + 1) & 0xFF;
+        final int c = buffer.get(offset + 2) & 0xFF;
+        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) | (c << 16) : (a << 16) | (b << 8) | c;
+    }
+
+    public static long u32(final ByteBuffer buffer, final int offset, final ByteOrder order) {
+        final long a = buffer.get(offset) & 0xFF;
+        final long b = buffer.get(offset + 1) & 0xFF;
+        final long c = buffer.get(offset + 2) & 0xFF;
+        final long d = buffer.get(offset + 3) & 0xFF;
+        return order == ByteOrder.LITTLE_ENDIAN ? a | (b << 8) | (c << 16) | (d << 24) : (a << 24) | (b << 16) | (c << 8) | d;
     }
 
     // EXPIRY CARRIED BY A SIGNED CDN URL: THE FIRST expire/expires/validto/x-expires QUERY VALUE, IN EPOCH SECONDS
@@ -95,15 +115,6 @@ public class DataTool {
 
     public static boolean contains(final String o, final String in) {
         return o != null && o.contains(in);
-    }
-
-    public static long sumArray(final long... array) {
-        int i = 0;
-        long result = 0;
-        while (i < array.length) {
-            result += array[i++];
-        }
-        return result;
     }
 
     // CONVERTS BT.601 LIMITED-RANGE YUV 4:2:0 PLANES (VP8) TO PACKED OPAQUE ARGB INTS, WHICH LAND AS [B,G,R,A]

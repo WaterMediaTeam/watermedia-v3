@@ -8,31 +8,21 @@ import java.nio.ByteBuffer;
 public record ColorTable(int size, int[] colors) implements IChunk {
     public static final int MAX_COLORS = 256;
 
-    /** Reads {@code size} RGB triples (up to {@link #MAX_COLORS}) as opaque ARGB colors. */
+    /** Reads {@code size} RGB triples (up to {@link #MAX_COLORS}) at the buffer position as opaque ARGB colors, advancing past them. */
     public static ColorTable read(final int size, final ByteBuffer buffer) throws CodecException {
         // VALIDATION LIVES HERE: A RECORD CANONICAL CONSTRUCTOR CANNOT THROW CodecException
-        if (size < 0 || size > MAX_COLORS) {
-            throw new CodecException("Color table size must be between 0 and " + MAX_COLORS);
-        }
-        final int byteCount = size * 3;
-        if (buffer.remaining() < byteCount) {
-            throw new CodecException("Buffer does not contain enough data for Color Table. " +
-                    "Expected " + byteCount + " bytes, but only " + buffer.remaining() + " available");
-        }
+        if (size < 0 || size > MAX_COLORS) throw new CodecException("Color table size must be between 0 and " + MAX_COLORS);
+        final int at = buffer.position();
+        if (buffer.remaining() < size * 3)
+            throw new CodecException("Truncated GIF color table: " + size * 3 + " bytes declared, " + buffer.remaining() + " available");
 
-        final byte[] raw = new byte[byteCount];
-        buffer.get(raw);
-
-        final int[] colorTable = new int[size];
-        for (int i = 0, p = 0; i < size; i++, p += 3) {
+        final int[] colors = new int[size];
+        for (int i = 0, p = at; i < size; i++, p += 3) {
             // BGRA LAYOUT WHEN CONSUMED VIA IntBuffer OVER A LITTLE-ENDIAN DIRECT BUFFER
-            colorTable[i] = 0xFF000000
-                    | ((raw[p]     & 0xFF) << 16)
-                    | ((raw[p + 1] & 0xFF) << 8)
-                    | (raw[p + 2] & 0xFF);
+            colors[i] = 0xFF000000 | ((buffer.get(p) & 0xFF) << 16) | ((buffer.get(p + 1) & 0xFF) << 8) | (buffer.get(p + 2) & 0xFF);
         }
-
-        return new ColorTable(size, colorTable);
+        buffer.position(at + size * 3);
+        return new ColorTable(size, colors);
     }
 
     @Override

@@ -15,7 +15,6 @@ import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -162,10 +161,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // MEDIA PLAYERS DECODE AND RENDER, SO THEY ARE CLIENT-ONLY; THE HEADLESS CLOCK BELOW IS THE SERVER-SIDE PLAYER
     MediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx, final Bridge bridge) {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
-        Objects.requireNonNull(mrl, "MediaPlayer must have a valid MRL");
+        if (mrl == null) throw new IllegalArgumentException("MediaPlayer must have a valid MRL");
         final MRL.Source resolved = mrl.source(sourceIndex);
-        Objects.requireNonNull(resolved, "Source at index " + sourceIndex + " is not available");
-        if (gfx == null && sfx == null) throw new IllegalStateException("MediaPlayer must have a valid GFX or SFX resource.");
+        if (resolved == null) throw new IllegalArgumentException("Source at index " + sourceIndex + " is not available");
+        if (gfx == null && sfx == null) throw new IllegalArgumentException("MediaPlayer must have a valid GFX or SFX resource");
         // A MISSING VIDEO SINK IS WORTH A WARNING; MISSING AUDIO IS THE NORMAL SHAPE OF EVERY IMAGE PLAYER
         if (gfx == null)
             LOGGER.warn(IT, "GFXEngine is null — there will be no video output");

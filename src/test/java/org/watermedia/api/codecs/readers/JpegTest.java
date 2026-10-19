@@ -5,9 +5,11 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PamImage;
@@ -20,16 +22,21 @@ import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
+import java.util.NoSuchElementException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * JPEG decoder verification, exercising baseline and APP-marker fixtures across the four
- * common chroma layouts.
+ * Verifies the JPEG decoder over baseline and APP-marker fixtures across the four common chroma
+ * layouts, plus its metadata and the split between unsupported and malformed streams.
  *
  * <p>Three tests are emitted per fixture: a structural check on the BGRA reader output, a
  * native pixel-format probe (color stays BGRA, grayscale stays one luma byte per pixel), and a
@@ -138,9 +145,9 @@ public class JpegTest {
         @DisplayName("The EXIF payload and its orientation reach the metadata")
         void exifFixture() throws IOException {
             try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_DIR.resolve("2.jpg"))))) {
-                final byte[] exif = assertInstanceOf(byte[].class, reader.metadata().value(CodecsAPI.JPEG_METAKEY_EXIF));
+                final byte[] exif = assertInstanceOf(byte[].class, reader.metadata().value(CodecsAPI.METAKEY_EXIF));
                 assertTrue((exif[0] == 'M' && exif[1] == 'M') || (exif[0] == 'I' && exif[1] == 'I'), "TIFF byte order marker");
-                final Integer orientation = assertInstanceOf(Integer.class, reader.metadata().value(CodecsAPI.JPEG_METAKEY_ORIENTATION));
+                final Integer orientation = assertInstanceOf(Integer.class, reader.metadata().value(CodecsAPI.METAKEY_ORIENTATION));
                 assertTrue(orientation >= 1 && orientation <= 8, "orientation " + orientation);
             }
         }
@@ -167,14 +174,117 @@ public class JpegTest {
         }
 
         @Test
-        @DisplayName("COM segments become comments")
+        @DisplayName("Every COM segment becomes a comment, in stream order")
         void comments() throws IOException {
-            final byte[] jpeg = withSegment(Fixtures.readAll(Fixtures.JPEG_BASELINE), 0xFE, "WaterMedia".getBytes(StandardCharsets.ISO_8859_1));
+            final byte[] once = withSegment(Fixtures.readAll(Fixtures.JPEG_BASELINE), 0xFE, "second".getBytes(StandardCharsets.ISO_8859_1));
+            final byte[] jpeg = withSegment(once, 0xFE, "first".getBytes(StandardCharsets.ISO_8859_1));
             try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(jpeg))) {
-                assertEquals(List.of("WaterMedia"), reader.metadata().comments());
-                assertEquals("WaterMedia", reader.metadata().value(CodecsAPI.JPEG_METAKEY_COMMENT));
+                assertEquals(List.of("first", "second"), reader.metadata().comments());
+                reader.next();
+                assertTrue(reader.reset());
+                reader.next();
+                assertEquals(List.of("first", "second"), reader.metadata().comments(), "a replay must not duplicate comments");
             }
         }
+
+        @Test
+        @DisplayName("Comments past the cap of 64 are dropped without failing the decode")
+        void commentCap() throws IOException {
+            final byte[] plain = Fixtures.readAll(Fixtures.JPEG_BASELINE);
+            // 65 COM SEGMENTS "c00".."c64" RIGHT AFTER SOI, 7 BYTES EACH
+            final ByteBuffer jpeg = ByteBuffer.allocate(plain.length + 65 * 7).put(plain, 0, 2);
+            for (int i = 0; i <= 64; i++)
+                jpeg.put((byte) 0xFF).put((byte) 0xFE).putShort((short) 5).put(String.format(Locale.ROOT, "c%02d", i).getBytes(StandardCharsets.ISO_8859_1));
+            jpeg.put(plain, 2, plain.length - 2);
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(jpeg.array()))) {
+                final List<String> comments = reader.metadata().comments();
+                assertEquals(64, comments.size());
+                assertEquals("c00", comments.get(0));
+                assertEquals("c63", comments.get(63), "the 65th comment is the one dropped");
+                assertEquals(1, reader.readAll().frames().length);
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Refusals")
+    class Refusals {
+
+        @Test
+        @DisplayName("Valid coding processes the decoder does not implement are unsupported and named")
+        void unsupportedProcesses() {
+            final byte[] plain = Fixtures.readAll(Fixtures.JPEG_BASELINE);
+            for (final int[] process: new int[][] { { 0xC3, 'l' }, { 0xC5, 'h' }, { 0xC9, 'a' }, { 0xCD, 'h' } }) {
+                final byte[] jpeg = plain.clone();
+                jpeg[sof(jpeg) + 1] = (byte) process[0];
+                final UnsupportedFormatException e = assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(jpeg)));
+                assertTrue(e.getMessage().contains(String.format("FF%02X (%c", process[0], process[1])), e.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("12-bit extended or progressive samples, four components and a DNL height are unsupported, other values are malformed")
+        void unsupportedFrameFields() {
+            final byte[] plain = Fixtures.readAll(Fixtures.JPEG_BASELINE);
+            final int sof = sof(plain);
+            // SOF LAYOUT: FF Cn, LENGTH (2), PRECISION, HEIGHT (2), WIDTH (2), COMPONENT COUNT
+            for (final int process: new int[] { 0xC1, 0xC2 })
+                assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(patch(patch(plain, sof + 1, process), sof + 4, 12))));
+            assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(patch(plain, sof + 9, 4))));
+            // A ZERO HEIGHT DEFERS THE LINE COUNT TO A DNL MARKER AFTER THE FIRST SCAN
+            final UnsupportedFormatException dnl = assertThrows(UnsupportedFormatException.class,
+                    () -> CodecsAPI.reader(ByteBuffer.wrap(patch(patch(plain, sof + 5, 0), sof + 6, 0))));
+            assertTrue(dnl.getMessage().contains("DNL"), dnl.getMessage());
+            // BASELINE (SOF0) ALLOWS 8 BITS ONLY
+            assertMalformed(patch(patch(plain, sof + 1, 0xC0), sof + 4, 12));
+            assertMalformed(patch(plain, sof + 4, 7));
+            assertMalformed(patch(plain, sof + 9, 0));
+        }
+
+        @Test
+        @DisplayName("Unknown markers and truncated segments stay malformed, not unsupported")
+        void malformed() {
+            final byte[] plain = Fixtures.readAll(Fixtures.JPEG_BASELINE);
+            final byte[] unknown = new byte[plain.length + 2];
+            System.arraycopy(plain, 0, unknown, 0, 2);
+            unknown[2] = (byte) 0xFF;
+            unknown[3] = 0x01;
+            System.arraycopy(plain, 2, unknown, 4, plain.length - 2);
+            final CodecException e = assertMalformed(unknown);
+            assertTrue(e.getMessage().contains("FF01"), e.getMessage());
+            assertMalformed(Arrays.copyOf(plain, sof(plain) + 6));
+        }
+
+        @Test
+        @DisplayName("next() past the frame throws NoSuchElementException and a closed reader IllegalStateException")
+        void endAndClose() throws IOException {
+            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(Fixtures.readAll(Fixtures.JPEG_BASELINE)));
+            reader.next();
+            assertFalse(reader.hasNext());
+            assertThrows(NoSuchElementException.class, reader::next);
+            reader.close();
+            assertThrows(IllegalStateException.class, reader::hasNext);
+            assertThrows(IllegalStateException.class, reader::reset);
+        }
+
+        private static CodecException assertMalformed(final byte[] jpeg) {
+            final CodecException e = assertThrows(CodecException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(jpeg)));
+            assertFalse(e instanceof UnsupportedFormatException, "malformed input reported as unsupported: " + e.getMessage());
+            return e;
+        }
+
+        private static byte[] patch(final byte[] jpeg, final int offset, final int value) {
+            final byte[] copy = jpeg.clone();
+            copy[offset] = (byte) value;
+            return copy;
+        }
+    }
+
+    // OFFSET OF THE FF BYTE OF THE FRAME HEADER, FOUND BY WALKING THE MARKER SEGMENTS THAT PRECEDE IT
+    private static int sof(final byte[] jpeg) {
+        int at = 2;
+        while ((jpeg[at + 1] & 0xFF) != 0xC0 && (jpeg[at + 1] & 0xFF) != 0xC2) at += 2 + (((jpeg[at + 2] & 0xFF) << 8) | (jpeg[at + 3] & 0xFF));
+        return at;
     }
 
     // INSERTS ONE MARKER SEGMENT RIGHT AFTER SOI

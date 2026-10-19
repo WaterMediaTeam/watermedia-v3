@@ -47,15 +47,19 @@ public abstract class ImageWriter implements Closeable {
      * Encodes one frame and appends it to the wrapped {@link OutputStream}.
      * The buffer must hold {@code width * height} pixels in {@link #pixelFormat()}.
      *
-     * @throws IOException on I/O error or unsupported frame configuration
+     * @throws IllegalArgumentException when the frame is null or its size does not match the writer
+     * @throws IllegalStateException    when the writer is closed
+     * @throws IOException              on I/O or encoder failure
      */
     public abstract void writeFrame(ByteBuffer frame) throws IOException;
 
     /**
      * Encodes one frame with an associated delay (for animated formats). Static formats may
-     * ignore {@code delayMs}. Defaults to {@link #writeFrame(ByteBuffer)}.
+     * ignore {@code delayMs}; a negative delay is an {@link IllegalArgumentException}. Defaults to
+     * {@link #writeFrame(ByteBuffer)}.
      */
     public void writeFrame(final ByteBuffer frame, final long delayMs) throws IOException {
+        if (delayMs < 0) throw new IllegalArgumentException("Frame delay must not be negative: " + delayMs);
         this.writeFrame(frame);
     }
 

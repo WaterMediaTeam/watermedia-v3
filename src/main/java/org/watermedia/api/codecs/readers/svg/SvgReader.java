@@ -22,8 +22,8 @@ import java.nio.ByteBuffer;
  * it is never upscaled.
  *
  * <p>The frame is {@link PixelFormat#BGRA} natively; a {@link PixelFormat#RGBA} request is honored by
- * swizzling the two colour channels during the canvas-to-buffer copy. Any other request falls back to
- * BGRA — callers must consult {@link #pixelFormat()}.
+ * swizzling the two colour channels during the canvas-to-buffer copy, and a {@link PixelFormat#GRAY}
+ * request is reduced to luma by the {@link ImageReader} conversion pass.
  */
 public final class SvgReader extends ImageReader {
     private final int w, h;
@@ -34,7 +34,7 @@ public final class SvgReader extends ImageReader {
 
     public SvgReader(final ByteBuffer data, final PixelFormat requestedFormat) throws IOException {
         super(data, requestedFormat);
-        // ONLY RGBA IS CHEAP TO HONOR (A CHANNEL SWIZZLE); EVERYTHING ELSE STAYS ON THE NATIVE BGRA LAYOUT
+        // RGBA COSTS A SWIZZLE IN THE CANVAS COPY; GRAY RENDERS BGRA AND LEAVES THE LUMA PASS TO THE BASE READER
         this.format = requestedFormat == PixelFormat.RGBA ? PixelFormat.RGBA : PixelFormat.BGRA;
 
         // STREAM StAX STRAIGHT OFF A ByteBuffer VIEW — NO FULL-DOCUMENT byte[] COPY
@@ -55,28 +55,32 @@ public final class SvgReader extends ImageReader {
 
     @Override public int width() { return this.w; }
     @Override public int height() { return this.h; }
-    @Override public PixelFormat pixelFormat() { return this.format; }
+    @Override protected PixelFormat decodedFormat() { return this.format; }
     @Override public ImageData.Scan scan() { return ImageData.Scan.EMPTY; }
 
     @Override
-    public boolean hasNext() {
+    protected boolean hasMore() {
         return !this.consumed;
     }
 
     @Override
     protected ByteBuffer decode() throws IOException {
-        if (this.consumed) throw new CodecException("SVG has a single frame");
         if (this.rendered == null) this.rendered = this.rasterize();
         this.rendered.rewind(); // RE-ARM POSITION 0 SO A SECOND PASS (AFTER reset()) READS THE FULL FRAME
         this.consumed = true;
-        this.delayMs = 0L;
         return this.rendered;
     }
 
     @Override
-    public boolean reset() {
+    protected boolean rewind() {
         this.consumed = false;
         return true;
+    }
+
+    @Override
+    protected void dispose() {
+        // THE RENDERED FRAME LIVES OFF-HEAP; DROPPING IT LETS THE Cleaner FREE IT BEFORE THE READER BECOMES UNREACHABLE
+        this.rendered = null;
     }
 
     private ByteBuffer rasterize() throws IOException {

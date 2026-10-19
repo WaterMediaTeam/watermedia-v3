@@ -2,12 +2,16 @@ package org.watermedia.api.codecs.readers;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
+import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.UnsupportedFormatException;
+import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.PamImage;
 import org.watermedia.test.support.PixelDiff;
@@ -22,9 +26,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
@@ -33,11 +40,13 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * PNG decoder verification.
+ * Verifies the PNG decoder against the fixtures and the reader contract with synthetic streams.
  *
  * <p>For every PNG fixture under {@code src/test/resources/png} two dynamic tests run:
  * the first checks that {@code CodecsAPI.decode} produces a well-formed
@@ -192,6 +201,178 @@ public class PngTest {
         } finally {
             WaterMediaConfig.decoders.png.useBKGDChunk = previous;
         }
+    }
+
+    @Nested
+    @DisplayName("Reader contract")
+    class ContractTests {
+        @Test
+        @DisplayName("An APNG default image ahead of the first fcTL is not a frame")
+        void defaultImageIsNotAFrame() throws IOException {
+            // 1x1 RGBA: A RED DEFAULT IMAGE, THEN TWO ANIMATION FRAMES, GREEN AND BLUE, OF 100 MS EACH
+            final ByteArrayOutputStream png = new ByteArrayOutputStream();
+            png.writeBytes(SIGNATURE);
+            chunk(png, "IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+            chunk(png, "acTL", new byte[] { 0, 0, 0, 2, 0, 0, 0, 0 });
+            chunk(png, "IDAT", deflate(new byte[] { 0, (byte) 255, 0, 0, (byte) 255 }));
+            chunk(png, "fcTL", fctl(0));
+            chunk(png, "fdAT", fdat(1, new byte[] { 0, 0, (byte) 255, 0, (byte) 255 }));
+            chunk(png, "fcTL", fctl(2));
+            chunk(png, "fdAT", fdat(3, new byte[] { 0, 0, 0, (byte) 255, (byte) 255 }));
+            chunk(png, "IEND", new byte[0]);
+
+            final ImageData image = CodecsAPI.decode(png.toByteArray());
+            assertEquals(2, image.frames().length, "the default image is not part of the animation");
+            assertArrayEquals(new long[] { 100L, 100L }, image.delays());
+            assertEquals(ImageData.REPEAT_FOREVER, image.repeat());
+            assertEquals(0xFF00FF00, pixels(image)[0], "the first frame is the green animation frame, not the red default image");
+            assertEquals(0xFF0000FF, image.frames()[1].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(0));
+        }
+
+        @Test
+        @DisplayName("Metadata met between frames is stored once, however many replays")
+        void metadataIsStableAcrossReplays() throws IOException {
+            final ByteArrayOutputStream png = new ByteArrayOutputStream();
+            png.writeBytes(SIGNATURE);
+            chunk(png, "IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+            chunk(png, "acTL", new byte[] { 0, 0, 0, 2, 0, 0, 0, 1 });
+            chunk(png, "fcTL", fctl(0));
+            chunk(png, "IDAT", deflate(new byte[] { 0, (byte) 255, 0, 0, (byte) 255 }));
+            chunk(png, "tEXt", "Comment\0between frames".getBytes(StandardCharsets.ISO_8859_1));
+            chunk(png, "fcTL", fctl(1));
+            chunk(png, "fdAT", fdat(2, new byte[] { 0, 0, (byte) 255, 0, (byte) 255 }));
+            chunk(png, "IEND", new byte[0]);
+
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(png.toByteArray()))) {
+                final ImageMetadata early = reader.metadata();
+                for (int pass = 0; pass < 3; pass++) {
+                    while (reader.hasNext()) reader.next();
+                    assertEquals(List.of("between frames"), reader.metadata().comments(), "pass " + pass);
+                    assertTrue(reader.reset());
+                }
+                assertTrue(early.comments().isEmpty(), "a snapshot never changes under the consumer");
+                assertEquals(1, reader.repeat(), "one declared play");
+                assertThrows(UnsupportedOperationException.class, () -> reader.metadata().comment("x"), "snapshots are read-only");
+            }
+        }
+
+        @Test
+        @DisplayName("A one-frame animation still skips its default image and compressed text obeys a byte budget")
+        void singleFrameDefaultImageAndTextBudget() throws IOException {
+            final ByteArrayOutputStream png = new ByteArrayOutputStream();
+            png.writeBytes(SIGNATURE);
+            chunk(png, "IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+            chunk(png, "acTL", new byte[] { 0, 0, 0, 1, 0, 0, 0, 0 });
+            // THREE zTXt CHUNKS OF 2 MiB EACH: THE 4 MiB TEXT BUDGET KEEPS TWO AND SKIPS THE THIRD WITHOUT FAILING
+            final byte[] bomb = deflate(new byte[2 << 20]);
+            for (int i = 0; i < 3; i++) {
+                final ByteArrayOutputStream ztxt = new ByteArrayOutputStream();
+                ztxt.writeBytes("Comment".getBytes(StandardCharsets.ISO_8859_1));
+                ztxt.write(0);
+                ztxt.write(0);
+                ztxt.writeBytes(bomb);
+                chunk(png, "zTXt", ztxt.toByteArray());
+            }
+            chunk(png, "IDAT", deflate(new byte[] { 0, (byte) 255, 0, 0, (byte) 255 }));
+            chunk(png, "fcTL", fctl(0));
+            chunk(png, "fdAT", fdat(1, new byte[] { 0, 0, (byte) 255, 0, (byte) 255 }));
+            chunk(png, "IEND", new byte[0]);
+
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(png.toByteArray()))) {
+                assertEquals(1, reader.frameCount());
+                final ImageData image = reader.readAll();
+                assertEquals(1, image.frames().length, "the default image is not a frame even with one fcTL");
+                assertEquals(0xFF00FF00, pixels(image)[0]);
+                final Map<?, ?> texts = (Map<?, ?>) reader.metadata().value(CodecsAPI.PNG_METAKEY_COMPRESSED_TEXT);
+                assertEquals(2, ((List<?>) texts.get("Comment")).size(), "the third 2 MiB text exceeds the budget and is skipped");
+            }
+        }
+
+        @Test
+        @DisplayName("Malformed ancillary chunks are skipped and an unknown critical chunk is unsupported")
+        void ancillaryPolicy() throws IOException {
+            final ByteArrayOutputStream png = new ByteArrayOutputStream();
+            png.writeBytes(SIGNATURE);
+            chunk(png, "IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+            chunk(png, "tEXt", new byte[] { 0, 'x' }); // EMPTY KEYWORD
+            chunk(png, "gAMA", new byte[] { 0, 1, (byte) 0x86, (byte) 0xA0 }); // 100000 = GAMMA 1.0
+            chunk(png, "tIME", new byte[] { 7, (byte) 0xE9, 10, 18, 12, 30, 45 });
+            chunk(png, "sRGB", new byte[] { 1 });
+            chunk(png, "IDAT", deflate(new byte[] { 0, (byte) 255, 0, 0, (byte) 255 }));
+            chunk(png, "IEND", new byte[0]);
+
+            try (final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(png.toByteArray()))) {
+                final ImageMetadata metadata = reader.metadata();
+                assertNull(metadata.value(CodecsAPI.PNG_METAKEY_TEXT), "the malformed tEXt is skipped");
+                assertEquals(1.0, metadata.value(CodecsAPI.PNG_METAKEY_GAMMA));
+                assertEquals(LocalDateTime.of(2025, 10, 18, 12, 30, 45), metadata.value(CodecsAPI.PNG_METAKEY_LAST_MODIFIED_TIME));
+                assertEquals(1, metadata.value(CodecsAPI.PNG_METAKEY_SRGB));
+                assertTrue(reader.hasNext(), "a skipped chunk never fails the decode");
+            }
+
+            final ByteArrayOutputStream critical = new ByteArrayOutputStream();
+            critical.writeBytes(SIGNATURE);
+            chunk(critical, "IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+            chunk(critical, "ZZZZ", new byte[] { 1 });
+            chunk(critical, "IDAT", deflate(new byte[] { 0, (byte) 255, 0, 0, (byte) 255 }));
+            chunk(critical, "IEND", new byte[0]);
+            final ByteBuffer source = ByteBuffer.wrap(critical.toByteArray());
+            assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.reader(source));
+            assertEquals(0, source.position(), "a refused body leaves the buffer where it was");
+        }
+
+        @Test
+        @DisplayName("The requested layout is honoured and the iterator contract holds")
+        void requestedLayoutAndIteration() throws IOException {
+            final ByteArrayOutputStream png = new ByteArrayOutputStream();
+            png.writeBytes(SIGNATURE);
+            chunk(png, "IHDR", new byte[] { 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0 });
+            chunk(png, "IDAT", deflate(new byte[] { 0, (byte) 255, 0, 0, (byte) 255 }));
+            chunk(png, "IEND", new byte[0]);
+            final byte[] bytes = png.toByteArray();
+
+            final ImageData rgba = CodecsAPI.decode(bytes, PixelFormat.RGBA);
+            assertEquals(PixelFormat.RGBA, rgba.format());
+            assertEquals(0xFF0000FF, pixels(rgba)[0], "red lands in the first byte under RGBA");
+            final ImageData gray = CodecsAPI.decode(bytes, PixelFormat.GRAY);
+            assertEquals(PixelFormat.GRAY, gray.format());
+            assertEquals(1, gray.frames()[0].remaining());
+            assertEquals(77, gray.frames()[0].get(0) & 0xFF, "BT.601 luma of pure red");
+
+            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(bytes));
+            assertEquals(0L, reader.delay());
+            reader.next();
+            assertFalse(reader.hasNext());
+            assertThrows(NoSuchElementException.class, reader::next);
+            reader.close();
+            reader.close();
+            assertThrows(IllegalStateException.class, reader::hasNext);
+            assertThrows(IllegalStateException.class, reader::reset);
+            assertThrows(IllegalArgumentException.class, () -> CodecsAPI.decode(bytes, PixelFormat.YUV420P));
+        }
+    }
+
+    private static final byte[] SIGNATURE = { (byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
+
+    // fcTL FOR A 1x1 FRAME AT THE ORIGIN WITH A 1/10 S DELAY, DISPOSE NONE AND BLEND SOURCE
+    private static byte[] fctl(final int sequence) {
+        return ByteBuffer.allocate(26).putInt(sequence).putInt(1).putInt(1).putInt(0).putInt(0)
+                .putShort((short) 1).putShort((short) 10).put((byte) 0).put((byte) 0).array();
+    }
+
+    private static byte[] fdat(final int sequence, final byte[] scanline) {
+        final byte[] compressed = deflate(scanline);
+        return ByteBuffer.allocate(4 + compressed.length).putInt(sequence).put(compressed).array();
+    }
+
+    private static byte[] deflate(final byte[] raw) {
+        final Deflater deflater = new Deflater();
+        deflater.setInput(raw);
+        deflater.finish();
+        final byte[] out = new byte[64 + raw.length];
+        final int length = deflater.deflate(out);
+        deflater.end();
+        return Arrays.copyOf(out, length);
     }
 
     private static void chunk(final ByteArrayOutputStream out, final String type, final byte[] data) {

@@ -5,9 +5,11 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
 import org.watermedia.api.codecs.ImageReader;
+import org.watermedia.api.codecs.UnsupportedFormatException;
 import org.watermedia.api.codecs.readers.netpbm.NetpbmHeader;
 import org.watermedia.test.support.Fixtures;
 
@@ -21,18 +23,21 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Netpbm reader tests: a header parser smoke test over every fixture, a decode test that runs
+ * Verifies the Netpbm reader: a header parser smoke test over every fixture, a decode test that runs
  * {@link ImageReader#next()} for each binary variant and asserts the first BGRA pixel and that
- * {@link ImageReader#reset()} replays the raster, plus hand-written plain (ASCII) and PAM alpha
- * rasters checked pixel by pixel.
+ * {@link ImageReader#reset()} replays the raster, hand-written plain (ASCII), 16-bit and PAM alpha
+ * rasters checked pixel by pixel, and the split between unsupported and malformed headers.
  */
 @DisplayName("Netpbm reader")
 public class NetpbmTest {
@@ -138,13 +143,11 @@ public class NetpbmTest {
             assertArrayEquals(new int[] { 0xFFFFFFFF, 0x00000000 }, pixels(image));
         }
 
-        private static ImageData decode(final String text) throws IOException {
-            return decode(text, new byte[0]);
-        }
-
-        private static ImageData decode(final String header, final byte[] raster) throws IOException {
-            final byte[] head = header.getBytes(StandardCharsets.US_ASCII);
-            return CodecsAPI.decode(ByteBuffer.allocate(head.length + raster.length).put(head).put(raster).array());
+        @Test
+        @DisplayName("16-bit samples are read big-endian and rescaled")
+        void sixteenBit() throws IOException {
+            final ImageData image = decode("P5 2 1 65535\n", new byte[] { (byte) 0xFF, (byte) 0xFF, (byte) 0x80, 0x00 });
+            assertArrayEquals(new int[] { 0xFFFFFFFF, 0xFF7F7F7F }, pixels(image));
         }
 
         private static int[] pixels(final ImageData image) {
@@ -152,6 +155,60 @@ public class NetpbmTest {
             image.frames()[0].duplicate().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
             return pixels;
         }
+    }
+
+    @Nested
+    @DisplayName("Refusals and contract")
+    class Refusals {
+
+        @Test
+        @DisplayName("A PAM tuple type outside the six known ones is unsupported at header time")
+        void unknownTupleType() {
+            for (final String tuple: List.of("TUPLTYPE CMYK\n", "")) {
+                final byte[] pam = bytes("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\n" + tuple + "ENDHDR\n", new byte[4]);
+                final UnsupportedFormatException e = assertThrows(UnsupportedFormatException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(pam)));
+                assertTrue(e.getMessage().contains(tuple.isEmpty() ? "(none)" : "CMYK"), e.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("A black-and-white PAM with a MAXVAL other than 1 is malformed")
+        void blackAndWhiteMaxVal() {
+            final byte[] pam = bytes("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 1\nMAXVAL 255\nTUPLTYPE BLACKANDWHITE\nENDHDR\n", new byte[1]);
+            final CodecException e = assertThrows(CodecException.class, () -> CodecsAPI.reader(ByteBuffer.wrap(pam)));
+            assertFalse(e instanceof UnsupportedFormatException, e.getMessage());
+        }
+
+        @Test
+        @DisplayName("A version outside P1..P7 is an argument error")
+        void invalidVersion() {
+            assertThrows(IllegalArgumentException.class, () -> new NetpbmReader(ByteBuffer.wrap(bytes(" 1 1 255\n", new byte[1])), 8));
+        }
+
+        @Test
+        @DisplayName("next() past the frame throws NoSuchElementException and a closed reader IllegalStateException")
+        void endAndClose() throws IOException {
+            final ImageReader reader = CodecsAPI.reader(ByteBuffer.wrap(bytes("P5 1 1 255\n", new byte[] { 7 })));
+            reader.next();
+            assertFalse(reader.hasNext());
+            assertThrows(NoSuchElementException.class, reader::next);
+            reader.close();
+            assertThrows(IllegalStateException.class, reader::hasNext);
+            assertThrows(IllegalStateException.class, reader::reset);
+        }
+    }
+
+    private static ImageData decode(final String text) throws IOException {
+        return decode(text, new byte[0]);
+    }
+
+    private static ImageData decode(final String header, final byte[] raster) throws IOException {
+        return CodecsAPI.decode(bytes(header, raster));
+    }
+
+    private static byte[] bytes(final String header, final byte[] raster) {
+        final byte[] head = header.getBytes(StandardCharsets.US_ASCII);
+        return ByteBuffer.allocate(head.length + raster.length).put(head).put(raster).array();
     }
 
     private static List<Path> netpbmFixtures() {

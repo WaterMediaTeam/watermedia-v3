@@ -2,6 +2,7 @@ package org.watermedia.api.codecs.common.png;
 
 import org.watermedia.api.codecs.CodecException;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
@@ -20,27 +21,12 @@ public record SRGB(int renderingIntent) implements IChunk {
     public static final int SATURATION = 2;
     public static final int ABSOLUTE_COLORIMETRIC = 3;
 
-    /**
-     * Reads sRGB chunk from buffer (reads length/type header first)
-     */
-    public static SRGB read(final ByteBuffer buffer) throws CodecException {
-        if (buffer.remaining() < 8) throw new CodecException("Truncated sRGB chunk header");
-        final int length = buffer.getInt();
-        final int type = buffer.getInt();
-
-        // TYPE AND LENGTH COME STRAIGHT OFF THE WIRE HERE, SO BOTH ARE ATTACKER DATA (UNLIKE convert)
-        if (type != SIGNATURE)
-            throw new CodecException("Invalid chunk type for sRGB: 0x" + Integer.toHexString(type));
-        if (length != LENGTH)
-            throw new CodecException("sRGB chunk length must be 1, got " + Integer.toUnsignedString(length));
-        if (buffer.remaining() < LENGTH) throw new CodecException("Truncated sRGB chunk");
-
-        return new SRGB(buffer.get() & 0xFF);
+    /** Reads a complete sRGB chunk (length, type, data and CRC) from the buffer. */
+    public static SRGB read(final ByteBuffer buffer) throws IOException {
+        return convert(PngChunk.read(buffer, SIGNATURE));
     }
 
-    /**
-     * Converts a generic PngChunk to SRGB
-     */
+    /** Converts a generic chunk to sRGB. */
     public static SRGB convert(final PngChunk chunk) throws CodecException {
         if (chunk.type() != SIGNATURE) {
             throw new IllegalArgumentException("Invalid chunk type for sRGB: 0x" + Integer.toHexString(chunk.type()));

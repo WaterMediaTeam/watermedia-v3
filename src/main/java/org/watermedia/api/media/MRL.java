@@ -68,13 +68,14 @@ public final class MRL {
     private boolean reloadPending;
 
     private MRL(final URI uri, final Session owner) {
-        this.uri = Objects.requireNonNull(uri, "URI cannot be null");
+        if (uri == null) throw new IllegalArgumentException("URI cannot be null");
+        this.uri = uri;
         this.owner = owner;
     }
 
     // CACHE LOOKUPS RETURN IMMEDIATELY; NEW SOURCES START PLATFORM DISCOVERY ASYNCHRONOUSLY.
     static MRL get(final URI uri) {
-        Objects.requireNonNull(uri, "URI cannot be null");
+        if (uri == null) throw new IllegalArgumentException("URI cannot be null");
         final Session current = session;
         if (current == null || !WaterMedia.loaded()) throw new IllegalStateException("The media module is not loaded");
         // A RELATIVE URI CAN NEVER RESOLVE: BORN IN ERROR INSTEAD OF CACHED AND FAILING LATE

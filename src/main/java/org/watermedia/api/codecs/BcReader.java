@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs;
 
 import org.watermedia.api.codecs.common.dds.DdsHeader;
+import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
 import java.nio.ByteBuffer;
@@ -20,8 +21,7 @@ public final class BcReader implements Closeable {
 
     private final int width;
     private final int height;
-    private final String version;
-    private final int blockBytes;
+    private final PixelFormat format;
     private final ByteBuffer[] frames;
     private final long[] delays;
     private final long duration;
@@ -30,19 +30,18 @@ public final class BcReader implements Closeable {
     /**
      * Parses a complete BC-in-DDS file from {@code file.position()}.
      *
-     * @throws CodecException when the container is malformed, truncated or exceeds the memory budget
+     * @throws UnsupportedFormatException when the DDS is valid but not a single-level 2D BC1, BC3 or BC7 texture array
+     * @throws CodecException             when the container is malformed, truncated or exceeds the memory budget
      */
     public BcReader(final ByteBuffer file) throws CodecException {
         final DdsHeader.Info info = DdsHeader.read(file);
         this.width = info.width();
         this.height = info.height();
-        this.version = info.codec();
-        this.blockBytes = info.blockBytes();
+        this.format = info.format();
 
-        // SANITY, RANGE, THEN TRUNCATION — IN THAT ORDER. THE RANGE CHECK IS WHAT MAKES THE int CASTS
-        // BELOW SOUND, SO RUNNING THE TRUNCATION CHECK FIRST LEFT IT GUARDING NOTHING
-        final long frameBytes = DdsHeader.frameBytes(this.width, this.height, this.version);
-        if (frameBytes <= 0) throw new CodecException("Invalid BC frame size: " + frameBytes + " bytes");
+        // RANGE, THEN TRUNCATION — IN THAT ORDER. THE RANGE CHECK IS WHAT MAKES THE int CASTS BELOW SOUND,
+        // SO RUNNING THE TRUNCATION CHECK FIRST LEFT IT GUARDING NOTHING
+        final long frameBytes = info.frameBytes();
         final long texLen = (long) info.arraySize() * frameBytes;
         if (texLen > ImageReader.MAX_DECODED_BYTES) throw new CodecException("BC texture too large: " + texLen + " bytes");
         final long need = (long) DdsHeader.BYTES + texLen;
@@ -86,10 +85,13 @@ public final class BcReader implements Closeable {
     public int frameCount() { return this.frames.length; }
 
     /** The BC version of the stored texture ({@code BC7}/{@code BC3}/{@code BC1}) — needed for GPU upload. */
-    public String version() { return this.version; }
+    public String version() {
+        // THE CodecsAPI.CODEC_BC* NAMES ARE THE PixelFormat CONSTANT NAMES
+        return this.format.name();
+    }
 
     /** Bytes per 4x4 block: {@code 8} for BC1, {@code 16} for BC3/BC7. */
-    public int blockBytes() { return this.blockBytes; }
+    public int blockBytes() { return this.format.blockBytes(); }
 
     /** Per-frame delays in milliseconds (defensive copy). */
     public long[] delays() { return this.delays.clone(); }

@@ -1,17 +1,21 @@
 package org.watermedia.api.codecs.readers;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.codecs.CodecException;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.ImageData;
-import org.watermedia.api.codecs.ImageMetadata;
 import org.watermedia.api.codecs.ImageReader;
-import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.codecs.common.Canvas;
+import org.watermedia.api.codecs.common.Limits;
 import org.watermedia.api.codecs.common.gif.ColorTable;
 import org.watermedia.api.codecs.common.gif.GraphicExtension;
 import org.watermedia.api.codecs.common.gif.ImageDescriptor;
 import org.watermedia.api.codecs.common.gif.ScreenDescriptor;
 import org.watermedia.api.util.PixelFormat;
+import org.watermedia.tools.DataTool;
+import org.watermedia.tools.LogTool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -20,7 +24,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -29,243 +35,143 @@ import static org.watermedia.WaterMedia.LOGGER;
  *
  * <p>Receives a {@link ByteBuffer} positioned immediately after the 6-byte signature
  * ({@code GIF87a} or {@code GIF89a}); the signature is consumed by {@code CodecsAPI}. The
- * constructor reads the Logical Screen Descriptor + optional Global Color Table, plus any
- * pre-image extensions (so loop count from a Netscape application extension is known up front).
- * Each {@link #next()} parses one Image Descriptor + LZW data block and composes it onto
- * the canvas.
+ * constructor reads the Logical Screen Descriptor and the optional Global Color Table, then walks
+ * the block stream once to collect the frame delays, the loop count, comments and application
+ * extensions. Each {@link #next()} parses one Image Descriptor + LZW data block and composes it
+ * onto the canvas.
  */
 public final class GifReader extends ImageReader {
     private static final Marker IT = MarkerManager.getMarker(GifReader.class.getSimpleName());
 
-    private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
-
     // SECURITY CAPS
-    private static final int MAX_DIM = 16_384;                    // 16K PER AXIS (1:1); CHEAP PRE-FILTER FOR THE AREA CAP
-    // TOTAL-PIXEL CAP (64 MPX, E.G. 8192x8192). THE PER-AXIS CAP ONLY KEEPS width*height*4 INSIDE INT
-    // RANGE, IT DOES NOT BOUND COST: A 7-BYTE 16K x 16K SCREEN DESCRIPTOR BUYS 1 GiB OF CANVAS PLUS
-    // 1 GiB OF DIRECT BUFFER PLUS 1 GiB OF DISPOSAL-3 SNAPSHOT BEFORE ANY FRAME BYTE IS PARSED
-    private static final int MAX_PIXELS = 1 << 26;
     // A FRAME COSTS A FULL-CANVAS COMPOSITE AND COPY REGARDLESS OF ITS DESCRIPTOR SIZE, YET IS ONLY
     // 12 FILE BYTES. BOUNDED PER PASS — reset() STARTS A NEW PASS SO LOOPING PLAYBACK IS UNAFFECTED
     private static final int MAX_FRAMES = 4_096;
-    // METADATA RECORDS ARE RETAINED FOR THE READER'S LIFETIME, SO THEIR COUNT IS CAPPED TOO
-    private static final int MAX_EXTENSIONS = 512;
-    private static final int MAX_COMMENTS = 512;
-    private static final int MAX_SUBBLOCK_BYTES = Integer.MAX_VALUE - 8;  // JAVA ARRAY-SIZE SAFE UPPER BOUND
+    // COMMENTS AND APPLICATION EXTENSIONS LIVE AS LONG AS THE READER: RECORDS PAST EITHER CAP ARE SKIPPED
+    private static final int MAX_METADATA_RECORDS = 1_024;
+    private static final int MAX_METADATA_BYTES = 8 << 20;
+    private static final int MAX_SUBBLOCK_BYTES = Integer.MAX_VALUE - 8; // JAVA ARRAY-SIZE SAFE UPPER BOUND
+    private static final long METADATA_REPORT_NS = 10_000_000_000L;
 
-    // BLOCK INTRODUCERS
+    // BLOCK INTRODUCERS AND EXTENSION LABELS
     private static final int IMAGE_SEPARATOR = 0x2C;
     private static final int EXTENSION_INTRODUCER = 0x21;
     private static final int TRAILER = 0x3B;
     private static final int APPLICATION_EXTENSION_LABEL = 0xFF;
     private static final int COMMENT_EXTENSION_LABEL = 0xFE;
+    private static final int APPLICATION_HEADER_BYTES = 11;
+    // LOOPING APPLICATION EXTENSIONS (NETSCAPE AND ITS ADOBE TWIN): SUB-ID 1, THEN A LITTLE-ENDIAN LOOP COUNT
+    private static final String NETSCAPE_LOOP = "NETSCAPE2.0";
+    private static final String ANIMEXTS_LOOP = "ANIMEXTS1.0";
 
     // LZW
     private static final int MIN_LZW_CODE_SIZE = 2;
     private static final int MAX_LZW_CODE_SIZE = 8;
     private static final int MAX_STACK_SIZE = 4_096;
-    private static final int STACK_BUFFER_SIZE = 4097;
+    private static final int STACK_BUFFER_SIZE = 4_097;
 
     // INTERLACED RENDERING
     private static final int[] PASS_STARTS = {0, 4, 2, 1};
     private static final int[] PASS_INCREMENTS = {8, 8, 4, 2};
 
-    // ANIMATION
-    private static final long DEFAULT_FRAME_DELAY_MS = 10L;
-    private static final int DELAY_TIME_MULTIPLIER = 10;
-
+    private static final int DELAY_UNIT_MS = 10; // GCE DELAYS COUNT CENTISECONDS
+    private static final long BROWSER_DELAY_MS = 100L;
     private static final int OPAQUE_BLACK = 0xFF000000;
 
-    // NETSCAPE
-    private static final long NETSCAPE_EXT_ID = 0x4E45545343415045L; // "NETSCAPE"
-    private static final int NETSCAPE_AUTH_CODE = 0x32_2E_30;        // "2.0"
+    private static final LogTool.Throttle METADATA_DROPS = new LogTool.Throttle(METADATA_REPORT_NS);
 
     // PARSED HEADER STATE
     private final ScreenDescriptor lsd;
     private final ColorTable globalColorTable;
-    private final ImageMetadata metadata = new ImageMetadata();
-    private final List<GifExtension> extensions = new ArrayList<>();
-    private int comments;
-    // HIGHEST STREAM OFFSET WHOSE METADATA BLOCK IS ALREADY RECORDED. reset() REPLAYS THE SAME BYTES,
-    // SO WITHOUT THIS EVERY LOOP RE-APPENDS EVERY MID-STREAM EXTENSION AND THE HEAP CLIMBS FOREVER
-    private int metaMark;
+    private final int backgroundColor;
+    private final int bodyStart;           // FIRST BLOCK AFTER THE GLOBAL COLOR TABLE; reset() REPLAYS FROM HERE
+    private final ImageData.Scan scan;
 
     // CANVAS STATE
-    private final int[] canvas;            // CURRENT COMPOSITED CANVAS
-    private int[] restoreFrame;            // SAVED CANVAS FOR DISPOSAL METHOD 3
+    private final int[] canvas;
+    private int[] restoreFrame;            // CANVAS SAVED FOR DISPOSAL METHOD 3
     private final ByteBuffer directOut;    // BGRA OUTPUT BUFFER (REUSED)
     private final IntBuffer directOutInts;
-    private final int backgroundColor;
 
     // STREAMING STATE
-    private int pendingIntroducer = -1;    // 1-BYTE LOOK-AHEAD CONSUMED BY CONSTRUCTOR
     private boolean done;
-    private boolean nextReady;
+    private boolean nextReady;             // AN IMAGE SEPARATOR WAS CONSUMED AND ITS FRAME AWAITS decode()
     private int frames;                    // FRAMES YIELDED IN THE CURRENT PASS
-    private final ImageData.Scan scan;
-    private byte[] subBlockBuffer = new byte[4096];
+    private byte[] subBlockBuffer = new byte[4_096];
     private byte[] lzwIndexScratch = new byte[0];
     private final short[] lzwPrefix = new short[MAX_STACK_SIZE];
     private final byte[] lzwSuffix = new byte[MAX_STACK_SIZE];
     private final byte[] lzwPixelStack = new byte[STACK_BUFFER_SIZE];
-    private final byte[] descriptorScratch = new byte[9];
-    private final byte[] gceScratch = new byte[6];
 
-    // FRAME-CONTROL BETWEEN CONSECUTIVE FRAMES
-    private GraphicExtension currentGce;
+    // FRAME CONTROL BETWEEN CONSECUTIVE FRAMES
+    private GraphicExtension gce;          // APPLIES TO THE NEXT IMAGE ONLY
     private GraphicExtension previousGce;
     private ImageDescriptor previousId;
 
-    // RESET SNAPSHOT — STREAM STATE RIGHT AFTER CONSTRUCTION (FRAME 0 BOUNDARY)
-    private final int resetPos;
-    private final int resetIntroducer;
-    private final boolean resetDone;
-    private final GraphicExtension resetGce;
+    public GifReader(final ByteBuffer data) throws CodecException { this(data, null); }
 
-    public GifReader(final ByteBuffer data) throws CodecException {
-        super(data);
-        this.data.order(LE);
-        this.scan = scan(this.data.duplicate().order(LE));
-
-        // LOGICAL SCREEN DESCRIPTOR (7 bytes)
-        final byte[] lsdBytes = readExactly(this.data, ScreenDescriptor.LENGTH);
-        this.lsd = ScreenDescriptor.read(ByteBuffer.wrap(lsdBytes).order(LE));
-        // CAP THE CANVAS BEFORE ANYTHING IS ALLOCATED. THE PER-AXIS TEST IS THE CHEAP PRE-FILTER THAT
-        // KEEPS width*height*4 INSIDE INT RANGE; THE AREA TEST IS THE ACTUAL BUDGET, IN LONG MATH
-        // BECAUSE TWO CAPPED AXES STILL MULTIPLY TO 268 MPX
-        if (this.lsd.width() > MAX_DIM || this.lsd.height() > MAX_DIM
-                || (long) this.lsd.width() * this.lsd.height() > MAX_PIXELS)
+    public GifReader(final ByteBuffer data, final PixelFormat requestedFormat) throws CodecException {
+        super(data, requestedFormat);
+        this.lsd = ScreenDescriptor.read(this.data);
+        // CAP THE CANVAS BEFORE ANYTHING IS ALLOCATED: A 7-BYTE SCREEN DESCRIPTOR DECLARING 16K x 16K BUYS 1 GiB OF
+        // CANVAS, 1 GiB OF DIRECT BUFFER AND 1 GiB OF DISPOSAL-3 SNAPSHOT BEFORE ANY FRAME BYTE IS PARSED
+        if (!Limits.fits(this.lsd.width(), this.lsd.height()))
             throw new CodecException("GIF canvas too big: " + this.lsd.width() + "x" + this.lsd.height()
-                    + " (max " + MAX_DIM + " per axis, " + MAX_PIXELS + " pixels)");
+                    + " (max " + Limits.MAX_DIM + " per axis, " + Limits.MAX_PIXELS + " pixels)");
+        this.globalColorTable = this.lsd.globalColorTableFlag() ? ColorTable.read(this.lsd.globalColorCount(), this.data) : null;
+        this.backgroundColor = this.globalColorTable != null && this.lsd.backgroundColorIndex() < this.globalColorTable.size()
+                ? this.globalColorTable.colors()[this.lsd.backgroundColorIndex()] : OPAQUE_BLACK;
+        this.bodyStart = this.data.position();
+        this.scan = this.scan(this.data.duplicate());
 
-        // GLOBAL COLOR TABLE (optional)
-        if (this.lsd.globalColorTableFlag()) {
-            final int gctSize = 1 << (this.lsd.globalColorTableSize() + 1);
-            if (this.data.remaining() < gctSize * 3) {
-                throw new CodecException("Unexpected EOF in global color table");
-            }
-            this.globalColorTable = ColorTable.read(gctSize, this.data);
-        } else {
-            this.globalColorTable = null;
-        }
-
-        // ALLOCATE CANVAS / OUTPUT
         this.canvas = new int[this.lsd.width() * this.lsd.height()];
-        this.directOut = ByteBuffer.allocateDirect(this.lsd.width() * this.lsd.height() * 4).order(LE);
+        this.directOut = ByteBuffer.allocateDirect(this.canvas.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         this.directOutInts = this.directOut.asIntBuffer();
-        this.backgroundColor = (this.globalColorTable != null
-                && this.lsd.backgroundColorIndex() < this.globalColorTable.colors().length)
-                ? this.globalColorTable.colors()[this.lsd.backgroundColorIndex()]
-                : OPAQUE_BLACK;
-
-        // PRE-IMAGE EXTENSIONS (LOOP COUNT, INITIAL GCE, ETC.) UNTIL THE FIRST NON-EXTENSION INTRODUCER
-        while (true) {
-            final int b = readUnsignedOrEnd(this.data);
-            if (b < 0) { this.done = true; break; }
-            if (b == EXTENSION_INTRODUCER) {
-                this.processExtension();
-            } else {
-                this.pendingIntroducer = b;
-                break;
-            }
-        }
-
-        // SNAPSHOT THE FRAME-0 BOUNDARY SO reset() CAN REPLAY WITHOUT RE-PARSING THE HEADER
-        this.resetPos = this.data.position();
-        this.resetIntroducer = this.pendingIntroducer;
-        this.resetDone = this.done;
-        this.resetGce = this.currentGce;
     }
 
     @Override public int width() { return this.lsd.width(); }
     @Override public int height() { return this.lsd.height(); }
-    @Override public PixelFormat pixelFormat() { return PixelFormat.BGRA; }
+    @Override protected PixelFormat decodedFormat() { return PixelFormat.BGRA; }
     @Override public ImageData.Scan scan() { return this.scan; }
-    @Override public boolean variableFrameRate() { return this.scan.frameCount() > 1; }
-    @Override public ImageMetadata metadata() { return this.metadata.empty() ? ImageMetadata.EMPTY : this.metadata; }
 
     @Override
-    public boolean hasNext() throws CodecException {
-        if (this.done) return false;
-        if (this.nextReady) return true;
-
-        while (true) {
-            final int b;
-            if (this.pendingIntroducer != -1) {
-                b = this.pendingIntroducer;
-                this.pendingIntroducer = -1;
-            } else {
-                b = readUnsignedOrEnd(this.data);
-                if (b < 0) { this.done = true; return false; }
-            }
-
-            if (b == TRAILER) { this.done = true; return false; }
-            if (b == IMAGE_SEPARATOR) {
-                // COUNTED ONCE PER FRAME: THE nextReady SHORT-CIRCUIT ABOVE ABSORBS REPEATED hasNext() CALLS
+    protected boolean hasMore() throws CodecException {
+        while (!this.nextReady && !this.done) {
+            final int b = this.data.hasRemaining() ? this.data.get() & 0xFF : TRAILER;
+            if (b == TRAILER) {
+                this.done = true;
+            } else if (b == IMAGE_SEPARATOR) {
+                // COUNTED ONCE PER FRAME: nextReady ABSORBS REPEATED hasNext() CALLS
                 if (++this.frames > MAX_FRAMES)
                     throw new CodecException("GIF frame count exceeds limit: " + this.frames + " (max " + MAX_FRAMES + ")");
-                this.pendingIntroducer = b;
                 this.nextReady = true;
-                return true;
+            } else if (b == EXTENSION_INTRODUCER) {
+                // THE GRAPHIC CONTROL EXTENSION DRIVES THE NEXT FRAME; scan() ALREADY READ EVERY OTHER EXTENSION
+                final int label = this.data.hasRemaining() ? this.data.get() & 0xFF : -1;
+                if (label == GraphicExtension.GCE_LABEL) this.gce = GraphicExtension.read(this.data);
+                else skipBlocks(this.data);
             }
-            // ANY OTHER UNKNOWN BYTE IS SKIPPED (MATCHES LEGACY BEHAVIOR)
-            if (b == EXTENSION_INTRODUCER) this.processExtension();
+            // ANY OTHER BYTE IS SKIPPED, EXACTLY AS scan() SKIPS IT
         }
+        return this.nextReady;
     }
 
     @Override
     protected ByteBuffer decode() throws CodecException {
-        if (!this.hasNext()) throw new CodecException("No more GIF frames");
-        this.pendingIntroducer = -1;
         this.nextReady = false;
-        this.decodeFrame();
-        return this.directOut;
-    }
-
-    @Override
-    public boolean reset() {
-        // CANVAS AND restoreFrame NEED NO CLEARING: FRAME 0 FULLY REFILLS THE CANVAS AND
-        // DISPOSAL-3 SNAPSHOTS ARE ALWAYS SAVED BEFORE BEING RESTORED WITHIN THE SAME PASS.
-        // METADATA NEEDS NO CLEARING EITHER: metaMark MAKES RE-PARSED BLOCKS A NO-OP (SEE readAppExtension)
-        this.data.position(this.resetPos);
-        this.pendingIntroducer = this.resetIntroducer;
-        this.done = this.resetDone;
-        this.nextReady = false;
-        this.currentGce = this.resetGce;
-        this.previousGce = null;
-        this.previousId = null;
-        this.delayMs = 0L;
-        this.frames = 0; // THE FRAME CAP BOUNDS ONE PASS, NOT THE LIFETIME OF A FOREVER-LOOPING READER
-        return true;
-    }
-
-    // ----- FRAME DECODE -----
-
-    private void decodeFrame() throws CodecException {
-        final ImageDescriptor id = this.readImageDescriptor();
+        final ImageDescriptor id = ImageDescriptor.read(this.data);
         // A DESCRIPTOR MAY HANG PAST THE CANVAS (REAL ENCODERS DO IT): THE RASTER DECODES AT ITS OWN SIZE AND
         // blitRow CLIPS IT, SO ONLY ITS AREA NEEDS A BUDGET. 16-BIT AXES MULTIPLY TO 4 GIGAPIXELS OF LZW SCRATCH
-        if ((long) id.width() * id.height() > MAX_PIXELS)
-            throw new CodecException("GIF frame too big: " + id.width() + "x" + id.height() + " (max " + MAX_PIXELS + " pixels)");
+        if ((long) id.width() * id.height() > Limits.MAX_PIXELS)
+            throw new CodecException("GIF frame too big: " + id.width() + "x" + id.height() + " (max " + Limits.MAX_PIXELS + " pixels)");
+        final ColorTable colorTable = id.localColorTableFlag() ? ColorTable.read(id.localColorCount(), this.data) : this.globalColorTable;
+        if (colorTable == null) throw new CodecException("GIF frame has no color table");
 
-        ColorTable activeColorTable = this.globalColorTable;
-        if (id.localColorTableFlag()) {
-            final int lctSize = id.localColorCount();
-            if (this.data.remaining() < lctSize * 3) {
-                throw new CodecException("Unexpected EOF in local color table");
-            }
-            activeColorTable = ColorTable.read(lctSize, this.data);
-        }
-        if (activeColorTable == null) {
-            throw new CodecException("No color table available for image frame.");
-        }
-
-        // LZW: 1 byte min code size + sub-blocks
-        final int lzwMinCodeSize = readUnsignedOrEnd(this.data);
-        if (lzwMinCodeSize < 0) throw new CodecException("EOF before LZW min code size");
-        if (lzwMinCodeSize < MIN_LZW_CODE_SIZE || lzwMinCodeSize > MAX_LZW_CODE_SIZE) {
+        // LZW: 1 BYTE MIN CODE SIZE + SUB-BLOCKS
+        if (!this.data.hasRemaining()) throw new CodecException("EOF before LZW min code size");
+        final int lzwMinCodeSize = this.data.get() & 0xFF;
+        if (lzwMinCodeSize < MIN_LZW_CODE_SIZE || lzwMinCodeSize > MAX_LZW_CODE_SIZE)
             throw new CodecException("Invalid LZW minimum code size: " + lzwMinCodeSize);
-        }
         final int lzwDataLength = this.readSubBlocks();
 
         // ONLY THE ROWS THAT LAND ON THE CANVAS ARE DECODED: LZW IS SEQUENTIAL, SO THE STREAM STOPS AFTER THE LAST
@@ -285,69 +191,66 @@ public final class GifReader extends ImageReader {
         needed *= id.width();
         final byte[] indices = this.decompress(lzwMinCodeSize, this.subBlockBuffer, lzwDataLength, needed);
 
-        // FIRST FRAME: INITIALIZE CANVAS; SUBSEQUENT FRAMES: DISPOSE THEN COMPOSITE
         if (this.previousId == null) {
-            final int initBg = (this.currentGce != null && this.currentGce.transparentColorFlag())
-                    ? 0x00000000 : this.backgroundColor;
-            Arrays.fill(this.canvas, initBg);
+            Arrays.fill(this.canvas, this.gce != null && this.gce.transparentColorFlag() ? 0 : this.backgroundColor);
         } else {
-            final int disposalBg = (this.previousGce != null && this.previousGce.transparentColorFlag())
-                    ? 0x00000000 : this.backgroundColor;
-            this.applyDisposal(this.previousGce, disposalBg, this.previousId);
+            // DISPOSE THE PREVIOUS FRAME'S RECTANGLE: 2 RESTORES THE BACKGROUND (TRANSPARENT WHEN THAT FRAME WAS),
+            // 3 THE CANVAS SAVED BEFORE IT WAS DRAWN
+            final ImageDescriptor p = this.previousId;
+            final int disposal = this.previousGce != null ? this.previousGce.disposalMethod() : 0;
+            if (disposal == 2) {
+                Canvas.fill(this.canvas, this.lsd.width(), this.lsd.height(), p.left(), p.top(), p.width(), p.height(),
+                        this.previousGce.transparentColorFlag() ? 0 : this.backgroundColor);
+            } else if (disposal == 3 && this.restoreFrame != null) {
+                Canvas.restore(this.canvas, this.restoreFrame, this.lsd.width(), this.lsd.height(), p.left(), p.top(), p.width(), p.height());
+            }
         }
-
-        if (this.currentGce != null && this.currentGce.disposalMethod() == 3) {
+        if (this.gce != null && this.gce.disposalMethod() == 3) {
             if (this.restoreFrame == null) this.restoreFrame = new int[this.canvas.length];
             System.arraycopy(this.canvas, 0, this.restoreFrame, 0, this.canvas.length);
         }
 
-        this.renderImage(indices, needed, this.canvas, id, this.lsd, activeColorTable, this.currentGce);
-
-        this.delayMs = this.scan.frameCount() <= 1 ? 0L
-                : (this.currentGce != null && this.currentGce.delayTime() > 0)
-                ? (long) this.currentGce.delayTime() * DELAY_TIME_MULTIPLIER : DEFAULT_FRAME_DELAY_MS;
-
-        this.previousGce = this.currentGce;
+        this.renderImage(indices, needed, id, colorTable);
+        // A SINGLE-FRAME GIF IS A STILL IMAGE: ITS GCE DELAY TIMES NOTHING
+        this.delayMs = this.scan.frameCount() > 1 ? delayOf(this.gce != null ? this.gce.delayTime() : 0) : 0L;
+        this.previousGce = this.gce;
         this.previousId = id;
-        this.currentGce = null;
-
-        // COPY TO DIRECT BUFFER (BGRA layout — canvas already has 0xFFrrggbb / 0x00...)
-        this.directOut.clear();
-        this.directOutInts.clear();
-        this.directOutInts.put(this.canvas);
-        this.directOut.position(0).limit(this.canvas.length * 4);
+        this.gce = null;
+        Canvas.write(this.canvas, this.canvas.length, this.directOutInts, this.directOut);
+        return this.directOut;
     }
 
-    private ImageDescriptor readImageDescriptor() throws CodecException {
-        readExactly(this.data, this.descriptorScratch, 0, this.descriptorScratch.length);
-        final byte[] data = this.descriptorScratch;
-        final int left = (data[0] & 0xFF) | ((data[1] & 0xFF) << 8);
-        final int top = (data[2] & 0xFF) | ((data[3] & 0xFF) << 8);
-        final int width = (data[4] & 0xFF) | ((data[5] & 0xFF) << 8);
-        final int height = (data[6] & 0xFF) | ((data[7] & 0xFF) << 8);
-        final int packed = data[8] & 0xFF;
-        final ImageDescriptor id = new ImageDescriptor(left, top, width, height,
-                (packed & 0x80) != 0, (packed & 0x40) != 0, (packed & 0x20) != 0, packed & 0x07);
-        id.validate(); // CANONICAL CONSTRUCTOR CAN'T THROW; REJECT MALFORMED FIELDS HERE AS CodecException
-        return id;
+    @Override
+    protected boolean rewind() {
+        // THE CANVAS AND restoreFrame NEED NO CLEARING: FRAME 0 FULLY REFILLS THE CANVAS AND DISPOSAL-3
+        // SNAPSHOTS ARE ALWAYS SAVED BEFORE BEING RESTORED WITHIN THE SAME PASS
+        this.data.position(this.bodyStart);
+        this.done = false;
+        this.nextReady = false;
+        this.gce = null;
+        this.previousGce = null;
+        this.previousId = null;
+        this.frames = 0; // THE FRAME CAP BOUNDS ONE PASS, NOT THE LIFETIME OF A FOREVER-LOOPING READER
+        return true;
     }
 
-    private void renderImage(final byte[] indexes, final int pixelCount, final int[] canvas, final ImageDescriptor id,
-                             final ScreenDescriptor lsd, final ColorTable colorTable, final GraphicExtension gce) {
-        final int transparentIndex = (gce != null && gce.transparentColorFlag()) ? gce.transparentColorIndex() : -1;
+    // ==========================================================================
+    // FRAME DECODE
+    // ==========================================================================
+    private void renderImage(final byte[] indexes, final int pixelCount, final ImageDescriptor id, final ColorTable colorTable) {
+        final int transparentIndex = this.gce != null && this.gce.transparentColorFlag() ? this.gce.transparentColorIndex() : -1;
+        final int[] canvas = this.canvas;
         final int[] colors = colorTable.colors();
         final int colorLen = colors.length;
-        final int canvasWidth = lsd.width();
-        final int canvasHeight = lsd.height();
+        final int canvasWidth = this.lsd.width();
+        final int canvasHeight = this.lsd.height();
         final int idLeft = id.left();
         final int idTop = id.top();
         final int idWidth = id.width();
         final int idHeight = id.height();
 
         // FAST PATH: IMAGE DESCRIPTOR COVERS THE WHOLE CANVAS EXACTLY — NO PER-PIXEL CLIPPING
-        if (!id.interlacedFlag()
-                && idLeft == 0 && idTop == 0
-                && idWidth == canvasWidth && idHeight == canvasHeight) {
+        if (!id.interlacedFlag() && idLeft == 0 && idTop == 0 && idWidth == canvasWidth && idHeight == canvasHeight) {
             if (transparentIndex < 0) {
                 for (int i = 0; i < pixelCount; i++) {
                     final int ci = indexes[i] & 0xFF;
@@ -376,7 +279,7 @@ public final class GifReader extends ImageReader {
                 final int passStart = PASS_STARTS[pass];
                 final int passInc = PASS_INCREMENTS[pass];
                 for (int y = passStart; y < idHeight; y += passInc) {
-                    srcIdx = this.blitRow(indexes, srcIdx, idWidth, idLeft, idTop + y,
+                    srcIdx = blitRow(indexes, srcIdx, idWidth, idLeft, idTop + y,
                             canvas, canvasWidth, clipXStart, clipXEnd, clipYStart, clipYEnd,
                             rowFullyVisible, colors, colorLen, transparentIndex);
                     if (srcIdx >= pixelCount) return;
@@ -384,7 +287,7 @@ public final class GifReader extends ImageReader {
             }
         } else {
             for (int y = 0; y < idHeight; y++) {
-                srcIdx = this.blitRow(indexes, srcIdx, idWidth, idLeft, idTop + y,
+                srcIdx = blitRow(indexes, srcIdx, idWidth, idLeft, idTop + y,
                         canvas, canvasWidth, clipXStart, clipXEnd, clipYStart, clipYEnd,
                         rowFullyVisible, colors, colorLen, transparentIndex);
                 if (srcIdx >= pixelCount) return;
@@ -392,14 +295,14 @@ public final class GifReader extends ImageReader {
         }
     }
 
-    private int blitRow(final byte[] indexes, final int start, final int idWidth,
-                        final int idLeft, final int canvasY,
-                        final int[] canvas, final int canvasWidth,
-                        final int clipXStart, final int clipXEnd,
-                        final int clipYStart, final int clipYEnd,
-                        final boolean rowFullyVisible,
-                        final int[] colors, final int colorLen,
-                        final int transparentIndex) {
+    private static int blitRow(final byte[] indexes, final int start, final int idWidth,
+                               final int idLeft, final int canvasY,
+                               final int[] canvas, final int canvasWidth,
+                               final int clipXStart, final int clipXEnd,
+                               final int clipYStart, final int clipYEnd,
+                               final boolean rowFullyVisible,
+                               final int[] colors, final int colorLen,
+                               final int transparentIndex) {
         if (canvasY < clipYStart || canvasY >= clipYEnd) {
             return start + idWidth;
         }
@@ -431,28 +334,8 @@ public final class GifReader extends ImageReader {
         return srcIdx;
     }
 
-    private void applyDisposal(final GraphicExtension gce, final int background, final ImageDescriptor id) {
-        final int disposal = gce != null ? gce.disposalMethod() : 0;
-        if (disposal == 2) {
-            // RESTORE TO BACKGROUND FOR THE PREVIOUS FRAME'S RECT — BULK-FILL EACH CLIPPED ROW
-            final int canvasWidth = this.lsd.width();
-            final int canvasHeight = this.lsd.height();
-            final int xStart = Math.max(0, id.left());
-            final int yStart = Math.max(0, id.top());
-            final int xEnd = Math.min(canvasWidth, id.left() + id.width());
-            final int yEnd = Math.min(canvasHeight, id.top() + id.height());
-            if (xStart >= xEnd || yStart >= yEnd) return;
-            for (int y = yStart; y < yEnd; y++) {
-                final int rowOff = y * canvasWidth;
-                Arrays.fill(this.canvas, rowOff + xStart, rowOff + xEnd, background);
-            }
-        } else if (disposal == 3 && this.restoreFrame != null) {
-            System.arraycopy(this.restoreFrame, 0, this.canvas, 0, this.canvas.length);
-        }
-    }
-
     private byte[] decompress(final int lzwMinCodeSize, final byte[] data,
-                             final int dataLength, final int expectedSize) throws CodecException {
+                              final int dataLength, final int expectedSize) throws CodecException {
         final int clearCode = 1 << lzwMinCodeSize;
         final int endOfInfoCode = clearCode + 1;
         if (this.lzwIndexScratch.length < expectedSize) this.lzwIndexScratch = new byte[expectedSize];
@@ -526,10 +409,8 @@ public final class GifReader extends ImageReader {
                 code = prefix[code];
             }
             first = suffix[code] & 0xFF;
-            if (available >= MAX_STACK_SIZE) {
-                pixelStack[top++] = (byte) first;
-            } else {
-                pixelStack[top++] = (byte) first;
+            pixelStack[top++] = (byte) first;
+            if (available < MAX_STACK_SIZE) {
                 prefix[available] = (short) oldCode;
                 suffix[available] = (byte) first;
                 available++;
@@ -546,263 +427,143 @@ public final class GifReader extends ImageReader {
         return output;
     }
 
-    // ----- EXTENSION HANDLING -----
-
-    private void processExtension() throws CodecException {
-        final int label = readUnsignedOrEnd(this.data);
-        if (label < 0) { this.done = true; return; }
-        switch (label) {
-            case GraphicExtension.GCE_LABEL -> this.readGce();
-            case APPLICATION_EXTENSION_LABEL -> {
-                final int lc = this.readAppExtension();
-                if (lc >= 0) this.metadata.put(CodecsAPI.GIF_METAKEY_REPEAT, lc);
+    // CONCATENATES THE IMAGE DATA SUB-BLOCKS INTO subBlockBuffer; UNLIKE METADATA, A BROKEN CHAIN HERE FAILS THE FRAME
+    private int readSubBlocks() throws CodecException {
+        int total = 0;
+        while (true) {
+            if (!this.data.hasRemaining()) throw new CodecException("EOF in GIF sub-block chain");
+            final int size = this.data.get() & 0xFF;
+            if (size == 0) return total;
+            if (this.data.remaining() < size)
+                throw new CodecException("Truncated GIF sub-block: " + size + " bytes declared, " + this.data.remaining() + " available");
+            final int need = total + size;
+            if (need < 0 || need > MAX_SUBBLOCK_BYTES) throw new CodecException("GIF sub-block data too large: " + need);
+            if (this.subBlockBuffer.length < need) {
+                // DOUBLING CAN OVERFLOW PAST Integer.MAX_VALUE INTO A NEGATIVE SIZE; FALL BACK TO THE EXACT NEED
+                int next = this.subBlockBuffer.length;
+                while (next < need) {
+                    next <<= 1;
+                    if (next < 0 || next > MAX_SUBBLOCK_BYTES) { next = need; break; }
+                }
+                this.subBlockBuffer = Arrays.copyOf(this.subBlockBuffer, next);
             }
-            case COMMENT_EXTENSION_LABEL -> this.readCommentExtension();
-            default -> this.skipSubBlocks();
+            this.data.get(this.subBlockBuffer, total, size);
+            total = need;
         }
     }
 
-    private void readCommentExtension() throws CodecException {
-        final int length = this.readSubBlocks();
-        if (this.data.position() <= this.metaMark) return; // ALREADY RECORDED BY AN EARLIER PASS OVER THESE BYTES
-        this.metaMark = this.data.position();
-        if (++this.comments > MAX_COMMENTS)
-            throw new CodecException("Too many GIF comment extensions: " + this.comments + " (max " + MAX_COMMENTS + ")");
-        final String comment = new String(this.subBlockBuffer, 0, length, StandardCharsets.ISO_8859_1);
-        this.metadata.comment(comment);
-        this.metadata.put(CodecsAPI.GIF_METAKEY_COMMENT, comment);
-    }
-
-    private void readGce() throws CodecException {
-        // GCE body: 1 (block size, must be 4) + 1 packed + 2 delay + 1 trans index + 1 terminator = 6 bytes
-        readExactly(this.data, this.gceScratch, 0, this.gceScratch.length);
-        // BLOCK SIZE AND TERMINATOR ARE FIXED BY THE SPEC AND scan() ALREADY ABORTS ON A WRONG SIZE.
-        // WITHOUT THESE TWO CHECKS THE PRE-PASS AND THE DECODER DISAGREE ON THE FRAME COUNT OF THE
-        // SAME FILE, WHICH TURNS ANY SIZE GATE COMPUTED FROM scan() INTO A BYPASS
-        if ((this.gceScratch[0] & 0xFF) != 4)
-            throw new CodecException("Invalid GCE block size: " + (this.gceScratch[0] & 0xFF) + " (must be 4)");
-        if (this.gceScratch[5] != 0)
-            throw new CodecException("Invalid GCE block terminator: " + (this.gceScratch[5] & 0xFF) + " (must be 0)");
-        final int packed = this.gceScratch[1] & 0xFF;
-        final int delayTime = (this.gceScratch[2] & 0xFF) | ((this.gceScratch[3] & 0xFF) << 8);
-        this.currentGce = new GraphicExtension(
-                (packed & 0b00011100) >> 2,
-                (packed & 0b00000010) != 0,
-                (packed & 0b00000001) != 0,
-                delayTime,
-                this.gceScratch[4] & 0xFF
-        );
-    }
-
-    private int readAppExtension() throws CodecException {
-        final int blockSize = readUnsignedOrEnd(this.data);
-        if (blockSize < 0) { this.done = true; return -1; }
-        final byte[] header = readExactly(this.data, blockSize);
-        final int dataLength = this.readSubBlocks();
-
-        // RECORD THE BLOCK ONLY THE FIRST TIME ITS STREAM OFFSET IS REACHED: reset() REPLAYS THE SAME
-        // BYTES ON EVERY ANIMATION LOOP, SO AN UNGUARDED add() IS A MONOTONIC HEAP CLIMB WITH NO CEILING
-        if (this.data.position() > this.metaMark) {
-            this.metaMark = this.data.position();
-            if (this.extensions.size() >= MAX_EXTENSIONS)
-                throw new CodecException("Too many GIF application extensions: " + (this.extensions.size() + 1)
-                        + " (max " + MAX_EXTENSIONS + ")");
-            this.extensions.add(new GifExtension(new String(header, StandardCharsets.ISO_8859_1).trim(),
-                    Arrays.copyOf(this.subBlockBuffer, dataLength)));
-            // PUBLISH AN UNMODIFIABLE VIEW SO A CONSUMER CANNOT MUTATE THE READER'S INTERNAL LIST
-            this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, Collections.unmodifiableList(this.extensions));
-        }
-
-        if (blockSize != 11) return -1;
-        final long id = readBE(header, 0, 8);
-        final int auth = (int) readBE(header, 8, 3);
-        if (id == NETSCAPE_EXT_ID && auth == NETSCAPE_AUTH_CODE) {
-            // CONCATENATED SUB-BLOCK DATA: 1 BYTE SUB-ID (1), 2 BYTES LOOP COUNT
-            if (dataLength >= 3 && (this.subBlockBuffer[0] & 0xFF) == 1) {
-                final int lo = this.subBlockBuffer[1] & 0xFF;
-                final int hi = this.subBlockBuffer[2] & 0xFF;
-                final int lc = (hi << 8) | lo;
-                LOGGER.debug(IT, "Netscape 2.0 extension with loop count: {}", lc);
-                return lc;
+    // ==========================================================================
+    // STREAM SCAN
+    // ==========================================================================
+    // WALKS THE BLOCK STREAM ONCE WITHOUT DECODING: FRAME DELAYS, THE LOOP COUNT, COMMENTS AND APPLICATION EXTENSIONS.
+    // IT SKIPS EXACTLY WHAT hasMore() SKIPS, SO BOTH AGREE ON THE FRAME COUNT; A MALFORMED BLOCK ENDS THE WALK
+    private ImageData.Scan scan(final ByteBuffer buffer) {
+        final List<Long> delays = new ArrayList<>();
+        final Map<String, List<byte[]>> extensions = new LinkedHashMap<>();
+        long delay = BROWSER_DELAY_MS; // A FRAME WITHOUT A GCE PLAYS AT THE BROWSER FLOOR, LIKE delayOf(0)
+        int loops = -1;
+        int records = 0;
+        int bytes = 0;
+        int dropped = 0;
+        try {
+            // ONE FRAME PAST THE CAP IS ENOUGH: THE DECODER REFUSES THAT FRAME ANYWAY
+            while (buffer.hasRemaining() && delays.size() <= MAX_FRAMES) {
+                final int introducer = buffer.get() & 0xFF;
+                if (introducer == TRAILER) break;
+                if (introducer == IMAGE_SEPARATOR) {
+                    final ImageDescriptor id = ImageDescriptor.read(buffer);
+                    // THE LOCAL COLOR TABLE AND THE LZW MINIMUM CODE SIZE PRECEDE THE IMAGE DATA SUB-BLOCKS
+                    final int skip = (id.localColorTableFlag() ? id.localColorCount() * 3 : 0) + 1;
+                    if (buffer.remaining() < skip) break;
+                    buffer.position(buffer.position() + skip);
+                    skipBlocks(buffer);
+                    delays.add(delay);
+                    delay = BROWSER_DELAY_MS;
+                } else if (introducer == EXTENSION_INTRODUCER && buffer.hasRemaining()) {
+                    final int label = buffer.get() & 0xFF;
+                    if (label == GraphicExtension.GCE_LABEL) {
+                        delay = delayOf(GraphicExtension.read(buffer).delayTime());
+                        continue;
+                    }
+                    final int start = buffer.position();
+                    final int total = skipBlocks(buffer);
+                    if (total < 0) break;
+                    if (label != COMMENT_EXTENSION_LABEL && label != APPLICATION_EXTENSION_LABEL) continue;
+                    // AN APPLICATION EXTENSION OPENS WITH ITS 11-BYTE HEADER BLOCK (8-BYTE IDENTIFIER + 3-BYTE
+                    // AUTHENTICATION CODE); ONE WITHOUT IT NAMES NOTHING AND IS SKIPPED LIKE AN UNKNOWN EXTENSION
+                    final int header = label == APPLICATION_EXTENSION_LABEL ? buffer.get(start) & 0xFF : 0;
+                    if (label == APPLICATION_EXTENSION_LABEL && header != APPLICATION_HEADER_BYTES) continue;
+                    final int payloadStart = start + (header == 0 ? 0 : 1 + header);
+                    final String identifier = new String(blocks(buffer, start, header), StandardCharsets.ISO_8859_1);
+                    if (loops < 0 && (identifier.equals(NETSCAPE_LOOP) || identifier.equals(ANIMEXTS_LOOP))
+                            && total - header >= 3 && (buffer.get(payloadStart) & 0xFF) >= 3 && buffer.get(payloadStart + 1) == 1) {
+                        loops = DataTool.u16(buffer, payloadStart + 2, ByteOrder.LITTLE_ENDIAN);
+                    }
+                    if (records >= MAX_METADATA_RECORDS || total - header > MAX_METADATA_BYTES - bytes) {
+                        dropped++;
+                        continue;
+                    }
+                    records++;
+                    bytes += total - header;
+                    final byte[] payload = blocks(buffer, payloadStart, total - header);
+                    if (label == COMMENT_EXTENSION_LABEL) this.metadata.comment(new String(payload, StandardCharsets.ISO_8859_1));
+                    else extensions.computeIfAbsent(identifier, key -> new ArrayList<>()).add(payload);
+                }
+                // ANY OTHER BYTE IS SKIPPED, EXACTLY AS hasMore() SKIPS IT
             }
-        } else {
-            LOGGER.debug(IT, "Unknown application extension: ID={} AUTH={}",
-                    Long.toHexString(id), Integer.toHexString(auth));
+        } catch (final CodecException malformed) {
+            // THE FRAMES BEFORE THE DAMAGE STILL COUNT; THE DECODER REPORTS THE DAMAGE WHEN IT GETS THERE
         }
+
+        if (dropped > 0)
+            LogTool.throttled(LOGGER, Level.WARN, IT, METADATA_DROPS, "Skipped {} GIF metadata records past the cap of {} records or {} bytes",
+                    dropped, MAX_METADATA_RECORDS, MAX_METADATA_BYTES);
+        if (loops >= 0) this.metadata.put(CodecsAPI.METAKEY_LOOP_COUNT, loops);
+        extensions.replaceAll((identifier, payloads) -> List.copyOf(payloads));
+        this.metadata.put(CodecsAPI.GIF_METAKEY_APPLICATION_EXTENSION, Collections.unmodifiableMap(extensions));
+        LOGGER.debug(IT, "GIF scanned: {} frames, loop count {}, {} metadata records", delays.size(), loops, records);
+
+        // ONE FRAME IS A STILL IMAGE WHATEVER ITS GCE OR LOOPING EXTENSION DECLARE
+        if (delays.size() <= 1) return ImageData.Scan.EMPTY;
+        final long[] delayArray = new long[delays.size()];
+        for (int i = 0; i < delayArray.length; i++) delayArray[i] = delays.get(i);
+        // NETSCAPE COUNTS EXTRA LOOPS AFTER THE FIRST PLAY WHILE THE API COUNTS PLAYS; 0 LOOPS FOREVER IN BOTH
+        return ImageData.Scan.of(delayArray, loops < 0 ? 1 : loops == 0 ? ImageData.REPEAT_FOREVER : loops + 1);
+    }
+
+    // ==========================================================================
+    // UTILITY
+    // ==========================================================================
+    // BROWSERS STRETCH GCE DELAYS OF 10 MS OR LESS (INCLUDING A MISSING GCE) TO 100 MS; GIFS ARE AUTHORED AGAINST THAT RULE
+    private static long delayOf(final int centiseconds) {
+        final long ms = (long) centiseconds * DELAY_UNIT_MS;
+        return ms <= DELAY_UNIT_MS ? BROWSER_DELAY_MS : ms;
+    }
+
+    // WALKS THE SUB-BLOCK CHAIN AT THE BUFFER POSITION PAST ITS TERMINATOR AND RETURNS ITS PAYLOAD SIZE, OR -1
+    // WHEN THE CHAIN RUNS PAST THE BUFFER, LEAVING THE POSITION AT THE LIMIT
+    private static int skipBlocks(final ByteBuffer buffer) {
+        int total = 0;
+        while (buffer.hasRemaining()) {
+            final int size = buffer.get() & 0xFF;
+            if (size == 0) return total;
+            if (buffer.remaining() < size) break;
+            buffer.position(buffer.position() + size);
+            total += size;
+        }
+        buffer.position(buffer.limit());
         return -1;
     }
 
-    // ----- SUB-BLOCK I/O -----
-
-    private int readSubBlocks() throws CodecException {
-        int totalSize = 0;
-        while (true) {
-            final int size = readUnsignedOrEnd(this.data);
-            if (size < 0) throw new CodecException("EOF in sub-block");
-            if (size == 0) break;
-            this.ensureSubBlockCapacity(totalSize + size);
-            readExactly(this.data, this.subBlockBuffer, totalSize, size);
-            totalSize += size;
+    // COPIES total PAYLOAD BYTES OF AN ALREADY WALKED SUB-BLOCK CHAIN STARTING AT from, DROPPING THE SIZE BYTES
+    private static byte[] blocks(final ByteBuffer buffer, final int from, final int total) {
+        final byte[] payload = new byte[total];
+        for (int p = from, o = 0; o < total; ) {
+            final int size = Math.min(buffer.get(p) & 0xFF, total - o);
+            buffer.get(p + 1, payload, o, size);
+            o += size;
+            p += size + 1;
         }
-        return totalSize;
+        return payload;
     }
-
-    private void ensureSubBlockCapacity(final int minCapacity) throws CodecException {
-        if (minCapacity < 0 || minCapacity > MAX_SUBBLOCK_BYTES) {
-            throw new CodecException("GIF sub-block data too large: " + minCapacity);
-        }
-        if (this.subBlockBuffer.length >= minCapacity) return;
-        int next = this.subBlockBuffer.length;
-        // DOUBLING CAN OVERFLOW PAST Integer.MAX_VALUE INTO A NEGATIVE SIZE; FALL BACK TO THE EXACT NEED
-        while (next < minCapacity) {
-            next <<= 1;
-            if (next < 0 || next > MAX_SUBBLOCK_BYTES) { next = minCapacity; break; }
-        }
-        this.subBlockBuffer = Arrays.copyOf(this.subBlockBuffer, next);
-    }
-
-    private void skipSubBlocks() throws CodecException {
-        while (true) {
-            final int size = readUnsignedOrEnd(this.data);
-            if (size < 0) { this.done = true; return; }
-            if (size == 0) return;
-            this.skipBytes(size);
-        }
-    }
-
-    private void skipBytes(final int n) throws CodecException {
-        if (n < 0 || this.data.remaining() < n) throw new CodecException("EOF skipping GIF bytes");
-        this.data.position(this.data.position() + n);
-    }
-
-    private static ImageData.Scan scan(final ByteBuffer source) {
-        final ByteBuffer buffer = source.slice().order(LE);
-        final List<Long> delays = new ArrayList<>();
-        int repeat = ImageData.NO_REPEAT;
-        long currentDelay = DEFAULT_FRAME_DELAY_MS;
-
-        if (buffer.remaining() < ScreenDescriptor.LENGTH) return ImageData.Scan.EMPTY;
-
-        final int packed = buffer.get(buffer.position() + 4) & 0xFF;
-        final boolean gctFlag = (packed & 0x80) != 0;
-        final int gctSizeBits = packed & 0x07;
-        buffer.position(buffer.position() + ScreenDescriptor.LENGTH);
-        if (gctFlag) {
-            final int bytes = 3 * (1 << (gctSizeBits + 1));
-            if (buffer.remaining() < bytes) return ImageData.Scan.EMPTY;
-            buffer.position(buffer.position() + bytes);
-        }
-
-        while (buffer.hasRemaining()) {
-            final int introducer = buffer.get() & 0xFF;
-            if (introducer == TRAILER) break;
-            if (introducer == EXTENSION_INTRODUCER) {
-                if (!buffer.hasRemaining()) break;
-                final int label = buffer.get() & 0xFF;
-                if (label == GraphicExtension.GCE_LABEL) {
-                    if (buffer.remaining() < 6) break;
-                    final int blockSize = buffer.get(buffer.position()) & 0xFF;
-                    if (blockSize != 4) break;
-                    final int delayLow = buffer.get(buffer.position() + 2) & 0xFF;
-                    final int delayHigh = buffer.get(buffer.position() + 3) & 0xFF;
-                    final int delayCs = (delayHigh << 8) | delayLow;
-                    currentDelay = delayCs > 0 ? (long) delayCs * DELAY_TIME_MULTIPLIER : DEFAULT_FRAME_DELAY_MS;
-                    buffer.position(buffer.position() + 6);
-                } else if (label == APPLICATION_EXTENSION_LABEL) {
-                    repeat = scanExtension(buffer, repeat);
-                } else {
-                    scanSkipSubBlocks(buffer);
-                }
-            } else if (introducer == IMAGE_SEPARATOR) {
-                if (buffer.remaining() < 9) break;
-                final int idPacked = buffer.get(buffer.position() + 8) & 0xFF;
-                final boolean lctFlag = (idPacked & 0x80) != 0;
-                final int lctSizeBits = idPacked & 0x07;
-                buffer.position(buffer.position() + 9);
-                if (lctFlag) {
-                    final int bytes = 3 * (1 << (lctSizeBits + 1));
-                    if (buffer.remaining() < bytes) break;
-                    buffer.position(buffer.position() + bytes);
-                }
-                if (!buffer.hasRemaining()) break;
-                buffer.position(buffer.position() + 1); // LZW minimum code size
-                scanSkipSubBlocks(buffer);
-                delays.add(currentDelay);
-                currentDelay = DEFAULT_FRAME_DELAY_MS;
-            } else {
-                break;
-            }
-        }
-
-        if (delays.size() <= 1) return ImageData.Scan.EMPTY;
-        final long[] delayArray = new long[delays.size()];
-        long total = 0L;
-        for (int i = 0; i < delayArray.length; i++) {
-            delayArray[i] = delays.get(i);
-            total += delayArray[i];
-        }
-        return new ImageData.Scan(delayArray.length, delayArray, total, repeat);
-    }
-
-    private static int scanExtension(final ByteBuffer buffer, final int fallbackRepeat) {
-        if (!buffer.hasRemaining()) return fallbackRepeat;
-        final int blockSize = buffer.get() & 0xFF;
-        if (buffer.remaining() < blockSize) return fallbackRepeat;
-        final byte[] header = new byte[blockSize];
-        buffer.get(header);
-
-        int repeat = fallbackRepeat;
-        // PEEK THE LOOP COUNT WITHOUT CONSUMING (remaining >= 5 KEEPS THE ABSOLUTE READS IN BOUNDS).
-        // ONLY scanSkipSubBlocks MAY WALK THE CHAIN, EXACTLY AS readSubBlocks DOES: CONSUMING THE
-        // SUB-BLOCK HEADER HERE DESYNCS THE PRE-PASS FROM THE DECODER WHENEVER THE DECLARED SUB-BLOCK
-        // SIZE IS NOT 3, AND TWO PARSERS AT DIFFERENT OFFSETS DISAGREE ON THE FRAME COUNT
-        if (blockSize == 11 && buffer.remaining() >= 5
-                && readBE(header, 0, 8) == NETSCAPE_EXT_ID && (int) readBE(header, 8, 3) == NETSCAPE_AUTH_CODE) {
-            // CONCATENATED SUB-BLOCK DATA: 1 BYTE SIZE (3), 1 BYTE SUB-ID (1), 2 BYTES LOOP COUNT
-            final int p = buffer.position();
-            if ((buffer.get(p) & 0xFF) == 3 && (buffer.get(p + 1) & 0xFF) == 1) {
-                final int lc = ((buffer.get(p + 3) & 0xFF) << 8) | (buffer.get(p + 2) & 0xFF);
-                repeat = lc == 0 ? ImageData.REPEAT_FOREVER : lc;
-            }
-        }
-        scanSkipSubBlocks(buffer);
-        return repeat;
-    }
-
-    private static void scanSkipSubBlocks(final ByteBuffer buffer) {
-        while (buffer.hasRemaining()) {
-            final int size = buffer.get() & 0xFF;
-            if (size == 0) return;
-            if (buffer.remaining() < size) {
-                buffer.position(buffer.limit());
-                return;
-            }
-            buffer.position(buffer.position() + size);
-        }
-    }
-
-    // ----- STATIC HELPERS -----
-
-    private static int readUnsignedOrEnd(final ByteBuffer buffer) {
-        return buffer.hasRemaining() ? buffer.get() & 0xFF : -1;
-    }
-
-    private static byte[] readExactly(final ByteBuffer buffer, final int n) throws CodecException {
-        final byte[] buf = new byte[n];
-        readExactly(buffer, buf, 0, n);
-        return buf;
-    }
-
-    private static void readExactly(final ByteBuffer buffer, final byte[] dst, final int off, final int len) throws CodecException {
-        if (buffer.remaining() < len) throw new CodecException("Unexpected EOF (" + buffer.remaining() + "/" + len + ")");
-        buffer.get(dst, off, len);
-    }
-
-    private static long readBE(final byte[] data, final int off, final int len) {
-        long v = 0;
-        for (int i = 0; i < len; i++) v = (v << 8) | (data[off + i] & 0xFFL);
-        return v;
-    }
-
-    public record GifExtension(String identifier, byte[] data) {}
 }
