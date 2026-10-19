@@ -30,17 +30,31 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+/**
+ * Verifies {@link SFXEngine.SpatialAudio} validation and the spatial {@link ALEngine}: mono
+ * negotiation, world positioning, environment processor isolation, context guards and release
+ * ordering with the player. The OpenAL cases skip when no output device opens.
+ */
 @DisplayName("Spatial audio")
-class SpatialAudioTest {
+public class SpatialAudioTest {
     @BeforeAll
     static void boot() {
         MediaBootstrap.client();
     }
 
     @Test
+    @DisplayName("SpatialAudio rejects non-finite coordinates and invalid distances")
     void rejectsInvalidCoordinatesAndDistances() {
         for (final double value: new double[] { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.MAX_VALUE }) {
             assertThrows(IllegalArgumentException.class, () -> new SFXEngine.SpatialAudio(value, 1, 1, 1, 16, 1, false, null));
@@ -59,6 +73,7 @@ class SpatialAudioTest {
     }
 
     @Test
+    @DisplayName("Java Sound refuses spatial updates")
     void javaSoundRefusesSpatialUpdates() {
         final SFXEngine engine = MediaAPI.jsEngine();
         assertFalse(engine.spatial());
@@ -69,6 +84,7 @@ class SpatialAudioTest {
 
     @Nested
     @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+    @DisplayName("ALEngine (OpenAL, requires a current context)")
     class OpenAL {
         private long device;
         private long context;
@@ -96,6 +112,7 @@ class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("A spatial source negotiates mono, applies its world position and keeps the host distance model")
         void negotiatesMonoAndPreservesHostDistanceModel() {
             final int model = AL10.alGetInteger(AL10.AL_DISTANCE_MODEL);
             final ALEngine engine = MediaAPI.alEngine(true);
@@ -126,6 +143,7 @@ class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("Environment callbacks see the world origin and a disabled processor leaves no effects")
         void callbacksRestoreWorldOriginAndClearEffectsWhenDisabled() {
             assumeTrue(AL.getCapabilities().ALC_EXT_EFX, "EFX unavailable");
             final ALEngine engine = MediaAPI.alEngine(true);
@@ -157,6 +175,7 @@ class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("Processor and reset failures leave a dry listener-relative source")
         void callbackAndResetFailuresLeaveDrySource() {
             final ALEngine engine = MediaAPI.alEngine(true);
             try {
@@ -185,11 +204,14 @@ class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("A wrong context throws and a released engine never touches a recycled source")
         void wrongContextAndLateUpdatesCannotTouchRecycledSource() {
             final ALEngine engine = MediaAPI.alEngine(true);
             final SFXEngine.SpatialAudio audio = new SFXEngine.SpatialAudio(1, 2, 3, 1, 32, 1, false, null);
             final long other = ALC10.alcCreateContext(this.device, (IntBuffer) null);
             assertNotEquals(0, other);
+            // A CONFIGURED ENGINE, SO THE UPLOAD BELOW PASSES THE BASE CHECKS AND REACHES THE CONTEXT GUARD
+            assertTrue(engine.format(SFXEngine.SampleType.S16, 1, 48_000));
             try {
                 assertTrue(ALC10.alcMakeContextCurrent(other));
                 assertThrows(IllegalStateException.class, () -> engine.spatialAudio(audio));
@@ -221,6 +243,7 @@ class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("A failing audio reset on release still frees the player's plane pool")
         void failingAudioResetCannotLeakPlayerPlanePool() throws Exception {
             final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.MP4_H264));
             assertTrue(mrl.await(3000));
@@ -259,6 +282,7 @@ class SpatialAudioTest {
         }
 
         @Test
+        @DisplayName("FFmpeg downmixes stereo to mono before a spatial upload")
         void ffmpegDownmixesStereoBeforeOpenALUpload(@TempDir final Path directory) throws Exception {
             assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable");
             final int samples = 48_000;

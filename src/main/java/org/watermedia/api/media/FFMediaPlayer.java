@@ -1808,6 +1808,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         av_frame_unref(slot.frame);
 
         if (this.audioPassthrough) {
+            // AN EMPTY FRAME HAS NOTHING TO PLAY, LIKE AN EMPTY RESAMPLE BELOW; THE ENGINE REFUSES EMPTY CHUNKS
+            if (srcFrame.nb_samples() <= 0) return true;
             av_frame_ref(slot.frame, srcFrame);
             final double durationSec = (double) srcFrame.nb_samples() / srcFrame.sample_rate();
             slot.ptsMs = (long) (ptsSec * 1000.0);

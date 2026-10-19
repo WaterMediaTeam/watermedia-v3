@@ -233,14 +233,15 @@ public class ServerMediaPlayerTest {
     }
 
     @Test
-    @DisplayName("seek() clamps negative targets and saturates instead of overflowing")
+    @DisplayName("seek() clamps to the known duration and saturates instead of overflowing")
     void testSeekClampsAndSaturates() {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         try {
+            player.syncDuration(Long.MAX_VALUE);
             player.start();
             assertTrue(player.seek(-5L));
             assertEquals(0L, player.time());
-            // NO DURATION YET: THE POSITION IS KEPT VERBATIM AND THE RUNNING SEGMENT MUST NOT WRAP NEGATIVE
+            // THE RUNNING SEGMENT MUST NOT WRAP NEGATIVE NEAR THE END OF THE LONG RANGE
             assertTrue(player.seek(Long.MAX_VALUE - 10L));
             assertTrue(player.time() >= Long.MAX_VALUE - 10L);
             assertTrue(player.skipTime(100L));
@@ -252,16 +253,47 @@ public class ServerMediaPlayerTest {
     }
 
     @Test
-    @DisplayName("A live clock seeked near the end of the long range saturates instead of wrapping negative")
-    void testLiveSeekSaturates() throws InterruptedException {
+    @DisplayName("seek() is refused until a client reports the duration and on a live session")
+    void testSeekNeedsATimeline() {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         try {
-            // A LIVE TIMELINE RUNS WITHOUT A DURATION, SO NOTHING CLAMPS THE RUNNING SEGMENT BUT THE SATURATION
-            player.live(true);
             assertTrue(player.start());
+            assertFalse(player.live(), "an unknown duration is not a live session");
+            assertFalse(player.canSeek());
+            assertFalse(player.seek(5_000L), "no timeline to move before the duration is known");
+            assertFalse(player.skipTime(1_000L));
+            assertEquals(0L, player.time());
+
+            player.syncDuration(60_000L);
+            assertTrue(player.canSeek());
+            assertTrue(player.seek(5_000L));
+
+            player.live(true);
+            assertFalse(player.canSeek());
+            final int revision = player.revision();
+            assertFalse(player.seek(10_000L), "a live session has no position to seek");
+            assertFalse(player.seekQuick(10_000L));
+            assertFalse(player.forward());
+            assertEquals(revision, player.revision(), "a refused seek is not broadcast");
+        } finally {
+            player.release();
+        }
+    }
+
+    @Test
+    @DisplayName("A clock that turns live near the end of the long range saturates instead of wrapping negative")
+    void testLiveClockSaturates() {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        try {
+            // A LIVE TIMELINE IGNORES THE DURATION, SO NOTHING CLAMPS THE RUNNING SEGMENT BUT THE SATURATION; PAUSED
+            // UNTIL IT IS LIVE, SO THE TICKER CANNOT END THE CLOCK AT THE DURATION FIRST
+            player.syncDuration(Long.MAX_VALUE);
+            assertTrue(player.startPaused());
             assertTrue(player.seek(Long.MAX_VALUE - 10L));
-            Thread.sleep(50L); // THE SEGMENT OUTGROWS THE 10ms LEFT
-            assertEquals(Long.MAX_VALUE, player.time());
+            player.live(true);
+            assertTrue(player.resume());
+            assertTrue(PlayerWait.awaitCondition(() -> player.time() == Long.MAX_VALUE, ENDED_TIMEOUT_MS),
+                    "the live segment outgrows the 10ms left and saturates");
             assertEquals(Status.PLAYING, player.status(), "a live clock never ends");
             final Sync snapshot = player.snapshot();
             assertEquals(Long.MAX_VALUE, snapshot.time());

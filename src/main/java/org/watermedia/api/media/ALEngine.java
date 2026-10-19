@@ -197,10 +197,10 @@ public final class ALEngine extends SFXEngine {
     }
 
     @Override
-    synchronized void gain(final float volume) {
+    synchronized void gain() {
         if (this.source == 0) return;
         this.requireContext();
-        AL10.alSourcef(this.source, AL10.AL_GAIN, volume);
+        AL10.alSourcef(this.source, AL10.AL_GAIN, this.volume);
     }
 
     @Override
@@ -233,18 +233,17 @@ public final class ALEngine extends SFXEngine {
 
     @Override
     synchronized boolean apply(final SampleType type, final int channels, final int sampleRate) {
-        if (this.source == 0 || (this.spatial && channels != 1)) return false;
-        final ChannelSupport support = this.channelSupport(channels);
-        if (support == null || !support.supports(type)) return false;
+        // THE BASE ONLY PASSES TABLE COMBINATIONS (MONO ALONE IN SPATIAL MODE), AND EVERY ONE HAS A NATIVE FORMAT
+        if (this.source == 0) return false;
         final int al = alFormatFor(type, channels);
-        if (al == -1) return false;
+        if (al == AL10.AL_NONE) throw new IllegalStateException("The OpenAL channel table offers " + type + " x" + channels + " without a native format");
         // A LAYOUT CHANGE WITH QUEUED AUDIO WOULD MAKE THE DRIVER REJECT THE NEXT BUFFER: DROP THE QUEUE FIRST
         if (this.alFormat != 0 && (al != this.alFormat || sampleRate != this.sampleRate) && this.queuedCount > 0) this.flush();
-        this.sampleType = type;
         this.channels = channels;
         this.sampleRate = sampleRate;
         this.alFormat = al;
-        this.bytesPerFrame = channels * bytesPerSample(type);
+        this.bytesPerFrame = channels * type.bytes();
+        this.sampleType = type; // LAST: IT FLAGS A CONFIGURED LAYOUT TO upload() ON ANY THREAD
         return true;
     }
 
@@ -252,9 +251,6 @@ public final class ALEngine extends SFXEngine {
     synchronized boolean push(final ByteBuffer data) {
         if (this.source == 0) return false;
         this.requireContext();
-        if (this.alFormat == 0) return false;
-        if (!data.isDirect() || !data.hasRemaining() || data.remaining() % this.bytesPerFrame != 0)
-            throw new IllegalArgumentException("Audio data must be direct, nonempty and sample-frame aligned");
         AL10.alGetError();
         // DRAIN *ALL* PROCESSED BUFFERS FIRST: alSourcePlay ON A STOPPED SOURCE (UNDERRUN) REPLAYS
         // ITS QUEUE FROM THE START, SO ANY STALE BUFFER LEFT QUEUED PLAYS OLD AUDIO AGAIN.
@@ -269,7 +265,7 @@ public final class ALEngine extends SFXEngine {
             checkError("rewind source");
         }
 
-        // UNCONFIGURED (NO format() YET) OR NO BUFFER AVAILABLE — SIGNAL BACKPRESSURE
+        // NO BUFFER AVAILABLE — SIGNAL BACKPRESSURE
         if (this.freeCount == 0) return false;
         final int buffer = this.freeIds[this.freeCount - 1];
 
@@ -378,17 +374,7 @@ public final class ALEngine extends SFXEngine {
         return channels.toArray(ChannelSupport[]::new);
     }
 
-    // BYTES PER SINGLE-CHANNEL SAMPLE FOR EACH CANONICAL TYPE
-    private static int bytesPerSample(final SampleType type) {
-        return switch (type) {
-            case U8 -> 1;
-            case S16 -> 2;
-            case S32, FLT -> 4;
-            case DBL -> 8;
-        };
-    }
-
-    // MAPS A COMBINATION ALREADY ACCEPTED BY THE CONTEXT'S CAPABILITY TABLE TO ITS NATIVE FORMAT.
+    // MAPS A TABLE COMBINATION TO ITS NATIVE FORMAT; AL_NONE WHEN NO CAPABILITY TABLE CAN OFFER THE COMBINATION
     private static int alFormatFor(final SampleType type, final int channels) {
         return switch (type) {
             case U8 -> switch (channels) {
@@ -398,7 +384,7 @@ public final class ALEngine extends SFXEngine {
                 case 6 -> EXTMCFormats.AL_FORMAT_51CHN8;
                 case 7 -> EXTMCFormats.AL_FORMAT_61CHN8;
                 case 8 -> EXTMCFormats.AL_FORMAT_71CHN8;
-                default -> -1;
+                default -> AL10.AL_NONE;
             };
             case S16 -> switch (channels) {
                 case 1 -> AL10.AL_FORMAT_MONO16;
@@ -407,10 +393,10 @@ public final class ALEngine extends SFXEngine {
                 case 6 -> EXTMCFormats.AL_FORMAT_51CHN16;
                 case 7 -> EXTMCFormats.AL_FORMAT_61CHN16;
                 case 8 -> EXTMCFormats.AL_FORMAT_71CHN16;
-                default -> -1;
+                default -> AL10.AL_NONE;
             };
             // OPENAL HAS NO NATIVE S32 INTEGER PCM FORMAT — CALLER MUST RESAMPLE TO S16 OR FLT
-            case S32 -> -1;
+            case S32 -> AL10.AL_NONE;
             case FLT -> switch (channels) {
                 case 1 -> EXTFloat32.AL_FORMAT_MONO_FLOAT32;
                 case 2 -> EXTFloat32.AL_FORMAT_STEREO_FLOAT32;
@@ -418,13 +404,13 @@ public final class ALEngine extends SFXEngine {
                 case 6 -> EXTMCFormats.AL_FORMAT_51CHN32;
                 case 7 -> EXTMCFormats.AL_FORMAT_61CHN32;
                 case 8 -> EXTMCFormats.AL_FORMAT_71CHN32;
-                default -> -1;
+                default -> AL10.AL_NONE;
             };
             // DBL COVERS MONO/STEREO ONLY — AL_EXT_DOUBLE HAS NO MULTICHANNEL VARIANTS
             case DBL -> switch (channels) {
                 case 1 -> EXTDouble.AL_FORMAT_MONO_DOUBLE_EXT;
                 case 2 -> EXTDouble.AL_FORMAT_STEREO_DOUBLE_EXT;
-                default -> -1;
+                default -> AL10.AL_NONE;
             };
         };
     }

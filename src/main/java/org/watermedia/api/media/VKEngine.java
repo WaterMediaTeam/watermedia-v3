@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -50,7 +51,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * so {@link #texture()} still returns a ready-to-sample RGBA view. Every other format (GRAY, NV21,
  * planar YUVA, packed YUYV/UYVY, deeper samples, PQ/HLG or BT.2020 primaries) runs one arithmetic
  * compute pass that samples the plane images and writes the managed image with the color math and
- * bit-depth scaling of {@code GLEngine}, HDR mapped to SDR included.
+ * bit-depth scaling of {@code GLEngine}, HDR mapped to SDR included. The samplers, layouts and
+ * pipelines of both paths are built once per device and shared by every engine on it until the last
+ * one is released.
  * <p>
  * <b>Triple buffering &amp; synchronization.</b> Three slots are used round-robin; each owns its plane
  * images, managed image+view, command buffer and fence. Before reusing a slot the engine waits the
@@ -82,6 +85,9 @@ public final class VKEngine extends GFXEngine {
     private static volatile byte[] ycbcrSpirv;
     // SHADER COMPILATION FAILED IN THIS PROCESS (NO shaderc, BAD GLSL): EVERY CONVERSION LAYOUT IS DECLINED FROM THEN ON
     private static volatile boolean convertBroken;
+    // ONE CONVERSION KIT PER DEVICE, GUARDED BY ITS OWN MONITOR (SEE Kit). KEYED BY VkDevice IDENTITY, NOT ITS HANDLE: A
+    // RECREATED DEVICE MAY REUSE THE ADDRESS OF ONE WHOSE KIT A WEDGED ENGINE STILL HOLDS
+    private static final Map<VkDevice, Kit> KITS = new IdentityHashMap<>();
 
     // COMPUTE CONVERSION MODES (MUST MATCH THE GLSL BELOW)
     private static final int MODE_GRAY = 0;
@@ -177,15 +183,12 @@ public final class VKEngine extends GFXEngine {
     private final VkDevice device;
     private final VkPhysicalDeviceMemoryProperties memProps;
     private final int minAlign; // 0 WHEN HOST IMPORT IS UNAVAILABLE
+    // THE DEVICE'S SHARED SAMPLER, LAYOUTS AND PIPELINES; LEFT ONLY AFTER EVERY OBJECT OF THIS ENGINE IS GONE
+    private final Kit kit;
 
-    // STATIC ENGINE-OWNED OBJECTS (LIVE FOR THE WHOLE ENGINE)
+    // ENGINE-OWNED OBJECTS (LIVE FOR THE WHOLE ENGINE)
     private long cmdPool;
     private long descPool;
-    private long descLayout;
-    private long pipeLayout;
-    private long pipeline;
-    private long shaderModule;
-    private long sampler;
 
     private final Slot[] slots = new Slot[SLOTS];
 
@@ -203,19 +206,14 @@ public final class VKEngine extends GFXEngine {
     private final PlaneSpec[] planeSpecs = new PlaneSpec[MAX_PLANES];
     private int formatGen;       // BUMPED ON EVERY FORMAT CHANGE; SLOTS REBUILD WHEN STALE
 
-    // SAMPLER-YCBCR FAST PATH (FORMAT-SPECIFIC — OBJECTS ARE LAZILY BUILT ON FIRST USE AND
-    // DESTROYED ON EVERY FORMAT CHANGE AND IN destroyResources)
+    // SAMPLER-YCBCR FAST PATH (FORMAT-SPECIFIC — TAKEN FROM THE KIT ON FIRST USE AND
+    // LEFT ON EVERY FORMAT CHANGE AND IN destroyResources)
     private int ycbcrFmt;        // MULTIPLANAR VkFormat, 0 = COMPUTE/PASSTHROUGH PATH
     private int ycbcrX;          // CHOSEN HORIZONTAL VkChromaLocation
     private int ycbcrY;          // CHOSEN VERTICAL VkChromaLocation
     private int ycbcrFilter;     // CHOSEN VkFilter FOR min/mag/chroma (ALWAYS THE SAME THREE)
-    private long ycbcrConv;      // VkSamplerYcbcrConversion
-    private long ycbcrSamp;      // IMMUTABLE SAMPLER WRAPPING THE CONVERSION
-    private long ycbcrLayout;    // SET LAYOUT: IMMUTABLE COMBINED SAMPLER + STORAGE IMAGE
-    private long ycbcrPipeLayout;
-    private long ycbcrPipeline;
+    private Ycbcr ycbcr;         // THE KIT'S CONVERSION, SAMPLER AND PIPELINE FOR THIS LAYOUT
     private long ycbcrPool;      // SLOTS SETS FOR THE YCBCR LAYOUT
-    private final Map<Integer, Integer> formatFeats = new ConcurrentHashMap<>(); // vkFormat -> optimalTilingFeatures (CACHED QUERY, ANY THREAD)
 
     // SUBMISSION BOOKKEEPING (PRODUCER-THREAD ONLY)
     private long head;           // NUMBER OF FRAMES SUBMITTED
@@ -234,15 +232,16 @@ public final class VKEngine extends GFXEngine {
     private volatile boolean strideWarned;
 
     // THE CONTEXT AND EVERY VULKAN OBJECT IT EXPOSES MUST OUTLIVE THIS ENGINE, WHICH ONLY CREATES ITS OWN COMMAND POOL,
-    // DESCRIPTORS, PIPELINES AND PER-SLOT IMAGES ON IT
+    // DESCRIPTORS AND PER-SLOT IMAGES ON IT AND SHARES THE DEVICE'S KIT WITH EVERY OTHER ENGINE THERE
     VKEngine(final VKContext ctx) {
         if (ctx == null) throw new IllegalArgumentException("VKContext must be non-null");
         this.ctx = ctx;
         this.device = ctx.vkDevice();
         this.memProps = ctx.memoryProperties();
         this.minAlign = ctx.hostImportSupported() ? (int) ctx.minImportedHostPointerAlignment() : 0;
+        this.kit = Kit.acquire(ctx);
 
-        // BUILD THE STATIC ENGINE OBJECTS (LIVE FOR THE WHOLE ENGINE LIFETIME).
+        // BUILD THE ENGINE OBJECTS (LIVE FOR THE WHOLE ENGINE LIFETIME).
         for (int i = 0; i < SLOTS; i++) this.slots[i] = new Slot();
         try (final MemoryStack stack = stackPush()) {
             // COMMAND POOL + PRIMARY COMMAND BUFFERS (RESETTABLE INDIVIDUALLY).
@@ -265,33 +264,7 @@ public final class VKEngine extends GFXEngine {
                 this.slots[i].fence = pf.get(0);
             }
 
-            // SAMPLER (LINEAR, CLAMP) — PLANAR/NV CHROMA UPSAMPLING; PACKED YUV USES texelFetch.
-            final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
-                    .magFilter(VK_FILTER_LINEAR).minFilter(VK_FILTER_LINEAR)
-                    .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
-                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .borderColor(VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK)
-                    .unnormalizedCoordinates(false);
-            final LongBuffer ps = stack.mallocLong(1);
-            check(vkCreateSampler(this.device, sci, null, ps), "create sampler");
-            this.sampler = ps.get(0);
-
-            // DESCRIPTOR SET LAYOUT: 4 COMBINED IMAGE SAMPLERS (PLANES) + 1 STORAGE IMAGE (OUTPUT).
-            final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
-            for (int j = 0; j < MAX_PLANES; j++) {
-                binds.get(j).binding(j).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            }
-            binds.get(4).binding(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            final VkDescriptorSetLayoutCreateInfo dlci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
-            final LongBuffer pl = stack.mallocLong(1);
-            check(vkCreateDescriptorSetLayout(this.device, dlci, null, pl), "create descriptor set layout");
-            this.descLayout = pl.get(0);
-
-            // DESCRIPTOR POOL + ONE SET PER SLOT.
+            // DESCRIPTOR POOL + ONE SET PER SLOT ON THE KIT'S LAYOUT.
             final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
             sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(MAX_PLANES * SLOTS);
             sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(SLOTS);
@@ -302,28 +275,18 @@ public final class VKEngine extends GFXEngine {
             this.descPool = pdp.get(0);
 
             final LongBuffer layouts = stack.mallocLong(SLOTS);
-            for (int i = 0; i < SLOTS; i++) layouts.put(i, this.descLayout);
+            for (int i = 0; i < SLOTS; i++) layouts.put(i, this.kit.descLayout);
             final VkDescriptorSetAllocateInfo dsai = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
                     .descriptorPool(this.descPool).pSetLayouts(layouts);
             final LongBuffer pSets = stack.mallocLong(SLOTS);
             check(vkAllocateDescriptorSets(this.device, dsai, pSets), "alloc descriptor sets");
             for (int i = 0; i < SLOTS; i++) this.slots[i].descSet = pSets.get(i);
-
-            // PIPELINE LAYOUT (DESCRIPTOR SET + PUSH CONSTANTS).
-            final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
-            pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(PUSH_BYTES);
-            final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                    .pSetLayouts(stack.longs(this.descLayout)).pPushConstantRanges(pcr);
-            final LongBuffer ppl = stack.mallocLong(1);
-            check(vkCreatePipelineLayout(this.device, plci, null, ppl), "create pipeline layout");
-            this.pipeLayout = ppl.get(0);
         } catch (final RuntimeException | Error e) {
             this.destroyResources(); // NOTHING CREATED SO FAR OUTLIVES A FAILED CONSTRUCTION
             throw e;
         }
-        // THE COMPUTE SHADER + PIPELINE ARE BUILT LAZILY ON THE FIRST CONVERSION UPLOAD:
-        // PASSTHROUGH-ONLY ENGINES (E.G. BGRA/RGBA IMAGE THUMBNAILS) NEVER COMPILE, AND THE SPIR-V
-        // IS CACHED ACROSS EVERY ENGINE — SO CREATING MANY ENGINES NEVER RECOMPILES THE SHADER.
+        // THE KIT BUILDS THE COMPUTE PIPELINE ON THE DEVICE'S FIRST CONVERSION UPLOAD: PASSTHROUGH-ONLY ENGINES
+        // (E.G. BGRA/RGBA IMAGE THUMBNAILS) NEVER COMPILE, AND CREATING MANY ENGINES NEVER REBUILDS IT
         LOGGER.debug(IT, "VKEngine initialized (hostImport={}, minAlign={})", ctx.hostImportSupported(), this.minAlign);
     }
 
@@ -432,9 +395,8 @@ public final class VKEngine extends GFXEngine {
             s.gen = -1L;
         }
         this.destroyImportCache();
-        // THE YCBCR OBJECTS ARE FORMAT-SPECIFIC AND ENGINE-PRIVATE (NEVER REFERENCED BY CONSUMER
-        // FRAMES — THE CONSUMER ONLY SAMPLES THE RGBA VIEW), SO AFTER THE waitAllIdle DRAIN ABOVE
-        // THEY DIE SYNCHRONOUSLY AND ARE LAZILY REBUILT IF THE NEW FORMAT USES THE YCBCR PATH.
+        // THE YCBCR SETS ARE FORMAT-SPECIFIC AND NEVER REFERENCED BY CONSUMER FRAMES (THEY ONLY SAMPLE THE RGBA VIEW), SO
+        // AFTER THE DRAIN ABOVE THEY DIE NOW AND THE KIT'S CONVERSION IS LEFT; THE NEW FORMAT TAKES ITS OWN ON FIRST USE
         this.destroyYcbcrRes();
 
         this.publish(format, width, height, bits, color);
@@ -560,21 +522,17 @@ public final class VKEngine extends GFXEngine {
         });
     }
 
-    // RUNS ON THE CONSUMER'S RENDER THREAD AFTER ITS IN-FLIGHT FRAMES RETIRE (SEE VKContext#retire).
+    // RUNS ON THE CONSUMER'S RENDER THREAD AFTER ITS IN-FLIGHT FRAMES RETIRE (SEE VKContext#retire). THE KIT GOES LAST:
+    // THESE SETS WERE ALLOCATED ON ITS LAYOUTS
     private void destroyResources() {
         for (final Slot s: this.slots) {
             this.destroySlotFormatRes(s);
             if (s.fence != 0L) { vkDestroyFence(this.device, s.fence, null); s.fence = 0L; }
         }
         this.destroyYcbcrRes();
-
-        if (this.pipeline != 0L) { vkDestroyPipeline(this.device, this.pipeline, null); this.pipeline = 0L; }
-        if (this.shaderModule != 0L) { vkDestroyShaderModule(this.device, this.shaderModule, null); this.shaderModule = 0L; }
-        if (this.pipeLayout != 0L) { vkDestroyPipelineLayout(this.device, this.pipeLayout, null); this.pipeLayout = 0L; }
-        if (this.descLayout != 0L) { vkDestroyDescriptorSetLayout(this.device, this.descLayout, null); this.descLayout = 0L; }
-        if (this.sampler != 0L) { vkDestroySampler(this.device, this.sampler, null); this.sampler = 0L; }
         if (this.descPool != 0L) { vkDestroyDescriptorPool(this.device, this.descPool, null); this.descPool = 0L; } // FREES SETS
         if (this.cmdPool != 0L) { vkDestroyCommandPool(this.device, this.cmdPool, null); this.cmdPool = 0L; }       // FREES CMD BUFFERS
+        this.kit.release();
     }
 
     // ==========================================================================
@@ -685,13 +643,13 @@ public final class VKEngine extends GFXEngine {
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-                vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcrPipeline);
-                vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcrPipeLayout, 0,
+                vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcr.pipeline);
+                vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.ycbcr.pipeLayout, 0,
                         stack.longs(slot.ycbcrSet), null);
                 final ByteBuffer push = stack.malloc(YCBCR_PUSH_BYTES);
                 push.putInt(0, this.width);
                 push.putInt(4, this.height);
-                vkCmdPushConstants(slot.cmd, this.ycbcrPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+                vkCmdPushConstants(slot.cmd, this.ycbcr.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
                 vkCmdDispatch(slot.cmd, (this.width + 7) / 8, (this.height + 7) / 8, 1);
                 // HAND THE RESULT TO THE CONSUMER'S FRAGMENT SAMPLING (SAME-QUEUE BARRIER).
                 this.barrier(stack, slot.cmd, slot.outImg,
@@ -699,29 +657,8 @@ public final class VKEngine extends GFXEngine {
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
             } else if (this.convert) {
-                // LAZY: THE FIRST CONVERSION FRAME BUILDS THIS ENGINE'S SHADER MODULE + PIPELINE FROM
-                // THE PROCESS-CACHED SPIR-V (shaderc COMPILATION IS THE EXPENSIVE STEP — SHARED BY EVERY ENGINE).
-                if (this.pipeline == 0L) {
-                    byte[] spirv = convertSpirv;
-                    if (spirv == null) {
-                        synchronized (VKEngine.class) {
-                            if (convertSpirv == null) convertSpirv = compileSpirv(COMPUTE_GLSL, "convert.comp");
-                            spirv = convertSpirv;
-                        }
-                    }
-                    final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
-                    final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-                    final LongBuffer pMod = stack.mallocLong(1);
-                    check(vkCreateShaderModule(this.device, smci, null, pMod), "create shader module");
-                    this.shaderModule = pMod.get(0);
-                    final VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
-                            .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(this.shaderModule).pName(stack.UTF8("main"));
-                    final VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, stack);
-                    ci.get(0).sType$Default().stage(stage).layout(this.pipeLayout);
-                    final LongBuffer pp = stack.mallocLong(1);
-                    check(vkCreateComputePipelines(this.device, 0, ci, null, pp), "create compute pipeline");
-                    this.pipeline = pp.get(0);
-                }
+                // THE DEVICE'S FIRST CONVERSION FRAME BUILDS THE KIT'S PIPELINE; EVERY LATER ENGINE REUSES IT
+                final long pipeline = this.kit.pipeline();
                 for (int i = 0; i < this.planeCount; i++) {
                     final PlaneSpec spec = this.planeSpecs[i];
                     this.barrier(stack, slot.cmd, slot.planeImg[i],
@@ -743,8 +680,8 @@ public final class VKEngine extends GFXEngine {
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-                vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.pipeline);
-                vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.pipeLayout, 0,
+                vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+                vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this.kit.pipeLayout, 0,
                         stack.longs(slot.descSet), null);
                 final ByteBuffer push = stack.malloc(PUSH_BYTES);
                 push.putInt(0, this.mode);
@@ -752,7 +689,7 @@ public final class VKEngine extends GFXEngine {
                 push.putInt(8, this.width);
                 push.putInt(12, this.height);
                 for (int i = 0; i < this.colorimetry.length; i++) push.putFloat(16 + i * 4, this.colorimetry[i]);
-                vkCmdPushConstants(slot.cmd, this.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+                vkCmdPushConstants(slot.cmd, this.kit.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
                 vkCmdDispatch(slot.cmd, (this.width + 7) / 8, (this.height + 7) / 8, 1);
                 // HAND THE RESULT TO THE CONSUMER'S FRAGMENT SAMPLING (SAME-QUEUE BARRIER).
                 this.barrier(stack, slot.cmd, slot.outImg,
@@ -923,7 +860,7 @@ public final class VKEngine extends GFXEngine {
                 // ONE MULTIPLANAR IMAGE HOLDS EVERY PLANE; ITS SAMPLED VIEW CHAINS THE SAME CONVERSION
                 // THE IMMUTABLE SAMPLER WAS CREATED WITH (REQUIRED TO MATCH).
                 final Img mp = this.image(stack, this.ycbcrFmt, this.width, this.height,
-                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, this.ycbcrConv);
+                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, this.ycbcr.conv);
                 slot.planeImg[0] = mp.image();
                 slot.planeMem[0] = mp.memory();
                 slot.planeView[0] = mp.view();
@@ -931,7 +868,7 @@ public final class VKEngine extends GFXEngine {
                 // WINS), BINDING 1 = THIS SLOT'S RGBA STORAGE VIEW.
                 final VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
                 final VkDescriptorImageInfo.Buffer srcInfo = VkDescriptorImageInfo.calloc(1, stack);
-                srcInfo.get(0).sampler(this.ycbcrSamp).imageView(mp.view()).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                srcInfo.get(0).sampler(this.ycbcr.sampler).imageView(mp.view()).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 writes.get(0).sType$Default().dstSet(slot.ycbcrSet).dstBinding(0).dstArrayElement(0)
                         .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(srcInfo);
                 final VkDescriptorImageInfo.Buffer outInfo = VkDescriptorImageInfo.calloc(1, stack);
@@ -954,7 +891,7 @@ public final class VKEngine extends GFXEngine {
                     // UNUSED PLANE SLOTS BIND PLANE 0 (ALWAYS PRESENT FOR CONVERT) — A VALID VIEW THE SHADER NEVER READS
                     final long view = j < this.planeCount ? slot.planeView[j] : slot.planeView[0];
                     final VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
-                    info.get(0).sampler(this.sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    info.get(0).sampler(this.kit.sampler).imageView(view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     writes.get(j).sType$Default().dstSet(slot.descSet).dstBinding(j).dstArrayElement(0)
                             .descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(info);
                 }
@@ -1107,18 +1044,7 @@ public final class VKEngine extends GFXEngine {
     private boolean sampleable(final int vkFormat) {
         final int need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
                 | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-        return (this.formatFeatures(vkFormat) & need) == need;
-    }
-
-    // OPTIMAL-TILING FEATURES OF A FORMAT, QUERIED ONCE PER DEVICE AND FORMAT
-    private int formatFeatures(final int vkFormat) {
-        return this.formatFeats.computeIfAbsent(vkFormat, fmt -> {
-            try (final MemoryStack stack = stackPush()) {
-                final VkFormatProperties props = VkFormatProperties.malloc(stack);
-                vkGetPhysicalDeviceFormatProperties(this.ctx.physicalDevice(), fmt, props);
-                return props.optimalTilingFeatures();
-            }
-        });
+        return (this.kit.features(vkFormat) & need) == need;
     }
 
     // ROUTES THE CURRENT FORMAT THROUGH THE SAMPLER-YCBCR PATH WHEN THE DEVICE FEATURE IS ON, THE FRAME NEEDS NO DISPLAY
@@ -1136,7 +1062,7 @@ public final class VKEngine extends GFXEngine {
             return;
         }
         // THE IMAGE IS SAMPLED BY THE TRIVIAL PASS AND FILLED VIA BUFFER->IMAGE COPIES
-        final int feats = this.formatFeatures(fmt);
+        final int feats = this.kit.features(fmt);
         final int need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
         if ((feats & need) != need) {
             LOGGER.debug(IT, "YCbCr sampler path declined for {}: format {} unsupported (optimalTilingFeatures=0x{})",
@@ -1170,103 +1096,31 @@ public final class VKEngine extends GFXEngine {
     // ==========================================================================
     // SAMPLER-YCBCR OBJECTS (FORMAT-SPECIFIC, LAZY)
     // ==========================================================================
-    // BUILDS EVERY YCBCR OBJECT FOR THE CURRENT ycbcrFmt ON FIRST USE: CONVERSION -> IMMUTABLE
-    // SAMPLER -> SET LAYOUT -> PIPELINE LAYOUT -> PIPELINE -> POOL + ONE SET PER SLOT. SAFE WITHOUT
-    // EXTRA SYNC: ONLY THE PRODUCER THREAD CALLS THIS, AND A FORMAT CHANGE DRAINED EVERYTHING FIRST.
+    // TAKES THE KIT'S CONVERSION FOR THE CURRENT LAYOUT ON FIRST USE AND ALLOCATES THIS ENGINE'S POOL + ONE SET PER SLOT ON
+    // ITS LAYOUT. ONLY THE PRODUCER THREAD CALLS THIS, AND A FORMAT CHANGE DRAINED EVERYTHING FIRST
     private void ensureYcbcr() {
-        if (this.ycbcrConv != 0L) return;
+        if (this.ycbcr != null) return;
+        final int model = switch (this.color.matrix()) {
+            case BT601 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+            case BT709 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709;
+            case BT2020 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020;
+        };
+        final int range = this.color.full() ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
+        final Ycbcr y = this.kit.ycbcr(new YcbcrKey(this.ycbcrFmt, model, range, this.ycbcrX, this.ycbcrY, this.ycbcrFilter));
+        this.ycbcr = y;
         try (final MemoryStack stack = stackPush()) {
-            // CONVERSION: THE LAYOUT'S MATRIX, RANGE AND SITING (CHECKED BY tryYcbcr), IDENTITY COMPONENTS (calloc) AND THE
-            // QUERIED FILTER. NO FORCED EXPLICIT RECONSTRUCTION — LET THE IMPLEMENTATION PICK
-            final VkSamplerYcbcrConversionCreateInfo cci = VkSamplerYcbcrConversionCreateInfo.calloc(stack).sType$Default()
-                    .format(this.ycbcrFmt)
-                    .ycbcrModel(switch (this.color.matrix()) {
-                        case BT601 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
-                        case BT709 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709;
-                        case BT2020 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020;
-                    })
-                    .ycbcrRange(this.color.full() ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW)
-                    .xChromaOffset(this.ycbcrX).yChromaOffset(this.ycbcrY)
-                    .chromaFilter(this.ycbcrFilter)
-                    .forceExplicitReconstruction(false);
-            final LongBuffer p = stack.mallocLong(1);
-            check(vkCreateSamplerYcbcrConversion(this.device, cci, null, p), "create ycbcr conversion");
-            this.ycbcrConv = p.get(0);
-
-            // SAMPLER: min/mag == chromaFilter (LEGAL WITHOUT SEPARATE-RECONSTRUCTION SUPPORT), AND
-            // CLAMP/NO-ANISO/NO-COMPARE/NORMALIZED — ALL MANDATORY WITH A YCBCR CONVERSION.
-            final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
-                    .pNext(VkSamplerYcbcrConversionInfo.calloc(stack).sType$Default().conversion(this.ycbcrConv))
-                    .magFilter(this.ycbcrFilter).minFilter(this.ycbcrFilter)
-                    .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
-                    .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-                    .borderColor(VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK)
-                    .unnormalizedCoordinates(false);
-            check(vkCreateSampler(this.device, sci, null, p), "create ycbcr sampler");
-            this.ycbcrSamp = p.get(0);
-
-            // SET LAYOUT: BINDING 0 = COMBINED IMAGE SAMPLER WITH THE IMMUTABLE YCBCR SAMPLER
-            // (IMMUTABILITY IS MANDATORY FOR CONVERSION-ENABLED SAMPLING), BINDING 1 = STORAGE IMAGE.
-            final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(2, stack);
-            binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT)
-                    .pImmutableSamplers(stack.longs(this.ycbcrSamp));
-            binds.get(1).binding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
-            final VkDescriptorSetLayoutCreateInfo dlci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
-            check(vkCreateDescriptorSetLayout(this.device, dlci, null, p), "create ycbcr set layout");
-            this.ycbcrLayout = p.get(0);
-
-            // PIPELINE LAYOUT: JUST { int width; int height; } PUSH CONSTANTS.
-            final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
-            pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(YCBCR_PUSH_BYTES);
-            final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                    .pSetLayouts(stack.longs(this.ycbcrLayout)).pPushConstantRanges(pcr);
-            check(vkCreatePipelineLayout(this.device, plci, null, p), "create ycbcr pipeline layout");
-            this.ycbcrPipeLayout = p.get(0);
-
-            // PIPELINE FROM THE PROCESS-CACHED TRIVIAL SHADER; THE MODULE DIES RIGHT AFTER (LEGAL).
-            byte[] spirv = ycbcrSpirv;
-            if (spirv == null) {
-                synchronized (VKEngine.class) {
-                    if (ycbcrSpirv == null) ycbcrSpirv = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
-                    spirv = ycbcrSpirv;
-                }
-            }
-            final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
-            final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            check(vkCreateShaderModule(this.device, smci, null, p), "create ycbcr shader module");
-            final long module = p.get(0);
-            final VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
-                    .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
-            final VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, stack);
-            ci.get(0).sType$Default().stage(stage).layout(this.ycbcrPipeLayout);
-            final int r = vkCreateComputePipelines(this.device, 0, ci, null, p);
-            vkDestroyShaderModule(this.device, module, null);
-            check(r, "create ycbcr pipeline");
-            this.ycbcrPipeline = p.get(0);
-
-            // POOL + ONE SET PER SLOT (THE LEGACY PER-SLOT SETS KEEP THE LEGACY LAYOUT). A YCBCR SAMPLER MAY COST SEVERAL
-            // COMBINED-SAMPLER DESCRIPTORS (RADV, MALI): THE POOL RESERVES WHAT THE DRIVER REPORTS FOR THE SLOT IMAGES
-            final VkSamplerYcbcrConversionImageFormatProperties cost = VkSamplerYcbcrConversionImageFormatProperties.calloc(stack).sType$Default();
-            final VkPhysicalDeviceImageFormatInfo2 image = VkPhysicalDeviceImageFormatInfo2.calloc(stack).sType$Default()
-                    .format(this.ycbcrFmt).type(VK_IMAGE_TYPE_2D).tiling(VK_IMAGE_TILING_OPTIMAL)
-                    .usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-            final int queried = vkGetPhysicalDeviceImageFormatProperties2(this.ctx.physicalDevice(), image,
-                    VkImageFormatProperties2.calloc(stack).sType$Default().pNext(cost.address()));
-            final int perSet = queried == VK_SUCCESS ? Math.max(1, cost.combinedImageSamplerDescriptorCount()) : 1;
+            // A YCBCR SAMPLER MAY COST SEVERAL COMBINED-SAMPLER DESCRIPTORS (RADV, MALI): THE POOL RESERVES WHAT THE DRIVER REPORTS
             final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(SLOTS * perSet);
+            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(SLOTS * y.perSet);
             sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(SLOTS);
             final VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(SLOTS).pPoolSizes(sizes);
+            final LongBuffer p = stack.mallocLong(1);
             check(vkCreateDescriptorPool(this.device, dpci, null, p), "create ycbcr descriptor pool");
             this.ycbcrPool = p.get(0);
 
             final LongBuffer layouts = stack.mallocLong(SLOTS);
-            for (int i = 0; i < SLOTS; i++) layouts.put(i, this.ycbcrLayout);
+            for (int i = 0; i < SLOTS; i++) layouts.put(i, y.layout);
             final VkDescriptorSetAllocateInfo dsai = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
                     .descriptorPool(this.ycbcrPool).pSetLayouts(layouts);
             final LongBuffer pSets = stack.mallocLong(SLOTS);
@@ -1275,16 +1129,12 @@ public final class VKEngine extends GFXEngine {
         }
     }
 
-    // CALLERS GUARANTEE THE ENGINE'S OWN WORK IS DRAINED. THE SAMPLER AND CONVERSION DIE LAST:
-    // THE SET LAYOUT AND THE POOL'S SETS REFERENCE THE IMMUTABLE SAMPLER UNTIL THEY ARE GONE.
+    // CALLERS GUARANTEE THE ENGINE'S OWN WORK IS DRAINED. THE POOL DIES BEFORE THE KIT MAY DESTROY THE LAYOUT AND THE
+    // IMMUTABLE SAMPLER ITS SETS REFERENCE
     private void destroyYcbcrRes() {
         for (final Slot s: this.slots) s.ycbcrSet = 0L;
-        if (this.ycbcrPipeline != 0L) { vkDestroyPipeline(this.device, this.ycbcrPipeline, null); this.ycbcrPipeline = 0L; }
-        if (this.ycbcrPipeLayout != 0L) { vkDestroyPipelineLayout(this.device, this.ycbcrPipeLayout, null); this.ycbcrPipeLayout = 0L; }
         if (this.ycbcrPool != 0L) { vkDestroyDescriptorPool(this.device, this.ycbcrPool, null); this.ycbcrPool = 0L; } // FREES SETS
-        if (this.ycbcrLayout != 0L) { vkDestroyDescriptorSetLayout(this.device, this.ycbcrLayout, null); this.ycbcrLayout = 0L; }
-        if (this.ycbcrSamp != 0L) { vkDestroySampler(this.device, this.ycbcrSamp, null); this.ycbcrSamp = 0L; }
-        if (this.ycbcrConv != 0L) { vkDestroySamplerYcbcrConversion(this.device, this.ycbcrConv, null); this.ycbcrConv = 0L; }
+        if (this.ycbcr != null) { this.kit.release(this.ycbcr); this.ycbcr = null; }
     }
 
     // COMPILES GLSL TO SPIR-V VIA shaderc. RUNS ONCE PER PROCESS PER SHADER — CALLERS CACHE THE
@@ -1340,6 +1190,262 @@ public final class VKEngine extends GFXEngine {
         if (!this.failWarned) LOGGER.error(IT, "{} failed; frames are dropped until the next format", op, cause);
         this.failWarned = true;
     }
+
+    // ==========================================================================
+    // DEVICE CONVERSION KIT
+    // ==========================================================================
+    // WHAT EVERY ENGINE ON ONE DEVICE SHARES: THE PLANE SAMPLER, THE COMPUTE SET AND PIPELINE LAYOUTS AND PIPELINE, ONE
+    // YCBCR CONVERSION + PIPELINE PER KEY AND THE FORMAT-FEATURE QUERIES. ENGINES LEAVE IT ONLY AFTER THEIR WORK DRAINED
+    private static final class Kit {
+        private final VkDevice device;
+        private final VkPhysicalDevice physical;
+        long sampler;
+        long descLayout;
+        long pipeLayout;
+        private volatile long pipeline; // BUILT ON THE DEVICE'S FIRST CONVERSION FRAME
+        private final Map<YcbcrKey, Ycbcr> ycbcrs = new HashMap<>(); // GUARDED BY this
+        private final Map<Integer, Integer> formatFeatures = new ConcurrentHashMap<>(); // vkFormat -> optimalTilingFeatures
+        private int engines; // GUARDED BY KITS
+
+        private Kit(final VkDevice device, final VkPhysicalDevice physical) {
+            this.device = device;
+            this.physical = physical;
+            try (final MemoryStack stack = stackPush()) {
+                // SAMPLER (LINEAR, CLAMP) — PLANAR/NV CHROMA UPSAMPLING; PACKED YUV USES texelFetch.
+                final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK_FILTER_LINEAR).minFilter(VK_FILTER_LINEAR)
+                        .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .borderColor(VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK)
+                        .unnormalizedCoordinates(false);
+                final LongBuffer p = stack.mallocLong(1);
+                check(vkCreateSampler(device, sci, null, p), "create sampler");
+                this.sampler = p.get(0);
+
+                // DESCRIPTOR SET LAYOUT: 4 COMBINED IMAGE SAMPLERS (PLANES) + 1 STORAGE IMAGE (OUTPUT).
+                final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
+                for (int j = 0; j < MAX_PLANES; j++) {
+                    binds.get(j).binding(j).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                            .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+                }
+                binds.get(4).binding(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+                final VkDescriptorSetLayoutCreateInfo dlci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
+                check(vkCreateDescriptorSetLayout(device, dlci, null, p), "create descriptor set layout");
+                this.descLayout = p.get(0);
+
+                // PIPELINE LAYOUT (DESCRIPTOR SET + PUSH CONSTANTS).
+                final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
+                pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(PUSH_BYTES);
+                final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+                        .pSetLayouts(stack.longs(this.descLayout)).pPushConstantRanges(pcr);
+                check(vkCreatePipelineLayout(device, plci, null, p), "create pipeline layout");
+                this.pipeLayout = p.get(0);
+            } catch (final RuntimeException | Error e) {
+                this.destroy();
+                throw e;
+            }
+        }
+
+        static Kit acquire(final VKContext ctx) {
+            synchronized (KITS) {
+                final Kit kit = KITS.computeIfAbsent(ctx.vkDevice(), device -> new Kit(device, ctx.physicalDevice()));
+                kit.engines++;
+                return kit;
+            }
+        }
+
+        // THE LAST ENGINE OUT ALREADY LEFT ITS YCBCR CONVERSIONS, SO ONLY THE DEVICE-WIDE OBJECTS REMAIN
+        void release() {
+            synchronized (KITS) {
+                if (--this.engines > 0) return;
+                KITS.remove(this.device, this);
+            }
+            this.destroy();
+        }
+
+        private void destroy() {
+            if (this.pipeline != 0L) vkDestroyPipeline(this.device, this.pipeline, null);
+            if (this.pipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.pipeLayout, null);
+            if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
+            if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
+        }
+
+        // PIPELINES ARE BUILT OUTSIDE THE KIT MONITOR, SO A RELEASE ON THE RENDER THREAD NEVER WAITS FOR A DRIVER COMPILE; A
+        // RACING BUILD OF THE SAME PIPELINE LOSES AND DESTROYS ITS COPY
+        long pipeline() {
+            final long built = this.pipeline;
+            if (built != 0L) return built;
+            if (convertSpirv == null) {
+                synchronized (VKEngine.class) {
+                    if (convertSpirv == null) convertSpirv = compileSpirv(COMPUTE_GLSL, "convert.comp");
+                }
+            }
+            final long fresh = this.compute(convertSpirv, this.pipeLayout);
+            final long kept;
+            synchronized (this) {
+                if (this.pipeline == 0L) this.pipeline = fresh;
+                kept = this.pipeline;
+            }
+            if (kept != fresh) vkDestroyPipeline(this.device, fresh, null);
+            else LOGGER.debug(IT, "Built the conversion pipeline for device 0x{}", Long.toHexString(this.device.address()));
+            return kept;
+        }
+
+        Ycbcr ycbcr(final YcbcrKey key) {
+            synchronized (this) {
+                final Ycbcr cached = this.ycbcrs.get(key);
+                if (cached != null) {
+                    cached.refs++;
+                    return cached;
+                }
+            }
+            final Ycbcr fresh = this.build(key);
+            final Ycbcr kept;
+            synchronized (this) {
+                final Ycbcr raced = this.ycbcrs.putIfAbsent(key, fresh);
+                kept = raced != null ? raced : fresh;
+                kept.refs++;
+            }
+            if (kept != fresh) destroy(this.device, fresh);
+            else LOGGER.debug(IT, "Built the YCbCr pipeline for vkFormat {} on device 0x{}", key.format(), Long.toHexString(this.device.address()));
+            return kept;
+        }
+
+        void release(final Ycbcr y) {
+            synchronized (this) {
+                if (--y.refs > 0) return;
+                this.ycbcrs.remove(y.key, y);
+            }
+            destroy(this.device, y);
+        }
+
+        // OPTIMAL-TILING FEATURES OF A FORMAT, QUERIED ONCE PER DEVICE AND FORMAT
+        int features(final int vkFormat) {
+            return this.formatFeatures.computeIfAbsent(vkFormat, fmt -> {
+                try (final MemoryStack stack = stackPush()) {
+                    final VkFormatProperties props = VkFormatProperties.malloc(stack);
+                    vkGetPhysicalDeviceFormatProperties(this.physical, fmt, props);
+                    return props.optimalTilingFeatures();
+                }
+            });
+        }
+
+        // CONVERSION -> IMMUTABLE SAMPLER -> SET LAYOUT -> PIPELINE LAYOUT -> PIPELINE, PLUS THE DESCRIPTOR COST OF ITS IMAGES
+        private Ycbcr build(final YcbcrKey key) {
+            final Ycbcr y = new Ycbcr(key);
+            try (final MemoryStack stack = stackPush()) {
+                // THE LAYOUT'S MATRIX, RANGE AND SITING (CHECKED BY tryYcbcr), IDENTITY COMPONENTS (calloc) AND THE QUERIED
+                // FILTER. NO FORCED EXPLICIT RECONSTRUCTION — LET THE IMPLEMENTATION PICK
+                final VkSamplerYcbcrConversionCreateInfo cci = VkSamplerYcbcrConversionCreateInfo.calloc(stack).sType$Default()
+                        .format(key.format()).ycbcrModel(key.model()).ycbcrRange(key.range())
+                        .xChromaOffset(key.x()).yChromaOffset(key.y())
+                        .chromaFilter(key.filter())
+                        .forceExplicitReconstruction(false);
+                final LongBuffer p = stack.mallocLong(1);
+                check(vkCreateSamplerYcbcrConversion(this.device, cci, null, p), "create ycbcr conversion");
+                y.conv = p.get(0);
+
+                // SAMPLER: min/mag == chromaFilter (LEGAL WITHOUT SEPARATE-RECONSTRUCTION SUPPORT), AND
+                // CLAMP/NO-ANISO/NO-COMPARE/NORMALIZED — ALL MANDATORY WITH A YCBCR CONVERSION.
+                final VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .pNext(VkSamplerYcbcrConversionInfo.calloc(stack).sType$Default().conversion(y.conv))
+                        .magFilter(key.filter()).minFilter(key.filter())
+                        .mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeV(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .borderColor(VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK)
+                        .unnormalizedCoordinates(false);
+                check(vkCreateSampler(this.device, sci, null, p), "create ycbcr sampler");
+                y.sampler = p.get(0);
+
+                // SET LAYOUT: BINDING 0 = COMBINED IMAGE SAMPLER WITH THE IMMUTABLE YCBCR SAMPLER
+                // (IMMUTABILITY IS MANDATORY FOR CONVERSION-ENABLED SAMPLING), BINDING 1 = STORAGE IMAGE.
+                final VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(2, stack);
+                binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT)
+                        .pImmutableSamplers(stack.longs(y.sampler));
+                binds.get(1).binding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+                final VkDescriptorSetLayoutCreateInfo dlci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
+                check(vkCreateDescriptorSetLayout(this.device, dlci, null, p), "create ycbcr set layout");
+                y.layout = p.get(0);
+
+                // PIPELINE LAYOUT: JUST { int width; int height; } PUSH CONSTANTS.
+                final VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
+                pcr.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(YCBCR_PUSH_BYTES);
+                final VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+                        .pSetLayouts(stack.longs(y.layout)).pPushConstantRanges(pcr);
+                check(vkCreatePipelineLayout(this.device, plci, null, p), "create ycbcr pipeline layout");
+                y.pipeLayout = p.get(0);
+
+                if (ycbcrSpirv == null) {
+                    synchronized (VKEngine.class) {
+                        if (ycbcrSpirv == null) ycbcrSpirv = compileSpirv(YCBCR_GLSL, "ycbcr.comp");
+                    }
+                }
+                y.pipeline = this.compute(ycbcrSpirv, y.pipeLayout);
+
+                final VkSamplerYcbcrConversionImageFormatProperties cost = VkSamplerYcbcrConversionImageFormatProperties.calloc(stack).sType$Default();
+                final VkPhysicalDeviceImageFormatInfo2 image = VkPhysicalDeviceImageFormatInfo2.calloc(stack).sType$Default()
+                        .format(key.format()).type(VK_IMAGE_TYPE_2D).tiling(VK_IMAGE_TILING_OPTIMAL)
+                        .usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                final int queried = vkGetPhysicalDeviceImageFormatProperties2(this.physical, image,
+                        VkImageFormatProperties2.calloc(stack).sType$Default().pNext(cost.address()));
+                y.perSet = queried == VK_SUCCESS ? Math.max(1, cost.combinedImageSamplerDescriptorCount()) : 1;
+            } catch (final RuntimeException | LinkageError e) {
+                destroy(this.device, y);
+                throw e;
+            }
+            return y;
+        }
+
+        // A COMPUTE PIPELINE FROM CACHED SPIR-V; THE MODULE DIES RIGHT AFTER (LEGAL)
+        private long compute(final byte[] spirv, final long layout) {
+            try (final MemoryStack stack = stackPush()) {
+                final ByteBuffer code = stack.malloc(spirv.length).put(spirv).flip();
+                final VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
+                final LongBuffer p = stack.mallocLong(1);
+                check(vkCreateShaderModule(this.device, smci, null, p), "create shader module");
+                final long module = p.get(0);
+                final VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
+                        .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
+                final VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, stack);
+                ci.get(0).sType$Default().stage(stage).layout(layout);
+                final int r = vkCreateComputePipelines(this.device, 0, ci, null, p);
+                vkDestroyShaderModule(this.device, module, null);
+                check(r, "create compute pipeline");
+                return p.get(0);
+            }
+        }
+
+        // THE SAMPLER AND CONVERSION DIE LAST: THE SET LAYOUT REFERENCES THE IMMUTABLE SAMPLER UNTIL IT IS GONE
+        private static void destroy(final VkDevice device, final Ycbcr y) {
+            if (y.pipeline != 0L) vkDestroyPipeline(device, y.pipeline, null);
+            if (y.pipeLayout != 0L) vkDestroyPipelineLayout(device, y.pipeLayout, null);
+            if (y.layout != 0L) vkDestroyDescriptorSetLayout(device, y.layout, null);
+            if (y.sampler != 0L) vkDestroySampler(device, y.sampler, null);
+            if (y.conv != 0L) vkDestroySamplerYcbcrConversion(device, y.conv, null);
+        }
+    }
+
+    // ONE KEY'S SHARED YCBCR OBJECTS; perSet IS THE COMBINED-SAMPLER DESCRIPTOR COST OF ONE SET ON layout
+    private static final class Ycbcr {
+        final YcbcrKey key;
+        long conv, sampler, layout, pipeLayout, pipeline;
+        int perSet;
+        int refs; // GUARDED BY THE KIT
+
+        Ycbcr(final YcbcrKey key) {
+            this.key = key;
+        }
+    }
+
+    // WHAT A YCBCR CONVERSION IS BUILT FROM: MULTIPLANAR FORMAT, MODEL, RANGE, CHROMA OFFSETS AND FILTER
+    private record YcbcrKey(int format, int model, int range, int x, int y, int filter) {}
 
     // ==========================================================================
     // STATE HOLDERS

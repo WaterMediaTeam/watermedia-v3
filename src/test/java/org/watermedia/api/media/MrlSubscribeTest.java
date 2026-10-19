@@ -11,11 +11,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Subscription contract for {@link MRL}: pre-ready listeners fire exactly once
- * on load completion, post-ready listeners fire immediately on the calling
- * thread, and a throwing listener never kills the dispatch chain. The MRL
- * cache hands back the same instance for repeated URIs, so each test uses a
- * different fixture URI to avoid cross-contamination.
+ * Verifies the {@link MRL} subscription contract: pre-ready listeners fire exactly once on load
+ * completion, post-ready listeners fire immediately on the calling thread, and a throwing listener
+ * never breaks the dispatch chain. Each case uses its own fixture because the MRL cache keys by URI.
  */
 @DisplayName("MRL subscription")
 public class MrlSubscribeTest {

@@ -26,6 +26,9 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -47,7 +50,8 @@ import static org.lwjgl.vulkan.VK11.*;
  * Verifies {@link VKEngine} conversions on a headless Vulkan 1.1 device, once with every feature the device offers
  * (YCbCr sampler, host import) and once forced onto the compute shader and staging copies: odd-sized planar and
  * packed frames, BT.601 and BT.709 matrices, full and limited range, chroma siting, PQ mapping and ragged strides,
- * each read back through the RGBA view {@link VKEngine#texture()} publishes. Validation-layer errors fail the test
+ * each read back through the RGBA view {@link VKEngine#texture()} publishes, and the device objects engines share
+ * until the last one is released. Validation-layer errors fail the test
  * when the Khronos layer is installed. Skipped without a Vulkan loader or a 1.1 device.
  */
 @DisplayName("VKEngine")
@@ -507,6 +511,57 @@ public class VKEngineTest {
                 assertEquals(shown, readback(view, 4, 2), "the last frame stays on screen");
             } finally {
                 release(engine);
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Shared objects")
+    class Shared {
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(Features.class)
+        @DisplayName("Engines on one device share the kit and its YCbCr conversion until the last one is released")
+        void kitOutlivesEveryEngineButTheLast(final Features features) {
+            final int w = 64;
+            final int h = 32;
+            final ByteBuffer[] planes = {
+                    YuvFrames.plane(0, w, h, (row, col) -> 120),
+                    YuvFrames.plane(0, w / 2, h / 2, (row, col) -> 90),
+                    YuvFrames.plane(0, w / 2, h / 2, (row, col) -> 200) };
+            final int[] bt601 = YuvFrames.rgb(KR_601, KB_601, false, 8, 120, 90, 200);
+            final int[] rgba = { bt601[0], bt601[1], bt601[2], 255 };
+            final VKEngine first = MediaAPI.vkEngine(features);
+            final VKEngine second = MediaAPI.vkEngine(features);
+            final Object kit;
+            try {
+                assertTrue(first.format(PixelFormat.YUV420P, w, h, 8, BT601_LIMITED));
+                assertTrue(second.format(PixelFormat.YUV420P, w, h, 8, BT601_LIMITED));
+                assertUniform(frame(first, planes, new int[3]), rgba, 3, "first engine");
+                assertUniform(frame(second, planes, new int[3]), rgba, 3, "second engine");
+                kit = field(first, "kit");
+                assertSame(kit, field(second, "kit"), "engines on one device share the kit");
+                if ((int) field(first, "ycbcrFmt") != 0) {
+                    assertNotNull(field(first, "ycbcr"), "the sampler route takes the kit's conversion");
+                    assertSame(field(first, "ycbcr"), field(second, "ycbcr"), "the same layout shares one conversion");
+                }
+
+                // THE SECOND ENGINE STILL IMPORTS THE ALIGNED PLANES, SO THEY STAY ALLOCATED UNTIL IT IS RELEASED TOO
+                first.release();
+                idle();
+                assertUniform(frame(second, planes, new int[3]), rgba, 3, "the remaining engine still converts");
+            } finally {
+                first.release();
+                release(second);
+            }
+
+            final VKEngine third = MediaAPI.vkEngine(features);
+            try {
+                assertNotSame(kit, field(third, "kit"), "the last engine released destroyed the kit");
+                assertTrue(third.format(PixelFormat.YUV420P, w, h, 8, BT601_LIMITED));
+                assertUniform(frame(third, planes, new int[3]), rgba, 3, "a fresh kit converts");
+            } finally {
+                release(third);
             }
         }
     }

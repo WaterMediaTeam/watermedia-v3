@@ -12,6 +12,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,8 +49,9 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>
  * Supports direct upload (BGRA, RGBA, RGB), packed YUV (YUYV/UYVY), semi-planar (NV12/NV21/P010),
  * planar YUV (420P/422P/444P), planar YUVA (with alpha), and grayscale (GRAY).
- * All YUV/GRAY formats are converted to RGBA on the GPU via FBO + shader pass.
- * High bit depths (10/12/16/32-bit) are supported via GL_R16/GL_RG16/GL_R32F textures.
+ * All YUV/GRAY formats are converted to RGBA on the GPU via FBO + shader pass; each conversion
+ * shader compiles once per OpenGL context and is shared by every engine on it until the last one
+ * is released. High bit depths (10/12/16/32-bit) are supported via GL_R16/GL_RG16/GL_R32F textures.
  * The developer always sees a single RGBA texture from {@link #texture()}.
  */
 public final class GLEngine extends GFXEngine {
@@ -166,6 +168,9 @@ public final class GLEngine extends GFXEngine {
     private static final Map<Thread, Hub> HUBS = new ConcurrentHashMap<>();
     private static final Map<GLCapabilities, ArrayDeque<Integer>> ORPHANS =
             Collections.synchronizedMap(new WeakHashMap<>());
+    // ONE CONVERSION KIT PER CONTEXT BY GLCapabilities IDENTITY, GUARDED BY ITS OWN MONITOR; THE LAST ENGINE OUT REMOVES ITS
+    // ENTRY, SO THE MAP HOLDS ONLY CONTEXTS WITH A LIVE CONVERTING ENGINE (SEE Kit)
+    private static final Map<GLCapabilities, Kit> KITS = new HashMap<>();
 
     // TEXTURE UNITS SCANNED BY THE ORPHAN SWEEP — COVERS MINECRAFT'S 12-UNIT BINDING CACHE
     // WITH MARGIN; HOSTS BINDING BEYOND THIS USE DSA OR UNCACHED PATHS
@@ -241,15 +246,9 @@ public final class GLEngine extends GFXEngine {
     private int glInternalRG = GL30.GL_RG8;  // RG8 / RG16
     private int glType = GL11.GL_UNSIGNED_BYTE; // UNSIGNED_BYTE / UNSIGNED_SHORT / FLOAT
 
-    // COMPILED CONVERSION PROGRAMS + THEIR UNIFORM LOCATIONS, INDEXED BY CONV KIND. LOCATIONS A
-    // PROGRAM DOESN'T DECLARE ARE -1 AND glUniform* IGNORES THEM, SO ONE BIND PATH SERVES ALL.
-    private final int[] programs = new int[FRAGMENTS.length];
-    private final int[][] uniforms = new int[FRAGMENTS.length][];
+    // THE CONTEXT'S CONVERSION KIT, TAKEN ON THE FIRST CONVERSION LAYOUT (RENDER THREAD) AND READ BY supports()
+    private volatile Kit kit;
     private int conv = CONV_NONE; // ACTIVE CONVERSION KIND FOR THE CURRENT FORMAT
-
-    // CONVERSION KINDS WHOSE SHADER FAILED TO COMPILE (ONE BIT PER CONV_*): THEIR FORMATS ARE DECLINED IN supports()
-    // SO THE PRODUCER PRE-CONVERTS TO BGRA INSTEAD OF RENDERING BLACK, AND THE COMPILE IS NEVER RETRIED
-    private volatile int shaderFailKinds;
 
     // LAST REQUESTED FORMAT (PRODUCER-SIDE SNAPSHOT): format() DEFERS FIELD UPDATES TO THE RENDER
     // THREAD, SO ASYNC preload() VALIDATES AGAINST THIS TO REJECT SYNCHRONOUSLY INSTEAD OF WARN-ONLY
@@ -325,9 +324,12 @@ public final class GLEngine extends GFXEngine {
             // DIRECT LAYOUTS UPLOAD AS GL TYPES: PACKED 8_8_8_8_REV FOR BGRA/YUYV, BYTE OR SHORT FOR RGB/RGBA
             case BGRA, YUYV, UYVY -> bits == 8;
             case RGB, RGBA -> bits == 8 || bits == 16;
-            // A KIND WHOSE CONVERSION SHADER FAILED TO COMPILE IS DECLINED SO THE PRODUCER RE-ROUTES IT
+            // A KIND WHOSE CONVERSION SHADER FAILED TO COMPILE ON THIS CONTEXT IS DECLINED SO THE PRODUCER RE-ROUTES IT
             // THROUGH THE SCALER TO BGRA INSTEAD OF RENDERING BLACK THROUGH A MISSING PROGRAM.
-            default -> (this.shaderFailKinds & (1 << kindOf(format))) == 0;
+            default -> {
+                final Kit kit = this.kit;
+                yield kit == null || (kit.failKinds & (1 << kindOf(format))) == 0;
+            }
         };
     }
 
@@ -493,19 +495,10 @@ public final class GLEngine extends GFXEngine {
         this.buildPlanes();
         this.activePlanes = this.planes.length;
 
-        // LAZY-COMPILE THE CONVERSION SHADER (ONCE PER KIND). ALL PROGRAMS SHARE ONE UNIFORM SCHEME,
-        // SO ONE RESOLVE LOOP COVERS EVERY KIND; UNDECLARED UNIFORMS RESOLVE TO -1 AND ARE IGNORED.
-        if (this.conv != CONV_NONE && this.programs[this.conv] == 0 && (this.shaderFailKinds & (1 << this.conv)) == 0) {
-            final int prog = this.compileShader(VERTEX_SHADER, FRAGMENTS[this.conv]);
-            if (prog != 0) {
-                final int[] locs = new int[UNIFORMS.length];
-                for (int i = 0; i < UNIFORMS.length; i++) locs[i] = GL20.glGetUniformLocation(prog, UNIFORMS[i]);
-                this.programs[this.conv] = prog;
-                this.uniforms[this.conv] = locs;
-                LOGGER.debug(IT, "Successfully compiled conversion shader for {} (program={})", format, prog);
-            } else {
-                this.shaderFailKinds |= 1 << this.conv; // DECLINE THIS KIND GOING FORWARD (SEE supports)
-            }
+        // THE CONTEXT'S KIT COMPILES EACH CONVERSION KIND ONCE FOR EVERY ENGINE ON IT
+        if (this.conv != CONV_NONE) {
+            if (this.kit == null) this.kit = Kit.acquire();
+            this.kit.compile(this.conv, format);
         }
 
         LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc)", format, width, height, this.planes.length, bits);
@@ -832,11 +825,10 @@ public final class GLEngine extends GFXEngine {
             this.managedTextureW = 0;
             this.managedTextureH = 0;
             this.releasePBOs();
-            for (int i = 0; i < this.programs.length; i++) {
-                if (this.programs[i] != 0) { GL20.glDeleteProgram(this.programs[i]); this.programs[i] = 0; }
-            }
             this.firstFrame = true;
         } finally {
+            // A FAILED DELETE ABOVE STILL LEAVES THE KIT, SO THE CONTEXT'S PROGRAMS NEVER OUTLIVE THEIR LAST ENGINE
+            if (this.kit != null) { this.kit.release(); this.kit = null; }
             env.restore();
         }
     }
@@ -848,12 +840,13 @@ public final class GLEngine extends GFXEngine {
     // AND FORCED A CLEAN DRAW STATE, SO THIS PASS ONLY SETS WHAT IT USES.
     private void convertToRGBA() {
         // SHADER COMPILE FAILED — SKIP RATHER THAN BIND PROGRAM 0 (BLACK OUTPUT); supports() NOW DECLINES IT
-        final int program = this.programs[this.conv];
+        final Kit kit = this.kit;
+        final int program = kit.programs[this.conv];
         if (program == 0) return;
         if (this.managedTexture == 0) this.managedTexture = this.newTexture();
         if (this.fbo == 0) this.fbo = GL30.glGenFramebuffers();
 
-        // LAZY FULLSCREEN QUAD (CORE PROFILE — NO IMMEDIATE MODE)
+        // LAZY FULLSCREEN QUAD (CORE PROFILE — NO IMMEDIATE MODE); A VAO NEVER CROSSES CONTEXTS, SO IT STAYS PER ENGINE
         if (this.quadVAO == 0) {
             final float[] verts = {
                     -1, -1,   0, 0,
@@ -893,7 +886,7 @@ public final class GLEngine extends GFXEngine {
         // ONE BIND PATH FOR EVERY CONVERSION KIND: BIND EACH PLANE TO ITS UNIT AND SET THE SHARED
         // UNIFORMS — LOCATIONS A PROGRAM DIDN'T DECLARE ARE -1, WHICH glUniform* SILENTLY IGNORES.
         GL20.glUseProgram(program);
-        final int[] locs = this.uniforms[this.conv];
+        final int[] locs = kit.uniforms[this.conv];
         for (int i = 0; i < this.planes.length; i++) {
             GL13.glActiveTexture(GL13.GL_TEXTURE0 + i);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.planes[i].tex);
@@ -1083,7 +1076,7 @@ public final class GLEngine extends GFXEngine {
         GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
     }
 
-    private int compileShader(final String vertSrc, final String fragSrc) {
+    private static int compileShader(final String vertSrc, final String fragSrc) {
         final int vert = GL20.glCreateShader(GL20.GL_VERTEX_SHADER);
         GL20.glShaderSource(vert, vertSrc);
         GL20.glCompileShader(vert);
@@ -1217,7 +1210,7 @@ public final class GLEngine extends GFXEngine {
     }
 
     // ==========================================================================
-    // DRAIN HUB + STATE ENVELOPE
+    // DRAIN HUB, CONVERSION KIT + STATE ENVELOPE
     // ==========================================================================
     // BATCHES EVERY ENGINE'S PENDING DRAIN ON ONE RENDER THREAD INTO A SINGLE TASK PER FRAME,
     // WRAPPED IN ONE STATE ENVELOPE — THE glGet CAPTURE COST IS PER FRAME, NOT PER PLAYER.
@@ -1276,6 +1269,56 @@ public final class GLEngine extends GFXEngine {
             } finally {
                 env.restore();
             }
+        }
+    }
+
+    // ONE CONTEXT'S CONVERSION PROGRAMS AND THEIR UNIFORM LOCATIONS, SHARED BY EVERY ENGINE ON IT. ENGINES TAKE IT AND
+    // LEAVE IT ON THEIR RENDER THREAD, SO EVERY GL CALL HERE RUNS WITH THE CONTEXT CURRENT
+    private static final class Kit {
+        private final GLCapabilities caps;
+        // PROGRAMS AND LOCATIONS BY CONV KIND; LOCATIONS A PROGRAM DOESN'T DECLARE ARE -1, WHICH glUniform* IGNORES
+        final int[] programs = new int[FRAGMENTS.length];
+        final int[][] uniforms = new int[FRAGMENTS.length][];
+        // KINDS WHOSE SHADER FAILED (ONE BIT PER CONV_*): supports() DECLINES THEM SO THE PRODUCER SENDS BGRA, NEVER RETRIED
+        volatile int failKinds;
+        private int engines; // GUARDED BY KITS
+
+        private Kit(final GLCapabilities caps) {
+            this.caps = caps;
+        }
+
+        static Kit acquire() {
+            synchronized (KITS) {
+                final Kit kit = KITS.computeIfAbsent(GL.getCapabilities(), Kit::new);
+                kit.engines++;
+                return kit;
+            }
+        }
+
+        // THE LAST ENGINE OUT DELETES EVERYTHING; A LATER ENGINE ON THE SAME CONTEXT BUILDS A FRESH KIT
+        void release() {
+            synchronized (KITS) {
+                if (--this.engines > 0) return;
+                KITS.remove(this.caps, this);
+            }
+            for (final int program: this.programs) {
+                if (program != 0) GL20.glDeleteProgram(program);
+            }
+        }
+
+        // COMPILES A KIND ONCE; ALL PROGRAMS SHARE ONE UNIFORM SCHEME, SO ONE RESOLVE LOOP COVERS EVERY KIND
+        void compile(final int kind, final PixelFormat format) {
+            if (this.programs[kind] != 0 || (this.failKinds & (1 << kind)) != 0) return;
+            final int prog = compileShader(VERTEX_SHADER, FRAGMENTS[kind]);
+            if (prog == 0) {
+                this.failKinds |= 1 << kind;
+                return;
+            }
+            final int[] locs = new int[UNIFORMS.length];
+            for (int i = 0; i < UNIFORMS.length; i++) locs[i] = GL20.glGetUniformLocation(prog, UNIFORMS[i]);
+            this.uniforms[kind] = locs;
+            this.programs[kind] = prog;
+            LOGGER.debug(IT, "Compiled the conversion shader for {} (program={})", format, prog);
         }
     }
 

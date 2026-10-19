@@ -197,9 +197,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
             f.status = report.status();
             // FIRST READY REPORT POOLS A MID-PLAYBACK JOINER INTO THE LOCKSTEP GATE
             if (report.status() == Status.PAUSED || report.status() == Status.PLAYING) f.pooled = true;
-            // MEDIA FACTS COUNT ONLY ONCE A CLIENT ACTUALLY OPENED THE SOURCE: A PLAYER THAT HASN'T
-            // REPORTS AN UNKNOWN DURATION, WHICH READS AS "LIVE" AND WOULD LATCH THE WHOLE SESSION
-            // INTO A LIVE ONE — KILLING SPEED CONTROL AND EVERY TIME CORRECTION.
+            // MEDIA FACTS COUNT ONLY ONCE A CLIENT OPENED THE SOURCE: AN UNOPENED PLAYER KNOWS NO DURATION, AND A WRONG LIVE
+            // LATCH WOULD KILL SPEED CONTROL, SEEKING AND EVERY TIME CORRECTION FOR THE WHOLE SESSION
             if (report.status() != Status.WAITING && report.status() != Status.LOADING) {
                 this.syncDuration(report.duration());
                 // LIVE IS A ONE-WAY LATCH FROM REPORTS — MIXED CLIENTS MUST NOT FLAP IT
@@ -421,12 +420,11 @@ public final class ServerMediaPlayer extends MediaPlayer {
     public boolean seek(final long time) {
         if (!super.seek(time)) return false;
         synchronized (this) {
-            if (this.status == Status.WAITING) return false;
+            if (this.status == Status.WAITING || !this.canSeek()) return false;
             final Status prev = this.status();
             // SCRUBBING A FINISHED/STOPPED CLOCK LANDS PAUSED AT THE POSITION INSTEAD OF STAYING DEAD
             if (this.status == Status.ENDED || this.status == Status.STOPPED) this.status = Status.PAUSED;
-            final long d = this.duration;
-            this.syncTime(d > 0 ? Math.min(Math.max(0L, time), d) : Math.max(0L, time));
+            this.syncTime(Math.min(Math.max(0L, time), this.duration));
             this.queueStatus(prev, this.status());
         }
         this.deliverStatus();
@@ -504,19 +502,14 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean live() {
-        // EXPLICIT CLIENT-REPORTED FLAG, PLUS THE ORIGINAL INFERENCE: UNKNOWN DURATION BEHAVES AS LIVE
-        return this.live || this.duration <= 0;
+        // ONLY A CLIENT REPORT OR THE HOST MARKS THE SESSION LIVE: AN UNKNOWN DURATION IS A SOURCE NOT OPEN YET
+        return this.live;
     }
 
     @Override
     public boolean canSeek() {
-        return !this.live();
-    }
-
-    /** Only an explicitly live session locks the rate; an unknown duration merely holds the clock. */
-    @Override
-    public boolean canSpeed() {
-        return !this.live;
+        // NO TIMELINE TO MOVE UNTIL A CLIENT REPORTS THE DURATION, AND NONE ON A LIVE SESSION
+        return this.duration > 0 && !this.live;
     }
 
     @Override

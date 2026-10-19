@@ -12,9 +12,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
- * Caching guarantees: {@link MediaAPI#preload(URI...)} fans out into the same
- * underlying instances that {@link MediaAPI#mrl(URI)} returns, and repeated
- * lookups for the same URI yield the exact same object (reference identity).
+ * Verifies the MRL cache: {@link MediaAPI#preload(URI...)} returns the same instances that
+ * {@link MediaAPI#mrl(URI)} returns, and repeated lookups of one URI yield the same object.
  */
 @DisplayName("MRL preload caching")
 public class MrlPreloadTest {

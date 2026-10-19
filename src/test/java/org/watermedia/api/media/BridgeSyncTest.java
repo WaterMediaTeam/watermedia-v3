@@ -363,8 +363,8 @@ public class BridgeSyncTest {
         final ServerMediaPlayer server = this.hub.authority();
         final ServerMediaPlayer follower = this.hub.follower();
         await("the follower to register", () -> server.followers() == 1);
-        // REPORTS FLOW WHILE NEITHER SIDE KNOWS THE MEDIA: AN UNKNOWN DURATION READS AS "LIVE",
-        // AND LATCHING IT WOULD KILL SPEED CONTROL AND EVERY TIME CORRECTION FOR THE SESSION
+        // REPORTS FLOW WHILE NEITHER SIDE KNOWS THE MEDIA; LATCHING THEM AS LIVE WOULD KILL SPEED CONTROL
+        // AND EVERY TIME CORRECTION FOR THE SESSION
         settle();
 
         server.syncDuration(60_000L);
@@ -373,6 +373,24 @@ public class BridgeSyncTest {
         settle();
         assertFalse(server.live(), "an unopened client must not mark the session live");
         assertTrue(server.canSpeed(), "speed control must survive the handshake");
+    }
+
+    @Test
+    @DisplayName("a playing follower clock without a duration keeps the session non-live until the duration makes it seekable")
+    void testUnknownDurationIsNotLive() {
+        this.hub = new Hub();
+        final ServerMediaPlayer server = this.hub.authority();
+        final ServerMediaPlayer follower = this.hub.follower();
+        await("the follower to register", () -> server.followers() == 1);
+        server.start();
+        await("the follower to play", follower::playing);
+        settle();
+        assertFalse(follower.live(), "an unknown duration is not a live session");
+        assertFalse(server.live(), "a playing client without a duration must not mark the session live");
+        assertFalse(server.canSeek(), "there is no timeline to seek yet");
+        server.syncDuration(60_000L);
+        assertTrue(server.canSeek(), "the reported duration opens the timeline");
+        assertTrue(server.canSpeed(), "speed control survives");
     }
 
     @Test

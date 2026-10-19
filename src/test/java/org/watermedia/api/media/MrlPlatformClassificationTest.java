@@ -25,13 +25,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Regression coverage for platform-resolved sources typed {@link MediaType#UNKNOWN}.
- *
- * <p>A platform that cannot know the payload type (water://, MediaFire) delivers UNKNOWN and MRL
- * used to keep it verbatim — images were dispatched to FFmpeg as one-frame "videos" that ENDED
- * instantly and restarted forever on synced displays (PLAYING→ENDED→LOADING roundtrip). A
- * single-source platform result must now be classified like a direct URL, while multi-source
- * results (IPTV lists) must stay untouched so no per-channel probe storm happens.
+ * Verifies how {@link MRL} classifies platform sources typed {@link MediaType#UNKNOWN} (water://,
+ * MediaFire): a single source is byte-sniffed like a direct URL, so an image never reaches FFmpeg as
+ * a one-frame video, while multi-source results such as IPTV lists stay UNKNOWN and are never probed.
  */
 @DisplayName("MRL platform source classification")
 public class MrlPlatformClassificationTest {

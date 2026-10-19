@@ -35,15 +35,24 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
      */
     public enum SampleType {
         /** Unsigned 8-bit integer. */
-        U8,
+        U8(1),
         /** Signed 16-bit integer, little-endian. */
-        S16,
+        S16(2),
         /** Signed 32-bit integer, little-endian. */
-        S32,
+        S32(4),
         /** IEEE 754 32-bit float, little-endian. Expected range [-1.0, +1.0]. */
-        FLT,
+        FLT(4),
         /** IEEE 754 64-bit float, little-endian. Expected range [-1.0, +1.0]. */
-        DBL
+        DBL(8);
+
+        private final int bytes;
+
+        SampleType(final int bytes) {
+            this.bytes = bytes;
+        }
+
+        /** Returns the size of one single-channel sample in bytes. */
+        public int bytes() { return this.bytes; }
     }
 
     /**
@@ -80,6 +89,7 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     volatile int channels;
     volatile int sampleRate;
     volatile float speed = 1.0f;
+    volatile float volume = 1.0f;
     volatile boolean released;
 
     // SINGLE ENFORCEMENT POINT: EVERY AUDIO ENGINE CONSTRUCTION PASSES THROUGH HERE.
@@ -88,10 +98,9 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     }
 
     /**
-     * Returns the channel-support table, one entry per supported channel count: the combinations
-     * every host can rely on. Callers pick an exact passthrough combination or fall back to the
-     * {@link #closestChannelSupport(int) closest} supported channel count; a backend may still open
-     * a combination outside the table when its mixer allows it.
+     * Returns the channel-support table, one entry per supported channel count: the only
+     * combinations the engine plays. Callers pick an exact passthrough combination or fall back to
+     * the {@link #closestChannelSupport(int) closest} supported channel count.
      * @return a defensive copy of the channel-support entries
      */
     public abstract ChannelSupport[] supportedChannels();
@@ -132,15 +141,15 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
         return best;
     }
 
-    // RECONFIGURES THE SOURCE FOR A SAMPLE TYPE, CHANNEL COUNT (1..8) AND RATE (MIN_SAMPLE_RATE_HZ..MAX_SAMPLE_RATE_HZ)
+    // RECONFIGURES THE SOURCE FOR A COMBINATION OF THE CHANNEL-SUPPORT TABLE AND A RATE (MIN_SAMPLE_RATE_HZ..MAX_SAMPLE_RATE_HZ)
     // BEFORE THE FIRST UPLOAD AND ON EVERY CHANGE; FALSE WHEN UNSUPPORTED OR RELEASED. A LAYOUT CHANGE DROPS QUEUED AUDIO
     final boolean format(final SampleType type, final int channels, final int sampleRate) {
-        if (this.released || type == null || channels < 1 || channels > 8
-                || sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
-        return this.apply(type, channels, sampleRate);
+        if (this.released || sampleRate < MIN_SAMPLE_RATE_HZ || sampleRate > MAX_SAMPLE_RATE_HZ) return false;
+        final ChannelSupport support = this.channelSupport(channels);
+        return support != null && support.supports(type) && this.apply(type, channels, sampleRate);
     }
 
-    // BACKEND RECONFIGURATION FOR ARGUMENTS THE BASE ALREADY VALIDATED; STREAM BACKENDS REOPEN THEIR LINE
+    // BACKEND RECONFIGURATION FOR A TABLE COMBINATION THE BASE ALREADY VALIDATED; STREAM BACKENDS REOPEN THEIR LINE
     abstract boolean apply(final SampleType type, final int channels, final int sampleRate);
 
     /** Current source handle, 0 when the backend has none or the engine was released. */
@@ -174,6 +183,9 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     /** Current playback speed multiplier (1.0 = normal). */
     public float speed() { return this.speed; }
 
+    /** Current gain: 0 = silent, 1 = full. */
+    public float volume() { return this.volume; }
+
     // PAUSES PLAYBACK
     abstract void pause();
 
@@ -193,11 +205,13 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     // SETS THE GAIN: 0 = SILENT, 1 = FULL. A NEGATIVE OR NON-FINITE VALUE IS A CALLER BUG; IGNORED ONCE RELEASED
     final void volume(final float volume) {
         if (!Float.isFinite(volume) || volume < 0) throw new IllegalArgumentException("Volume must be finite and nonnegative");
-        if (!this.released) this.gain(volume);
+        if (this.released) return;
+        this.volume = volume;
+        this.gain();
     }
 
-    // BACKEND GAIN FOR A VALUE THE BASE ALREADY VALIDATED
-    abstract void gain(final float volume);
+    // APPLIES volume TO THE BACKEND; IT ALWAYS READS THE LATEST VALUE, SO CONCURRENT CALLS SETTLE ON THE LAST WRITE
+    abstract void gain();
 
     /**
      * Releases all resources associated with the source. The engine is unusable after this call;
@@ -220,13 +234,17 @@ public abstract sealed class SFXEngine permits ALEngine, JSEngine {
     // BACKEND TEARDOWN; A THROW LEAVES THE ENGINE LIVE SO THE CALLER CAN RETRY ON THE RIGHT THREAD
     abstract void destroy();
 
-    // QUEUES PCM IN THE LAST format(): NON-BLOCKING, FALSE MEANS NO BUFFER WAS AVAILABLE (RETRY LATER) OR THE ENGINE
-    // WAS RELEASED. THE ENGINE READS [position, limit) AND NEVER MOVES position
+    // QUEUES PCM IN THE LAST format(), READING [position, limit) WITHOUT MOVING position: FALSE WHEN FULL (RETRY LATER),
+    // UNCONFIGURED OR RELEASED. A HEAP, EMPTY OR FRAME-MISALIGNED CHUNK IS A CALLER BUG ON EVERY BACKEND
     final boolean upload(final ByteBuffer data) {
-        return !this.released && this.push(data);
+        final SampleType type = this.sampleType;
+        if (this.released || type == null) return false;
+        if (!data.isDirect() || !data.hasRemaining() || data.remaining() % (this.channels * type.bytes()) != 0)
+            throw new IllegalArgumentException("Audio data must be direct, nonempty and sample-frame aligned");
+        return this.push(data);
     }
 
-    // BACKEND UPLOAD (SEE upload)
+    // BACKEND UPLOAD OF A CHUNK THE BASE ALREADY VALIDATED (SEE upload)
     abstract boolean push(final ByteBuffer data);
 
     // DROPS QUEUED AUDIO THAT HAS NOT PLAYED (SEEKS, QUALITY SWITCHES); PLAYBACK STOPS UNTIL THE NEXT upload + play

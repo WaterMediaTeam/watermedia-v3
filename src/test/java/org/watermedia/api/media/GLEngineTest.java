@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
 import org.watermedia.api.media.Colorimetry.Matrix;
 import org.watermedia.api.media.Colorimetry.Transfer;
 import org.watermedia.api.util.PixelFormat;
@@ -14,9 +15,14 @@ import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.YuvFrames;
 
 import java.awt.GraphicsEnvironment;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.lwjgl.glfw.GLFW.*;
@@ -25,8 +31,8 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 /**
  * Verifies {@link GLEngine} conversions on a real OpenGL context: odd sizes keep their last chroma column, padded
  * planes may end on their last tight row, packed YUYV keeps each pixel's luma, ragged RGB strides land every row,
- * and the colorimetry (matrix, range, chroma siting, PQ/HLG and BT.2020) matches the standard formulas. Skipped
- * without a display, GLFW or a 3.2 core context.
+ * the colorimetry (matrix, range, chroma siting, PQ/HLG and BT.2020) matches the standard formulas, and engines on
+ * one context share their conversion programs. Skipped without a display, GLFW or a 3.2 core context.
  */
 @DisplayName("GLEngine")
 public class GLEngineTest {
@@ -217,7 +223,65 @@ public class GLEngineTest {
         assertPixels(expected, rgba, "BT.2020 to BT.709");
     }
 
+    @Test
+    @DisplayName("Engines on one context share their conversion programs and the last one released deletes them")
+    void sharedConversionKit() throws ReflectiveOperationException {
+        final int[] expected = YuvFrames.rgb(BT601[0], BT601[1], false, 8, 120, 90, 200);
+        final Colorimetry color = new Colorimetry(Matrix.BT601, false, true, false, Transfer.SDR, false);
+        final GLEngine first = MediaAPI.glEngine(null, null);
+        final GLEngine second = MediaAPI.glEngine(null, null);
+        final Object kit;
+        final int program;
+        try {
+            assertTrue(first.format(PixelFormat.YUV444P, 2, 2, 8, color));
+            first.upload(uniform(120, 90, 200), new int[3]);
+            assertTrue(second.format(PixelFormat.YUV444P, 2, 2, 8, color));
+            second.upload(uniform(120, 90, 200), new int[3]);
+            kit = kit(first);
+            assertNotNull(kit, "a conversion layout takes the context's kit");
+            assertSame(kit, kit(second), "a second engine on the same context reuses the kit");
+            program = program(kit);
+            assertTrue(GL20.glIsProgram(program), "the shared program is live");
+
+            first.release();
+            assertTrue(GL20.glIsProgram(program), "the kit survives while an engine still uses it");
+            second.upload(uniform(120, 90, 200), new int[3]);
+            assertPixels(expected, pixels(second, 2, 2), "the remaining engine still converts");
+        } finally {
+            first.release();
+            second.release();
+        }
+        assertFalse(GL20.glIsProgram(program), "the last engine released deletes the program");
+
+        final GLEngine third = MediaAPI.glEngine(null, null);
+        try {
+            assertTrue(third.format(PixelFormat.YUV444P, 2, 2, 8, color));
+            third.upload(uniform(120, 90, 200), new int[3]);
+            assertNotSame(kit, kit(third), "a later engine builds a fresh kit");
+            assertPixels(expected, pixels(third, 2, 2), "the fresh kit converts");
+        } finally {
+            third.release();
+        }
+    }
+
     // UTILITY
+
+    // THE ENGINE'S PRIVATE CONVERSION KIT, null BEFORE ITS FIRST CONVERSION LAYOUT
+    private static Object kit(final GLEngine engine) throws ReflectiveOperationException {
+        final Field field = GLEngine.class.getDeclaredField("kit");
+        field.setAccessible(true);
+        return field.get(engine);
+    }
+
+    // THE KIT'S YUV 3-PLANE PROGRAM (THE ONLY KIND THE SHARING TEST CONVERTS)
+    private static int program(final Object kit) throws ReflectiveOperationException {
+        final Field field = kit.getClass().getDeclaredField("programs");
+        field.setAccessible(true);
+        for (final int program: (int[]) field.get(kit)) {
+            if (program != 0) return program;
+        }
+        return 0;
+    }
 
     // 8-BIT LIMITED-RANGE GRAY AS ANY MATRIX SHOWS IT (NEUTRAL CHROMA)
     private static int gray(final int luma) {

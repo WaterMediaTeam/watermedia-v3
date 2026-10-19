@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.test.support.PlayerWait;
 import org.watermedia.tools.ThreadTool;
 
 import java.lang.reflect.Field;
@@ -86,11 +87,10 @@ public class PlatformSearchTest {
 
     @Test
     @DisplayName("A platform returning more than the limit is defensively capped")
-    void testPerPlatformCap() throws Exception {
+    void testPerPlatformCap() {
         PlatformAPI.register(new StubPlatform(5, null)); // RETURNS 5 HITS; CALLER ASKS FOR 2
         final PlatformSearch search = PlatformAPI.search("cats", 2);
-        awaitDone(search, 3000);
-        assertTrue(search.done(), "Search must complete");
+        assertTrue(PlayerWait.awaitCondition(search::done, 3_000), "Search must complete");
         assertEquals(2, search.results().size(), "Hits beyond the per-platform limit must be dropped");
     }
 
@@ -101,8 +101,9 @@ public class PlatformSearchTest {
         PlatformAPI.register(stub);
 
         final PlatformSearch first = PlatformAPI.search("dogs", 2);
-        awaitDone(first, 3000);
-        awaitCacheKey("2 dogs", 2000); // CACHING HAPPENS JUST AFTER completion — WAIT FOR IT TO LAND
+        assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "Search must complete");
+        // CACHING HAPPENS JUST AFTER COMPLETION — WAIT FOR IT TO LAND
+        assertTrue(awaitCacheKey("2 dogs", 2_000), "The finished search must land in the cache");
         final int probesAfterFirst = stub.probes.get();
 
         final PlatformSearch second = PlatformAPI.search("dogs", 2);
@@ -114,10 +115,11 @@ public class PlatformSearchTest {
     @Test
     @DisplayName("Superseding a search ends the old handle at once, marked superseded and empty")
     void testSupersedeEndsOldHandle() throws Exception {
-        PlatformAPI.register(new StubPlatform(1, 2000)); // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
+        final StubPlatform stub = new StubPlatform(1, 2_000); // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
+        PlatformAPI.register(stub);
 
         final PlatformSearch first = PlatformAPI.search("slow-a", 2);
-        Thread.sleep(150); // LET THE PROBE START
+        assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
         assertFalse(first.done());
         assertFalse(first.superseded());
         PlatformAPI.search("slow-b", 2); // SUPERSEDES: CANCELS THE FIRST COORDINATOR + ITS PROBE
@@ -129,30 +131,31 @@ public class PlatformSearchTest {
 
     @Test
     @DisplayName("A blank query leaves the running search alone")
-    void testBlankQueryDoesNotSupersede() throws Exception {
-        PlatformAPI.register(new StubPlatform(1, 300)); // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
+    void testBlankQueryDoesNotSupersede() {
+        final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
+        PlatformAPI.register(stub);
 
         final PlatformSearch first = PlatformAPI.search("slow-c", 2);
-        Thread.sleep(100); // LET THE PROBE START
+        assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
         assertTrue(PlatformAPI.search("   ", 2).done(), "The blank query is a no-op handle");
-        awaitDone(first, 3000);
-        assertTrue(first.done(), "The in-flight search must complete instead of being cancelled by a no-op");
+        assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "The in-flight search must complete instead of being cancelled by a no-op");
         assertFalse(first.superseded());
         assertEquals(1, first.results().size());
     }
 
     @Test
     @DisplayName("A registration during a search keeps that search out of the cache")
-    void testRegistrationDuringSearchIsNotCached() throws Exception {
-        PlatformAPI.register(new StubPlatform(1, 300)); // BLOCKS SO THE REGISTRY CHANGES WHILE THE SEARCH RUNS
+    void testRegistrationDuringSearchIsNotCached() {
+        final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS SO THE REGISTRY CHANGES WHILE THE SEARCH RUNS
+        PlatformAPI.register(stub);
         final PlatformSearch first = PlatformAPI.search("race", 2);
-        Thread.sleep(100);
+        assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
         PlatformAPI.register(new StubPlatform(1, null));
-        awaitDone(first, 3000);
+        assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "Search must complete");
         assertEquals(1, first.results().size(), "The running search keeps its snapshot of the registry");
 
         final PlatformSearch again = PlatformAPI.search("race", 2);
-        awaitDone(again, 3000);
+        assertTrue(PlayerWait.awaitCondition(again::done, 3_000), "Search must complete");
         assertEquals(2, again.results().size(), "The query is probed again with the new handler instead of served from cache");
     }
 
@@ -161,12 +164,13 @@ public class PlatformSearchTest {
     void testRegistrationInvalidatesCache() throws Exception {
         final StubPlatform stub = new StubPlatform(1, null);
         PlatformAPI.register(stub);
-        awaitDone(PlatformAPI.search("birds", 2), 3000);
-        awaitCacheKey("2 birds", 2000);
+        final PlatformSearch first = PlatformAPI.search("birds", 2);
+        assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "Search must complete");
+        assertTrue(awaitCacheKey("2 birds", 2_000), "The finished search must land in the cache");
 
         PlatformAPI.register(new StubPlatform(1, null));
         final PlatformSearch again = PlatformAPI.search("birds", 2);
-        awaitDone(again, 3000);
+        assertTrue(PlayerWait.awaitCondition(again::done, 3_000), "Search must complete");
         assertEquals(2, stub.probes.get(), "A new handler must force the query to be probed again");
         assertEquals(2, again.results().size(), "Both handlers answer the re-probed query");
     }
@@ -201,22 +205,16 @@ public class PlatformSearchTest {
         }
     }
 
-    private static void awaitDone(final PlatformSearch search, final long timeoutMs) throws InterruptedException {
-        final long deadline = System.currentTimeMillis() + timeoutMs;
-        while (!search.done() && System.currentTimeMillis() < deadline) Thread.sleep(10);
-    }
-
+    // WAITS FOR key IN THE RESULT CACHE, READ UNDER THE SEARCH LOCK THAT GUARDS ITS WRITES
     @SuppressWarnings("unchecked")
-    private static void awaitCacheKey(final String key, final long timeoutMs) throws Exception {
+    private static boolean awaitCacheKey(final String key, final long timeoutMs) throws Exception {
         final Object lock = field("SEARCH_LOCK").get(null);
         final Map<String, ?> cache = (Map<String, ?>) field("SEARCH_CACHE").get(null);
-        final long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
+        return PlayerWait.awaitCondition(() -> {
             synchronized (lock) {
-                if (cache.containsKey(key)) return;
+                return cache.containsKey(key);
             }
-            Thread.sleep(10);
-        }
+        }, timeoutMs);
     }
 
     private static void cancelSearchTask() throws Exception {

@@ -41,7 +41,6 @@ public final class JSEngine extends SFXEngine {
     // CAPABILITY TABLES: JAVA SOUND SUPPORTS U8/S16 PCM MONO/STEREO ON EVERY PLATFORM; IT
     // DOESN'T SUPPORT FLOAT, S32 NOR MULTICHANNEL THROUGH THE DEFAULT MIXER, SO NEGOTIATION
     // ALWAYS FALLS BACK INSIDE THIS SET (THERE IS NO SECOND FALLBACK IF format() REJECTS).
-    // formatFor() STILL MAPS S32/FLT SO A DIRECT CALLER MAY USE THEM WHEN ITS MIXER ALLOWS.
     private static final SampleType[] SUPPORTED_TYPES = { SampleType.U8, SampleType.S16 };
     private static final ChannelSupport[] SUPPORTED_CHANNELS = {
             new ChannelSupport(1, SampleType.U8, SampleType.S16), // MONO
@@ -53,7 +52,8 @@ public final class JSEngine extends SFXEngine {
     // THE CONTROL THREAD (volume/pause) — EVERY ACCESS HOLDS THE ENGINE MONITOR
     private SourceDataLine line;
     private FloatControl gainControl;
-    private float gain = 1.0f; // LAST REQUESTED LINEAR VOLUME, RE-APPLIED ON REOPEN
+    // start() WAS CALLED SINCE THE LAST stop(): isActive()/isRunning() STAY FALSE UNTIL DATA FLOWS, SO THEY CANNOT TELL
+    private boolean started;
     // PENDING-AUDIO BOOKKEEPING (pendingMs): framesWritten - line.getLongFramePosition() = FRAMES WRITTEN BUT NOT YET AUDIBLE
     private long framesWritten;
     private int bytesPerFrame;
@@ -68,15 +68,16 @@ public final class JSEngine extends SFXEngine {
 
     @Override
     synchronized void pause() {
-        if (this.line != null && this.line.isActive()) this.line.stop();
+        if (this.line != null) this.line.stop();
+        this.started = false;
     }
 
     @Override
     synchronized void play() {
-        if (this.line == null) return;
-        // A STARTED LINE RENDERS WHATEVER IS WRITTEN AND AUTO-RESUMES AFTER AN UNDERRUN, SO
-        // START ONCE PER PAUSE CYCLE. isActive() IS true FROM start() UNTIL stop().
-        if (!this.line.isActive()) this.line.start();
+        // A STARTED LINE RENDERS WHATEVER IS WRITTEN AND AUTO-RESUMES AFTER AN UNDERRUN, SO START ONCE PER PAUSE CYCLE
+        if (this.line == null || this.started) return;
+        this.line.start();
+        this.started = true;
     }
 
     @Override
@@ -88,8 +89,7 @@ public final class JSEngine extends SFXEngine {
     }
 
     @Override
-    synchronized void gain(final float volume) {
-        this.gain = volume;
+    synchronized void gain() {
         this.applyGain();
     }
 
@@ -111,8 +111,11 @@ public final class JSEngine extends SFXEngine {
 
     @Override
     synchronized boolean apply(final SampleType type, final int channels, final int sampleRate) {
-        final AudioFormat fmt = formatFor(type, channels, sampleRate);
-        if (fmt == null) return false;
+        // A RELEASE BETWEEN THE BASE CHECK AND THIS MONITOR WOULD LEAK THE LINE OPENED BELOW
+        if (this.released) return false;
+        // THE BASE ONLY PASSES U8/S16 MONO/STEREO (THE TABLE), LITTLE-ENDIAN LIKE EVERY CANONICAL TYPE
+        final AudioFormat fmt = new AudioFormat(type == SampleType.U8 ? AudioFormat.Encoding.PCM_UNSIGNED : AudioFormat.Encoding.PCM_SIGNED,
+                sampleRate, type.bytes() * 8, channels, channels * type.bytes(), sampleRate, false);
         final int frameSize = fmt.getFrameSize();
         // REUSE THE OPEN LINE ON AN IDENTICAL RECONFIGURE (MIRRORS ALEngine's STATE-ONLY UPDATE); A NEW LAYOUT
         // OPENS A FRESH LINE WITH DEPTH ≈ bufferMs, DROPPING QUEUED AUDIO LIKE ALEngine's FLUSH
@@ -123,29 +126,28 @@ public final class JSEngine extends SFXEngine {
             LOGGER.error(IT, "Java Sound line unavailable for type={} ch={} rate={}", type, channels, sampleRate);
             return false;
         }
-        this.sampleType = type;
         this.channels = channels;
         this.sampleRate = sampleRate;
         this.bytesPerFrame = frameSize;
+        this.sampleType = type; // LAST: IT FLAGS A CONFIGURED LAYOUT TO upload() ON ANY THREAD
         return true;
     }
 
     @Override
     synchronized boolean push(final ByteBuffer data) {
-        if (this.line == null) return false; // NOT CONFIGURED — CALLER BUG (LIKE ALEngine's UNINITIALIZED STATE)
+        if (this.line == null) return false; // A RELEASE CLOSED THE LINE AFTER THE BASE LET THIS CALL THROUGH
         final int len = data.remaining();
-        if (len == 0) return true;
         // A CHUNK LARGER THAN THE LINE BUFFER COULD NEVER PASS available(): REOPEN WITH ROOM FOR TWO OF THEM, ONCE
         // PER JUMP, RESUMING PLAYBACK WHEN THE OLD LINE WAS RUNNING; WITHOUT A WIDER LINE THE CHUNK IS DROPPED, NOT RETRIED
         if (len > this.line.getBufferSize()) {
-            final boolean active = this.line.isActive();
+            final boolean resume = this.started;
             LOGGER.debug(IT, "Audio chunk of {} bytes exceeds the {}-byte line buffer; reopening wider", len, this.line.getBufferSize());
             if (!this.openLine(this.line.getFormat(), 2 * len)) {
                 if (!this.dropWarned) LOGGER.warn(IT, "Dropped a {}-byte audio chunk: no wider Java Sound line", len);
                 this.dropWarned = true;
                 return true;
             }
-            if (active) this.play();
+            if (resume) this.play();
         }
         final SourceDataLine l = this.line;
         // NON-BLOCKING: available() < len MEANS THE LINE IS FULL — BACKPRESSURE, LIKE ALEngine's
@@ -166,6 +168,7 @@ public final class JSEngine extends SFXEngine {
         // SO ALIGNING framesWritten TO IT ZEROES pendingMs() CORRECTLY.
         l.stop();
         l.flush();
+        this.started = false;
         this.framesWritten = l.getLongFramePosition();
     }
 
@@ -205,6 +208,7 @@ public final class JSEngine extends SFXEngine {
         l.flush();
         l.close();
         this.line = null;
+        this.started = false;
     }
 
     // APPLIES THE LAST REQUESTED LINEAR GAIN TO THE CURRENT LINE VIA MASTER_GAIN (IN DECIBELS).
@@ -212,28 +216,13 @@ public final class JSEngine extends SFXEngine {
     private void applyGain() {
         final FloatControl c = this.gainControl;
         if (c == null) return;
-        if (this.gain <= 0.0f) {
+        final float gain = this.volume;
+        if (gain <= 0.0f) {
             c.setValue(c.getMinimum()); // SILENCE
             return;
         }
         // MASTER_GAIN IS LOGARITHMIC: dB = 20·log10(linearGain), CLAMPED TO THE CONTROL RANGE
-        final float db = (float) (20.0 * Math.log10(this.gain));
+        final float db = (float) (20.0 * Math.log10(gain));
         c.setValue(Math.min(c.getMaximum(), Math.max(c.getMinimum(), db)));
-    }
-
-    // MAPS TYPE + CHANNELS + RATE TO A LITTLE-ENDIAN AudioFormat; RETURNS null FOR DBL,
-    // WHICH HAS NO PORTABLE 64-BIT PCM ENCODING.
-    private static AudioFormat formatFor(final SampleType type, final int channels, final int rate) {
-        final AudioFormat.Encoding enc;
-        final int bits;
-        switch (type) {
-            case U8  -> { enc = AudioFormat.Encoding.PCM_UNSIGNED; bits = 8; }
-            case S16 -> { enc = AudioFormat.Encoding.PCM_SIGNED;   bits = 16; }
-            case S32 -> { enc = AudioFormat.Encoding.PCM_SIGNED;   bits = 32; }
-            case FLT -> { enc = AudioFormat.Encoding.PCM_FLOAT;    bits = 32; }
-            default  -> { return null; } // DBL — NO PORTABLE JAVA SOUND ENCODING
-        }
-        final int frameSize = channels * (bits / 8);
-        return new AudioFormat(enc, rate, bits, channels, frameSize, rate, false);
     }
 }
