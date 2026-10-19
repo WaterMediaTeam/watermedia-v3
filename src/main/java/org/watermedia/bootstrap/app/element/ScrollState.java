@@ -22,7 +22,7 @@ final class ScrollState {
         if (this.animPos == this.target) return false;
         final long now = System.currentTimeMillis();
         // dt CLAMPED TO [0,64]MS — A STALLED FRAME NEVER TELEPORTS AND A CLOCK JUMP NEVER DIVERGES
-        final float dt = Math.max(0L, Math.min(64L, now - this.tick));
+        final float dt = MathUtil.clamp(now - this.tick, 0L, 64L);
         this.tick = now;
         this.animPos += (this.target - this.animPos) * (1f - (float) Math.exp(-dt / TAU));
         if (Math.abs(this.target - this.animPos) < 0.5f) this.animPos = this.target;

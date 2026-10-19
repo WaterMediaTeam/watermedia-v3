@@ -2,6 +2,7 @@ package org.watermedia.api.media;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
+import org.watermedia.api.util.MathUtil;
 
 import java.nio.ByteBuffer;
 import java.util.Map;
@@ -325,41 +326,27 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     // --- PLAYBACK CONTROLS ---
 
-    // EVERY CONTROL DELEGATES TO super FIRST (A FOLLOWER'S CALL IS HANDED TO ITS AUTHORITY THERE); THE LOCK COMES AFTER IT AND
-    // QUEUES THE TRANSITION IN WRITE ORDER, AND THE LISTENER HEARS IT AFTER THE LOCK, SO NEITHER THE BRIDGE NOR A CALLBACK RUNS UNDER IT
+    // THE BASE CALLS THIS ONCE A START IS THIS CLOCK'S OWN; THE MONITOR RELEASE() TAKES KEEPS A RELEASED CLOCK STOPPED
     @Override
-    public boolean start() {
-        if (!super.start()) return false;
+    boolean launch(final boolean paused, final long seekMs) {
         synchronized (this) {
+            if (this.released) return false;
+            this.exception = null;
             final Status prev = this.status();
-            this.accumulatedMs = 0;
+            this.accumulatedMs = Math.max(0L, seekMs);
             this.segmentStartNanos = System.nanoTime();
             this.gated = false;
-            this.status = Status.PLAYING;
+            this.status = paused ? Status.PAUSED : Status.PLAYING;
             this.revision.incrementAndGet();
             this.ticking(true);
-            this.queueStatus(prev, Status.PLAYING);
+            this.queueStatus(prev, this.status);
         }
         this.deliverStatus();
         return true;
     }
 
-    @Override
-    public boolean startPaused() {
-        if (!super.startPaused()) return false;
-        synchronized (this) {
-            final Status prev = this.status();
-            this.accumulatedMs = 0;
-            this.gated = false;
-            this.status = Status.PAUSED;
-            this.revision.incrementAndGet();
-            this.ticking(true);
-            this.queueStatus(prev, Status.PAUSED);
-        }
-        this.deliverStatus();
-        return true;
-    }
-
+    // EVERY CONTROL DELEGATES TO super FIRST (A FOLLOWER'S CALL IS HANDED TO ITS AUTHORITY THERE); THE LOCK COMES AFTER IT AND
+    // QUEUES THE TRANSITION IN WRITE ORDER, AND THE LISTENER HEARS IT AFTER THE LOCK, SO NEITHER THE BRIDGE NOR A CALLBACK RUNS UNDER IT
     @Override
     public boolean pause(final boolean paused) {
         if (!super.pause(paused)) return false;
@@ -424,7 +411,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
             final Status prev = this.status();
             // SCRUBBING A FINISHED/STOPPED CLOCK LANDS PAUSED AT THE POSITION INSTEAD OF STAYING DEAD
             if (this.status == Status.ENDED || this.status == Status.STOPPED) this.status = Status.PAUSED;
-            this.syncTime(Math.min(Math.max(0L, time), this.duration));
+            this.syncTime(MathUtil.clamp(time, 0L, this.duration));
             this.queueStatus(prev, this.status());
         }
         this.deliverStatus();

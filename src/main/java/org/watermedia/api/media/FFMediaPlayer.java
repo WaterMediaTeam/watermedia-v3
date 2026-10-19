@@ -18,6 +18,7 @@ import org.bytedeco.javacpp.IntPointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMediaConfig;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.Track;
@@ -297,19 +298,10 @@ public final class FFMediaPlayer extends MediaPlayer {
     }
 
     // MEDIAPLAYER OVERRIDES
-    @Override
-    public boolean start() {
-        return super.start() && this.launch(false, -1L);
-    }
-
-    @Override
-    public boolean startPaused() {
-        return super.startPaused() && this.launch(true, -1L);
-    }
-
     // LAUNCHES A LIFECYCLE RUN, ABORTING THE ONE IN FLIGHT. THE PAUSE INTENT AND THE INITIAL SEEK TRAVEL
     // WITH THE RUN (THE CLOCK IS RESET BY IT); THE THREAD STARTS UNDER THE LOCK SO release() ALWAYS JOINS IT
-    private boolean launch(final boolean paused, final long seekMs) {
+    @Override
+    boolean launch(final boolean paused, final long seekMs) {
         synchronized (this.lifecycleLock) {
             // release() FREES gfx/sfx — REBUILDING THE PIPELINE ON DEAD ENGINES WOULD CRASH ON UPLOAD
             if (this.released) {
@@ -317,6 +309,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                 return false;
             }
             LOGGER.debug(IT, "Start requested (quality={}, paused={}, at={}ms)", this.quality, paused, seekMs);
+            this.exception = null;
             final Thread oldThread = this.lifecycleThread;
             // A RUN THAT ALREADY ENDED OR FAILED IS ONLY TEARING DOWN: THE NEW RUN JOINS IT INSTEAD OF ABORTING IT, SO NO
             // STRAY STOPPED CONSUMES THE LISTENERS A TERMINAL CALLBACK JUST REGISTERED
@@ -331,6 +324,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                     this.publishTransition(Status.STOPPED);
                     return;
                 }
+                // THE PREVIOUS RUN MAY HAVE RECORDED A FAILURE WHILE IT TORE DOWN; IT IS GONE NOW, SO ITS FAILURE IS TOO
+                this.exception = null;
                 this.lifecycle(paused, seekMs);
             });
             this.lifecycleThread = thread;
@@ -919,7 +914,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                                     break;
                                 }
                             }
-                            this.clock.awaitChange(shown > 0 ? Math.max(1L, Math.min(500L, shown - this.clock.timeMs())) : 500L);
+                            this.clock.awaitChange(shown > 0 ? MathUtil.clamp(shown - this.clock.timeMs(), 1L, 500L) : 500L);
                             continue;
                         }
                         if (this.repeat()) {

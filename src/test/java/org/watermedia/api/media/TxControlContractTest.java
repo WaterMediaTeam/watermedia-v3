@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.watermedia.api.media.MediaPlayer.Status;
@@ -11,19 +12,21 @@ import org.watermedia.test.support.Fixtures;
 import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the shared control contract on {@link TxMediaPlayer}: boolean controls answer whether
  * the local state changed, stop() rewinds to zero, a scrub or toggle after ended/stopped restarts
- * the media in both the streaming and the frame-texture mode, frame stepping is paused-only, and
- * the status listener hears every transition.
+ * the media in both the streaming and the frame-texture mode, every restart clears the previous
+ * failure, frame stepping is paused-only, and the status listener hears every transition.
  */
 @DisplayName("TxMediaPlayer control contract")
 public class TxControlContractTest {
@@ -63,6 +66,37 @@ public class TxControlContractTest {
                 assertTrue(player.canPlay(), "a stopped player can start again");
                 assertFalse(player.stop(), "already stopped");
                 assertFalse(player.pause(), "nothing to pause");
+            } finally {
+                player.release();
+                gfx.release();
+            }
+        }
+
+        @Test
+        @DisplayName("startPaused() and a togglePlay() restart clear the old failure, so the next one is recorded")
+        void restartsClearTheFailure(@TempDir final Path directory) throws Exception {
+            final Path input = directory.resolve("removed.gif");
+            Files.copy(Fixtures.GIF_ANIMATED, input);
+            final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(input));
+            assertTrue(mrl.await(MRL_TIMEOUT_MS));
+            // THE SOURCE VANISHES AFTER IT RESOLVED, SO EVERY RUN FAILS WITH ITS OWN EXCEPTION
+            Files.delete(input);
+            final HeadlessGFXEngine gfx = new HeadlessGFXEngine(false);
+            final TxMediaPlayer player = new TxMediaPlayer(mrl, 0, gfx);
+            try {
+                assertTrue(player.start());
+                assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.ERROR));
+                final Throwable first = player.exception();
+                assertNotNull(first, "the failed run is recorded");
+                assertTrue(player.startPaused());
+                assertTrue(PlayerWait.awaitCondition(() -> player.exception() != null && player.exception() != first, PLAYER_TIMEOUT_MS),
+                        "the paused restart failed again and replaced the old failure");
+                final Throwable second = player.exception();
+                assertTrue(PlayerWait.awaitStatus(player, PLAYER_TIMEOUT_MS, Status.ERROR));
+                assertTrue(player.stop());
+                assertTrue(player.togglePlay(), "a stopped player restarts on toggle");
+                assertTrue(PlayerWait.awaitCondition(() -> player.exception() != null && player.exception() != second, PLAYER_TIMEOUT_MS),
+                        "the toggle restart failed again and replaced the old failure");
             } finally {
                 player.release();
                 gfx.release();

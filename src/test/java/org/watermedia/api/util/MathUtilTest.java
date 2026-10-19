@@ -49,6 +49,16 @@ public class MathUtilTest {
         }
 
         @Test
+        @DisplayName("long clamp keeps values beyond the int range and returns max on inverted bounds")
+        void clampLong() {
+            final long big = Integer.MAX_VALUE * 4L;
+            assertEquals(big, MathUtil.clamp(big, 0L, Long.MAX_VALUE), "inside, beyond the int range");
+            assertEquals(0L, MathUtil.clamp(-big, 0L, Long.MAX_VALUE), "below");
+            assertEquals(big, MathUtil.clamp(Long.MAX_VALUE, 0L, big), "above");
+            assertEquals(0L, MathUtil.clamp(big, 10L, 0L), "inverted bounds return max");
+        }
+
+        @Test
         @DisplayName("clip255 caps at 255")
         void clip255Upper() {
             assertEquals(255, MathUtil.clip255(300));

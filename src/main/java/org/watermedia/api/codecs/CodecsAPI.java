@@ -39,12 +39,6 @@ public final class CodecsAPI {
     public static final String CODEC_WEBP = "WEBP";
     public static final String CODEC_NETPBM = "NETPBM";
     public static final String CODEC_SVG = "SVG";
-    /** BC1 (DXT1): RGB with optional 1-bit alpha, 8 bytes per 4x4 block (8:1 vs RGBA8). */
-    public static final String CODEC_BC1 = "BC1";
-    /** BC3 (DXT5): RGBA, 16 bytes per 4x4 block (4:1 vs RGBA8). */
-    public static final String CODEC_BC3 = "BC3";
-    /** BC7: high-quality RGBA, 16 bytes per 4x4 block (4:1 vs RGBA8). */
-    public static final String CODEC_BC7 = "BC7";
 
     // ==========================================================================
     // METADATA KEYS — VALUES ARE JDK TYPES ONLY, SO EVERY HOST CAN READ THEM
@@ -505,8 +499,7 @@ public final class CodecsAPI {
     // CODEC AVAILABILITY
     // ==========================================================================
     /**
-     * Reports support for decoding pixels through this API. BC texture identifiers describe
-     * compressed GPU storage; use {@link BcReader} for their blocks and query the graphics engine separately.
+     * Reports support for decoding pixels through this API; BC textures are read through {@link BcReader}.
      * @param codec a pixel codec id, case-insensitive
      * @return true when its pure Java pixel decoder is available
      */

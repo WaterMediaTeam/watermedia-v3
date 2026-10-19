@@ -233,7 +233,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
     private void nudgeSeek(final long deltaMs) {
         final MediaPlayer p = this.player;
         if (p == null || p.duration() <= 0) return;
-        p.seek(Math.max(0, Math.min(p.duration(), p.time() + deltaMs)));
+        p.seek(MathUtil.clamp(p.time() + deltaMs, 0L, p.duration()));
     }
 
     private void bumpVolume(final int delta) {

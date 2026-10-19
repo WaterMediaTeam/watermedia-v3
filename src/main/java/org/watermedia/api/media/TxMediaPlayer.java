@@ -192,17 +192,12 @@ public final class TxMediaPlayer extends MediaPlayer {
     }
 
     // ==========================================================================
-    // LIFECYCLE PUBLIC API
+    // LIFECYCLE
     // ==========================================================================
-    @Override
-    public boolean start() { return super.start() && this.launch(false, -1L); }
-
-    @Override
-    public boolean startPaused() { return super.startPaused() && this.launch(true, -1L); }
-
     // LAUNCHES A PREPARE PASS, TEARING DOWN THE ONE IN FLIGHT. THE PAUSE INTENT AND THE INITIAL SEEK
     // ARE SEEDED HERE ONLY — NEVER FROM A LEFTOVER TRIGGER OF A PRIOR SESSION
-    private boolean launch(final boolean initialPause, final long seekMs) {
+    @Override
+    boolean launch(final boolean initialPause, final long seekMs) {
         if (this.released) return false;
         final Future<?> oldTask = this.lifecycleTask;
         if ((this.lifecycleThread != null && this.lifecycleThread.isAlive()) || (oldTask != null && !oldTask.isDone())) {
@@ -216,6 +211,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.released) return false;
             serial = this.lifecycleSerial + 1;
             this.lifecycleSerial = serial;
+            this.exception = null; // A FAILING PASS RECORDS UNDER signals AGAINST ITS SERIAL, SO AN OLDER ONE NEVER LANDS HERE
             final Status prev = this.status;
             this.resetForStart(initialPause);
             this.startSeekMs = seekMs;
@@ -372,6 +368,20 @@ public final class TxMediaPlayer extends MediaPlayer {
         this.deliverStatus();
     }
 
+    // ENDS THE PASS OF serial IN ERROR. THE SERIAL CHECK, THE RECORD AND THE STATUS SHARE ONE signals SECTION WITH launch(), SO A
+    // PASS A NEWER RUN ALREADY RETIRED CAN NEITHER LEAVE ITS FAILURE ON THAT RUN NOR FAIL IT
+    private void fail(final Exception failure, final int serial) {
+        synchronized (this.signals) {
+            if (serial != this.lifecycleSerial) return;
+            this.exception(failure);
+            this.playable = false;
+            this.loaded = false;
+            this.queueStatus(this.status, Status.ERROR);
+            this.status = Status.ERROR;
+        }
+        this.deliverStatus();
+    }
+
     // ==========================================================================
     // MODE DISPATCH
     // ==========================================================================
@@ -435,12 +445,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.publish(Status.STOPPED, serial);
             } else {
                 LOGGER.error(IT, "Lifecycle error: {}", this.source, e);
-                if (this.lifecycleSerial == serial) {
-                    this.exception(e);
-                    this.playable = false;
-                    this.loaded = false;
-                    this.publish(Status.ERROR, serial);
-                }
+                this.fail(e, serial);
             }
         } finally {
             if (!handedOff) {
@@ -657,12 +662,7 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.publish(Status.STOPPED, serial);
             } else {
                 LOGGER.error(IT, "Lifecycle error: {}", this.source, e);
-                if (this.lifecycleSerial == serial) {
-                    this.exception(e);
-                    this.playable = false;
-                    this.loaded = false;
-                    this.publish(Status.ERROR, serial);
-                }
+                this.fail(e, serial);
             }
         } finally {
             if (this.lifecycleSerial == serial) this.clearBuffers();
@@ -1101,7 +1101,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // CAPS THE PREFETCH QUEUE SO DIRECT BUFFER MEMORY STAYS UNDER THE BUDGET.
     private void capPrefetch() {
         final long bytesPerFrame = Math.max(1L, this.bufferByteSize);
-        final int cap = (int) Math.max(1L, Math.min(PREFETCH_MAX, PREFETCH_BUDGET_BYTES / bytesPerFrame));
+        final int cap = (int) MathUtil.clamp(PREFETCH_BUDGET_BYTES / bytesPerFrame, 1L, PREFETCH_MAX);
         this.prefetchMax = cap;
         this.prefetchRefill = Math.min(PREFETCH_REFILL, cap);
     }

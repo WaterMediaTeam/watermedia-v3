@@ -1,26 +1,28 @@
 package org.watermedia.test.support;
 
-import org.watermedia.api.codecs.CodecsAPI;
+import org.watermedia.api.util.PixelFormat;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 
 /** Builds DDS byte streams for container and BC reader tests. */
 public final class DdsFixture {
     private static final int HEADER_BYTES = 148;
-    private static final int FOOTER_MAGIC = 0x574D5443;
+    // THE ON-DISK FOOTER MAGIC, WRITTEN AS BYTES SO THE TESTS PIN THE FILE FORMAT INDEPENDENTLY OF THE READER'S CONSTANT
+    private static final byte[] FOOTER_MAGIC = "WMTC".getBytes(StandardCharsets.US_ASCII);
 
     private DdsFixture() {}
 
-    public static byte[] write(final int width, final int height, final String codec, final int arraySize) {
-        final int format = switch (codec) {
-            case CodecsAPI.CODEC_BC1 -> 71;
-            case CodecsAPI.CODEC_BC3 -> 77;
-            case CodecsAPI.CODEC_BC7 -> 98;
-            default -> throw new IllegalArgumentException("Unsupported BC fixture: " + codec);
+    public static byte[] write(final int width, final int height, final PixelFormat format, final int arraySize) {
+        // DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC3_UNORM AND DXGI_FORMAT_BC7_UNORM
+        final int dxgi = switch (format) {
+            case BC1 -> 71;
+            case BC3 -> 77;
+            case BC7 -> 98;
+            default -> throw new IllegalArgumentException("Unsupported BC fixture: " + format);
         };
-        final int blockBytes = format == 71 ? 8 : 16;
-        final int frameBytes = Math.toIntExact((((long) width + 3) / 4) * (((long) height + 3) / 4) * blockBytes);
+        final int frameBytes = Math.toIntExact((((long) width + 3) / 4) * (((long) height + 3) / 4) * format.blockBytes());
         // WRITE THE DDS AND DX10 PREFIX IN LITTLE-ENDIAN CONTAINER ORDER.
         final ByteBuffer header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         header.putInt(0x20534444);
@@ -38,7 +40,7 @@ public final class DdsFixture {
         header.position(header.position() + 20);
         header.putInt(0x1000);
         header.position(header.position() + 16);
-        header.putInt(format);
+        header.putInt(dxgi);
         header.putInt(3);
         header.putInt(0);
         header.putInt(arraySize);
@@ -48,7 +50,7 @@ public final class DdsFixture {
 
     public static byte[] writeFooter(final long... delays) {
         final ByteBuffer footer = ByteBuffer.allocate(12 + delays.length * Long.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        footer.putInt(FOOTER_MAGIC).putInt(1).putInt(delays.length);
+        footer.put(FOOTER_MAGIC).putInt(1).putInt(delays.length);
         for (final long delay: delays) footer.putLong(delay);
         return footer.array();
     }

@@ -19,6 +19,11 @@ public final class MathUtil {
     }
 
     /** Limits a value to the inclusive range between {@code min} and {@code max}; inverted bounds always return {@code max}. */
+    public static long clamp(final long value, final long min, final long max) {
+        return Math.min(Math.max(value, min), max);
+    }
+
+    /** Limits a value to the inclusive range between {@code min} and {@code max}; inverted bounds always return {@code max}. */
     public static float clamp(final float value, final float min, final float max) {
         return Math.min(Math.max(value, min), max);
     }

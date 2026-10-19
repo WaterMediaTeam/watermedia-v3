@@ -366,7 +366,7 @@ public final class MRL {
         while (this.status == Status.FETCHING) {
             final long remaining = budget - (System.nanoTime() - started);
             if (remaining <= 0) return false;
-            if (!ThreadTool.sleep(Math.min(50L, Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining))))) return false;
+            if (!ThreadTool.sleep(MathUtil.clamp(TimeUnit.NANOSECONDS.toMillis(remaining), 1L, 50L))) return false;
         }
         return true;
     }

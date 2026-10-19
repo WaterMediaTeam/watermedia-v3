@@ -138,8 +138,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private final ArrayDeque<Transition> statusEvents = new ArrayDeque<>();
     private boolean statusDraining;
 
-    // FAILURE BEHIND THE CURRENT ERROR STATE — SET BY SUBCLASSES, CLEARED ON EVERY LOCAL start()
-    private volatile Throwable exception;
+    // FAILURE BEHIND THE CURRENT ERROR STATE: SET THROUGH exception(Throwable), CLEARED BY EVERY launch() WHERE IT RETIRES THE
+    // PREVIOUS RUN, SO A LATE FAILURE OF THAT RUN NEVER LANDS ON THE NEW ONE
+    volatile Throwable exception;
 
     // VIDEO UPLOAD SCALING, WRITTEN BY THE CALLER AND READ BY THE PLAYBACK THREADS THROUGH scaled(native, scale, lod.percent()):
     // THE SCALE CAPS EACH AXIS (NO_SIZE = NO CAP, NEVER UPSCALES) AND lod SHRINKS IT FURTHER BY A PERCENTAGE
@@ -787,20 +788,24 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * @return true if a local run was launched, false when the call was forwarded to the
      *         sync authority (see {@link #sync(ByteBuffer)}), dropped or refused
      */
-    public boolean start() {
-        if (this.request(Control.Op.START, 0L)) return false;
-        this.exception = null; // A NEW LOCAL RUN INVALIDATES THE PREVIOUS FAILURE
-        return true;
+    public final boolean start() {
+        return !this.request(Control.Op.START, 0L) && this.launch(false, -1L);
     }
 
     /**
-     * Starts media playback like {@link #start()} but landing in a paused state. Not equivalent
-     * to {@code start()} followed by {@link #pause()}: those two calls race the pipeline setup,
-     * so implementations latch the pause intent before playback begins. Non-blocking.
+     * Starts media playback like {@link #start()} but landing in a paused state, also clearing a
+     * previous failure. Not equivalent to {@code start()} followed by {@link #pause()}: those two
+     * calls race the pipeline setup, so the pause intent is latched before playback begins. Non-blocking.
      * @return true if a local run was launched, false when the call was forwarded, dropped or refused
      * @see MediaPlayer#start()
      */
-    public boolean startPaused() { return !this.request(Control.Op.START_PAUSED, 0L); }
+    public final boolean startPaused() {
+        return !this.request(Control.Op.START_PAUSED, 0L) && this.launch(true, -1L);
+    }
+
+    // LAUNCHES A LOCAL RUN, PAUSED OR PLAYING, FROM THE BEGINNING (seekMs < 0) OR AT seekMs, AND CLEARS exception WHERE IT
+    // RETIRES THE PREVIOUS RUN; START CONTROLS AND RESTARTS FROM ENDED/STOPPED CALL IT. FALSE WHEN RELEASED
+    abstract boolean launch(final boolean paused, final long seekMs);
 
     /**
      * Resumes media playback from the current position.
@@ -984,12 +989,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /**
      * The failure behind the current {@link Status#ERROR ERROR} state, useful to surface the real
      * cause (bad URL, unsupported codec, network failure) instead of a bare error flag.
-     * @return the last playback failure, or {@code null} when none occurred since the last start
+     * @return the last playback failure, or {@code null} when none occurred since the current run started (through
+     *         {@link #start()}, {@link #startPaused()}, or a {@link #togglePlay()} or {@link #seek(long)} restart)
      */
     public final Throwable exception() { return this.exception; }
 
     // RECORDS THE FAILURE BEHIND AN ERROR TRANSITION. FIRST FAILURE OF A RUN WINS — LATER ONES
-    // ARE USUALLY CASCADE NOISE OF THE ROOT CAUSE. start() CLEARS IT FOR THE NEXT RUN.
+    // ARE USUALLY CASCADE NOISE OF THE ROOT CAUSE. EVERY launch() CLEARS IT FOR THE NEXT RUN.
     final void exception(final Throwable t) {
         if (this.exception == null) this.exception = t;
     }

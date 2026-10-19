@@ -15,13 +15,14 @@ import java.nio.ByteOrder;
  * This class knows the container only; the block layout comes from the frame's {@link PixelFormat}.
  *
  * <p>An animation is stored as a 2D texture array (one array slice per frame). DDS itself has no
- * field for per-frame delays, so a small WaterMedia footer is appended after the texture data:
+ * field for per-frame delays, so an optional WaterMedia footer is appended after the texture data:
  * <pre>
  *   "DDS " (4) + DDS_HEADER (124) + DDS_HEADER_DXT10 (20)     // {@value #BYTES}-byte prefix
  *   frame[0..N) block data, each {@link Info#frameBytes()} bytes
- *   footer: int magic({@value #FOOTER_MAGIC}) + int version + int frameCount + long[frameCount] delaysMs
+ *   footer: "WMTC" (4) + int version + int frameCount + long[frameCount] delaysMs   // little-endian ints and longs
  * </pre>
- * The DDS prefix is a valid stand-alone texture; readers that ignore trailing bytes still load it.
+ * The DDS prefix is a valid stand-alone texture; readers that ignore trailing bytes still load it, and
+ * {@link #readFooter} gives zero delays when the bytes after the texture do not start with the footer magic.
  */
 public final class DdsHeader {
 
@@ -29,8 +30,8 @@ public final class DdsHeader {
     public static final int BYTES = 148;
     // LITTLE-ENDIAN ARRAY SIZE OFFSET IN THE DXT10 HEADER.
     private static final int ARRAYSIZE_OFFSET = 140;
-    // WATERMEDIA ANIMATION FOOTER IDENTIFIER.
-    private static final int FOOTER_MAGIC = 0x574D5443;
+    // WATERMEDIA ANIMATION FOOTER IDENTIFIER: 'W','M','T','C' AS A LITTLE-ENDIAN INT, SO IT READS IN A HEX DUMP LIKE "DDS "
+    private static final int FOOTER_MAGIC = 0x43544D57;
     private static final int FOOTER_VERSION = 1;
     // MAGIC, VERSION AND FRAME COUNT PRECEDE THE DELAY LONGS.
     private static final int FOOTER_HEAD_BYTES = 12;
@@ -115,18 +116,21 @@ public final class DdsHeader {
     }
 
     /**
-     * Reads the per-frame delays from the footer that starts at {@code src.position()}.
+     * Reads the per-frame delays from the optional footer at {@code src.position()}, leaving the position
+     * unchanged; bytes that do not start with the footer magic are not a footer and yield zero delays.
      *
-     * @throws CodecException when the footer is truncated or its magic/version/count is wrong
+     * @throws IllegalArgumentException when {@code expectedCount} is negative or above the largest array size {@link #read} accepts
+     * @throws CodecException           when a footer that starts with the magic is truncated or its version/count is wrong
      */
     public static long[] readFooter(final ByteBuffer src, final int expectedCount) throws CodecException {
+        // THE ARRAY-SIZE CAP BOUNDS THE ZERO-DELAY ARRAY OF AN ABSENT FOOTER AND KEEPS THE SIZE MATH BELOW IN int RANGE
+        if (expectedCount < 0 || expectedCount > MAX_ARRAY_SIZE)
+            throw new IllegalArgumentException("Frame count must be within [0, " + MAX_ARRAY_SIZE + "], got " + expectedCount);
         final ByteBuffer b = src.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        // LONG MATH: expectedCount*8 OVERFLOWS int FOR expectedCount > ~268M, BYPASSING THE TRUNCATION
-        // CHECK INTO A MULTI-GB new long[count]; ALSO REJECTS A FORGED COUNT THAT CANNOT FIT IN THE BUFFER
-        if (expectedCount < 0 || (long) FOOTER_HEAD_BYTES + (long) expectedCount * Long.BYTES > b.remaining()) {
-            throw new CodecException("Truncated DDS footer");
-        }
-        if (b.getInt() != FOOTER_MAGIC) throw new CodecException("Bad DDS footer magic");
+        // ONLY THE MAGIC CLAIMS THE TRAILING BYTES AS A FOOTER; ANYTHING ELSE AFTER THE TEXTURE IS IGNORED
+        if (b.remaining() < Integer.BYTES || b.getInt(b.position()) != FOOTER_MAGIC) return new long[expectedCount];
+        if (FOOTER_HEAD_BYTES + expectedCount * Long.BYTES > b.remaining()) throw new CodecException("Truncated DDS footer");
+        b.position(b.position() + Integer.BYTES);
         if (b.getInt() != FOOTER_VERSION) throw new CodecException("Unsupported DDS footer version");
         final int count = b.getInt();
         if (count != expectedCount) throw new CodecException("DDS footer frame count mismatch: " + count + " != " + expectedCount);

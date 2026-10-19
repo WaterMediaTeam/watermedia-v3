@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs;
 
 import org.watermedia.api.codecs.common.dds.DdsHeader;
+import org.watermedia.api.media.GFXEngine;
 import org.watermedia.api.util.PixelFormat;
 
 import java.io.Closeable;
@@ -11,11 +12,12 @@ import java.nio.ByteOrder;
  * Reader for the BC (BC7/BC3/BC1) texture-compression codec stored in a DDS
  * container. Unlike the pixel-decoding {@link ImageReader} readers, BC is
  * sampled by the GPU, so this reader yields the <em>compressed</em> blocks of each frame (in the
- * file's own version) for a consumer's direct upload; there is no software decode.
+ * file's own BC layout) for a consumer's direct upload; there is no software decode.
  *
  * <p>Reading blocks requires no native encoder. WaterMedia's built-in graphics engines currently
- * decline BC textures; an external GPU consumer must support the layout named by {@link #version()}.
- * A WaterMedia animation footer is optional; without one, texture array slices have zero display delay.
+ * decline BC textures; an external GPU consumer must support the layout named by {@link #pixelFormat()}.
+ * A WaterMedia animation footer is optional; trailing bytes that do not start with its magic are ignored
+ * and leave every texture array slice with zero display delay.
  */
 public final class BcReader implements Closeable {
 
@@ -31,7 +33,8 @@ public final class BcReader implements Closeable {
      * Parses a complete BC-in-DDS file from {@code file.position()}.
      *
      * @throws UnsupportedFormatException when the DDS is valid but not a single-level 2D BC1, BC3 or BC7 texture array
-     * @throws CodecException             when the container is malformed, truncated or exceeds the memory budget
+     * @throws CodecException             when the container or its animation footer is malformed, truncated or
+     *                                    exceeds the memory budget
      */
     public BcReader(final ByteBuffer file) throws CodecException {
         final DdsHeader.Info info = DdsHeader.read(file);
@@ -51,9 +54,7 @@ public final class BcReader implements Closeable {
         final int base = file.position();
         final int texStart = base + DdsHeader.BYTES;
 
-        final ByteBuffer footer = file.duplicate();
-        footer.position(texStart + (int) texLen);
-        this.delays = footer.hasRemaining() ? DdsHeader.readFooter(footer, info.arraySize()) : new long[info.arraySize()];
+        this.delays = DdsHeader.readFooter(file.duplicate().position(texStart + (int) texLen), info.arraySize());
         long total = 0L;
         for (final long delay: this.delays) {
             if (delay < 0 || delay > Long.MAX_VALUE - total) throw new CodecException("Invalid BC frame delays");
@@ -84,14 +85,8 @@ public final class BcReader implements Closeable {
     /** Returns the number of texture-array slices, including already consumed frames. */
     public int frameCount() { return this.frames.length; }
 
-    /** The BC version of the stored texture ({@code BC7}/{@code BC3}/{@code BC1}) — needed for GPU upload. */
-    public String version() {
-        // THE CodecsAPI.CODEC_BC* NAMES ARE THE PixelFormat CONSTANT NAMES
-        return this.format.name();
-    }
-
-    /** Bytes per 4x4 block: {@code 8} for BC1, {@code 16} for BC3/BC7. */
-    public int blockBytes() { return this.format.blockBytes(); }
+    /** Returns the BC layout of the stored texture, the format to check with {@link GFXEngine#supports(PixelFormat)} before upload. */
+    public PixelFormat pixelFormat() { return this.format; }
 
     /** Per-frame delays in milliseconds (defensive copy). */
     public long[] delays() { return this.delays.clone(); }
