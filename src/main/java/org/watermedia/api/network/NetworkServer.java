@@ -1,5 +1,6 @@
 package org.watermedia.api.network;
 
+import com.sun.net.httpserver.Filter;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.logging.log4j.Marker;
@@ -125,8 +126,15 @@ public final class NetworkServer {
                 deadlines.setRemoveOnCancelPolicy(true);
                 final Running state = new Running(server, executor, deadlines, storage, storageChannel, token.getBytes(StandardCharsets.UTF_8),
                         config.maxUploadSize * 1024L * 1024L, config.maxStorageSize * 1024L * 1024L, used, config.serverTimeout);
-                server.createContext("/upload", exchange -> handleUpload(exchange, state));
-                server.createContext("/", exchange -> handleRoot(exchange, state));
+                // RFC 9112: THE SERVER CLOSES AFTER A REQUEST CARRYING Connection: close AND SHOULD SAY SO, OR A CLIENT THAT
+                // KEEPS SOCKETS (FFMPEG'S HTTP) REUSES THE DEAD ONE AND READS NOTHING
+                final Filter announceClose = Filter.beforeHandler("Announces Connection: close", exchange -> {
+                    // THE SAME TEST THE JDK SERVER USES TO DECIDE THE CLOSE
+                    if ("close".equalsIgnoreCase(exchange.getRequestHeaders().getFirst("Connection")))
+                        exchange.getResponseHeaders().set("Connection", "close");
+                });
+                server.createContext("/upload", exchange -> handleUpload(exchange, state)).getFilters().add(announceClose);
+                server.createContext("/", exchange -> handleRoot(exchange, state)).getFilters().add(announceClose);
                 // REJECTED WORK CLOSES ITS CONNECTION IN HTTPSERVER'S DISPATCHER; NO REQUEST QUEUE GROWS.
                 server.setExecutor(command -> state.executor.execute(() -> {
                     final Watchdog watchdog = new Watchdog(Thread.currentThread(), state.deadlines, TimeUnit.MILLISECONDS.toNanos(state.timeout));

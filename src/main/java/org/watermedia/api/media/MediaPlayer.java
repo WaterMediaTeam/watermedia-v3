@@ -9,6 +9,7 @@ import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.WaterMediaModule;
 import org.watermedia.tools.ThreadTool;
 
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -374,7 +375,9 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (target.status() != Status.PLAYING) return target.time();
         // THE SNAPSHOT AGED HALF THE ROUND TRIP IN FLIGHT, AND KEPT AGEING SINCE IT LANDED
         final long elapsed = (System.nanoTime() - this.targetNanos) / 1_000_000L + this.aheadMs;
-        final long t = target.time() + (long) (elapsed * target.speed());
+        final long run = (long) (elapsed * target.speed());
+        // SATURATE LIKE THE AUTHORITY: A LIVE POSITION NEAR Long.MAX_VALUE MUST NOT WRAP NEGATIVE
+        final long t = run > Long.MAX_VALUE - target.time() ? Long.MAX_VALUE : target.time() + run;
         final long d = target.duration();
         if (d <= 0 || target.live()) return t;
         return target.repeat() ? t % d : Math.min(t, d);
@@ -567,13 +570,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      */
     public MediaQuality quality() { return this.quality; }
 
-    // RESOLVES A STILL-UNKNOWN QUALITY TO THE REAL ONE ONCE THE DECODED DIMENSIONS ARE KNOWN,
-    // RELOCATING THE URI INSIDE THE MRL SO LATER LOOKUPS FIND IT UNDER ITS TRUE QUALITY.
+    // RESOLVES A STILL-UNKNOWN QUALITY ONCE THE DECODED SIZE IS KNOWN, RELABELING THE URI IN THE SHARED MRL (OR FINDING IT ALREADY
+    // RELABELED BY AN EARLIER RUN); WHEN ANOTHER URI HOLDS THAT QUALITY OR THE MRL RELOADED, IT STAYS UNKNOWN
     final void resolveQuality(final int width, final int height) {
         if (this.quality != MediaQuality.UNKNOWN) return;
         final MediaQuality real = MediaQuality.of(width, height);
-        this.mrl.moveQuality(this.sourceIndex, this.quality, real);
-        LOGGER.info(IT, "Moved URI {} from Quality {} to {}", this.source.uri(real), this.quality, real);
+        final URI uri = this.source.uri(MediaQuality.UNKNOWN);
+        if (!this.mrl.moveQuality(this.sourceIndex, uri, real)) return;
+        LOGGER.info(IT, "Moved URI {} from quality {} to {}", uri, MediaQuality.UNKNOWN, real);
         this.quality = real;
     }
 
@@ -962,10 +966,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * {@link Status#STOPPED}, {@link Status#ENDED} or {@link Status#ERROR} consumes them, so a
      * consumer registers once per playback and, when it restarts the player from that terminal
      * callback, registers again from the callback itself. Transitions are delivered one at a time
-     * and in order, on whichever thread drove the first of them: a playback thread, the shared sync
-     * ticker, or the caller of {@link #status()}, {@link #time()} or {@link #texture()} on image
-     * players whose clock resolves the end lazily. Keep it short, never block, and never call
-     * {@link #release()} from it.
+     * and in the order the statuses changed, on whichever thread drove the first of them: a playback
+     * thread, the shared sync ticker, or the caller of {@link #status()}, {@link #time()} or
+     * {@link #texture()} on image players whose clock resolves the end lazily. A listener never runs
+     * under a lock of the player; {@link #release()} delivers its transitions once it finishes and
+     * the engines are freed. Keep it short, never block, and never call {@link #release()} from it.
      * @param listener the listener to add
      * @throws IllegalArgumentException when {@code listener} is null
      */
@@ -989,20 +994,27 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (this.exception == null) this.exception = t;
     }
 
-    // QUEUES A REAL TRANSITION AND, UNLESS ANOTHER THREAD IS ALREADY DRAINING, DELIVERS THE QUEUE IN ORDER. A TERMINAL
-    // TRANSITION CONSUMES THE LISTENERS BEFORE FIRING, SO ONE ADDED FROM ITS CALLBACK SURVIVES; FAILURES ARE SWALLOWED
-    void invokeStatus(final Status prev, final Status next) {
+    // QUEUES A REAL TRANSITION WITHOUT DELIVERING IT. CALL IT UNDER THE LOCK THAT WROTE THE STATUS, SO TWO WRITERS QUEUE IN THE
+    // ORDER THEY WROTE, THEN deliverStatus() ONCE NO PLAYER LOCK IS HELD
+    final void queueStatus(final Status prev, final Status next) {
         if (prev == next) return;
         synchronized (this.statusEvents) {
             this.statusEvents.add(new Transition(prev, next));
-            if (this.statusDraining) return;
+        }
+    }
+
+    // DELIVERS THE QUEUE IN ORDER UNLESS ANOTHER THREAD ALREADY DRAINS IT. A TERMINAL TRANSITION CONSUMES THE LISTENERS
+    // BEFORE FIRING, SO ONE ADDED FROM ITS CALLBACK SURVIVES; FAILURES ARE SWALLOWED
+    final void deliverStatus() {
+        synchronized (this.statusEvents) {
+            if (this.statusDraining || this.statusEvents.isEmpty() || this.holdStatus()) return;
             this.statusDraining = true;
         }
         while (true) {
             final Transition transition;
             final StatusListener[] listeners;
             synchronized (this.statusEvents) {
-                transition = this.statusEvents.poll();
+                transition = this.holdStatus() ? null : this.statusEvents.poll();
                 if (transition == null) {
                     this.statusDraining = false;
                     return;
@@ -1019,6 +1031,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
             }
         }
     }
+
+    // TRUE WHILE A RELEASE JOINS THE PIPELINE: NO THREAD IT WAITS FOR MAY RUN A LISTENER (ONE BLOCKED ON THE RELEASING THREAD WOULD
+    // STALL THE JOIN), SO TRANSITIONS STAY QUEUED AND THE RELEASE DELIVERS THEM WHEN IT FINISHES
+    boolean holdStatus() { return false; }
 
     // LEAVES THE BRIDGE BEFORE A RELEASE PUBLISHES STOPPED, SO A CONTROL A LISTENER ISSUES NEVER REACHES THE AUTHORITY
     final void disarm() {

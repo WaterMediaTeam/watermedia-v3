@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -62,6 +63,36 @@ public final class LocalHttp implements AutoCloseable {
         exchange.sendResponseHeaders(200, body.length);
         exchange.getResponseBody().write(body);
         exchange.close();
+    }
+
+    /**
+     * Writes {@code body} the way a media CDN answers a seeking client: a {@code Range: bytes=start-[end]} request gets
+     * a 206 with its {@code Content-Range}, any other request the whole body, and both advertise byte ranges.
+     */
+    public static void respondRange(final HttpExchange exchange, final String contentType, final byte[] body) throws IOException {
+        final String range = exchange.getRequestHeaders().getFirst("Range");
+        int start = 0;
+        int end = body.length - 1;
+        final boolean partial = range != null && range.startsWith("bytes=");
+        if (partial) {
+            final String[] bounds = range.substring("bytes=".length()).split("-", 2);
+            start = Integer.parseInt(bounds[0].strip());
+            if (bounds.length > 1 && !bounds[1].isBlank()) end = Math.min(end, Integer.parseInt(bounds[1].strip()));
+        }
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+        // THE SERVER DROPS EVERY CONNECTION A CLIENT ASKED TO CLOSE WITHOUT SAYING SO; ANNOUNCING IT STOPS A PERSISTENT
+        // CLIENT (FFMPEG) FROM WRITING ITS NEXT REQUEST INTO THAT DEAD SOCKET
+        exchange.getResponseHeaders().set("Connection", "close");
+        if (start > end) {
+            exchange.getResponseHeaders().set("Content-Range", "bytes */" + body.length);
+            exchange.sendResponseHeaders(416, -1);
+            exchange.close();
+            return;
+        }
+        if (partial) exchange.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + body.length);
+        exchange.sendResponseHeaders(partial ? 206 : 200, end - start + 1L);
+        try (final OutputStream out = exchange.getResponseBody()) { out.write(body, start, end - start + 1); }
     }
 
     /** RFC 1123-formatted timestamp {@code n} seconds in the future. */

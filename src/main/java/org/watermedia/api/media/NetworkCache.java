@@ -7,6 +7,7 @@ import org.watermedia.api.util.NetRequest;
 import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
+import org.watermedia.tools.ThreadTool;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -29,9 +30,12 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
@@ -49,6 +53,8 @@ final class NetworkCache {
     private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
     // LEFTOVERS YOUNGER THAN THIS MAY BELONG TO ANOTHER PROCESS SHARING THE FOLDER, SO THE STARTUP SWEEP SPARES THEM
     private static final long SWEEP_GRACE_MS = 60_000L;
+    // DAEMON WORKERS FOR NETWORK TRANSFERS, ONE PER CONCURRENT DOWNLOAD, RETIRED AFTER A MINUTE IDLE
+    private static final ExecutorService TRANSFERS = Executors.newCachedThreadPool(ThreadTool.workerFactory("MediaCache", Thread.NORM_PRIORITY - 1));
     private static volatile Store active;
 
     private NetworkCache() {}
@@ -82,7 +88,7 @@ final class NetworkCache {
     public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
-        if (!enabled || !isHttp(uri) || store == null) return fetch(uri, headers, accept, maxBytes, false);
+        if (!enabled || !isHttp(uri) || store == null) return await(transfer(() -> fetch(uri, headers, accept, maxBytes, false)));
         final byte[] hash = keyHash(uri, headers, accept);
         final String hex = HexFormat.of().formatHex(hash);
         final Entry entry;
@@ -107,13 +113,7 @@ final class NetworkCache {
                 LOGGER.warn(IT, "Dropping unreadable media cache entry {}", file, failure);
             }
         }
-        final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes, false);
-        try {
-            if (downloaded.expiresAt > System.currentTimeMillis()) store(store, hex, hash, downloaded);
-        } finally {
-            store.inflight.computeIfPresent(hex, (key, future) -> future.isDone() ? null : future);
-        }
-        return downloaded;
+        return fetchShared(store, hex, hash, uri, headers, accept, maxBytes, false).body();
     }
 
     /**
@@ -134,43 +134,78 @@ final class NetworkCache {
                 else if (entry.size <= maxBytes) return new CachedFile(file(store, hex), true, entry.contentType);
             }
         }
-        final CachedBytes downloaded = fetchShared(store, hex, uri, headers, accept, maxBytes, true);
-        try {
-            if (isPlaylist(downloaded.contentType) || downloaded.expiresAt <= System.currentTimeMillis()) return null;
-            final Path file = store(store, hex, hash, downloaded);
-            return file == null ? null : new CachedFile(file, false, downloaded.contentType);
-        } finally {
-            store.inflight.computeIfPresent(hex, (key, future) -> future.isDone() ? null : future);
-        }
+        final Download done = fetchShared(store, hex, hash, uri, headers, accept, maxBytes, true);
+        // A PLAYLIST, AN EXPIRED BODY OR A FAILED STORE LEAVES NO FILE TO HAND OUT
+        if (done.file() == null || isPlaylist(done.body().contentType)) return null;
+        return new CachedFile(done.file(), false, done.body().contentType);
     }
 
-    private static CachedBytes fetchShared(final Store store, final String hex, final URI uri, final HttpHeaders headers,
-                                           final String accept, final long maxBytes, final boolean bounded) throws IOException {
-        final CompletableFuture<CachedBytes> mine = new CompletableFuture<>();
-        final CompletableFuture<CachedBytes> leader;
+    // ONE TRANSFER PER KEY, SHARED BY CONCURRENT CALLERS. SOCKET I/O IGNORES INTERRUPTS, SO THE TRANSFER RUNS ON A CACHE WORKER
+    // AND EVERY CALLER WAITS INTERRUPTIBLY: A STOPPED PLAYER LEAVES AT ONCE AND THE ABANDONED TRANSFER ENDS ON ITS OWN DEADLINE
+    private static Download fetchShared(final Store store, final String hex, final byte[] hash, final URI uri, final HttpHeaders headers,
+                                        final String accept, final long maxBytes, final boolean bounded) throws IOException {
+        final CompletableFuture<Download> mine = new CompletableFuture<>();
+        final CompletableFuture<Download> leader;
         synchronized (store) {
             leader = store.inflight.putIfAbsent(hex, mine);
         }
         if (leader != null) {
             try {
-                final CachedBytes shared = leader.get();
-                if (shared.bytes.length <= maxBytes) return shared;
-            } catch (final InterruptedException failure) {
-                Thread.currentThread().interrupt();
-                throw new InterruptedIOException("Interrupted waiting for media cache download");
-            } catch (final ExecutionException failure) {
-                // THE LEADER FAILED; THIS WAITER FETCHES ON ITS OWN BELOW
+                final Download shared = await(leader);
+                if (shared.body().bytes.length <= maxBytes) return shared;
+            } catch (final IOException failure) {
+                // AN INTERRUPT ENDS THE WAIT; ANY OTHER FAILURE WAS THE LEADER'S, SO THIS WAITER FETCHES ON ITS OWN BELOW
+                if (Thread.currentThread().isInterrupted()) throw failure;
             }
-            return fetch(uri, headers, accept, maxBytes, bounded);
+            return await(transfer(() -> download(store, hex, hash, uri, headers, accept, maxBytes, bounded)));
         }
-        try {
-            final CachedBytes downloaded = fetch(uri, headers, accept, maxBytes, bounded);
-            mine.complete(downloaded);
-            return downloaded;
-        } catch (final IOException | RuntimeException | Error failure) {
-            mine.completeExceptionally(failure);
+        // THE WORKER STORES THE BODY BEFORE IT STOPS SHARING IT, SO A LATE CALLER FINDS THE TRANSFER OR THE ENTRY, NEVER NEITHER
+        transfer(() -> download(store, hex, hash, uri, headers, accept, maxBytes, bounded)).whenComplete((done, failure) -> {
             store.inflight.remove(hex, mine);
-            throw failure;
+            if (failure == null) mine.complete(done);
+            else mine.completeExceptionally(failure);
+        });
+        return await(mine);
+    }
+
+    // FETCHES ONE BODY AND STORES IT WHEN IT MAY BE CACHED (NOT EXPIRED, NOT A PLAYLIST FOR A FILE READ); IT RUNS ON THE WORKER,
+    // SO A DOWNLOAD WHOSE CALLER LEFT STILL FILLS THE CACHE
+    private static Download download(final Store store, final String hex, final byte[] hash, final URI uri, final HttpHeaders headers,
+                                     final String accept, final long maxBytes, final boolean bounded) throws IOException {
+        final CachedBytes body = fetch(uri, headers, accept, maxBytes, bounded);
+        final boolean keep = body.expiresAt > System.currentTimeMillis() && !(bounded && isPlaylist(body.contentType));
+        return new Download(body, keep ? store(store, hex, hash, body) : null);
+    }
+
+    // STARTS ONE TRANSFER ON A CACHE WORKER; WHEN NO WORKER CAN START, THE TRANSFER FAILS INSTEAD OF NEVER COMPLETING
+    private static <T> CompletableFuture<T> transfer(final Callable<T> work) {
+        final CompletableFuture<T> future = new CompletableFuture<>();
+        try {
+            TRANSFERS.execute(() -> {
+                try {
+                    future.complete(work.call());
+                } catch (final Throwable failure) {
+                    future.completeExceptionally(failure);
+                }
+            });
+        } catch (final RuntimeException | Error failure) {
+            future.completeExceptionally(failure);
+        }
+        return future;
+    }
+
+    // WAITS FOR A TRANSFER, GIVING UP ON INTERRUPT, AND RETHROWS ITS OWN FAILURE
+    private static <T> T await(final CompletableFuture<T> transfer) throws IOException {
+        try {
+            return transfer.get();
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException("Interrupted waiting for a media cache download");
+        } catch (final ExecutionException e) {
+            if (e.getCause() instanceof final IOException failure) throw failure;
+            if (e.getCause() instanceof final RuntimeException failure) throw failure;
+            if (e.getCause() instanceof final Error failure) throw failure;
+            throw new IOException("Media cache download failed", e.getCause());
         }
     }
 
@@ -376,13 +411,15 @@ final class NetworkCache {
 
     public record CachedBytes(byte[] bytes, String contentType, boolean cached, long expiresAt) {}
     public record CachedFile(Path path, boolean cached, String contentType) {}
+    // A SHARED DOWNLOAD AND THE CACHE FILE THE WORKER STORED IT AS, null WHEN IT WAS NOT CACHEABLE OR THE STORE FAILED
+    private record Download(CachedBytes body, Path file) {}
     private record Entry(byte[] hash, long expiresAt, long size, String contentType) {}
 
     private static final class Store {
         private final Path dir;
         private final Path indexPath;
         private final Map<String, Entry> index = new LinkedHashMap<>(64, 0.75f, true);
-        private final Map<String, CompletableFuture<CachedBytes>> inflight = new ConcurrentHashMap<>();
+        private final Map<String, CompletableFuture<Download>> inflight = new ConcurrentHashMap<>();
         private long totalBytes;
         private volatile boolean writeWarned; // A FAILING WRITE IS LOGGED ONCE PER STORE
 

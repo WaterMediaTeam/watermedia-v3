@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Decode-pipeline smoke + upload-scaling test for {@link FFMediaPlayer}, driving a
+ * Verifies the {@link FFMediaPlayer} decode pipeline and upload scaling, driving a
  * local H.264 MP4 through a {@link HeadlessGFXEngine} (video only, no OpenAL).
  *
  * <p>The whole class is gated on FFmpeg actually loading: {@link MediaBootstrap}
@@ -217,8 +217,9 @@ public class FFMediaPlayerTest {
         gfx.release();
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "{0}")
     @EnumSource(value = Status.class, names = { "ENDED", "ERROR" })
+    @DisplayName("A terminal callback cannot release the player from a playback thread, which keeps its graphics")
     void terminalCallbackCannotFreeItsOwnPlaybackResources(final Status terminal, @TempDir final Path directory) throws Exception {
         final Path input = terminal == Status.ERROR ? directory.resolve("removed.mp4") : Fixtures.MP4_H264;
         if (terminal == Status.ERROR) Files.copy(Fixtures.MP4_H264, input);

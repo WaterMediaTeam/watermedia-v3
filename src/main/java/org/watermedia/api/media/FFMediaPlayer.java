@@ -168,6 +168,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private volatile boolean ioAbortRequested = false;
     private volatile boolean released = false; // ONCE release() RUNS THE ENGINES ARE FREED — REJECT NEW start()s
     private volatile boolean releaseDone; // SET ONCE THE ENGINES ARE FREED, SO A REPEATED release() IS A NO-OP
+    private volatile boolean releasing; // A release() IS JOINING THE PIPELINE: STATUS DELIVERY WAITS FOR IT (SEE holdStatus)
     private volatile boolean playable; // THE SOURCE OPENED AT LEAST ONCE AND NOTHING FAILED SINCE — canPlay()
     private volatile float fps; // 0 UNTIL THE VIDEO STREAM REPORTS A PLAUSIBLE RATE; AUDIO-ONLY STAYS 0
     private volatile long displayTimeMs; // HOW LONG A SINGLE-FRAME SOURCE STAYS UP BEFORE ENDED (0 = FOREVER)
@@ -286,8 +287,12 @@ public final class FFMediaPlayer extends MediaPlayer {
         synchronized (THREADS) {
             this.group = "FFThread-" + players++;
         }
-        // EVERY CLOCK TRANSITION (INCLUDING THE ONES THE PIPELINE MAKES INTERNALLY) REACHES THE LISTENER
-        this.clock.listener(this::invokeStatus);
+        // EVERY CLOCK TRANSITION (INCLUDING THE ONES THE PIPELINE MAKES INTERNALLY) REACHES THE LISTENERS, HELD WHILE A RELEASE
+        // JOINS THE PIPELINE (SEE holdStatus)
+        this.clock.listener((previous, current) -> {
+            this.queueStatus(previous, current);
+            this.deliverStatus();
+        });
         this.arm();
     }
 
@@ -340,33 +345,42 @@ public final class FFMediaPlayer extends MediaPlayer {
         final Thread caller = Thread.currentThread();
         if (caller == this.lifecycleThread || caller == this.demuxThread || caller == this.videoDecodeThread || caller == this.audioDecodeThread)
             throw new IllegalStateException("Release the player from its host thread, not from a playback callback");
-        // ONE RELEASE AT A TIME: A CONCURRENT SECOND CALL WAITS AND THEN FINDS THE WORK DONE
-        synchronized (this.releaseLock) {
-            this.disarm();
-            final Thread lifecycle;
-            synchronized (this.lifecycleLock) {
-                if (this.releaseDone) return;
-                LOGGER.debug(IT, "Release requested");
-                this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
-                // TEAR DOWN DIRECTLY, NEVER THROUGH stop(): ON A BRIDGED PLAYER THAT WOULD ASK THE SYNC
-                // AUTHORITY TO STOP THE MEDIA FOR EVERY FOLLOWER JUST BECAUSE ONE CLIENT WENT AWAY.
-                this.abort();
-                lifecycle = this.lifecycleThread;
+        // ONE RELEASE AT A TIME: A CONCURRENT SECOND CALL WAITS AND THEN FINDS THE WORK DONE. STOPPED AND WHATEVER THE PIPELINE
+        // PUBLISHED WHILE IT WAS JOINED ARE HEARD AFTER THE LOCK, SO A LISTENER CAN WAIT FOR A THREAD THAT CALLS INTO THIS PLAYER
+        try {
+            synchronized (this.releaseLock) {
+                this.releasing = true;
+                this.disarm();
+                final Thread lifecycle;
+                synchronized (this.lifecycleLock) {
+                    if (this.releaseDone) return;
+                    LOGGER.debug(IT, "Release requested");
+                    this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
+                    // TEAR DOWN DIRECTLY, NEVER THROUGH stop(): ON A BRIDGED PLAYER THAT WOULD ASK THE SYNC
+                    // AUTHORITY TO STOP THE MEDIA FOR EVERY FOLLOWER JUST BECAUSE ONE CLIENT WENT AWAY.
+                    this.abort();
+                    lifecycle = this.lifecycleThread;
+                }
+                // WAIT FOR THE PIPELINE TO EXIT BEFORE FREEING ENGINES — THE CONSUMPTION LOOP KEEPS TOUCHING sfx/gfx
+                // AND NATIVE CONTEXTS UNTIL IT FINISHES; ioAbortRequested (SET BY abort()) MAKES NATIVE I/O RETURN FAST
+                if (lifecycle != null) ThreadTool.join(lifecycle);
+                // RETIRE EACH GPU IMPORT BEFORE FREEING ITS HOST BUFFER, WHILE THE GRAPHICS ENGINE IS LIVE.
+                // AUDIO ADAPTER CLEANUP MAY THROW, SO THE DECODED PLANE POOL MUST ALREADY BE RELEASED.
+                this.freePlanePool();
+                this.playable = false;
+                this.clock.halt(); // EVERY PLAYER LANDS STOPPED ON RELEASE, EVEN FROM ERROR
+                this.releaseDone = true;
+                super.release();
             }
-            // WAIT FOR THE PIPELINE TO EXIT BEFORE FREEING ENGINES — THE CONSUMPTION LOOP KEEPS TOUCHING sfx/gfx
-            // AND NATIVE CONTEXTS UNTIL IT FINISHES; ioAbortRequested (SET BY abort()) MAKES NATIVE I/O RETURN FAST
-            if (lifecycle != null) {
-                ThreadTool.join(lifecycle);
-            }
-            // RETIRE EACH GPU IMPORT BEFORE FREEING ITS HOST BUFFER, WHILE THE GRAPHICS ENGINE IS LIVE.
-            // AUDIO ADAPTER CLEANUP MAY THROW, SO THE DECODED PLANE POOL MUST ALREADY BE RELEASED.
-            this.freePlanePool();
-            this.playable = false;
-            this.clock.halt(); // EVERY PLAYER LANDS STOPPED ON RELEASE, EVEN FROM ERROR
-            this.releaseDone = true;
-            super.release();
+        } finally {
+            this.releasing = false;
+            this.clock.drain();
+            this.deliverStatus();
         }
     }
+
+    @Override
+    boolean holdStatus() { return this.releasing; }
 
     // FREES THE ROTATING PLANE POOL. PAGE-ALIGNED BUFFERS (memAlignedAlloc, FOR ZERO-COPY VULKAN IMPORT) ARE
     // NOT GC-MANAGED AND MUST BE FREED EXPLICITLY; allocateDirect SETS ARE LEFT TO THE GC.
@@ -1326,7 +1340,8 @@ public final class FFMediaPlayer extends MediaPlayer {
                         continue;
                     }
 
-                    final long ffTs = targetMs * 1000L;
+                    // A TARGET WITHOUT A DURATION TO CLAMP IT (LIVE, RELOAD) IS SATURATED, NEVER WRAPPED NEGATIVE
+                    final long ffTs = Math.min(targetMs, Long.MAX_VALUE / 1_000L) * 1_000L;
                     final int seekFlags = avformat.AVSEEK_FLAG_BACKWARD;
                     boolean reopened = false;
 

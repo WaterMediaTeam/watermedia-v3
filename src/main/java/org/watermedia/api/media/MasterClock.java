@@ -158,10 +158,9 @@ final class MasterClock {
         this.listener = listener;
     }
 
-    // DELIVERS QUEUED TRANSITIONS OUTSIDE THE LOCK. A MUTATOR ARRIVING WHILE ANOTHER THREAD DRAINS HANDS
-    // ITS EVENT TO THAT DRAINER; A THREAD STILL HOLDING THE LOCK (NESTED MUTATOR) LEAVES THE DELIVERY TO
-    // ITS OUTERMOST CALL, SO THE LISTENER NEVER RUNS UNDER THE LOCK
-    private void drain() {
+    // DELIVERS QUEUED TRANSITIONS OUTSIDE THE LOCK: A MUTATOR HANDS ITS EVENT TO A RUNNING DRAINER, A NESTED ONE TO ITS
+    // OUTERMOST CALL, AND halt() TO ITS CALLER, SO THE LISTENER NEVER RUNS UNDER THE LOCK
+    void drain() {
         if (this.lock.isHeldByCurrentThread()) return;
         while (true) {
             final Status[] event;
@@ -254,7 +253,8 @@ final class MasterClock {
 
     /**
      * Forces the terminal stopped state regardless of the state machine, for a release that tears
-     * the pipeline down from any status (including error).
+     * the pipeline down from any status (including error). The transition is queued, not delivered:
+     * the caller runs {@link #drain()} once it holds no lock of its own.
      *
      * @return the previous status, or null when the clock was already stopped
      */
@@ -272,7 +272,6 @@ final class MasterClock {
         } finally {
             this.lock.unlock();
         }
-        this.drain();
         return current;
     }
 

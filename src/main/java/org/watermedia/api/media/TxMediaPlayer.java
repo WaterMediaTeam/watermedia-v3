@@ -132,6 +132,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile Thread prepareThread; // POOL THREAD RUNNING prepare(), SO release() FROM ITS LISTENER FAILS FAST
     private volatile boolean released;
     private volatile boolean releaseDone; // SET ONCE THE ENGINE IS FREED, SO A RETRIED OR REPEATED release() IS A NO-OP
+    private volatile boolean releasing; // A release() IS JOINING THE PIPELINE: STATUS DELIVERY WAITS FOR IT (SEE holdStatus)
     private volatile boolean playable; // THE SOURCE LOADED AT LEAST ONCE AND NOTHING FAILED SINCE — canPlay()
     private volatile long startSeekMs = -1L; // A RESTART FROM ENDED/STOPPED LANDS PAUSED HERE (-1 = FROM THE BEGINNING)
     private volatile ImageReader activeReader;
@@ -158,13 +159,13 @@ public final class TxMediaPlayer extends MediaPlayer {
     private volatile int currentFrameIndex = -1;
 
     // MODE 2 PASSIVE CLOCK — texTimeline[i] IS THE CUMULATIVE START TIME OF FRAME i. WHEN
-    // NON-NULL, THE DISPLAYED FRAME IS RESOLVED FROM WALL TIME ON EACH texture() CALL AND NO
+    // NON-NULL, THE DISPLAYED FRAME IS RESOLVED FROM ELAPSED TIME ON EACH texture() CALL AND NO
     // LIFECYCLE THREAD EXISTS. clock GUARDS THE (clockBase, wallBase) PAIR.
     private final Object clock = new Object();
     private volatile long[] texTimeline;
     private volatile long[] texDelays;
     private long clockBase;     // MEDIA TIME AT wallBase
-    private long wallBase;      // WALL MILLIS WHEN clockBase WAS TAKEN
+    private long wallBase;      // MONOTONIC nowMs() WHEN clockBase WAS TAKEN
 
     // PREFETCH STATE (ACCESSED ONLY BY THE LIFECYCLE THREAD IN STREAMING MODE)
     private final ArrayDeque<PrefetchedFrame> prefetchQueue = new ArrayDeque<>(PREFETCH_MAX);
@@ -208,7 +209,6 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.teardown(true);
         }
         final Thread old = this.lifecycleThread;
-        final Status prev;
         final int serial;
         // MINT THE SERIAL UNDER signals: TWO CONCURRENT start() CALLS (GAME THREAD + NETWORK HANDLER) MUST NOT
         // READ-MODIFY-WRITE THE SAME lifecycleSerial AND LET BOTH PREPARE PASSES BELIEVE THEY ARE CURRENT
@@ -216,12 +216,13 @@ public final class TxMediaPlayer extends MediaPlayer {
             if (this.released) return false;
             serial = this.lifecycleSerial + 1;
             this.lifecycleSerial = serial;
-            prev = this.status;
+            final Status prev = this.status;
             this.resetForStart(initialPause);
             this.startSeekMs = seekMs;
+            this.queueStatus(prev, Status.WAITING);
         }
-        // PUBLISHED BEFORE THE PASS IS HANDED OFF, SO WAITING ALWAYS PRECEDES ITS OWN LOADING
-        this.invokeStatus(prev, Status.WAITING);
+        // HEARD BEFORE THE PASS IS HANDED OFF, SO WAITING ALWAYS PRECEDES ITS OWN LOADING
+        this.deliverStatus();
         synchronized (this.signals) {
             // A NEWER start()/stop() SUPERSEDED THIS ONE WHILE THE LISTENER RAN — IT OWNS THE PIPELINE NOW
             if (this.released || serial != this.lifecycleSerial) return !this.released;
@@ -266,7 +267,10 @@ public final class TxMediaPlayer extends MediaPlayer {
             prev = this.status;
             // A RESTART OF A RUN THAT ALREADY ENDED OR FAILED PUBLISHES NO STOPPED: ITS LISTENERS JUST MOVED ON
             quiet = restart && (prev == Status.ENDED || prev == Status.ERROR);
-            if (prev != Status.WAITING && !quiet) this.status = Status.STOPPED;
+            if (prev != Status.WAITING && !quiet) {
+                this.status = Status.STOPPED;
+                this.queueStatus(prev, Status.STOPPED);
+            }
         }
         this.texTimeline = null;
         this.texDelays = null;
@@ -282,7 +286,7 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.clockBase = 0L;
             this.wallBase = nowMs();
         }
-        if (prev != Status.WAITING && !quiet) this.invokeStatus(prev, Status.STOPPED);
+        this.deliverStatus();
         return prev != Status.STOPPED && prev != Status.WAITING;
     }
 
@@ -293,68 +297,79 @@ public final class TxMediaPlayer extends MediaPlayer {
         final Thread t = this.lifecycleThread;
         if (Thread.currentThread() == this.prepareThread || (t != null && t == Thread.currentThread()))
             throw new IllegalStateException("Release the image player from its host thread, not from a playback callback");
-        // ONE RELEASE AT A TIME: A CONCURRENT SECOND CALL WAITS AND THEN FINDS THE WORK DONE
-        synchronized (this.releaseLock) {
-            final Status prev;
-            synchronized (this.signals) {
-                if (this.releaseDone) return;
-                this.released = true;
-                this.triggerStop = true;
-                this.lifecycleSerial++;
-                prev = this.status;
-            }
-            this.texTimeline = null;
-            this.texDelays = null;
-            IOTool.closeQuietly(this.activeReader);
-            final Future<?> task = this.lifecycleTask;
-            if (task != null) task.cancel(true);
-            if (t != null) t.interrupt();
-            if (t != null) ThreadTool.join(t);
-            // CANCELLING A FUTURE DOES NOT END A RUNNING TASK; KEEP ITS ENGINE ALIVE UNTIL IT EXITS.
-            boolean interrupted = false;
-            final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RELEASE_WAIT_TIMEOUT_MS);
-            try {
+        // ONE RELEASE AT A TIME: A CONCURRENT SECOND CALL WAITS AND THEN FINDS THE WORK DONE. STOPPED IS QUEUED UNDER THE LOCK
+        // AND HEARD AFTER IT, SO A LISTENER CAN WAIT FOR A THREAD THAT CALLS INTO THIS PLAYER
+        try {
+            synchronized (this.releaseLock) {
+                this.releasing = true;
                 synchronized (this.signals) {
-                    while (this.prepareActive > 0) {
-                        final long remaining = deadline - System.nanoTime();
-                        if (remaining <= 0L)
-                            throw new IllegalStateException("Image preparation has not stopped; release must be retried after I/O finishes");
-                        try {
-                            TimeUnit.NANOSECONDS.timedWait(this.signals, remaining);
-                        } catch (final InterruptedException e) {
-                            interrupted = true;
+                    if (this.releaseDone) return;
+                    this.released = true;
+                    this.triggerStop = true;
+                    this.lifecycleSerial++;
+                }
+                this.texTimeline = null;
+                this.texDelays = null;
+                IOTool.closeQuietly(this.activeReader);
+                final Future<?> task = this.lifecycleTask;
+                if (task != null) task.cancel(true);
+                if (t != null) t.interrupt();
+                if (t != null) ThreadTool.join(t);
+                // CANCELLING A FUTURE DOES NOT END A RUNNING TASK; KEEP ITS ENGINE ALIVE UNTIL IT EXITS.
+                boolean interrupted = false;
+                final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RELEASE_WAIT_TIMEOUT_MS);
+                try {
+                    synchronized (this.signals) {
+                        while (this.prepareActive > 0) {
+                            final long remaining = deadline - System.nanoTime();
+                            if (remaining <= 0L)
+                                throw new IllegalStateException("Image preparation has not stopped; release must be retried after I/O finishes");
+                            try {
+                                TimeUnit.NANOSECONDS.timedWait(this.signals, remaining);
+                            } catch (final InterruptedException e) {
+                                interrupted = true;
+                            }
                         }
                     }
+                } finally {
+                    if (interrupted) Thread.currentThread().interrupt();
                 }
-            } finally {
-                if (interrupted) Thread.currentThread().interrupt();
+                // PREPARATION MAY HAVE HANDED OFF TO STREAMING WHILE RELEASE WAS WAITING FOR ITS EXIT.
+                final Thread streaming = this.lifecycleThread;
+                if (streaming != null && streaming != t && streaming != Thread.currentThread()) {
+                    streaming.interrupt();
+                    ThreadTool.join(streaming);
+                }
+                this.lifecycleThread = null;
+                this.lifecycleTask = null;
+                this.playable = false;
+                this.releaseDone = true;
+                this.disarm();
+                synchronized (this.signals) {
+                    final Status prev = this.status;
+                    this.resetAfterRelease();
+                    this.queueStatus(prev, Status.STOPPED);
+                }
+                super.release();
             }
-            // PREPARATION MAY HAVE HANDED OFF TO STREAMING WHILE RELEASE WAS WAITING FOR ITS EXIT.
-            final Thread streaming = this.lifecycleThread;
-            if (streaming != null && streaming != t && streaming != Thread.currentThread()) {
-                streaming.interrupt();
-                ThreadTool.join(streaming);
-            }
-            this.lifecycleThread = null;
-            this.lifecycleTask = null;
-            this.playable = false;
-            this.resetAfterRelease();
-            this.releaseDone = true;
-            this.disarm();
-            this.invokeStatus(prev, Status.STOPPED);
-            super.release();
+        } finally {
+            this.releasing = false;
+            this.deliverStatus();
         }
     }
 
-    // PUBLISHES A STATUS FROM A PIPELINE PASS, REJECTED WHEN A LATER start()/stop() ORPHANED THAT PASS
+    @Override
+    boolean holdStatus() { return this.releasing; }
+
+    // PUBLISHES A STATUS FROM A PIPELINE PASS, REJECTED WHEN A LATER start()/stop() ORPHANED THAT PASS; QUEUED WITH THE
+    // SERIAL CHECK, SO AN ORPHANED PASS CAN NEVER BE HEARD AFTER THE TRANSITION THAT ORPHANED IT
     private void publish(final Status next, final int serial) {
-        final Status prev;
         synchronized (this.signals) {
             if (serial != this.lifecycleSerial) return;
-            prev = this.status;
+            this.queueStatus(this.status, next);
             this.status = next;
         }
-        this.invokeStatus(prev, next);
+        this.deliverStatus();
     }
 
     // ==========================================================================
@@ -473,7 +488,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     // MODE 2 — PRE-UPLOADED FRAME TEXTURES + PASSIVE CLOCK
     // ==========================================================================
     // ALL FRAMES ARE DECODED UP FRONT AND UPLOADED AS PER-FRAME TEXTURES. NO THREAD EXISTS:
-    // texture() RESOLVES THE DISPLAYED FRAME FROM WALL TIME ON EVERY CALL, SO PLAYBACK COSTS
+    // texture() RESOLVES THE DISPLAYED FRAME FROM ELAPSED TIME ON EVERY CALL, SO PLAYBACK COSTS
     // ZERO UPLOADS, ZERO WAKEUPS, AND HAS NO SLEEP DRIFT.
 
     // ELIGIBLE WHEN THE FRAME SET AT THE UPLOAD TARGET FITS THE CONFIGURED VRAM BUDGET, THE FRAME
@@ -551,7 +566,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     // RESOLVES THE PASSIVE-CLOCK MEDIA TIME, FOLDING LOOP WRAPS AND THE ENDED TRANSITION.
     // SHARED BY MODE 2 FRAME TEXTURES AND THE TIMED-STATIC DISPLAY CLOCK.
     private long texTime() {
-        final Status prev;
         final long result;
         synchronized (this.clock) {
             final long duration = Math.max(1L, this.knownDuration);
@@ -570,13 +584,15 @@ public final class TxMediaPlayer extends MediaPlayer {
             this.clockBase = duration;
             this.wallBase = nowMs();
             synchronized (this.signals) {
-                prev = this.status;
-                if (prev == Status.PLAYING) this.status = Status.ENDED;
+                if (this.status == Status.PLAYING) {
+                    this.status = Status.ENDED;
+                    this.queueStatus(Status.PLAYING, Status.ENDED);
+                }
             }
             result = duration;
         }
-        // PUBLISH OUTSIDE THE clock LOCK SO A LISTENER RE-ENTERING THE PLAYER CANNOT DEADLOCK
-        if (prev == Status.PLAYING) this.invokeStatus(prev, Status.ENDED);
+        // HEARD OUTSIDE THE clock LOCK SO A LISTENER RE-ENTERING THE PLAYER CANNOT DEADLOCK
+        this.deliverStatus();
         return result;
     }
 
@@ -1162,19 +1178,19 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (!this.animated || this.texTimeline != null) {
             // A STILL OR THE PASSIVE CLOCK FLIPS BETWEEN PLAYING AND PAUSED IN PLACE; ENDED HAS NOTHING
             // TO RESUME AND A REPEATED CALL CHANGES NOTHING. THE CLOCK IS FROZEN OR REBASED ON THE FLIP
-            final Status prev;
             synchronized (this.clock) {
                 synchronized (this.signals) {
-                    prev = this.status;
+                    final Status prev = this.status;
                     if (paused ? prev != Status.PLAYING : prev != Status.PAUSED) return false;
                     this.paused = paused;
                     this.status = paused ? Status.PAUSED : Status.PLAYING;
+                    this.queueStatus(prev, this.status);
                 }
                 final long now = nowMs();
                 if (paused && (this.staticTimed || this.texTimeline != null)) this.clockBase += (long) ((now - this.wallBase) * this.speed());
                 this.wallBase = now;
             }
-            this.invokeStatus(prev, paused ? Status.PAUSED : Status.PLAYING);
+            this.deliverStatus();
             return true;
         }
         // STREAMING: ONLY A LIVE LOOP TAKES THE TRIGGER; AN ENDED, FAILED OR IDLE PLAYER HAS NOTHING TO PAUSE
@@ -1210,19 +1226,18 @@ public final class TxMediaPlayer extends MediaPlayer {
         if (status == Status.STOPPED || (status == Status.ENDED && this.texTimeline == null)) return this.launch(true, target);
         if (!this.loaded) return false;
         if (this.texTimeline != null) {
-            final Status prev;
             synchronized (this.clock) {
                 synchronized (this.signals) {
-                    prev = this.status;
-                    if (prev == Status.ENDED) {
+                    if (this.status == Status.ENDED) {
                         this.paused = true;
                         this.status = Status.PAUSED;
+                        this.queueStatus(Status.ENDED, Status.PAUSED);
                     }
                 }
                 this.clockBase = target;
                 this.wallBase = nowMs();
             }
-            if (prev == Status.ENDED) this.invokeStatus(prev, Status.PAUSED);
+            this.deliverStatus();
             return true;
         }
         this.seekTarget = target;

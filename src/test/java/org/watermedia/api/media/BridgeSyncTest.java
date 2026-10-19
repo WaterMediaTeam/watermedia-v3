@@ -5,6 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.Config.Capability;
 import org.watermedia.api.media.MediaPlayer.Status;
+import org.watermedia.test.support.PlayerWait;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -21,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * End-to-end tests of the bridge sync protocol over a real byte transport: a
+ * Verifies the bridge sync protocol end to end over a real byte transport: a
  * {@link ServerMediaPlayer} authority and its followers exchange encoded packets through
  * in-memory carriers, exactly as a dev's packet channel or socket would deliver them.
  * Covers follower registration, lockstep gating, late joiners, control requests and the
@@ -43,12 +44,7 @@ public class BridgeSyncTest {
 
     // BLOCKS UNTIL THE CONDITION HOLDS OR THE DEADLINE PASSES, THEN ASSERTS IT
     private static void await(final String what, final BooleanSupplier condition) {
-        final long deadline = System.currentTimeMillis() + AWAIT_MS;
-        while (System.currentTimeMillis() < deadline) {
-            if (condition.getAsBoolean()) return;
-            try { Thread.sleep(10L); } catch (final InterruptedException e) { Thread.currentThread().interrupt(); break; }
-        }
-        assertTrue(condition.getAsBoolean(), "timed out waiting for: " + what);
+        assertTrue(PlayerWait.awaitCondition(condition, AWAIT_MS), "timed out waiting for: " + what);
     }
 
     // SLEEPS THROUGH SEVERAL AUTHORITY TICKS SO A "NOTHING HAPPENED" ASSERTION IS MEANINGFUL

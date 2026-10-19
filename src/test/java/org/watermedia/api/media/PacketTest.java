@@ -8,6 +8,7 @@ import org.watermedia.api.media.MediaPlayer.Status;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -15,9 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Codec tests for the bridge sync wire protocol. Decoding is the trust boundary between the
- * network and playback code, so every packet must round-trip byte for byte and every
- * malformed payload must be rejected instead of reaching a player.
+ * Verifies the bridge sync wire protocol codec. Decoding is the trust boundary between the
+ * network and playback code, so every packet must round-trip byte for byte, decode from any
+ * buffer whatever its byte order, and every malformed payload must be rejected instead of
+ * reaching a player.
  */
 @DisplayName("Sync protocol packets")
 public class PacketTest {
@@ -124,6 +126,30 @@ public class PacketTest {
         final ByteBuffer rejected = ByteBuffer.wrap(badVersion);
         assertThrows(IllegalArgumentException.class, () -> Packet.read(rejected));
         assertEquals(0, rejected.position(), "a rejected payload must not consume bytes");
+    }
+
+    @Test
+    @DisplayName("Every packet type decodes from little-endian heap and direct buffers and leaves their order alone")
+    void testLittleEndianSources() {
+        // BYTE-ASYMMETRIC VALUES: A DECODE THAT HONOURED THE CALLER'S ORDER WOULD READ EVERY FIELD SWAPPED
+        final long id = 0x0102_0304_0506_0708L;
+        final List<Packet> packets = List.of(
+                new Sync(0x0A0B_0C0D, Status.PAUSED, 0x0102_0304L, 0x0506_0708L, 1.5f, 42, true, false, true),
+                new Config(id, Capability.mask(Capability.LOCKSTEP, Capability.VOLUME)),
+                new Watch(id),
+                new Report(id, Status.BUFFERING, 0x0102_0304L, true),
+                new Control(id, Op.SEEK, 0x0102_0304L),
+                new Unwatch(id));
+        for (final Packet packet: packets) {
+            final byte[] wire = packet.toBytes().array();
+            final ByteBuffer heap = ByteBuffer.wrap(wire).order(ByteOrder.LITTLE_ENDIAN);
+            final ByteBuffer direct = ByteBuffer.allocateDirect(wire.length).order(ByteOrder.LITTLE_ENDIAN).put(wire).flip();
+            for (final ByteBuffer source: List.of(heap, direct)) {
+                assertEquals(packet, Packet.read(source), (source.isDirect() ? "direct " : "heap ") + packet);
+                assertEquals(0, source.remaining(), "the decode consumes exactly the packet");
+                assertEquals(ByteOrder.LITTLE_ENDIAN, source.order(), "the caller's byte order survives the decode");
+            }
+        }
     }
 
     @Test

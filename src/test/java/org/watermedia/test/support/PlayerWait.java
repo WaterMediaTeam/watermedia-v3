@@ -6,6 +6,7 @@ import org.watermedia.api.media.MediaPlayer.Status;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -34,8 +35,9 @@ public final class PlayerWait {
 
     /** Generic spin-wait helper — returns true if the condition was satisfied within the timeout. */
     public static boolean awaitCondition(final BooleanSupplier condition, final long timeoutMs) {
-        final long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
+        // MONOTONIC: A WALL-CLOCK ADJUSTMENT MUST NEVER STRETCH OR CUT A WAIT
+        final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (System.nanoTime() - deadline < 0) {
             if (condition.getAsBoolean()) return true;
             try { Thread.sleep(POLL_INTERVAL_MS); }
             catch (final InterruptedException e) {

@@ -15,9 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Quality bucket semantics on {@link MRL.Source}: closest-fallback resolution
- * via {@link MRL.Source#uri(MediaQuality)}, in-place quality remap via
- * {@link MRL#moveQuality}, and bidirectional URI/quality lookup via
+ * Verifies the quality buckets of {@link MRL.Source}: closest-fallback resolution
+ * via {@link MRL.Source#uri(MediaQuality)}, copy-on-write relabel of an unknown quality via
+ * {@code MRL.moveQuality}, and bidirectional URI/quality lookup via
  * {@link MRL.Source#qualityOf(URI)}.
  */
 @DisplayName("MRL quality buckets")
@@ -42,23 +42,27 @@ public class MrlQualityTest {
     }
 
     @Test
-    @DisplayName("moveQuality rewrites the quality key in place")
-    void testMoveQualityRewritesQualityKey() {
+    @DisplayName("moveQuality relabels the unknown quality of its own URI once, in a fresh source array")
+    void testMoveQualityRelabelsUnknownQuality() {
         final MRL mrl = MediaAPI.mrl(Fixtures.fileUri(Fixtures.PNG_DIR.resolve("4.png")));
         assertTrue(mrl.await(TIMEOUT_MS));
 
         final MRL.Source before = mrl.source(0);
         assertNotNull(before);
-        final MediaQuality oldKey = before.qualities().keySet().iterator().next();
-
-        // SKIP THE NO-OP CASE WHERE HIGH IS ALREADY THE KEY — TEST REMAINS MEANINGFUL.
-        final MediaQuality target = oldKey == MediaQuality.HIGHER ? MediaQuality.HIGH : MediaQuality.HIGHER;
-        mrl.moveQuality(0, oldKey, target);
+        final URI uri = before.qualities().get(MediaQuality.UNKNOWN);
+        assertNotNull(uri, "a local file starts with an unknown quality");
+        assertFalse(mrl.moveQuality(0, URI.create("file:///elsewhere.png"), MediaQuality.HIGH), "another URI is never relabeled");
+        assertTrue(mrl.moveQuality(0, uri, MediaQuality.HIGH));
 
         final MRL.Source after = mrl.source(0);
         assertNotNull(after);
-        assertTrue(after.qualities().containsKey(target));
-        assertFalse(after.qualities().containsKey(oldKey));
+        assertEquals(uri, after.qualities().get(MediaQuality.HIGH));
+        assertFalse(after.qualities().containsKey(MediaQuality.UNKNOWN));
+        // PLAYERS KEEP THE SOURCE THEY STARTED WITH: THE RELABEL REPLACES THE ARRAY INSTEAD OF EDITING IT
+        assertEquals(uri, before.qualities().get(MediaQuality.UNKNOWN));
+        // A RESTART OR A SECOND PLAYER STILL HOLDS THE OLD SOURCE AND ASKS AGAIN: THE URI ALREADY SITS THERE
+        assertTrue(mrl.moveQuality(0, uri, MediaQuality.HIGH), "a repeated relabel succeeds");
+        assertFalse(mrl.moveQuality(0, uri, MediaQuality.HIGHER), "a known quality is never relabeled");
     }
 
     @Test

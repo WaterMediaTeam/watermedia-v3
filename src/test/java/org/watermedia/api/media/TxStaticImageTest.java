@@ -1,24 +1,29 @@
 package org.watermedia.api.media;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * End-to-end smoke test for the {@link TxMediaPlayer} static-image path: load a
- * single-frame PNG, observe the first GPU upload, and verify that release tears
- * down the engine cleanly.
+ * Verifies the {@link TxMediaPlayer} static-image path end to end: a single-frame
+ * PNG loads, reaches its first GPU upload, and release tears down the engine
+ * cleanly.
  */
 @DisplayName("TxMediaPlayer static image")
 public class TxStaticImageTest {
 
-    private static final long MRL_TIMEOUT_MS = 2000L;
-    private static final long PLAYER_TIMEOUT_MS = 3000L;
+    private static final long MRL_TIMEOUT_MS = 2_000L;
+    private static final long PLAYER_TIMEOUT_MS = 3_000L;
+
+    @BeforeAll
+    static void boot() { MediaBootstrap.client(); }
 
     @Test
     @DisplayName("Static PNG loads and uploads one frame")

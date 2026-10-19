@@ -15,8 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link MasterClock}: covers the state machine, seek lifecycle,
- * serial invalidation, and the speed/time linearity invariants.
+ * Verifies {@link MasterClock}: the state machine, seek lifecycle, serial
+ * invalidation, and the speed/time linearity invariants.
  */
 @DisplayName("MasterClock")
 public class MasterClockTest {

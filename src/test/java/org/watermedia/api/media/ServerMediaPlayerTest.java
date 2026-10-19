@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link ServerMediaPlayer}, the headless wall-clock sync authority. Its contract
+ * Verifies {@link ServerMediaPlayer}, the headless wall-clock sync authority. Its contract
  * (start/pause/seek/speed/repeat and the shared-ticker ENDED transition) is pure-Java and
  * deterministic; a regression here desyncs every client that trusts it.
  */
@@ -252,14 +252,35 @@ public class ServerMediaPlayerTest {
     }
 
     @Test
+    @DisplayName("A live clock seeked near the end of the long range saturates instead of wrapping negative")
+    void testLiveSeekSaturates() throws InterruptedException {
+        final ServerMediaPlayer player = new ServerMediaPlayer();
+        try {
+            // A LIVE TIMELINE RUNS WITHOUT A DURATION, SO NOTHING CLAMPS THE RUNNING SEGMENT BUT THE SATURATION
+            player.live(true);
+            assertTrue(player.start());
+            assertTrue(player.seek(Long.MAX_VALUE - 10L));
+            Thread.sleep(50L); // THE SEGMENT OUTGROWS THE 10ms LEFT
+            assertEquals(Long.MAX_VALUE, player.time());
+            assertEquals(Status.PLAYING, player.status(), "a live clock never ends");
+            final Sync snapshot = player.snapshot();
+            assertEquals(Long.MAX_VALUE, snapshot.time());
+            assertEquals(snapshot, Packet.read(snapshot.toBytes()), "the saturated snapshot still crosses the wire");
+        } finally {
+            player.release();
+        }
+    }
+
+    @Test
     @DisplayName("A solo clock ignores follower traffic and never enrolls anyone")
     void testSoloIgnoresUpstream() {
         final ServerMediaPlayer player = new ServerMediaPlayer();
         try {
             player.sync(new Watch(7L));
-            player.sync(new Report(7L, Status.PLAYING, 60_000L, false));
+            player.sync(new Report(7L, Status.PLAYING, 60_000L, true));
             assertEquals(0, player.followers());
             assertEquals(0L, player.duration(), "a solo clock must not learn facts from strangers");
+            assertTrue(player.canSpeed(), "nor latch their live flag");
         } finally {
             player.release();
         }

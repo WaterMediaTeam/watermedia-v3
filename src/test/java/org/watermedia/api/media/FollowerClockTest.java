@@ -4,6 +4,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
+import org.watermedia.test.support.PlayerWait;
+import org.watermedia.tools.ThreadTool;
 
 import java.util.concurrent.TimeUnit;
 
@@ -12,8 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * How a follower tracks its session between snapshots. Snapshots arrive seconds apart, so the
- * value is entirely in what happens <em>in between</em>: the last one is aged into a live
+ * Verifies how a follower tracks its session between snapshots. Snapshots arrive seconds apart, so
+ * the value is entirely in what happens <em>in between</em>: the last one is aged into a live
  * position, folded into the media timeline, and never replaced by an older one.
  */
 @DisplayName("Follower clock")
@@ -93,6 +95,17 @@ public class FollowerClockTest {
     }
 
     @Test
+    @DisplayName("a live session snapshotted at the end of the long range ages without wrapping negative")
+    void testLiveSessionSaturates() throws InterruptedException {
+        final ServerMediaPlayer follower = this.follower();
+        // A LIVE AUTHORITY SEEKED NEAR Long.MAX_VALUE SATURATES ITS CLOCK AND SNAPSHOTS IT; AGEING THAT SNAPSHOT MUST SATURATE TOO
+        follower.sync(new Sync(1, Status.PLAYING, Long.MAX_VALUE - 10L, 0L, 1f, 100, false, false, true));
+        Thread.sleep(50L);
+        assertEquals(Long.MAX_VALUE, follower.authorityTime(), "the aged position must saturate");
+        assertTrue(follower.drift() >= 0L, "the session is never behind a follower that has not started");
+    }
+
+    @Test
     @DisplayName("a looping timeline wraps instead of overrunning the media")
     void testWrapsOnRepeat() throws InterruptedException {
         final ServerMediaPlayer follower = this.follower();
@@ -118,19 +131,18 @@ public class FollowerClockTest {
         // THE FOLLOWER'S OWN MEDIA IS 500ms; THE SESSION LATCHED A DIVERGENT 60s TIMELINE AND
         // SITS AT 5s — RESTARTING WOULD REPLAY THE MEDIA FOREVER UNTIL THE SESSION CATCHES UP
         follower.syncDuration(500L);
-        final long deadline = System.currentTimeMillis() + 3000L;
-        boolean ended = false;
-        long restarts = 0, last = 0;
-        while (System.currentTimeMillis() < deadline) {
+        // THE SESSION HEARTBEATS EVERY 50ms WHILE THE FOLLOWER PLAYS TOWARDS ITS OWN END; A CLOCK GOING BACKWARDS IS A RESTART
+        final long[] last = new long[1];
+        final long[] restarts = new long[1];
+        assertTrue(PlayerWait.awaitCondition(() -> {
             follower.sync(sync(1, Status.PLAYING, 5_000L, 60_000L, false, 1f));
-            Thread.sleep(50L);
+            ThreadTool.sleep(50L);
             final long t = follower.time();
-            if (t < last) restarts++;
-            last = t;
-            if (follower.ended()) { ended = true; break; }
-        }
-        assertTrue(ended, "the follower must reach its own end");
-        assertEquals(0, restarts, "no restarts while ending");
+            if (t < last[0]) restarts[0]++;
+            last[0] = t;
+            return follower.ended();
+        }, 3_000L), "the follower must reach its own end");
+        assertEquals(0L, restarts[0], "no restarts while ending");
         Thread.sleep(300L); // SEVERAL TICKS OF FRESH SNAPSHOTS MUST NOT REVIVE IT
         follower.sync(sync(1, Status.PLAYING, 8_000L, 60_000L, false, 1f));
         Thread.sleep(300L);
@@ -138,9 +150,7 @@ public class FollowerClockTest {
 
         // A REWIND BELOW OUR MEDIA'S END IS A REAL REPLAY AND MUST GO THROUGH
         follower.sync(sync(2, Status.PLAYING, 100L, 60_000L, false, 1f));
-        final long replayDeadline = System.currentTimeMillis() + 2000L;
-        while (System.currentTimeMillis() < replayDeadline && !follower.playing()) Thread.sleep(25L);
-        assertTrue(follower.playing(), "a rewound session must replay the ended media");
+        assertTrue(PlayerWait.awaitCondition(follower::playing, 2_000L), "a rewound session must replay the ended media");
     }
 
     @Test

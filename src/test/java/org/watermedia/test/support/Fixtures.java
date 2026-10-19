@@ -1,8 +1,13 @@
 package org.watermedia.test.support;
 
+import org.watermedia.api.codecs.writers.WebMWriter;
+import org.watermedia.api.util.PixelFormat;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -54,5 +59,26 @@ public final class Fixtures {
     /** Returns a {@code file://} URI for a fixture, suitable for {@code MRL}/MediaAPI. */
     public static URI fileUri(final Path path) {
         return path.toAbsolutePath().toUri();
+    }
+
+    /** Encodes a moving BGRA gradient into a VP9 WebM through {@link WebMWriter}; needs the FFmpeg natives. */
+    public static byte[] webm(final int width, final int height, final int frames, final int fps, final int crf) throws IOException {
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (final WebMWriter writer = new WebMWriter(out, width, height, PixelFormat.BGRA, fps, crf)) {
+            final ByteBuffer frame = ByteBuffer.allocateDirect(width * height * 4);
+            // CONSECUTIVE FRAMES DIFFER SO VP9 HAS REAL CONTENT TO CODE
+            for (int f = 0; f < frames; f++) {
+                frame.clear();
+                for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+                    frame.put((byte) ((x + f * 4) & 0xFF));      // B
+                    frame.put((byte) ((y + f * 4) & 0xFF));      // G
+                    frame.put((byte) ((x + y + f * 8) & 0xFF));  // R
+                    frame.put((byte) 0xFF);                       // A
+                }
+                frame.flip();
+                writer.writeFrame(frame);
+            }
+        }
+        return out.toByteArray();
     }
 }

@@ -1,10 +1,12 @@
 package org.watermedia.api.media;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import java.nio.file.Path;
@@ -16,16 +18,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 /**
- * Animated-image smoke test for {@link TxMediaPlayer}. For each animated GIF
- * fixture, drives the player through the standard load + play + pause cycle
- * and verifies the lifecycle thread uploads frames over time.
+ * Verifies the {@link TxMediaPlayer} animated-image path: each animated GIF fixture
+ * runs the standard load + play + pause cycle and the lifecycle thread uploads
+ * frames over time.
  */
 @DisplayName("TxMediaPlayer animated image")
 public class TxAnimatedImageTest {
 
-    private static final long MRL_TIMEOUT_MS = 2000L;
-    private static final long PLAYER_TIMEOUT_MS = 3000L;
-    private static final long PLAYBACK_OBSERVATION_MS = 1500L;
+    private static final long MRL_TIMEOUT_MS = 2_000L;
+    private static final long PLAYER_TIMEOUT_MS = 3_000L;
+    private static final long PLAYBACK_OBSERVATION_MS = 1_500L;
+
+    @BeforeAll
+    static void boot() { MediaBootstrap.client(); }
 
     @TestFactory
     @DisplayName("Animated GIF load/play/pause cycle")

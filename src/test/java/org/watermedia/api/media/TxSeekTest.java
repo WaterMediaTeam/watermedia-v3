@@ -1,25 +1,29 @@
 package org.watermedia.api.media;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Seek smoke test for {@link TxMediaPlayer}'s streaming path. Issues a mid-
- * duration seek and verifies the lifecycle thread eventually resumes playback
- * after settling on the target frame.
+ * Verifies seeking on the {@link TxMediaPlayer} streaming path: a mid-duration
+ * seek settles on the target frame and the lifecycle thread resumes playback.
  */
 @DisplayName("TxMediaPlayer seek")
 public class TxSeekTest {
 
-    private static final long MRL_TIMEOUT_MS = 2000L;
-    private static final long PLAYER_TIMEOUT_MS = 3000L;
-    private static final long SEEK_SETTLE_MS = 3000L;
+    private static final long MRL_TIMEOUT_MS = 2_000L;
+    private static final long PLAYER_TIMEOUT_MS = 3_000L;
+    private static final long SEEK_SETTLE_MS = 3_000L;
+
+    @BeforeAll
+    static void boot() { MediaBootstrap.client(); }
 
     @Test
     @DisplayName("Seek jumps to mid-duration and resumes playback")

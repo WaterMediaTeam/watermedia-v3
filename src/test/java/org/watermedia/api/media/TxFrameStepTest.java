@@ -1,9 +1,11 @@
 package org.watermedia.api.media;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,16 +13,19 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Frame-step semantics for {@link TxMediaPlayer}: while paused, {@code nextFrame()}
+ * Verifies the {@link TxMediaPlayer} frame-step semantics: while paused, {@code nextFrame()}
  * advances {@code time()} and {@code previousFrame()} rewinds it; the player must
  * remain in {@link Status#PAUSED} throughout.
  */
 @DisplayName("TxMediaPlayer frame step")
 public class TxFrameStepTest {
 
-    private static final long MRL_TIMEOUT_MS = 2000L;
-    private static final long PLAYER_TIMEOUT_MS = 3000L;
-    private static final long STEP_SETTLE_MS = 2000L;
+    private static final long MRL_TIMEOUT_MS = 2_000L;
+    private static final long PLAYER_TIMEOUT_MS = 3_000L;
+    private static final long STEP_SETTLE_MS = 2_000L;
+
+    @BeforeAll
+    static void boot() { MediaBootstrap.client(); }
 
     @Test
     @DisplayName("nextFrame and previousFrame move the clock while paused")

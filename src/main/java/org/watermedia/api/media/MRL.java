@@ -478,22 +478,23 @@ public final class MRL {
                 .toList();
     }
 
-    /**
-     * Internal: rewires a quality bucket inside an existing {@link Source}.
-     * Used by FFMediaPlayer when an HLS rendition turns out to map to a
-     * different bucket than the platform reported. Public only because the
-     * caller lives in a sibling package; not part of the supported API.
-     * <p>Do not call from application code.
-     */
-    public void moveQuality(final int sourceIndex, final MediaQuality from, final MediaQuality to) {
-        final Source[] s = this.sources;
-        if (s == null || sourceIndex < 0 || sourceIndex >= s.length) return;
-        final Source src = s[sourceIndex];
-        if (!src.qualities().containsKey(from)) return;
-        final EnumMap<MediaQuality, URI> newQualities = new EnumMap<>(src.qualities());
-        final URI uri = newQualities.remove(from);
-        newQualities.put(to, uri);
-        s[sourceIndex] = new Source(src.type(), src.thumbnail(), src.metadata(), src.headers(), newQualities, src.audioTracks(), src.subtitleTracks());
+    // RELABELS THE UNKNOWN QUALITY OF SOURCE sourceIndex AS to ONCE A PLAYER DECODED THE REAL SIZE OF uri; TRUE ALSO WHEN AN EARLIER
+    // RUN OR ANOTHER PLAYER ALREADY DID. COPY-ON-WRITE UNDER loadLock; FALSE WHEN uri LEFT UNKNOWN (A RELOAD) OR to IS TAKEN
+    boolean moveQuality(final int sourceIndex, final URI uri, final MediaQuality to) {
+        synchronized (this.loadLock) {
+            final Source[] s = this.sources;
+            if (s == null || sourceIndex < 0 || sourceIndex >= s.length) return false;
+            final Source src = s[sourceIndex];
+            if (uri.equals(src.qualities().get(to))) return true;
+            if (!uri.equals(src.qualities().get(MediaQuality.UNKNOWN)) || src.qualities().containsKey(to)) return false;
+            final EnumMap<MediaQuality, URI> qualities = new EnumMap<>(src.qualities());
+            qualities.remove(MediaQuality.UNKNOWN);
+            qualities.put(to, uri);
+            final Source[] next = s.clone();
+            next[sourceIndex] = new Source(src.type(), src.thumbnail(), src.metadata(), src.headers(), qualities, src.audioTracks(), src.subtitleTracks());
+            this.sources = next;
+            return true;
+        }
     }
 
 

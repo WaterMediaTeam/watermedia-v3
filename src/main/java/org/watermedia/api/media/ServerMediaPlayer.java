@@ -319,53 +319,53 @@ public final class ServerMediaPlayer extends MediaPlayer {
             else this.segmentStartNanos = System.nanoTime();
             this.gated = on;
             this.revision.incrementAndGet();
+            this.queueStatus(on ? Status.PLAYING : Status.BUFFERING, on ? Status.BUFFERING : Status.PLAYING);
         }
-        this.invokeStatus(on ? Status.PLAYING : Status.BUFFERING, on ? Status.BUFFERING : Status.PLAYING);
+        this.deliverStatus();
     }
 
     // --- PLAYBACK CONTROLS ---
 
-    // EVERY CONTROL DELEGATES TO super FIRST (A FOLLOWER'S CALL IS HANDED TO ITS AUTHORITY THERE); THE LOCK
-    // COMES AFTER IT AND THE LISTENER AFTER THE LOCK, SO NEITHER THE BRIDGE NOR A CALLBACK RUNS UNDER IT
+    // EVERY CONTROL DELEGATES TO super FIRST (A FOLLOWER'S CALL IS HANDED TO ITS AUTHORITY THERE); THE LOCK COMES AFTER IT AND
+    // QUEUES THE TRANSITION IN WRITE ORDER, AND THE LISTENER HEARS IT AFTER THE LOCK, SO NEITHER THE BRIDGE NOR A CALLBACK RUNS UNDER IT
     @Override
     public boolean start() {
         if (!super.start()) return false;
-        final Status prev;
         synchronized (this) {
-            prev = this.status();
+            final Status prev = this.status();
             this.accumulatedMs = 0;
             this.segmentStartNanos = System.nanoTime();
             this.gated = false;
             this.status = Status.PLAYING;
             this.revision.incrementAndGet();
             this.ticking(true);
+            this.queueStatus(prev, Status.PLAYING);
         }
-        this.invokeStatus(prev, Status.PLAYING);
+        this.deliverStatus();
         return true;
     }
 
     @Override
     public boolean startPaused() {
         if (!super.startPaused()) return false;
-        final Status prev;
         synchronized (this) {
-            prev = this.status();
+            final Status prev = this.status();
             this.accumulatedMs = 0;
             this.gated = false;
             this.status = Status.PAUSED;
             this.revision.incrementAndGet();
             this.ticking(true);
+            this.queueStatus(prev, Status.PAUSED);
         }
-        this.invokeStatus(prev, Status.PAUSED);
+        this.deliverStatus();
         return true;
     }
 
     @Override
     public boolean pause(final boolean paused) {
         if (!super.pause(paused)) return false;
-        final Status prev;
         synchronized (this) {
-            prev = this.status();
+            final Status prev = this.status();
             if (paused) {
                 if (this.status != Status.PLAYING) return false;
                 // A GATED CLOCK IS ALREADY FROZEN — DON'T RE-DERIVE TIME FROM A STALE SEGMENT START
@@ -381,25 +381,26 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 this.ticking(true);
             }
             this.revision.incrementAndGet();
+            this.queueStatus(prev, paused ? Status.PAUSED : Status.PLAYING);
         }
-        this.invokeStatus(prev, paused ? Status.PAUSED : Status.PLAYING);
+        this.deliverStatus();
         return true;
     }
 
     @Override
     public boolean stop() {
         if (!super.stop()) return false;
-        final Status prev;
         synchronized (this) {
             if (this.status == Status.WAITING || this.status == Status.STOPPED) return false;
-            prev = this.status();
+            final Status prev = this.status();
             this.accumulatedMs = 0;
             this.gated = false;
             this.status = Status.STOPPED;
             this.revision.incrementAndGet();
             this.ticking(false);
+            this.queueStatus(prev, Status.STOPPED);
         }
-        this.invokeStatus(prev, Status.STOPPED);
+        this.deliverStatus();
         return true;
     }
 
@@ -419,16 +420,16 @@ public final class ServerMediaPlayer extends MediaPlayer {
     @Override
     public boolean seek(final long time) {
         if (!super.seek(time)) return false;
-        final Status prev;
         synchronized (this) {
             if (this.status == Status.WAITING) return false;
-            prev = this.status();
+            final Status prev = this.status();
             // SCRUBBING A FINISHED/STOPPED CLOCK LANDS PAUSED AT THE POSITION INSTEAD OF STAYING DEAD
             if (this.status == Status.ENDED || this.status == Status.STOPPED) this.status = Status.PAUSED;
             final long d = this.duration;
             this.syncTime(d > 0 ? Math.min(Math.max(0L, time), d) : Math.max(0L, time));
+            this.queueStatus(prev, this.status());
         }
-        this.invokeStatus(prev, this.status());
+        this.deliverStatus();
         return true;
     }
 
@@ -535,18 +536,18 @@ public final class ServerMediaPlayer extends MediaPlayer {
 
     @Override
     public void release() {
-        final Status prev;
         synchronized (this) {
-            prev = this.status();
+            final Status prev = this.status();
             this.released = true;
             this.gated = false;
             this.status = Status.STOPPED;
             this.registry.clear();
             this.departed.clear();
+            this.queueStatus(prev, Status.STOPPED);
         }
         // OUTSIDE THE LOCK — A FOLLOWER'S super SENDS Unwatch THROUGH THE DEV'S BRIDGE
         this.disarm();
-        this.invokeStatus(prev, Status.STOPPED);
+        this.deliverStatus();
         super.release();
     }
 
@@ -565,9 +566,8 @@ public final class ServerMediaPlayer extends MediaPlayer {
         return run > Long.MAX_VALUE - this.accumulatedMs ? Long.MAX_VALUE : this.accumulatedMs + run;
     }
 
-    // 50ms CLOCK MAINTENANCE: LOOP WRAP AND THE ENDED TRANSITION, PUBLISHED OUTSIDE THE MONITOR
+    // 50ms CLOCK MAINTENANCE: LOOP WRAP AND THE ENDED TRANSITION, QUEUED UNDER THE MONITOR AND HEARD OUTSIDE IT
     private void update() {
-        final boolean ended;
         synchronized (this) {
             if (this.status != Status.PLAYING || this.gated) return;
 
@@ -577,12 +577,12 @@ public final class ServerMediaPlayer extends MediaPlayer {
             final long now = this.computeTime(this.speed());
             if (now < d) return;
 
-            ended = !this.repeat();
-            if (ended) {
+            if (!this.repeat()) {
                 this.accumulatedMs = d;
                 this.status = Status.ENDED;
                 this.revision.incrementAndGet();
                 this.ticking(false);
+                this.queueStatus(Status.PLAYING, Status.ENDED);
             } else {
                 // CARRY THE OVERSHOOT ACROSS THE LOOP BOUNDARY — DISCARDING IT SLIPPED THE AUTHORITATIVE
                 // CLOCK BY UP TO ONE TICK (50ms) PER LOOP, DESYNCING EVERY CLIENT THAT TRUSTS IT.
@@ -592,7 +592,7 @@ public final class ServerMediaPlayer extends MediaPlayer {
                 this.revision.incrementAndGet();
             }
         }
-        if (ended) this.invokeStatus(Status.PLAYING, Status.ENDED);
+        this.deliverStatus();
     }
 
     // PER-FOLLOWER REGISTRY ENTRY. pooled MARKS LOCKSTEP GATE MEMBERSHIP — IMMEDIATE WHEN THE

@@ -1,11 +1,13 @@
 package org.watermedia.api.media;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.MediaPlayer.LodLevel;
 import org.watermedia.api.media.MediaPlayer.Status;
 import org.watermedia.test.support.Fixtures;
+import org.watermedia.test.support.MediaBootstrap;
 import org.watermedia.test.support.PlayerWait;
 
 import java.util.function.Consumer;
@@ -15,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exercises the {@link TxMediaPlayer} upload-scaling pipeline ({@code maxSize} +
+ * Verifies the {@link TxMediaPlayer} upload-scaling pipeline ({@code maxSize} +
  * {@link LodLevel}) end to end against a known-size fixture, asserting on the
  * dimensions the engine is actually configured with ({@code width()}/{@code height()})
  * versus the untouched native size ({@code sourceWidth()}/{@code sourceHeight()}).
@@ -27,11 +29,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("TxMediaPlayer scaling")
 public class TxScalingTest {
 
-    private static final long MRL_TIMEOUT_MS = 2000L;
-    private static final long PLAYER_TIMEOUT_MS = 3000L;
-    private static final long HOT_CHANGE_MS = 3000L;
+    private static final long MRL_TIMEOUT_MS = 2_000L;
+    private static final long PLAYER_TIMEOUT_MS = 3_000L;
+    private static final long HOT_CHANGE_MS = 3_000L;
 
     private static final int NATIVE = 150; // src/test/resources/png/2.png IS 150x150
+
+    @BeforeAll
+    static void boot() { MediaBootstrap.client(); }
 
     // BUILDS A STATIC-IMAGE PLAYER, APPLIES THE GIVEN SCALING CONFIG, STARTS IT AND
     // WAITS UNTIL THE FIRST FRAME IS LIVE SO width()/height() REFLECT THE UPLOAD SIZE.

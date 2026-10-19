@@ -35,27 +35,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @DisplayName("WebMWriter VP9")
 public class WebMWriterTest {
 
-    // ENCODES A MOVING GRADIENT SO CONSECUTIVE FRAMES DIFFER AND VP9 HAS REAL CONTENT TO CODE
-    private static byte[] encode(final int w, final int h, final int frames, final int fps, final int crf) throws IOException {
-        final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (final WebMWriter writer = new WebMWriter(out, w, h, PixelFormat.BGRA, fps, crf)) {
-            final ByteBuffer frame = ByteBuffer.allocateDirect(w * h * 4);
-            for (int f = 0; f < frames; f++) {
-                frame.clear();
-                for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-                    frame.put((byte) ((x + f * 4) & 0xFF));      // B
-                    frame.put((byte) ((y + f * 4) & 0xFF));      // G
-                    frame.put((byte) ((x + y + f * 8) & 0xFF));  // R
-                    frame.put((byte) 0xFF);                       // A
-                }
-                frame.flip();
-                writer.writeFrame(frame);
-            }
-            assertEquals(frames, writer.frameCount());
-        }
-        return out.toByteArray();
-    }
-
     @Test
     @DisplayName("Constructor rejects invalid fps, crf and block-compressed pixel formats before looking for FFmpeg")
     void rejectsInvalidArgs() {
@@ -86,7 +65,7 @@ public class WebMWriterTest {
     @DisplayName("Encodes a valid, sniffable WebM stream")
     void encodesValidWebM() throws Exception {
         assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
-        final byte[] webm = encode(64, 48, 15, 30, 32);
+        final byte[] webm = Fixtures.webm(64, 48, 15, 30, 32);
 
         assertTrue(webm.length > 64, "encoded stream should carry real data");
         // EBML / MATROSKA MAGIC (1A 45 DF A3)
@@ -102,7 +81,7 @@ public class WebMWriterTest {
     @DisplayName("The encoded WebM decodes back through FFMediaPlayer")
     void decodesRoundTrip() throws Exception {
         assumeTrue(MediaBootstrap.ffmpegAvailable(), "FFmpeg natives unavailable — skipping");
-        final byte[] webm = encode(96, 64, 20, 30, 32);
+        final byte[] webm = Fixtures.webm(96, 64, 20, 30, 32);
         final Path file = Files.createTempFile("wm-webm-", ".webm");
         file.toFile().deleteOnExit();
         Files.write(file, webm);
@@ -118,7 +97,7 @@ public class WebMWriterTest {
             // REGRESSION: THE CONTAINER MUST CARRY ITS DURATION UP FRONT (MATROSKA Duration + Cues), SO
             // A CLIENT CAN REPORT LENGTH AND SEEK RIGHT AFTER LOAD — NOT ONLY AFTER READING TO THE END
             assertTrue(player.duration() > 0, "duration must be known right after load");
-            // encode() WRITES EVERY FRAME WITH A ZERO DELAY, SO EACH ONE ADVANCES BY THE 30 FPS FRAME DURATION
+            // Fixtures.webm() WRITES EVERY FRAME WITH A ZERO DELAY, SO EACH ONE ADVANCES BY THE 30 FPS FRAME DURATION
             final long expected = 20 * 1_000L / 30;
             assertTrue(Math.abs(player.duration() - expected) <= 2 * 1_000L / 30,
                     "duration " + player.duration() + " ms, expected about " + expected + " ms");
