@@ -3,10 +3,11 @@ package org.watermedia.bootstrap.app;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.Platform;
 import org.lwjgl.system.windows.RECT;
 import org.lwjgl.system.windows.WindowProc;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.screen.TitleBar;
+import org.watermedia.tools.IOTool;
 
 import java.nio.IntBuffer;
 
@@ -42,7 +43,7 @@ import static org.lwjgl.system.windows.User32.*;
 public final class WinFrame {
 
     /** Whether the native Windows frame integration applies on this platform. */
-    public static final boolean ACTIVE = Platform.get() == Platform.WINDOWS;
+    public static final boolean ACTIVE = "windows".equals(IOTool.os());
 
     // WM_DPICHANGED IS NOT EXPOSED BY LWJGL'S User32 BINDING
     private static final int WM_DPICHANGED = 0x02E0;
@@ -127,8 +128,8 @@ public final class WinFrame {
             if (ww <= 0 || wh <= 0) return;
             final int nw = Math.min(w, ww);
             final int nh = Math.min(h, wh);
-            final int nx = Math.max(wx, Math.min(x, wx + ww - nw));
-            final int ny = Math.max(wy, Math.min(y, wy + wh - nh));
+            final int nx = MathUtil.clamp(x, wx, wx + ww - nw);
+            final int ny = MathUtil.clamp(y, wy, wy + wh - nh);
             if (nw == w && nh == h && nx == x && ny == y) return;
             // THE GLFW SIZE CALLBACK RE-SYNCS ctx.windowWidth/Height AND THE ENGINE VIEWPORT
             glfwSetWindowSize(window, nw, nh);

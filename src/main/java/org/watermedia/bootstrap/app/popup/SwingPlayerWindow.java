@@ -6,6 +6,7 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.GFXEngine;
 import org.watermedia.api.media.SFXEngine;
 import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.tools.ThreadTool;
@@ -236,7 +237,7 @@ final class SwingPlayerWindow implements PopupPlayers.Closer {
     }
 
     private void bumpVolume(final int delta) {
-        this.volume.setValue(Math.max(0, Math.min(100, this.volume.getValue() + delta)));
+        this.volume.setValue(MathUtil.clamp(this.volume.getValue() + delta, 0, 100));
     }
 
     private void toggleMute() {

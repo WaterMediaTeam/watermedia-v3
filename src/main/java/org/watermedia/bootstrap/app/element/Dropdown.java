@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
@@ -73,7 +74,7 @@ public final class Dropdown extends Element<Dropdown> {
     public Dropdown selected(final int index) {
         // CLAMP INTO RANGE LIKE items() DOES — AN OUT-OF-RANGE INDEX WOULD DRAW/PICK A BLANK VALUE
         this.selectedIndex = this.items.isEmpty() ? Math.max(0, index)
-                : Math.max(0, Math.min(index, this.items.size() - 1));
+                : MathUtil.clamp(index, 0, this.items.size() - 1);
         return this;
     }
 
@@ -205,7 +206,7 @@ public final class Dropdown extends Element<Dropdown> {
         }
         final ParentScroll scroll = new ParentScroll().width(MAX_PARENT).add(column);
         // CAP THE VISIBLE HEIGHT SO A LONG LIST SCROLLS INSTEAD OF OVERFLOWING THE SCREEN
-        scroll.height(Math.min(Math.max(1, this.items.size()), 8) * (Theme.BUTTON + 6));
+        scroll.height(MathUtil.clamp(this.items.size(), 1, 8) * (Theme.BUTTON + 6));
         this.pickerDialog = new Dialog()
                 .title(this.title)
                 .accent(this.accent)
@@ -294,9 +295,9 @@ public final class Dropdown extends Element<Dropdown> {
             boolean flip = false;
             if (fullH <= availBelow || availBelow >= availAbove) {
                 panelY = anchorB + 4;
-                panelH = Math.min(fullH, Math.max(minH, availBelow));
+                panelH = MathUtil.clamp(availBelow, minH, fullH);
             } else {
-                panelH = Math.min(fullH, Math.max(minH, availAbove));
+                panelH = MathUtil.clamp(availAbove, minH, fullH);
                 panelY = anchorT - 4 - panelH;
                 flip = true;
             }
@@ -328,7 +329,7 @@ public final class Dropdown extends Element<Dropdown> {
             final int w = b.w();
             final int h = b.h();
             final int rows = this.visibleRows(h);
-            this.scroll = Math.max(0, Math.min(this.scroll, this.maxScroll(h)));
+            this.scroll = MathUtil.clamp(this.scroll, 0, this.maxScroll(h));
 
             // UNFOLD: THE PANEL GROWS FROM ITS ANCHORED EDGE (DOWNWARD, OR UPWARD WHEN FLIPPED ABOVE) WITH
             // A CUBIC EASE-OUT; ROWS KEEP THEIR FINAL POSITIONS AND THE CLIP REVEALS THEM. ONLY THE DRAW
@@ -409,7 +410,7 @@ public final class Dropdown extends Element<Dropdown> {
                 // ONE ROW PER NOTCH MINIMUM SO PRECISION-TOUCHPAD DELTAS < 1 STILL SCROLL (LIKE THE OTHER SURFACES);
                 // A BARE (int) CAST TRUNCATED THEM TO ZERO SO THE MENU NEVER MOVED
                 final int rows = amount > 0 ? Math.max(1, (int) amount) : Math.min(-1, (int) amount);
-                final int next = Math.max(0, Math.min(max, this.scroll - rows));
+                final int next = MathUtil.clamp(this.scroll - rows, 0, max);
                 if (next != this.scroll) {
                     this.scroll = next;
                     this.invalidate();

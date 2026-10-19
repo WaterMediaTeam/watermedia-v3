@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
@@ -68,7 +69,7 @@ public final class StatusSquare extends Element<StatusSquare> {
         if (s != Status.PENDING) return base;
         // SINE ALPHA PULSE — FIXED PHASE AND RANGE
         final float pulse = 0.42f + 0.35f * (float) ((Math.sin(System.currentTimeMillis() / 180.0) + 1.0) * 0.5);
-        return AppTheme.alpha(base, Math.max(70, Math.min(255, (int) (255 * pulse))));
+        return AppTheme.alpha(base, MathUtil.clamp((int) (255 * pulse), 70, 255));
     }
 
     @Override

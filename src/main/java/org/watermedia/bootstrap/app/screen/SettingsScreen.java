@@ -6,6 +6,7 @@ import me.srrapero720.waterconfig.WaterConfig;
 import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.IConfigField;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppConfig;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.element.Box;
@@ -529,7 +530,7 @@ public final class SettingsScreen extends Screen {
     private void switchSection(final int index) {
         final SettingSpec spec = this.activeSpec();
         if (spec == null || spec.sections.isEmpty()) return;
-        this.activeSectionIndex = Math.max(0, Math.min(spec.sections.size() - 1, index));
+        this.activeSectionIndex = MathUtil.clamp(index, 0, spec.sections.size() - 1);
         this.closeEdit();
         this.populateRows();
     }
@@ -547,18 +548,18 @@ public final class SettingsScreen extends Screen {
             this.activeSectionIndex = 0;
             return;
         }
-        this.activeSectionIndex = Math.max(0, Math.min(spec.sections.size() - 1, this.activeSectionIndex));
+        this.activeSectionIndex = MathUtil.clamp(this.activeSectionIndex, 0, spec.sections.size() - 1);
     }
 
     private SettingSpec activeSpec() {
-        return this.specs.isEmpty() ? null : this.specs.get(Math.max(0, Math.min(this.specs.size() - 1, this.activeSpecIndex)));
+        return this.specs.isEmpty() ? null : this.specs.get(MathUtil.clamp(this.activeSpecIndex, 0, this.specs.size() - 1));
     }
 
     private SettingSection activeSection() {
         final SettingSpec spec = this.activeSpec();
         return spec == null || spec.sections.isEmpty()
                 ? null
-                : spec.sections.get(Math.max(0, Math.min(spec.sections.size() - 1, this.activeSectionIndex)));
+                : spec.sections.get(MathUtil.clamp(this.activeSectionIndex, 0, spec.sections.size() - 1));
     }
 
     // ==========================================================================
@@ -1034,7 +1035,7 @@ public final class SettingsScreen extends Screen {
                 this.followActive = false;
                 this.scrollX = this.offsetForActive(viewport);
             }
-            this.scrollX = Math.max(0, Math.min(this.scrollX, this.maxScrollX));
+            this.scrollX = MathUtil.clamp(this.scrollX, 0, this.maxScrollX);
             int x = this.innerLeft() - this.scrollX;
             final int y = this.innerTop();
             boolean first = true;
@@ -1079,7 +1080,7 @@ public final class SettingsScreen extends Screen {
         public boolean dispatchScroll(final double mx, final double my, final double amount) {
             if (!this.contains(mx, my) || this.maxScrollX <= 0) return false;
             // VERTICAL WHEEL DRIVES THE HORIZONTAL OFFSET — THE USUAL STRIP-SCROLL GESTURE
-            final int next = Math.max(0, Math.min(this.maxScrollX, this.scrollX - (int) (amount * STEP)));
+            final int next = MathUtil.clamp(this.scrollX - (int) (amount * STEP), 0, this.maxScrollX);
             if (next != this.scrollX) {
                 this.scrollX = next;
                 this.invalidate();
@@ -1408,7 +1409,7 @@ public final class SettingsScreen extends Screen {
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             // CLAMP FIXED-WIDTH CONTROLS TO THE LEGACY BUDGET SO THE LABEL ALWAYS KEEPS ITS MINIMUM SPACE
-            if (this.ctlW > 0) this.control.width(Math.min(this.ctlW, Math.max(120, innerAvailWidth - 160)));
+            if (this.ctlW > 0) this.control.width(MathUtil.clamp(innerAvailWidth - 160, 120, this.ctlW));
             this.control.measure(innerAvailWidth, innerAvailHeight);
             this.contentWidth = innerAvailWidth;
             this.contentHeight = innerAvailHeight;
@@ -1910,7 +1911,7 @@ public final class SettingsScreen extends Screen {
             final double min = this.minValue;
             final double max = this.maxValue;
             // hasUsableRange() ALREADY GUARANTEES MAX > MIN, SO THE SPAN IS SAFE TO DIVIDE BY DIRECTLY
-            return (float) Math.max(0d, Math.min(1d, (value - min) / (max - min)));
+            return (float) MathUtil.clamp((value - min) / (max - min), 0d, 1d);
         }
 
         @Override
@@ -2038,7 +2039,7 @@ public final class SettingsScreen extends Screen {
         }
 
         private Object valueForPercent(final double pct) {
-            final double raw = this.minValue + (this.maxValue - this.minValue) * Math.max(0d, Math.min(1d, pct));
+            final double raw = this.minValue + (this.maxValue - this.minValue) * MathUtil.clamp(pct, 0d, 1d);
             if (this.isInteger()) {
                 return this.numberOf(Math.round(raw));
             }

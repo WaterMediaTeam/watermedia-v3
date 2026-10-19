@@ -5,6 +5,7 @@ import org.apache.logging.log4j.MarkerManager;
 import org.lwjgl.glfw.GLFWImage;
 import org.lwjgl.system.MemoryUtil;
 import org.watermedia.WaterMedia;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.tools.IOTool;
 
@@ -211,12 +212,12 @@ public final class Assets {
         for (int y = 0; y < h; y++) {
             int sum = 0;
             for (int x = -radius; x <= radius; x++) {
-                sum += source[y * w + clamp(x, 0, w - 1)];
+                sum += source[y * w + MathUtil.clamp(x, 0, w - 1)];
             }
             for (int x = 0; x < w; x++) {
                 horizontal[y * w + x] = sum / window;
-                final int removeX = clamp(x - radius, 0, w - 1);
-                final int addX = clamp(x + radius + 1, 0, w - 1);
+                final int removeX = MathUtil.clamp(x - radius, 0, w - 1);
+                final int addX = MathUtil.clamp(x + radius + 1, 0, w - 1);
                 sum += source[y * w + addX] - source[y * w + removeX];
             }
         }
@@ -224,20 +225,16 @@ public final class Assets {
         for (int x = 0; x < w; x++) {
             int sum = 0;
             for (int y = -radius; y <= radius; y++) {
-                sum += horizontal[clamp(y, 0, h - 1) * w + x];
+                sum += horizontal[MathUtil.clamp(y, 0, h - 1) * w + x];
             }
             for (int y = 0; y < h; y++) {
                 output[y * w + x] = sum / window;
-                final int removeY = clamp(y - radius, 0, h - 1);
-                final int addY = clamp(y + radius + 1, 0, h - 1);
+                final int removeY = MathUtil.clamp(y - radius, 0, h - 1);
+                final int addY = MathUtil.clamp(y + radius + 1, 0, h - 1);
                 sum += horizontal[addY * w + x] - horizontal[removeY * w + x];
             }
         }
         return output;
-    }
-
-    private static int clamp(final int value, final int min, final int max) {
-        return Math.max(min, Math.min(max, value));
     }
 
     private static ByteBuffer argbToRgbaBuffer(final BufferedImage img) {

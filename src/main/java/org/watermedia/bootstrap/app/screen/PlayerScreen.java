@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.screen;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
@@ -443,7 +444,7 @@ public final class PlayerScreen extends Screen {
 
     private void openQualityDialog() {
         if (this.ctx.availableSources == null || this.ctx.availableSources.length == 0) return;
-        this.sourceSelectedIndex = Math.max(0, Math.min(this.ctx.sourceSelectorIndex, this.ctx.availableSources.length - 1));
+        this.sourceSelectedIndex = MathUtil.clamp(this.ctx.sourceSelectorIndex, 0, this.ctx.availableSources.length - 1);
         this.loadQualitiesForSource(this.sourceSelectedIndex);
         if (this.ctx.availableQualities == null || this.ctx.availableQualities.length == 0) return;
 
@@ -537,9 +538,9 @@ public final class PlayerScreen extends Screen {
         final int winH = this.ctx.logicalHeight();
         final int srcCount = this.ctx.availableSources != null ? this.ctx.availableSources.length : 1;
         final int qualCount = this.ctx.availableQualities != null ? this.ctx.availableQualities.length : 1;
-        final int dialogW = Math.min(Math.max(620, (int) (winW * 0.60f)), winW - 72);
-        final int dialogH = Math.min(Math.max(320, 98 + Math.max(Math.min(srcCount, 5) * 58, Math.max(1, qualCount) * 40)), winH - 96);
-        final int split = Math.min(dialogW - 250, Math.max(360, (int) (dialogW * 0.72f)));
+        final int dialogW = MathUtil.clamp((int) (winW * 0.60f), 620, winW - 72);
+        final int dialogH = MathUtil.clamp(98 + Math.max(Math.min(srcCount, 5) * 58, Math.max(1, qualCount) * 40), 320, winH - 96);
+        final int split = MathUtil.clamp((int) (dialogW * 0.72f), 360, dialogW - 250);
         final int listH = dialogH - 82;
         this.qualityDialog.panelWidth(dialogW);
         this.qualLeftCol.width(split - 48);
@@ -723,7 +724,7 @@ public final class PlayerScreen extends Screen {
 
     private void syncVideoDialog() {
         final int winW = this.ctx.logicalWidth();
-        final int dialogW = Math.min(Math.max(580, (int) (winW * 0.54f)), winW - 72);
+        final int dialogW = MathUtil.clamp((int) (winW * 0.54f), 580, winW - 72);
         final int colW = dialogW / 2 - 46;
         this.videoDialog.panelWidth(dialogW);
         this.videoLeftCol.width(colW);
@@ -815,7 +816,7 @@ public final class PlayerScreen extends Screen {
     }
 
     private void selectVideoLod(final int index) {
-        final int next = Math.max(0, Math.min(MediaPlayer.LodLevel.values().length - 1, index));
+        final int next = MathUtil.clamp(index, 0, MediaPlayer.LodLevel.values().length - 1);
         if (next == this.lodSelectedIndex) return;
         this.lodSelectedIndex = next;
         this.applyVideoSettings();
@@ -1076,7 +1077,7 @@ public final class PlayerScreen extends Screen {
         @Override
         public boolean dispatchScroll(final double mx, final double my, final double amount) {
             if (!this.visible || this.maxScroll <= 0 || !this.contains(mx, my)) return false;
-            final int next = Math.max(0, Math.min(this.maxScroll, this.scroll - (int) (amount * METRIC_SCROLL_STEP)));
+            final int next = MathUtil.clamp(this.scroll - (int) (amount * METRIC_SCROLL_STEP), 0, this.maxScroll);
             if (next != this.scroll) {
                 this.scroll = next;
                 this.invalidate();
@@ -1099,7 +1100,7 @@ public final class PlayerScreen extends Screen {
 
             // CLAMP THE WHEEL OFFSET TO LAST FRAME'S OVERFLOW, THEN CLIP EVERY METRIC TO THE PANEL RECT SO A
             // LONG METADATA BLOCK CANNOT SPILL OVER THE SEEK BAR; CONTENT IS DRAWN SHIFTED UP BY scroll
-            this.scroll = Math.max(0, Math.min(this.scroll, this.maxScroll));
+            this.scroll = MathUtil.clamp(this.scroll, 0, this.maxScroll);
             canvas.pushClip(px, py, pw, ph);
 
             final AppContext ctx = PlayerScreen.this.ctx;
@@ -1267,7 +1268,7 @@ public final class PlayerScreen extends Screen {
         }
 
         private int wrapBreak(final String value, final int fit) {
-            final int limit = Math.max(1, Math.min(fit, value.length()));
+            final int limit = MathUtil.clamp(fit, 1, value.length());
             int best = -1;
             // PREFER VISUALLY STABLE BREAKS FOR LONG URLS AND TITLES.
             for (int i = limit - 1; i > Math.max(0, limit - 18); i--) {
@@ -1458,7 +1459,7 @@ public final class PlayerScreen extends Screen {
             final long duration = Math.max(0, p.duration());
             this.seek.enabled(duration > 0);
             this.seek.value(duration > 0 ? (float) p.time() / duration : 0f);
-            this.vol.value(Math.max(0, Math.min(100, p.volume())) / 100f);
+            this.vol.value(MathUtil.clamp(p.volume(), 0, 100) / 100f);
             this.spk.color(this.vol.hovered() ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT);
             final boolean playing = p.playing();
             this.play.icon(playing ? "pause" : "play")
@@ -1482,7 +1483,7 @@ public final class PlayerScreen extends Screen {
             // LOCAL GEOMETRY (WINDOW X == LOCAL X; Y IS OFFSET BY this.top AT LAYOUT). LEGACY:
             // transportY = max(TITLEBAR_H + 120, windowH - FOOTER_H - 92) → LOCAL max(120, H - 92)
             this.transportYL = Math.max(120, innerAvailHeight - 92);
-            this.panelW = Math.min(405, Math.max(240, innerAvailWidth / 4));
+            this.panelW = MathUtil.clamp(innerAvailWidth / 4, 240, 405);
             this.panelH = Math.max(220, this.transportYL - 80 - 14);
             this.metrics.size(this.panelW, this.panelH);
 
@@ -1629,7 +1630,7 @@ public final class PlayerScreen extends Screen {
                 canvas.fill(this.volDividerXA, this.controlsYA - 6, 1, 32, AppTheme.STROKE_BRIGHT);
                 final MediaPlayer p = PlayerScreen.this.ctx.player;
                 if (p != null) {
-                    final int volume = Math.max(0, Math.min(100, p.volume()));
+                    final int volume = MathUtil.clamp(p.volume(), 0, 100);
                     canvas.text(volume + "%", this.volPctXA,
                             this.controlsYA - 5 + Math.max(0, (30 - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
                             AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);

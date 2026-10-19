@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.screen;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.system.MemoryStack;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.WinFrame;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -254,7 +255,7 @@ public final class TitleBar extends Element<TitleBar> {
             final double globalCursorX = winX.get(0) + this.ctx.mouseRawX;
             final double globalCursorY = winY.get(0) + this.ctx.mouseRawY;
             final double xRatio = this.ctx.windowWidth <= 0 ? 0.5d
-                    : Math.max(0d, Math.min(1d, this.ctx.mouseRawX / this.ctx.windowWidth));
+                    : MathUtil.clamp(this.ctx.mouseRawX / this.ctx.windowWidth, 0d, 1d);
 
             glfwRestoreWindow(this.ctx.windowHandle);
             this.ctx.windowMaximized = false;

@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
@@ -39,7 +40,7 @@ public final class Canvas {
         // STOP RECORDING SO A RUNAWAY OR UNBALANCED PUSH CAN NEVER WRITE OUT OF BOUNDS (POP GUARDS UNDERFLOW)
         if (this.alphaDepth < this.alphaStack.length) this.alphaStack[this.alphaDepth] = this.alpha;
         this.alphaDepth++;
-        this.alpha *= Math.max(0f, Math.min(1f, factor));
+        this.alpha *= MathUtil.clamp(factor, 0f, 1f);
     }
 
     /** Restores the alpha multiplier active before the matching {@link #pushAlpha(float)}. */

@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.screen;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
@@ -92,7 +93,7 @@ public final class Header extends Group<Header> {
         canvas.glow(x, y + H - 8, w, 4, 0f, AppTheme.NEON, 0.16f);
 
         final int bannerX = x + 18;
-        final int bannerW = Math.min(665, Math.max(430, (int) (w * 0.40f)));
+        final int bannerW = MathUtil.clamp((int) (w * 0.40f), 430, 665);
         final int actualBannerW = this.bannerWidth(bannerW, 100);
         final int sepX = bannerX + actualBannerW + 14;
         canvas.fill(sepX, y + 38, 4, 42, AppTheme.AMBER);

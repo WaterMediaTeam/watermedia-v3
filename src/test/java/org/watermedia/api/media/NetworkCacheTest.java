@@ -7,11 +7,14 @@ import org.watermedia.api.util.HttpHeaders;
 import org.watermedia.test.support.LocalHttp;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -121,6 +124,66 @@ public class NetworkCacheTest {
                     "the file cache refuses to download an endless source");
             // THE BYTE READER (IMAGES) STILL ACCEPTS CHUNKED RESPONSES
             assertArrayEquals(body, NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true).bytes());
+        }
+    }
+
+    @Test
+    @DisplayName("An abandoned uncached read stops and leaves the origin instead of reading on to its limit")
+    void testAbandonedReadStops() throws Exception {
+        final CountDownLatch streaming = new CountDownLatch(1);
+        final CountDownLatch disconnected = new CountDownLatch(1);
+        try (final LocalHttp server = LocalHttp.start("/slow.png", exchange -> {
+            // ANNOUNCES A LARGE BODY, THEN TRICKLES ONE BYTE AT A TIME UNTIL THE CLIENT GOES AWAY
+            exchange.getResponseHeaders().set("Content-Type", "image/png");
+            exchange.sendResponseHeaders(200, 1_000_000L);
+            streaming.countDown();
+            try (final OutputStream out = exchange.getResponseBody()) {
+                while (true) {
+                    out.write(0);
+                    out.flush();
+                    Thread.sleep(20L);
+                }
+            } catch (final IOException | InterruptedException gone) {
+                disconnected.countDown();
+            }
+        })) {
+            final URI uri = server.uri("/slow.png");
+            final Thread caller = new Thread(() -> {
+                try { NetworkCache.read(uri, null, ACCEPT_IMAGE, 2_000_000L, false); }
+                catch (final IOException expected) { /* THE INTERRUPT ENDS THE WAIT */ }
+            }, "NetworkCacheTest-Caller");
+            caller.start();
+            assertTrue(streaming.await(5, TimeUnit.SECONDS), "the origin started streaming");
+            final long start = System.nanoTime();
+            caller.interrupt();
+            caller.join(5_000L);
+            assertFalse(caller.isAlive(), "the interrupted caller leaves");
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 1_000L, "giving up never waits on the transfer");
+            assertTrue(disconnected.await(5, TimeUnit.SECONDS), "the transfer stopped instead of trickling on to its limit");
+        }
+    }
+
+    @Test
+    @DisplayName("A body shorter than its Content-Length fails instead of being cached")
+    void testTruncatedBodyIsRefused() throws Exception {
+        this.hits.set(0);
+        try (final LocalHttp server = LocalHttp.start("/cut.png", exchange -> {
+            this.hits.incrementAndGet();
+            exchange.getResponseHeaders().set("Content-Type", "image/png");
+            exchange.getResponseHeaders().set("Expires", LocalHttp.expiresIn(3600));
+            exchange.sendResponseHeaders(200, 100L);
+            // TEN OF THE HUNDRED ANNOUNCED BYTES: THE FIXED-LENGTH STREAM REFUSES THE SHORT BODY AND DROPS THE CONNECTION
+            exchange.getResponseBody().write(new byte[10]);
+            exchange.getResponseBody().flush();
+            exchange.close();
+        })) {
+            final Path cache = this.tempDir.resolve("cache-truncated");
+            NetworkCache.start(cache);
+            final URI uri = server.uri("/cut.png");
+            assertThrows(IOException.class, () -> NetworkCache.read(uri, null, ACCEPT_IMAGE, READ_LIMIT, true), "a short body is a failure");
+            try (final var stream = Files.list(cache)) {
+                assertFalse(stream.anyMatch(path -> path.getFileName().toString().endsWith(".tmp")), "nothing was cached");
+            }
         }
     }
 

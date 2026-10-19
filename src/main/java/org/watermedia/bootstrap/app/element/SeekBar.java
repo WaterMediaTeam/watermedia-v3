@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
@@ -27,12 +28,12 @@ public final class SeekBar extends Element<SeekBar> {
     }
 
     public SeekBar value(final float v) {
-        this.value = Math.max(0f, Math.min(1f, v));
+        this.value = MathUtil.clamp(v, 0f, 1f);
         return this;
     }
 
     public SeekBar buffered(final float v) {
-        this.buffered = Math.max(0f, Math.min(1f, v));
+        this.buffered = MathUtil.clamp(v, 0f, 1f);
         return this;
     }
 
@@ -107,6 +108,6 @@ public final class SeekBar extends Element<SeekBar> {
     private float valueFromX(final double mx) {
         final int w = this.innerWidth();
         if (w <= 0) return 0f;
-        return (float) Math.max(0d, Math.min(1d, (mx - this.innerLeft()) / w));
+        return (float) MathUtil.clamp((mx - this.innerLeft()) / w, 0d, 1d);
     }
 }

@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.element.Badge;
 import org.watermedia.bootstrap.app.element.Button;
@@ -157,9 +158,9 @@ public class HomeScreen extends Screen {
         }
 
         // CLAMP THE KEYBOARD SELECTION TO THE FRESH LISTS (M-10 COMPANION: NEVER POINT AT A GONE TILE)
-        this.selectedAction = Math.max(0, Math.min(this.selectedAction, this.actions.size() - 1));
-        this.selectedMedia = Math.max(0, Math.min(this.selectedMedia, Math.max(0, this.mediaTests.size() - 1)));
-        this.selectedEntertainment = Math.max(0, Math.min(this.selectedEntertainment, Math.max(0, this.entertainment.size() - 1)));
+        this.selectedAction = MathUtil.clamp(this.selectedAction, 0, this.actions.size() - 1);
+        this.selectedMedia = MathUtil.clamp(this.selectedMedia, 0, Math.max(0, this.mediaTests.size() - 1));
+        this.selectedEntertainment = MathUtil.clamp(this.selectedEntertainment, 0, Math.max(0, this.entertainment.size() - 1));
         if (this.selectedPanel == 1 && this.mediaTests.isEmpty()) this.selectedPanel = 0;
         if (this.selectedPanel == 2 && this.entertainment.isEmpty()) this.selectedPanel = 0;
 
@@ -268,7 +269,7 @@ public class HomeScreen extends Screen {
                     .color(count > 0 ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
             r.url.visible(false);
             r.bar.visible(r.twoLine)
-                    .progress(Math.max(0, Math.min(100, this.ctx.cleanup.progress)) / 100f);
+                    .progress(MathUtil.clamp(this.ctx.cleanup.progress, 0, 100) / 100f);
             r.size.text(this.ctx.cleanup.sizeLabel);
             r.tag.label(this.cleanupStateLabel()).color(this.cleanupStateColor());
         };
@@ -483,7 +484,7 @@ public class HomeScreen extends Screen {
 
     private void moveSelection(final int delta) {
         if (this.selectedPanel == 0 && !this.actions.isEmpty()) {
-            this.selectedAction = Math.max(0, Math.min(this.actions.size() - 1, this.selectedAction + delta));
+            this.selectedAction = MathUtil.clamp(this.selectedAction + delta, 0, this.actions.size() - 1);
         } else if (this.selectedPanel == 2) {
             if (delta < 0 && !this.mediaTests.isEmpty()) {
                 this.selectedPanel = 1;
@@ -501,7 +502,7 @@ public class HomeScreen extends Screen {
             }
         } else if (!this.entertainment.isEmpty()) {
             this.selectedPanel = 2;
-            this.selectedEntertainment = Math.max(0, Math.min(this.entertainment.size() - 1, this.selectedEntertainment + delta));
+            this.selectedEntertainment = MathUtil.clamp(this.selectedEntertainment + delta, 0, this.entertainment.size() - 1);
         }
         this.ctx.playSelectionSound();
         this.invalidate();
@@ -627,7 +628,7 @@ public class HomeScreen extends Screen {
 
     private RepoTarget selectedRepo() {
         final List<RepoTarget> repos = this.repoTargets.isEmpty() ? this.uploadRepoTargets() : this.repoTargets;
-        return repos.get(Math.max(0, Math.min(repos.size() - 1, this.repoSelected)));
+        return repos.get(MathUtil.clamp(this.repoSelected, 0, repos.size() - 1));
     }
 
     private void submitRepo(final RepoTarget repo, final int index) {
@@ -639,7 +640,7 @@ public class HomeScreen extends Screen {
 
     private void moveRepoSelection(final int delta) {
         final List<RepoTarget> targets = this.repoTargets.isEmpty() ? this.uploadRepoTargets() : this.repoTargets;
-        this.repoSelected = Math.max(0, Math.min(targets.size() - 1, this.repoSelected + delta));
+        this.repoSelected = MathUtil.clamp(this.repoSelected + delta, 0, targets.size() - 1);
         // DRIVE THE LIST SELECTION SO THE PICKED MOD CARD (TARGETS 1..n) STAYS INSIDE THE SCROLL VIEWPORT
         if (this.repoSelected >= 1) {
             this.repoList.moveSelection(this.repoSelected - 1 - Math.max(0, this.repoList.selectedIndex()));
@@ -658,7 +659,7 @@ public class HomeScreen extends Screen {
             final int stage = this.ctx.upload.stage;
             final boolean errored = "FAILED".equals(entry.state) || "READ ERROR".equals(entry.state);
             final boolean linked = stage >= 3 && entry.uploaded && !entry.url.isBlank();
-            final int pct = Math.max(0, Math.min(100, entry.progress));
+            final int pct = MathUtil.clamp(entry.progress, 0, 100);
             r.twoLine = linked || (stage == 2 && entry.present && entry.valid && !errored);
             r.name.text(entry.name).color(entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
             r.url.visible(linked).text(entry.url);
@@ -729,7 +730,7 @@ public class HomeScreen extends Screen {
 
     private String cleanupStateLabel() {
         if (this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working) {
-            return Math.max(0, Math.min(100, this.ctx.cleanup.progress)) + "%";
+            return MathUtil.clamp(this.ctx.cleanup.progress, 0, 100) + "%";
         }
         return this.ctx.cleanup.state;
     }
@@ -1081,7 +1082,7 @@ public class HomeScreen extends Screen {
             final String line2 = blocked ? "the Minecraft mods folder." : "then uploads.";
             final int desiredW = Math.max(text.width(title, AppTheme.TEXT_BUTTON),
                     Math.max(text.width(line1, AppTheme.TEXT_BODY), text.width(line2, AppTheme.TEXT_BODY))) + 24;
-            this.contentWidth = Math.min(Math.max(340, desiredW), Math.max(120, innerAvailWidth - 24));
+            this.contentWidth = MathUtil.clamp(desiredW, 340, Math.max(120, innerAvailWidth - 24));
             this.contentHeight = BOX_H + NOTCH_H;
         }
 

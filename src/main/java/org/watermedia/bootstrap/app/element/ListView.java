@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
@@ -85,7 +86,7 @@ public final class ListView<D> extends Group<ListView<D>> {
     }
 
     public ListView<D> selection(final int index) {
-        this.selectedIndex = Math.max(-1, Math.min(index, this.items.size() - 1));
+        this.selectedIndex = MathUtil.clamp(index, -1, this.items.size() - 1);
         return this;
     }
 
@@ -100,7 +101,7 @@ public final class ListView<D> extends Group<ListView<D>> {
     public ListView<D> moveSelection(final int delta) {
         if (this.items.isEmpty()) return this;
         final int base = Math.max(0, this.selectedIndex);
-        final int next = Math.max(0, Math.min(base + delta, this.items.size() - 1));
+        final int next = MathUtil.clamp(base + delta, 0, this.items.size() - 1);
         if (next != this.selectedIndex) {
             this.selection(next).invalidate();
             this.ensureVisible(next);

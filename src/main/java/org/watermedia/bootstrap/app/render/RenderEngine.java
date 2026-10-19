@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.render;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
 import org.watermedia.api.media.GFXEngine;
+import org.watermedia.api.util.MathUtil;
 
 import java.awt.Color;
 import java.nio.ByteBuffer;
@@ -455,7 +456,7 @@ public final class RenderEngine {
     private static float glowPulse() {
         final double t = System.currentTimeMillis() * 0.001;
         final double wave = Math.sin(t * 0.45) + 0.6 * Math.sin(t * 0.19 + 1.3) + 0.35 * Math.sin(t * 0.83 + 2.7);
-        final double n = Math.max(0.0, Math.min(1.0, wave * 0.256 + 0.5));
+        final double n = MathUtil.clamp(wave * 0.256 + 0.5, 0.0, 1.0);
         return (float) (GLOW_STRENGTH * (0.82 + 0.18 * n));
     }
 

@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
@@ -42,14 +43,15 @@ public final class Spinner extends Element<Spinner> {
     }
 
     public Spinner value(final double v) {
-        this.value = Math.max(this.min, Math.min(this.max, v));
+        this.value = MathUtil.clamp(v, this.min, this.max);
         return this;
     }
 
     public Spinner range(final double min, final double max) {
+        if (!(min <= max)) throw new IllegalArgumentException("Spinner range needs min <= max");
         this.min = min;
         this.max = max;
-        this.value = Math.max(min, Math.min(max, this.value));
+        this.value = MathUtil.clamp(this.value, min, max);
         return this;
     }
 
@@ -253,7 +255,7 @@ public final class Spinner extends Element<Spinner> {
 
     // CLAMP TO THE RANGE, REPORT ONLY REAL CHANGES, AND ALWAYS REPAINT
     private void apply(final double v) {
-        final double next = Math.max(this.min, Math.min(this.max, v));
+        final double next = MathUtil.clamp(v, this.min, this.max);
         if (next != this.value) {
             this.value = next;
             if (this.onChange != null) this.onChange.accept(this.value);

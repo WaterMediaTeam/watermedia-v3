@@ -8,10 +8,9 @@ import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMediaConfig;
 import org.watermedia.api.util.NetRequest;
+import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.HttpURLConnection;
@@ -43,11 +42,13 @@ public final class NetworkServer {
     private static final String ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
     private static final int ID_LENGTH = 8;
     private static final long INVALID_RANGE = -1L;
+    // EACH WRITTEN CHUNK TOUCHES THE IDLE WATCHDOG AND BLOCKS UNTIL SENT: SMALL ENOUGH THAT A SLOW PEER STILL MOVES ONE PER TIMEOUT,
+    // AND THAT A CANCELLED UPLOAD STOPS WITHIN ONE CHUNK
+    static final int CHUNK_BYTES = 8 * 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
     // THE IDLE WATCHDOG OF THE REQUEST THE CURRENT WORKER IS SERVING; TRANSFERS TOUCH IT PER CHUNK
     private static final ThreadLocal<Watchdog> WATCHDOG = new ThreadLocal<>();
     private static volatile Running running;
-    private static boolean shutdownHook;
 
     // STARTS THE CONFIGURED LISTENER UNDER cwd; INVALID CONFIGURATION AND BIND FAILURES PROPAGATE TO THE CALLER
     static synchronized void start(final int port, final Path cwd) throws IOException {
@@ -148,10 +149,6 @@ public final class NetworkServer {
                         Thread.interrupted();
                     }
                 }));
-                if (!shutdownHook) {
-                    Runtime.getRuntime().addShutdownHook(new Thread(NetworkServer::stop, "NetworkServer-Shutdown"));
-                    shutdownHook = true;
-                }
                 server.start();
                 running = state;
                 retained = true;
@@ -192,7 +189,8 @@ public final class NetworkServer {
         return state == null || state.stopping ? null : state.server.getAddress();
     }
 
-    // STOPS ADMISSION AND ACTIVE TRANSFERS; COMPLETED FILES REMAIN ON DISK. SAFE TO REPEAT
+    // STOPS ADMISSION AND ACTIVE TRANSFERS; COMPLETED FILES REMAIN ON DISK. SAFE TO REPEAT. THE LIFECYCLE NEVER CALLS IT: AT EXIT
+    // THE OS RELEASES THE SOCKET AND THE STORAGE LOCK AND THE NEXT START SWEEPS INCOMPLETE UPLOADS; TESTS RESTART THROUGH IT
     static synchronized void stop() {
         final Running state = running;
         if (state == null) return;
@@ -294,9 +292,9 @@ public final class NetworkServer {
                 }
                 target = temporary.resolve(filename);
                 final Watchdog watchdog = WATCHDOG.get();
-                try (final var input = new BufferedInputStream(exchange.getRequestBody());
-                     final var output = new BufferedOutputStream(Files.newOutputStream(target, StandardOpenOption.CREATE_NEW))) {
-                    final byte[] buffer = new byte[8192];
+                try (final var input = exchange.getRequestBody();
+                     final var output = Files.newOutputStream(target, StandardOpenOption.CREATE_NEW)) {
+                    final byte[] buffer = new byte[IOTool.BUFFER_SIZE];
                     long remaining = length;
                     while (remaining > 0) {
                         if (Thread.currentThread().isInterrupted()) throw new IOException("Upload idle for too long");
@@ -415,7 +413,7 @@ public final class NetworkServer {
                  final var input = Channels.newInputStream(channel);
                  final var output = exchange.getResponseBody()) {
                 channel.position(start);
-                final byte[] buffer = new byte[8192];
+                final byte[] buffer = new byte[CHUNK_BYTES];
                 long remaining = length;
                 while (remaining > 0) {
                     if (Thread.currentThread().isInterrupted()) throw new IOException("Download idle for too long");

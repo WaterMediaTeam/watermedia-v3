@@ -12,6 +12,7 @@ import org.watermedia.bootstrap.app.render.TextureHandle;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.GFXEngine;
 import org.watermedia.api.media.VKContext;
+import org.watermedia.api.util.MathUtil;
 
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
@@ -238,7 +239,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             // OPPORTUNISTIC API BUMP TO min(LOADER, 1.4) BUT NEVER BELOW 1.1: A HIGHER apiVersion ONLY WIDENS
             // WHAT MAY BE USED (WE STAY 1.1-CORE), AND getInstanceVersionSupported IS NULL-SAFE ON OLD LOADERS.
             final int loaderVer = VK.getInstanceVersionSupported();
-            final int apiVersion = Math.max(VK_API_VERSION_1_1, Math.min(loaderVer, VK14.VK_API_VERSION_1_4));
+            final int apiVersion = MathUtil.clamp(loaderVer, VK_API_VERSION_1_1, VK14.VK_API_VERSION_1_4);
             final VkApplicationInfo app = VkApplicationInfo.calloc(stack).sType$Default()
                     .pApplicationName(stack.UTF8("WaterMedia"))
                     .applicationVersion(VK_MAKE_API_VERSION(0, 3, 0, 0))
@@ -677,8 +678,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                 final IntBuffer fbw = stack.mallocInt(1);
                 final IntBuffer fbh = stack.mallocInt(1);
                 glfwGetFramebufferSize(this.window, fbw, fbh);
-                w = clamp(fbw.get(0), caps.minImageExtent().width(), caps.maxImageExtent().width());
-                h = clamp(fbh.get(0), caps.minImageExtent().height(), caps.maxImageExtent().height());
+                w = MathUtil.clamp(fbw.get(0), caps.minImageExtent().width(), caps.maxImageExtent().width());
+                h = MathUtil.clamp(fbh.get(0), caps.minImageExtent().height(), caps.maxImageExtent().height());
             }
             if (w == 0 || h == 0) return false;
             this.extentW = w;
@@ -1549,10 +1550,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public boolean ycbcrSampler() {
         return this.ycbcrSampler;
-    }
-
-    private static int clamp(final int value, final int min, final int max) {
-        return Math.max(min, Math.min(max, value));
     }
 
     private static void check(final int result, final String op) {

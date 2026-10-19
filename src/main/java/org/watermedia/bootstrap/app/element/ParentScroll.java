@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 /**
@@ -118,7 +119,7 @@ public final class ParentScroll extends Group<ParentScroll> {
         int next = this.scroll.offset;
         if (rel + child.measuredHeight > next + viewport) next = rel + child.measuredHeight - viewport;
         if (rel < next) next = rel;
-        next = Math.max(0, Math.min(next, this.scroll.max));
+        next = MathUtil.clamp(next, 0, this.scroll.max);
         final boolean moved = next != this.scroll.offset;
         // INSTANT (NO ANIMATION) AND KILLS ANY WHEEL MOMENTUM — KEYBOARD NAV AND CALLERS RELY ON THE
         // CHILD BEING IN VIEW RIGHT AFTER THE CALL, WHICH A COASTING OFFSET WOULD DRIFT BACK OUT

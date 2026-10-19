@@ -88,7 +88,10 @@ final class NetworkCache {
     public static CachedBytes read(final URI uri, final HttpHeaders headers, final String accept,
                                    final long maxBytes, final boolean enabled) throws IOException {
         final Store store = active;
-        if (!enabled || !isHttp(uri) || store == null) return await(transfer(() -> fetch(uri, headers, accept, maxBytes, false)));
+        if (!enabled || !isHttp(uri) || store == null) {
+            final Abort abort = new Abort();
+            return await(transfer(() -> abort.run(() -> fetch(uri, headers, accept, maxBytes, false))), abort);
+        }
         final byte[] hash = keyHash(uri, headers, accept);
         final String hex = HexFormat.of().formatHex(hash);
         final Entry entry;
@@ -141,7 +144,7 @@ final class NetworkCache {
     }
 
     // ONE TRANSFER PER KEY, SHARED BY CONCURRENT CALLERS. SOCKET I/O IGNORES INTERRUPTS, SO THE TRANSFER RUNS ON A CACHE WORKER
-    // AND EVERY CALLER WAITS INTERRUPTIBLY: A STOPPED PLAYER LEAVES AT ONCE AND THE ABANDONED TRANSFER ENDS ON ITS OWN DEADLINE
+    // AND EVERY CALLER WAITS INTERRUPTIBLY: A STOPPED PLAYER LEAVES AT ONCE AND THE SHARED TRANSFER STILL FILLS THE CACHE
     private static Download fetchShared(final Store store, final String hex, final byte[] hash, final URI uri, final HttpHeaders headers,
                                         final String accept, final long maxBytes, final boolean bounded) throws IOException {
         final CompletableFuture<Download> mine = new CompletableFuture<>();
@@ -151,13 +154,14 @@ final class NetworkCache {
         }
         if (leader != null) {
             try {
-                final Download shared = await(leader);
+                final Download shared = await(leader, null);
                 if (shared.body().bytes.length <= maxBytes) return shared;
             } catch (final IOException failure) {
                 // AN INTERRUPT ENDS THE WAIT; ANY OTHER FAILURE WAS THE LEADER'S, SO THIS WAITER FETCHES ON ITS OWN BELOW
                 if (Thread.currentThread().isInterrupted()) throw failure;
             }
-            return await(transfer(() -> download(store, hex, hash, uri, headers, accept, maxBytes, bounded)));
+            final Abort abort = new Abort();
+            return await(transfer(() -> abort.run(() -> download(store, hex, hash, uri, headers, accept, maxBytes, bounded))), abort);
         }
         // THE WORKER STORES THE BODY BEFORE IT STOPS SHARING IT, SO A LATE CALLER FINDS THE TRANSFER OR THE ENTRY, NEVER NEITHER
         transfer(() -> download(store, hex, hash, uri, headers, accept, maxBytes, bounded)).whenComplete((done, failure) -> {
@@ -165,11 +169,11 @@ final class NetworkCache {
             if (failure == null) mine.complete(done);
             else mine.completeExceptionally(failure);
         });
-        return await(mine);
+        return await(mine, null);
     }
 
     // FETCHES ONE BODY AND STORES IT WHEN IT MAY BE CACHED (NOT EXPIRED, NOT A PLAYLIST FOR A FILE READ); IT RUNS ON THE WORKER,
-    // SO A DOWNLOAD WHOSE CALLER LEFT STILL FILLS THE CACHE
+    // SO A SHARED DOWNLOAD WHOSE CALLERS LEFT STILL FILLS THE CACHE
     private static Download download(final Store store, final String hex, final byte[] hash, final URI uri, final HttpHeaders headers,
                                      final String accept, final long maxBytes, final boolean bounded) throws IOException {
         final CachedBytes body = fetch(uri, headers, accept, maxBytes, bounded);
@@ -194,11 +198,13 @@ final class NetworkCache {
         return future;
     }
 
-    // WAITS FOR A TRANSFER, GIVING UP ON INTERRUPT, AND RETHROWS ITS OWN FAILURE
-    private static <T> T await(final CompletableFuture<T> transfer) throws IOException {
+    // WAITS FOR A TRANSFER, GIVING UP ON INTERRUPT, AND RETHROWS ITS OWN FAILURE. abort IS NON-NULL ONLY FOR AN UNSHARED
+    // TRANSFER: ITS CALLER IS THE ONLY ONE WAITING, SO GIVING UP ALSO STOPS IT INSTEAD OF LETTING IT READ ON TO maxBytes
+    private static <T> T await(final CompletableFuture<T> transfer, final Abort abort) throws IOException {
         try {
             return transfer.get();
         } catch (final InterruptedException e) {
+            if (abort != null) abort.abort();
             Thread.currentThread().interrupt();
             throw new InterruptedIOException("Interrupted waiting for a media cache download");
         } catch (final ExecutionException e) {
@@ -229,6 +235,9 @@ final class NetworkCache {
             try (final InputStream in = req.inputStream()) {
                 bytes = IOTool.readLimited(in, maxBytes, contentLength, 0L);
             }
+            // A CONNECTION THAT CLOSES EARLY READS AS A CLEAN END: A SHORT BODY MUST NEVER REACH THE CALLER OR THE CACHE
+            if (contentLength >= 0 && bytes.length != contentLength)
+                throw new IOException("Truncated media body (" + bytes.length + " of " + contentLength + " bytes): " + uri);
             return new CachedBytes(bytes, req.contentType(), false, expiry(req));
         }
     }
@@ -426,6 +435,34 @@ final class NetworkCache {
         private Store(final Path dir) {
             this.dir = dir;
             this.indexPath = dir.resolve(INDEX_FILE);
+        }
+    }
+
+    // LETS THE ONLY CALLER OF A TRANSFER STOP IT WITHOUT BLOCKING: AN INTERRUPT ENDS readLimited AT ITS NEXT CHUNK (A SILENT SOCKET
+    // ENDS ON THE READ TIMEOUT, ON THE WORKER ALONE), AND IT NEVER OUTLIVES ITS TRANSFER ON THE POOLED THREAD
+    private static final class Abort {
+        private Thread worker;   // GUARDED BY this
+        private boolean aborted; // GUARDED BY this
+
+        // RUNS THE TRANSFER ON THE WORKER, REACHABLE BY abort() ONLY WHILE IT RUNS
+        <T> T run(final Callable<T> work) throws Exception {
+            synchronized (this) {
+                if (this.aborted) throw new InterruptedIOException("Media cache download abandoned before it started");
+                this.worker = Thread.currentThread();
+            }
+            try {
+                return work.call();
+            } finally {
+                synchronized (this) {
+                    this.worker = null;
+                    Thread.interrupted(); // AN ABORT THAT LANDED DURING THIS TRANSFER ENDS WITH IT
+                }
+            }
+        }
+
+        synchronized void abort() {
+            this.aborted = true;
+            if (this.worker != null) this.worker.interrupt();
         }
     }
 }

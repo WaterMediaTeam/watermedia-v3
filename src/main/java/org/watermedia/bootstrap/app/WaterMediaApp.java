@@ -58,9 +58,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -441,7 +438,7 @@ public class WaterMediaApp {
     }
 
     private static float clampScale(final float scale) {
-        return Math.max(1.0f, Math.min(3.0f, scale));
+        return MathUtil.clamp(scale, 1.0f, 3.0f);
     }
 
     private static void initAudio() {
@@ -1357,19 +1354,12 @@ public class WaterMediaApp {
     }
 
     private static String uploadToMclogs(final String content, final AppContext.UploadFileEntry entry) {
-        try {
-            final HttpClient client = HttpClient.newHttpClient();
-            final HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.mclo.gs/1/log"))
-                    .header("Content-Type", NetRequest.MIMETYPE_FORM)
-                    .POST(HttpRequest.BodyPublishers.ofString("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)))
-                    .build();
-
-            final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                final JsonObject json = JSONTool.parse(response.body(), JsonObject.class);
-                if (json.get("success").getAsBoolean()) {
+        // NetRequest BOUNDS THE REQUEST WITH THE NETWORK TIMEOUTS AND ITS REPLY WITH THE TEXT BUDGET, AND KEEPS EVERY HOP ON HTTPS
+        try (final NetRequest req = NetRequest.create(URI.create("https://api.mclo.gs/1/log")).method("POST").httpsOnly()
+                .contentType(NetRequest.MIMETYPE_FORM).body("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)).send()) {
+            if (req.statusCode() == 200) {
+                final JsonObject json = req.json(JsonObject.class);
+                if (json != null && json.get("success").getAsBoolean()) {
                     final String url = json.get("url").getAsString();
                     entry.url = url;
                     entry.uploaded = true;

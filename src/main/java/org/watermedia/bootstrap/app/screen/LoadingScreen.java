@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.screen;
 import org.watermedia.WaterMedia;
 import org.watermedia.WaterMedia.Status;
 import org.watermedia.api.util.MathEases;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.Assets;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -88,14 +89,6 @@ public final class LoadingScreen extends Screen {
                 glowW * sx, glowH * sy, null);
     }
 
-    private static float clamp01(final float v) {
-        return v < 0f ? 0f : (v > 1f ? 1f : v);
-    }
-
-    private static double clamp01(final double v) {
-        return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
-    }
-
     // FITTED PIXEL SIZE — NAMED Fit (NOT Box) SO IT NEVER SHADOWS THE element.Box DRAWABLE THE SIBLING SCREENS USE
     private record Fit(int w, int h) {
     }
@@ -140,7 +133,7 @@ public final class LoadingScreen extends Screen {
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             final Assets a = this.ctx.assets;
             final Fit box = fit(a.bannerWidth, a.bannerHeight,
-                    Math.min(BANNER_MAX_W, Math.max(180, innerAvailWidth - 96)), BANNER_MAX_H);
+                    MathUtil.clamp(innerAvailWidth - 96, 180, BANNER_MAX_W), BANNER_MAX_H);
             this.imgW = box.w();
             this.imgH = box.h();
             this.contentWidth = box.w();
@@ -219,7 +212,7 @@ public final class LoadingScreen extends Screen {
                 goal = 1f;
                 this.caption = "Starting: WaterMediaApp";
             } else if (status.total() > 0) {
-                goal = clamp01((float) status.done() / status.total());
+                goal = MathUtil.clamp((float) status.done() / status.total(), 0f, 1f);
                 final Class<?> loading = status.loading();
                 this.caption = "Loading: " + (loading == null ? WaterMedia.NAME : Status.name(loading)) + " (" + status.done() + "/" + status.total() + ")";
             } else {
@@ -235,13 +228,13 @@ public final class LoadingScreen extends Screen {
                 this.target = goal;
                 this.startMs = now;
             }
-            final double t = clamp01((now - this.startMs) / (double) PROGRESS_ANIM_MS);
-            this.shown = t >= 1.0 ? this.target : clamp01((float) MathEases.EASE_IN_OUT_QUAD.apply(this.from, this.target, t));
+            final double t = MathUtil.clamp((now - this.startMs) / (double) PROGRESS_ANIM_MS, 0.0, 1.0);
+            this.shown = t >= 1.0 ? this.target : MathUtil.clamp((float) MathEases.EASE_IN_OUT_QUAD.apply(this.from, this.target, t), 0f, 1f);
         }
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.contentWidth = Math.min(BAR_W, Math.max(180, innerAvailWidth - 96));
+            this.contentWidth = MathUtil.clamp(innerAvailWidth - 96, 180, BAR_W);
             this.contentHeight = BAR_H + CAPTION_GAP + CAPTION_H;
         }
 

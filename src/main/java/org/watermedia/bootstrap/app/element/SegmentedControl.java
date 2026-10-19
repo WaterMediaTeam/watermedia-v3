@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
@@ -186,7 +187,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         if (n == 0 || !this.contains(mx, my)) return false;
         final int segW = this.innerWidth() / n;
         int idx = segW > 0 ? (int) ((mx - this.innerLeft()) / segW) : 0;
-        idx = Math.max(0, Math.min(n - 1, idx));
+        idx = MathUtil.clamp(idx, 0, n - 1);
         // A DISABLED SEGMENT SWALLOWS THE CLICK WITHOUT CHANGING THE SELECTION
         if (this.disabled != null && idx < this.disabled.length && this.disabled[idx]) return true;
         if (idx != this.selectedIndex) {

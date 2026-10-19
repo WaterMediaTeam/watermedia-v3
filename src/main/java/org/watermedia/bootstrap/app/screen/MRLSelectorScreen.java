@@ -5,6 +5,7 @@ import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.media.TxMediaPlayer;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.bootstrap.app.AppContext;
@@ -733,7 +734,7 @@ public final class MRLSelectorScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.leftW = Math.min(380, Math.max(320, innerAvailWidth / 3));
+            this.leftW = MathUtil.clamp(innerAvailWidth / 3, 320, 380);
             this.listH = Math.max(0, innerAvailHeight - 20);
             this.leftCol.measure(this.leftW, this.listH);
             if (MRLSelectorScreen.this.preview.visible()) {
@@ -823,7 +824,7 @@ public final class MRLSelectorScreen extends Screen {
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
             // LEGACY STACK GEOMETRY: 16px GAP BETWEEN TV AND PANEL, 18px STACK MARGINS TOP+BOTTOM
-            this.panelH = Math.min(112, Math.max(96, innerAvailHeight / 5));
+            this.panelH = MathUtil.clamp(innerAvailHeight / 5, 96, 112);
             this.tvH = Math.max(220, innerAvailHeight - this.panelH - 16 - 36);
             this.crt.measure(Math.max(0, innerAvailWidth - 16), Math.max(0, this.tvH - 16));
             this.copyBtn.measure(innerAvailWidth, innerAvailHeight);

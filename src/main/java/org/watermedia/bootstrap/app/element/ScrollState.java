@@ -1,5 +1,7 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
+
 // SHARED WHEEL-MOMENTUM SCROLL STATE FOR THE VERTICAL SCROLLERS (ListView, ParentScroll): THE OFFSET
 // EASES TOWARD AN ACCUMULATED WHEEL target WITH EXPONENTIAL DECAY. IDLE INVARIANT: animPos == target == offset.
 final class ScrollState {
@@ -31,9 +33,9 @@ final class ScrollState {
     // CLAMP THE OFFSET AND MOMENTUM STATE INTO [0,max] AFTER A RESIZE/REBUILD SO NO STALE TARGET SURVIVES
     void clamp(final int maxScroll) {
         this.max = Math.max(0, maxScroll);
-        this.offset = Math.max(0, Math.min(this.offset, this.max));
-        this.target = Math.max(0, Math.min(this.target, this.max));
-        this.animPos = Math.max(0f, Math.min(this.animPos, this.max));
+        this.offset = MathUtil.clamp(this.offset, 0, this.max);
+        this.target = MathUtil.clamp(this.target, 0, this.max);
+        this.animPos = MathUtil.clamp(this.animPos, 0f, this.max);
     }
 
     // WHEEL NOTCH: START COASTING FROM THE IDLE OFFSET IF NEEDED, THEN SHIFT THE TARGET. RETURNS true IF MOVED.
@@ -43,7 +45,7 @@ final class ScrollState {
             this.target = this.offset;
             this.tick = System.currentTimeMillis();
         }
-        final int next = Math.max(0, Math.min(this.max, this.target - (int) (amount * SCROLL_STEP)));
+        final int next = MathUtil.clamp(this.target - (int) (amount * SCROLL_STEP), 0, this.max);
         if (next == this.target) return false;
         this.target = next;
         return true;

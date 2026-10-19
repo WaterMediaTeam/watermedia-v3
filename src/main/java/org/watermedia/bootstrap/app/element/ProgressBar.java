@@ -1,5 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
@@ -21,7 +22,7 @@ public final class ProgressBar extends Element<ProgressBar> {
     }
 
     public ProgressBar progress(final float value) {
-        this.progress = Math.max(0f, Math.min(1f, value));
+        this.progress = MathUtil.clamp(value, 0f, 1f);
         return this;
     }
 

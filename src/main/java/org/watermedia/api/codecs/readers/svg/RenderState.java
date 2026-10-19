@@ -1,6 +1,7 @@
 package org.watermedia.api.codecs.readers.svg;
 
 import org.watermedia.api.codecs.CodecException;
+import org.watermedia.api.util.MathUtil;
 
 import java.util.Locale;
 import java.util.Map;
@@ -58,7 +59,7 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
 
         float opacity = this.opacity;
         final String op = a.get("opacity");
-        if (op != null) opacity = this.opacity * clamp01(SvgParser.ratioOrNumber(op, 1.0));
+        if (op != null) opacity = this.opacity * (float) MathUtil.clamp(SvgParser.ratioOrNumber(op, 1.0), 0.0, 1.0);
 
         boolean evenOdd = this.evenOdd;
         final String fr = a.get("fill-rule");
@@ -129,11 +130,6 @@ record RenderState(Affine ctm, SvgPaint fill, float fillOpacity, boolean evenOdd
         if (v == null) return inherited;
         final String s = v.trim().toLowerCase(Locale.ROOT);
         if (s.equals("inherit")) return inherited;
-        return clamp01(SvgParser.ratioOrNumber(v, inherited));
-    }
-
-    private static float clamp01(final double v) {
-        if (v <= 0) return 0f;
-        return v >= 1 ? 1f : (float) v;
+        return (float) MathUtil.clamp(SvgParser.ratioOrNumber(v, inherited), 0.0, 1.0);
     }
 }

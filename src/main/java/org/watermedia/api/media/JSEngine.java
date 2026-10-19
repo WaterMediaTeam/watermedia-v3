@@ -137,8 +137,8 @@ public final class JSEngine extends SFXEngine {
     synchronized boolean push(final ByteBuffer data) {
         if (this.line == null) return false; // A RELEASE CLOSED THE LINE AFTER THE BASE LET THIS CALL THROUGH
         final int len = data.remaining();
-        // A CHUNK LARGER THAN THE LINE BUFFER COULD NEVER PASS available(): REOPEN WITH ROOM FOR TWO OF THEM, ONCE
-        // PER JUMP, RESUMING PLAYBACK WHEN THE OLD LINE WAS RUNNING; WITHOUT A WIDER LINE THE CHUNK IS DROPPED, NOT RETRIED
+        // A CHUNK LARGER THAN THE LINE BUFFER COULD NEVER PASS available(): REOPEN WITH ROOM FOR TWO, ONCE PER JUMP, DROPPING WHAT
+        // THE OLD LINE QUEUED (FF CHUNKS RARELY OUTGROW IT) AND RESUMING IF IT RAN; WITHOUT A WIDER LINE THE CHUNK IS DROPPED
         if (len > this.line.getBufferSize()) {
             final boolean resume = this.started;
             LOGGER.debug(IT, "Audio chunk of {} bytes exceeds the {}-byte line buffer; reopening wider", len, this.line.getBufferSize());

@@ -1,6 +1,7 @@
 package org.watermedia.bootstrap.app;
 
 import org.lwjgl.glfw.GLFWVidMode;
+import org.watermedia.api.util.MathUtil;
 
 import java.util.concurrent.locks.LockSupport;
 
@@ -22,7 +23,7 @@ final class FrameLimiter {
     private long nextFrameNanos;
 
     private FrameLimiter(final int refreshRate) {
-        this.refreshRate = Math.max(MIN_REFRESH_HZ, Math.min(MAX_REFRESH_HZ, refreshRate));
+        this.refreshRate = MathUtil.clamp(refreshRate, MIN_REFRESH_HZ, MAX_REFRESH_HZ);
         this.frameNanos = 1_000_000_000L / this.refreshRate;
     }
 
@@ -50,6 +51,6 @@ final class FrameLimiter {
     }
 
     double idleTimeoutSeconds() {
-        return Math.min(0.25, Math.max(1.0 / this.refreshRate, 0.01));
+        return MathUtil.clamp(1.0 / this.refreshRate, 0.01, 0.25);
     }
 }

@@ -7,6 +7,7 @@ import org.watermedia.api.media.TxMediaPlayer;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.platform.PlatformSearch;
+import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
@@ -881,7 +882,7 @@ public class OpenMultimediaScreen extends Screen {
             final int reserved = 56 + 20 + 28 + 18 + 42 + 12 + 26 + 20 + 38 + 18;
             final int targetPreviewH = Math.max(80, dialogH - reserved);
             final int maxDialogW = Math.max(360, innerAvailWidth - 100);
-            final int dialogW = Math.min(Math.max(Math.round(targetPreviewH * 16f / 9f) + 40, 660), maxDialogW);
+            final int dialogW = MathUtil.clamp(Math.round(targetPreviewH * 16f / 9f) + 40, 660, maxDialogW);
             // SEARCH MODE HAS NOTHING TO PREVIEW ("NO MEDIA"), SO SHRINK THE PREVIEW AND HAND THE FREED
             // VERTICAL SPACE TO THE RESULTS DROPDOWN. animatePreviewH EASES BETWEEN THE TWO HEIGHTS SO THE
             // PREVIEW GROWS/SHRINKS SMOOTHLY INSTEAD OF SNAPPING WHEN THE MODE FLIPS.

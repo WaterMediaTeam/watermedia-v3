@@ -117,7 +117,7 @@ public final class NetworkAPI {
 
             try (final var fis = new FileInputStream(file);
                  final var os = conn.getOutputStream()) {
-                final byte[] buffer = new byte[8192];
+                final byte[] buffer = new byte[NetworkServer.CHUNK_BYTES];
                 long uploaded = 0;
                 long lastTime = System.nanoTime();
                 long lastUploaded = 0;

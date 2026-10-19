@@ -43,6 +43,7 @@ public final class AppBootstrap {
     private static final String APP_FLAG = "watermedia.app";
     private static final String ENGINE_PROP = "watermedia.engine";
     private static final String MAVEN = "https://repo1.maven.org/maven2/";
+    private static final long MAX_DOWNLOAD_BYTES = 256L * 1024 * 1024; // NO PINNED LIBRARY COMES CLOSE
     // SHARED BY EVERY USER ON LINUX (/tmp): PINS REJECT PLANTED JARS, BUT AN OWNER OF THIS FOLDER COULD STILL SWAP A
     // VERIFIED JAR BEFORE THE CHILD JVM OPENS IT. KEPT FOR NOW; A PER-USER CACHE DIRECTORY WOULD CLOSE THAT WINDOW
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs");
@@ -258,6 +259,10 @@ public final class AppBootstrap {
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(30_000);
         final long total = connection.getContentLengthLong();
+        // THE SHA-256 ONLY JUDGES A FINISHED FILE, SO A HOSTILE MIRROR COULD FILL THE DISK FIRST: THE BODY STOPS AT ITS
+        // ANNOUNCED LENGTH OR THE CAP. THIS RUNS BEFORE LOG4J AND GSON EXIST, SO IT CANNOT USE NetRequest
+        if (total > MAX_DOWNLOAD_BYTES) throw new IOException(name + " announces " + total + " bytes, above the " + MAX_DOWNLOAD_BYTES + "-byte cap");
+        final long limit = total >= 0 ? total : MAX_DOWNLOAD_BYTES;
         // UNIQUE PARTIAL FILES PREVENT CONCURRENT LAUNCHERS FROM OVERWRITING EACH OTHER'S TRANSFERS.
         final Path partial = Files.createTempFile(destination.getParent(), name + ".", ".part");
         long received = 0;
@@ -268,8 +273,9 @@ public final class AppBootstrap {
                 long lastUpdate = 0;
                 int count;
                 while ((count = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, count);
                     received += count;
+                    if (received > limit) throw new IOException("Download of " + name + " exceeds " + limit + " bytes");
+                    output.write(buffer, 0, count);
                     final long now = System.nanoTime();
                     if (window != null && now - lastUpdate >= 50_000_000L) {
                         lastUpdate = now;
