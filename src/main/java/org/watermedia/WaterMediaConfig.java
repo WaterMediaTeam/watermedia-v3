@@ -107,7 +107,7 @@ public final class WaterMediaConfig {
         public float mrlCleanupInterval = 60.0f;
 
         @Spec.Field(suffix = "MB")
-        @Comment("Total on-disk budget (in MB) for the shared media cache store (network + codec tiers under %TEMP%)")
+        @Comment("Total on-disk budget (in MB) for the shared cache of downloaded media files under %TEMP%")
         @Comment("Checked after every cache write; once the store grows past this cap the oldest entries are evicted until it fits again")
         @NumberConditions(minInt = 1, math = true)
         public int cacheBudget = 1024 * 8;
