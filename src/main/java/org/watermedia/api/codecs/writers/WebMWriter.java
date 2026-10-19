@@ -14,6 +14,7 @@ import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.IntPointer;
 import org.bytedeco.javacpp.Pointer;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
@@ -39,7 +40,8 @@ import static org.watermedia.WaterMedia.LOGGER;
  * <p>Every frame is converted to {@code YUV420P} (VP9 profile 0) with {@code libswscale} before it
  * reaches the encoder, so any raw {@link PixelFormat} the writer accepts (packed RGB/BGRA,
  * grayscale, packed or planar YUV) is valid input; block-compressed layouts are not. Alpha is
- * flattened — VP9-in-WebM alpha is out of scope.
+ * flattened — VP9-in-WebM alpha is out of scope. The stream is tagged BT.709 limited range: RGB
+ * input is converted with that matrix and YUV input is taken as already being in it.
  *
  * <p>Frame timing follows the {@link #writeFrame(ByteBuffer, long) delay} of each frame when it is
  * positive, otherwise the constructor frame rate; quality is a VP9 CRF (0-63, lower is better) in
@@ -129,6 +131,11 @@ public final class WebMWriter extends ImageWriter {
             this.encoder.width(width);
             this.encoder.height(height);
             this.encoder.pix_fmt(avutil.AV_PIX_FMT_YUV420P);
+            // TAGGED BT.709 LIMITED RANGE, SO NO PLAYER GUESSES BT.601 FOR A SMALL FRAME; THE CONVERTER BELOW MATCHES IT
+            this.encoder.colorspace(avutil.AVCOL_SPC_BT709);
+            this.encoder.color_primaries(avutil.AVCOL_PRI_BT709);
+            this.encoder.color_trc(avutil.AVCOL_TRC_BT709);
+            this.encoder.color_range(avutil.AVCOL_RANGE_MPEG);
             this.encoder.time_base(this.timeBase);
             this.encoder.framerate(new AVRational().num(fps).den(1));
             this.encoder.bit_rate(0); // 0 BITRATE + CRF => CONSTANT QUALITY
@@ -154,6 +161,12 @@ public final class WebMWriter extends ImageWriter {
             this.scaler = swscale.sws_getContext(width, height, this.srcFormat, width, height,
                     avutil.AV_PIX_FMT_YUV420P, swscale.SWS_BILINEAR, null, null, (double[]) null);
             if (FFTool.isNull(this.scaler)) throw new IOException("Failed to create pixel converter");
+            // SWS TURNS RGB INTO BT.601 BY DEFAULT; GRAY AND YUV INPUT ALREADY CARRY LUMA AND CHROMA AND ONLY CHANGE LAYOUT
+            if (pixelFormat == PixelFormat.RGB || pixelFormat == PixelFormat.RGBA || pixelFormat == PixelFormat.BGRA) {
+                final IntPointer bt709 = swscale.sws_getCoefficients(swscale.SWS_CS_ITU709);
+                final int details = swscale.sws_setColorspaceDetails(this.scaler, bt709, 1, bt709, 0, 0, 1 << 16, 1 << 16);
+                if (details < 0) throw new IOException("sws_setColorspaceDetails refused the BT.709 conversion (code " + details + ")");
+            }
             this.srcFrame = avutil.av_frame_alloc();
             this.yuvFrame = avutil.av_frame_alloc();
             if (FFTool.isNull(this.srcFrame) || FFTool.isNull(this.yuvFrame))

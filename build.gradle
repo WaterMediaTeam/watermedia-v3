@@ -81,6 +81,7 @@ test {
     maxHeapSize = test_max_heap
     jvmArgs "-XX:MaxDirectMemorySize=$test_max_direct_memory"
     systemProperty 'watermedia.test.requireNatives', require_natives
+    systemProperty 'org.lwjgl.system.stackSize', test_lwjgl_stack
     // ISOLATED JVM PROBES AND LAUNCHER PIN CHECKS READ THE TEST CLASSPATH FROM HERE
     doFirst { Test task -> task.systemProperty('watermedia.test.classpath', task.classpath.asPath) }
     testLogging { events 'passed', 'skipped', 'failed' }

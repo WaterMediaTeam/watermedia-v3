@@ -41,14 +41,16 @@ import static org.watermedia.WaterMedia.LOGGER;
  * buffer per plane per slot, copies the bytes in, and copies that to the image.
  * <p>
  * <b>Conversion.</b> Passthrough formats (BGRA/RGBA) are copied directly into the managed image.
- * When the device enables {@code samplerYcbcrConversion} and the format qualifies, 8-bit NV12 and
- * planar YUV420/422/444 upload their planes into one multi-planar image and an immutable
- * {@code VkSamplerYcbcrConversion} sampler (BT.709 narrow range) converts in sampler hardware; a
- * trivial compute pass then samples it once into the managed {@code R8G8B8A8_UNORM} storage image,
+ * Every other format converts with the colorimetry of its layout: YCbCr matrix, sample range, chroma
+ * siting and transfer curve. When the device enables {@code samplerYcbcrConversion}, an even-sized
+ * 8-bit SDR frame without BT.2020 primaries in NV12 or planar YUV420/422/444 whose chroma siting the
+ * format advertises uploads its planes into one multi-planar image, and an immutable
+ * {@code VkSamplerYcbcrConversion} sampler built from that colorimetry converts in sampler hardware;
+ * a trivial compute pass then samples it once into the managed {@code R8G8B8A8_UNORM} storage image,
  * so {@link #texture()} still returns a ready-to-sample RGBA view. Every other format (GRAY, NV21,
- * planar YUVA, packed YUYV/UYVY, 10/12-bit) runs one arithmetic compute pass that samples the plane
- * images and writes the managed image, using the exact BT.709 limited-range coefficients and
- * bit-depth scaling of {@code GLEngine}.
+ * planar YUVA, packed YUYV/UYVY, deeper samples, PQ/HLG or BT.2020 primaries) runs one arithmetic
+ * compute pass that samples the plane images and writes the managed image with the color math and
+ * bit-depth scaling of {@code GLEngine}, HDR mapped to SDR included.
  * <p>
  * <b>Triple buffering &amp; synchronization.</b> Three slots are used round-robin; each owns its plane
  * images, managed image+view, command buffer and fence. Before reusing a slot the engine waits the
@@ -70,7 +72,7 @@ public final class VKEngine extends GFXEngine {
     // COMPLETED FRAME WHILE NEWER ONES ARE STILL ON THE GPU.
     private static final int SLOTS = 3;
     private static final int MAX_PLANES = 4;
-    private static final int PUSH_BYTES = 16; // { int mode; float bitScale; int width; int height; }
+    private static final int PUSH_BYTES = 80; // { int mode; float bitScale; int width; int height; vec4 colorimetry[4]; } (std430)
     private static final int YCBCR_PUSH_BYTES = 8; // { int width; int height; }
     private static final long WAIT_TIMEOUT_NS = 5_000_000_000L; // 5s — GUARD AGAINST A WEDGED GPU
 
@@ -90,10 +92,8 @@ public final class VKEngine extends GFXEngine {
     private static final int MODE_YUYV = 5; // PACKED [Y0,U,Y1,V]
     private static final int MODE_UYVY = 6; // PACKED [U,Y0,V,Y1]
 
-    // ONE COMPUTE SHADER FOR EVERY NON-PASSTHROUGH FORMAT. PLANES ARE SAMPLED WITH NORMALIZED
-    // COORDS SO THE SAMPLER HANDLES CHROMA UPSAMPLING (PLANAR/NV); PACKED YUV USES texelFetch SO
-    // PIXEL PAIRS ARE NOT INTERPOLATED. COEFFICIENTS AND bitScale MIRROR GLEngine EXACTLY
-    // (BT.709 STUDIO RANGE).
+    // ONE COMPUTE SHADER FOR EVERY NON-PASSTHROUGH FORMAT, MIRRORING GLEngine's FRAGMENT SHADERS THROUGH Colorimetry.GLSL.
+    // PLANES SAMPLE NORMALIZED (CHROMA AT colorimetry[2]'S SITED COORDS); PACKED YUV USES texelFetch TO KEEP PAIRS APART
     private static final String COMPUTE_GLSL = """
             #version 450
             layout(local_size_x = 8, local_size_y = 8) in;
@@ -107,6 +107,7 @@ public final class VKEngine extends GFXEngine {
                 float bitScale;
                 int width;
                 int height;
+                vec4 colorimetry[4];
             } pc;
 
             const int MODE_GRAY = 0;
@@ -117,48 +118,35 @@ public final class VKEngine extends GFXEngine {
             const int MODE_YUYV = 5;
             const int MODE_UYVY = 6;
 
+            """ + Colorimetry.GLSL + """
+
             void main() {
                 ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
                 if (gid.x >= pc.width || gid.y >= pc.height) return;
                 vec2 uv = (vec2(gid) + 0.5) / vec2(float(pc.width), float(pc.height));
+                vec2 chroma = uv * pc.colorimetry[2].xy + pc.colorimetry[2].zw;
                 float bs = pc.bitScale;
-                vec4 rgba;
-                // COMPUTE SHADERS HAVE NO DERIVATIVES, SO IMPLICIT-LOD texture() IS ILLEGAL HERE.
-                // EVERY PLANE IS SINGLE-MIP, SO textureLod(..., 0.0) GIVES THE SAME BILINEAR RESULT
-                // AS THE FRAGMENT-STAGE texture() CALLS IN GLEngine (LINEAR SAMPLER, MIP 0).
+                float alpha = 1.0;
+                vec3 rgb;
+                // NO DERIVATIVES IN COMPUTE, SO IMPLICIT-LOD texture() IS ILLEGAL; ON SINGLE-MIP PLANES textureLod(..., 0.0)
+                // GIVES THE SAME BILINEAR RESULT AS THE FRAGMENT-STAGE texture() CALLS IN GLEngine
                 if (pc.mode == MODE_GRAY) {
-                    float l = textureLod(plane0, uv, 0.0).r * bs;
-                    rgba = vec4(l, l, l, 1.0);
+                    rgb = vec3(textureLod(plane0, uv, 0.0).r * bs * pc.colorimetry[0].x - pc.colorimetry[0].y);
                 } else if (pc.mode == MODE_NV12 || pc.mode == MODE_NV21) {
-                    float Y  = textureLod(plane0, uv, 0.0).r * bs * 1.16438 - 0.07306;
-                    vec2 raw = textureLod(plane1, uv, 0.0).rg * bs;
-                    float Cb = (pc.mode == MODE_NV12 ? raw.x : raw.y) * 1.13839 - 0.57143;
-                    float Cr = (pc.mode == MODE_NV12 ? raw.y : raw.x) * 1.13839 - 0.57143;
-                    rgba = vec4(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb, 1.0);
-                } else if (pc.mode == MODE_YUV3) {
-                    float Y  = textureLod(plane0, uv, 0.0).r * bs * 1.16438 - 0.07306;
-                    float Cb = textureLod(plane1, uv, 0.0).r * bs * 1.13839 - 0.57143;
-                    float Cr = textureLod(plane2, uv, 0.0).r * bs * 1.13839 - 0.57143;
-                    rgba = vec4(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb, 1.0);
-                } else if (pc.mode == MODE_YUVA) {
-                    float Y  = textureLod(plane0, uv, 0.0).r * bs * 1.16438 - 0.07306;
-                    float Cb = textureLod(plane1, uv, 0.0).r * bs * 1.13839 - 0.57143;
-                    float Cr = textureLod(plane2, uv, 0.0).r * bs * 1.13839 - 0.57143;
-                    float A  = textureLod(plane3, uv, 0.0).r * bs;
-                    rgba = vec4(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb, A);
+                    vec2 raw = textureLod(plane1, chroma, 0.0).rg * bs;
+                    if (pc.mode == MODE_NV21) raw = raw.yx;
+                    rgb = ycbcr(textureLod(plane0, uv, 0.0).r * bs, raw.x, raw.y, pc.colorimetry[0], pc.colorimetry[1]);
+                } else if (pc.mode == MODE_YUV3 || pc.mode == MODE_YUVA) {
+                    rgb = ycbcr(textureLod(plane0, uv, 0.0).r * bs, textureLod(plane1, chroma, 0.0).r * bs,
+                            textureLod(plane2, chroma, 0.0).r * bs, pc.colorimetry[0], pc.colorimetry[1]);
+                    if (pc.mode == MODE_YUVA) alpha = textureLod(plane3, uv, 0.0).r * bs;
                 } else {
-                    // PACKED YUV422: ONE RGBA TEXEL COVERS A PIXEL PAIR AT (ceil(width/2), height)
-                    ivec2 t = ivec2(gid.x >> 1, gid.y);
-                    vec4 p = texelFetch(plane0, t, 0);
-                    float Y0, Cb, Y1, Cr;
-                    if (pc.mode == MODE_YUYV) { Y0 = p.r; Cb = p.g; Y1 = p.b; Cr = p.a; }
-                    else { Cb = p.r; Y0 = p.g; Cr = p.b; Y1 = p.a; }
-                    float Y = ((gid.x & 1) == 0 ? Y0 : Y1) * 1.16438 - 0.07306;
-                    Cb = Cb * 1.13839 - 0.57143;
-                    Cr = Cr * 1.13839 - 0.57143;
-                    rgba = vec4(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb, 1.0);
+                    // PACKED YUV422 (8-BIT ONLY): ONE RGBA TEXEL COVERS A PIXEL PAIR, REORDERED TO [Y0, Cb, Y1, Cr]
+                    vec4 p = texelFetch(plane0, ivec2(gid.x >> 1, gid.y), 0);
+                    if (pc.mode == MODE_UYVY) p = p.grab;
+                    rgb = ycbcr((gid.x & 1) == 0 ? p.r : p.b, p.g, p.a, pc.colorimetry[0], pc.colorimetry[1]);
                 }
-                imageStore(outImg, gid, rgba);
+                imageStore(outImg, gid, vec4(display(rgb, pc.colorimetry[3]), alpha));
             }
             """;
 
@@ -210,6 +198,7 @@ public final class VKEngine extends GFXEngine {
     private int outFormat;       // MANAGED IMAGE FORMAT
     private int outUsage;        // MANAGED IMAGE USAGE
     private float bitScale = 1.0f;
+    private float[] colorimetry; // Colorimetry.constants OF THE LAYOUT, PUSHED AFTER THE FOUR SCALARS
     private int planeCount;      // SOURCE PLANES PER FRAME; PASSTHROUGH HAS ONE, COPIED STRAIGHT INTO THE MANAGED IMAGE
     private final PlaneSpec[] planeSpecs = new PlaneSpec[MAX_PLANES];
     private int formatGen;       // BUMPED ON EVERY FORMAT CHANGE; SLOTS REBUILD WHEN STALE
@@ -217,7 +206,8 @@ public final class VKEngine extends GFXEngine {
     // SAMPLER-YCBCR FAST PATH (FORMAT-SPECIFIC — OBJECTS ARE LAZILY BUILT ON FIRST USE AND
     // DESTROYED ON EVERY FORMAT CHANGE AND IN destroyResources)
     private int ycbcrFmt;        // MULTIPLANAR VkFormat, 0 = COMPUTE/PASSTHROUGH PATH
-    private int ycbcrLoc;        // CHOSEN VkChromaLocation (X AND Y)
+    private int ycbcrX;          // CHOSEN HORIZONTAL VkChromaLocation
+    private int ycbcrY;          // CHOSEN VERTICAL VkChromaLocation
     private int ycbcrFilter;     // CHOSEN VkFilter FOR min/mag/chroma (ALWAYS THE SAME THREE)
     private long ycbcrConv;      // VkSamplerYcbcrConversion
     private long ycbcrSamp;      // IMMUTABLE SAMPLER WRAPPING THE CONVERSION
@@ -344,10 +334,10 @@ public final class VKEngine extends GFXEngine {
      * Returns the {@code VkImageView} handle of the final RGBA image for the newest completed frame.
      * <p>
      * Passthrough formats (BGRA, RGBA) are copied directly into the engine-owned managed image.
-     * Every other format is resolved to RGBA by a compute pass; a subset of planar YUV is instead
-     * sampled through a {@code VkSamplerYcbcrConversion} (BT.709 narrow range) that converts in
-     * sampler hardware. Either way the handle returned here is always a ready-to-sample RGBA view,
-     * never a raw luma or chroma plane.
+     * Every other format is resolved to RGBA by a compute pass; a subset of 8-bit SDR planar YUV is
+     * instead sampled through a {@code VkSamplerYcbcrConversion} built from the frame's matrix, range
+     * and chroma siting that converts in sampler hardware. Either way the handle returned here is
+     * always a ready-to-sample RGBA view, never a raw luma or chroma plane.
      * <p>
      * The view is fence-gated: this returns the most recent slot whose GPU work has signalled its
      * fence, rotating across the slot ring as frames complete, and 0 until the first frame is ready.
@@ -412,7 +402,7 @@ public final class VKEngine extends GFXEngine {
     // RESETS PER-FORMAT GPU STATE (SLOT IMAGES, IMPORT CACHE; POOL, PIPELINE, SAMPLER AND FENCES STAY) AFTER DRAINING OUR
     // WORK; THE LAST PUBLISHED VIEW STAYS EXPOSED UNTIL THE FIRST FRAME OF THE NEW LAYOUT COMPLETES (SEE texture)
     @Override
-    synchronized boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
+    synchronized boolean apply(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
         // DRAIN ENGINE WORK SO PER-FORMAT RESOURCES CAN BE DESTROYED SAFELY; A WEDGED GPU REFUSES THE LAYOUT INSTEAD
         if (!this.waitAllIdle()) return false;
         synchronized (this.ctx.queueLock()) {
@@ -447,11 +437,12 @@ public final class VKEngine extends GFXEngine {
         // THEY DIE SYNCHRONOUSLY AND ARE LAZILY REBUILT IF THE NEW FORMAT USES THE YCBCR PATH.
         this.destroyYcbcrRes();
 
-        this.publish(format, width, height, bits);
+        this.publish(format, width, height, bits, color);
 
         // BUILD THE FORMAT TABLE IN ONE PASS: PER-PLANE SPECS, OUTPUT FORMAT/USAGE, COMPUTE MODE
         // AND THE OPTIONAL SAMPLER-YCBCR ROUTE, ALL DERIVED FROM THE NEW FORMAT.
         this.bitScale = bitScale(bits);
+        this.colorimetry = color.constants(format, width, height, bits);
         final int rF = redFormat(bits);
 
         this.convert = true;
@@ -519,16 +510,18 @@ public final class VKEngine extends GFXEngine {
         this.formatGen++;
         this.head = 0L;
         this.failed = false; // A NEW LAYOUT IS A FRESH ATTEMPT AFTER A DRIVER FAILURE
-        if (this.ycbcrFmt != 0) {
-            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> YCbCr sampler path (vkFormat={}, chromaLoc={}, filter={})",
-                    format, width, height, this.planeCount, bits,
-                    this.ycbcrFmt, this.ycbcrLoc == VK_CHROMA_LOCATION_MIDPOINT ? "midpoint" : "cosited-even",
-                    this.ycbcrFilter == VK_FILTER_LINEAR ? "linear" : "nearest");
-        } else {
-            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> {} path",
-                    format, width, height, this.planeCount, bits,
-                    this.convert ? "compute" : "passthrough");
-        }
+        if (this.ycbcrFmt != 0)
+            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> YCbCr sampler path ({} {} range, chroma x {} y {}, {}; vkFormat={}, filter={})",
+                    format, width, height, this.planeCount, bits, color.matrix(), color.full() ? "full" : "limited",
+                    this.ycbcrX == VK_CHROMA_LOCATION_MIDPOINT ? "midpoint" : "cosited", this.ycbcrY == VK_CHROMA_LOCATION_MIDPOINT ? "midpoint" : "cosited",
+                    color.transfer(), this.ycbcrFmt, this.ycbcrFilter == VK_FILTER_LINEAR ? "linear" : "nearest");
+        else if (this.convert)
+            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> compute path ({} {} range, chroma x {} y {}, {}{})",
+                    format, width, height, this.planeCount, bits, color.matrix(), color.full() ? "full" : "limited",
+                    color.cositedX() ? "cosited" : "midpoint", color.cositedY() ? "cosited" : "midpoint",
+                    color.transfer(), color.wide() ? ", BT.2020 primaries" : "");
+        else
+            LOGGER.debug(IT, "Format set: {} {}x{} ({} planes, {}bpc) -> passthrough path", format, width, height, this.planeCount, bits);
         return true;
     }
 
@@ -758,6 +751,7 @@ public final class VKEngine extends GFXEngine {
                 push.putFloat(4, this.bitScale);
                 push.putInt(8, this.width);
                 push.putInt(12, this.height);
+                for (int i = 0; i < this.colorimetry.length; i++) push.putFloat(16 + i * 4, this.colorimetry[i]);
                 vkCmdPushConstants(slot.cmd, this.pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
                 vkCmdDispatch(slot.cmd, (this.width + 7) / 8, (this.height + 7) / 8, 1);
                 // HAND THE RESULT TO THE CONSUMER'S FRAGMENT SAMPLING (SAME-QUEUE BARRIER).
@@ -1127,28 +1121,43 @@ public final class VKEngine extends GFXEngine {
         });
     }
 
-    // ROUTES THE CURRENT FORMAT THROUGH THE SAMPLER-YCBCR PATH WHEN THE DEVICE FEATURE IS ON AND
-    // THE MULTIPLANAR FORMAT CARRIES THE REQUIRED OPTIMAL-TILING BITS; OTHERWISE ycbcrFmt STAYS 0
-    // AND THE ARITHMETIC COMPUTE PATH ALREADY CONFIGURED BY THE CALLER REMAINS ACTIVE.
+    // ROUTES THE CURRENT FORMAT THROUGH THE SAMPLER-YCBCR PATH WHEN THE DEVICE FEATURE IS ON, THE FRAME NEEDS NO DISPLAY
+    // MAPPING AND THE MULTIPLANAR FORMAT CARRIES THE REQUIRED BITS; OTHERWISE THE CALLER'S COMPUTE PATH STAYS (ycbcrFmt 0)
     private void tryYcbcr(final int fmt) {
         if (!this.ctx.ycbcrSampler()) {
             LOGGER.debug(IT, "YCbCr sampler path declined for {}: samplerYcbcrConversion feature off", this.format);
             return;
         }
+        // THE SAMPLER ONLY EXPANDS THE RANGE AND APPLIES THE MATRIX: PQ, HLG AND BT.2020 PRIMARIES NEED THE COMPUTE display()
+        final Colorimetry color = this.color;
+        if (color.transfer() != Colorimetry.Transfer.SDR || color.wide()) {
+            LOGGER.debug(IT, "YCbCr sampler path declined for {}: {} transfer{} needs the compute display mapping",
+                    this.format, color.transfer(), color.wide() ? " with BT.2020 primaries" : "");
+            return;
+        }
+        // THE IMAGE IS SAMPLED BY THE TRIVIAL PASS AND FILLED VIA BUFFER->IMAGE COPIES
         final int feats = this.formatFeatures(fmt);
-        // THE IMAGE IS SAMPLED BY THE TRIVIAL PASS AND FILLED VIA BUFFER->IMAGE COPIES, AND THE
-        // CONVERSION NEEDS A SUPPORTED CHROMA SITING (EVEN 444 FORMATS MUST ADVERTISE ONE BIT —
-        // OTHERWISE NO VALID xChromaOffset/yChromaOffset EXISTS AND THE ENGINE FALLS BACK).
         final int need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-        final boolean mid = (feats & VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT) != 0;
-        final boolean cos = (feats & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT) != 0;
-        if ((feats & need) != need || (!mid && !cos)) {
+        if ((feats & need) != need) {
             LOGGER.debug(IT, "YCbCr sampler path declined for {}: format {} unsupported (optimalTilingFeatures=0x{})",
                     this.format, fmt, Integer.toHexString(feats));
             return;
         }
+        // A SUBSAMPLED AXIS NEEDS THE FRAME'S OWN SITING ADVERTISED; A FULL-RESOLUTION AXIS IGNORES IT BUT STILL TAKES AN
+        // ADVERTISED VALUE, SO A FORMAT WITHOUT EITHER BIT HAS NO VALID OFFSET AT ALL
+        final boolean mid = (feats & VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT) != 0;
+        final boolean cos = (feats & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT) != 0;
+        final PlaneSpec chroma = this.planeSpecs[1];
+        final boolean cosX = chroma.w < this.width ? color.cositedX() : !mid;
+        final boolean cosY = chroma.h < this.height ? color.cositedY() : !mid;
+        if ((cosX || cosY) && !cos || (!cosX || !cosY) && !mid) {
+            LOGGER.debug(IT, "YCbCr sampler path declined for {}: format {} lacks chroma siting x {} y {} (optimalTilingFeatures=0x{})",
+                    this.format, fmt, cosX ? "cosited" : "midpoint", cosY ? "cosited" : "midpoint", Integer.toHexString(feats));
+            return;
+        }
         this.ycbcrFmt = fmt;
-        this.ycbcrLoc = mid ? VK_CHROMA_LOCATION_MIDPOINT : VK_CHROMA_LOCATION_COSITED_EVEN;
+        this.ycbcrX = cosX ? VK_CHROMA_LOCATION_COSITED_EVEN : VK_CHROMA_LOCATION_MIDPOINT;
+        this.ycbcrY = cosY ? VK_CHROMA_LOCATION_COSITED_EVEN : VK_CHROMA_LOCATION_MIDPOINT;
         // LINEAR ONLY WHEN THE FORMAT ADVERTISES BOTH YCBCR LINEAR CHROMA RECONSTRUCTION
         // (VUID-VkSamplerYcbcrConversionCreateInfo-chromaFilter-01657) AND PLAIN LINEAR SAMPLING
         // (VUID-vkCmdDispatch-magFilter-04553). min/mag/chroma ALWAYS SHARE ONE FILTER BECAUSE
@@ -1167,13 +1176,17 @@ public final class VKEngine extends GFXEngine {
     private void ensureYcbcr() {
         if (this.ycbcrConv != 0L) return;
         try (final MemoryStack stack = stackPush()) {
-            // CONVERSION: BT.709 NARROW RANGE, IDENTITY COMPONENTS (calloc), SITING/FILTER FROM THE
-            // FORMAT QUERY. NO FORCED EXPLICIT RECONSTRUCTION — LET THE IMPLEMENTATION PICK.
+            // CONVERSION: THE LAYOUT'S MATRIX, RANGE AND SITING (CHECKED BY tryYcbcr), IDENTITY COMPONENTS (calloc) AND THE
+            // QUERIED FILTER. NO FORCED EXPLICIT RECONSTRUCTION — LET THE IMPLEMENTATION PICK
             final VkSamplerYcbcrConversionCreateInfo cci = VkSamplerYcbcrConversionCreateInfo.calloc(stack).sType$Default()
                     .format(this.ycbcrFmt)
-                    .ycbcrModel(VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709)
-                    .ycbcrRange(VK_SAMPLER_YCBCR_RANGE_ITU_NARROW)
-                    .xChromaOffset(this.ycbcrLoc).yChromaOffset(this.ycbcrLoc)
+                    .ycbcrModel(switch (this.color.matrix()) {
+                        case BT601 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+                        case BT709 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709;
+                        case BT2020 -> VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020;
+                    })
+                    .ycbcrRange(this.color.full() ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW)
+                    .xChromaOffset(this.ycbcrX).yChromaOffset(this.ycbcrY)
                     .chromaFilter(this.ycbcrFilter)
                     .forceExplicitReconstruction(false);
             final LongBuffer p = stack.mallocLong(1);
@@ -1235,9 +1248,17 @@ public final class VKEngine extends GFXEngine {
             check(r, "create ycbcr pipeline");
             this.ycbcrPipeline = p.get(0);
 
-            // POOL + ONE SET PER SLOT (THE LEGACY PER-SLOT SETS KEEP THE LEGACY LAYOUT).
+            // POOL + ONE SET PER SLOT (THE LEGACY PER-SLOT SETS KEEP THE LEGACY LAYOUT). A YCBCR SAMPLER MAY COST SEVERAL
+            // COMBINED-SAMPLER DESCRIPTORS (RADV, MALI): THE POOL RESERVES WHAT THE DRIVER REPORTS FOR THE SLOT IMAGES
+            final VkSamplerYcbcrConversionImageFormatProperties cost = VkSamplerYcbcrConversionImageFormatProperties.calloc(stack).sType$Default();
+            final VkPhysicalDeviceImageFormatInfo2 image = VkPhysicalDeviceImageFormatInfo2.calloc(stack).sType$Default()
+                    .format(this.ycbcrFmt).type(VK_IMAGE_TYPE_2D).tiling(VK_IMAGE_TILING_OPTIMAL)
+                    .usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            final int queried = vkGetPhysicalDeviceImageFormatProperties2(this.ctx.physicalDevice(), image,
+                    VkImageFormatProperties2.calloc(stack).sType$Default().pNext(cost.address()));
+            final int perSet = queried == VK_SUCCESS ? Math.max(1, cost.combinedImageSamplerDescriptorCount()) : 1;
             final VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(SLOTS);
+            sizes.get(0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(SLOTS * perSet);
             sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(SLOTS);
             final VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default()
                     .maxSets(SLOTS).pPoolSizes(sizes);

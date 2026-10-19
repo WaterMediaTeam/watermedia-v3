@@ -94,8 +94,8 @@ public final class VP8LossyDecoder {
         // RFC6386 SECTION 15 - APPLY LOOP FILTER
         applyLoopFilter(st, yPln, uPln, vPln, yStr, uvStr, mbW, mbH, frm.keyFrame);
 
-        // VP8 IS BT.601 LIMITED RANGE; CONVERTING HERE KEEPS EVERY ENGINE ON THE SAME COLORS, SINCE
-        // THE GPU SHADERS EXPAND PLANAR YUV WITH BT.709 COEFFICIENTS
+        // VP8 IS BT.601 LIMITED RANGE; IT IS CONVERTED HERE BECAUSE PICTURE DECODERS HAND OUT BGRA OR GRAY,
+        // NEVER PLANAR YUV, SO EVERY ENGINE SHOWS THE SAME COLORS
         return DataTool.yuvToBgra(yPln, uPln, vPln, frm.w, frm.h, yStr, uvStr);
     }
 

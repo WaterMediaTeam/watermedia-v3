@@ -32,6 +32,7 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
     volatile int width;
     volatile int height;
     volatile int bits = 8;
+    volatile Colorimetry color;
     volatile boolean released;
 
     // SINGLE ENFORCEMENT POINT: EVERY ENGINE CONSTRUCTION PASSES THROUGH HERE, HEADLESS CAPTURE INCLUDED.
@@ -39,31 +40,37 @@ public abstract sealed class GFXEngine permits VKEngine, GLEngine, HeadlessGFXEn
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
     }
 
-    // RECONFIGURES FOR AN 8-BIT FORMAT; SEE THE FOUR-ARGUMENT OVERLOAD
+    // RECONFIGURES FOR AN 8-BIT FORMAT; SEE THE FIVE-ARGUMENT OVERLOAD
     final boolean format(final PixelFormat format, final int width, final int height) {
         return this.format(format, width, height, 8);
     }
 
-    // RESETS PLANE TEXTURES, UPLOAD BUFFERS AND BUFFERED FRAMES FOR A NEW LAYOUT; CALLED BEFORE THE FIRST UPLOAD AND ON
-    // EVERY RESOLUTION OR LAYOUT CHANGE. FALSE (RELEASED, EMPTY SIZE, UNSUPPORTED FORMAT/BITS) LEAVES THE ENGINE AS IT WAS
+    // RECONFIGURES FOR FRAMES WITH THE COLORIMETRY AN UNTAGGED FRAME OF THIS SIZE MOST LIKELY HAS
     final boolean format(final PixelFormat format, final int width, final int height, final int bits) {
-        if (this.released || width <= 0 || height <= 0 || !this.supports(format, bits)) return false;
-        return this.apply(format, width, height, bits);
+        return this.format(format, width, height, bits, Colorimetry.guess(format, width, height));
+    }
+
+    // RESETS PLANE TEXTURES, UPLOAD BUFFERS AND BUFFERED FRAMES FOR A NEW LAYOUT; CALLED BEFORE THE FIRST UPLOAD AND ON EVERY
+    // RESOLUTION, LAYOUT OR COLORIMETRY CHANGE. FALSE (RELEASED, EMPTY SIZE, UNSUPPORTED FORMAT/BITS) LEAVES THE ENGINE AS IT WAS
+    final boolean format(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
+        if (this.released || width <= 0 || height <= 0 || color == null || !this.supports(format, bits)) return false;
+        return this.apply(format, width, height, bits, color);
     }
 
     // APPLIES A LAYOUT THE BASE ALREADY ACCEPTED; FALSE WHEN THE BACKEND CANNOT BACK IT (E.G. A SURFACE TOO LARGE).
     // THE DEFAULT ONLY PUBLISHES THE FIELDS
-    boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
-        this.publish(format, width, height, bits);
+    boolean apply(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
+        this.publish(format, width, height, bits, color);
         return true;
     }
 
     // PUBLISHES THE LAYOUT ONCE THE BACKEND APPLIED IT (GL DOES SO ON ITS RENDER THREAD, THE REST SYNCHRONOUSLY)
-    final void publish(final PixelFormat format, final int width, final int height, final int bits) {
+    final void publish(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
         this.format = format;
         this.width = width;
         this.height = height;
         this.bits = bits;
+        this.color = color;
     }
 
     /** Frame width in pixels, or 0 if no format has been set. */

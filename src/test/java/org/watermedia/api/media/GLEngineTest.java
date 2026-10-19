@@ -7,13 +7,14 @@ import org.junit.jupiter.api.Test;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
-import org.watermedia.api.util.MathUtil;
+import org.watermedia.api.media.Colorimetry.Matrix;
+import org.watermedia.api.media.Colorimetry.Transfer;
 import org.watermedia.api.util.PixelFormat;
 import org.watermedia.test.support.MediaBootstrap;
+import org.watermedia.test.support.YuvFrames;
 
 import java.awt.GraphicsEnvironment;
 import java.nio.ByteBuffer;
-import java.util.function.IntBinaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,13 +23,17 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * Verifies {@link GLEngine} uploads on a real OpenGL context: an odd-sized frame keeps its last chroma
- * column, padded planes may end on their last tight row, odd-width packed YUYV keeps each pixel's luma,
- * and an RGB stride that is not a whole number of texels lands every row without shearing. Skipped
+ * Verifies {@link GLEngine} conversions on a real OpenGL context: odd sizes keep their last chroma column, padded
+ * planes may end on their last tight row, packed YUYV keeps each pixel's luma, ragged RGB strides land every row,
+ * and the colorimetry (matrix, range, chroma siting, PQ/HLG and BT.2020) matches the standard formulas. Skipped
  * without a display, GLFW or a 3.2 core context.
  */
 @DisplayName("GLEngine")
 public class GLEngineTest {
+    private static final double[] BT601 = { 0.299, 0.114 };
+    private static final double[] BT709 = { 0.2126, 0.0722 };
+    private static final double[] BT2020 = { 0.2627, 0.0593 };
+
     private static boolean initialized;
     private static long window = NULL;
 
@@ -66,16 +71,15 @@ public class GLEngineTest {
     void oddWidthKeepsLastChromaColumn() {
         final int w = 853;
         final int h = 3;
-        final PixelFormat f = PixelFormat.YUV420P;
         final int cw = 427; // FFMPEG ROUNDS 4:2:0 CHROMA UP: A 853x3 FRAME CARRIES 427x2 CHROMA SAMPLES
         final int ch = 2;
         // Y AND U ROWS ARE PADDED BUT EACH PLANE STOPS RIGHT AFTER ITS LAST ROW; U MARKS ONLY ITS LAST COLUMN (STRONG BLUE)
-        final ByteBuffer y = plane(864, w, h, (row, col) -> 128);
-        final ByteBuffer u = plane(448, cw, ch, (row, col) -> col == cw - 1 ? 255 : 128);
-        final ByteBuffer v = plane(0, cw, ch, (row, col) -> 128);
+        final ByteBuffer y = YuvFrames.plane(864, w, h, (row, col) -> 128);
+        final ByteBuffer u = YuvFrames.plane(448, cw, ch, (row, col) -> col == cw - 1 ? 255 : 128);
+        final ByteBuffer v = YuvFrames.plane(0, cw, ch, (row, col) -> 128);
         final GLEngine engine = MediaAPI.glEngine(null, null);
         try {
-            assertTrue(engine.format(f, w, h, 8));
+            assertTrue(engine.format(PixelFormat.YUV420P, w, h, 8));
             engine.upload(new ByteBuffer[] { y, u, v }, new int[] { 864, 448, 0 });
             final ByteBuffer rgba = pixels(engine, w, h);
             final int first = rgba.get(2) & 0xFF;
@@ -94,7 +98,7 @@ public class GLEngineTest {
     void oddWidthPackedLuma() {
         // FIVE PIXELS ARE THREE [Y0 U Y1 V] GROUPS; THE LAST Y1 IS PADDING NO PIXEL SHOWS
         final int[] luma = { 50, 100, 150, 200, 250 };
-        final ByteBuffer yuyv = plane(0, 12, 1, (row, col) -> col % 2 == 1 ? 128 : col / 2 < luma.length ? luma[col / 2] : 0);
+        final ByteBuffer yuyv = YuvFrames.plane(0, 12, 1, (row, col) -> col % 2 == 1 ? 128 : col / 2 < luma.length ? luma[col / 2] : 0);
         final GLEngine engine = MediaAPI.glEngine(null, null);
         try {
             assertTrue(engine.format(PixelFormat.YUYV, 5, 1, 8));
@@ -111,7 +115,7 @@ public class GLEngineTest {
     @DisplayName("An RGB stride that is not a whole number of texels lands every row in place")
     void raggedRgbStride() {
         // 5 RGB PIXELS ARE 15 BYTES; A 16-BYTE STRIDE CANNOT BE A WHOLE ROW LENGTH IN TEXELS
-        final ByteBuffer rgb = plane(16, 15, 2, (row, col) -> row * 100 + col + 1);
+        final ByteBuffer rgb = YuvFrames.plane(16, 15, 2, (row, col) -> row * 100 + col + 1);
         final GLEngine engine = MediaAPI.glEngine(null, null);
         try {
             assertTrue(engine.format(PixelFormat.RGB, 5, 2, 8));
@@ -128,20 +132,143 @@ public class GLEngineTest {
         }
     }
 
-    // UTILITY
-
-    // 8-BIT LIMITED-RANGE LUMA WITH NEUTRAL CHROMA AS THE SHADERS EXPAND IT
-    private static int gray(final int luma) {
-        return Math.round(MathUtil.clamp((luma / 255f * 1.16438f - 0.07306f) * 255f, 0f, 255f));
+    @Test
+    @DisplayName("Gray frames stay full range unless tagged otherwise")
+    void grayIsFullRange() {
+        final ByteBuffer gray = YuvFrames.plane(0, 2, 1, (row, col) -> col == 0 ? 16 : 235);
+        final ByteBuffer rgba = convert(PixelFormat.GRAY, 2, 1, 8, null, new ByteBuffer[] { gray });
+        assertEquals(16, rgba.get(0) & 0xFF, "full-range black level");
+        assertEquals(235, rgba.get(4) & 0xFF, "full-range near white");
     }
 
-    // A PLANE OF rows ROWS OF rowBytes BYTES stride APART (0 = TIGHT), ENDING RIGHT AFTER ITS LAST ROW
-    private static ByteBuffer plane(final int stride, final int rowBytes, final int rows, final IntBinaryOperator sample) {
-        final int step = stride == 0 ? rowBytes : stride;
-        final ByteBuffer buffer = BufferUtils.createByteBuffer((rows - 1) * step + rowBytes);
-        for (int row = 0; row < rows; row++)
-            for (int col = 0; col < rowBytes; col++) buffer.put(row * step + col, (byte) sample.applyAsInt(row, col));
-        return buffer;
+    @Test
+    @DisplayName("Each matrix and range converts like the BT.601, BT.709 and BT.2020 formulas")
+    void matricesAndRanges() {
+        record Case(Matrix matrix, boolean full, double[] weights) {}
+        final Case[] cases = {
+                new Case(Matrix.BT601, false, BT601), new Case(Matrix.BT709, false, BT709),
+                new Case(Matrix.BT2020, false, BT2020), new Case(Matrix.BT709, true, BT709)
+        };
+        for (final Case c: cases) {
+            final Colorimetry color = new Colorimetry(c.matrix(), c.full(), true, false, Transfer.SDR, false);
+            final ByteBuffer rgba = convert(PixelFormat.YUV444P, 2, 2, 8, color, uniform(120, 90, 200));
+            final int[] expected = YuvFrames.rgb(c.weights()[0], c.weights()[1], c.full(), 8, 120, 90, 200);
+            assertPixels(expected, rgba, c.matrix() + (c.full() ? " full" : " limited"));
+        }
+    }
+
+    @Test
+    @DisplayName("Subsampled chroma sits centered or co-sited with the first luma column and row")
+    void chromaSiting() {
+        // ONE STRONG-BLUE CHROMA SAMPLE NEXT TO A ZERO ONE: THE BLUE OF EACH PIXEL REVEALS WHERE ITS CHROMA WAS SAMPLED
+        final int[] samples = { 255, 0 };
+        for (final boolean cosited: new boolean[] { false, true }) {
+            final Colorimetry horizontal = new Colorimetry(Matrix.BT601, false, cosited, false, Transfer.SDR, false);
+            final ByteBuffer wide = convert(PixelFormat.YUV420P, 4, 2, 8, horizontal, new ByteBuffer[] {
+                    YuvFrames.plane(0, 4, 2, (row, col) -> 128),
+                    YuvFrames.plane(0, 2, 1, (row, col) -> samples[col]),
+                    YuvFrames.plane(0, 2, 1, (row, col) -> 128) });
+            final Colorimetry vertical = new Colorimetry(Matrix.BT601, false, false, cosited, Transfer.SDR, false);
+            final ByteBuffer tall = convert(PixelFormat.YUV420P, 2, 4, 8, vertical, new ByteBuffer[] {
+                    YuvFrames.plane(0, 2, 4, (row, col) -> 128),
+                    YuvFrames.plane(0, 1, 2, (row, col) -> samples[row]),
+                    YuvFrames.plane(0, 1, 2, (row, col) -> 128) });
+            for (int i = 0; i < 4; i++) {
+                // CHROMA TEXEL COORDINATE OF LUMA PIXEL i: (i + 0.5) / 2 CENTERED, i / 2 + 0.5 CO-SITED
+                final double at = cosited ? i / 2.0 + 0.5 : (i + 0.5) / 2.0;
+                final int blue = YuvFrames.rgb(BT601[0], BT601[1], false, 8, 128, (int) Math.round(bilinear(samples, at)), 128)[2];
+                final String siting = cosited ? "co-sited" : "centered";
+                assertTrue(Math.abs((wide.get(i * 4 + 2) & 0xFF) - blue) <= 3, siting + " column " + i + ": " + (wide.get(i * 4 + 2) & 0xFF) + " vs " + blue);
+                assertTrue(Math.abs((tall.get(i * 8 + 2) & 0xFF) - blue) <= 3, siting + " row " + i + ": " + (tall.get(i * 8 + 2) & 0xFF) + " vs " + blue);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("PQ and HLG grays keep their SDR brightness below the knee and a 1000-nit peak lands on white")
+    void hdrTransfers() {
+        final int[] cases = { 100, 1_000 };
+        for (final int nits: cases) {
+            final int code = (int) Math.round(64 + YuvFrames.pq(nits) * 876);
+            final ByteBuffer rgba = convert(PixelFormat.YUV420P, 2, 2, 10, new Colorimetry(Matrix.BT2020, false, true, false, Transfer.PQ, true), gray10(code));
+            final int shown = rgba.get(0) & 0xFF;
+            if (nits == 1_000) assertTrue(shown >= 252, "PQ 1000 nits reaches white: " + shown);
+            else assertTrue(Math.abs(shown - YuvFrames.hdrGray(nits)) <= 3, "PQ " + nits + " nits: " + shown + " vs " + YuvFrames.hdrGray(nits));
+        }
+        final int code = (int) Math.round(64 + 0.5 * 876);
+        final ByteBuffer rgba = convert(PixelFormat.YUV420P, 2, 2, 10, new Colorimetry(Matrix.BT2020, false, true, false, Transfer.HLG, true), gray10(code));
+        final int expected = YuvFrames.hdrGray(YuvFrames.hlgNits(0.5));
+        assertTrue(Math.abs((rgba.get(0) & 0xFF) - expected) <= 3, "HLG half signal: " + (rgba.get(0) & 0xFF) + " vs " + expected);
+    }
+
+    @Test
+    @DisplayName("BT.2020 primaries map to the same BT.709 color")
+    void wideGamut() {
+        // A BT.709 COLOR (LINEAR 0.5, 0.3, 0.2) RE-EXPRESSED IN BT.2020 PRIMARIES (BT.2087), ENCODED WITH GAMMA 2.4
+        final double[] linear = { 0.5, 0.3, 0.2 };
+        final double r = 0.6274 * linear[0] + 0.3293 * linear[1] + 0.0433 * linear[2];
+        final double g = 0.0691 * linear[0] + 0.9195 * linear[1] + 0.0114 * linear[2];
+        final double b = 0.0164 * linear[0] + 0.0880 * linear[1] + 0.8956 * linear[2];
+        final int[] codes = YuvFrames.ycbcr(BT2020[0], BT2020[1], Math.pow(r, 1 / 2.4), Math.pow(g, 1 / 2.4), Math.pow(b, 1 / 2.4));
+        final Colorimetry color = new Colorimetry(Matrix.BT2020, false, true, false, Transfer.SDR, true);
+        final ByteBuffer rgba = convert(PixelFormat.YUV444P, 2, 2, 8, color, uniform(codes[0], codes[1], codes[2]));
+        final int[] expected = new int[3];
+        for (int c = 0; c < 3; c++) expected[c] = (int) Math.round(Math.pow(linear[c], 1 / 2.4) * 255);
+        assertPixels(expected, rgba, "BT.2020 to BT.709");
+    }
+
+    // UTILITY
+
+    // 8-BIT LIMITED-RANGE GRAY AS ANY MATRIX SHOWS IT (NEUTRAL CHROMA)
+    private static int gray(final int luma) {
+        return YuvFrames.rgb(BT601[0], BT601[1], false, 8, luma, 128, 128)[0];
+    }
+
+    // A 2x2 YUV444P FRAME OF ONE UNIFORM YCbCr SAMPLE
+    private static ByteBuffer[] uniform(final int y, final int cb, final int cr) {
+        return new ByteBuffer[] {
+                YuvFrames.plane(0, 2, 2, (row, col) -> y),
+                YuvFrames.plane(0, 2, 2, (row, col) -> cb),
+                YuvFrames.plane(0, 2, 2, (row, col) -> cr) };
+    }
+
+    // A 2x2 10-BIT YUV420P GRAY: LUMA code, NEUTRAL CHROMA
+    private static ByteBuffer[] gray10(final int code) {
+        return new ByteBuffer[] {
+                YuvFrames.plane16(2, 2, (row, col) -> code),
+                YuvFrames.plane16(1, 1, (row, col) -> 512),
+                YuvFrames.plane16(1, 1, (row, col) -> 512) };
+    }
+
+    // LINEAR FILTERING OF A ROW OF TEXELS AT A TEXEL COORDINATE, CLAMPED TO THE EDGES LIKE GL_CLAMP_TO_EDGE
+    private static double bilinear(final int[] texels, final double at) {
+        final double t = Math.max(0.0, Math.min(texels.length - 1.0, at - 0.5));
+        final int first = (int) Math.floor(t);
+        final int second = Math.min(first + 1, texels.length - 1);
+        return texels[first] + (texels[second] - texels[first]) * (t - first);
+    }
+
+    // CONVERTS ONE TIGHT FRAME ON A FRESH ENGINE (null COLOR = THE UNTAGGED GUESS) AND READS ITS RGBA BACK
+    private static ByteBuffer convert(final PixelFormat format, final int width, final int height, final int bits,
+                                      final Colorimetry color, final ByteBuffer[] planes) {
+        final GLEngine engine = MediaAPI.glEngine(null, null);
+        try {
+            assertTrue(color == null ? engine.format(format, width, height, bits) : engine.format(format, width, height, bits, color));
+            engine.upload(planes, new int[planes.length]);
+            return pixels(engine, width, height);
+        } finally {
+            engine.release();
+        }
+    }
+
+    // ASSERTS EVERY PIXEL OF A 2x2 RGBA FRAME SHOWS rgb WITHIN 3 CODES
+    private static void assertPixels(final int[] rgb, final ByteBuffer rgba, final String label) {
+        for (int p = 0; p < 4; p++) {
+            for (int c = 0; c < 3; c++) {
+                final int shown = rgba.get(p * 4 + c) & 0xFF;
+                assertTrue(Math.abs(shown - rgb[c]) <= 3, label + " pixel " + p + " channel " + c + ": " + shown + " vs " + rgb[c]);
+            }
+        }
     }
 
     // READS THE ENGINE'S RGBA TEXTURE BACK, ROW 0 FIRST

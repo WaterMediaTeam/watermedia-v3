@@ -50,7 +50,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
     }
 
     @Override
-    boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
+    boolean apply(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
         // DROP THE PREVIOUS SURFACE FIRST SO A FAILED ALLOCATION NEVER LEAVES A STALE IMAGE ON SCREEN
         this.framed = false;
         this.bgra = null;
@@ -70,7 +70,7 @@ public abstract sealed class SWEngine extends GFXEngine permits JFXEngine, AWTEn
             return false;
         }
         this.bgra = surface;
-        this.publish(format, width, height, bits);
+        this.publish(format, width, height, bits, color);
         return true;
     }
 

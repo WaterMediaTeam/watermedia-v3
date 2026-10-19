@@ -14,6 +14,7 @@ import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.ffmpeg.global.swresample;
 import org.bytedeco.ffmpeg.global.swscale;
 import org.bytedeco.javacpp.BytePointer;
+import org.bytedeco.javacpp.IntPointer;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.watermedia.WaterMediaConfig;
@@ -136,6 +137,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int swsInputFormat = AV_PIX_FMT_NONE;
     private int swsInputWidth;
     private int swsInputHeight;
+    private Colorimetry swsColor; // COLORIMETRY THE CURRENT CONTEXT CONVERTS TO BGRA WITH, null UNTIL SET
 
     // STREAM INDEXES
     private int videoStreamIndex = -1;
@@ -221,6 +223,12 @@ public final class FFMediaPlayer extends MediaPlayer {
     private int lastFrameHeight;
     private PixelFormat lastFormat;
     private int lastBitsPerComponent;
+    private Colorimetry lastColor;
+    // TAGS, FORMAT AND SIZE OF THE LAST MAPPED FRAME: THE COLOR MAPPING RE-RUNS ONLY WHEN ONE OF THEM CHANGES
+    private long colorTags = -1L;
+    private int colorWidth;
+    private int colorHeight;
+    private Colorimetry frameColor;
     private boolean uploadRefused; // THE ENGINE REFUSED THE LAST LAYOUT: FRAMES DROP UNTIL IT CHANGES
     // FFTool.Pixels CACHE (CONSUME THREAD ONLY): THE STREAM PIXEL FORMAT IS STABLE, SO MAP ONCE PER
     // FORMAT CHANGE INSTEAD OF ALLOCATING A MAPPING EVERY FRAME IN THE UPLOAD HOT PATH.
@@ -603,6 +611,34 @@ public final class FFMediaPlayer extends MediaPlayer {
         return null;
     }
 
+    // MAPS THE COLOR TAGS OF A FRAME OR STREAM; WHAT IT LEAVES UNSPECIFIED FALLS BACK TO Colorimetry.guess. GRAY OF ANY DEPTH
+    // (ALPHA INCLUDED) AND THE LEGACY YUVJ LAYOUTS DEFAULT TO FULL RANGE, AS SWSCALE TREATS THEM
+    private static Colorimetry colorimetry(final int avFormat, final int width, final int height, final int space,
+                                           final int range, final int location, final int transfer, final int primaries) {
+        final AVPixFmtDescriptor desc = av_pix_fmt_desc_get(avFormat);
+        final boolean gray = !FFTool.isNull(desc) && desc.nb_components() > 0 && desc.nb_components() <= 2
+                && (desc.flags() & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_HWACCEL)) == 0;
+        final Colorimetry guess = Colorimetry.guess(gray ? PixelFormat.GRAY : null, width, height);
+        final Colorimetry.Matrix matrix = switch (space) {
+            case AVCOL_SPC_BT709, AVCOL_SPC_SMPTE240M -> Colorimetry.Matrix.BT709;
+            case AVCOL_SPC_BT470BG, AVCOL_SPC_SMPTE170M, AVCOL_SPC_FCC -> Colorimetry.Matrix.BT601;
+            case AVCOL_SPC_BT2020_NCL, AVCOL_SPC_BT2020_CL -> Colorimetry.Matrix.BT2020;
+            default -> guess.matrix();
+        };
+        final boolean jpeg = avFormat == AV_PIX_FMT_YUVJ420P || avFormat == AV_PIX_FMT_YUVJ422P || avFormat == AV_PIX_FMT_YUVJ444P
+                || avFormat == AV_PIX_FMT_YUVJ411P || avFormat == AV_PIX_FMT_YUVJ440P;
+        final boolean full = range == AVCOL_RANGE_JPEG || range != AVCOL_RANGE_MPEG && (jpeg || guess.full());
+        final boolean tagged = location != AVCHROMA_LOC_UNSPECIFIED;
+        final boolean cositedX = tagged
+                ? location == AVCHROMA_LOC_LEFT || location == AVCHROMA_LOC_TOPLEFT || location == AVCHROMA_LOC_BOTTOMLEFT
+                : guess.cositedX();
+        final boolean cositedY = tagged ? location == AVCHROMA_LOC_TOPLEFT || location == AVCHROMA_LOC_TOP : guess.cositedY();
+        final Colorimetry.Transfer curve = transfer == AVCOL_TRC_SMPTE2084 ? Colorimetry.Transfer.PQ
+                : transfer == AVCOL_TRC_ARIB_STD_B67 ? Colorimetry.Transfer.HLG : Colorimetry.Transfer.SDR;
+        final boolean wide = primaries == AVCOL_PRI_BT2020 || primaries == AVCOL_PRI_UNSPECIFIED && matrix == Colorimetry.Matrix.BT2020;
+        return new Colorimetry(matrix, full, cositedX, cositedY, curve, wide);
+    }
+
     // COPIES AVFRAME PLANE DATA TO A POOLED BUFFER SET, THEN UPLOADS TO GFXENGINE. THE COPY IS NECESSARY BECAUSE GLENGINE MAY DISPATCH THE UPLOAD TO THE RENDER THREAD ASYNCHRONOUSLY, BUT THE AVFRAME DATA IS RECYCLED BY FRAMEQUEUE.NEXT(). STRIDES ARE PASSED IN BYTES (FFMPEG LINESIZE CONVENTION).
     private void uploadNativePlanes(final AVFrame frame, final PixelFormat cs, final int height) {
         // QUERY THE ENGINE'S BUFFER ALIGNMENT ONCE — NON-ZERO ASKS FOR PAGE-ALIGNED POOLS SO A ZERO-COPY ENGINE CAN IMPORT THE HOST POINTER
@@ -656,7 +692,7 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     // LAZY-INIT SWS RESOURCES FOR FORMAT CONVERSION AND/OR DOWNSCALE. RETURNS FALSE IF INIT FAILS.
     private boolean ensureScaler(final int srcWidth, final int srcHeight, final int srcFormat,
-                                 final int dstWidth, final int dstHeight, final int dstFormat) {
+                                 final int dstWidth, final int dstHeight, final int dstFormat, final Colorimetry color) {
         // ALLOCATE THE DESTINATION FRAME ON FIRST USE (OR TARGET CHANGE).
         // TRACK THE REALLOCATION — COMPARING scaledFrame PROPERTIES BELOW WOULD
         // ALWAYS MATCH AFTER THE REALLOC, LEAVING A STALE SWS CONTEXT CONFIGURED
@@ -686,6 +722,18 @@ public final class FFMediaPlayer extends MediaPlayer {
             this.recreateSwsContext(srcWidth, srcHeight, srcFormat, dstWidth, dstHeight, dstFormat);
         }
 
+        // BGRA OUTPUT NEEDS THE SOURCE MATRIX AND RANGE, OR SWS CONVERTS EVERY YUV FRAME AS BT.601; IT CANNOT TONE MAP, SO
+        // HDR REACHES SOFTWARE ENGINES UNMAPPED. YUV OUTPUT KEEPS ITS SAMPLES AND THE ENGINE CONVERTS THEM
+        if (this.swsContext != null && dstFormat == AV_PIX_FMT_BGRA && !color.equals(this.swsColor)) {
+            final IntPointer coefficients = swscale.sws_getCoefficients(switch (color.matrix()) {
+                case BT601 -> swscale.SWS_CS_ITU601;
+                case BT709 -> swscale.SWS_CS_ITU709;
+                case BT2020 -> swscale.SWS_CS_BT2020;
+            });
+            final int details = swscale.sws_setColorspaceDetails(this.swsContext, coefficients, color.full() ? 1 : 0, coefficients, 1, 0, 1 << 16, 1 << 16);
+            if (details < 0) LOGGER.warn(IT, "The scaler refused {} (code {}) and keeps its default colorimetry", color, details);
+            this.swsColor = color;
+        }
         return this.swsContext != null;
     }
 
@@ -991,6 +1039,18 @@ public final class FFMediaPlayer extends MediaPlayer {
                         AVFrame uploadFrame = slot.frame;
                         int uploadW = slot.width;
                         int uploadH = slot.height;
+                        // THE TAGS RARELY CHANGE: PACKED WITH THE FORMAT (12 BITS EACH, 4 FOR RANGE AND SITING) THEY GATE THE REMAP
+                        final long tags = (slot.format & 0xFFFL) | (uploadFrame.colorspace() & 0xFFFL) << 12
+                                | (uploadFrame.color_range() & 0xFL) << 24 | (uploadFrame.chroma_location() & 0xFL) << 28
+                                | (uploadFrame.color_trc() & 0xFFFL) << 32 | (uploadFrame.color_primaries() & 0xFFFL) << 44;
+                        if (tags != this.colorTags || slot.width != this.colorWidth || slot.height != this.colorHeight) {
+                            this.frameColor = colorimetry(slot.format, slot.width, slot.height, uploadFrame.colorspace(),
+                                    uploadFrame.color_range(), uploadFrame.chroma_location(), uploadFrame.color_trc(), uploadFrame.color_primaries());
+                            this.colorTags = tags;
+                            this.colorWidth = slot.width;
+                            this.colorHeight = slot.height;
+                        }
+                        final Colorimetry color = this.frameColor;
 
                         final long workStart = System.nanoTime();
                         if (mapping == null || targetW != slot.width || targetH != slot.height) {
@@ -999,7 +1059,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                             // UNSUPPORTED OUTPUTS CONVERT TO BGRA INSTEAD.
                             final int dstFormat = mapping != null && swscale.sws_isSupportedOutput(slot.format) != 0
                                     ? slot.format : AV_PIX_FMT_BGRA;
-                            if (this.ensureScaler(slot.width, slot.height, slot.format, targetW, targetH, dstFormat)) {
+                            if (this.ensureScaler(slot.width, slot.height, slot.format, targetW, targetH, dstFormat, color)) {
                                 final int result = swscale.sws_scale(
                                         this.swsContext,
                                         slot.frame.data(),
@@ -1034,17 +1094,21 @@ public final class FFMediaPlayer extends MediaPlayer {
                             // SCALER UNAVAILABLE BUT THE FORMAT UPLOADS NATIVELY — DEGRADE TO SOURCE SIZE
                         }
 
-                        // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine; A REFUSED LAYOUT DROPS FRAMES UNTIL IT CHANGES
+                        // FORMAT CHANGE DETECTION — RECONFIGURE GFXEngine; A REFUSED LAYOUT DROPS FRAMES UNTIL IT CHANGES. RGB
+                        // LAYOUTS UPLOAD AS THEY ARE, SO ONLY YUV AND GRAY RECONFIGURE ON A COLOR CHANGE
+                        final boolean tinted = mapping.format() != PixelFormat.BGRA && mapping.format() != PixelFormat.RGBA
+                                && mapping.format() != PixelFormat.RGB;
                         if (mapping.format() != this.lastFormat || mapping.bits() != this.lastBitsPerComponent
-                                || uploadW != this.lastFrameWidth || uploadH != this.lastFrameHeight) {
-                            this.uploadRefused = !this.gfx.format(mapping.format(), uploadW, uploadH, mapping.bits());
+                                || uploadW != this.lastFrameWidth || uploadH != this.lastFrameHeight || tinted && !color.equals(this.lastColor)) {
+                            this.uploadRefused = !this.gfx.format(mapping.format(), uploadW, uploadH, mapping.bits(), color);
                             this.lastFormat = mapping.format();
                             this.lastBitsPerComponent = mapping.bits();
                             this.lastFrameWidth = uploadW;
                             this.lastFrameHeight = uploadH;
+                            this.lastColor = color;
                             if (!this.uploadRefused)
-                                LOGGER.debug(IT, "GFX format: {} {}x{} {}bit (source={}x{})",
-                                        mapping.format(), uploadW, uploadH, mapping.bits(), slot.width, slot.height);
+                                LOGGER.debug(IT, "GFX format: {} {}x{} {}bit {} (source={}x{})",
+                                        mapping.format(), uploadW, uploadH, mapping.bits(), color, slot.width, slot.height);
                             else if (!this.refusedWarned) {
                                 this.refusedWarned = true;
                                 LOGGER.error(IT, "Graphics engine refused {} {}x{} {}bit; frames are dropped until the layout changes",
@@ -1515,6 +1579,10 @@ public final class FFMediaPlayer extends MediaPlayer {
                             }
                             hwFailStreak = 0;
                             frameToQueue = hwTransfer;
+                            // THE GPU COPY CARRIES PIXELS ONLY, SO THE COLOR TAGS COME FROM THE DECODED FRAME
+                            hwTransfer.colorspace(tempFrame.colorspace()).color_range(tempFrame.color_range())
+                                    .chroma_location(tempFrame.chroma_location()).color_trc(tempFrame.color_trc())
+                                    .color_primaries(tempFrame.color_primaries());
 
                             // SOME DRIVERS (NOTABLY AMD D3D11VA) DECODE FINE BUT STALL ON
                             // THE GPU→CPU COPY — IF THE TRANSFER ALONE EATS THE FRAME
@@ -2570,11 +2638,15 @@ public final class FFMediaPlayer extends MediaPlayer {
             // THE FIRST FRAME DOESN'T PAY AN EXTRA RECONFIGURATION
             final int targetW = scaled(w, this.scaleWidth, this.lod.percent());
             final int targetH = scaled(h, this.scaleHeight, this.lod.percent());
-            this.uploadRefused = !this.gfx.format(initialMapping.format(), targetW, targetH, initialMapping.bits());
+            final AVCodecContext ctx = this.videoCodecContext;
+            final Colorimetry color = colorimetry(ctx.pix_fmt(), w, h, ctx.colorspace(), ctx.color_range(),
+                    ctx.chroma_sample_location(), ctx.color_trc(), ctx.color_primaries());
+            this.uploadRefused = !this.gfx.format(initialMapping.format(), targetW, targetH, initialMapping.bits(), color);
             this.lastFormat = initialMapping.format();
             this.lastBitsPerComponent = initialMapping.bits();
             this.lastFrameWidth = targetW;
             this.lastFrameHeight = targetH;
+            this.lastColor = color;
         }
 
         return true;
@@ -2866,6 +2938,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             swscale.sws_freeContext(this.swsContext);
             this.swsContext = null;
         }
+        this.swsColor = null;
 
         // SWS_AREA AVERAGES THE WHOLE SOURCE BLOCK PER OUTPUT PIXEL — THE RIGHT
         // QUALITY/COST TRADE FOR STRONG LOD DOWNSCALES; PURE FORMAT CONVERSIONS
@@ -2907,6 +2980,7 @@ public final class FFMediaPlayer extends MediaPlayer {
             swscale.sws_freeContext(this.swsContext);
             this.swsContext = null;
         }
+        this.swsColor = null;
         if (this.swrContext != null) {
             swresample.swr_free(this.swrContext);
             this.swrContext = null;
@@ -2954,6 +3028,8 @@ public final class FFMediaPlayer extends MediaPlayer {
         // SAFETY NET — IDEMPOTENT.
         this.freePlanePool();
         this.lastFormat = null;
+        this.lastColor = null;
+        this.colorTags = -1L;
         this.uploadRefused = false;
         this.lastBitsPerComponent = 0;
 

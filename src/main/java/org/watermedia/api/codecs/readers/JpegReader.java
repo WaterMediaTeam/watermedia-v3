@@ -738,8 +738,8 @@ public final class JpegReader extends ImageReader {
         if (this.components == null) throw new CodecException("JPEG frame header not found");
         for (final Component component: this.components) this.buildComponent(component);
 
-        // GRAYSCALE STAYS ONE FULL-RANGE LUMA BYTE PER PIXEL UNLESS BGRA WAS ASKED FOR; COLOR IS CONVERTED HERE
-        // BECAUSE JPEG IS FULL-RANGE BT.601 WHILE THE GPU SHADERS EXPAND PLANAR YUV AS BT.709 STUDIO RANGE
+        // GRAYSCALE STAYS ONE FULL-RANGE LUMA BYTE PER PIXEL UNLESS BGRA WAS ASKED FOR; COLOR (FULL-RANGE BT.601) IS
+        // CONVERTED HERE BECAUSE PICTURE DECODERS HAND OUT BGRA OR GRAY, NEVER PLANAR YUV
         final boolean gray = this.components.length == 1;
         this.outputFormat = gray && this.requestedFormat != PixelFormat.BGRA ? PixelFormat.GRAY : PixelFormat.BGRA;
         this.directOut = ByteBuffer.allocateDirect(this.width * this.height * (this.outputFormat == PixelFormat.GRAY ? 1 : 4))

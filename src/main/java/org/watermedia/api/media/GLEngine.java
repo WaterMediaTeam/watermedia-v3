@@ -77,72 +77,9 @@ public final class GLEngine extends GFXEngine {
             }
             """;
 
-    // EVERY FRAGMENT SHADER SHARES ONE UNIFORM SCHEME — plane0..plane3, bitScale, uvSwap,
-    // outputWidth — SO A SINGLE COMPILE/BIND PATH SERVES ALL OF THEM: LOCATIONS A PROGRAM DOESN'T
-    // DECLARE RESOLVE TO -1, WHICH glUniform* SILENTLY IGNORES (GL SPEC). ALL YUV MATH IS BT.709
-    // STUDIO RANGE, MIRRORED EXACTLY BY VKEngine's COMPUTE SHADER.
-
-    // GRAY → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
-    private static final String FRAGMENT_GRAY = """
-            #version 150 core
-            in vec2 texCoord;
-            out vec4 fragColor;
-            uniform sampler2D plane0;
-            uniform float bitScale;
-            void main() {
-                float luma = texture(plane0, texCoord).r * bitScale;
-                fragColor = vec4(luma, luma, luma, 1.0);
-            }
-            """;
-
-    // NV12/NV21/P010/P016 → RGB
-    // plane0: GL_R8/R16 — FULL RESOLUTION — .r = Y
-    // plane1: GL_RG8/RG16 — HALF RES — .r = first byte, .g = second byte
-    // uvSwap: 0.0 = NV12 (BYTE ORDER U,V), 1.0 = NV21 (BYTE ORDER V,U)
-    private static final String FRAGMENT_NV = """
-            #version 150 core
-            in vec2 texCoord;
-            out vec4 fragColor;
-            uniform sampler2D plane0;
-            uniform sampler2D plane1;
-            uniform float uvSwap;
-            uniform float bitScale;
-            void main() {
-                float Y  = texture(plane0, texCoord).r * bitScale * 1.16438 - 0.07306;
-                vec2 raw = texture(plane1, texCoord).rg * bitScale;
-                float Cb = mix(raw.x, raw.y, uvSwap) * 1.13839 - 0.57143;
-                float Cr = mix(raw.y, raw.x, uvSwap) * 1.13839 - 0.57143;
-                fragColor = vec4(
-                    Y + 1.5748 * Cr,
-                    Y - 0.1873 * Cb - 0.4681 * Cr,
-                    Y + 1.8556 * Cb,
-                    1.0);
-            }
-            """;
-
-    // YUV 3-PLANAR → RGB
-    private static final String FRAGMENT_YUV3 = """
-            #version 150 core
-            in vec2 texCoord;
-            out vec4 fragColor;
-            uniform sampler2D plane0;
-            uniform sampler2D plane1;
-            uniform sampler2D plane2;
-            uniform float bitScale;
-            void main() {
-                float Y  = texture(plane0, texCoord).r * bitScale * 1.16438 - 0.07306;
-                float Cb = texture(plane1, texCoord).r * bitScale * 1.13839 - 0.57143;
-                float Cr = texture(plane2, texCoord).r * bitScale * 1.13839 - 0.57143;
-                fragColor = vec4(
-                    Y + 1.5748 * Cr,
-                    Y - 0.1873 * Cb - 0.4681 * Cr,
-                    Y + 1.8556 * Cb,
-                    1.0);
-            }
-            """;
-
-    // YUVA 4-PLANAR → RGBA (WITH ALPHA)
-    private static final String FRAGMENT_YUVA = """
+    // ONE HEADER FOR EVERY FRAGMENT SHADER, SO ONE BIND PATH SERVES ALL: UNREAD UNIFORMS RESOLVE TO -1, WHICH glUniform* IGNORES.
+    // THE COLOR MATH IS Colorimetry.GLSL, SHARED WITH VKEngine; CHROMA SAMPLES AT texCoord * colorimetry[2].xy + .zw (SITING)
+    private static final String FRAGMENT_HEADER = """
             #version 150 core
             in vec2 texCoord;
             out vec4 fragColor;
@@ -151,28 +88,55 @@ public final class GLEngine extends GFXEngine {
             uniform sampler2D plane2;
             uniform sampler2D plane3;
             uniform float bitScale;
+            uniform float uvSwap;
+            uniform float outputWidth;
+            uniform vec4 colorimetry[4];
+            """ + Colorimetry.GLSL;
+
+    // GRAY → RGB — SINGLE LUMA PLANE TO GRAYSCALE RGBA
+    private static final String FRAGMENT_GRAY = FRAGMENT_HEADER + """
             void main() {
-                float Y  = texture(plane0, texCoord).r * bitScale * 1.16438 - 0.07306;
-                float Cb = texture(plane1, texCoord).r * bitScale * 1.13839 - 0.57143;
-                float Cr = texture(plane2, texCoord).r * bitScale * 1.13839 - 0.57143;
-                float A  = texture(plane3, texCoord).r * bitScale;
-                fragColor = vec4(
-                    Y + 1.5748 * Cr,
-                    Y - 0.1873 * Cb - 0.4681 * Cr,
-                    Y + 1.8556 * Cb,
-                    A);
+                float luma = texture(plane0, texCoord).r * bitScale * colorimetry[0].x - colorimetry[0].y;
+                fragColor = vec4(display(vec3(luma), colorimetry[3]), 1.0);
+            }
+            """;
+
+    // NV12/NV21/P010/P016 → RGB
+    // plane0: GL_R8/R16 — FULL RESOLUTION — .r = Y
+    // plane1: GL_RG8/RG16 — HALF RES — .r = first byte, .g = second byte
+    // uvSwap: 0.0 = NV12 (BYTE ORDER U,V), 1.0 = NV21 (BYTE ORDER V,U)
+    private static final String FRAGMENT_NV = FRAGMENT_HEADER + """
+            void main() {
+                vec2 raw = texture(plane1, texCoord * colorimetry[2].xy + colorimetry[2].zw).rg * bitScale;
+                vec3 rgb = ycbcr(texture(plane0, texCoord).r * bitScale, mix(raw.x, raw.y, uvSwap), mix(raw.y, raw.x, uvSwap),
+                        colorimetry[0], colorimetry[1]);
+                fragColor = vec4(display(rgb, colorimetry[3]), 1.0);
+            }
+            """;
+
+    // YUV 3-PLANAR → RGB
+    private static final String FRAGMENT_YUV3 = FRAGMENT_HEADER + """
+            void main() {
+                vec2 chroma = texCoord * colorimetry[2].xy + colorimetry[2].zw;
+                vec3 rgb = ycbcr(texture(plane0, texCoord).r * bitScale, texture(plane1, chroma).r * bitScale,
+                        texture(plane2, chroma).r * bitScale, colorimetry[0], colorimetry[1]);
+                fragColor = vec4(display(rgb, colorimetry[3]), 1.0);
+            }
+            """;
+
+    // YUVA 4-PLANAR → RGBA (WITH ALPHA, ALWAYS FULL RANGE AT FULL RESOLUTION)
+    private static final String FRAGMENT_YUVA = FRAGMENT_HEADER + """
+            void main() {
+                vec2 chroma = texCoord * colorimetry[2].xy + colorimetry[2].zw;
+                vec3 rgb = ycbcr(texture(plane0, texCoord).r * bitScale, texture(plane1, chroma).r * bitScale,
+                        texture(plane2, chroma).r * bitScale, colorimetry[0], colorimetry[1]);
+                fragColor = vec4(display(rgb, colorimetry[3]), texture(plane3, texCoord).r * bitScale);
             }
             """;
 
     // YUYV/UYVY PACKED YUV422 → RGB. THE RGBA8 TEXTURE HOLDS ONE PIXEL PAIR PER TEXEL, ceil(WIDTH/2) WIDE; EACH PIXEL
     // FETCHES ITS PAIR BY INDEX, SINCE NORMALIZED SAMPLING DRIFTS TO THE NEXT PAIR ON ODD WIDTHS
-    private static final String FRAGMENT_YUYV = """
-            #version 150 core
-            in vec2 texCoord;
-            out vec4 fragColor;
-            uniform sampler2D plane0;
-            uniform float outputWidth;
-            uniform float uvSwap;
+    private static final String FRAGMENT_YUYV = FRAGMENT_HEADER + """
             void main() {
                 int px = int(texCoord.x * outputWidth);
                 vec4 pair = texelFetch(plane0, ivec2(px >> 1, int(texCoord.y * float(textureSize(plane0, 0).y))), 0);
@@ -181,14 +145,8 @@ public final class GLEngine extends GFXEngine {
                 float Cb = mix(pair.g, pair.r, uvSwap);
                 float Y1 = mix(pair.b, pair.a, uvSwap);
                 float Cr = mix(pair.a, pair.b, uvSwap);
-                float Y = mix(Y0, Y1, isOdd) * 1.16438 - 0.07306;
-                Cb = Cb * 1.13839 - 0.57143;
-                Cr = Cr * 1.13839 - 0.57143;
-                fragColor = vec4(
-                    Y + 1.5748 * Cr,
-                    Y - 0.1873 * Cb - 0.4681 * Cr,
-                    Y + 1.8556 * Cb,
-                    1.0);
+                vec3 rgb = ycbcr(mix(Y0, Y1, isOdd), Cb, Cr, colorimetry[0], colorimetry[1]);
+                fragColor = vec4(display(rgb, colorimetry[3]), 1.0);
             }
             """;
 
@@ -200,8 +158,8 @@ public final class GLEngine extends GFXEngine {
     private static final int CONV_YUVA = 3;
     private static final int CONV_YUYV = 4;
     private static final String[] FRAGMENTS = { FRAGMENT_GRAY, FRAGMENT_NV, FRAGMENT_YUV3, FRAGMENT_YUVA, FRAGMENT_YUYV };
-    // UNIFORM SLOTS PER PROGRAM: [plane0..plane3, bitScale, uvSwap, outputWidth]
-    private static final String[] UNIFORMS = { "plane0", "plane1", "plane2", "plane3", "bitScale", "uvSwap", "outputWidth" };
+    // UNIFORM SLOTS PER PROGRAM: [plane0..plane3, bitScale, uvSwap, outputWidth, colorimetry]
+    private static final String[] UNIFORMS = { "plane0", "plane1", "plane2", "plane3", "bitScale", "uvSwap", "outputWidth", "colorimetry" };
 
     // ONE DRAIN HUB PER RENDER THREAD (ONE BATCHED TASK/FRAME IN ONE ENVELOPE); ORPHANS, KEYED
     // BY GLCapabilities IDENTITY, HOLDS EXPOSED TEXTURE NAMES AWAITING PROVABLY-SAFE DELETION.
@@ -276,8 +234,9 @@ public final class GLEngine extends GFXEngine {
     private boolean strideWarned;        // RENDER THREAD ONLY
     private boolean glErrorWarned;       // RENDER THREAD ONLY
 
-    // BIT DEPTH DERIVED STATE (SET IN format())
+    // BIT DEPTH AND COLOR DERIVED STATE (SET IN format())
     private float bitScale = 1.0f;
+    private float[] colorimetry;
     private int glInternalR = GL30.GL_R8;    // R8 / R16 / R32F
     private int glInternalRG = GL30.GL_RG8;  // RG8 / RG16
     private int glType = GL11.GL_UNSIGNED_BYTE; // UNSIGNED_BYTE / UNSIGNED_SHORT / FLOAT
@@ -479,17 +438,17 @@ public final class GLEngine extends GFXEngine {
     // RESETS THE PIPELINE FOR A NEW FORMAT (PLANE TEXTURES, PBOs, RING; SHADERS CACHED PER KIND, MANAGED TEXTURE REALLOCATED
     // ON THE NEXT UPLOAD). DEFERRED TO THE RENDER THREAD, SO width()/height() LAG: PRODUCERS TRACK THEIR OWN SIZE
     @Override
-    boolean apply(final PixelFormat format, final int width, final int height, final int bits) {
+    boolean apply(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
         this.req = new Req(format, width, height);
         if (this.renderThread != null && this.renderThread != Thread.currentThread()) {
-            this.renderThreadEx.execute(() -> this.applyNow(format, width, height, bits));
+            this.renderThreadEx.execute(() -> this.applyNow(format, width, height, bits, color));
             return true;
         }
-        this.applyNow(format, width, height, bits);
+        this.applyNow(format, width, height, bits, color);
         return true;
     }
 
-    private void applyNow(final PixelFormat format, final int width, final int height, final int bits) {
+    private void applyNow(final PixelFormat format, final int width, final int height, final int bits, final Colorimetry color) {
         if (this.released) return; // A RELEASE OVERTOOK THE DEFERRED TASK
 
         // RELEASE FORMAT-SPECIFIC RESOURCES
@@ -510,6 +469,7 @@ public final class GLEngine extends GFXEngine {
 
         // DERIVE BIT DEPTH STATE: 10 AND 12-BIT SAMPLES LIVE IN 16-BIT TEXELS, STRETCHED BY bitScale IN THE SHADER
         this.bitScale = bitScale(bits);
+        this.colorimetry = color.constants(format, width, height, bits);
         switch (bits) {
             case 10, 12, 16 -> {
                 this.glInternalR = GL30.GL_R16;
@@ -529,7 +489,7 @@ public final class GLEngine extends GFXEngine {
         }
 
         // PUBLISH THE LAYOUT THEN BUILD THE PLANE LAYOUT FOR THE NEW FORMAT
-        this.publish(format, width, height, bits);
+        this.publish(format, width, height, bits, color);
         this.buildPlanes();
         this.activePlanes = this.planes.length;
 
@@ -942,6 +902,7 @@ public final class GLEngine extends GFXEngine {
         GL20.glUniform1f(locs[4], this.bitScale);
         GL20.glUniform1f(locs[5], this.format == PixelFormat.NV21 || this.format == PixelFormat.UYVY ? 1.0f : 0.0f);
         GL20.glUniform1f(locs[6], (float) this.width);
+        GL20.glUniform4fv(locs[7], this.colorimetry);
 
         GL30.glBindVertexArray(this.quadVAO);
         GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
