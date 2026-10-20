@@ -14,13 +14,12 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link ServerMediaPlayer}, the headless wall-clock sync authority. Its contract
- * (start/pause/seek/speed/repeat and the shared-ticker ENDED transition) is pure-Java and
- * deterministic; a regression here desyncs every client that trusts it.
+ * Verifies {@link ServerMediaPlayer}, the headless wall clock whose snapshots players follow. Its contract
+ * (start/pause/seek/speed/repeat, snapshots, release and the shared-ticker ENDED transition) is pure-Java
+ * and deterministic; a regression here desyncs every player that follows it.
  */
 @DisplayName("ServerMediaPlayer")
 public class ServerMediaPlayerTest {
@@ -39,19 +38,6 @@ public class ServerMediaPlayerTest {
     @Nested
     @DisplayName("Controls")
     class Controls {
-
-        @Test
-        @DisplayName("follower timeout rejects nanosecond overflow without changing the prior value")
-        void followerTimeoutRejectsOverflow() {
-            final ServerMediaPlayer player = ServerMediaPlayerTest.this.authority();
-            final long maximum = Long.MAX_VALUE / 1_000_000L;
-            player.followerTimeout(maximum);
-            assertEquals(maximum, player.followerTimeout());
-            assertThrows(IllegalArgumentException.class, () -> player.followerTimeout(maximum + 1));
-            assertEquals(maximum, player.followerTimeout());
-            assertThrows(IllegalArgumentException.class, () -> player.followerTimeout(Long.MAX_VALUE));
-            assertEquals(maximum, player.followerTimeout());
-        }
 
         @Test
         @DisplayName("start() plays and time advances with the wall clock")
@@ -158,6 +144,12 @@ public class ServerMediaPlayerTest {
             r = player.revision();
             assertTrue(player.seek(5_000L));
             assertTrue(player.revision() > r);
+
+            // VOLUME AND MUTE ARE LOCAL TO EVERY PLAYER, SO THERE IS NOTHING TO SEND
+            r = player.revision();
+            player.volume(40);
+            player.mute(true);
+            assertEquals(r, player.revision(), "volume and mute must not bump the revision");
         }
 
         @Test
@@ -351,7 +343,7 @@ public class ServerMediaPlayerTest {
             assertEquals(Status.PLAYING, player.status(), "a live clock never ends");
             final Sync snapshot = player.snapshot();
             assertEquals(Long.MAX_VALUE, snapshot.time());
-            assertEquals(snapshot, Packet.read(snapshot.toBytes()), "the saturated snapshot still crosses the wire");
+            assertEquals(snapshot, Sync.read(snapshot.toBytes()), "the saturated snapshot still crosses the wire");
         }
     }
 
@@ -388,7 +380,7 @@ public class ServerMediaPlayerTest {
             player.start();
             final int revision = player.revision();
 
-            // A WRAP REBASES THE TIMELINE AND BUMPS THE REVISION SO THE PROXY RE-BROADCASTS
+            // A WRAP REBASES THE TIMELINE AND BUMPS THE REVISION SO THE HOST RESENDS THE SNAPSHOT
             assertTrue(PlayerWait.awaitCondition(() -> player.revision() > revision, ENDED_TIMEOUT_MS), "loop wraps must bump the revision");
             // ACROSS SEVERAL LOOP PERIODS THE CLOCK STAYS PLAYING AND WRAPS WITHIN [0, duration)
             assertFalse(PlayerWait.awaitStatus(player, 400L, Status.ENDED));
@@ -396,63 +388,6 @@ public class ServerMediaPlayerTest {
             assertFalse(player.ended());
             assertTrue(player.time() < 120L, "repeat time() must wrap under the duration, was " + player.time());
             assertEquals(Status.PLAYING, cap.to, "no terminal transition is published while looping, only the start");
-        }
-    }
-
-    @Nested
-    @DisplayName("Followers")
-    class Followers {
-
-        @Test
-        @DisplayName("A solo clock ignores follower traffic and never enrolls anyone")
-        void testSoloIgnoresUpstream() {
-            final ServerMediaPlayer player = ServerMediaPlayerTest.this.solo();
-            player.sync(new Watch(7L));
-            player.sync(new Report(7L, Status.PLAYING, 60_000L, true));
-            assertEquals(0, player.followers());
-            assertEquals(0L, player.duration(), "a solo clock must not learn facts from strangers");
-            assertTrue(player.canSpeed(), "nor latch their live flag");
-        }
-
-        @Test
-        @DisplayName("A late report behind an Unwatch does not re-enroll the departed follower")
-        void testLateReportAfterUnwatch() {
-            final ServerMediaPlayer player = ServerMediaPlayerTest.this.authority();
-            player.sync(new Watch(9L));
-            assertEquals(1, player.followers());
-            player.sync(new Unwatch(9L));
-            player.sync(new Report(9L, Status.PLAYING, 60_000L, false));
-            assertEquals(0, player.followers(), "the keepalive that overtook its own Unwatch must be ignored");
-            // AN EXPLICIT HELLO IS A REJOIN
-            player.sync(new Watch(9L));
-            assertEquals(1, player.followers());
-        }
-
-        @Test
-        @DisplayName("A follower that has not opened its source contributes no duration or live flag, and live latches one way")
-        void testUnopenedReportsCarryNoFacts() {
-            final ServerMediaPlayer player = ServerMediaPlayerTest.this.authority();
-            player.sync(new Watch(3L));
-            player.sync(new Report(3L, Status.WAITING, 60_000L, true));
-            player.sync(new Report(3L, Status.LOADING, 60_000L, true));
-            assertEquals(1, player.followers());
-            assertEquals(0L, player.duration(), "an unopened player knows no duration");
-            assertFalse(player.live(), "a wrong live latch would kill speed, seeking and every correction for the session");
-            assertTrue(player.canSpeed());
-
-            // A PLAYING CLIENT THAT KNOWS NO DURATION YET LEAVES THE TIMELINE CLOSED WITHOUT MARKING THE SESSION LIVE
-            player.sync(new Report(3L, Status.PLAYING, 0L, false));
-            assertEquals(0L, player.duration());
-            assertFalse(player.live());
-            assertFalse(player.canSeek(), "there is no timeline to seek yet");
-            assertTrue(player.canSpeed());
-
-            player.sync(new Report(3L, Status.PLAYING, 60_000L, true));
-            assertEquals(60_000L, player.duration());
-            assertTrue(player.live());
-            // MIXED CLIENTS MUST NOT FLAP THE FLAG BACK
-            player.sync(new Report(3L, Status.PLAYING, 60_000L, false));
-            assertTrue(player.live());
         }
     }
 
@@ -466,8 +401,6 @@ public class ServerMediaPlayerTest {
             final ServerMediaPlayer source = ServerMediaPlayerTest.this.solo();
             source.syncDuration(60_000L);
             source.repeat(true);
-            source.volume(40);
-            source.mute(true);
             assertTrue(source.startPaused());
             assertTrue(source.speed(2.0f));
             assertTrue(source.seek(30_000L));
@@ -475,13 +408,16 @@ public class ServerMediaPlayerTest {
             final Sync snapshot = source.snapshot();
             assertEquals(source.revision(), snapshot.revision());
             assertEquals(Status.PAUSED, snapshot.status());
+            assertEquals(30_000L, snapshot.time());
             assertEquals(60_000L, snapshot.duration());
             assertEquals(2.0f, snapshot.speed());
-            assertEquals(40, snapshot.volume());
-            assertTrue(snapshot.mute());
             assertTrue(snapshot.repeat());
             assertFalse(snapshot.live());
-            assertEquals(30_000L, snapshot.time());
+
+            // THE LIVE FLAG IS SESSION STATE TOO
+            source.live(true);
+            assertTrue(source.snapshot().live());
+            source.live(false);
 
             // WITHOUT LOOP WRAPS, THE RUNNING SNAPSHOT MUST FALL BETWEEN THE SURROUNDING READS
             source.repeat(false);
@@ -511,17 +447,57 @@ public class ServerMediaPlayerTest {
             player.stop();
             assertEquals(List.of(Status.PLAYING, Status.PAUSED, Status.PLAYING, Status.STOPPED), seen);
         }
+
+        @Test
+        @DisplayName("release() lands STOPPED with a new revision, so its last snapshot can still be sent")
+        void testReleaseLandsStopped() {
+            final ServerMediaPlayer player = ServerMediaPlayerTest.this.solo();
+            final StatusCapture cap = new StatusCapture();
+            player.onStatus(cap);
+            player.syncDuration(60_000L);
+            assertTrue(player.start());
+            assertTrue(PlayerWait.awaitCondition(() -> player.time() > 0L, ENDED_TIMEOUT_MS), "the clock must run before the release");
+            final int revision = player.revision();
+
+            player.release();
+            assertEquals(Status.STOPPED, player.status());
+            assertEquals(revision + 1, player.revision(), "the release is one more mutation to send");
+            assertEquals(Status.PLAYING, cap.from);
+            assertEquals(Status.STOPPED, cap.to, "the listener hears the release");
+            final Sync last = player.snapshot();
+            assertEquals(Status.STOPPED, last.status());
+            assertEquals(player.revision(), last.revision());
+            assertTrue(last.time() > 0L && last.time() == player.time(), "the position freezes where the release caught it");
+            assertFalse(player.canPlay());
+            assertFalse(player.start(), "a released clock never runs again");
+            player.release();
+            assertEquals(revision + 1, player.revision(), "a second release is a no-op");
+        }
+
+        @Test
+        @DisplayName("A released clock refuses every control and keeps its last snapshot")
+        void testReleasedClockIsInert() {
+            final ServerMediaPlayer player = ServerMediaPlayerTest.this.solo();
+            player.syncDuration(60_000L);
+            assertTrue(player.startPaused());
+            assertTrue(player.seek(10_000L));
+            player.release();
+            final Sync last = player.snapshot();
+            assertFalse(player.seek(20_000L), "a released clock cannot be scrubbed");
+            assertFalse(player.pause(false), "a released clock cannot resume");
+            assertFalse(player.togglePlay());
+            assertFalse(player.speed(2f));
+            assertFalse(player.repeat(true));
+            player.syncTime(30_000L);
+            player.live(true);
+            assertEquals(last, player.snapshot(), "nothing moves a released clock");
+        }
     }
 
     // UTILITY
 
     private ServerMediaPlayer solo() {
         this.player = new ServerMediaPlayer();
-        return this.player;
-    }
-
-    private ServerMediaPlayer authority() {
-        this.player = new ServerMediaPlayer(ignored -> {});
         return this.player;
     }
 

@@ -125,11 +125,11 @@ player.repeat(true);
 player.scale(1280, 720);
 ```
 
-`speed(value)` accepts finite values in `(0, 4]` and reports acceptance. Java Sound cannot change playback rate. `canSpeed()` is a pure query that any thread can call every frame; `speed(value)` must run on the owning audio context, and the player clock follows only a rate the audio engine accepted. A synchronized follower returns `false` even when it sends a control request; that return does not confirm remote application. `spatialAudio(...)` also reports whether the engine accepted the update; use `spatial()` before presenting positional controls.
+`speed(value)` accepts finite values in `(0, 4]` and reports acceptance. Java Sound cannot change playback rate. `canSpeed()` is a pure query that any thread can call every frame; `speed(value)` must run on the owning audio context, and the player clock follows only a rate the audio engine accepted. `spatialAudio(...)` also reports whether the engine accepted the update; use `spatial()` before presenting positional controls.
 
 Time arguments use milliseconds; player volume uses a percentage from 0 to 100. Check `canSeek()` for streams that do not support seeking. Poll `status()`, `time()`, `duration()`, `buffered()` and `exception()` for playback diagnostics. Scaling and level of detail affect supported pixel layouts. Built-in graphics engines do not currently accept compressed BC textures. Release with `player.release()` when the host removes the playback surface, including when playback has failed.
 
-Every boolean control answers one question: did this call change the player's own state? `false` covers a call forwarded to a sync authority, dropped by a locked session, refused by the media or made after `release()`; `repeat(boolean)` follows the same rule. The three players share one contract: a pause while loading is latched and applied when the pipeline opens; `pause()` and `resume()` return `false` on an ended, stopped or failed player; `stop()` tears the pipeline down, lands in `STOPPED` with `time()` at 0 and returns `true` only when a transition happened; `seek(...)` on an ended or stopped player restarts it paused at the target, and `togglePlay()` there starts it again; `nextFrame()` and `previousFrame()` only work while paused. `canPlay()` is true from the first successful load until the player fails or is released, `canSeek()` and `live()` are false until the source is open, `fps()` is 0 until the rate is known, and `status()` is `STOPPED` after `release()`. A still image shown through FFmpeg honours `displayTime(ms)` like the image player and never loops; without a display time it stays up until stopped.
+Every boolean control answers one question: did this call change the player's own state? `false` covers a call refused by the media, already satisfied or made after `release()`; `repeat(boolean)` follows the same rule. The three players share one contract: a pause while loading is latched and applied when the pipeline opens; `pause()` and `resume()` return `false` on an ended, stopped or failed player; `stop()` tears the pipeline down, lands in `STOPPED` with `time()` at 0 and returns `true` only when a transition happened; `seek(...)` on an ended or stopped player restarts it paused at the target, and `togglePlay()` there starts it again; `nextFrame()` and `previousFrame()` only work while paused. `canPlay()` is true from the first successful load until the player fails or is released, `canSeek()` and `live()` are false until the source is open, `fps()` is 0 until the rate is known, and `status()` is `STOPPED` after `release()`. A still image shown through FFmpeg honours `displayTime(ms)` like the image player and never loops; without a display time it stays up until stopped.
 
 `onStatus(listener)` adds a `MediaPlayer.StatusListener` that receives the player, the previous and the current status on every real transition, including the ones a restart, `stop()` and `release()` cause. Listeners stack (adding one twice keeps it once), and the transition into `STOPPED`, `ENDED` or `ERROR` consumes them, so a playlist consumer registers once per playback and, when it restarts the player from that terminal callback, registers again from the callback itself. Transitions are delivered one at a time and in the order the statuses changed, even when several threads drive the player, on whichever thread drove the change (a playback thread, the shared sync ticker, or the caller of `status()`, `time()` or `texture()` on image players whose clock resolves the end lazily), so keep it short and never call `release()` from it. A listener never runs while the player holds one of its locks, nor on a playback thread `release()` is waiting for: `release()` delivers its `STOPPED`, and anything published while it tore the player down, once it finishes and the engines are freed, so that callback may wait for another thread that uses the player; every other callback must stay short and never block. `release()` is idempotent.
 
@@ -200,7 +200,7 @@ Vulkan development takes priority; OpenGL remains supported as the secondary bac
 | `MediaAPI.alEngine(true)` | Same OpenAL contract; advertises mono output for positional sound. |
 | `MediaAPI.jsEngine()` | Java Sound device/line is available; positional audio is unsupported. |
 
-Spatial audio uses `SpatialAudio` and an optional environment processor. See [spatial audio and Sound Physics Remastered](#spatial-audio-and-sound-physics-remastered) for the adapter, source/context ownership, update cadence and feature gates. Spatial state is local to a listener and is not transported by the synchronization protocol.
+Spatial audio uses `SpatialAudio` and an optional environment processor. See [spatial audio and Sound Physics Remastered](#spatial-audio-and-sound-physics-remastered) for the adapter, source/context ownership, update cadence and feature gates. Spatial state is local to a listener and never travels in a clock snapshot.
 
 Engine base classes are sealed. The integration supplies host contexts and executors; it cannot pass arbitrary implementations of these engines. Engines manage their own playback resources, including textures, audio sources and buffers.
 
@@ -224,7 +224,7 @@ audio.spatialAudio(position);
 
 Run engine creation, spatial updates and release on the host's sound executor, with the original OpenAL context current. The host owns the device, context and listener; they must outlive every player using them. `FFMediaPlayer` uses private playback threads and currently requires the source's context to be the process-current context on those threads, as with ordinary `ALEngine` playback. A host that exposes its audio context only through thread-local binding is not supported by the player pipeline; binding that context on the caller's sound thread alone is insufficient. Native engine operations reject a different or absent context; they never switch or recreate the host's context. Release players before a device reload, then create new engines in the replacement context. `FFMediaPlayer.release()` interrupts and joins its playback pipeline before deleting the audio source; it must run before context destruction, not as a callback from that pipeline.
 
-`SpatialAudio` validates finite positions representable by OpenAL floats, `0 < referenceDistance < maxDistance`, and finite nonnegative rolloff. The host's distance model determines how these parameters attenuate audio. The API does not change the global distance model, listener or source velocity. In particular, `maxDistance` is not a universal silence radius under every OpenAL model. Passing zero rolloff disables distance attenuation. Spatial state belongs to the local listener and is not included in synchronization packets.
+`SpatialAudio` validates finite positions representable by OpenAL floats, `0 < referenceDistance < maxDistance`, and finite nonnegative rolloff. The host's distance model determines how these parameters attenuate audio. The API does not change the global distance model, listener or source velocity. In particular, `maxDistance` is not a universal silence radius under every OpenAL model. Passing zero rolloff disables distance attenuation. Spatial state belongs to the local listener and is not included in the clock snapshot.
 
 ### Sound Physics Remastered adapter
 
@@ -325,54 +325,29 @@ Every decoder delivers one tightly packed BGRA buffer per frame, except grayscal
 
 ## Synchronized playback
 
-Implement `Bridge.send(ByteBuffer)` with the host's transport. The authority's bridge broadcasts downstream; a follower's bridge sends upstream. Route incoming payloads to the matching `player.sync(payload)` session. Copy the bytes when the transport queues them beyond the call. Bridge implementations must be thread-safe and nonblocking; authenticate and authorize the peer in the host transport.
+`MediaAPI.serverPlayer()` builds a `ServerMediaPlayer`, a clock without media or engines that runs on either side. It owns the time math: start, pause, seek, speed, repeat and the loop wrap or `ENDED` transition happen on the system clock, and every successful mutation bumps `revision()`. The host owns everything else: who may drive the clock, how its snapshots reach the clients and where its position is persisted. Engines and players have no public constructors: every instance comes from `MediaAPI`.
 
 ```java
-ServerMediaPlayer authority = MediaAPI.serverPlayer(downstreamBridge,
-        Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
-authority.start();
-MediaPlayer follower = MediaAPI.player(mrl, gfxSupplier, sfxSupplier, upstreamBridge);
-if (follower == null) throw new IllegalStateException("Follower media is unavailable");
+ServerMediaPlayer clock = MediaAPI.serverPlayer();
+clock.syncDuration(durationMs);
+clock.start();
+// ON EVERY SERVER TICK: SEND clock.snapshot() WITH YOUR OWN PACKET WHEN clock.revision() MOVED
+MediaPlayer player = MediaAPI.player(mrl, gfxSupplier, sfxSupplier);
+player.sync(snapshot); // ON THE CLIENT, FOR EVERY SNAPSHOT RECEIVED
 ```
 
-`MediaAPI.follower(upstreamBridge)` builds a media-less follower clock, useful for HUDs, logic-side replicas and protocol tests; `MediaAPI.serverPlayer()` builds a plain clock with no bridge. Engines and players have no public constructors: every instance comes from `MediaAPI`.
+A player fed a snapshot through `sync(Sync)` (or `sync(ByteBuffer)` for the encoded form) follows the clock from then on: every 50 ms it mirrors the snapshot's status (start, pause, stop; a `BUFFERING` snapshot, which only a hand-built one carries, holds like a pause), adopts its repeat and speed and pulls playback back with a rate-limited `seekQuick` once `drift()` exceeds `tolerance(ms)` (one second by default). The latest snapshot fed always wins, so send them in the order the clock produced them; `authority()` returns that snapshot, `authorityTime()` extrapolates where the clock is now, and `following()` tells whether a player follows one. Correction never trims the playback speed, pauses while the player loads or buffers, and takes the short way around a loop boundary on repeating media. A control called on a following player applies at once and is undone by the next tick that disagrees with it, so route user controls to the clock through your own packets and let the snapshot carry the result; frame stepping is refused while following. Volume, mute, scaling and spatial audio always stay local.
 
-Use `org.watermedia.api.media.Config.Capability`. `LOCKSTEP` holds the authority while an established follower buffers; late joiners do not immediately pause the pool. `CONTROLS` allows followers to request playback changes. `VOLUME` also synchronizes volume and mute. Other local controls, including scaling and spatial effects, remain local.
+The clock holds at zero until `syncDuration(ms)` or `live(true)` tells it what timeline it runs on: report the duration once from a client that opened the source (the first positive value wins for the clock's lifetime and divergent later values are ignored), and restore a persisted position with `syncTime(ms)` after starting the clock, since `start()` restarts from zero. `canSeek()` is false and `seek(...)` returns `false` until a duration is known and on a live session. `release()` freezes the position and leaves the clock `STOPPED` with a new revision, so persist and send that last snapshot before dropping it or the players keep extrapolating the previous one; release each player when its host session ends.
 
-`sync(...)` validates incoming packet structure. The bridge does not identify or authenticate peers for you. Followers announce themselves and receive session state; the authority learns duration/live status from a ready follower. Release each authority and follower when its host session ends. Tune drift with `tolerance(ms)` and inspect `authorityTime()`, `drift()` and `role()` when diagnosing synchronization.
+### Snapshot format
 
-### Session sequence and calling threads
-
-1. A follower announces itself as still loading without immediately holding the existing pool.
-2. The authority replies with capabilities and a current state snapshot.
-3. Followers report state changes and send periodic keepalives. Until the authority learns a duration or a live stream, its clock stays at zero. It seeks only once it knows a duration and never on a live stream; otherwise `canSeek()` is false and `seek(...)` returns `false`.
-4. The authority broadcasts state changes and refreshes its snapshot about every five seconds. Followers ignore older revisions (compared by signed distance, so a replacement authority, whose revision starts from its clock, takes over); equal revisions can refresh the time reference.
-5. Releasing a follower sends its departure. `followerTimeout(ms)` removes silent followers after 15 seconds by default.
-
-Follower timeouts must be between 1 and `Long.MAX_VALUE / 1_000_000` milliseconds. Values outside that range are rejected without changing the current timeout.
-
-The authority retains the first positive duration for its session. When reports identify a live stream, later reports with `live=false` do not clear that classification. With `LOCKSTEP`, waiting for an established follower presents `BUFFERING`, freezes the clock and resumes from the same position. Follower playback controls such as start, pause, seek, speed and repeat travel as requests to the authority instead of applying locally; after capabilities arrive, requests without `CONTROLS` are discarded.
-
-`sync(...)` decodes and consumes the packet on the calling thread; a plain clock without a bridge ignores session traffic, and a follower that just left (`Unwatch`) is not re-enrolled by a report still in flight. Followers reconcile playback on their 50 ms synchronization tick. An authority can process controls and send replies synchronously during `sync`; not every effect is deferred to the tick. Bridge callbacks can also run on host control threads. Use `authority.sync(payload)` for upstream messages and `follower.sync(payload)` for downstream messages, after routing and authorizing them in the host transport.
-
-Read `player.granted(capability)` when presenting controls. Frame stepping is unavailable to followers. `tolerance(ms)` defaults to one second; correction uses rate-limited `seekQuick`, pauses while loading or buffering, and accounts for loop boundaries in finite repeating media. Drift can be corrected in either direction; synchronization does not gradually alter playback speed. `authority()` returns the last received snapshot, while `authorityTime()` estimates its current position using elapsed time.
-
-### Packet format
-
-Packets are fixed-size big-endian records in the `org.watermedia.api.media` package. `Packet.read(ByteBuffer)` consumes only the packet's bytes, leaving trailing data for the host transport; the buffer's own byte order is irrelevant, and a rejected payload leaves the position untouched.
-
-| Packet | Size | Direction |
-| --- | ---: | --- |
-| `Sync` | 29 bytes | Authority → followers |
-| `Config` | 11 bytes | Authority → followers |
-| `Watch` / `Unwatch` | 10 bytes | Follower → authority |
-| `Report` | 20 bytes | Follower → authority |
-| `Control` | 19 bytes | Follower → authority |
+`Sync` is a fixed 27-byte big-endian record (version, revision, status, time, duration, speed, flags). `Sync.read(ByteBuffer)` consumes only those bytes, leaving trailing data for the host transport; the buffer's own byte order is irrelevant, and a rejected payload leaves the position untouched. Validate who sent a snapshot in the host transport: the library never identifies peers.
 
 ## Executable examples and diagnostics
 
 The project logger names are `watermedia` and `watermedia_binaries`; configure those names for DEBUG diagnostics. Project log messages reduce media URLs to their origin, hide header values and mask bare access tokens, `Authorization` values, Minecraft session arguments and secret-looking `key=value` pairs (`DataTool.redact` applies the same filter to the app's log uploads). Exception traces with private URLs retain their type, stack, causes and suppressed failures as sanitized text. Nothing is aggregated per time window: an anomaly that can repeat, such as a short frame buffer, a refused layout, a failing callback or a rejected upload, is logged on its first occurrence in each engine, player, server or playlist and then stays silent, and slow playback iterations are counted and reported once when the run ends. FFmpeg still writes its own native log lines to the process error output, outside the project loggers and their redaction; routing them through the project logger is prepared but disabled until macOS and Linux are validated.
 
-The source in `src/test/java/org/watermedia/ApiGuideExample.java` compiles factory usage for every graphics/audio engine and both synchronization roles. Its image decoding example, which filters every frame through a `DownscaleFilter`, runs in `ApiGuideExampleTest`; GUI, audio-device and Minecraft behavior requires the corresponding host integration. The normal playback and spatial test suites exercise actual FFmpeg/OpenAL behavior separately.
+The source in `src/test/java/org/watermedia/ApiGuideExample.java` compiles factory usage for every graphics/audio engine and both sides of synchronized playback, the clock and a follower. Its image decoding example, which filters every frame through a `DownscaleFilter`, runs in `ApiGuideExampleTest`; GUI, audio-device and Minecraft behavior requires the corresponding host integration. The normal playback and spatial test suites exercise actual FFmpeg/OpenAL behavior separately.
 
 Examples use host-provided variables and are integration fragments, not complete standalone applications. Jobs configured with `require_natives=true` require FFmpeg binaries instead of skipping their absence.

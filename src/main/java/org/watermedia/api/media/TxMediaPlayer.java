@@ -182,12 +182,7 @@ public final class TxMediaPlayer extends MediaPlayer {
     private int bufferByteSize;
 
     TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine) {
-        this(mrl, sourceIndex, gfxEngine, null);
-    }
-
-    // A NON-NULL bridge FOLLOWS A SERVER-SIDE AUTHORITY (SEE MediaPlayer)
-    TxMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfxEngine, final Bridge bridge) {
-        super(mrl, sourceIndex, gfxEngine, null, bridge);
+        super(mrl, sourceIndex, gfxEngine, null);
         this.arm();
     }
 
@@ -247,11 +242,11 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
-        return super.stop() && this.teardown(false);
+        return this.teardown(false);
     }
 
-    // CANCELS THE PIPELINE, DROPS THE TIMELINE AND REWINDS TO 0; SHARED BY stop() AND THE LOCAL RESTART IN
-    // launch() (NEVER REACHES THE SYNC AUTHORITY). ANSWERS WHETHER A TRANSITION TO STOPPED HAPPENED
+    // CANCELS THE PIPELINE, DROPS THE TIMELINE AND REWINDS TO 0; SHARED BY stop() AND THE RESTART IN launch().
+    // ANSWERS WHETHER A TRANSITION TO STOPPED HAPPENED
     private boolean teardown(final boolean restart) {
         final Status prev;
         final boolean quiet;
@@ -304,6 +299,8 @@ public final class TxMediaPlayer extends MediaPlayer {
                     this.triggerStop = true;
                     this.lifecycleSerial++;
                 }
+                // OFF THE TICKER BEFORE THE JOINS, SO NO CORRECTION RUNS ON A DYING PLAYER
+                this.disarm();
                 this.texTimeline = null;
                 this.texDelays = null;
                 IOTool.closeQuietly(this.activeReader);
@@ -340,7 +337,6 @@ public final class TxMediaPlayer extends MediaPlayer {
                 this.lifecycleTask = null;
                 this.playable = false;
                 this.releaseDone = true;
-                this.disarm();
                 synchronized (this.signals) {
                     final Status prev = this.status;
                     this.resetAfterRelease();
@@ -1164,7 +1160,6 @@ public final class TxMediaPlayer extends MediaPlayer {
     // ==========================================================================
     @Override
     public boolean pause(final boolean paused) {
-        if (!super.pause(paused)) return false;
         final Status status = this.status;
         if (!this.loaded) {
             // LATCHED WHILE LOADING, LIKE THE VIDEO PLAYER: APPLIED THE INSTANT THE FIRST FRAME GOES LIVE
@@ -1205,7 +1200,6 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean togglePlay() {
-        if (!super.togglePlay()) return false;
         return switch (this.status()) {
             case ENDED, STOPPED -> this.launch(false, -1L);
             case WAITING, ERROR -> false;
@@ -1215,7 +1209,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean seek(final long time) {
-        if (!super.seek(time) || !this.canSeek()) return false;
+        if (!this.canSeek()) return false;
         long target = Math.max(0L, time);
         if (this.knownDuration > 0L) target = Math.min(target, this.knownDuration - 1L);
         final Status status = this.status();
@@ -1315,8 +1309,7 @@ public final class TxMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean speed(final float speed) {
-        // RESOLVE THE CALL BEFORE TAKING THE CLOCK: A BRIDGED PLAYER SENDS THE REQUEST FROM super,
-        // AND THE RENDER THREAD TAKES THIS SAME LOCK ON EVERY DRAW TO READ THE PASSIVE CLOCK
+        // RESOLVE THE CALL BEFORE TAKING THE CLOCK: THE RENDER THREAD TAKES THIS SAME LOCK ON EVERY DRAW TO READ THE PASSIVE CLOCK
         final float old = this.speed();
         if (!super.speed(speed)) return false;
         synchronized (this.clock) {

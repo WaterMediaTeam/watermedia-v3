@@ -3,8 +3,6 @@ package org.watermedia;
 import org.watermedia.api.codecs.CodecsAPI;
 import org.watermedia.api.codecs.DownscaleFilter;
 import org.watermedia.api.codecs.ImageReader;
-import org.watermedia.api.media.Bridge;
-import org.watermedia.api.media.Config;
 import org.watermedia.api.media.GFXEngine;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
@@ -12,12 +10,14 @@ import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.media.SFXEngine;
 import org.watermedia.api.media.SFXEngine.SpatialAudio;
 import org.watermedia.api.media.ServerMediaPlayer;
+import org.watermedia.api.media.Sync;
 import org.watermedia.api.media.VKContext;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /** Compiled counterparts of the public API guide's integration examples. */
@@ -82,15 +82,18 @@ public final class ApiGuideExample {
         player.scale(1280, 720);
     }
 
-    public static ServerMediaPlayer authority(final Bridge bridge) {
-        final ServerMediaPlayer authority = MediaAPI.serverPlayer(bridge, Config.Capability.LOCKSTEP, Config.Capability.CONTROLS);
-        authority.start();
-        return authority;
+    public static ServerMediaPlayer clock(final long durationMs, final Consumer<Sync> transport) {
+        final ServerMediaPlayer clock = MediaAPI.serverPlayer();
+        clock.syncDuration(durationMs);
+        clock.start();
+        // THE HOST SENDS A SNAPSHOT AGAIN WHENEVER clock.revision() MOVES
+        transport.accept(clock.snapshot());
+        return clock;
     }
 
-    public static MediaPlayer follower(final MRL mrl, final Supplier<GFXEngine> graphics,
-                                       final Supplier<SFXEngine> audio, final Bridge bridge) {
-        return MediaAPI.player(mrl, graphics, audio, bridge);
+    public static void follow(final MediaPlayer player, final Sync snapshot) {
+        player.tolerance(500L);
+        player.sync(snapshot);
     }
 
     public static long decode(final ByteBuffer encoded) throws IOException {

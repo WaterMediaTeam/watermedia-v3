@@ -17,21 +17,18 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static org.watermedia.WaterMedia.LOGGER;
 
 /**
  * Base of every playback unit, carrying the shared control surface (volume, mute, speed,
- * repeat, LOD/scaling) and the bridge sync protocol.
+ * repeat, LOD/scaling) and the session follower.
  * <p>
- * A player built with a {@link Bridge} joins a synchronized session as a {@link Role#FOLLOWER}:
- * it tracks where the session says playback should be — see {@link #authority()} — and keeps
- * its own playback aligned with it. Received payloads go in through {@link #sync(ByteBuffer)};
- * control calls go out as {@link Control} requests when {@link Config.Capability#CONTROLS} is
- * granted, and are dropped otherwise. The session's truth lives in a {@link ServerMediaPlayer}
- * built with a bridge of its own, the {@link Role#AUTHORITY}.
+ * A player fed the {@link ServerMediaPlayer#snapshot() snapshots} of a clock through {@link #sync(Sync)}
+ * follows that clock: it mirrors its status, repeat and speed and keeps its own position within
+ * {@link #tolerance()} of {@link #authorityTime()}. How the snapshots travel from the clock to the
+ * player is the host's business; the library owns the time math and the correction.
  */
 public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlayer, TxMediaPlayer {
     private static final Marker IT = MarkerManager.getMarker(MediaPlayer.class.getSimpleName());
@@ -44,9 +41,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /** Sentinel for an unknown media duration. */
     public static final long NO_DURATION = 0L;
 
-    // === SHARED 50ms TICKER — DRIVES SERVER CLOCKS, FOLLOWER CORRECTIONS AND AUTHORITY BROADCASTS ===
-    // A SINGLE DAEMON THREAD TICKS EVERY REGISTERED PLAYER, SO ALL CORRECTION STATE IS
-    // EFFECTIVELY SINGLE-THREADED AND THE BRIDGE FLOW NEVER TOUCHES THE GAME THREAD.
+    // === SHARED 50ms TICKER — DRIVES SERVER CLOCKS AND FOLLOWER CORRECTIONS ===
+    // ONE DAEMON THREAD TICKS EVERY REGISTERED PLAYER, SO ALL CORRECTION STATE IS SINGLE-THREADED AND OFF THE GAME THREAD
     private static final long TICK_MS = 50;
     private static final Set<MediaPlayer> TICKING = ConcurrentHashMap.newKeySet();
     private static final ScheduledExecutorService TICKER = Executors.newSingleThreadScheduledExecutor(
@@ -61,18 +57,14 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         TICKER.scheduleAtFixedRate(MediaPlayer::tickAll, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
     }
 
-    // THE TICKER THREAD, SO A FOLLOWER CAN TELL ITS OWN follow() PASS FROM A USER CALL RACING IT
-    private static volatile Thread tickerThread;
-
     private static void tickAll() {
-        tickerThread = Thread.currentThread();
         for (final MediaPlayer player: TICKING) {
             try {
                 if (player.armed) player.tick();
             } catch (final Throwable t) {
                 if (player.tickWarned) continue;
                 player.tickWarned = true;
-                // SERVER PLAYERS AND FOLLOWER CLOCKS CARRY NO MRL
+                // A SERVER CLOCK CARRIES NO MRL
                 final Object subject = player.mrl != null ? player.mrl.uri() : player.getClass().getSimpleName();
                 LOGGER.error(IT, "Sync tick failed for {}", subject, t);
             }
@@ -81,7 +73,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     // FOLLOWER CORRECTION CONSTANTS
     private static final long SEEK_COOLDOWN_NS = 1_000_000_000L; // 1s BETWEEN SEEKS WHILE THE PIPELINE RESETTLES
-    private static final long REPORT_NS = 5_000_000_000L;        // UPSTREAM KEEPALIVE SO THE AUTHORITY TTL HOLDS
     private static final long SKIP_STEP_MS = 5_000L;             // forward()/rewind() DISTANCE FOR VIDEO AND MUSIC
 
     // BASIC PROPERTIES
@@ -99,24 +90,11 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private volatile float speed = 1.0f;
     private volatile boolean muted = false;
 
-    // BRIDGE SYNC — bridge IS THE DEV'S BYTE CARRIER (NULL WHEN UNBRIDGED); target IS THE LAST
-    // SNAPSHOT A FOLLOWER HEARD, AGED INTO A LIVE POSITION BY authorityTime(). armed GATES THE
-    // SHARED TICKER OFF A HALF-CONSTRUCTED INSTANCE — EVERY CONCRETE CTOR CALLS arm() LAST.
-    private final Bridge bridge;
-    private final Role role;
-    private final long watcherId;
+    // SESSION SYNC — heard IS THE LAST SNAPSHOT THIS PLAYER WAS FED WITH ITS ARRIVAL STAMP, AGED INTO A LIVE POSITION BY
+    // authorityTime(). armed GATES THE SHARED TICKER OFF A HALF-CONSTRUCTED INSTANCE — EVERY CONCRETE CTOR CALLS arm() LAST
     private volatile boolean armed;
-    private final Object bridgeLock = new Object();
-    private int sending;
-    private boolean pendingUnwatch;
-    private boolean unwatched;
-    private volatile int caps;
-    private volatile boolean configured;
-    private volatile long aheadMs;    // HALF THE MEASURED ROUND TRIP — SNAPSHOT AGE IN FLIGHT
-    private volatile long watchNanos; // NON-ZERO WHILE THE Watch HELLO AWAITS ITS Config ECHO
-    private volatile Sync target;     // LAST SNAPSHOT HEARD FROM THE SESSION, NULL UNTIL THE FIRST ONE
-    private volatile long targetNanos;// WHEN IT ARRIVED, SO IT CAN BE AGED INTO A CURRENT POSITION
-    private volatile boolean sendWarned; // A FAILING BRIDGE IS LOGGED ONCE PER PLAYER
+    private final Object tickLock = new Object();
+    private volatile Heard heard; // NULL UNTIL THE FIRST SNAPSHOT
 
     // FOLLOWER TUNABLE — HOW FAR PLAYBACK MAY DRIFT BEFORE IT IS PULLED BACK
     private volatile long toleranceMs = 1_000;
@@ -125,11 +103,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     private boolean tickWarned; // A FAILING TICK IS LOGGED ONCE PER PLAYER
     private boolean startIssued;
     private long lastSeekNanos;
-    private Status lastReport;
-    private long lastReportNanos;
-    // SET WHILE follow() IMPOSES AUTHORITY STATE, SO THOSE CALLS LAND LOCALLY INSTEAD OF BEING SENT
-    // BACK UPSTREAM. ONLY HONOURED ON THE TICKER THREAD: A USER CALL RACING THE PASS STILL FORWARDS
-    private volatile boolean applying;
 
     // STATUS LISTENERS, CONSUMED BY A TERMINAL TRANSITION; TRANSITIONS QUEUE UP AND ONE THREAD DRAINS THEM IN ORDER, SO
     // A CONTROL ISSUED FROM A CALLBACK NEVER DELIVERS ITS TRANSITION AHEAD OF THE REPORTED ONE. GUARDED BY statusEvents
@@ -152,9 +125,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     volatile int sourceWidth = NO_SIZE;
     volatile int sourceHeight = NO_SIZE;
 
-    // A NON-NULL bridge MAKES THIS PLAYER A FOLLOWER OF A SERVER-SIDE ServerMediaPlayer AUTHORITY (SEE THE CLASS DOCS).
     // MEDIA PLAYERS DECODE AND RENDER, SO THEY ARE CLIENT-ONLY; THE HEADLESS CLOCK BELOW IS THE SERVER-SIDE PLAYER
-    MediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx, final Bridge bridge) {
+    MediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
         WaterMedia.checkIsClientSideOrThrow(this.getClass());
         if (mrl == null) throw new IllegalArgumentException("MediaPlayer must have a valid MRL");
         final MRL.Source resolved = mrl.source(sourceIndex);
@@ -172,208 +144,109 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         this.source = resolved;
         this.gfx = gfx;
         this.sfx = sfx;
-        this.bridge = bridge;
-        // A PLAYER WITH REAL MEDIA CAN ONLY EVER FOLLOW — THE AUTHORITY ROLE BELONGS TO THE CLOCK
-        this.role = bridge != null ? Role.FOLLOWER : Role.SOLO;
-
-        this.watcherId = bridge != null ? ThreadLocalRandom.current().nextLong() : 0L;
     }
 
-    // HEADLESS CONSTRUCTOR FOR ServerMediaPlayer, WHICH ONLY TRACKS TIME PROGRESSION; bridge IS NULL WHEN UNBRIDGED
-    MediaPlayer(final Bridge bridge, final Role role) {
-        if (role != Role.SOLO && bridge == null) throw new IllegalArgumentException(role + " requires a bridge");
+    // HEADLESS CONSTRUCTOR FOR ServerMediaPlayer, WHICH ONLY TRACKS TIME PROGRESSION
+    MediaPlayer() {
         this.mrl = null;
         this.sourceIndex = -1;
         this.source = null;
         this.gfx = null;
         this.sfx = null;
-        this.bridge = bridge;
-        this.role = role;
-
-        this.watcherId = role == Role.FOLLOWER ? ThreadLocalRandom.current().nextLong() : 0L;
     }
 
     // ==========================================================================
-    // BRIDGE SYNC
+    // SESSION SYNC
     // ==========================================================================
 
-    // PUBLISHES THIS FULLY-CONSTRUCTED PLAYER TO THE BRIDGE MACHINERY: REGISTERS THE 50ms TICK
-    // AND SENDS THE Watch HELLO. MUST BE THE LAST STATEMENT OF EVERY CONCRETE CONSTRUCTOR —
-    // NEVER CALLED FROM THIS BASE CLASS, WHERE SUBCLASS FIELDS WOULD STILL BE UNINITIALIZED
-    // WHEN THE TICKER FIRES.
+    // PUBLISHES THIS FULLY-CONSTRUCTED PLAYER TO THE TICKER MACHINERY. MUST BE THE LAST STATEMENT OF EVERY CONCRETE
+    // CONSTRUCTOR — NEVER CALLED FROM THIS BASE CLASS, WHERE SUBCLASS FIELDS WOULD STILL BE UNINITIALIZED WHEN THE TICKER FIRES
     final void arm() {
-        synchronized (this.bridgeLock) {
+        synchronized (this.tickLock) {
             if (this.armed) return;
             // A SERVER PLAYER NEEDS NO SESSION; A MEDIA PLAYER NEEDS THE LOADED MEDIA MODULE
             if (this.mrl != null && !WaterMedia.loaded()) throw new IllegalStateException("Cannot create a media player before WaterMedia loads");
             this.armed = true;
-        }
-        if (this.role == Role.FOLLOWER) {
             // BACKDATE THE COOLDOWN SO THE FIRST CORRECTION IS NEVER BLOCKED (nanoTime ORIGIN IS ARBITRARY)
             this.lastSeekNanos = System.nanoTime() - SEEK_COOLDOWN_NS;
-            this.watchNanos = System.nanoTime();
-            TICKING.add(this);
-            try {
-                this.send(new Watch(this.watcherId));
-            } catch (final RuntimeException | Error failure) {
-                TICKING.remove(this);
-                throw failure;
-            }
-        } else if (this.role == Role.AUTHORITY) {
-            // TICKS PERMANENTLY FOR AUTO-BROADCAST, HEARTBEAT AND GATE SWEEPS
-            TICKING.add(this);
         }
     }
 
-    // REGISTERS/DEREGISTERS A PLAYER ON THE SHARED TICKER. BRIDGED PLAYERS IGNORE DEREGISTRATION —
-    // THEY TICK UNTIL release() — SO CLOCK STOP/START CYCLES NEVER SILENCE THE BRIDGE.
+    // REGISTERS/DEREGISTERS A PLAYER ON THE SHARED TICKER. A FOLLOWING PLAYER IGNORES DEREGISTRATION — IT TICKS UNTIL
+    // release() — SO A CLOCK'S STOP/START CYCLES NEVER SILENCE THE CORRECTION
     void ticking(final boolean on) {
-        synchronized (this.bridgeLock) {
+        synchronized (this.tickLock) {
             if (on && this.armed) TICKING.add(this);
-            else if (this.role == Role.SOLO) TICKING.remove(this);
+            else if (this.heard == null) TICKING.remove(this);
         }
     }
 
-    // SHARED-TICKER CALLBACK. THE BASE RUNS THE FOLLOWER ENGINE; ServerMediaPlayer LAYERS THE
-    // AUTHORITY CLOCK AND BROADCAST ON TOP.
+    // SHARED-TICKER CALLBACK. THE BASE RUNS THE FOLLOWER ENGINE; ServerMediaPlayer LAYERS ITS CLOCK MAINTENANCE ON TOP
     void tick() {
-        if (!this.armed || this.role != Role.FOLLOWER) return;
-        this.applying = true;
-        try {
-            this.follow();
-        } finally {
-            // NEVER LEAVE IT LATCHED: A STUCK FLAG WOULD TURN EVERY LATER USER CALL INTO A LOCAL
-            // MUTATION AND DESYNC THIS PLAYER FROM THE AUTHORITY FOR GOOD.
-            this.applying = false;
+        // ONE READ FOR THE WHOLE PASS: A RELEASE OR A NEWER SNAPSHOT LANDING MID-PASS NEVER MIXES INTO IT
+        final Heard heard = this.heard;
+        if (this.armed && heard != null) this.follow(heard);
+    }
+
+    /**
+     * Feeds a clock snapshot into this player, which follows it from then on: every 50 ms the snapshot's
+     * status is mirrored (start, pause, stop), its repeat and speed are adopted and playback is pulled
+     * back with {@link #seekQuick(long)} once it drifts past {@link #tolerance()}. The latest snapshot
+     * fed always wins, so feed them in the order the clock produced them. Safe to call from any thread.
+     * A control called on a following player applies at once and is overridden by the next tick that
+     * disagrees with it: drive the session through its {@link ServerMediaPlayer} instead.
+     * @param snapshot a {@link ServerMediaPlayer#snapshot()}, received through the host's own transport
+     * @throws IllegalArgumentException when {@code snapshot} is null
+     */
+    public final void sync(final Sync snapshot) {
+        if (snapshot == null) throw new IllegalArgumentException("Snapshot cannot be null");
+        synchronized (this.tickLock) {
+            if (!this.armed) return;
+            this.heard = new Heard(snapshot, System.nanoTime());
+            TICKING.add(this);
         }
     }
 
     /**
-     * Feeds a received bridge payload into this player — the single inbound entry of the
-     * sync protocol. Safe to call from any thread (a packet handler, a socket reader): the
-     * payload is decoded and validated on the calling thread. Authorities handle it and may
-     * reply immediately; followers reconcile playback on their synchronization tick.
-     * <p>
-     * Followers accept {@link Sync} and {@link Config}; an authority accepts {@link Watch},
-     * {@link Report}, {@link Control} and {@link Unwatch}. Packets for the opposite role
-     * are ignored.
-     * @param payload the packet bytes, consumed
-     * @throws IllegalArgumentException if the payload is malformed (see {@link Packet#read(ByteBuffer)})
+     * Feeds an encoded clock snapshot, decoded with {@link Sync#read(ByteBuffer)} on the calling thread;
+     * see {@link #sync(Sync)}.
+     * @param payload the snapshot bytes, consumed
+     * @throws IllegalArgumentException if the payload is malformed
      */
     public final void sync(final ByteBuffer payload) {
-        this.sync(Packet.read(payload));
+        this.sync(Sync.read(payload));
     }
+
+    /** Whether this player follows a clock, which it does from the first {@link #sync(Sync)} until {@link #release()}. */
+    public final boolean following() { return this.heard != null; }
 
     /**
-     * Feeds an already decoded packet into this player. Use it to inspect traffic before it
-     * takes effect — decode with {@link Packet#read(ByteBuffer)}, apply your own rules (say,
-     * dropping a {@link Control} from a player without permission) and forward what survives.
-     * Safe to call from any thread.
-     * @param packet the decoded packet
-     */
-    public final void sync(final Packet packet) {
-        if (packet == null) throw new IllegalArgumentException("Packet cannot be null");
-        if (!this.armed) return;
-        if (this.role == Role.AUTHORITY) {
-            this.upstream(packet);
-            return;
-        }
-        if (this.role == Role.SOLO) {
-            // A SOLO PLAYER HAS NO SESSION: ACCEPTING FOLLOWER TRAFFIC WOULD ENROLL CLIENTS NOBODY SWEEPS
-            LOGGER.debug(IT, "Ignored {} on a solo player", packet);
-            return;
-        }
-        if (packet instanceof final Sync snapshot) {
-            // A SNAPSHOT SUPERSEDES EVERY EARLIER ONE — THERE IS NOTHING TO QUEUE, ONLY THE LATEST
-            // MATTERS. AN OLDER REVISION IS REORDERED TRANSPORT NOISE; AN EQUAL ONE IS A HEARTBEAT
-            // CARRYING A FRESHER TIMESTAMP, SO IT MUST LAND. THE ARRIVAL STAMP GOES FIRST: A READER
-            // SEEING THE NEW SNAPSHOT MUST NEVER PAIR IT WITH THE PREVIOUS ONE'S AGE.
-            final Sync known = this.target;
-            // SIGNED DISTANCE: CLOCK-SEEDED REVISIONS MAY WRAP, AND A REPLACEMENT AUTHORITY STILL READS AS NEWER
-            if (known == null || snapshot.revision() - known.revision() >= 0) {
-                this.targetNanos = System.nanoTime();
-                this.target = snapshot;
-            }
-        } else if (packet instanceof final Config config) {
-            this.caps = config.capabilities();
-            this.configured = true;
-            final long sent = this.watchNanos;
-            if (sent != 0 && config.watcherId() == this.watcherId) {
-                // SNAPSHOTS AGE HALF THE ROUND TRIP IN FLIGHT. STICKY: ONLY A FRESH MEASUREMENT
-                // (A NEW Watch/Config EXCHANGE) EVER CHANGES IT.
-                this.watchNanos = 0;
-                this.aheadMs = (System.nanoTime() - sent) / 2_000_000L;
-            }
-        } else {
-            LOGGER.debug(IT, "Ignored upstream packet on a follower: {}", packet);
-        }
-    }
-
-    // AUTHORITY-SIDE PACKET HANDLING — OVERRIDDEN BY ServerMediaPlayer; EVERY OTHER PLAYER
-    // HAS NO FOLLOWERS TO SERVE AND JUST DROPS IT.
-    void upstream(final Packet packet) {
-        LOGGER.debug(IT, "Ignored packet on a non-authority player: {}", packet);
-    }
-
-    // SENDS A PACKET THROUGH THE DEV'S CARRIER. A BROKEN CARRIER NEVER TEARS DOWN PLAYBACK.
-    final void send(final Packet packet) {
-        final Bridge bridge = this.bridge;
-        if (bridge == null) return;
-        final boolean unwatch = packet instanceof Unwatch;
-        synchronized (this.bridgeLock) {
-            if (unwatch) {
-                if (this.unwatched) return;
-                if (this.sending != 0) {
-                    this.pendingUnwatch = true;
-                    return;
-                }
-                this.pendingUnwatch = false;
-                this.unwatched = true;
-            } else {
-                if (!this.armed) return;
-                this.sending++;
-            }
-        }
-        // HOST CALLBACKS RUN WITHOUT OUR LOCKS; THE LAST ADMITTED SEND EMITS THE FINAL UNWATCH.
-        try {
-            bridge.send(packet.toBytes());
-        } catch (final Throwable t) {
-            if (!this.sendWarned) LOGGER.error(IT, "Bridge send failed", t);
-            this.sendWarned = true;
-        } finally {
-            if (!unwatch) {
-                final boolean finish;
-                synchronized (this.bridgeLock) {
-                    finish = --this.sending == 0 && this.pendingUnwatch;
-                }
-                if (finish) this.send(new Unwatch(this.watcherId));
-            }
-        }
-    }
-
-    /** What this player is within its sync session. */
-    public final Role role() { return this.role; }
-
-    /**
-     * The last state this follower heard from the session. It is a point in the past — use
+     * The last snapshot fed to this player. It is a point in the past — use
      * {@link #authorityTime()} for where playback should be right now.
-     * @return the latest snapshot, or {@code null} before the first one arrives
+     * @return the latest snapshot, or {@code null} before the first one or after {@link #release()}
      */
-    public final Sync authority() { return this.target; }
+    public final Sync authority() {
+        final Heard heard = this.heard;
+        return heard == null ? null : heard.snapshot();
+    }
 
     /**
      * Where the session says playback should be right now. A running session is extrapolated
      * from the last snapshot at its own rate and folded into the media timeline, so a loop
      * wraps instead of overrunning; a stopped one reports its frozen position. A live session
      * is never folded — its timeline is open-ended.
-     * @return the authoritative position in milliseconds, or 0 on a non-follower
+     * @return the authoritative position in milliseconds, or 0 before the first snapshot
      */
     public final long authorityTime() {
-        final Sync target = this.target;
-        if (target == null) return 0;
+        final Heard heard = this.heard;
+        return heard == null ? 0 : authorityTime(heard);
+    }
+
+    // THE SNAPSHOT KEPT AGEING SINCE IT LANDED; A LIVE OR UNKNOWN TIMELINE RUNS FREE, A FINITE ONE WRAPS OR CLAMPS
+    private static long authorityTime(final Heard heard) {
+        final Sync target = heard.snapshot();
         if (target.status() != Status.PLAYING) return target.time();
-        // THE SNAPSHOT AGED HALF THE ROUND TRIP IN FLIGHT, AND KEPT AGEING SINCE IT LANDED
-        final long elapsed = (System.nanoTime() - this.targetNanos) / 1_000_000L + this.aheadMs;
+        final long elapsed = (System.nanoTime() - heard.nanos()) / 1_000_000L;
         final long run = (long) (elapsed * target.speed());
         // SATURATE LIKE THE AUTHORITY: A LIVE POSITION NEAR Long.MAX_VALUE MUST NOT WRAP NEGATIVE
         final long t = run > Long.MAX_VALUE - target.time() ? Long.MAX_VALUE : target.time() + run;
@@ -384,14 +257,18 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Signed drift between the session and this player in milliseconds; positive means the
-     * session is ahead. Always zero on non-followers. On repeating media the drift is computed
+     * session is ahead. Zero before the first snapshot. On repeating media the drift is computed
      * on the circular timeline, taking the short way around the wrap.
      * @return the current drift in milliseconds
      */
     public final long drift() {
-        final Sync target = this.target;
-        if (target == null) return 0;
-        long drift = this.authorityTime() - this.time();
+        final Heard heard = this.heard;
+        return heard == null ? 0 : this.drift(heard);
+    }
+
+    private long drift(final Heard heard) {
+        final Sync target = heard.snapshot();
+        long drift = authorityTime(heard) - this.time();
         final long d = target.duration();
         if (target.repeat() && d > 0 && !target.live()) {
             // LOOPING TIMELINES ARE CIRCULAR — MAP INTO [-d/2, d/2) SO THE WRAP NEVER FAKES A HUGE DRIFT
@@ -404,8 +281,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Sets how far a follower may drift from the session before it is pulled back with a
      * {@link #seekQuick(long)}. Correction is deliberately not millimetric: the alternative,
      * trimming the playback rate to converge smoothly, is perceived as the video randomly
-     * running slow, which is a worse experience than an occasional jump. No effect on
-     * non-followers.
+     * running slow, which is a worse experience than an occasional jump. No effect until the
+     * player follows a clock.
      * @param ms drift tolerance in milliseconds, {@code > 0}
      */
     public final void tolerance(final long ms) {
@@ -416,45 +293,19 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     /** Returns the follower drift tolerance in milliseconds. */
     public final long tolerance() { return this.toleranceMs; }
 
-    // FOLLOWER ENGINE, RUNS ON THE SHARED TICKER: REPORTS LOCAL TRANSITIONS UPSTREAM, MIRRORS THE
-    // SESSION ONTO THIS PLAYER AND PULLS PLAYBACK BACK WHEN IT DRIFTS PAST THE TOLERANCE.
-    // `applying` MARKS THE WHOLE PASS AS AUTHORITY STATE SO THE ORDINARY CONTROL METHODS ACT
-    // LOCALLY INSTEAD OF SENDING THE CORRECTION BACK UPSTREAM.
-    private void follow() {
-        final Sync authority = this.target;
-        if (authority == null) return; // NOTHING HEARD FROM THE SESSION YET
+    // FOLLOWER ENGINE, RUNS ON THE SHARED TICKER: MIRRORS THE SESSION ONTO THIS PLAYER AND PULLS PLAYBACK BACK WHEN IT
+    // DRIFTS PAST THE TOLERANCE
+    private void follow(final Heard heard) {
+        final Sync authority = heard.snapshot();
         final Status target = authority.status();
         Status current = this.status();
         final long now = System.nanoTime();
 
-        // UPSTREAM REPORT: EVERY LOCAL TRANSITION, PLUS A KEEPALIVE SO THE AUTHORITY TTL HOLDS.
-        // 50ms POLLING NATURALLY DEBOUNCES SUB-TICK STATUS BLIPS THAT WOULD FLAP A LOCKSTEP GATE.
-        if (current != this.lastReport || now - this.lastReportNanos >= REPORT_NS) {
-            this.lastReport = current;
-            this.lastReportNanos = now;
-            this.send(new Report(this.watcherId, current, this.duration(), this.live()));
-        }
-
-        // RE-SEND THE HELLO UNTIL A CONFIG ANSWERS IT — LOSSY OR LATE-WIRED TRANSPORTS MAY DROP THE FIRST
-        final long watch = this.watchNanos;
-        if (watch != 0 && now - watch >= REPORT_NS) {
-            this.watchNanos = now;
-            this.send(new Watch(this.watcherId));
-        }
-        if (!this.armed) return;
-
-        // VOLUME/MUTE MIRROR ONLY UNDER THE VOLUME CAPABILITY — OTHERWISE CLIENT-LOCAL, LIKE LOD
-        if ((this.caps & Config.Capability.VOLUME.bit) != 0) {
-            if (this.volume() != authority.volume()) this.volume(authority.volume());
-            if (this.mute() != authority.mute()) this.mute(authority.mute());
-        }
-
         final boolean dormant = current == Status.WAITING || current == Status.STOPPED || current == Status.ENDED;
         if (!dormant) this.startIssued = false;
 
-        // DISCRETE STATE MIRROR — THE SESSION DICTATES START/PAUSE/STOP TRANSITIONS. ERROR PLAYERS
-        // ARE LEFT ALONE: RETRY POLICY BELONGS TO THE OWNER. A LOCKSTEP GATE REACHES US AS
-        // BUFFERING AND HOLDS THIS PLAYER LIKE A PAUSE UNTIL THE AUTHORITY RELEASES IT.
+        // DISCRETE STATE MIRROR — THE SESSION DICTATES START/PAUSE/STOP TRANSITIONS. ERROR PLAYERS ARE LEFT ALONE: RETRY
+        // POLICY BELONGS TO THE OWNER. A BUFFERING SESSION HOLDS THIS PLAYER LIKE A PAUSE
         switch (target) {
             case PLAYING -> {
                 if (dormant) {
@@ -467,10 +318,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
                     final boolean go;
                     if (current == Status.ENDED) {
                         final long end = this.duration() > 0 ? this.duration() : authority.duration();
-                        go = end > 0 && this.authorityTime() < Math.max(end - this.toleranceMs, this.toleranceMs);
+                        go = end > 0 && authorityTime(heard) < Math.max(end - this.toleranceMs, this.toleranceMs);
                     } else {
                         go = authority.repeat() || authority.duration() <= 0
-                                || authority.duration() - this.authorityTime() > this.toleranceMs;
+                                || authority.duration() - authorityTime(heard) > this.toleranceMs;
                     }
                     if (!this.startIssued && go) {
                         this.start();
@@ -514,36 +365,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         // RANDOMLY RUNNING SLOW, AND THE CLIENT ONLY EVER FALLS BEHIND ANYWAY (THE AUTHORITY IS A
         // BARE CLOCK: NO DECODING, NO BUFFERS), SO SMOOTHING THE OTHER DIRECTION BOUGHT NOTHING.
         // RATE-LIMITED SO A RESETTLING PIPELINE ISN'T SEEKED AGAIN BEFORE IT REPORTS ITS POSITION.
-        if (Math.abs(this.drift()) > this.toleranceMs && now - this.lastSeekNanos >= SEEK_COOLDOWN_NS) {
-            this.seekQuick(this.authorityTime());
+        if (Math.abs(this.drift(heard)) > this.toleranceMs && now - this.lastSeekNanos >= SEEK_COOLDOWN_NS) {
+            this.seekQuick(authorityTime(heard));
             this.lastSeekNanos = now;
         }
-    }
-
-    // HANDS A CONTROL CALL TO THE AUTHORITY WHEN THIS PLAYER FOLLOWS ONE, AND ANSWERS WHETHER THE
-    // CALL WAS TAKEN OVER — true MEANS THE CALLER MUST NOT TOUCH LOCAL STATE. A CALL RACING THE
-    // HANDSHAKE STILL GOES OUT: THE AUTHORITY IS THE REAL ENFORCEMENT POINT, AND SWALLOWING THE
-    // USER'S FIRST CLICK BECAUSE THE CONFIG HASN'T LANDED IS WORSE THAN ASKING FOR TOO MUCH.
-    private boolean request(final Control.Op op, final long value) {
-        if (!this.armed) return true;
-        if (this.role != Role.FOLLOWER || (this.applying && Thread.currentThread() == tickerThread)) return false;
-        if (this.configured && (this.caps & Config.Capability.CONTROLS.bit) == 0) {
-            LOGGER.debug(IT, "Dropped {} — controls are locked on this bridged player", op);
-            return true;
-        }
-        this.send(new Control(this.watcherId, op, value));
-        return true;
-    }
-
-    /**
-     * Whether the sync authority granted the given capability to this follower. Always false
-     * on non-followers and until the authority answers the initial hello — useful to reflect
-     * the session rules in a UI (e.g. disabling controls followers are not allowed to drive).
-     * @param capability the capability to check
-     * @return true when granted
-     */
-    public final boolean granted(final Config.Capability capability) {
-        return this.configured && (this.caps & capability.bit) != 0;
     }
 
     // ==========================================================================
@@ -723,25 +548,24 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     public boolean spatialAudio(final SFXEngine.SpatialAudio audio) { return this.sfx != null && this.sfx.spatialAudio(audio); }
 
     /**
-     * Moves to the previous frame of the video. Refused on a follower — stepping frames
+     * Moves to the previous frame of the video. Refused on a following player — stepping frames
      * against a synced timeline is meaningless.
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean previousFrame() { return this.role != Role.FOLLOWER; }
+    public boolean previousFrame() { return this.heard == null; }
 
     /**
-     * Moves to the next frame of the video. Refused on a follower — stepping frames
+     * Moves to the next frame of the video. Refused on a following player — stepping frames
      * against a synced timeline is meaningless.
      * @return true if the operation was successful, false otherwise.
      */
-    public boolean nextFrame() { return this.role != Role.FOLLOWER; }
+    public boolean nextFrame() { return this.heard == null; }
 
     /**
      * Sets the volume of the audio playback, clamped between 0 and 100.
      * Volume and {@link #mute(boolean)} are independent controls: changing the volume
-     * never alters the mute state, and audio stays silent while muted.
-     * On a follower with the {@link Config.Capability#VOLUME} capability the authority
-     * re-imposes its own value on the next tick.
+     * never alters the mute state, and audio stays silent while muted. Volume is always local:
+     * a followed clock never dictates it.
      * @param volume the desired volume level (0-100)
      */
     public void volume(final int volume) {
@@ -776,28 +600,27 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // ==========================================================================
     // SESSION CONTROLS
     // ==========================================================================
-    // EVERY BOOLEAN CONTROL ANSWERS ONE QUESTION: DID THIS CALL CHANGE THIS PLAYER'S OWN STATE? false
-    // COVERS A CALL FORWARDED TO THE AUTHORITY, DROPPED BY A LOCKED SESSION, REFUSED OR MADE AFTER release()
+    // EVERY BOOLEAN CONTROL ANSWERS ONE QUESTION: DID THIS CALL CHANGE THIS PLAYER'S OWN STATE? false COVERS A CALL
+    // REFUSED, ALREADY SATISFIED OR MADE AFTER release()
 
     /**
      * Starts media playback from the beginning, recovering from any previous state
      * (stopped, ended or error). An already-playing player restarts. Non-blocking.
-     * @return true if a local run was launched, false when the call was forwarded to the
-     *         sync authority (see {@link #sync(ByteBuffer)}), dropped or refused
+     * @return true if a run was launched, false when refused or released
      */
     public final boolean start() {
-        return !this.request(Control.Op.START, 0L) && this.launch(false, -1L);
+        return this.launch(false, -1L);
     }
 
     /**
      * Starts media playback like {@link #start()} but landing in a paused state, also clearing a
      * previous failure. Not equivalent to {@code start()} followed by {@link #pause()}: those two
      * calls race the pipeline setup, so the pause intent is latched before playback begins. Non-blocking.
-     * @return true if a local run was launched, false when the call was forwarded, dropped or refused
+     * @return true if a run was launched, false when refused or released
      * @see MediaPlayer#start()
      */
     public final boolean startPaused() {
-        return !this.request(Control.Op.START_PAUSED, 0L) && this.launch(true, -1L);
+        return this.launch(true, -1L);
     }
 
     // LAUNCHES A LOCAL RUN, PAUSED OR PLAYING, FROM THE BEGINNING (seekMs < 0) OR AT seekMs, AND CLEARS exception WHERE IT
@@ -823,34 +646,34 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * pipeline opens; an ended, stopped, waiting or failed player has nothing to pause or resume
      * and answers false (use {@link #start()} or {@link #togglePlay()} to play it again).
      * @param paused true to pause the media playback, false to resume
-     * @return true if the local state changed, false when forwarded, dropped, already there or impossible
+     * @return true if the state changed, false when already there or impossible
      */
-    public boolean pause(final boolean paused) { return !this.request(Control.Op.PAUSE, paused ? 1L : 0L); }
+    public abstract boolean pause(boolean paused);
 
     /**
      * Stops media playback, tearing the pipeline down and resetting the position to the beginning.
      * Every player, a failed one included, lands in {@link Status#STOPPED} with {@link #time()} at 0.
      * Non-blocking.
      * @return true if a transition to stopped happened (or was scheduled on the playback thread),
-     *         false when the player was already stopped, never started, forwarded or dropped
+     *         false when the player was already stopped or never started
      */
-    public boolean stop() { return !this.request(Control.Op.STOP, 0L); }
+    public abstract boolean stop();
 
     /**
      * Toggles playback: a playing (or buffering) player pauses, a paused one resumes, and an ended
      * or stopped one starts again from the beginning like {@link #start()}.
-     * @return true if the local state changed, false when forwarded, dropped or there is nothing to toggle
+     * @return true if the state changed, false when there is nothing to toggle
      */
-    public boolean togglePlay() { return !this.request(Control.Op.TOGGLE, 0L); }
+    public abstract boolean togglePlay();
 
     /**
      * Seeks to a specific time in the media, clamped to the known duration. Seeking an ended or
      * stopped player restarts it paused at the target; a waiting, failed or non-seekable one
      * answers false.
      * @param time the time to seek to, in milliseconds.
-     * @return true if the seek was taken locally, false when forwarded, dropped or impossible
+     * @return true if the seek was taken, false when impossible
      */
-    public boolean seek(final long time) { return !this.request(Control.Op.SEEK, time); }
+    public abstract boolean seek(long time);
 
     /**
      * Returns the current playback time in milliseconds: 0 before the first frame and after
@@ -863,7 +686,7 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Skips forward or backward by a specific time in the media. A positive value skips forward,
      * a negative one backward; the sum saturates instead of overflowing.
      * @param time the time to skip, in milliseconds.
-     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
+     * @return true if the seek was taken, false otherwise (see {@link #seek(long)})
      */
     public boolean skipTime(final long time) {
         final long now = this.time();
@@ -875,21 +698,21 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Quickly seeks to a specific time in the media without precise accuracy.
      * This method is useful for fast seeking operations where exact frame accuracy is not required.
      * @param time the time to seek to, in milliseconds.
-     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
+     * @return true if the seek was taken, false otherwise (see {@link #seek(long)})
      */
-    public boolean seekQuick(final long time) { return !this.request(Control.Op.SEEK_QUICK, time); }
+    public abstract boolean seekQuick(long time);
 
     /**
      * Skips forward 5 seconds in the media. Players with a finer natural step
      * (e.g. animated images) may override the distance.
-     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
+     * @return true if the seek was taken, false otherwise (see {@link #seek(long)})
      */
     public boolean forward() { return this.skipTime(SKIP_STEP_MS); }
 
     /**
      * Skips backward 5 seconds in the media. Players with a finer natural step
      * (e.g. animated images) may override the distance.
-     * @return true if the seek was taken locally, false otherwise (see {@link #seek(long)})
+     * @return true if the seek was taken, false otherwise (see {@link #seek(long)})
      */
     public boolean rewind() { return this.skipTime(-SKIP_STEP_MS); }
 
@@ -915,15 +738,13 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * while a speed less than 1.0f indicates slower playback.
      * The speed must be within the range (0.0f, 4.0f].
      * @param speed the desired playback speed.
-     * @return true if the speed applies locally, false when the value is out of range, the call was
-     *         forwarded or dropped, the player cannot change speed ({@link #canSpeed()}) or the
-     *         audio engine refused the new rate.
+     * @return true if the speed applies, false when the value is out of range, the player cannot
+     *         change speed ({@link #canSpeed()}), the audio engine refused the new rate or the player was released.
      */
     public boolean speed(final float speed) {
         // NaN FAILS BOTH COMPARISONS, WHICH IS THE POINT — IT MUST NEVER REACH THE CLOCKS
-        if (!(speed > 0f && speed <= 4.0f)) return false;
-        if (this.request(Control.Op.SPEED, Float.floatToIntBits(speed) & 0xFFFFFFFFL)) return false;
-        // RE-REQUESTING THE CURRENT SPEED IS A SUCCESSFUL NO-OP EVEN WHEN LOCKED (e.g. 1.0x ON SETUP)
+        if (!(speed > 0f && speed <= 4.0f) || !this.armed) return false;
+        // RE-REQUESTING THE CURRENT SPEED IS A SUCCESSFUL NO-OP (e.g. 1.0x ON SETUP)
         if (speed == this.speed) return true;
         // THE AUDIO ENGINE APPLIES THE RATE FIRST; THE CLOCKS FOLLOW ONLY A SPEED IT ACCEPTED
         if (!this.canSpeed() || (this.sfx != null && !this.sfx.speed(speed))) return false;
@@ -947,10 +768,10 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
      * Sets whether the media should repeat playback when it reaches the end. A timed still image
      * (see {@link #displayTime(long)}) never loops.
      * @param repeat true to enable repeat playback, false to disable
-     * @return true if the setting applied locally, false when forwarded to the authority or dropped
+     * @return true if the setting applied, false after {@link #release()}
      */
     public boolean repeat(final boolean repeat) {
-        if (this.request(Control.Op.REPEAT, repeat ? 1L : 0L)) return false;
+        if (!this.armed) return false;
         this.repeat = repeat;
         return true;
     }
@@ -1039,13 +860,17 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
     // STALL THE JOIN), SO TRANSITIONS STAY QUEUED AND THE RELEASE DELIVERS THEM WHEN IT FINISHES
     boolean holdStatus() { return false; }
 
-    // LEAVES THE BRIDGE BEFORE A RELEASE PUBLISHES STOPPED, SO A CONTROL A LISTENER ISSUES NEVER REACHES THE AUTHORITY
+    // LEAVES THE TICKER AND THE SESSION BEFORE A RELEASE PUBLISHES STOPPED, SO NO CORRECTION RUNS ON A DYING PLAYER
     final void disarm() {
-        synchronized (this.bridgeLock) {
+        synchronized (this.tickLock) {
             this.armed = false;
+            this.heard = null;
             TICKING.remove(this);
         }
     }
+
+    // THE LAST SNAPSHOT FED AND WHEN IT ARRIVED, PUBLISHED TOGETHER SO A READER NEVER AGES ONE WITH THE OTHER'S STAMP
+    private record Heard(Sync snapshot, long nanos) {}
 
     // A STATUS TRANSITION WAITING FOR DELIVERY; THE TERMINAL ONES CONSUME THE LISTENERS
     private record Transition(Status previous, Status current) {
@@ -1167,8 +992,8 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
 
     /**
      * Releases all resources associated with the media player, including the GPU and audio
-     * resources held by the backing engines. A follower deregisters from its authority and every
-     * player lands in {@link Status#STOPPED}. Idempotent: a second call is a no-op.
+     * resources held by the backing engines; every player stops following its clock and lands in
+     * {@link Status#STOPPED}. Idempotent: a second call is a no-op.
      * <p>Implementations may block the calling thread while their internal decode/IO threads
      * finish, so never call it from a status listener or a playback callback. After calling this
      * method, the media player should not be used again.
@@ -1178,7 +1003,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         Throwable failure = null;
         // ATTEMPT EVERY OWNED RESOURCE EVEN WHEN A HOST CALLBACK OR ANOTHER ENGINE FAILS.
         final Runnable[] cleanup = {
-                () -> { if (this.role == Role.FOLLOWER) this.send(new Unwatch(this.watcherId)); },
                 () -> { if (this.gfx != null) this.gfx.release(); },
                 () -> { if (this.sfx != null) this.sfx.release(); }
         };
@@ -1218,22 +1042,6 @@ public abstract sealed class MediaPlayer permits ServerMediaPlayer, FFMediaPlaye
         if (percent < 100) size = (int) Math.round(size * (percent / 100.0));
         if (size >= nativeSize) return nativeSize;
         return Math.max(2, size & ~1);
-    }
-
-    /**
-     * What a player is within a synchronized session. Not a client/server split: the axis is who
-     * owns the truth. A {@link ServerMediaPlayer} can take any role — it is the authority on a
-     * server, and a headless mirror on a client — while players backed by real media can only
-     * ever follow.
-     * @see MediaPlayer#role()
-     */
-    public enum Role {
-        /** No bridge: the player owns its playback and answers to nobody. */
-        SOLO,
-        /** Owns the session's truth and broadcasts it to every follower. */
-        AUTHORITY,
-        /** Tracks an authority and keeps its own playback aligned with it. */
-        FOLLOWER
     }
 
     /**

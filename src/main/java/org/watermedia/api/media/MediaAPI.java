@@ -2,7 +2,6 @@ package org.watermedia.api.media;
 
 import java.io.File;
 import java.net.URI;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -97,34 +96,9 @@ public final class MediaAPI {
         return MRL.preload(uri);
     }
 
-    /** Creates a plain {@link ServerMediaPlayer}: a clock without media or engines, on either side; broadcasting, if any, stays manual. */
+    /** Creates a {@link ServerMediaPlayer}, a clock without media or engines for either side; send its snapshots with your own transport and feed them to {@link MediaPlayer#sync(Sync)}. */
     public static ServerMediaPlayer serverPlayer() {
         return new ServerMediaPlayer();
-    }
-
-    /**
-     * Creates a broadcasting {@link ServerMediaPlayer} authority: the whole server side of the
-     * sync protocol runs automatically over the given byte carrier. Feed received upstream
-     * payloads through {@link ServerMediaPlayer#sync(ByteBuffer)}.
-     * @param bridge downstream byte carrier that broadcasts to every follower
-     * @param capabilities capabilities granted to the followers
-     * @return the authority instance
-     */
-    public static ServerMediaPlayer serverPlayer(final Bridge bridge, final Config.Capability... capabilities) {
-        if (capabilities == null) throw new IllegalArgumentException("Capabilities cannot be null");
-        return new ServerMediaPlayer(bridge, capabilities);
-    }
-
-    /**
-     * Creates a headless {@link ServerMediaPlayer} follower: a wall clock driven by a remote authority
-     * through the given carrier, useful as a media-less mirror (HUDs, logic-side replicas) and for
-     * exercising the protocol without a media backend. Feed received payloads through
-     * {@link ServerMediaPlayer#sync(ByteBuffer)}.
-     * @param bridge upstream byte carrier towards the authority
-     * @return the follower instance
-     */
-    public static ServerMediaPlayer follower(final Bridge bridge) {
-        return ServerMediaPlayer.follower(bridge);
     }
 
     /**
@@ -141,21 +115,7 @@ public final class MediaAPI {
      * @return the player, or {@code null} when not ready or on failure
      */
     public static MediaPlayer player(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
-        return player(mrl, 0, gfx, sfx, null);
-    }
-
-    /**
-     * Creates a media player for the FIRST MRL source that follows a {@link ServerMediaPlayer} authority
-     * through the given bridge, or {@code null} when no player can be built.
-     * @param mrl the resolved MRL
-     * @param gfx supplier of the video sink, invoked at most once
-     * @param sfx supplier of the audio sink, invoked at most once
-     * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
-     * @return the player, or {@code null} when not ready or on failure
-     * @see #player(MRL, int, Supplier, Supplier)
-     */
-    public static MediaPlayer player(final MRL mrl, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
-        return player(mrl, 0, gfx, sfx, bridge);
+        return player(mrl, 0, gfx, sfx);
     }
 
     /**
@@ -171,24 +131,9 @@ public final class MediaAPI {
      * @param gfx supplier of the video sink, invoked at most once
      * @param sfx supplier of the audio sink, invoked at most once
      * @return the player, or {@code null} when not ready or on failure
+     * @throws IllegalArgumentException when {@code mrl}, {@code gfx} or {@code sfx} is null
      */
     public static MediaPlayer player(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx) {
-        return player(mrl, sourceIndex, gfx, sfx, null);
-    }
-
-    /**
-     * Creates a media player for the given MRL source that follows a {@link ServerMediaPlayer} authority
-     * through the given bridge, or {@code null} when no player can be built.
-     * @param mrl the resolved MRL
-     * @param sourceIndex index of the source to play
-     * @param gfx supplier of the video sink, invoked at most once
-     * @param sfx supplier of the audio sink, invoked at most once
-     * @param bridge upstream byte carrier towards the authority, or {@code null} for a plain player
-     * @return the player, or {@code null} when not ready or on failure
-     * @throws IllegalArgumentException when {@code mrl}, {@code gfx} or {@code sfx} is null
-     * @see #player(MRL, int, Supplier, Supplier)
-     */
-    public static MediaPlayer player(final MRL mrl, final int sourceIndex, final Supplier<GFXEngine> gfx, final Supplier<SFXEngine> sfx, final Bridge bridge) {
         if (mrl == null || gfx == null || sfx == null) throw new IllegalArgumentException("The MRL and both engine suppliers are required");
         final MRL.Source source = mrl.source(sourceIndex);
         if (source == null) {
@@ -213,14 +158,14 @@ public final class MediaAPI {
             if (source.type() == MediaType.IMAGE) {
                 LOGGER.debug(IT, "Creating TxMediaPlayer for image: {}", source);
                 gfxEngine = gfx.get();
-                return new TxMediaPlayer(mrl, sourceIndex, gfxEngine, bridge);
+                return new TxMediaPlayer(mrl, sourceIndex, gfxEngine);
             }
 
             if (ffmpegLoaded) {
                 LOGGER.debug(IT, "Creating FFMediaPlayer for: {}", source);
                 gfxEngine = gfx.get();
                 sfxEngine = sfx.get();
-                return new FFMediaPlayer(mrl, sourceIndex, gfxEngine, sfxEngine, bridge);
+                return new FFMediaPlayer(mrl, sourceIndex, gfxEngine, sfxEngine);
             }
 
             LOGGER.error(IT, "No media backend available for: {}", mrl.uri());

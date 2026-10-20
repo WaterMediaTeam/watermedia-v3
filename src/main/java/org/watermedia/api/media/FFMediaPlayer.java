@@ -276,12 +276,7 @@ public final class FFMediaPlayer extends MediaPlayer {
     // NOTHING IS OPENED UNTIL start(); THE HEAVY FFMPEG SETUP RUNS ON THE INTERNAL THREADS SPAWNED THEN.
     // A NULL gfx MEANS AUDIO-ONLY AND A NULL sfx VIDEO-ONLY PLAYBACK
     FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx) {
-        this(mrl, sourceIndex, gfx, sfx, null);
-    }
-
-    // A NON-NULL bridge FOLLOWS A SERVER-SIDE AUTHORITY (SEE MediaPlayer)
-    FFMediaPlayer(final MRL mrl, final int sourceIndex, final GFXEngine gfx, final SFXEngine sfx, final Bridge bridge) {
-        super(mrl, sourceIndex, gfx, sfx, bridge);
+        super(mrl, sourceIndex, gfx, sfx);
         synchronized (THREADS) {
             this.group = "FFThread-" + players++;
         }
@@ -348,8 +343,7 @@ public final class FFMediaPlayer extends MediaPlayer {
                     if (this.releaseDone) return;
                     LOGGER.debug(IT, "Release requested");
                     this.released = true; // GATE OUT ANY LATER start() — THE ENGINES ARE ABOUT TO BE FREED
-                    // TEAR DOWN DIRECTLY, NEVER THROUGH stop(): ON A BRIDGED PLAYER THAT WOULD ASK THE SYNC
-                    // AUTHORITY TO STOP THE MEDIA FOR EVERY FOLLOWER JUST BECAUSE ONE CLIENT WENT AWAY.
+                    // TEAR DOWN DIRECTLY RATHER THAN THROUGH stop(): THE RELEASE PUBLISHES ITS OWN STOPPED ONCE THE PIPELINE IS JOINED
                     this.abort();
                     lifecycle = this.lifecycleThread;
                 }
@@ -396,7 +390,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean pause(final boolean paused) {
-        if (!super.pause(paused)) return false;
         final boolean changed = this.clock.paused(paused);
         // ALSO PAUSE/RESUME THE AUDIO ENGINE — WITHOUT THIS, OPENAL KEEPS PLAYING
         // ITS QUEUED BUFFERS UNTIL IT UNDERRUNS AND STOPS, AND THE NEXT RESUME
@@ -413,7 +406,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean stop() {
-        if (!super.stop()) return false;
         synchronized (this.lifecycleLock) {
             final Thread lifecycle = this.lifecycleThread;
             if (lifecycle != null && lifecycle.isAlive() && !lifecycle.isInterrupted()) return this.abort();
@@ -424,8 +416,7 @@ public final class FFMediaPlayer extends MediaPlayer {
         return (status == Status.ENDED || status == Status.ERROR) && this.clock.transition(Status.STOPPED);
     }
 
-    // INTERRUPTS THE PIPELINE AND ABORTS BLOCKING NATIVE I/O. SHARED BY stop(), THE RESTART PATH IN
-    // launch() AND release() — THE LATTER TWO ARE LOCAL TEARDOWNS THAT MUST NOT REACH THE AUTHORITY.
+    // INTERRUPTS THE PIPELINE AND ABORTS BLOCKING NATIVE I/O. SHARED BY stop(), THE RESTART PATH IN launch() AND release()
     private boolean abort() {
         final Thread lifecycle = this.lifecycleThread;
         if (lifecycle != null) {
@@ -441,7 +432,6 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean togglePlay() {
-        if (!super.togglePlay()) return false;
         return switch (this.clock.status()) {
             case ENDED, STOPPED -> this.launch(false, -1L);
             case WAITING, ERROR -> false;
@@ -451,12 +441,12 @@ public final class FFMediaPlayer extends MediaPlayer {
 
     @Override
     public boolean seek(final long timeMs) {
-        return super.seek(timeMs) && this.requestClampedSeek(timeMs, true);
+        return this.requestClampedSeek(timeMs, true);
     }
 
     @Override
     public boolean seekQuick(final long timeMs) {
-        return super.seekQuick(timeMs) && this.requestClampedSeek(timeMs, false);
+        return this.requestClampedSeek(timeMs, false);
     }
 
     // CLAMP ONLY AGAINST A KNOWN DURATION — duration() RETURNS NO_DURATION (0)
