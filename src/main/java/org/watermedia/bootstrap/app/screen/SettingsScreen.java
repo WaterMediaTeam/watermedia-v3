@@ -69,6 +69,10 @@ public final class SettingsScreen extends Screen {
     // AT 48 THE TITLE SAT FLUSH AGAINST THE FOLDER'S TOP EDGE
     private static final int TAB_H = 64;
     private static final int SECTION_H = 36;
+    private static final List<Keybind> KEYS_EDIT = List.of(new Keybind("ENTER", "Commit"), new Keybind("BACKSPACE", "Delete"),
+            new Keybind("ESC", "Cancel"));
+    private static final List<Keybind> KEYS_BROWSE = List.of(new Keybind("UP/DOWN", "Field"), new Keybind("LEFT/RIGHT", "Change"),
+            new Keybind("TAB", "Spec"), new Keybind("PGUP/PGDN", "Section"), new Keybind("R", "Reset"), new Keybind("ESC", "Back"));
 
     // EXTERNAL MOD CONFIG FILES THE SCREEN TRIES TO REVERSE-ENGINEER FROM THE CONFIG DIR INTO EDITABLE
     // TABS — SKIPPED SILENTLY WHEN THE FILE IS ABSENT OR CANNOT BE PARSED (SEE buildReverseSpec)
@@ -305,19 +309,7 @@ public final class SettingsScreen extends Screen {
 
     @Override
     public List<Keybind> keybinds() {
-        if (this.editField != null) {
-            return List.of(
-                    new Keybind("ENTER", "Commit"),
-                    new Keybind("BACKSPACE", "Delete"),
-                    new Keybind("ESC", "Cancel"));
-        }
-        return List.of(
-                new Keybind("UP/DOWN", "Field"),
-                new Keybind("LEFT/RIGHT", "Change"),
-                new Keybind("TAB", "Spec"),
-                new Keybind("PGUP/PGDN", "Section"),
-                new Keybind("R", "Reset"),
-                new Keybind("ESC", "Back"));
+        return this.editField != null ? KEYS_EDIT : KEYS_BROWSE;
     }
 
     // ==========================================================================

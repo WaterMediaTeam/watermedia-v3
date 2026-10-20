@@ -18,11 +18,15 @@ import java.awt.Color;
  * whole subtree in one place (dialog fade-in).
  */
 public final class Canvas {
+    private static final int CLIP_LEVELS = 16;
 
     private final TextRenderer text;
     // GLOBAL ALPHA MULTIPLIER STACK — MULTIPLICATIVE AND NESTABLE; 16 LEVELS IS FAR BEYOND ANY REAL TREE
     private final float[] alphaStack = new float[16];
     private int alphaDepth;
+    // LEFT, TOP, RIGHT AND BOTTOM OF EACH PUSHED CLIP, ALREADY INTERSECTED WITH ITS PARENT
+    private final int[] clipStack = new int[CLIP_LEVELS * 4];
+    private int clipDepth;
     private float alpha = 1f;
     private int windowWidth;
     private int windowHeight;
@@ -60,6 +64,10 @@ public final class Canvas {
     public Canvas viewport(final int width, final int height) {
         this.windowWidth = width;
         this.windowHeight = height;
+        // EVERY FRAME STARTS HERE, SO A DRAW THAT THREW MID-FRAME CANNOT LEAK ITS CLIP OR FADE INTO THE NEXT ONE
+        this.clipDepth = 0;
+        this.alphaDepth = 0;
+        this.alpha = 1f;
         return this;
     }
 
@@ -234,15 +242,41 @@ public final class Canvas {
         return this.text.spacedWidth(value, scale, bold, letterSpacing);
     }
 
-    /**
-     * Scissor clip — calls must be balanced with {@link #popClip}. The backend keeps a single rectangle,
-     * so nested clips are intersected by the caller ({@code ParentScroll}) rather than stacked here.
-     */
+    /** Clips every following draw to the rectangle intersected with the active clip; balance it with {@link #popClip}. */
     public void pushClip(final int x, final int y, final int w, final int h) {
-        RenderSystem.clip(x, y, w, h, this.windowHeight);
+        int left = x;
+        int top = y;
+        int right = x + Math.max(0, w);
+        int bottom = y + Math.max(0, h);
+        if (this.clipDepth > 0) {
+            // A SATURATED STACK INTERSECTS WITH ITS DEEPEST RECORDED CLIP, LIKE THE ALPHA STACK
+            final int at = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;
+            left = Math.max(left, this.clipStack[at]);
+            top = Math.max(top, this.clipStack[at + 1]);
+            right = Math.max(left, Math.min(right, this.clipStack[at + 2]));
+            bottom = Math.max(top, Math.min(bottom, this.clipStack[at + 3]));
+        }
+        if (this.clipDepth < CLIP_LEVELS) {
+            final int at = this.clipDepth * 4;
+            this.clipStack[at] = left;
+            this.clipStack[at + 1] = top;
+            this.clipStack[at + 2] = right;
+            this.clipStack[at + 3] = bottom;
+        }
+        this.clipDepth++;
+        RenderSystem.clip(left, top, right - left, bottom - top, this.windowHeight);
     }
 
+    /** Restores the clip active before the matching {@link #pushClip}, or disables clipping at the outermost level. */
     public void popClip() {
-        RenderSystem.clearClip();
+        if (this.clipDepth == 0) return;
+        this.clipDepth--;
+        if (this.clipDepth == 0) {
+            RenderSystem.clearClip();
+            return;
+        }
+        final int at = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;
+        RenderSystem.clip(this.clipStack[at], this.clipStack[at + 1], this.clipStack[at + 2] - this.clipStack[at],
+                this.clipStack[at + 3] - this.clipStack[at + 1], this.windowHeight);
     }
 }

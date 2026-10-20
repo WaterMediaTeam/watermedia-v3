@@ -166,7 +166,55 @@ public class ListViewInteractionTest {
         }
     }
 
+    @Nested
+    @DisplayName("Long lists")
+    class LongLists {
+
+        @Test
+        @DisplayName("only the rows near the viewport are children, and scrolling moves that window")
+        void onlyRowsNearTheViewportAreChildren() {
+            final List<String> items = new ArrayList<>();
+            for (int i = 0; i < 500; i++) items.add("item" + i);
+            final List<Integer> updated = new ArrayList<>();
+            final ListView<String> list = new ListView<String>().rowHeight(40)
+                    .rowFactory((item, index) -> new BoundRow(() -> updated.add(index)))
+                    .items(items).size(200, 80);
+            list.measure(200, 80);
+            list.layout(0, 0);
+            list.update();
+            assertTrue(list.children().size() <= 4, "children: " + list.children().size());
+            assertTrue(updated.stream().allMatch(index -> index < 4), "updated: " + updated);
+
+            list.selection(0).moveSelection(300);
+            list.update();
+            list.measure(200, 80);
+            list.layout(0, 0);
+            final Element<?> selected = list.children().stream().filter(row -> row.top() >= 0 && row.top() < 80)
+                    .reduce((first, second) -> second).orElseThrow();
+            assertTrue(selected.top() + selected.measuredHeight() <= 80);
+            assertTrue(list.children().size() <= 5, "children: " + list.children().size());
+
+            final List<String> activations = new ArrayList<>();
+            list.onSelect((item, index) -> activations.add(item));
+            assertTrue(list.dispatchClick(20, 60));
+            assertEquals(List.of("item300"), activations);
+        }
+    }
+
     // UTILITY
+
+    private static final class BoundRow extends Element<BoundRow> {
+        private final Runnable binder;
+
+        private BoundRow(final Runnable binder) {
+            this.binder = binder;
+        }
+
+        @Override
+        protected void onUpdate() {
+            this.binder.run();
+        }
+    }
 
     private static ListView<String> list(final List<String> activations) {
         final ListView<String> list = new ListView<String>().rowHeight(40)

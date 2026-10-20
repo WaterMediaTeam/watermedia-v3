@@ -50,6 +50,10 @@ public final class RenderEngine {
     // SCISSOR RECTS AND RASTERIZED LINE WIDTHS. GEOMETRY AND THE VIEWPORT ARE NOT TOUCHED — QUADS
     // ALREADY SCALE THROUGH THE ORTHO PROJECTION AND THE VIEWPORT STAYS PHYSICAL. DORMANT AT 1f.
     private float uiScale = 1f;
+    // BOTH BACKENDS START AT A 1px RASTERIZER LINE WIDTH
+    private float physicalLineWidth = 1f;
+    // GLOW HEARTBEAT SAMPLED ONCE PER FRAME; IT DRIFTS FAR TOO SLOWLY TO DIFFER BETWEEN GLOWS OF ONE FRAME
+    private float pulse = glowPulse();
 
     public RenderEngine(final RenderBackend backend) {
         this.backend = backend;
@@ -145,6 +149,7 @@ public final class RenderEngine {
     }
 
     public void beginFrame() {
+        this.pulse = glowPulse();
         this.backend.beginFrame();
     }
 
@@ -197,10 +202,14 @@ public final class RenderEngine {
     }
 
     public void lineWidth(final float width) {
-        this.flush();
         // RASTERIZER LINE WIDTH (glLineWidth / vkCmdSetLineWidth) IS PHYSICAL PIXELS — SCALE IT HERE.
         // QUAD-BASED STROKES (strokeQuads) ARE LOGICAL GEOMETRY AND ALREADY SCALE WITH THE ORTHO.
-        this.backend.lineWidth(width * this.uiScale);
+        final float physical = width * this.uiScale;
+        // THE BACKENDS KEEP THE LAST WIDTH (VULKAN RE-RECORDS IT PER FRAME), SO AN EQUAL WIDTH KEEPS THE BATCH
+        if (physical == this.physicalLineWidth) return;
+        this.flush();
+        this.physicalLineWidth = physical;
+        this.backend.lineWidth(physical);
     }
 
     public void flush() {
@@ -432,7 +441,7 @@ public final class RenderEngine {
         final float r = glow.getRed() / 255f;
         final float g = glow.getGreen() / 255f;
         final float b = glow.getBlue() / 255f;
-        final float a = alpha * glowPulse(); // -10% FORCE, MODULATED BY A SLOW RANDOM HEARTBEAT
+        final float a = alpha * this.pulse; // -10% FORCE, MODULATED BY A SLOW RANDOM HEARTBEAT
         if (this.backend.supportsSoftRect()) {
             // ONE SDF QUAD INSTEAD OF 10 STACKED FILLS — SAME HALO, A FRACTION OF THE OVERDRAW
             this.flush();

@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.screen;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaPlayer;
+import org.watermedia.api.media.TxMediaPlayer;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
@@ -65,6 +66,17 @@ public final class PlayerScreen extends Screen {
     private static final int METRIC_SCROLL_STEP = 48;
     // HOISTED FORMATTER: REBUILDING IT PER FRAME (UP TO TWICE) WAS PURE OVERHEAD
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(ZoneId.systemDefault());
+    // A PAUSED PLAYER KEEPS PAINTING THIS LONG AFTER INPUT, SO A PAUSED SEEK SHOWS ITS FRAME ON VULKAN, WHOSE
+    // ENGINE DOES NOT WAKE THE RENDER LOOP WHEN A FRAME LANDS
+    private static final long SETTLE_NS = 1_000_000_000L;
+    private static final List<Keybind> KEYS_VIDEO = List.of(new Keybind("TYPE", "Resolution"), new Keybind("TAB", "Field"),
+            new Keybind("UP/DOWN", "LOD"), new Keybind("ENTER/ESC", "Close"));
+    private static final List<Keybind> KEYS_QUALITY = List.of(new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"),
+            new Keybind("ESC", "Cancel"));
+    private static final List<Keybind> KEYS_SOURCES = List.of(new Keybind("SPACE", "Play/Pause"), new Keybind("L", "Loop"),
+            new Keybind("V", "Video"), new Keybind("ESC", "Menu"), new Keybind("ENTER", "Sources"));
+    private static final List<Keybind> KEYS_QUALITIES = List.of(new Keybind("SPACE", "Play/Pause"), new Keybind("L", "Loop"),
+            new Keybind("V", "Video"), new Keybind("ESC", "Menu"), new Keybind("ENTER", "Quality"));
     // HUD FADE / TOP-BAND GRADIENT STOPS (PORTED FROM THE LEGACY fadeLeft/fadeBottom/fillGradientV CALLS)
     private static final Color FADE_DARK = new Color(0, 0, 0, 230);
     private static final Color FADE_CLEAR = new Color(0, 0, 0, 0);
@@ -76,6 +88,7 @@ public final class PlayerScreen extends Screen {
     // LIVE PLAYBACK STATE
     private boolean debugOpen = true;
     private boolean endedSoundPlayed;
+    private long settleUntil;
     private boolean loopEnabled = true;
     private float speed = 1f;
     // REMEMBERS THE KEY WHOSE PRESS JUST CLOSED THE SPEED DROPDOWN MENU SO ONLY ITS MATCHING RELEASE IS
@@ -149,27 +162,30 @@ public final class PlayerScreen extends Screen {
 
     @Override
     public boolean continuous() {
-        // TEXT INPUT (CARET BLINK) PLUS THE PLAYER-ACTIVE TRIGGER (VIDEO NEEDS FRAMES)
+        if (this.textInputActive()) return true;
         final MediaPlayer player = this.ctx.player;
-        return this.textInputActive()
-                || (player != null && !player.error() && !player.stopped()
-                    && (!player.ended() || !this.endedSoundPlayed));
+        if (player == null) return false;
+        return switch (player.status()) {
+            case WAITING, LOADING, BUFFERING -> true;
+            // A STILL PICTURE HAS NO TIMELINE: ONCE SHOWN IT NEVER CHANGES
+            case PLAYING -> !(player instanceof TxMediaPlayer) || player.duration() > 0L;
+            case PAUSED -> System.nanoTime() < this.settleUntil;
+            case ENDED -> !this.endedSoundPlayed;
+            case STOPPED, ERROR -> false;
+        };
+    }
+
+    @Override
+    public boolean dispatchClick(final double mx, final double my) {
+        this.settleUntil = System.nanoTime() + SETTLE_NS;
+        return super.dispatchClick(mx, my);
     }
 
     @Override
     public List<Keybind> keybinds() {
-        if (this.videoDialog != null) {
-            return List.of(new Keybind("TYPE", "Resolution"), new Keybind("TAB", "Field"),
-                    new Keybind("UP/DOWN", "LOD"), new Keybind("ENTER/ESC", "Close"));
-        }
-        if (this.qualityDialog != null) {
-            return List.of(new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"),
-                    new Keybind("ESC", "Cancel"));
-        }
-        final boolean multi = this.ctx.availableSources != null && this.ctx.availableSources.length > 1;
-        return List.of(new Keybind("SPACE", "Play/Pause"), new Keybind("L", "Loop"),
-                new Keybind("V", "Video"), new Keybind("ESC", "Menu"),
-                new Keybind("ENTER", multi ? "Sources" : "Quality"));
+        if (this.videoDialog != null) return KEYS_VIDEO;
+        if (this.qualityDialog != null) return KEYS_QUALITY;
+        return this.ctx.availableSources != null && this.ctx.availableSources.length > 1 ? KEYS_SOURCES : KEYS_QUALITIES;
     }
 
     @Override
@@ -352,6 +368,7 @@ public final class PlayerScreen extends Screen {
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
+        this.settleUntil = System.nanoTime() + SETTLE_NS;
         // THE SPEED DROPDOWN MENU LIVES ON OUR OVERLAY AND SWALLOWS ITS OWN ESC/ENTER ON PRESS. IF THIS PRESS
         // CLOSED IT, EAT THE MATCHING RELEASE SO ONE TAP IS NOT ALSO A SCREEN SHORTCUT (E.G. LEAVE THE SCREEN)
         final boolean menuOpen = this.speedMenuOpen();

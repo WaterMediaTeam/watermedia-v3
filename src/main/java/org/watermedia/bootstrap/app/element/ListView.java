@@ -16,13 +16,16 @@ import java.util.function.BiFunction;
  * the scrollbar, and the selection/hover highlight so row views only render content. Keyboard navigation
  * is available via {@link #moveSelection}, which auto-scrolls instantly to the selection only when it
  * actually changes (free wheel scrolling is never stolen back). Hover and keyboard navigation update
- * the selection without activating a row; only a row click fires {@link #onSelect}.
+ * the selection without activating a row; only a row click fires {@link #onSelect}. With a fixed
+ * {@link #rowHeight} only the rows near the viewport are children, so long lists cost what they show.
  *
  * @param <D> the item data type
  */
 public final class ListView<D> extends Group<ListView<D>> {
 
     private final List<D> items = new ArrayList<>();
+    // EVERY BUILT ROW BY ITEM INDEX; children HOLDS THE WINDOW OF THEM THAT UPDATES, LAYS OUT, DRAWS AND TAKES INPUT
+    private final List<Element<?>> rows = new ArrayList<>();
     private BiFunction<D, Integer, Element<?>> rowFactory;
     private BiConsumer<D, Integer> onSelect;
     private int rowHeight;      // 0 = EACH ROW'S NATURAL HEIGHT
@@ -34,6 +37,11 @@ public final class ListView<D> extends Group<ListView<D>> {
     private boolean selectOnHover;
     private Color selectionColor = AppTheme.alpha(AppTheme.NEON, 46);
     private Color hoverColor = AppTheme.alpha(AppTheme.NEON_DARK, 40);
+    // ITEM INDEX OF children.get(0) AND HOW MANY VISIBLE ROWS SIT ABOVE IT
+    private int windowFrom;
+    private int windowSlot;
+    // INNER HEIGHT OF THE LAST LAYOUT; update() PICKS ITS WINDOW WITH IT BEFORE THE NEXT LAYOUT RUNS
+    private int viewport;
 
     public ListView<D> items(final List<D> data) {
         this.items.clear();
@@ -110,7 +118,10 @@ public final class ListView<D> extends Group<ListView<D>> {
     }
 
     private void rebuild() {
-        this.children.clear();
+        this.clear();
+        this.rows.clear();
+        this.windowFrom = 0;
+        this.windowSlot = 0;
         if (this.rowFactory == null) return;
         for (int i = 0; i < this.items.size(); i++) {
             final int index = i;
@@ -119,8 +130,48 @@ public final class ListView<D> extends Group<ListView<D>> {
             row.width(MAX_PARENT);
             if (this.rowHeight > 0) row.height(this.rowHeight);
             row.onClick(v -> this.activate(index));
-            this.add(row);
+            this.rows.add(row);
         }
+        // NATURAL-HEIGHT ROWS ARE ALWAYS ALL CHILDREN; FIXED-HEIGHT ROWS JOIN THROUGH window()
+        if (this.rowHeight <= 0) for (final Element<?> row: this.rows) this.add(row);
+    }
+
+    // MAKES THE ROWS WHOSE SLOTS OVERLAP THE VIEWPORT, PLUS ONE ROW ON EACH SIDE, THE ONLY CHILDREN. RETURNS
+    // WHETHER THE WINDOW CHANGED, SO A LAYOUT KNOWS ITS NEW ROWS STILL NEED A MEASURE
+    private boolean window() {
+        if (this.rowHeight <= 0) return false;
+        final int pitch = this.rowHeight + this.spacing;
+        final int top = this.scroll.offset - pitch;
+        final int bottom = this.scroll.offset + this.viewport + pitch;
+        int from = -1;
+        int to = this.rows.size();
+        int slot = 0;
+        int fromSlot = 0;
+        for (int i = 0; i < this.rows.size(); i++) {
+            if (!this.rows.get(i).visible) continue;
+            final int y = slot * pitch;
+            if (y >= bottom) {
+                to = i;
+                break;
+            }
+            if (from < 0 && y + this.rowHeight > top) {
+                from = i;
+                fromSlot = slot;
+            }
+            slot++;
+        }
+        if (from < 0) {
+            from = to;
+            fromSlot = slot;
+        }
+        if (from == this.windowFrom && to - from == this.children.size()) return false;
+        // A ROW LEAVING THE WINDOW KEEPS NO HOVER, OR IT WOULD COME BACK LIT
+        for (final Element<?> row: this.children) row.clearHover();
+        this.clear();
+        for (int i = from; i < to; i++) this.add(this.rows.get(i));
+        this.windowFrom = from;
+        this.windowSlot = fromSlot;
+        return true;
     }
 
     private void activate(final int index) {
@@ -132,10 +183,16 @@ public final class ListView<D> extends Group<ListView<D>> {
 
     private void ensureVisible(final int index) {
         int y = 0;
-        for (int i = 0; i < index && i < this.children.size(); i++) {
-            y += this.children.get(i).measuredHeight + this.spacing;
+        final int rowH;
+        if (this.rowHeight > 0) {
+            for (int i = 0; i < index && i < this.rows.size(); i++) {
+                if (this.rows.get(i).visible) y += this.rowHeight + this.spacing;
+            }
+            rowH = this.rowHeight;
+        } else {
+            for (int i = 0; i < index && i < this.rows.size(); i++) y += this.rows.get(i).measuredHeight + this.spacing;
+            rowH = index < this.rows.size() ? this.rows.get(index).measuredHeight : 0;
         }
-        final int rowH = index < this.children.size() ? this.children.get(index).measuredHeight : this.rowHeight;
         final int viewport = this.innerHeight();
         int offset = this.scroll.offset;
         if (y < offset) offset = y;
@@ -148,18 +205,32 @@ public final class ListView<D> extends Group<ListView<D>> {
     @Override
     protected void onUpdate() {
         if (this.scroll.animate()) this.invalidate();
+        // Group.update RUNS THIS BEFORE THE CHILDREN, SO ONLY THE ROWS OF THE NEW WINDOW BIND THIS FRAME
+        this.window();
     }
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
+        if (this.rowHeight > 0) {
+            int count = 0;
+            for (final Element<?> row: this.rows) if (row.visible) count++;
+            this.totalHeight = count * this.rowHeight + this.spacing * Math.max(0, count - 1);
+            for (final Element<?> row: this.children) {
+                if (!row.visible) continue;
+                row.measure(innerAvailWidth, this.rowHeight);
+                row.measuredHeight = this.rowHeight;
+            }
+            this.contentWidth = this.rows.isEmpty() ? 0 : innerAvailWidth;
+            this.contentHeight = Math.min(this.totalHeight, innerAvailHeight);
+            return;
+        }
         int used = 0;
         int maxW = 0;
         int visibleCount = 0;
         for (final Element<?> row: this.children) {
             if (!row.visible) continue;
             visibleCount++;
-            row.measure(innerAvailWidth, this.rowHeight > 0 ? this.rowHeight : ScrollState.UNBOUNDED);
-            if (this.rowHeight > 0) row.measuredHeight = this.rowHeight;
+            row.measure(innerAvailWidth, ScrollState.UNBOUNDED);
             used += row.measuredHeight;
             maxW = Math.max(maxW, row.measuredWidth);
         }
@@ -172,7 +243,15 @@ public final class ListView<D> extends Group<ListView<D>> {
     protected void onLayout() {
         // CLAMP THE OFFSET + MOMENTUM STATE INTO THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
         this.scroll.clamp(this.totalHeight - this.innerHeight());
-        int y = this.innerTop() - this.scroll.offset;
+        this.viewport = this.innerHeight();
+        if (this.window()) {
+            for (final Element<?> row: this.children) {
+                if (!row.visible) continue;
+                row.measure(this.innerWidth(), this.rowHeight);
+                row.measuredHeight = this.rowHeight;
+            }
+        }
+        int y = this.innerTop() - this.scroll.offset + this.windowSlot * (this.rowHeight + this.spacing);
         boolean first = true;
         for (final Element<?> row: this.children) {
             if (!row.visible) continue;
@@ -191,12 +270,13 @@ public final class ListView<D> extends Group<ListView<D>> {
         for (int i = 0; i < this.children.size(); i++) {
             final Element<?> row = this.children.get(i);
             if (!row.visible) continue;
+            final boolean selected = this.windowFrom + i == this.selectedIndex;
             // TELL THE ROW ITS SELECTION STATE SO CUSTOM ROWS CAN SELF-STYLE; ALSO PAINT THE DEFAULT HIGHLIGHT
-            row.selected(i == this.selectedIndex);
+            row.selected(selected);
             // CULL ROWS FULLY OUTSIDE THE VIEWPORT IN LOGIC — DON'T RELY ONLY ON THE SCISSOR, SO A SCROLLED
             // ROW CAN NEVER BLEED OVER THE CHROME EVEN IF A BACKEND'S CLIP MISBEHAVES
             if (row.top + row.measuredHeight <= viewTop || row.top >= viewBottom) continue;
-            if (i == this.selectedIndex) {
+            if (selected) {
                 canvas.fill(row.left, row.top, row.measuredWidth, row.measuredHeight, this.selectionColor);
             } else if (row.hovered) {
                 canvas.fill(row.left, row.top, row.measuredWidth, row.measuredHeight, this.hoverColor);
@@ -215,6 +295,15 @@ public final class ListView<D> extends Group<ListView<D>> {
     }
 
     @Override
+    public boolean textInputActive() {
+        // A FOCUSED FIELD STAYS FOCUSED WHILE ITS ROW IS SCROLLED OUT OF THE WINDOW
+        for (final Element<?> row: this.rows) {
+            if (row.textInputActive()) return true;
+        }
+        return false;
+    }
+
+    @Override
     public boolean dispatchClick(final double mx, final double my) {
         if (!this.contains(mx, my)) return false;
         return super.dispatchClick(mx, my);
@@ -229,8 +318,8 @@ public final class ListView<D> extends Group<ListView<D>> {
         final boolean result = super.dispatchHover(mx, my);
         if (this.selectOnHover) {
             for (int i = 0; i < this.children.size(); i++) {
-                if (this.children.get(i).hovered && i != this.selectedIndex) {
-                    this.selection(i).invalidate();
+                if (this.children.get(i).hovered && this.windowFrom + i != this.selectedIndex) {
+                    this.selection(this.windowFrom + i).invalidate();
                     break;
                 }
             }

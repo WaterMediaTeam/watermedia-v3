@@ -3,6 +3,8 @@ package org.watermedia.bootstrap.app.element;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Spacing;
 
+import java.util.Locale;
+
 /**
  * A keyboard key-cap that renders a single shortcut key such as {@code "C"} or {@code "ESC"}. It sizes to
  * the key text plus a tight padding and draws a dark neon-tinted cap with a hairline neon outline and a
@@ -17,6 +19,8 @@ public final class KeyChip extends Element<KeyChip> {
     private static final float SCALE = AppTheme.TEXT_TINY;
 
     private String key = "";
+    // THE FOOTER CAP SHOWS THE KEY UPPERCASE; KEPT HERE SO MEASURE AND DRAW DO NOT CONVERT IT EVERY FRAME
+    private String upper = "";
     private String icon = "";
 
     public KeyChip() {
@@ -25,11 +29,12 @@ public final class KeyChip extends Element<KeyChip> {
 
     public KeyChip(final String key) {
         this();
-        this.key = key == null ? "" : key;
+        this.key(key);
     }
 
     public KeyChip key(final String value) {
         this.key = value == null ? "" : value;
+        this.upper = this.key.toUpperCase(Locale.ROOT);
         return this;
     }
 
@@ -48,7 +53,7 @@ public final class KeyChip extends Element<KeyChip> {
      * pause for SPACE, info otherwise — the exact mapping of the imperative bindings bar.
      */
     public static String keyIcon(final String key) {
-        final String k = key == null ? "" : key.toUpperCase();
+        final String k = key == null ? "" : key.toUpperCase(Locale.ROOT);
         if (k.contains("ARROW") || k.contains("UP") || k.contains("DOWN") || k.contains("LEFT") || k.contains("RIGHT")) return "arrows";
         if (k.contains("ENTER")) return "play";
         if (k.contains("ESC")) return "x";
@@ -65,7 +70,7 @@ public final class KeyChip extends Element<KeyChip> {
         }
         if (!this.icon.isEmpty()) {
             // FOOTER KEY-CAP — max(36, textWidth + 36) x 22
-            this.contentWidth = Math.max(36, this.ctx.text.width(this.key.toUpperCase(), AppTheme.TEXT_BODY) + 36);
+            this.contentWidth = Math.max(36, this.ctx.text.width(this.upper, AppTheme.TEXT_BODY) + 36);
             this.contentHeight = 22;
             return;
         }
@@ -81,7 +86,7 @@ public final class KeyChip extends Element<KeyChip> {
             canvas.stroke(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.STROKE_BRIGHT, 1f);
             canvas.icon(this.icon, this.left + 7, this.top + (this.measuredHeight - 12) / 2, 12, AppTheme.TEXT_FAINT);
             if (!this.key.isEmpty()) {
-                canvas.text(this.key.toUpperCase(), this.left + 24,
+                canvas.text(this.upper, this.left + 24,
                         this.top + (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2,
                         AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
             }

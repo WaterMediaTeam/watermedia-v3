@@ -22,6 +22,7 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -806,6 +807,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         }
         f.descPoolIndex = 0;
         f.descPoolUsed = 0;
+        f.viewSetCount = 0;
         f.vertexOffset = 0;
         this.boundPipeline = 0L;
         this.boundVbo = 0L;
@@ -959,12 +961,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
 
             final boolean useTex = textured && this.currentView != 0L;
-            // TEXTURED DRAWS SAMPLE currentView: REUSE THE CACHED SET WHILE THE VIEW IS UNCHANGED, ELSE ALLOCATE
-            // A FRESH PER-FRAME SET. NON-TEXTURED DRAWS BIND THE DUMMY.
+            // TEXTURED DRAWS SAMPLE currentView THROUGH THE SET THIS FRAME ALREADY WROTE FOR IT, SO ALTERNATING
+            // BETWEEN ATLASES, ICONS AND THUMBNAILS DOES NOT ALLOCATE A SET PER SWITCH. NON-TEXTURED DRAWS BIND THE DUMMY.
             final long set;
             if (useTex) {
                 if (this.currentView != this.boundView || this.boundTexSet == 0L) {
-                    this.boundTexSet = this.allocTextureSet(stack, f, this.currentView);
+                    this.boundTexSet = this.textureSet(stack, f, this.currentView);
                     this.boundView = this.currentView;
                 }
                 set = this.boundTexSet;
@@ -1217,7 +1219,11 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     // DESCRIPTOR SETS (PER-FRAME, GROWABLE POOL CHAIN)
     // ==========================================================================
-    private long allocTextureSet(final MemoryStack stack, final Frame f, final long view) {
+    // A FRAME SAMPLES FEW DISTINCT VIEWS, SO A LINEAR SCAN OVER ITS VIEW -> SET PAIRS BEATS A BOXED MAP
+    private long textureSet(final MemoryStack stack, final Frame f, final long view) {
+        for (int i = 0; i < f.viewSetCount; i++) {
+            if (f.viewSets[i * 2] == view) return f.viewSets[i * 2 + 1];
+        }
         if (f.descPoolUsed >= SETS_PER_POOL) {
             f.descPoolIndex++;
             f.descPoolUsed = 0;
@@ -1227,6 +1233,10 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final long set = this.allocSet(stack, pool);
         f.descPoolUsed++;
         this.writeTextureSet(stack, set, view);
+        if (f.viewSetCount * 2 == f.viewSets.length) f.viewSets = Arrays.copyOf(f.viewSets, f.viewSets.length * 2);
+        f.viewSets[f.viewSetCount * 2] = view;
+        f.viewSets[f.viewSetCount * 2 + 1] = set;
+        f.viewSetCount++;
         return set;
     }
 
@@ -1285,6 +1295,18 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         vkDestroyImageView(this.device, rec.view(), null);
         vkDestroyImage(this.device, rec.image(), null);
         vkFreeMemory(this.device, rec.memory(), null);
+        // THE DRIVER MAY HAND THE SAME HANDLE TO THE NEXT VIEW, SO NO CACHED SET MAY OUTLIVE THIS ONE
+        if (this.boundView == rec.view()) this.boundTexSet = 0L;
+        for (final Frame f: this.frames) {
+            if (f == null) continue;
+            for (int i = 0; i < f.viewSetCount; i++) {
+                if (f.viewSets[i * 2] != rec.view()) continue;
+                f.viewSetCount--;
+                f.viewSets[i * 2] = f.viewSets[f.viewSetCount * 2];
+                f.viewSets[i * 2 + 1] = f.viewSets[f.viewSetCount * 2 + 1];
+                break;
+            }
+        }
     }
 
     // CREATES A SAMPLED R8G8B8A8_UNORM DEVICE-LOCAL IMAGE, STAGES THE TIGHTLY-PACKED RGBA THROUGH A
@@ -1571,6 +1593,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final List<Long> descPools = new ArrayList<>();
         int descPoolIndex;
         int descPoolUsed;
+        // VIEW, SET PAIRS WRITTEN THIS FRAME; THEY DIE WITH THE POOL RESET THAT STARTS THE NEXT USE OF THIS FRAME
+        long[] viewSets = new long[64];
+        int viewSetCount;
     }
 
     // AN APP TEXTURE: ITS IMAGE, BACKING MEMORY AND SAMPLEABLE VIEW

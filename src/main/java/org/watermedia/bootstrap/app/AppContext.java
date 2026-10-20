@@ -170,10 +170,10 @@ public final class AppContext implements Executor {
     }
 
     public void requestRender() {
+        // ONLY THE FIRST REQUEST AFTER A CONSUMED FRAME WAKES THE LOOP; LATER ONES FIND THE FLAG ALREADY RAISED
+        if (this.renderRequested) return;
         this.renderRequested = true;
-        if (this.windowHandle != 0L) {
-            glfwPostEmptyEvent();
-        }
+        if (this.windowHandle != 0L) glfwPostEmptyEvent();
     }
 
     public boolean renderRequested() {

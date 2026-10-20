@@ -92,12 +92,16 @@ public class WaterMediaApp {
     // LOG FILES PAST EITHER LIMIT ARE NOT UPLOADED TO MCLOGS
     private static final long UPLOAD_LIMIT_BYTES = 10L * 1_024 * 1_024;
     private static final int UPLOAD_LIMIT_LINES = 25_000;
+    private static final List<Keybind> KEYS_ERROR = List.of(new Keybind("ENTER/ESC", "Close"));
+    private static final List<Keybind> KEYS_EXIT = List.of(new Keybind("ENTER", "Exit"), new Keybind("ESC", "Cancel"));
     private static final AppContext ctx = new AppContext();
     private static final ScreenManager screens = new ScreenManager();
 
     // READ BY THE GLOW-PULSE BACKGROUND THREAD, WRITTEN BY THE RENDER THREAD (EXIT/SWAP-FAILURE) — VOLATILE
     // SO THE FALSE IS ALWAYS OBSERVED.
     private static volatile boolean running = true;
+    // WRITTEN BY THE GLFW ICONIFY CALLBACK, READ BY THE GLOW-PULSE THREAD
+    private static volatile boolean iconified;
     private static boolean maximized;
     // PENDING RENDER-ENGINE HOT-SWAP TARGET (null = NONE). SET FROM THE SETTINGS SCREEN, CONSUMED AT THE TOP
     // OF THE MAIN LOOP — NEVER MID-FRAME OR INSIDE A CALLBACK. THE MAIN LOOP OWNS THE FrameLimiter, WHICH THE
@@ -316,6 +320,10 @@ public class WaterMediaApp {
             RenderSystem.viewport(width, height);
             ctx.requestRender();
         });
+        glfwSetWindowIconifyCallback(ctx.windowHandle, (w, minimized) -> {
+            iconified = minimized;
+            ctx.requestRender();
+        });
         glfwSetWindowMaximizeCallback(ctx.windowHandle, (w, isMaximized) -> {
             maximized = isMaximized;
             ctx.windowMaximized = maximized;
@@ -457,8 +465,8 @@ public class WaterMediaApp {
 
     // FOOTER SHORTCUTS — A VISIBLE GLOBAL DIALOG OVERRIDES THE ACTIVE SCREEN'S HINTS, AS THE OLD BOTTOM BAR DID
     private static List<Keybind> footerKeybinds() {
-        if (ctx.hasError()) return List.of(new Keybind("ENTER/ESC", "Close"));
-        if (ctx.exitConfirm) return List.of(new Keybind("ENTER", "Exit"), new Keybind("ESC", "Cancel"));
+        if (ctx.hasError()) return KEYS_ERROR;
+        if (ctx.exitConfirm) return KEYS_EXIT;
         return screens.currentKeybinds();
     }
 
@@ -597,12 +605,12 @@ public class WaterMediaApp {
     private static void mainLoop() {
         frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         ctx.requestRender();
-        // DRIVE THE SLOW GLOW HEARTBEAT ON RENDER-ON-DEMAND SCREENS: NUDGE A REDRAW ~15x/s SO THE PULSE
-        // ADVANCES. CONTINUOUS SCREENS (VIDEO / CRT) ALREADY REPAINT FASTER; requestRender COALESCES.
+        // THE GLOW HEARTBEAT MOVES ABOUT 1% EVERY 250 ms, SO 4 REDRAWS A SECOND KEEP IT SMOOTH ON ON-DEMAND SCREENS;
+        // A MINIMIZED WINDOW SHOWS NOTHING AND IS LEFT IDLE
         ThreadTool.thread("WaterMedia-GlowPulse", () -> {
             while (running) {
-                ctx.requestRender();
-                ThreadTool.sleep(66);
+                if (!iconified) ctx.requestRender();
+                ThreadTool.sleep(250);
             }
         });
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {

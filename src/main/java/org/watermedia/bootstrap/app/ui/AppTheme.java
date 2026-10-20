@@ -1,8 +1,8 @@
 package org.watermedia.bootstrap.app.ui;
 
 import java.awt.Color;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Hi-fi handoff theme tokens.
@@ -10,10 +10,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class AppTheme {
 
     private static final float FONT_BASE_PX = 20f;
-    // CACHE OF alpha() RESULTS — alpha() IS CALLED MANY TIMES PER FRAME FROM DRAW CODE, SO REUSING THE
-    // IMMUTABLE Color AVOIDS ALLOCATING GARBAGE EVERY FRAME. ACCESSED FROM BOTH THE RENDER THREAD (UI
-    // DRAW) AND THE SWING EDT (SKIN STATIC INIT), SO ConcurrentHashMap PROVIDES THE NEEDED SAFETY.
-    private static final Map<Integer, Color> ALPHA_CACHE = new ConcurrentHashMap<>();
+    // alpha() RUNS MANY TIMES PER FRAME: ONE 256-SLOT ROW PER BASE COLOR AVOIDS BOTH A NEW Color AND A BOXED
+    // INT KEY ON EVERY CALL. ONLY THE RENDER THREAD CALLS IT
+    private static final Map<Color, Color[]> ALPHA_CACHE = new HashMap<>();
 
     private AppTheme() {
     }
@@ -59,12 +58,9 @@ public final class AppTheme {
 
     public static Color alpha(final Color color, final int alpha) {
         final int a = alpha < 0 ? 0 : Math.min(alpha, 255);
-        final int key = (color.getRGB() & 0xFFFFFF) << 8 | a;
-        Color cached = ALPHA_CACHE.get(key);
-        if (cached == null) {
-            cached = new Color(color.getRed(), color.getGreen(), color.getBlue(), a);
-            ALPHA_CACHE.put(key, cached);
-        }
+        final Color[] row = ALPHA_CACHE.computeIfAbsent(color, base -> new Color[256]);
+        Color cached = row[a];
+        if (cached == null) row[a] = cached = new Color(color.getRed(), color.getGreen(), color.getBlue(), a);
         return cached;
     }
 

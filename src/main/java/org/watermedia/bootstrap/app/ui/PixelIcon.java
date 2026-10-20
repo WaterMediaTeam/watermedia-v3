@@ -91,10 +91,16 @@ public final class PixelIcon {
         final int oy = y + Math.max(0, (size - rows * cell) / 2);
         for (int row = 0; row < rows; row++) {
             final String bits = mask[row];
-            for (int col = 0; col < cols; col++) {
-                if (bits.charAt(col) == '1') {
-                    RenderSystem.fill(ox + col * cell, oy + row * cell, cell, cell, color);
+            // ONE QUAD PER HORIZONTAL RUN OF LIT CELLS INSTEAD OF ONE PER CELL
+            int col = 0;
+            while (col < cols) {
+                if (bits.charAt(col) != '1') {
+                    col++;
+                    continue;
                 }
+                final int start = col;
+                while (col < cols && bits.charAt(col) == '1') col++;
+                RenderSystem.fill(ox + start * cell, oy + row * cell, (col - start) * cell, cell, color);
             }
         }
     }

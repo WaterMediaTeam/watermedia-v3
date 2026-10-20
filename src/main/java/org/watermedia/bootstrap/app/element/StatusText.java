@@ -3,6 +3,7 @@ package org.watermedia.bootstrap.app.element;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
+import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -29,7 +30,7 @@ public final class StatusText extends Element<StatusText> {
 
     /** Sets the chip label (rendered uppercase). */
     public StatusText label(final String value) {
-        this.label = value == null ? "" : value;
+        this.label = value == null ? "" : value.toUpperCase(Locale.ROOT);
         return this;
     }
 
@@ -66,7 +67,7 @@ public final class StatusText extends Element<StatusText> {
             return;
         }
         // UPPERCASE LABEL WIDTH PLUS THE PIP/PADDING BAND
-        this.contentWidth = this.ctx.text.width(this.label.toUpperCase(), AppTheme.TEXT_BODY) + 44;
+        this.contentWidth = this.ctx.text.width(this.label, AppTheme.TEXT_BODY) + 44;
         this.contentHeight = H;
     }
 
@@ -84,14 +85,13 @@ public final class StatusText extends Element<StatusText> {
         canvas.fill(x + 8, y + 7, 8, 8, c);
         canvas.glow(x + 8, y + 7, 8, 8, 0f, c, 0.42f);
 
-        final String upper = this.label.toUpperCase();
         final int textX = x + 24;
         final int glyphH = this.ctx.text.glyphHeight(AppTheme.TEXT_BODY);
         final int textY = y + Math.max(0, (h - glyphH) / 2);
-        canvas.text(upper, textX, textY, c, AppTheme.TEXT_BODY, false);
+        canvas.text(this.label, textX, textY, c, AppTheme.TEXT_BODY, false);
         if (this.strike.getAsBoolean()) {
             canvas.lineH(textX, textY + Math.max(1, glyphH / 2),
-                    this.ctx.text.width(upper, AppTheme.TEXT_BODY), c, 1f);
+                    this.ctx.text.width(this.label, AppTheme.TEXT_BODY), c, 1f);
         }
     }
 }

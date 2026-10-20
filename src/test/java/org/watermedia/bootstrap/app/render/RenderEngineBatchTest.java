@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.watermedia.api.media.GFXEngine;
 
+import java.awt.Color;
 import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
@@ -62,9 +63,21 @@ public class RenderEngineBatchTest {
         assertEquals(150, this.backend.clipCanvas);
     }
 
+    @Test
+    @DisplayName("lines of an unchanged width share one batch, a new width flushes it once")
+    void lineWidthDedupe() {
+        this.engine.lineH(0f, 0f, 10f, Color.WHITE, 1f);
+        this.engine.lineH(0f, 5f, 10f, Color.WHITE, 1f);
+        assertEquals(0, this.backend.lineWidths, "the backend already starts at 1 px");
+        assertEquals(0, this.backend.draws, "equal widths must not break the batch");
+        this.engine.lineH(0f, 9f, 10f, Color.WHITE, 2f);
+        assertEquals(1, this.backend.lineWidths);
+        assertEquals(1, this.backend.draws, "the 1 px lines flush once before the width changes");
+    }
+
     // RECORDS THE ENGINE'S BACKEND CALLS; EVERY GPU METHOD IS AN INERT NO-OP.
     private static final class RecordingBackend implements RenderBackend {
-        int draws, projections, lastVertexCount;
+        int draws, projections, lastVertexCount, lineWidths;
         int clipX, clipY, clipW, clipH, clipCanvas;
 
         @Override public void init() {}
@@ -81,7 +94,7 @@ public class RenderEngineBatchTest {
             this.draws++;
             this.lastVertexCount = vertexCount;
         }
-        @Override public void lineWidth(final float width) {}
+        @Override public void lineWidth(final float width) { this.lineWidths++; }
         @Override public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
             this.clipX = x;
             this.clipY = y;

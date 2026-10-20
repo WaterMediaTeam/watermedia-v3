@@ -34,6 +34,8 @@ public final class TextRenderer {
     private int margin = LINE_MARGIN;
     // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — PICKS THE ATLAS RESOLUTION; QUADS/METRICS STAY LOGICAL
     private volatile float uiScale = 1f;
+    // ONE IMMUTABLE RECORD, SO A READER NEVER PAIRS A SCALE WITH ANOTHER CALL'S RUN
+    private volatile LastRun last;
 
     public TextRenderer() {
         this(loadBundledFont(Font.PLAIN), loadBundledFont(Font.BOLD), Font.PLAIN, DEFAULT_FONT_SIZE);
@@ -69,6 +71,7 @@ public final class TextRenderer {
      */
     public void reset() {
         this.atlases.clear();
+        this.last = null;
     }
 
     /**
@@ -245,14 +248,18 @@ public final class TextRenderer {
     }
 
     private FontRun fontRun(final float scale, final int style) {
-        // ATLAS IS PICKED IN PHYSICAL PX (SNAPPED TO THE PIXEL GRID, ODD-SIZE SNAP KEPT); QUADS ARE
-        // EMITTED IN LOGICAL PX BY DIVIDING THE SNAPPED PHYSICAL SIZE BACK BY uiScale — AT uiScale=1
-        // THIS IS BIT-IDENTICAL TO THE OLD targetSize/atlasSize MATH.
+        final int weight = style == Font.BOLD ? Font.BOLD : Font.PLAIN;
         final float ui = this.uiScale;
+        // MEASURE AND DRAW CALLS COME IN RUNS OF ONE SCALE AND WEIGHT, SO THE LAST RUN SKIPS THE ATLAS LOOKUP
+        final LastRun last = this.last;
+        if (last != null && last.scale() == scale && last.style() == weight && last.ui() == ui) return last.run();
+        // ATLAS IS PICKED IN PHYSICAL PX (SNAPPED TO THE PIXEL GRID, ODD-SIZE SNAP KEPT); QUADS ARE
+        // EMITTED IN LOGICAL PX BY DIVIDING THE SNAPPED PHYSICAL SIZE BACK BY uiScale
         final int targetSize = Math.max(1, Math.round(this.baseSize * Math.max(0.05f, scale) * ui));
         final int atlasSize = targetSize % 2 == 0 ? targetSize + 1 : targetSize;
-        final FontAtlas atlas = this.atlas(style == Font.BOLD ? Font.BOLD : Font.PLAIN, atlasSize);
-        return new FontRun(atlas, targetSize / ui / atlasSize);
+        final FontRun run = new FontRun(this.atlas(weight, atlasSize), targetSize / ui / atlasSize);
+        this.last = new LastRun(scale, weight, ui, run);
+        return run;
     }
 
     private FontAtlas atlas(final int style, final int size) {
@@ -282,6 +289,9 @@ public final class TextRenderer {
     }
 
     private record FontRun(FontAtlas atlas, float drawScale) {
+    }
+
+    private record LastRun(float scale, int style, float ui, FontRun run) {
     }
 
     private static final class FontAtlas {
