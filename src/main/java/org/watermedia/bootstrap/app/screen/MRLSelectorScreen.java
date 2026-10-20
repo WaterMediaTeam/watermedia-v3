@@ -15,6 +15,7 @@ import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
+import org.watermedia.bootstrap.app.element.ListRow;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.SectionHead;
@@ -109,7 +110,7 @@ public final class MRLSelectorScreen extends Screen {
                 .rowHeight(60)
                 .spacing(6)
                 .rowFactory((uri, index) -> {
-                    final MediaRow row = new MediaRow(uri);
+                    final ListRow row = this.mediaRow(uri);
                     // selectOnHover MOVES THE SELECTION; CHIME WHEN IT LANDS ON A NEW ROW
                     row.onHover(v -> { if (!v.selected()) this.ctx.sound.play(); });
                     return row;
@@ -508,9 +509,9 @@ public final class MRLSelectorScreen extends Screen {
         final int viewTop = this.list.top();
         final int viewBottom = viewTop + this.list.measuredHeight();
         for (final Element<?> child: this.list.children()) {
-            if (!(child instanceof final MediaRow row) || row.measuredHeight() <= 0) continue;
-            final int rowTop = row.top();
-            if (rowTop + row.measuredHeight() > viewTop && rowTop < viewBottom) active.add(row.uri.name());
+            if (!(child.tag() instanceof final MediaCatalog.TestURI uri) || child.measuredHeight() <= 0) continue;
+            final int rowTop = child.top();
+            if (rowTop + child.measuredHeight() > viewTop && rowTop < viewBottom) active.add(uri.name());
         }
         return active;
     }
@@ -805,55 +806,26 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // ONE MEDIA ROW (THUMBNAIL, NAME, URI AND STATUS PIP) STYLED BY ITS ListView selected STATE;
-    // A CrtOverlay CHILD SITS ON THE THUMB WELL
-    private final class MediaRow extends Group<MediaRow> {
-
-        private final MediaCatalog.TestURI uri;
-        private final CrtOverlay crt = new CrtOverlay();
-
-        private MediaRow(final MediaCatalog.TestURI uri) {
-            this.uri = uri;
-            this.add(this.crt);
-        }
-
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.crt.measure(58, 34); // THUMB INNER WELL
-            this.contentWidth = 0;
-            this.contentHeight = 0;
-        }
-
-        @Override
-        protected void onLayout() {
-            this.crt.layout(this.left + 12, this.top + 14);
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            final MRL mrl = MRLSelectorScreen.this.mrlOf(this.uri);
-            final Color stateColor = Previews.color(mrl);
-            if (this.selected) {
-                canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON, 26));
-                canvas.stroke(x, y, w, h, AppTheme.NEON, 1f);
-                canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.20f);
-            }
-            tvFrame(canvas, x + 6, y + 8, 70, 46, this.selected);
-            MRLSelectorScreen.this.drawThumb(canvas, this.uri, x + 12, y + 14, 58, 34, true);
-            final int textX = x + 88;
-            final int statusX = x + w - 19;
-            final int maxTextW = Math.max(40, statusX - textX - 14);
-            canvas.text(MRLSelectorScreen.this.text.truncateToWidth(this.uri.name().toUpperCase(Locale.ROOT), maxTextW, AppTheme.TEXT_BUTTON, Font.BOLD),
-                    textX, y + 12, this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT, AppTheme.TEXT_BUTTON, true);
-            canvas.text(MRLSelectorScreen.this.text.truncateToWidth(this.uri.uri(), maxTextW, AppTheme.TEXT_SUBTITLE),
-                    textX, y + 34, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
-            pip(canvas, statusX, y + 25, 8, stateColor, false);
-            super.onDraw(canvas); // MINI CRT OVER THE THUMB WELL
-        }
+    // ONE MEDIA ROW: A TV FRAME WITH THE THUMBNAIL AND ITS MINI CRT, THE NAME OVER THE URI, AND THE STATUS PIP RIGHT
+    private ListRow mediaRow(final MediaCatalog.TestURI uri) {
+        final String name = uri.name().toUpperCase(Locale.ROOT);
+        return new ListRow()
+                .fill(null, null, AppTheme.alpha(AppTheme.NEON, 26))
+                .outline(null, AppTheme.NEON, 1f, 1f)
+                .selectedGlow(AppTheme.NEON, 0.20f, false)
+                .lead((canvas, row, x, y, w, h) -> {
+                    tvFrame(canvas, x + 6, y + 8, 70, 46, row.isPicked());
+                    this.drawThumb(canvas, uri, x + 12, y + 14, 58, 34, true);
+                })
+                .title(name)
+                .titleStyle(AppTheme.TEXT_BUTTON, true, AppTheme.TEXT, AppTheme.NEON_LIGHT)
+                .textAt(88, 12)
+                // THE TEXTS STOP 14 PX BEFORE THE PIP, WHICH SITS 19 PX FROM THE RIGHT EDGE
+                .textRight(33, 40)
+                .subtitle(uri::uri, AppTheme.TEXT_SUBTITLE, AppTheme.TEXT_FAINT, 34)
+                .trail((canvas, row, x, y, w, h) -> pip(canvas, x + w - 19, y + 25, 8, Previews.color(this.mrlOf(uri)), false))
+                .place(new CrtOverlay().size(58, 34), 12, 14)
+                .tag(uri);
     }
 
     // FILTER FIELD WITH A SEARCH GLYPH, FOCUS ON HOVER AND CLEAR ON ESC, WHICH TextField DOES NOT OFFER

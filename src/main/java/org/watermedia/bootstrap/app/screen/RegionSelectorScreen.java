@@ -4,17 +4,15 @@ import org.watermedia.WaterMedia;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.MediaCatalog;
 import org.watermedia.bootstrap.app.ui.AppTheme;
-import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
+import org.watermedia.bootstrap.app.element.ListRow;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.SectionHead;
 
-import java.awt.Color;
-import java.awt.Font;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -58,7 +56,7 @@ public final class RegionSelectorScreen extends Screen {
         this.list = new ListView<Integer>()
                 .rowHeight(ROW_H)
                 .spacing(ROW_GAP)
-                .rowFactory((index, pos) -> new RegionRow(this, index))
+                .rowFactory((index, pos) -> this.regionRow(index))
                 .onSelect((index, pos) -> this.openSelected())
                 .selectOnHover(true)
                 // THE ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
@@ -252,61 +250,47 @@ public final class RegionSelectorScreen extends Screen {
         }
     }
 
-    // ONE REGION ROW, SELECTED BY THE ListView: INDEX 0 IS GLOBAL, THEN THE SYSTEM ROW WHEN A REGION WAS
-    // DETECTED, THEN THE REMAINING REGIONS
-    private static final class RegionRow extends Element<RegionRow> {
+    // ONE REGION ROW: INDEX 0 IS GLOBAL, THEN THE SYSTEM ROW WHEN A REGION WAS DETECTED, THEN THE REMAINING REGIONS;
+    // THE CHANNEL COUNT TAG SITS RIGHT AND THE DETECTED REGION CARRIES A SYSTEM BADGE AFTER ITS NAME
+    private ListRow regionRow(final int index) {
+        return new ListRow()
+                .fill(AppTheme.alpha(AppTheme.BG_2, 220), null, AppTheme.alpha(AppTheme.NEON_DARK, 82))
+                .selectedGlow(AppTheme.GREEN, 0.26f, true)
+                .icon("tv", 24, 16, ListRow.CENTER, AppTheme.NEON_LIGHT, AppTheme.GREEN)
+                .title(() -> {
+                    final String region = this.regionFor(index);
+                    return index == 0 || region == null ? "GLOBAL" : region.toUpperCase(Locale.ROOT);
+                })
+                .titleStyle(AppTheme.TEXT_BUTTON, true, AppTheme.TEXT, AppTheme.GREEN)
+                .textAt(52, ListRow.CENTER)
+                .binder(row -> {
+                    final boolean detected = index == 1 && this.detectedRegion != null;
+                    final int tagW = Math.max(98, this.text.width(this.channelCount(index), AppTheme.TEXT_SUBTITLE) + 22);
+                    row.outline(index == 0 || detected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, AppTheme.GREEN, 1.5f, 2f)
+                            .textRight(tagW + (detected ? 116 : 40), 80);
+                })
+                .trail((canvas, row, x, y, w, h) -> {
+                    final boolean sel = row.isPicked();
+                    final String meta = this.channelCount(index);
+                    final int tagW = Math.max(98, canvas.textWidth(meta, AppTheme.TEXT_SUBTITLE, false) + 22);
+                    // THE BADGE AND THE TAG ARE 22 PX TALL AND SIT 16 PX BELOW THE ROW TOP
+                    final int textY = y + 16 + Math.max(0, (22 - canvas.textHeight(AppTheme.TEXT_SUBTITLE, false)) / 2);
+                    if (index == 1 && this.detectedRegion != null) {
+                        final int badgeX = row.titleEnd() + 10;
+                        canvas.fill(badgeX, y + 16, 76, 22, AppTheme.alpha(AppTheme.BG_1, 190));
+                        canvas.stroke(badgeX, y + 16, 76, 22, AppTheme.AMBER, 1f);
+                        canvas.text("SYSTEM", badgeX + 10, textY, AppTheme.AMBER, AppTheme.TEXT_SUBTITLE, false);
+                    }
+                    final int tagX = x + w - tagW - 12;
+                    canvas.fill(tagX, y + 16, tagW, 22, AppTheme.alpha(AppTheme.BG_1, 190));
+                    canvas.stroke(tagX, y + 16, tagW, 22, sel ? AppTheme.GREEN : AppTheme.STROKE, 1f);
+                    canvas.text(meta, tagX + 11, textY, sel ? AppTheme.GREEN : AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
+                });
+    }
 
-        private final RegionSelectorScreen screen;
-        private final int index;
-
-        private RegionRow(final RegionSelectorScreen screen, final int index) {
-            this.screen = screen;
-            this.index = index;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final TextRenderer text = canvas.text();
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            final String region = this.screen.regionFor(this.index);
-            final boolean detected = this.index == 1 && this.screen.detectedRegion != null;
-            final boolean fixed = this.index == 0 || detected;
-            final Color accent = this.selected ? AppTheme.GREEN : fixed ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT;
-
-            if (this.selected) canvas.glow(x, y, w, h, 0f, AppTheme.GREEN, 0.26f);
-            canvas.fill(x, y, w, h, this.selected ? AppTheme.alpha(AppTheme.NEON_DARK, 82) : AppTheme.alpha(AppTheme.BG_2, 220));
-            canvas.stroke(x, y, w, h, accent, this.selected ? 2f : 1.5f);
-            PixelIcon.draw("tv", x + 16, y + Math.max(0, (h - 24) / 2), 24, this.selected ? AppTheme.GREEN : AppTheme.NEON_LIGHT);
-
-            final String label = this.index == 0 || region == null ? "GLOBAL" : region.toUpperCase(Locale.ROOT);
-            final int count = this.index == 0 || region == null ? this.screen.totalChannels : this.screen.counts.getOrDefault(region, 0);
-            final String meta = count + (count == 1 ? " CHANNEL" : " CHANNELS");
-            final int tagW = Math.max(98, text.width(meta, AppTheme.TEXT_SUBTITLE) + 22);
-            final int labelMax = Math.max(80, w - 72 - tagW - (detected ? 96 : 20));
-            final int labelY = y + Math.max(0, (h - text.glyphHeightBold(AppTheme.TEXT_BUTTON)) / 2);
-            canvas.text(text.truncateToWidth(label, labelMax, AppTheme.TEXT_BUTTON, Font.BOLD),
-                    x + 52, labelY, this.selected ? AppTheme.GREEN : AppTheme.TEXT, AppTheme.TEXT_BUTTON, true);
-
-            if (detected) {
-                final int badgeX = x + 62 + Math.min(labelMax, text.widthBold(label, AppTheme.TEXT_BUTTON));
-                canvas.fill(badgeX, y + 16, 76, 22, AppTheme.alpha(AppTheme.BG_1, 190));
-                canvas.stroke(badgeX, y + 16, 76, 22, AppTheme.AMBER, 1f);
-                canvas.text("SYSTEM", badgeX + 10, this.centerY(text, y + 16), AppTheme.AMBER, AppTheme.TEXT_SUBTITLE, false);
-            }
-
-            final int tagX = x + w - tagW - 12;
-            canvas.fill(tagX, y + 16, tagW, 22, AppTheme.alpha(AppTheme.BG_1, 190));
-            canvas.stroke(tagX, y + 16, tagW, 22, this.selected ? AppTheme.GREEN : AppTheme.STROKE, 1f);
-            canvas.text(meta, tagX + 11, this.centerY(text, y + 16),
-                    this.selected ? AppTheme.GREEN : AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
-        }
-
-        // CENTERS THE SUBTITLE GLYPHS IN THE 22 PX BADGE ROW
-        private int centerY(final TextRenderer text, final int y) {
-            return y + Math.max(0, (22 - text.glyphHeight(AppTheme.TEXT_SUBTITLE)) / 2);
-        }
+    private String channelCount(final int index) {
+        final String region = this.regionFor(index);
+        final int count = index == 0 || region == null ? this.totalChannels : this.counts.getOrDefault(region, 0);
+        return count + (count == 1 ? " CHANNEL" : " CHANNELS");
     }
 }

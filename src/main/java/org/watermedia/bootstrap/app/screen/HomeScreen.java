@@ -15,6 +15,7 @@ import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
+import org.watermedia.bootstrap.app.element.ListRow;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.ProgressBar;
@@ -264,17 +265,17 @@ public class HomeScreen extends Screen {
             if (this.ctx.cleanup.done || "FOUND".equals(this.ctx.cleanup.state)) return StatusSquare.Status.OK;
             return StatusSquare.Status.OFF;
         });
-        row.binder = r -> {
+        row.binder(r -> {
             final int count = this.ctx.cleanup.fileCount;
-            r.twoLine = this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working;
-            r.name.text(count == 1 ? "1 FILE" : count + " FILES")
+            row.twoLine = this.ctx.cleanup.stage == 2 && this.ctx.cleanup.working;
+            row.name.text(count == 1 ? "1 FILE" : count + " FILES")
                     .color(count > 0 ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
-            r.url.visible(false);
-            r.bar.visible(r.twoLine)
+            row.url.visible(false);
+            row.bar.visible(row.twoLine)
                     .progress(MathUtil.clamp(this.ctx.cleanup.progress, 0, 100) / 100f);
-            r.size.text(this.ctx.cleanup.sizeLabel);
-            r.tag.label(this.cleanupStateLabel()).color(this.cleanupStateColor());
-        };
+            row.size.text(this.ctx.cleanup.sizeLabel);
+            row.tag.label(this.cleanupStateLabel()).color(this.cleanupStateColor());
+        });
         row.size(MAX_PARENT, CLEANUP_ROW_H);
         final Parent panel = Parent.column()
                 .padding(new Spacing(UPLOAD_PANEL_PAD, 18, UPLOAD_PANEL_PAD, 18))
@@ -647,24 +648,24 @@ public class HomeScreen extends Screen {
     private Element<?> uploadRow(final UploadState.FileEntry entry, final int index) {
         final FileRow row = new FileRow();
         row.pip.status(() -> uploadStatus(entry));
-        row.binder = r -> {
+        row.binder(r -> {
             final int stage = this.ctx.upload.stage;
             final boolean errored = "FAILED".equals(entry.state) || "READ ERROR".equals(entry.state);
             final boolean linked = stage >= 3 && entry.uploaded && !entry.url.isBlank();
             final int pct = MathUtil.clamp(entry.progress, 0, 100);
-            r.twoLine = linked || (stage == 2 && entry.present && entry.valid && !errored);
-            r.name.text(entry.name).color(entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
-            r.url.visible(linked).text(entry.url);
-            r.bar.visible(stage == 2 && entry.present).progress(pct / 100f);
-            r.size.text(entry.sizeLabel);
+            row.twoLine = linked || (stage == 2 && entry.present && entry.valid && !errored);
+            row.name.text(entry.name).color(entry.present ? AppTheme.TEXT : AppTheme.TEXT_SOFT);
+            row.url.visible(linked).text(entry.url);
+            row.bar.visible(stage == 2 && entry.present).progress(pct / 100f);
+            row.size.text(entry.sizeLabel);
             final String tag = stage == 2 && errored
                     ? "ERROR"
                     : stage == 2 && entry.present && entry.valid && !entry.uploaded
                     ? pct + "%"
                     : entry.state;
-            r.tag.label(tag).color(uploadStateColor(entry));
-            r.separator = index < this.uploadRows.size() - 1;
-        };
+            row.tag.label(tag).color(uploadStateColor(entry));
+            row.separator(index < this.uploadRows.size() - 1);
+        });
         return row;
     }
 
@@ -1098,9 +1099,9 @@ public class HomeScreen extends Screen {
     // DIALOG BUILDING BLOCKS
     // ==========================================================================
 
-    // ONE FILE/SUMMARY ROW: STATUS PIP + NAME (+ URL OR PROGRESS BAR UNDERNEATH) + SIZE + STATE BADGE.
-    // A binder CONSUMER RE-READS LIVE STATE EVERY FRAME
-    private static final class FileRow extends Group<FileRow> {
+    // ONE FILE OR SUMMARY ROW: STATUS PIP, NAME (WITH THE URL OR A PROGRESS BAR UNDER IT), SIZE AND STATE BADGE; A
+    // ListRow WHOSE ONLY ADDITION IS THIS TWO-LINE LAYOUT OF LIVE ELEMENTS, BOUND EVERY FRAME BY ITS BINDER
+    private static final class FileRow extends ListRow {
 
         private final StatusSquare pip = new StatusSquare();
         private final Text name = new Text();
@@ -1108,20 +1109,14 @@ public class HomeScreen extends Screen {
         private final ProgressBar bar = new ProgressBar().accent(AppTheme.NEON_LIGHT);
         private final Text size = new Text().color(AppTheme.TEXT_FAINT).scale(AppTheme.TEXT_SUBTITLE);
         private final Badge tag = new Badge();
-        private Consumer<FileRow> binder;
         private boolean twoLine;
-        private boolean separator;
 
         private FileRow() {
             this.pip.size(10, 10);
             this.url.visible(false);
             this.bar.visible(false);
+            this.separatorFrom(28).separator(false);
             this.add(this.pip).add(this.name).add(this.url).add(this.bar).add(this.size).add(this.tag);
-        }
-
-        @Override
-        protected void onUpdate() {
-            if (this.binder != null) this.binder.accept(this);
         }
 
         @Override
@@ -1156,19 +1151,6 @@ public class HomeScreen extends Screen {
             final int sizeY = this.twoLine ? nameY : y + Math.max(0, (h - this.size.measuredHeight()) / 2);
             this.size.layout(x + w - 180, sizeY);
             this.tag.layout(x + w - this.tag.measuredWidth(), y + Math.max(0, (h - this.tag.measuredHeight()) / 2));
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            super.onDraw(canvas);
-            if (this.separator) {
-                // DOTTED HAIRLINE BETWEEN ROWS
-                final int endX = this.innerLeft() + this.innerWidth();
-                final int sy = this.top + this.measuredHeight - 1;
-                for (int dx = this.innerLeft() + 28; dx < endX; dx += 8) {
-                    canvas.fill(dx, sy, 4, 1, AppTheme.alpha(AppTheme.STROKE_BRIGHT, 90));
-                }
-            }
         }
     }
 

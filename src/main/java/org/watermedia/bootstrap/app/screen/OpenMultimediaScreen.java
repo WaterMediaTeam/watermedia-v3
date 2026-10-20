@@ -20,6 +20,7 @@ import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.element.IconButton;
+import org.watermedia.bootstrap.app.element.ListRow;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
@@ -62,6 +63,9 @@ public class OpenMultimediaScreen extends Screen {
     // TRANSLUCENT SO THE HOME SCREEN STAYS VISIBLE BEHIND THE DIALOG
     private static final Color SCRIM_COLOR = AppTheme.rgba(5, 8, 26, 166);
     private static final Color CLOSE_HOVER = AppTheme.rgba(255, 132, 160, 255);
+    private static final int RESULT_ROW_H = 38;
+    // A RESULT'S TEXTS START 10 PX AFTER ITS 16:9 THUMBNAIL, WHICH SITS 6 PX IN WITH 4 PX ABOVE AND BELOW
+    private static final int RESULT_TEXT_X = 6 + Math.round((RESULT_ROW_H - 8) * 16f / 9f) + 10;
     private static final Color GRADIENT_TOP = AppTheme.rgba(0, 0, 0, 0);
 
     // DROPDOWN ROW KINDS: ONE FLAT Row LIST FEEDS THE ListView
@@ -188,9 +192,18 @@ public class OpenMultimediaScreen extends Screen {
                 .add(this.save)
                 .add(this.play);
 
+        // DIALOG TITLE STRIP: BOLD TITLE, A DIVIDER UNDER IT AND THE RED CLOSE BUTTON PINNED RIGHT
+        final ListRow titleRow = new ListRow()
+                .fill(AppTheme.BG_2, null, null)
+                .title("OPEN MULTIMEDIA")
+                .titleStyle(AppTheme.TEXT_BUTTON, true, AppTheme.NEON_LIGHT, null)
+                .textAt(20, ListRow.CENTER)
+                .trail((canvas, row, x, y, w, h) -> canvas.fill(x, y + h, w, 1, AppTheme.STROKE_BRIGHT))
+                .place(new IconButton("x").accent(AppTheme.RED).iconColor(AppTheme.RED).hoverColor(CLOSE_HOVER).size(26, 26)
+                        .onClick(b -> this.navigator.accept(HomeScreen.Action.BACK)), -44, 14);
         final Parent column = Parent.column()
                 .size(Element.MAX_PARENT, Element.MAX_PARENT)
-                .add(new TitleRow().width(Element.MAX_PARENT).height(56))
+                .add(titleRow.width(Element.MAX_PARENT).height(56))
                 .add(this.preview)
                 .add(new InputBlock().width(Element.MAX_PARENT).height(68).margin(new Spacing(0, 20, 0, 20)))
                 .add(new MiddleZone().width(Element.MAX_PARENT).weight(1f).margin(new Spacing(0, 20, 0, 20)))
@@ -605,12 +618,60 @@ public class OpenMultimediaScreen extends Screen {
 
     private Element<?> rowFor(final Row row) {
         return switch (row.kind()) {
-            case ROW_HEAD -> new HeadRow(row.text(), false).height(20).enabled(false);
-            case ROW_RECENT -> new HeadRow("RECENT", true).height(20).enabled(false);
-            case ROW_WAIT -> new WaitRow().height(38).enabled(false);
-            case ROW_RESULT -> new ResultRow(row.result()).height(38);
-            default -> new HistoryRow(row.text()).height(26);
+            case ROW_HEAD -> headRow(row.text(), false);
+            case ROW_RECENT -> headRow("RECENT", true);
+            // PLACEHOLDER WHILE THE FIRST RESULTS ARE STILL IN FLIGHT
+            case ROW_WAIT -> new ListRow().title("Looking across platforms...")
+                    .titleStyle(AppTheme.TEXT_BODY, false, AppTheme.NEON, null).textAt(12, ListRow.CENTER)
+                    .height(38).enabled(false);
+            case ROW_RESULT -> this.resultRow(row.result());
+            // A RECENT QUERY: SEARCH GLYPH AND THE QUERY TEXT
+            default -> new ListRow().fill(null, AppTheme.alpha(AppTheme.NEON_DARK, 60), null)
+                    .icon("search", 11, 10, ListRow.CENTER, AppTheme.TEXT_FAINT, null)
+                    .title(row.text()).titleStyle(AppTheme.TEXT_BODY, false, AppTheme.TEXT_SOFT, null)
+                    .textAt(30, ListRow.CENTER).textRight(10, 0)
+                    .height(26);
         };
+    }
+
+    // A SECTION HEAD OF THE DROPDOWN ("RESULTS (n)", "SEARCHING...", "RECENT"); THE RECENT ONE SITS ON A RULE
+    private static ListRow headRow(final String label, final boolean rule) {
+        final ListRow row = new ListRow().title(label)
+                .titleStyle(AppTheme.TEXT_SUBTITLE, false, AppTheme.TEXT_FAINT, null).textAt(8, ListRow.CENTER);
+        if (rule) row.lead((canvas, r, x, y, w, h) -> canvas.fill(x + 8, y + h / 2f, w - 16, 1, AppTheme.STROKE));
+        return row.height(20).enabled(false);
+    }
+
+    // ONE SEARCH RESULT: A 16:9 THUMBNAIL (THE LIVE MEDIA TEXTURE, ASPECT-FIT) AND THE PLATFORM TAG BEFORE THE TITLE
+    private ListRow resultRow(final PlatformResult result) {
+        return new ListRow()
+                .fill(null, AppTheme.alpha(AppTheme.NEON_DARK, 70), null)
+                .lead((canvas, row, x, y, w, h) -> {
+                    final int thumbH = h - 8;
+                    final int thumbW = Math.round(thumbH * 16f / 9f);
+                    final int thumbX = x + 6;
+                    final int thumbY = y + 4;
+                    // MEDIA TEXTURE READ PER DRAW; ASPECT-FIT NEVER OVERFLOWS THE CELL, SO THE LIST CLIP SUFFICES
+                    final MediaPlayer player = this.thumbPlayer(result.thumbnail());
+                    if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
+                        final float imgAspect = (float) player.width() / player.height();
+                        final float boxAspect = (float) thumbW / thumbH;
+                        final float bw = imgAspect > boxAspect ? thumbW : thumbH * imgAspect;
+                        final float bh = imgAspect > boxAspect ? thumbW / imgAspect : thumbH;
+                        canvas.mediaImage(player.texture(), thumbX + (thumbW - bw) / 2f, thumbY + (thumbH - bh) / 2f, bw, bh);
+                    } else {
+                        canvas.fill(thumbX, thumbY, thumbW, thumbH, AppTheme.BG_0);
+                        canvas.stroke(thumbX, thumbY, thumbW, thumbH, AppTheme.STROKE, 1f);
+                        canvas.icon(result.thumbnail() == null ? "warn" : "tv",
+                                thumbX + (thumbW - 12) / 2, thumbY + (thumbH - 12) / 2, 12, AppTheme.TEXT_FAINT);
+                    }
+                })
+                .prefix(() -> (result.platform() == null ? "?" : result.platform().name()) + ":", AppTheme.NEON_LIGHT)
+                .title(result.title() == null || result.title().isEmpty() ? "(untitled)" : result.title())
+                .titleStyle(AppTheme.TEXT_BODY, false, AppTheme.TEXT, null)
+                .textAt(RESULT_TEXT_X, ListRow.CENTER)
+                .textRight(8, 20)
+                .height(RESULT_ROW_H);
     }
 
     // ==========================================================================
@@ -841,39 +902,6 @@ public class OpenMultimediaScreen extends Screen {
             canvas.cube(this.left + this.measuredWidth - 9, this.top - 1, 10);
             canvas.cube(this.left - 1, this.top + this.measuredHeight - 9, 10);
             canvas.cube(this.left + this.measuredWidth - 9, this.top + this.measuredHeight - 9, 10);
-            super.onDraw(canvas);
-        }
-    }
-
-    // DIALOG TITLE ROW — BG_2 STRIP, BOLD TITLE, BOTTOM DIVIDER AND THE RED CLOSE BUTTON PINNED RIGHT
-    private final class TitleRow extends Group<TitleRow> {
-
-        private final IconButton close = new IconButton("x").accent(AppTheme.RED).iconColor(AppTheme.RED)
-                .hoverColor(CLOSE_HOVER).size(26, 26);
-
-        private TitleRow() {
-            this.add(this.close.onClick(b -> OpenMultimediaScreen.this.navigator.accept(HomeScreen.Action.BACK)));
-        }
-
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.close.measure(26, 26);
-            this.contentWidth = innerAvailWidth;
-            this.contentHeight = innerAvailHeight;
-        }
-
-        @Override
-        protected void onLayout() {
-            this.close.layout(this.left + this.measuredWidth - 44, this.top + 14);
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.BG_2);
-            canvas.fill(this.left, this.top + this.measuredHeight, this.measuredWidth, 1, AppTheme.STROKE_BRIGHT);
-            canvas.text("OPEN MULTIMEDIA", this.left + 20,
-                    this.top + Math.max(0, (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BUTTON, true)) / 2f),
-                    AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
             super.onDraw(canvas);
         }
     }
@@ -1143,119 +1171,6 @@ public class OpenMultimediaScreen extends Screen {
                 OpenMultimediaScreen.this.ensurePreviewMRL();
             }
             return true;
-        }
-    }
-
-    // ==========================================================================
-    // TREE — DROPDOWN ROWS
-    // ==========================================================================
-
-    // SECTION HEADER ("RESULTS (n)"/"SEARCHING..."/"RECENT"); THE RECENT VARIANT DRAWS THE SEPARATOR LINE
-    private static final class HeadRow extends Element<HeadRow> {
-
-        private final String label;
-        private final boolean separator;
-
-        private HeadRow(final String label, final boolean separator) {
-            this.label = label;
-            this.separator = separator;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            if (this.separator) canvas.fill(x + 8, y + h / 2f, w - 16, 1, AppTheme.STROKE);
-            canvas.text(this.label, x + 8, y + (h - canvas.textHeight(AppTheme.TEXT_SUBTITLE, false)) / 2f,
-                    AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
-        }
-    }
-
-    // "LOOKING ACROSS PLATFORMS..." PLACEHOLDER WHILE THE FIRST RESULTS ARE STILL IN FLIGHT
-    private static final class WaitRow extends Element<WaitRow> {
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            canvas.text("Looking across platforms...", this.left + 12,
-                    this.top + (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f,
-                    AppTheme.NEON, AppTheme.TEXT_BODY, false);
-        }
-    }
-
-    // ONE SEARCH RESULT: HOVER FILL + 16:9 THUMBNAIL (LIVE MEDIA TEXTURE, ASPECT-FIT) + PLATFORM TAG + TITLE
-    private final class ResultRow extends Element<ResultRow> {
-
-        private final PlatformResult result;
-
-        private ResultRow(final PlatformResult result) {
-            this.result = result;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            if (this.hovered) canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON_DARK, 70));
-
-            final int thumbH = h - 8;
-            final int thumbW = Math.round(thumbH * 16f / 9f);
-            final int thumbX = x + 6;
-            final int thumbY = y + 4;
-            // MEDIA TEXTURE READ PER DRAW; ASPECT-FIT NEVER OVERFLOWS THE CELL, SO THE LIST CLIP SUFFICES
-            final MediaPlayer player = OpenMultimediaScreen.this.thumbPlayer(this.result.thumbnail());
-            if (player != null && player.texture() != 0 && player.width() > 0 && player.height() > 0) {
-                final float imgAspect = (float) player.width() / player.height();
-                final float boxAspect = (float) thumbW / thumbH;
-                float bw = thumbW;
-                float bh = thumbH;
-                if (imgAspect > boxAspect) bh = thumbW / imgAspect;
-                else bw = thumbH * imgAspect;
-                canvas.mediaImage(player.texture(), thumbX + (thumbW - bw) / 2f, thumbY + (thumbH - bh) / 2f, bw, bh);
-            } else {
-                canvas.fill(thumbX, thumbY, thumbW, thumbH, AppTheme.BG_0);
-                canvas.stroke(thumbX, thumbY, thumbW, thumbH, AppTheme.STROKE, 1f);
-                PixelIcon.draw(this.result.thumbnail() == null ? "warn" : "tv",
-                        thumbX + (thumbW - 12) / 2, thumbY + (thumbH - 12) / 2, 12, AppTheme.TEXT_FAINT);
-            }
-
-            final int textX = thumbX + thumbW + 10;
-            final int textMaxW = Math.max(20, x + w - textX - 8);
-            final String platform = this.result.platform() == null ? "?" : this.result.platform().name();
-            final String tag = platform + ":";
-            final int tagW = canvas.textWidth(tag, AppTheme.TEXT_BODY, true);
-            final float textY = y + (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f;
-            canvas.text(tag, textX, textY, AppTheme.NEON_LIGHT, AppTheme.TEXT_BODY, true);
-            final String title = this.result.title() == null || this.result.title().isEmpty()
-                    ? "(untitled)" : this.result.title();
-            canvas.text(canvas.text().truncateToWidth(title, Math.max(20, textMaxW - tagW - 6), AppTheme.TEXT_BODY),
-                    textX + tagW + 6, textY, AppTheme.TEXT, AppTheme.TEXT_BODY, false);
-        }
-    }
-
-    // ONE RECENT-QUERY ENTRY: HOVER FILL + SEARCH GLYPH + TRUNCATED QUERY TEXT
-    private static final class HistoryRow extends Element<HistoryRow> {
-
-        private final String entry;
-
-        private HistoryRow(final String entry) {
-            this.entry = entry;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top;
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            if (this.hovered) canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON_DARK, 60));
-            PixelIcon.draw("search", x + 10, y + (h - 11) / 2, 11, AppTheme.TEXT_FAINT);
-            canvas.text(canvas.text().truncateToWidth(this.entry, w - 40, AppTheme.TEXT_BODY), x + 30,
-                    y + (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2f,
-                    AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
         }
     }
 }

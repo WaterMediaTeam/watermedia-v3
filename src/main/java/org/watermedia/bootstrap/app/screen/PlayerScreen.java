@@ -19,6 +19,7 @@ import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.element.Icon;
 import org.watermedia.bootstrap.app.element.IconButton;
+import org.watermedia.bootstrap.app.element.ListRow;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.ParentFrame;
@@ -458,7 +459,7 @@ public final class PlayerScreen extends Screen {
         this.srcList.rowHeight(50).spacing(8).scrollbarWidth(3)
                 .selectionColor(null).hoverColor(null)
                 .rowFactory((src, i) -> {
-                    final SourceRow row = new SourceRow(src, i);
+                    final ListRow row = this.sourceRow(src, i);
                     // HOVER LISTS THE SOURCE'S QUALITIES WITHOUT SWITCHING PLAYBACK
                     row.onHover(r -> {
                         if (this.sourceSelectedIndex != i) {
@@ -482,7 +483,7 @@ public final class PlayerScreen extends Screen {
         this.qualList.rowHeight(34).spacing(6).scrollbarWidth(3)
                 .selectionColor(null).hoverColor(null)
                 .rowFactory((q, i) -> {
-                    final PickRow row = new PickRow(q.name(), q.height() + "p", null, false);
+                    final ListRow row = pickRow(q.name(), q.height() + "p", null, false);
                     row.onHover(r -> {
                         if (this.qualList.selectedIndex() != i) {
                             this.qualList.selection(i);
@@ -684,7 +685,7 @@ public final class PlayerScreen extends Screen {
         final Parent lodCol = Parent.column().spacing(6).margin(new Spacing(10, 0, 0, 0)).width(MAX_PARENT);
         for (int i = 0; i < lods.length; i++) {
             final int idx = i;
-            lodCol.add(new PickRow(lods[idx].name(), lods[idx].percent() + "%", () -> this.lodSelectedIndex == idx, true)
+            lodCol.add(pickRow(lods[idx].name(), lods[idx].percent() + "%", () -> this.lodSelectedIndex == idx, true)
                     .size(MAX_PARENT, 34)
                     .onClick(r -> {
                         this.clearResFocus();
@@ -848,95 +849,40 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // SOURCE ROW FOR THE QUALITY DIALOG: STATE ICON + BOLD TITLE + MEDIA TYPE TAG + SUBTITLE
-    private final class SourceRow extends Group<SourceRow> {
-
-        private final MRL.Source source;
-        private final int index;
-        private final Icon icon = new Icon("folder").iconSize(14);
-
-        SourceRow(final MRL.Source source, final int index) {
-            this.source = source;
-            this.index = index;
-            this.add(this.icon);
-        }
-
-        @Override
-        protected void onUpdate() {
-            final boolean active = this.index == PlayerScreen.this.ctx.media.sourceSelectorIndex;
-            this.icon.icon(active ? "play" : "folder").color(active ? AppTheme.GREEN : AppTheme.NEON_LIGHT);
-        }
-
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            this.icon.measure(innerAvailWidth, innerAvailHeight);
-            this.contentWidth = 0;
-            this.contentHeight = 0;
-        }
-
-        @Override
-        protected void onLayout() {
-            this.icon.layout(this.left + 12, this.top + 15);
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            canvas.fill(this.left, this.top, w, h,
-                    this.selected ? AppTheme.alpha(AppTheme.NEON_DARK, 90) : AppTheme.alpha(AppTheme.BG_1, 150));
-            canvas.stroke(this.left, this.top, w, h,
-                    this.selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, this.selected ? 2f : 1f);
-            if (this.selected) canvas.glow(this.left, this.top, w, h, 0f, AppTheme.NEON, 0.20f);
-            final int tagW = PlayerScreen.this.typeTagWidth(this.source.type());
-            PlayerScreen.this.drawTypeTag(canvas, this.left + w - tagW - 12, this.top + Math.max(0, (h - 22) / 2), this.source.type());
-            final String title = PlayerScreen.this.text.truncateToWidth(
-                    PlayerScreen.this.sourceTitle(this.source, this.index).toUpperCase(),
-                    w - tagW - 68, AppTheme.TEXT_BODY, Font.BOLD);
-            canvas.text(title, this.left + 34, this.top + 10,
-                    this.selected ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
-            final int count = PlayerScreen.this.ctx.media.availableSources != null ? PlayerScreen.this.ctx.media.availableSources.length : 1;
-            canvas.text("SOURCE " + (this.index + 1) + "/" + count + " - " + this.source.qualities().size() + " QUALITIES",
-                    this.left + 34, this.top + 32, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
-            super.onDraw(canvas);
-        }
+    // SOURCE ROW OF THE QUALITY DIALOG: THE ICON MARKS THE PLAYING SOURCE, THE MEDIA TYPE TAG SITS RIGHT
+    private ListRow sourceRow(final MRL.Source source, final int index) {
+        final int tagW = this.typeTagWidth(source.type());
+        return new ListRow()
+                .fill(AppTheme.alpha(AppTheme.BG_1, 150), null, AppTheme.alpha(AppTheme.NEON_DARK, 90))
+                .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, 2f)
+                .selectedGlow(AppTheme.NEON, 0.20f, false)
+                .binder(row -> {
+                    final boolean active = index == this.ctx.media.sourceSelectorIndex;
+                    row.icon(active ? "play" : "folder", 14, 12, 15, active ? AppTheme.GREEN : AppTheme.NEON_LIGHT, null);
+                })
+                .title(() -> this.sourceTitle(source, index).toUpperCase(Locale.ROOT))
+                .titleStyle(AppTheme.TEXT_BODY, true, AppTheme.TEXT_SOFT, AppTheme.TEXT)
+                .textAt(34, 10)
+                .textRight(tagW + 34, 0)
+                .subtitle(() -> "SOURCE " + (index + 1) + "/" + (this.ctx.media.availableSources != null ? this.ctx.media.availableSources.length : 1)
+                        + " - " + source.qualities().size() + " QUALITIES", AppTheme.TEXT_SUBTITLE, AppTheme.TEXT_FAINT, 32)
+                .trail((canvas, row, x, y, w, h) -> this.drawTypeTag(canvas, x + w - tagW - 12, y + Math.max(0, (h - 22) / 2), source.type()));
     }
 
-    // A PICKABLE DIALOG ROW (QUALITY OR LOD): PIP, BOLD LABEL AND A DETAIL THAT LIGHT UP WHILE PICKED
-    private static final class PickRow extends Element<PickRow> {
-
-        private final String label;
-        private final String detail;
-        // null FOR A ROW INSIDE A ListView, WHICH STAMPS selected ITSELF
-        private final BooleanSupplier picked;
-        // THE LOD LOOK: A HOVER TINT, A 2 px PICKED BORDER AND A RIGHT-ALIGNED DETAIL; QUALITY ROWS PUT IT 62 px FROM THE EDGE
-        private final boolean strong;
-
-        PickRow(final String label, final String detail, final BooleanSupplier picked, final boolean strong) {
-            this.label = label.toUpperCase(Locale.ROOT);
-            this.detail = detail;
-            this.picked = picked;
-            this.strong = strong;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final boolean sel = this.picked == null ? this.selected : this.picked.getAsBoolean();
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            canvas.fill(this.left, this.top, w, h,
-                    sel ? AppTheme.alpha(AppTheme.NEON_DARK, 88)
-                            : this.strong && this.hovered ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : AppTheme.alpha(AppTheme.BG_1, 148));
-            canvas.stroke(this.left, this.top, w, h,
-                    sel ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, sel && this.strong ? 2f : 1f);
-            canvas.fill(this.left + 8, this.top + Math.max(0, (h - 8) / 2), 8, 8, sel ? AppTheme.AMBER : AppTheme.TEXT_FAINT);
-            canvas.text(this.label, this.left + 28,
-                    this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, true)) / 2),
-                    sel ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
-            canvas.text(this.detail, this.left + w - (this.strong ? canvas.textWidth(this.detail, AppTheme.TEXT_BODY, false) + 12 : 62),
-                    this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
-                    sel ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
-        }
+    // A PICKABLE DIALOG ROW (QUALITY OR LOD); strong IS THE LOD LOOK: A HOVER TINT, A 2 px PICKED BORDER AND A
+    // RIGHT-ALIGNED DETAIL, WHERE QUALITY ROWS START IT 62 px FROM THE EDGE
+    private static ListRow pickRow(final String label, final String detail, final BooleanSupplier picked, final boolean strong) {
+        final ListRow row = new ListRow()
+                .fill(AppTheme.alpha(AppTheme.BG_1, 148), strong ? AppTheme.alpha(AppTheme.NEON_DARK, 44) : null, AppTheme.alpha(AppTheme.NEON_DARK, 88))
+                .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, strong ? 2f : 1f)
+                .lead((canvas, r, x, y, w, h) -> canvas.fill(x + 8, y + Math.max(0, (h - 8) / 2), 8, 8, r.isPicked() ? AppTheme.AMBER : AppTheme.TEXT_FAINT))
+                .title(label.toUpperCase(Locale.ROOT))
+                .titleStyle(AppTheme.TEXT_BODY, true, AppTheme.TEXT_SOFT, AppTheme.NEON_LIGHT)
+                .textAt(28, ListRow.CENTER)
+                .detail(() -> detail, AppTheme.TEXT_FAINT, AppTheme.CYAN, 12);
+        if (!strong) row.detailColumn(62);
+        // A LOD ROW LIVES OUTSIDE A ListView, SO ITS SELECTION COMES FROM THE DIALOG STATE
+        return picked == null ? row : row.picked(picked);
     }
 
     // DEBUG METRICS AND METADATA PANEL: A DRAW-ONLY LEAF THAT READS THE LIVE PLAYER EVERY FRAME
