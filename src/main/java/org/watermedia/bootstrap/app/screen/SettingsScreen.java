@@ -29,9 +29,7 @@ import org.watermedia.bootstrap.app.element.TextField;
 import org.watermedia.bootstrap.app.element.Theme;
 import org.watermedia.bootstrap.app.UiScale;
 import org.watermedia.bootstrap.app.WaterMediaApp;
-import org.watermedia.bootstrap.app.PlayerTarget;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.render.RenderMode;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.Gravity;
 import org.watermedia.bootstrap.app.ui.Spacing;
@@ -80,9 +78,6 @@ public final class SettingsScreen extends Screen {
     // EXTERNAL MOD CONFIG FILES THE SCREEN TRIES TO REVERSE-ENGINEER FROM THE CONFIG DIR INTO EDITABLE
     // TABS — SKIPPED SILENTLY WHEN THE FILE IS ABSENT OR CANNOT BE PARSED (SEE buildReverseSpec)
     private static final String[] REVERSE_FILES = {"chloride-client.json", "waterframes-client.toml"};
-
-    // THE RENDER-MODE SETTING KEY, HOISTED SO THE SEGMENTED-CONTROL EXEMPTION AND THE ROW CREATION CANNOT DRIFT APART
-    private static final String RENDER_KEY = "app.engines.render";
 
     // ConfigSpec.save() IS PACKAGE-PRIVATE IN WATERCONFIG, SO IT IS REFLECTED ONCE HERE INSTEAD OF PER
     // SAVE; A null (METHOD RENAMED/HIDDEN UPSTREAM) SURFACES LATER AS A FAILED SAVE STATE
@@ -694,8 +689,6 @@ public final class SettingsScreen extends Screen {
     // SEGMENTS THAT WOULD BE WIDER THAN THE CONTROL BUDGET
     private boolean needsDropdown(final Setting setting) {
         if (!setting.isEnumControl()) return false;
-        // THE RENDER-MODE SELECTOR STAYS A SLIDE-SWITCH (SEGMENTED) EVEN WITH ITS 4 OPTIONS — NEVER A DROPDOWN
-        if (RENDER_KEY.equals(setting.key)) return false;
         final List<String> options = setting.optionLabels();
         if (options.size() > 4) return true;
         int segW = 0;
@@ -730,30 +723,21 @@ public final class SettingsScreen extends Screen {
             }
         }
         if (engines == null) {
-            engines = new SettingSection("Engines", "Engine backends: render, interface scale and audio", "engines", 0);
+            engines = new SettingSection("Engines", "Engine backends: render and interface scale", "engines", 0);
             spec.sections.add(engines);
         }
-        engines.settings.add(0, new RuntimeEnumSetting<>("Render", RENDER_KEY, "ENUM",
-                "Render mode. OpenGL/Vulkan play in-app; VK+AWT and VK+JavaFX run the UI on Vulkan and pop the player out into a native window. Engine changes apply live; the popup target applies to the next media opened. Stored in engine.cfg + playermode.cfg.",
-                RenderMode.values(),
-                () -> RenderMode.of(RenderSystem.engineKind(), WaterMediaApp.playerTarget()),
-                mode -> {
-                    // PERSIST BOTH HALVES, HOT-SWAP THE ENGINE IN PLACE, AND ROUTE FUTURE MRLs TO THE POPUP
-                    RenderSystem.saveEnginePreference(mode.engine());
-                    RenderSystem.savePlayerTarget(mode.target());
-                    WaterMediaApp.applyPlayerTarget(mode.target());
-                    // VK+JavaFX WITHOUT JAVAFX ON THE CLASSPATH: THE CONFIG IS SAVED, SO EXIT AND LET THE
-                    // BOOTSTRAP PULL JAVAFX AND RELAUNCH (ONCE CACHED, LATER SWITCHES NEED NO RESTART)
-                    if (mode.target() == PlayerTarget.JFX && !WaterMediaApp.javafxAvailable()) {
-                        WaterMediaApp.requestRelaunch();
-                        return;
-                    }
-                    if (mode.engine() != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(mode.engine());
+        engines.settings.add(0, new RuntimeEnumSetting<>("Render", "app.engines.render", "ENUM",
+                "Render engine. Changes apply live. Stored in engine.cfg.",
+                RenderSystem.Engine.values(),
+                RenderSystem::engineKind,
+                engine -> {
+                    RenderSystem.saveEnginePreference(engine);
+                    if (engine != RenderSystem.engineKind()) WaterMediaApp.requestEngineSwap(engine);
                 },
-                RenderMode.OPENGL,
-                RenderMode::label,
-                // VULKAN-BACKED MODES NEED A VULKAN LOADER; OPENGL IS ALWAYS AVAILABLE
-                mode -> mode.engine() != RenderSystem.Engine.VULKAN || RenderSystem.vulkanAvailable()));
+                RenderSystem.Engine.OPENGL,
+                RenderSystem.Engine::name,
+                // VULKAN NEEDS A VULKAN LOADER; OPENGL IS ALWAYS AVAILABLE
+                engine -> engine != RenderSystem.Engine.VULKAN || RenderSystem.vulkanAvailable()));
         engines.settings.add(1, new RuntimeEnumSetting<>("UI scale", "app.engines.uiScale", "ENUM",
                 "Global interface magnification. AUTO derives it from the monitor's DPI and resolution. Applies live. Stored in uiscale.cfg, read at boot before any config spec exists.",
                 UiScale.values(),

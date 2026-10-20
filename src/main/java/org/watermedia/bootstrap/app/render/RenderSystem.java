@@ -2,7 +2,6 @@ package org.watermedia.bootstrap.app.render;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.GFXEngine;
-import org.watermedia.bootstrap.app.PlayerTarget;
 import org.watermedia.bootstrap.app.render.opengl.OpenGLRenderBackend;
 import org.watermedia.bootstrap.app.render.vulkan.VulkanRenderBackend;
 
@@ -35,8 +34,6 @@ public final class RenderSystem {
     private static final Path ENGINE_PREF_FILE = Path.of("watermedia", "engine.cfg");
     // GLOBAL UI SCALE PREFERENCE — PERSISTED NEXT TO engine.cfg AS EITHER "auto" OR A FLOAT FACTOR
     private static final Path UI_SCALE_PREF_FILE = Path.of("watermedia", "uiscale.cfg");
-    // POPUP PLAYER TARGET — PERSISTED NEXT TO engine.cfg; READ AT BOOT (NOT BY THE LAUNCHER) TO ROUTE MRLs
-    private static final Path PLAYER_MODE_FILE = Path.of("watermedia", "playermode.cfg");
 
     // VOLATILE: deviceName()/engineKind() AND FRIENDS ARE READ OFF THE RENDER THREAD, AND THE ENGINE IS
     // SWAPPED ON A GL<->VK HOTSWAP — READERS MUST SEE THE PUBLISHED VALUE, NOT A STALE/NULL CACHE.
@@ -82,22 +79,6 @@ public final class RenderSystem {
     /** Persists the engine to use on the next launch (written from the Settings screen). */
     public static void saveEnginePreference(final Engine choice) {
         savePref(ENGINE_PREF_FILE, choice == Engine.VULKAN ? "vulkan" : "opengl", "Failed to save the render engine preference");
-    }
-
-    /** The persisted popup player target, or {@link PlayerTarget#IN_APP} when unset/unreadable. */
-    public static PlayerTarget playerTargetPreference() {
-        final String value = pref(PLAYER_MODE_FILE);
-        if (value != null) {
-            for (final PlayerTarget t: PlayerTarget.values()) {
-                if (t.name().equalsIgnoreCase(value)) return t;
-            }
-        }
-        return PlayerTarget.IN_APP;
-    }
-
-    /** Persists the popup player target chosen in Settings (the AWT/JFX half of the render-mode selector). */
-    public static void savePlayerTarget(final PlayerTarget target) {
-        savePref(PLAYER_MODE_FILE, (target == null ? PlayerTarget.IN_APP : target).name(), "Failed to save the player target preference");
     }
 
     /** The persisted UI scale preference: {@code "auto"} or a float factor; {@code "auto"} when unset/unreadable. */

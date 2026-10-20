@@ -2,7 +2,6 @@ package org.watermedia.bootstrap.app;
 
 import me.srrapero720.waterconfig.ConfigSpec;
 import me.srrapero720.waterconfig.WaterConfig;
-import me.srrapero720.waterconfig.api.Control;
 import me.srrapero720.waterconfig.api.IConfigField;
 import me.srrapero720.waterconfig.api.annotations.Comment;
 import me.srrapero720.waterconfig.api.annotations.Spec;
@@ -18,8 +17,8 @@ import org.watermedia.tools.ThreadTool;
  * <p>The render engine and the UI scale are deliberately NOT part of this spec: their stores
  * ({@code engine.cfg} / {@code uiscale.cfg}) are read by the {@code AppBootstrap} launcher JVM and by
  * the early window boot before WaterConfig ever loads, so those two remain runtime settings backed by
- * their own files. The settings screen still lists them inside this spec's {@code engines} section,
- * next to the audio engine field. Keeping a second copy here would desync the two stores.</p>
+ * their own files. The settings screen still lists them inside an {@code engines} section of this
+ * spec's tab. Keeping a second copy here would desync the two stores.</p>
  *
  * <p>Values load off-thread on the WaterConfig IO pool; {@link #applyBoot(AppContext)} waits (bounded)
  * for the load and dumps them into the live {@link AppContext} state, and the settings screen re-dumps
@@ -39,18 +38,6 @@ public class AppConfig {
     @Spec.Field
     @Comment("UI tick sound used by menu and settings navigation")
     public static boolean selectionSound = true;
-
-    @Spec.Field
-    @Comment("Engine backends: render, interface scale and audio")
-    public static final Engines engines = new Engines();
-
-    @Spec(value = "engines", disableStatic = true)
-    public static final class Engines {
-        @Spec.Field(control = Control.SEGMENTED)
-        @Comment("Audio backend used when opening a player: OpenAL or the native Java Sound engine")
-        @Comment("Applies to the next media you open")
-        public AudioEngine audio = AudioEngine.OPENAL;
-    }
 
     // REGISTERED SPEC — null WHEN REGISTRATION FAILED (THE APP THEN RUNS ON THE FIELD DEFAULTS)
     private static volatile ConfigSpec spec;
@@ -81,7 +68,7 @@ public class AppConfig {
     /**
      * Waits (bounded) for the async spec load kicked off by {@link #register()} and then dumps the
      * loaded values into the live app state via {@link #apply(AppContext)}. Call once at boot, before
-     * the first frame, so the shell starts with the persisted CRT/sound/audio choices.
+     * the first frame, so the shell starts with the persisted CRT and sound choices.
      * @param ctx the app context receiving the values
      */
     public static void applyBoot(final AppContext ctx) {
@@ -96,15 +83,14 @@ public class AppConfig {
     }
 
     /**
-     * Dumps the current spec values into the live app state ({@code ctx.crt},
-     * {@code ctx.selectionSoundEnabled}, {@code ctx.audioEngine}). The settings screen calls this after
+     * Dumps the current spec values into the live app state ({@code ctx.crt} and
+     * {@code ctx.selectionSoundEnabled}). The settings screen calls this after
      * every edit of the shell spec so changes apply live, exactly like the old runtime settings did.
      * @param ctx the app context receiving the values
      */
     public static void apply(final AppContext ctx) {
         ctx.crt = crtOverlay;
         ctx.selectionSoundEnabled = selectionSound;
-        ctx.audioEngine = engines.audio == null ? AudioEngine.OPENAL : engines.audio;
     }
 
     /**

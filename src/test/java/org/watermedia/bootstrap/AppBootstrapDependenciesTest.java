@@ -60,7 +60,7 @@ public class AppBootstrapDependenciesTest {
             final Properties build = new Properties();
             try (final InputStream source = Files.newInputStream(Path.of("gradle.properties"))) { build.load(source); }
             final Properties catalog = catalog();
-            for (final String key: List.of("log4j_version", "gson_version", "lwjgl_version", "joml_version", "javafx_version")) {
+            for (final String key: List.of("log4j_version", "gson_version", "lwjgl_version", "joml_version")) {
                 assertNotNull(build.getProperty(key), key);
                 assertEquals(build.getProperty(key), catalog.getProperty(key), key);
             }
@@ -86,16 +86,16 @@ public class AppBootstrapDependenciesTest {
                 final Method catalog = bootstrap.getDeclaredMethod("dependencies", Properties.class);
                 catalog.setAccessible(true);
                 for (final String[] platform: List.of(
-                        new String[] { "Windows 10", "amd64", "windows", "win" },
-                        new String[] { "Windows 11", "aarch64", "windows-arm64", "win" },
-                        new String[] { "Linux", "amd64", "linux", "linux" },
-                        new String[] { "Linux", "aarch64", "linux-arm64", "linux-aarch64" },
-                        new String[] { "Mac OS X", "amd64", "macos", "mac" },
-                        new String[] { "Mac OS X", "aarch64", "macos-arm64", "mac-aarch64" })) {
+                        new String[] { "Windows 10", "amd64", "windows" },
+                        new String[] { "Windows 11", "aarch64", "windows-arm64" },
+                        new String[] { "Linux", "amd64", "linux" },
+                        new String[] { "Linux", "aarch64", "linux-arm64" },
+                        new String[] { "Mac OS X", "amd64", "macos" },
+                        new String[] { "Mac OS X", "aarch64", "macos-arm64" })) {
                     System.setProperty("os.name", platform[0]);
                     System.setProperty("os.arch", platform[1]);
                     final List<?> dependencies = (List<?>) catalog.invoke(null, versions);
-                    assertEquals(platform[2].startsWith("macos") ? 21 : 20, dependencies.size());
+                    assertEquals(platform[2].startsWith("macos") ? 18 : 17, dependencies.size());
                     expect(dependencies, versions, "log4j-api", "log4j", null, false);
                     expect(dependencies, versions, "log4j-core", "log4j", null, false);
                     expect(dependencies, versions, "gson", "gson", null, false);
@@ -109,8 +109,6 @@ public class AppBootstrapDependenciesTest {
                     expect(dependencies, versions, "lwjgl-shaderc", "lwjgl", "natives-" + platform[2], true);
                     if (platform[2].startsWith("macos"))
                         expect(dependencies, versions, "lwjgl-vulkan", "lwjgl", "natives-" + platform[2], true);
-                    for (final String artifact: List.of("javafx-base", "javafx-graphics", "javafx-swing"))
-                        expect(dependencies, versions, artifact, "javafx", platform[3], true);
                     for (final Object dependency: dependencies) {
                         final String name = value(dependency, "name").toString();
                         assertFalse(name.startsWith("waterconfig-"));
@@ -317,7 +315,7 @@ public class AppBootstrapDependenciesTest {
             assertTrue(dependency.getClass().isRecord());
             assertEquals(optional, value(dependency, "optional"));
             final String group = artifact.startsWith("log4j") ? "org/apache/logging/log4j"
-                    : artifact.startsWith("lwjgl") ? "org/lwjgl" : artifact.startsWith("javafx") ? "org/openjfx"
+                    : artifact.startsWith("lwjgl") ? "org/lwjgl"
                     : artifact.equals("gson") ? "com/google/code/gson" : "org/joml";
             assertEquals(URI.create("https://repo1.maven.org/maven2/" + group + "/" + artifact + "/" + version + "/" + name), value(dependency, "source"));
             return;

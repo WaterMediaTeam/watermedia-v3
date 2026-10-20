@@ -37,8 +37,6 @@ import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 import org.watermedia.bootstrap.app.render.RenderSystem;
-import org.watermedia.bootstrap.app.popup.AWTPlayerWindow;
-import org.watermedia.bootstrap.app.popup.JFXPlayerWindow;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Parent;
@@ -98,10 +96,8 @@ public class WaterMediaApp {
     private static final ScreenManager screens = new ScreenManager();
 
     // READ BY THE GLOW-PULSE BACKGROUND THREAD, WRITTEN BY THE RENDER THREAD (EXIT/SWAP-FAILURE) — VOLATILE
-    // SO THE FALSE IS ALWAYS OBSERVED. relaunchRequested IS SET IN A CALLBACK AND READ IN cleanup() LIKEWISE.
+    // SO THE FALSE IS ALWAYS OBSERVED.
     private static volatile boolean running = true;
-    // SET WHEN THE APP NEEDS THE BOOTSTRAP TO RE-PROVISION AND RELAUNCH (E.G. TO PULL JAVAFX FOR VK+JavaFX)
-    private static volatile boolean relaunchRequested;
     private static boolean maximized;
     // PENDING RENDER-ENGINE HOT-SWAP TARGET (null = NONE). SET FROM THE SETTINGS SCREEN, CONSUMED AT THE TOP
     // OF THE MAIN LOOP — NEVER MID-FRAME OR INSIDE A CALLBACK. THE MAIN LOOP OWNS THE FrameLimiter, WHICH THE
@@ -147,8 +143,6 @@ public class WaterMediaApp {
         // DUMP THE PERSISTED SHELL SETTINGS (CRT/SOUND/AUDIO ENGINE) INTO THE LIVE STATE BEFORE THE
         // FIRST FRAME SO THE LOADING SCREEN ALREADY RESPECTS THEM.
         AppConfig.applyBoot(ctx);
-        // POPUP PLAYER TARGET IS PART OF THE UNIFIED RENDER-MODE SELECTOR (STORED SEPARATELY FROM THE SPEC)
-        ctx.playerTarget = RenderSystem.playerTargetPreference();
         ctx.assets.load(ctx);
         initShell();
         glfwShowWindow(ctx.windowHandle);
@@ -360,36 +354,6 @@ public class WaterMediaApp {
         }
     }
 
-    // PLAYER TARGET & RELAUNCH
-    // ==========================================================================
-
-    /** The popup player target for the next opened MRL (in-app / AWT / JavaFX). */
-    public static PlayerTarget playerTarget() {
-        return ctx.playerTarget;
-    }
-
-    /** Applies the popup player target chosen in the unified render-mode selector to the live app state. */
-    public static void applyPlayerTarget(final PlayerTarget target) {
-        ctx.playerTarget = target == null ? PlayerTarget.IN_APP : target;
-    }
-
-    /** Whether the JavaFX runtime is on this JVM's classpath (provisioned by the bootstrap). */
-    public static boolean javafxAvailable() {
-        // THE SAME PROBE AS MediaAPI.jfxEngine: THE ENGINE NEEDS PixelBuffer, WHICH ONLY JAVAFX 13+ SHIPS
-        try {
-            Class.forName("javafx.scene.image.PixelBuffer", false, WaterMediaApp.class.getClassLoader());
-            return true;
-        } catch (final ClassNotFoundException | LinkageError absent) {
-            return false;
-        }
-    }
-
-    /** Cleanly shuts the app down and exits so the supervising bootstrap re-provisions and relaunches. */
-    public static void requestRelaunch() {
-        relaunchRequested = true;
-        running = false; // BREAK THE MAIN LOOP; cleanup() THEN EXITS WITH RELAUNCH_EXIT
-    }
-
     // GLOBAL UI SCALE — RESOLUTION, PERSISTENCE AND LIVE APPLICATION
     // ==========================================================================
 
@@ -592,16 +556,6 @@ public class WaterMediaApp {
                             null);
                     return;
                 }
-                // POPPED-OUT WINDOW INSTEAD OF THE IN-APP PLAYER SCREEN
-                if (ctx.playerTarget == PlayerTarget.AWT) {
-                    AWTPlayerWindow.open(ctx);
-                    return;
-                }
-                if (ctx.playerTarget == PlayerTarget.JFX && javafxAvailable()) {
-                    JFXPlayerWindow.open(ctx);
-                    return;
-                }
-                // IN_APP, OR VK+JavaFX WITHOUT A PROVISIONED JAVAFX (DOWNLOAD FAILED) — PLAY IN-APP
                 screens.navigate("player");
             }
 
@@ -1667,8 +1621,7 @@ public class WaterMediaApp {
         glfwTerminate();
         final GLFWErrorCallback errorCallback = glfwSetErrorCallback(null);
         if (errorCallback != null) errorCallback.close();
-        // A RELAUNCH REQUEST EXITS WITH RELAUNCH_EXIT SO THE SUPERVISING BOOTSTRAP RE-PROVISIONS AND SPAWNS AGAIN
-        System.exit(relaunchRequested ? AppBootstrap.RELAUNCH_EXIT : 0);
+        System.exit(0);
     }
 
     // LOGGING

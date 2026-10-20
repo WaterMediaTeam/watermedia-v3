@@ -47,7 +47,6 @@ def lwjglHost = lwjglPlatform + lwjglArch
 def javafxHost = [windows: 'win', linux: 'linux', osx: 'mac'][osdetector.os]
 if (osdetector.arch == 'aarch_64' && osdetector.os != 'windows') javafxHost += '-aarch64'
 def lwjglTargets = lwjgl_platforms.tokenize(',')*.trim()
-def javafxTargets = javafx_platforms.tokenize(',')*.trim()
 
 dependencies {
     include "org.bytedeco:ffmpeg:$ffmpeg_version"
@@ -71,10 +70,7 @@ dependencies {
         if (natives(lwjglHost)) testRuntimeOnly "$library:natives-$lwjglHost"
         lwjglTargets.findAll(natives).each { platform -> launcher "$library:natives-$platform" }
     }
-    ['base', 'graphics', 'swing'].each { module ->
-        compileOnlyApi "org.openjfx:javafx-$module:$javafx_version:$javafxHost"
-        javafxTargets.each { platform -> launcher "org.openjfx:javafx-$module:$javafx_version:$platform" }
-    }
+    ['base', 'graphics'].each { module -> compileOnlyApi "org.openjfx:javafx-$module:$javafx_version:$javafxHost" }
 }
 
 test {
@@ -146,7 +142,7 @@ def nestedJars = tasks.register('nestedJars') {
 // THE STANDALONE LAUNCHER READS ITS LIBRARY VERSIONS, NESTED JARS AND THE SHA-256 OF EVERY DOWNLOADABLE JAR HERE.
 def launcherFiles = configurations.launcher.incoming.files
 def launcherValues = [log4j_version: log4j_version, gson_version: gson_version, lwjgl_version: lwjgl_version,
-                      joml_version: joml_version, javafx_version: javafx_version, nested: nestedLibraries*.file.join(',')]
+                      joml_version: joml_version, nested: nestedLibraries*.file.join(',')]
 def bootstrapProperties = tasks.register('bootstrapProperties') {
     group = 'build'
     description = 'Writes the standalone launcher catalog with versions, nested jars and SHA-256 pins'

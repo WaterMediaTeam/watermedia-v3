@@ -204,8 +204,7 @@ public final class PlayerScreen extends Screen {
                 this.ctx.sourceSelectorIndex,
                 // THE ACTIVE RENDER BACKEND DECIDES THE ENGINE (GLEngine / VKEngine) — THE SCREEN STAYS AGNOSTIC
                 mediaEngineSupplier(Thread.currentThread(), this.ctx),
-                // AUDIO BACKEND PICKED BY THE USER IN SETTINGS (OpenAL / Java Sound), RESOLVED AT CREATION
-                this.ctx.audioEngine.supplier()
+                MediaAPI::alEngine
         );
 
         if (this.ctx.player == null) {

@@ -47,9 +47,8 @@ public final class AppBootstrap {
     // SHARED BY EVERY USER ON LINUX (/tmp): PINS REJECT PLANTED JARS, BUT AN OWNER OF THIS FOLDER COULD STILL SWAP A
     // VERIFIED JAR BEFORE THE CHILD JVM OPENS IT. KEPT FOR NOW; A PER-USER CACHE DIRECTORY WOULD CLOSE THAT WINDOW
     private static final Path LIBS_DIR = Path.of(System.getProperty("java.io.tmpdir"), "watermedia", "libs");
-    // THE RENDER SYSTEM READS AND WRITES THESE SAME PREFERENCES IN THE CHILD JVM.
+    // THE RENDER SYSTEM READS AND WRITES THIS SAME PREFERENCE IN THE CHILD JVM.
     private static final Path ENGINE_FILE = Path.of("watermedia", "engine.cfg");
-    private static final Path PLAYER_MODE_FILE = Path.of("watermedia", "playermode.cfg");
     private BootstrapWindow window;
 
     public interface Extension {
@@ -135,7 +134,6 @@ public final class AppBootstrap {
         if (platform.equals("unsupported")) throw new IOException("Unsupported operating system or CPU architecture");
         final String natives = "natives-" + platform;
         final String lwjgl = version(versions, "lwjgl");
-        final String javafx = version(versions, "javafx");
         final List<Dependency> dependencies = new ArrayList<>();
         for (final String artifact: List.of("log4j-api", "log4j-core"))
             dependencies.add(new Dependency(MAVEN, "org/apache/logging/log4j", artifact, version(versions, "log4j"), null, false));
@@ -151,15 +149,6 @@ public final class AppBootstrap {
             if (artifact.equals("lwjgl-shaderc") || platform.startsWith("macos"))
                 dependencies.add(new Dependency(MAVEN, "org/lwjgl", artifact, lwjgl, natives, true));
         }
-        final String classifier = switch (platform) {
-            case "windows", "windows-arm64" -> "win";
-            case "macos" -> "mac";
-            case "macos-arm64" -> "mac-aarch64";
-            case "linux-arm64" -> "linux-aarch64";
-            default -> "linux";
-        };
-        for (final String artifact: List.of("javafx-base", "javafx-graphics", "javafx-swing"))
-            dependencies.add(new Dependency(MAVEN, "org/openjfx", artifact, javafx, classifier, true));
         return dependencies;
     }
 
@@ -192,18 +181,12 @@ public final class AppBootstrap {
             this.log("Extracting " + name);
             jars.add(extract("/META-INF/jarjar/" + name, LIBS_DIR));
         }
-        boolean javafx = false;
-        try { javafx = Files.readString(PLAYER_MODE_FILE).trim().equalsIgnoreCase("JFX"); }
-        catch (final NoSuchFileException absent) {} // NO SAVED CHOICE YET
-        catch (final IOException failure) { this.log("Cannot read the player mode: " + failure.getMessage()); }
         for (final Dependency dependency: dependencies(versions)) {
             final Path jar = LIBS_DIR.resolve(dependency.name());
             final String sha256 = versions.getProperty(dependency.name());
             if (sha256 == null) throw new IOException("Missing SHA-256 pin for " + dependency.name());
             // THE SHARED CACHE IS UNTRUSTED: A JAR JOINS THE CLASSPATH ONLY WHILE IT MATCHES ITS BUILD PIN.
             if (!Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS) || !IOTool.sha256(jar).equals(sha256)) {
-                // CACHED JAVAFX IS ALWAYS INCLUDED; DOWNLOAD IT ONLY WHEN ITS PLAYER IS SELECTED.
-                if (dependency.group().equals("org/openjfx") && !javafx) continue;
                 if (!GraphicsEnvironment.isHeadless()) this.window();
                 this.log((Files.exists(jar, LinkOption.NOFOLLOW_LINKS) ? "Replacing unverified " : "Downloading ") + dependency.name());
                 try {

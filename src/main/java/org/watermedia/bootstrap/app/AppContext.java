@@ -112,11 +112,6 @@ public final class AppContext implements Executor {
     public int soundSource = -1;
     public boolean audioReady;
     public boolean audioError;
-    // AUDIO BACKEND CHOSEN FOR THE NEXT CREATED PLAYER (SETTINGS SCREEN) — NOT A FALLBACK
-    public AudioEngine audioEngine = AudioEngine.OPENAL;
-
-    // WHERE THE NEXT OPENED MRL PLAYS: IN-APP (GPU) OR A POPPED-OUT AWT WINDOW (SETTINGS SCREEN)
-    public PlayerTarget playerTarget = PlayerTarget.IN_APP;
 
     public String customUrlText = "";
 
