@@ -10,6 +10,7 @@ import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
+import org.watermedia.bootstrap.app.element.SectionHead;
 
 import java.awt.Color;
 import java.awt.Font;
@@ -246,19 +247,8 @@ public final class RegionSelectorScreen extends Screen {
             this.cube(canvas, this.panelX - 1, this.panelY - 1);
             this.cube(canvas, this.panelX + this.panelW - 9, this.panelY + this.panelH - 9);
 
-            // SECTION HEAD — NEON TAB + BOLD TITLE + FAINT LIVE COUNT
-            final TextRenderer text = canvas.text();
-            final int headX = this.panelX + 18;
-            final int headY = this.panelY + 21;
-            canvas.fill(headX, headY, 4, 21, AppTheme.NEON);
-            canvas.glow(headX, headY, 4, 21, 0f, AppTheme.NEON, 0.16f);
-            canvas.text("REGIONS", headX + 18,
-                    headY + Math.max(0, (21 - text.glyphHeightBold(AppTheme.TEXT_SECTION)) / 2),
-                    AppTheme.NEON, AppTheme.TEXT_SECTION, true);
-            canvas.text(RegionSelectorScreen.this.optionCount() + " AVAILABLE",
-                    headX + 30 + text.widthBold("REGIONS", AppTheme.TEXT_SECTION),
-                    headY + Math.max(0, (21 - text.glyphHeight(AppTheme.TEXT_BODY)) / 2),
-                    AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
+            SectionHead.draw(canvas, "REGIONS", RegionSelectorScreen.this.optionCount() + " AVAILABLE",
+                    this.panelX + 18, this.panelY + 18, this.panelW - 36);
             super.onDraw(canvas);
         }
 

@@ -930,7 +930,8 @@ public class OpenMultimediaScreen extends Screen {
     // DIALOG TITLE ROW — BG_2 STRIP, BOLD TITLE, BOTTOM DIVIDER AND THE RED CLOSE BUTTON PINNED RIGHT
     private final class TitleRow extends Group<TitleRow> {
 
-        private final CloseBtn close = new CloseBtn();
+        private final IconButton close = new IconButton("x").accent(AppTheme.RED).iconColor(AppTheme.RED)
+                .hoverColor(CLOSE_HOVER).size(26, 26);
 
         private TitleRow() {
             this.add(this.close.onClick(b -> OpenMultimediaScreen.this.navigator.accept(HomeScreen.Action.BACK)));
@@ -956,22 +957,6 @@ public class OpenMultimediaScreen extends Screen {
                     this.top + Math.max(0, (this.measuredHeight - canvas.textHeight(AppTheme.TEXT_BUTTON, true)) / 2f),
                     AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
             super.onDraw(canvas);
-        }
-    }
-
-    // LEGACY DIALOG CLOSE — AN ICON-ONLY BUTTON IN THE DESTRUCTIVE RED HUE THAT BRIGHTENS ON HOVER
-    private static final class CloseBtn extends Element<CloseBtn> {
-
-        private CloseBtn() {
-            this.width = 26;
-            this.height = 26;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final Color color = this.hovered ? CLOSE_HOVER : AppTheme.RED;
-            IconButton.render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight,
-                    "x", 14, color, color, false, this.hovered, true);
         }
     }
 

@@ -10,7 +10,6 @@ import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.element.Badge;
-import org.watermedia.bootstrap.app.element.Box;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Canvas;
 import org.watermedia.bootstrap.app.element.Dialog;
@@ -18,6 +17,7 @@ import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
+import org.watermedia.bootstrap.app.element.SectionHead;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.render.RenderSystem;
 import org.watermedia.bootstrap.app.ui.AppTheme;
@@ -73,8 +73,7 @@ public final class MRLSelectorScreen extends Screen {
     private ListView<AppContext.TestURI> list;
     private PreviewPane preview;
     // HEADER ROW ELEMENTS — TEXT REFRESHED EACH FRAME FROM THE LIVE GROUP NAME / ITEM COUNT / FAILED COUNT
-    private Text headerLabel;
-    private Text headerCount;
+    private SectionHead headerHead;
     private Badge headerFailed;
     // LOADING MODAL — BUILT LAZILY, SHOWN ON THE SCREEN OVERLAY WHILE AN MRL FETCH IS IN FLIGHT
     private Dialog loadDialog;
@@ -100,18 +99,13 @@ public final class MRLSelectorScreen extends Screen {
                 .width(Element.MAX_PARENT)
                 .height(30);
 
-        // SECTION HEAD ROW — A HORIZONTAL LAYOUT: NEON BAR + GROUP LABEL + ITEM COUNT + [FLEX SPACER] + FAILED BADGE
-        this.headerLabel = new Text().bold(true).scale(AppTheme.TEXT_SECTION).color(AppTheme.NEON).gravity(Gravity.CENTER);
-        this.headerCount = new Text().scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_FAINT).gravity(Gravity.CENTER);
+        this.headerHead = new SectionHead().weight(1f);
         this.headerFailed = new Badge().gravity(Gravity.CENTER);
         final Parent headRow = Parent.row()
                 .spacing(8)
                 .width(Element.MAX_PARENT)
-                .height(24)
-                .add(new Box().size(4, 20).background(AppTheme.NEON).glow(AppTheme.NEON, 0.16f).gravity(Gravity.CENTER))
-                .add(this.headerLabel)
-                .add(this.headerCount)
-                .add(new Box().size(0, 1).weight(1f))
+                .height(SectionHead.HEIGHT)
+                .add(this.headerHead)
                 .add(this.headerFailed);
 
         this.list = new ListView<AppContext.TestURI>()
@@ -200,8 +194,7 @@ public final class MRLSelectorScreen extends Screen {
         this.subscribeGroupMRLs();
         this.updateThumbs(this.activeThumbNames());
         this.header.sub(this.ctx.selectedGroup.name());
-        this.headerLabel.text(this.ctx.selectedGroup.name().toUpperCase(Locale.ROOT));
-        this.headerCount.text(this.filtered.size() + " ITEMS");
+        this.headerHead.label(this.ctx.selectedGroup.name()).count(this.filtered.size() + " ITEMS");
         int failed = 0;
         for (final MRL mrl: this.ctx.groupMRLs.values()) {
             if (failed(mrl)) failed++;

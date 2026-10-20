@@ -3,63 +3,71 @@ package org.watermedia.bootstrap.app.element;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
+import java.util.function.IntPredicate;
 
 /**
- * A horizontal progress-of-N indicator: a row of square step dots joined by connector lines. It is
- * display-only, with no interaction. Completed steps are filled green, the active step is outlined in the
- * accent with a faint fill, and future steps are muted; each connector takes the color of the step to its
- * left so the completed run reads as one continuous bar.
+ * A labeled progress strip: numbered square cells joined by rules, where a finished step shows a check and the step in
+ * progress lights its border. Step states are read on every draw, so the strip follows live progress.
  */
-final class Stepper extends Element<Stepper> {
+public final class Stepper extends Element<Stepper> {
+    private static final int CELL = 30;
+    private static final int LABEL_X = 42;
+    private static final int STEP_GAP = 56;
 
-    private static final int DOT = 22;
-    private static final int GAP = 24;
+    private final String[] labels;
+    private IntPredicate complete = step -> false;
+    private IntPredicate active = step -> false;
 
-    private int steps = 3;
-    private int active;
-    private int complete;
+    public Stepper(final String... labels) {
+        this.labels = labels == null ? new String[0] : labels.clone();
+    }
 
-    public Stepper steps(final int value) {
-        this.steps = Math.max(1, value);
+    /** Sets the live test for finished steps; steps count from 1. */
+    public Stepper complete(final IntPredicate test) {
+        this.complete = test == null ? step -> false : test;
         return this;
     }
 
-    public Stepper active(final int value) {
-        // REJECT NEGATIVES LIKE THE SIBLING CONTROLS — A NEGATIVE INDEX NEVER MATCHES A STEP (SILENT MISUSE)
-        this.active = Math.max(0, value);
-        return this;
-    }
-
-    public Stepper complete(final int value) {
-        this.complete = Math.max(0, value);
+    /** Sets the live test for the step in progress; steps count from 1. */
+    public Stepper active(final IntPredicate test) {
+        this.active = test == null ? step -> false : test;
         return this;
     }
 
     @Override
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-        this.contentWidth = this.steps * DOT + (this.steps - 1) * GAP;
-        this.contentHeight = DOT;
+        int w = 0;
+        if (this.ctx != null && this.ctx.text != null) {
+            for (int i = 0; i < this.labels.length; i++) {
+                if (i > 0) w += STEP_GAP;
+                w += LABEL_X + this.ctx.text.width(this.labels[i], AppTheme.TEXT_BODY);
+            }
+        }
+        this.contentWidth = w;
+        this.contentHeight = CELL;
     }
 
     @Override
     protected void onDraw(final Canvas canvas) {
         final int y = this.innerTop();
         int x = this.innerLeft();
-        for (int i = 0; i < this.steps; i++) {
-            // CONNECTOR INTO THIS DOT — COLORED BY WHETHER THE STEP ON ITS LEFT IS COMPLETE
-            if (i > 0) {
-                final Color line = i - 1 < this.complete ? AppTheme.GREEN : AppTheme.alpha(AppTheme.NEON_DARK, 80);
-                canvas.fill(x - GAP, y + DOT / 2 - 1, GAP, 2, line);
-            }
-            if (i < this.complete) {
-                canvas.fill(x, y, DOT, DOT, AppTheme.GREEN);
-            } else if (i == this.active) {
-                canvas.fill(x, y, DOT, DOT, AppTheme.alpha(AppTheme.NEON, 40));
-                canvas.stroke(x, y, DOT, DOT, AppTheme.NEON, 1.5f);
+        for (int i = 0; i < this.labels.length; i++) {
+            final int step = i + 1;
+            final boolean done = this.complete.test(step);
+            final boolean act = this.active.test(step);
+            final Color color = done ? AppTheme.GREEN : act ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
+            canvas.fill(x, y, CELL, CELL, AppTheme.alpha(AppTheme.BG_2, 220));
+            canvas.stroke(x, y, CELL, CELL, color, act || done ? Theme.BORDER_HEAVY : Theme.BORDER_HAIRLINE);
+            if (done) {
+                canvas.icon("check", x + 8, y + 8, 14, color);
             } else {
-                canvas.fill(x, y, DOT, DOT, AppTheme.alpha(AppTheme.NEON_DARK, 80));
+                canvas.text(String.valueOf(step), x + 11, y + 7, color, AppTheme.TEXT_BODY, false);
             }
-            x += DOT + GAP;
+            canvas.text(this.labels[i], x + LABEL_X, y + 8, color, AppTheme.TEXT_BODY, false);
+            final int end = x + LABEL_X + canvas.textWidth(this.labels[i], AppTheme.TEXT_BODY, false);
+            // THE RULE TO THE NEXT STEP STARTS 10px AFTER THIS LABEL AND STOPS 12px BEFORE THE NEXT CELL
+            if (i < this.labels.length - 1) canvas.fill(end + 10, y + 15, STEP_GAP - 22, 1, AppTheme.STROKE_BRIGHT);
+            x = end + STEP_GAP;
         }
     }
 }

@@ -30,6 +30,7 @@ public final class Button extends Element<Button> {
     private String icon = "";
     private Color accent = AppTheme.NEON;
     private Color textColor = AppTheme.TEXT;
+    private Color subTextColor = AppTheme.TEXT_FAINT;
     private boolean filled;
 
     public Button() {
@@ -71,6 +72,12 @@ public final class Button extends Element<Button> {
         return this;
     }
 
+    /** Sets the color of the subtext chip's text, for a chip that shows a value instead of a keybind. */
+    public Button subTextColor(final Color value) {
+        this.subTextColor = value == null ? AppTheme.TEXT_FAINT : value;
+        return this;
+    }
+
     public Button filled(final boolean value) {
         this.filled = value;
         return this;
@@ -92,7 +99,7 @@ public final class Button extends Element<Button> {
         if (this.ctx == null || this.ctx.text == null) return;
         render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight,
                 this.label, this.subText, this.icon, this.subtextSpacing,
-                this.accent, this.textColor, this.filled, this.hovered, this.enabled);
+                this.accent, this.textColor, this.subTextColor, this.filled, this.hovered, this.enabled);
     }
 
     /** Intrinsic (wrap) width of a button: internal padding + icon + label + spacing + subtext chip. */

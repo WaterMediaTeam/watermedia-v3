@@ -18,6 +18,8 @@ public final class IconButton extends Element<IconButton> {
     private int iconSize = DEFAULT_ICON;
     private Color accent = AppTheme.NEON;
     private Color iconColor = AppTheme.TEXT;
+    // REPLACES BOTH THE ACCENT AND THE ICON COLOR WHILE HOVERED; null KEEPS THEM
+    private Color hoverColor;
     private boolean filled;
     private boolean bordered = true;
 
@@ -48,6 +50,12 @@ public final class IconButton extends Element<IconButton> {
         return this;
     }
 
+    /** Sets the color that tints the box and the icon while hovered, for a control that lights up in its own hue. */
+    public IconButton hoverColor(final Color value) {
+        this.hoverColor = value;
+        return this;
+    }
+
     public IconButton filled(final boolean value) {
         this.filled = value;
         return this;
@@ -68,8 +76,10 @@ public final class IconButton extends Element<IconButton> {
 
     @Override
     protected void onDraw(final Canvas canvas) {
+        final boolean lit = this.hovered && this.hoverColor != null;
         render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight, this.icon, this.iconSize,
-                this.accent, this.iconColor, this.filled, this.hovered, this.enabled, this.bordered);
+                lit ? this.hoverColor : this.accent, lit ? this.hoverColor : this.iconColor,
+                this.filled, this.hovered, this.enabled, this.bordered);
     }
 
     /**

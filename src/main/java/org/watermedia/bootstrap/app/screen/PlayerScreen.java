@@ -21,6 +21,7 @@ import org.watermedia.bootstrap.app.element.IconButton;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.ParentFrame;
+import org.watermedia.bootstrap.app.element.SectionHead;
 import org.watermedia.bootstrap.app.element.SeekBar;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.element.TextField;
@@ -861,79 +862,6 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // SECTION HEADER (NEON PIP + BOLD LABEL + FAINT COUNT) — CANVAS PORT OF THE LEGACY DIALOG HEADS
-    private static final class SectionHead extends Element<SectionHead> {
-
-        private final String label;
-        private String count = "";
-
-        SectionHead(final String label) {
-            this.label = label.toUpperCase();
-            this.width = MAX_PARENT;
-            this.height = 30;
-        }
-
-        SectionHead count(final String value) {
-            this.count = value == null ? "" : value.toUpperCase();
-            return this;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int x = this.left;
-            final int y = this.top + 3;
-            canvas.fill(x, y, 4, 21, AppTheme.NEON);
-            canvas.glow(x, y, 4, 21, 0f, AppTheme.NEON, 0.16f);
-            canvas.text(this.label, x + 18, y + Math.max(0, (21 - canvas.textHeight(AppTheme.TEXT_SECTION, true)) / 2),
-                    AppTheme.NEON, AppTheme.TEXT_SECTION, true);
-            if (!this.count.isEmpty()) {
-                canvas.text(this.count, x + 30 + canvas.textWidth(this.label, AppTheme.TEXT_SECTION, true),
-                        y + Math.max(0, (21 - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
-                        AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
-            }
-        }
-    }
-
-    // LABELED TRANSPORT BUTTON WITH THE CYAN VALUE CHIP (MAX-SIZE) — STOCK Button HAS NO CHIP-COLOR
-    // KNOB, SO IT PAINTS THROUGH THE SHARED DESIGN-SYSTEM STATIC FOR AN IDENTICAL LOOK
-    private final class ChipButton extends Element<ChipButton> {
-
-        private final String icon;
-        private final Color accent;
-        private String label = "";
-        private String chip = "";
-
-        ChipButton(final String icon, final Color accent) {
-            this.icon = icon;
-            this.accent = accent;
-        }
-
-        ChipButton label(final String value) {
-            this.label = value == null ? "" : value;
-            return this;
-        }
-
-        ChipButton chip(final String value) {
-            this.chip = value == null ? "" : value;
-            return this;
-        }
-
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // WRAP TO CONTENT (BORDER PADDING + ICON + LABEL + THE CYAN VALUE CHIP) VIA THE SHARED BUTTON
-            // METRIC, SO A LONG QUALITY NAME OR RESOLUTION CHIP IS NEVER CLIPPED
-            this.contentWidth = Button.width(PlayerScreen.this.text, this.label, this.chip, this.icon, 12);
-            this.contentHeight = 30;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            Button.render(canvas, this.left, this.top, this.measuredWidth, this.measuredHeight,
-                    this.label, this.chip, this.icon, 12, this.accent, this.accent, AppTheme.CYAN,
-                    false, this.hovered, true);
-        }
-    }
-
     // SOURCE ROW FOR THE QUALITY DIALOG: STATE ICON + BOLD TITLE + MEDIA TYPE TAG + SUBTITLE
     private final class SourceRow extends Group<SourceRow> {
 
@@ -1327,8 +1255,8 @@ public final class PlayerScreen extends Screen {
         private final Icon srcIcon;
         private final MetricsPanel metrics = new MetricsPanel();
         private final Button dbg;
-        private final ChipButton qual;
-        private final ChipButton lod;
+        private final Button qual;
+        private final Button lod;
         private final IconButton prev;
         private final IconButton rew;
         private final IconButton stopBtn;
@@ -1378,12 +1306,12 @@ public final class PlayerScreen extends Screen {
                         PlayerScreen.this.ctx.playSelectionSound();
                     });
             // WRAP TO CONTENT: THE QUALITY/LOD LABELS AND THEIR RESOLUTION CHIPS VARY, SO A FIXED WIDTH CLIPPED THEM
-            this.qual = new ChipButton("folder", AppTheme.CYAN);
+            this.qual = new Button().icon("folder").accent(AppTheme.CYAN).textColor(AppTheme.CYAN).subTextColor(AppTheme.CYAN);
             this.qual.width(WRAP_CONTENT).height(30).onClick(v -> {
                 PlayerScreen.this.openQualityDialog();
                 PlayerScreen.this.ctx.playSelectionSound();
             });
-            this.lod = new ChipButton("tv", AppTheme.AMBER);
+            this.lod = new Button().icon("tv").accent(AppTheme.AMBER).textColor(AppTheme.AMBER).subTextColor(AppTheme.CYAN);
             this.lod.width(WRAP_CONTENT).height(30).onClick(v -> {
                 PlayerScreen.this.openVideoDialog();
                 PlayerScreen.this.ctx.playSelectionSound();
@@ -1482,8 +1410,8 @@ public final class PlayerScreen extends Screen {
                     .accent(loopOn ? AppTheme.GREEN : AppTheme.TEXT_FAINT)
                     .textColor(loopOn ? AppTheme.GREEN : AppTheme.TEXT_FAINT);
             final String scale = PlayerScreen.this.scaleLabel();
-            this.qual.label(p.quality().name()).chip(scale);
-            this.lod.label(PlayerScreen.this.lodLabel()).chip(scale);
+            this.qual.label(p.quality().name()).subText(scale);
+            this.lod.label(PlayerScreen.this.lodLabel()).subText(scale);
             // KEEP THE DROPDOWN SELECTION MIRRORING THE LIVE PLAYER SPEED (SNAPPED TO THE NEAREST PRESET);
             // LOCK IT WHEN THE PLAYER CANNOT CHANGE SPEED (LIVE STREAM, OR AN ENGINE STUCK AT 1.0×)
             this.speedDrop.enabled(p.canSpeed());

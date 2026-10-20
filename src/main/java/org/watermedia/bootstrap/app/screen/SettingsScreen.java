@@ -19,6 +19,7 @@ import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.ParentScroll;
+import org.watermedia.bootstrap.app.element.SectionHead;
 import org.watermedia.bootstrap.app.element.SeekBar;
 import org.watermedia.bootstrap.app.element.SegmentedControl;
 import org.watermedia.bootstrap.app.element.Spinner;
@@ -104,8 +105,7 @@ public final class SettingsScreen extends Screen {
     private Header header;
     private TabScroll tabs;
     private Parent sectionColumn;
-    private Text paneTitle;
-    private Text paneDetail;
+    private SectionHead paneHead;
     private ListView<Setting> list;
 
     private int activeSpecIndex;
@@ -165,20 +165,17 @@ public final class SettingsScreen extends Screen {
         strip.spacing(12).width(MAX_PARENT).height(TAB_H).padding(new Spacing(12, 22, 0, 22));
         strip.add(this.tabs).add(reset);
 
-        // SECTIONS — CLEAN LEFT COLUMN, MRL-STYLE: HEAD ROW (NEON BAR + LABEL) OVER A FLAT PLATE
+        // SECTIONS — A SECTION HEAD OVER A FLAT PLATE
         this.sectionColumn = Parent.column().spacing(2).width(MAX_PARENT);
         final Parent sections = Parent.column().spacing(10)
                 .size(SIDEBAR_W, MAX_PARENT)
                 .padding(new Spacing(8, 4, 8, 4))
                 .background(AppTheme.alpha(AppTheme.BG_1, 150))
-                .add(Parent.row().spacing(8).width(MAX_PARENT).height(24)
-                        .add(new Box().size(4, 20).background(AppTheme.NEON).glow(AppTheme.NEON, 0.16f).gravity(Gravity.CENTER))
-                        .add(new Text("SECTIONS").bold(true).scale(AppTheme.TEXT_SECTION).color(AppTheme.NEON).gravity(Gravity.CENTER)))
+                .add(new SectionHead("Sections"))
                 .add(new ParentScroll().scrollbarWidth(3).size(MAX_PARENT, MAX_PARENT).add(this.sectionColumn));
 
-        // SETTINGS PANE — MRL-STYLE HEAD ROW (NEON BAR + TITLE + DETAIL) OVER THE OPEN ROW LIST
-        this.paneTitle = new Text().bold(true).color(AppTheme.NEON).scale(AppTheme.TEXT_SECTION).gravity(Gravity.CENTER);
-        this.paneDetail = new Text().color(AppTheme.TEXT_FAINT).scale(AppTheme.TEXT_BODY).gravity(Gravity.CENTER).width(MAX_PARENT);
+        // SETTINGS PANE — A SECTION HEAD WITH THE SECTION'S DETAIL OVER THE OPEN ROW LIST
+        this.paneHead = new SectionHead();
         this.list = new ListView<Setting>()
                 .rowHeight(ROW_H)
                 .spacing(8)
@@ -200,10 +197,7 @@ public final class SettingsScreen extends Screen {
         final Parent pane = Parent.column().spacing(10)
                 .size(MAX_PARENT, MAX_PARENT)
                 .padding(new Spacing(8, 0, 0, 18))
-                .add(Parent.row().spacing(8).width(MAX_PARENT).height(24)
-                        .add(new Box().size(4, 20).background(AppTheme.NEON).glow(AppTheme.NEON, 0.16f).gravity(Gravity.CENTER))
-                        .add(this.paneTitle)
-                        .add(this.paneDetail))
+                .add(this.paneHead)
                 .add(this.list);
 
         // CONTENT — SECTIONS PLATE | HAIRLINE RULE | OPEN ROWS, ALL DIRECTLY OVER THE SHELL BACKGROUND
@@ -230,8 +224,7 @@ public final class SettingsScreen extends Screen {
         final SettingSection section = this.activeSection();
         // THE HEADER SUBTITLE SHOWS THE ACTIVE TREE PATH ("media" OR "group1 / group2")
         this.header.sub(section == null ? "" : section.path.toLowerCase(Locale.ROOT));
-        this.paneTitle.text(section == null ? "" : section.name.toUpperCase(Locale.ROOT));
-        this.paneDetail.text(section == null ? "" : section.detail);
+        this.paneHead.label(section == null ? "" : section.name).count(section == null ? "" : section.detail);
         // FLUSH THE PER-GESTURE SEEKBAR SAVE ONCE THE POINTER RELEASED (LEGACY saveAfterDrag SEMANTICS),
         // PERSISTING THE SPEC THAT WAS ACTUALLY MUTATED — NOT activeSpec(), WHICH MAY HAVE SWITCHED MID-GESTURE
         if (this.dragSave && !this.ctx.mouseDown) {

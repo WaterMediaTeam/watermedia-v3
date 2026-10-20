@@ -13,6 +13,8 @@ import org.watermedia.bootstrap.app.element.Group;
 import org.watermedia.bootstrap.app.element.ListView;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.ProgressBar;
+import org.watermedia.bootstrap.app.element.SectionHead;
+import org.watermedia.bootstrap.app.element.Stepper;
 import org.watermedia.bootstrap.app.element.StatusSquare;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.bootstrap.app.element.Theme;
@@ -32,7 +34,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
-import java.util.function.IntPredicate;
 
 import static org.lwjgl.glfw.GLFW.*;
 
@@ -191,9 +192,9 @@ public class HomeScreen extends Screen {
     }
 
     private Dialog buildUploadDialog() {
-        final StageStrip strip = new StageStrip(new String[]{"SCAN", "UPLOAD", "ISSUE"},
-                step -> this.ctx.upload.stage > step || this.ctx.upload.done || (step == 2 && this.ctx.upload.uploadsDone),
-                step -> this.ctx.upload.stage == step && !this.ctx.upload.done);
+        final Stepper strip = new Stepper("SCAN", "UPLOAD", "ISSUE")
+                .complete(step -> this.ctx.upload.stage > step || this.ctx.upload.done || (step == 2 && this.ctx.upload.uploadsDone))
+                .active(step -> this.ctx.upload.stage == step && !this.ctx.upload.done);
 
         this.fileList = new ListView<AppContext.UploadFileEntry>()
                 .rowFactory(this::uploadRow)
@@ -250,9 +251,9 @@ public class HomeScreen extends Screen {
     }
 
     private Dialog buildCleanupDialog() {
-        final StageStrip strip = new StageStrip(new String[]{"SCAN", "CLEAN"},
-                step -> this.ctx.cleanup.stage > step || (step == 2 && this.ctx.cleanup.done),
-                step -> this.ctx.cleanup.stage == step && !this.ctx.cleanup.done);
+        final Stepper strip = new Stepper("SCAN", "CLEAN")
+                .complete(step -> this.ctx.cleanup.stage > step || (step == 2 && this.ctx.cleanup.done))
+                .active(step -> this.ctx.cleanup.stage == step && !this.ctx.cleanup.done);
 
         final FileRow row = new FileRow();
         row.pip.status(() -> {
@@ -869,29 +870,14 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            this.head(canvas, "Actions", HomeScreen.this.actions.size() + " available", this.innerLeft(), this.innerTop());
-            this.head(canvas, "Media tests", HomeScreen.this.mediaTests.size() + " categories", this.rightXAbs, this.innerTop());
+            SectionHead.draw(canvas, "ACTIONS", HomeScreen.this.actions.size() + " AVAILABLE", this.innerLeft(), this.innerTop(), this.innerWidth());
+            SectionHead.draw(canvas, "MEDIA TESTS", HomeScreen.this.mediaTests.size() + " CATEGORIES", this.rightXAbs, this.innerTop(), this.innerWidth());
             if (this.entHeadVisible) {
-                this.head(canvas, "Entertainment", HomeScreen.this.entertainment.size() + " available", this.rightXAbs, this.entYAbs);
+                SectionHead.draw(canvas, "ENTERTAINMENT", HomeScreen.this.entertainment.size() + " AVAILABLE", this.rightXAbs, this.entYAbs, this.innerWidth());
             }
             super.onDraw(canvas); // TILES, THEN THE TOOLTIP ON TOP
         }
 
-        // CANVAS PORT OF THE CHROME SECTION HEAD: NEON TICK + BOLD LABEL + FAINT COUNT
-        private void head(final Canvas canvas, final String label, final String count, final int x, final int y) {
-            final int headY = y + 3;
-            final int headH = 21;
-            canvas.fill(x, headY, 4, headH, AppTheme.NEON);
-            canvas.glow(x, headY, 4, headH, 0f, AppTheme.NEON, 0.16f);
-            final String up = label.toUpperCase(Locale.ROOT);
-            canvas.text(up, x + 18, headY + Math.max(0, (headH - canvas.textHeight(AppTheme.TEXT_SECTION, true)) / 2),
-                    AppTheme.NEON, AppTheme.TEXT_SECTION, true);
-            if (count != null) {
-                canvas.text(count.toUpperCase(Locale.ROOT), x + 30 + canvas.textWidth(up, AppTheme.TEXT_SECTION, true),
-                        headY + Math.max(0, (headH - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
-                        AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
-            }
-        }
     }
 
     // ONE ACTION ROW — DECOR (BACKGROUND/BORDER/GLOW) IS BOUND FROM LIVE STATE IN onUpdate, CONTENT IS
@@ -1122,57 +1108,6 @@ public class HomeScreen extends Screen {
     // ==========================================================================
     // DIALOG BUILDING BLOCKS
     // ==========================================================================
-
-    // LABELED STEP STRIP — THE CANVAS PORT OF THE LEGACY DIALOG STEPPER (NUMBERED 30px BOXES WITH LABELS
-    // AND CONNECTORS). STEP STATE IS RESOLVED LIVE FROM ctx ON EVERY DRAW VIA THE TWO PREDICATES.
-    private final class StageStrip extends Element<StageStrip> {
-
-        private final String[] labels;
-        private final IntPredicate complete;
-        private final IntPredicate active;
-
-        private StageStrip(final String[] labels, final IntPredicate complete, final IntPredicate active) {
-            this.labels = labels;
-            this.complete = complete;
-            this.active = active;
-        }
-
-        @Override
-        protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            int w = 0;
-            for (int i = 0; i < this.labels.length; i++) {
-                if (i > 0) w += 56;
-                w += 42 + HomeScreen.this.ctx.text.width(this.labels[i], AppTheme.TEXT_BODY);
-            }
-            this.contentWidth = w;
-            this.contentHeight = 30;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int y = this.innerTop();
-            int x = this.innerLeft();
-            for (int i = 0; i < this.labels.length; i++) {
-                final int step = i + 1;
-                final boolean done = this.complete.test(step);
-                final boolean act = this.active.test(step);
-                final Color color = done ? AppTheme.GREEN : act ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT;
-                canvas.fill(x, y, 30, 30, AppTheme.alpha(AppTheme.BG_2, 220));
-                canvas.stroke(x, y, 30, 30, color, act || done ? 2f : 1f);
-                if (done) {
-                    PixelIcon.draw("check", x + 8, y + 8, 14, color);
-                } else {
-                    canvas.text(String.valueOf(step), x + 11, y + 7, color, AppTheme.TEXT_BODY, false);
-                }
-                canvas.text(this.labels[i], x + 42, y + 8, color, AppTheme.TEXT_BODY, false);
-                final int end = x + 42 + canvas.textWidth(this.labels[i], AppTheme.TEXT_BODY, false);
-                if (i < this.labels.length - 1) {
-                    canvas.fill(end + 10, y + 15, 34, 1, AppTheme.STROKE_BRIGHT);
-                }
-                x = end + 56;
-            }
-        }
-    }
 
     // ONE FILE/SUMMARY ROW: STATUS PIP + NAME (+ URL OR PROGRESS BAR UNDERNEATH) + SIZE + STATE BADGE.
     // A binder CONSUMER RE-READS LIVE STATE EVERY FRAME; LAYOUT MIRRORS THE LEGACY ROW METRICS.
