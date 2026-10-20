@@ -323,15 +323,15 @@ public final class TikTokPlatform implements Platform {
 
     // HTTP
     private static Webpage fetchWebpage(final URI uri, final String cookies) throws IOException {
-        final NetRequest.Builder builder = NetRequest.create(uri)
-                .method("GET")
+        final NetRequest req = new NetRequest(uri)
                 .accept("text/html,application/xhtml+xml,*/*")
                 .userAgent(NetRequest.UserAgent.GENERIC)
                 .referer(TIKTOK_REFERER)
                 .header("Accept-Language", "en-US,en;q=0.9");
-        if (cookies != null) builder.header("Cookie", cookies);
+        if (cookies != null) req.header("Cookie", cookies);
 
-        try (final NetRequest req = builder.send()) {
+        req.send();
+        try (req) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "HTTP " + req.statusCode() + " for " + uri);
             return new Webpage(req.text(), captureCookies(req));
         }

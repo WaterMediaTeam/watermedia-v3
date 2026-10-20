@@ -171,8 +171,8 @@ single-origin credential policy; a redirected server cannot establish a separate
 inside that playback input. Native HTTP logs omit full requests, header dumps and cookie values.
 
 `NetRequest` applies the same boundary to request bodies. A redirect to another origin fails instead
-of resending the body unless the body is set with `body(body, true)`. A 303 response switches only
-that send to GET without a body; the builder keeps its method and body for later sends.
+of resending the body unless the body is set with `body(body, true)`. A 303 response is re-requested
+as GET without a body. A request is sent once: configure it, `send()` it and read its response on one thread.
 
 Redirects only move between http and https, in either direction: a `Location` pointing at a `file:`,
 `jar:` or `ftp:` resource fails the request, and only the first request may name a local file. URLs

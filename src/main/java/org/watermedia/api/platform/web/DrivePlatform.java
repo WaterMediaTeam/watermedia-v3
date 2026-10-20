@@ -55,7 +55,7 @@ public final class DrivePlatform implements Platform {
         try {
             // TRY API APPROACH FIRST
             final URI apiUri = URI.create(String.format(API_URL, fileId, LUCK));
-            try (final NetRequest req = NetRequest.create(apiUri).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
+            try (final NetRequest req = new NetRequest(apiUri).send()) {
                 if (req.statusCode() == HttpURLConnection.HTTP_OK) {
                     final MediaType type = MediaType.of(req.contentType());
                     LOGGER.debug(IT, "Google Drive resolved fileId '{}' via API (content-type {})", fileId, req.contentType());
@@ -82,7 +82,7 @@ public final class DrivePlatform implements Platform {
     private Resolution getDownloadData(final String fileId, final URI original) throws IOException {
         String url = String.format(DOWNLOAD_URL, fileId);
 
-        try (final NetRequest req = NetRequest.create(URI.create(url)).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
+        try (final NetRequest req = new NetRequest(url).send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Download for fileId '" + fileId + "' returned HTTP " + req.statusCode() + " (" + original + ")");
 
             if (req.contentType() != null && req.contentType().startsWith("text/html")) {
@@ -111,7 +111,7 @@ public final class DrivePlatform implements Platform {
                 // THE ORIGINAL RESPONSE WAS THE HTML FORM, NOT THE FILE — RE-REQUEST THE REBUILT URL SO THE
                 // THE Source CARRIES THE REAL FILE CONTENT-TYPE INSTEAD OF "text/html" (WHICH TYPES AS UNKNOWN)
                 final URI confirmed = URI.create(url);
-                try (final NetRequest confirm = NetRequest.create(confirmed).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
+                try (final NetRequest confirm = new NetRequest(confirmed).send()) {
                     if (confirm.statusCode() != 200)
                         throw new PlatformException(NAME, "Confirmed download for fileId '" + fileId + "' returned HTTP " + confirm.statusCode() + " (" + original + ")");
                     final MediaType type = MediaType.of(confirm.contentType());

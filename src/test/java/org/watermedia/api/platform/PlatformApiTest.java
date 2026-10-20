@@ -214,7 +214,7 @@ public class PlatformApiTest {
             final List<Quality> one = List.of(new Quality(this.uri, 0, 0));
             assertThrows(IllegalArgumentException.class, () -> new Source(null, null, null, null, one, null, null));
             assertThrows(IllegalArgumentException.class, () -> new Source(MediaType.VIDEO, null, null, null, List.of(), null, null));
-            assertTrue(new Source(MediaType.VIDEO, null, null, null, one, null, null).headers().frozen());
+            assertThrows(UnsupportedOperationException.class, () -> new Source(MediaType.VIDEO, null, null, null, one, null, null).headers().set("X-Test", "1"));
         }
 
         @Test

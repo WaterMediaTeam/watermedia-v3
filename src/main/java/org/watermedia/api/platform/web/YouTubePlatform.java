@@ -191,7 +191,7 @@ public final class YouTubePlatform extends YtDlpPlatform {
     // FETCHES A FRESH visitorData FROM YOUTUBE'S INNERTUBE visitor_id ENDPOINT; THE po_token MUST BE
     // BOUND TO THE SAME visitorData HANDED TO yt-dlp
     private static String fetchVisitorData() throws IOException {
-        final JsonObject json = WebRequests.fetchJson(NAME, VISITOR_ENDPOINT, NetRequest.create(VISITOR_ENDPOINT)
+        final JsonObject json = WebRequests.fetchJson(NAME, new NetRequest(VISITOR_ENDPOINT)
                 .method("POST")
                 .accept(NetRequest.ACCEPT_JSON)
                 .contentType(NetRequest.MIMETYPE_JSON)

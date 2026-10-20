@@ -45,7 +45,7 @@ public final class OdyseePlatform implements Platform {
         try {
             final URI embedUri = URI.create("https://odysee.com/%24/embed/" + path.substring(1));
             LOGGER.debug(IT, "Odysee fetching embed page {} for {}", embedUri, uri);
-            try (final NetRequest req = NetRequest.create(embedUri).method("GET").accept("text/html").send()) {
+            try (final NetRequest req = new NetRequest(embedUri).accept("text/html").send()) {
                 if (req.statusCode() != 200) throw new PlatformException(NAME, "Embed request for " + embedUri + " returned HTTP " + req.statusCode());
                 final String html = req.text();
 

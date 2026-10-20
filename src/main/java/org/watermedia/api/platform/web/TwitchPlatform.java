@@ -439,7 +439,7 @@ public final class TwitchPlatform implements Platform {
 
     // POSTS ONE GQL OPERATION (AN OBJECT ANSWER) OR A BATCH (AN ARRAY ANSWER)
     private static <T> T gql(final Object body, final Class<T> type) throws PlatformException {
-        return WebRequests.fetchJson(NAME, GQL, NetRequest.create(GQL)
+        return WebRequests.fetchJson(NAME, new NetRequest(GQL)
                 .method("POST")
                 .accept(NetRequest.ACCEPT_JSON)
                 .contentType("application/json; charset=utf-8")

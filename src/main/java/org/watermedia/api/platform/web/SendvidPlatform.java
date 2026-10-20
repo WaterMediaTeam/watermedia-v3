@@ -56,7 +56,7 @@ public final class SendvidPlatform implements Platform {
                 this.waitForReady(statusUrl, videoId);
             }
 
-            try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+            try (final NetRequest req = new NetRequest(uri).accept("text/html").send()) {
                 if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for video '" + videoId + "' returned HTTP " + req.statusCode());
 
                 final String html = req.text();

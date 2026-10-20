@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -75,10 +76,10 @@ public class NetRequestTest {
                 LocalHttp.respond(exchange, "application/octet-stream", new byte[] { 1 }, 0);
             })) {
                 final URI uri = server.uri("/binary");
-                assertThrows(IOException.class, () -> NetRequest.create(uri).httpsOnly().send());
+                assertThrows(IOException.class, () -> new NetRequest(uri).httpsOnly().send());
                 final Path output = directory.resolve("binary");
                 assertThrows(IOException.class, () -> {
-                    try (final NetRequest request = NetRequest.create(uri).httpsOnly().maxBytes(128).send()) { request.download(output, "0".repeat(64)); }
+                    try (final NetRequest request = new NetRequest(uri).httpsOnly().maxBytes(128).send()) { request.download(output, "0".repeat(64)); }
                 });
                 assertFalse(Files.exists(output));
                 assertEquals(0, hits[0]);
@@ -91,19 +92,19 @@ public class NetRequestTest {
             final byte[] body = "0123456789".repeat(20).getBytes(StandardCharsets.UTF_8);
             try (final LocalHttp server = LocalHttp.start("/data", exchange -> LocalHttp.respond(exchange, "text/plain", body, 0))) {
                 final URI uri = server.uri("/data");
-                try (final NetRequest request = NetRequest.create(uri).maxBytes(64).send()) { assertThrows(IOException.class, request::text); }
-                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).send()) { assertEquals(new String(body, StandardCharsets.UTF_8), request.text()); }
+                try (final NetRequest request = new NetRequest(uri).maxBytes(64).send()) { assertThrows(IOException.class, request::text); }
+                try (final NetRequest request = new NetRequest(uri).maxBytes(1024).send()) { assertEquals(new String(body, StandardCharsets.UTF_8), request.text()); }
                 final Path output = directory.resolve("data");
-                try (final NetRequest request = NetRequest.create(uri).maxBytes(64).send()) {
+                try (final NetRequest request = new NetRequest(uri).maxBytes(64).send()) {
                     assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)));
                 }
                 assertFalse(Files.exists(output));
-                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).send()) {
+                try (final NetRequest request = new NetRequest(uri).maxBytes(1024).send()) {
                     assertThrows(IOException.class, () -> request.download(output, "0".repeat(64)), "a wrong digest fails");
                 }
                 assertFalse(Files.exists(output), "a failed download leaves no file behind");
                 final String digest = HexFormat.of().formatHex(DataTool.sha256(body));
-                try (final NetRequest request = NetRequest.create(uri).maxBytes(1024).deadline(10_000L).send()) { request.download(output, digest); }
+                try (final NetRequest request = new NetRequest(uri).maxBytes(1024).deadline(10_000L).send()) { request.download(output, digest); }
                 assertArrayEquals(body, Files.readAllBytes(output));
             }
         }
@@ -122,7 +123,7 @@ public class NetRequestTest {
                     received.append(ex.getRequestHeaders().getFirst(name)).append('\n');
                 }
                 LocalHttp.respond(ex, "text/plain", received.toString().getBytes(StandardCharsets.UTF_8), 0);
-            }); final LocalHttp redirector = redirect(target.uri("/final").toString()); final NetRequest req = NetRequest.create(redirector.uri("/start"))
+            }); final LocalHttp redirector = redirect(target.uri("/final").toString()); final NetRequest req = new NetRequest(redirector.uri("/start"))
                     .header("Authorization", "Bearer test")
                     .header("X-WaterMedia-Token", "test")
                     .header("Cookie", "session=test")
@@ -146,7 +147,7 @@ public class NetRequestTest {
                             + ex.getRequestHeaders().getFirst("Cookie");
                     LocalHttp.respond(ex, "text/plain", received.getBytes(StandardCharsets.UTF_8), 0);
                 }
-            }); final NetRequest req = NetRequest.create(server.uri("/start"))
+            }); final NetRequest req = new NetRequest(server.uri("/start"))
                     .header("Authorization", "Bearer test").header("Cookie", "session=test").send()) {
                 assertEquals("Bearer test|session=test", req.text());
             }
@@ -155,19 +156,17 @@ public class NetRequestTest {
         @Test
         @DisplayName("The origin policy handles downgrades, default ports and host case")
         void originPolicyHandlesDowngradesDefaultPortsAndHostCase() throws Exception {
-            final var materialize = NetRequest.Builder.class.getDeclaredMethod("materializeHeaders", URI.class);
-            materialize.setAccessible(true);
-            final NetRequest.Builder builder = NetRequest.create("https://EXAMPLE.com/start")
+            final NetRequest request = new NetRequest("https://EXAMPLE.com/start")
                     .header("Authorization", "Bearer test").header("Proxy-Authorization", "proxy test")
                     .header("Cookie", "session=test").header("X-WaterMedia-Token", "test");
             for (final String target: List.of("https://example.com:443/end", "https://EXAMPLE.com/end")) {
-                final HttpHeaders headers = (HttpHeaders) materialize.invoke(builder, URI.create(target));
+                final HttpHeaders headers = request.headersFor(URI.create(target));
                 assertEquals("Bearer test", headers.value("Authorization"));
                 assertEquals("session=test", headers.value("Cookie"));
             }
             for (final String target: List.of("http://example.com/end", "http://example.com:443/end",
                     "https://example.com:8443/end", "https://other.example/end")) {
-                final HttpHeaders headers = (HttpHeaders) materialize.invoke(builder, URI.create(target));
+                final HttpHeaders headers = request.headersFor(URI.create(target));
                 for (final String name: List.of("Authorization", "Proxy-Authorization", "Cookie", "X-WaterMedia-Token")) {
                     assertNull(headers.value(name), name + " leaked to " + target);
                 }
@@ -187,17 +186,17 @@ public class NetRequestTest {
                 ex.close();
             })) {
                 final IOException failure = assertThrows(IOException.class,
-                        () -> NetRequest.create(redirector.uri("/start")).method("POST").body("payload").send());
+                        () -> new NetRequest(redirector.uri("/start")).method("POST").body("payload").send());
                 assertTrue(failure.getMessage().contains("another origin"), failure.getMessage());
-                try (final NetRequest req = NetRequest.create(redirector.uri("/start")).method("POST").body("payload", true).send()) {
+                try (final NetRequest req = new NetRequest(redirector.uri("/start")).method("POST").body("payload", true).send()) {
                     assertEquals("POST payload", req.text());
                 }
             }
         }
 
         @Test
-        @DisplayName("A 303 switches only that send to GET, so a reused builder posts again")
-        void seeOtherKeepsTheBuilder() throws IOException {
+        @DisplayName("A 303 is re-requested as GET without the body, and a request is sent once")
+        void seeOtherRequestsGet() throws IOException {
             final List<String> starts = new CopyOnWriteArrayList<>();
             try (final LocalHttp target = LocalHttp.start("/final", ex -> {
                 final String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -208,13 +207,16 @@ public class NetRequestTest {
                 ex.sendResponseHeaders(303, -1);
                 ex.close();
             })) {
-                final NetRequest.Builder builder = NetRequest.create(redirector.uri("/start")).method("POST").body("payload");
-                for (int i = 0; i < 2; i++) {
-                    try (final NetRequest req = builder.send()) {
-                        assertEquals("GET ", req.text());
-                    }
+                final NetRequest request = new NetRequest(redirector.uri("/start")).method("POST").body("payload");
+                assertEquals(redirector.uri("/start"), request.uri(), "before send, uri() is the request's own");
+                assertThrows(IllegalStateException.class, request::statusCode, "the response is unavailable before send");
+                try (final NetRequest req = request.send()) {
+                    assertSame(request, req);
+                    assertEquals("GET ", req.text());
+                    assertEquals("/final", req.uri().getPath(), "after send, uri() is the final hop");
                 }
-                assertEquals(List.of("POST payload", "POST payload"), starts);
+                assertEquals(List.of("POST payload"), starts);
+                assertThrows(IllegalStateException.class, request::send, "a request is sent once");
             }
         }
 
@@ -230,7 +232,7 @@ public class NetRequestTest {
             }
             for (final String location: List.of(secret.toUri().toString(), "jar:" + archive.toUri() + "!/x")) {
                 try (final LocalHttp server = redirect(location)) {
-                    final IOException failure = assertThrows(IOException.class, () -> NetRequest.create(server.uri("/start")).send());
+                    final IOException failure = assertThrows(IOException.class, () -> new NetRequest(server.uri("/start")).send());
                     assertTrue(failure.getMessage().startsWith("Redirect to unsupported scheme"), failure.getMessage());
                 }
             }
@@ -258,13 +260,13 @@ public class NetRequestTest {
                     default -> LocalHttp.respond(ex, "text/plain", "done".getBytes(StandardCharsets.UTF_8), 0);
                 }
             })) {
-                try (final NetRequest req = NetRequest.create(server.uri("/upper")).send()) {
+                try (final NetRequest req = new NetRequest(server.uri("/upper")).send()) {
                     assertEquals("done", req.text());
                     assertEquals("/final", req.uri().getPath());
                 }
                 // THE PLAIN SERVER CANNOT SPEAK TLS: THE HTTPS HOP IS ATTEMPTED AND FAILS ON THE WIRE, NOT ON THE SCHEME RULE
                 final IOException failure = assertThrows(IOException.class,
-                        () -> NetRequest.create(server.uri("/secure")).connectTimeout(1_000).readTimeout(1_000).send());
+                        () -> new NetRequest(server.uri("/secure")).connectTimeout(1_000).readTimeout(1_000).send());
                 assertFalse(String.valueOf(failure.getMessage()).startsWith("Redirect to unsupported scheme"), failure.getMessage());
             }
         }
@@ -278,7 +280,7 @@ public class NetRequestTest {
         @DisplayName("accept() sets the outbound Accept header")
         void acceptHeader() throws IOException {
             try (final LocalHttp server = echo("Accept");
-                 final NetRequest req = NetRequest.create(server.uri("/echo")).accept("image/png").send()) {
+                 final NetRequest req = new NetRequest(server.uri("/echo")).accept("image/png").send()) {
                 assertEquals("image/png", req.text());
             }
         }
@@ -288,14 +290,14 @@ public class NetRequestTest {
         void userAgentLastWriterWins() throws IOException {
             try (final LocalHttp server = echo("User-Agent")) {
                 final URI uri = server.uri("/echo");
-                assertEquals(NetRequest.UserAgent.WATERMEDIA.value(), text(NetRequest.create(uri)));
-                assertEquals("custom", text(NetRequest.create(uri).header("User-Agent", "custom")));
-                assertEquals("bag", text(NetRequest.create(uri).headers(new HttpHeaders().set("User-Agent", "bag"))));
+                assertEquals(NetRequest.UserAgent.WATERMEDIA.value(), text(new NetRequest(uri)));
+                assertEquals("custom", text(new NetRequest(uri).header("User-Agent", "custom")));
+                assertEquals("bag", text(new NetRequest(uri).headers(new HttpHeaders().set("User-Agent", "bag"))));
                 assertEquals(NetRequest.UserAgent.WATERMEDIA.value(),
-                        text(NetRequest.create(uri).userAgent(NetRequest.UserAgent.GENERIC).headers(HttpHeaders.defaults(uri))));
-                assertEquals("x", text(NetRequest.create(uri).userAgent(NetRequest.UserAgent.GENERIC).header("User-Agent", "x")));
+                        text(new NetRequest(uri).userAgent(NetRequest.UserAgent.GENERIC).headers(HttpHeaders.defaults(uri))));
+                assertEquals("x", text(new NetRequest(uri).userAgent(NetRequest.UserAgent.GENERIC).header("User-Agent", "x")));
                 assertEquals(NetRequest.UserAgent.GENERIC.value(),
-                        text(NetRequest.create(uri).header("User-Agent", "x").userAgent(NetRequest.UserAgent.GENERIC)));
+                        text(new NetRequest(uri).header("User-Agent", "x").userAgent(NetRequest.UserAgent.GENERIC)));
             }
         }
 
@@ -303,8 +305,8 @@ public class NetRequestTest {
         @DisplayName("The derived Referer keeps an explicit port")
         void refererKeepsPort() throws IOException {
             try (final LocalHttp server = echo("Referer")) {
-                assertEquals(server.uri("/").toString(), text(NetRequest.create(server.uri("/echo"))));
-                assertEquals("https://set.example/", text(NetRequest.create(server.uri("/echo")).referer("https://set.example/")));
+                assertEquals(server.uri("/").toString(), text(new NetRequest(server.uri("/echo"))));
+                assertEquals("https://set.example/", text(new NetRequest(server.uri("/echo")).referer("https://set.example/")));
             }
         }
     }
@@ -326,14 +328,14 @@ public class NetRequestTest {
                 LocalHttp.respond(ex, type, "{\"a\":1}".getBytes(StandardCharsets.UTF_8), 0);
             })) {
                 for (final String path: List.of("/json", "/api", "/text")) {
-                    try (final NetRequest req = NetRequest.create(server.uri(path)).accept(NetRequest.ACCEPT_JSON).send()) {
+                    try (final NetRequest req = new NetRequest(server.uri(path)).accept(NetRequest.ACCEPT_JSON).send()) {
                         final Map<?, ?> map = req.json(Map.class);
                         assertNotNull(map, path);
                         // GSON DESERIALIZES UNTYPED NUMBERS AS Double
                         assertEquals(1.0, map.get("a"), path);
                     }
                 }
-                try (final NetRequest req = NetRequest.create(server.uri("/plain")).send()) {
+                try (final NetRequest req = new NetRequest(server.uri("/plain")).send()) {
                     assertNull(req.json(Map.class));
                     assertEquals("{\"a\":1}", req.text());
                 }
@@ -345,7 +347,7 @@ public class NetRequestTest {
         void malformedJson() throws IOException {
             try (final LocalHttp server = LocalHttp.start("/broken",
                     ex -> LocalHttp.respond(ex, "application/json", "{\"a\":".getBytes(StandardCharsets.UTF_8), 0));
-                 final NetRequest req = NetRequest.create(server.uri("/broken")).send()) {
+                 final NetRequest req = new NetRequest(server.uri("/broken")).send()) {
                 final IOException failure = assertThrows(IOException.class, () -> req.json(Map.class));
                 assertTrue(failure.getMessage().startsWith("Malformed JSON"), failure.getMessage());
             }
@@ -364,11 +366,11 @@ public class NetRequestTest {
                 }
                 ex.close();
             })) {
-                try (final NetRequest req = NetRequest.create(server.uri("/missing")).send()) {
+                try (final NetRequest req = new NetRequest(server.uri("/missing")).send()) {
                     assertEquals(404, req.statusCode());
                     assertEquals("not here", req.text());
                 }
-                try (final NetRequest req = NetRequest.create(server.uri("/gone")).send()) {
+                try (final NetRequest req = new NetRequest(server.uri("/gone")).send()) {
                     assertEquals(410, req.statusCode());
                     assertEquals("", req.text());
                 }
@@ -379,7 +381,7 @@ public class NetRequestTest {
         @DisplayName("A plain GET exposes its status and content type, and the body can be read only once")
         void singleRead() throws IOException {
             try (final LocalHttp server = LocalHttp.start("/text", ex -> LocalHttp.respond(ex, "text/plain", "hello".getBytes(), 0));
-                 final NetRequest req = NetRequest.create(server.uri("/text")).send()) {
+                 final NetRequest req = new NetRequest(server.uri("/text")).send()) {
                 assertEquals(200, req.statusCode());
                 assertTrue(String.valueOf(req.contentType()).contains("text/plain"));
                 assertEquals("hello", req.text());
@@ -409,7 +411,7 @@ public class NetRequestTest {
                 } catch (final IOException gone) {
                     // THE CLIENT GAVE UP
                 }
-            }, handlers); final NetRequest req = NetRequest.create(server.uri("/slow")).readTimeout(200).send()) {
+            }, handlers); final NetRequest req = new NetRequest(server.uri("/slow")).readTimeout(200).send()) {
                 final long start = System.nanoTime();
                 final IOException failure = assertThrows(IOException.class, req::text);
                 final long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
@@ -438,8 +440,8 @@ public class NetRequestTest {
                 String.valueOf(ex.getRequestHeaders().getFirst(name)).getBytes(StandardCharsets.UTF_8), 0));
     }
 
-    private static String text(final NetRequest.Builder builder) throws IOException {
-        try (final NetRequest req = builder.send()) {
+    private static String text(final NetRequest request) throws IOException {
+        try (final NetRequest req = request.send()) {
             return req.text();
         }
     }

@@ -38,7 +38,7 @@ public final class MediaFirePlatform implements Platform {
         final String path = uri.getPath();
         if (path == null || !path.startsWith("/file/")) throw PlatformException.unsupported(NAME, uri);
 
-        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+        try (final NetRequest req = new NetRequest(uri).accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
 
             final String html = req.text();

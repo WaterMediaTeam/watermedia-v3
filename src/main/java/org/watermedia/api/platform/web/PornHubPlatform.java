@@ -45,7 +45,7 @@ public final class PornHubPlatform implements Platform {
         if (!WaterMediaConfig.platforms.allowMatureContent)
             throw new MatureContentException(NAME, "Mature content is disabled in config (this platform serves mature content exclusively)");
 
-        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+        try (final NetRequest req = new NetRequest(uri).accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for viewkey '" + viewkey + "' returned HTTP " + req.statusCode());
 
             final String html = req.text();

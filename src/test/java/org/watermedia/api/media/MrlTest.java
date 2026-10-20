@@ -337,8 +337,7 @@ public class MrlTest {
             final Source source = new Source(MediaType.VIDEO, null, null, null,
                     List.of(new Quality(URI.create("https://example.invalid/clip.mp4"), 0, 0)), null, null);
             final MRL.Source resolved = resolve(URI.create("watertest://bucket/headers"), source).source(0);
-            assertTrue(resolved.headers().frozen());
-            assertThrows(IllegalStateException.class, () -> resolved.headers().set("X-Test", "1"));
+            assertThrows(UnsupportedOperationException.class, () -> resolved.headers().set("X-Test", "1"));
         }
 
         @Test

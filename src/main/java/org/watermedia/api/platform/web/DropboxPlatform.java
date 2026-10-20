@@ -43,7 +43,7 @@ public final class DropboxPlatform implements Platform {
                 : query.isEmpty() ? "dl=1" : query + "&dl=1";
         final URI directUri = URI.create(uri.getScheme() + "://" + uri.getRawAuthority() + path + "?" + rebuilt);
 
-        try (final NetRequest req = NetRequest.create(directUri).method("GET").accept(NetRequest.ACCEPT_ANY).send()) {
+        try (final NetRequest req = new NetRequest(directUri).send()) {
             if (req.statusCode() != 200)
                 throw new PlatformException(NAME, "Direct download for " + directUri + " returned HTTP " + req.statusCode());
 

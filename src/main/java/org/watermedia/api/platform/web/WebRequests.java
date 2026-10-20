@@ -20,12 +20,13 @@ final class WebRequests {
         final URI target;
         try { target = URI.create(uri); }
         catch (final IllegalArgumentException malformed) { throw new PlatformException(platform, "Malformed API URL " + uri, malformed); }
-        return fetchJson(platform, target, NetRequest.create(target).method("GET").accept(NetRequest.ACCEPT_JSON), type);
+        return fetchJson(platform, new NetRequest(target).accept(NetRequest.ACCEPT_JSON), type);
     }
 
-    // SENDS request (BUILT FOR uri) AND BINDS ITS JSON BODY; A NON-200 STATUS, A NON-JSON OR EMPTY BODY AND ANY
-    // TRANSPORT OR PARSE FAILURE BECOME A PlatformException NAMING platform AND uri, KEEPING THE CAUSE
-    static <T> T fetchJson(final String platform, final URI uri, final NetRequest.Builder request, final Class<T> type) throws PlatformException {
+    // SENDS AN UNSENT request AND BINDS ITS JSON BODY; A NON-200 STATUS, A NON-JSON OR EMPTY BODY AND ANY
+    // TRANSPORT OR PARSE FAILURE BECOME A PlatformException NAMING platform AND THE REQUESTED URI, KEEPING THE CAUSE
+    static <T> T fetchJson(final String platform, final NetRequest request, final Class<T> type) throws PlatformException {
+        final URI uri = request.uri();
         try (final NetRequest req = request.send()) {
             if (req.statusCode() != 200)
                 throw new PlatformException(platform, "API " + uri + " returned HTTP " + req.statusCode());
@@ -42,8 +43,7 @@ final class WebRequests {
 
     // FOLLOWS A SHORT LINK'S REDIRECTS WITH A BROWSER UA (SHORTENERS FILTER BOTS) AND RETURNS WHERE IT LANDED
     static URI follow(final URI link) throws IOException {
-        try (final NetRequest req = NetRequest.create(link).method("GET").accept(NetRequest.ACCEPT_ANY)
-                .userAgent(NetRequest.UserAgent.GENERIC).send()) {
+        try (final NetRequest req = new NetRequest(link).userAgent(NetRequest.UserAgent.GENERIC).send()) {
             return req.uri();
         }
     }

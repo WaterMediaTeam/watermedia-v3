@@ -49,7 +49,7 @@ public final class DTubePlatform implements Platform {
                 .set("User-Agent", NetRequest.UserAgent.GENERIC.value())
                 .set("Referer", ORIGIN + "/")
                 .set("Origin", ORIGIN);
-        try (final NetRequest req = NetRequest.create(uri).method("GET").accept("text/html").send()) {
+        try (final NetRequest req = new NetRequest(uri).accept("text/html").send()) {
             if (req.statusCode() != 200) throw new PlatformException(NAME, "Page request for " + uri + " returned HTTP " + req.statusCode());
             final String html = req.text();
 

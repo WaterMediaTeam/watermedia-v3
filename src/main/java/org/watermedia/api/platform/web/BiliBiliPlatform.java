@@ -343,14 +343,13 @@ public final class BiliBiliPlatform implements Platform {
 
     // FETCH: THE BROWSER UA, REFERER AND SESSION COOKIE THE API DEMANDS; A NON-ZERO code IS AN API ERROR
     private static JsonObject fetchJson(final String api, final String dataKey) throws PlatformException {
-        final URI uri = URI.create(api);
-        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").accept(NetRequest.ACCEPT_JSON)
+        final NetRequest request = new NetRequest(api).accept(NetRequest.ACCEPT_JSON)
                 .userAgent(NetRequest.UserAgent.GENERIC)
                 .referer(REFERER);
         final String c = WaterMediaConfig.platforms.biliBiliCookie;
-        if (c != null && !c.isEmpty()) builder.header("Cookie", c);
+        if (c != null && !c.isEmpty()) request.header("Cookie", c);
 
-        final JsonObject json = WebRequests.fetchJson(NAME, uri, builder, JsonObject.class);
+        final JsonObject json = WebRequests.fetchJson(NAME, request, JsonObject.class);
         final int code = intOr(json, "code", 0);
         if (code != 0) {
             final String message = str(json, "message");

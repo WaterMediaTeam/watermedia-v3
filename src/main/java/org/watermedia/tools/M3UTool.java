@@ -79,7 +79,7 @@ public final class M3UTool {
      */
     public static Playlist fetch(final URI uri, final HttpHeaders headers) throws IOException {
         // THE CONFIGURED network.timeout APPLIES, LIKE EVERY OTHER REQUEST
-        try (final NetRequest req = NetRequest.create(uri).method("GET").headers(headers).send()) {
+        try (final NetRequest req = new NetRequest(uri).headers(headers).send()) {
             final int code = req.statusCode();
             if (code != 200)
                 throw new IOException("Cannot fetch playlist from " + uri + ": server returned HTTP " + code + " (expected 200 OK)");

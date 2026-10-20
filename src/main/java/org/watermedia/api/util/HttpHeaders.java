@@ -46,8 +46,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         public String toString() { return this.name; }
     }
 
-    private final List<Entry> entries = new ArrayList<>();
-    private boolean frozen;
+    private List<Entry> entries = new ArrayList<>();
 
     public HttpHeaders() {}
 
@@ -55,14 +54,11 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
         if (other != null) this.entries.addAll(other.entries);
     }
 
-    /** Makes this bag immutable: every later mutator throws {@link IllegalStateException}. */
+    /** Makes this bag immutable: every later mutator throws {@link UnsupportedOperationException}. */
     public HttpHeaders freeze() {
-        this.frozen = true;
+        this.entries = Collections.unmodifiableList(this.entries);
         return this;
     }
-
-    /** Whether {@link #freeze()} ran on this bag. */
-    public boolean frozen() { return this.frozen; }
 
     /**
      * Default header bag for outbound platform requests: WaterMedia User-Agent,
@@ -70,9 +66,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * stamp it onto each {@link Platform.Source} they emit.
      */
     public static HttpHeaders defaults(final URI uri) {
-        final HttpHeaders h = new HttpHeaders()
-                .set("User-Agent", WaterMedia.USER_AGENT)
-                .set("Accept", NetRequest.ACCEPT_MEDIA);
+        final HttpHeaders h = new HttpHeaders().set("User-Agent", WaterMedia.USER_AGENT).set("Accept", NetRequest.ACCEPT_MEDIA);
         final String referer = referer(uri);
         if (referer != null) h.set("Referer", referer);
         return h;
@@ -88,7 +82,6 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Replaces all values for {@code name} with a single entry. Case-insensitive match.
      */
     public HttpHeaders set(final String name, final String value) {
-        this.checkMutable();
         final Entry entry = new Entry(name, value);
         this.removeAll(name);
         this.entries.add(entry);
@@ -99,7 +92,6 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Appends a new value for {@code name}. Existing values are kept.
      */
     public HttpHeaders add(final String name, final String value) {
-        this.checkMutable();
         this.entries.add(new Entry(name, value));
         return this;
     }
@@ -110,7 +102,6 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * preserving multi-valued headers. A {@code null} or empty bag, or this same bag, is a no-op.
      */
     public HttpHeaders merge(final HttpHeaders other) {
-        this.checkMutable();
         if (other == null || other == this || other.empty()) return this;
         final Set<String> seen = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (final Entry e: other.entries) {
@@ -124,7 +115,6 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Removes every entry whose name matches (case-insensitive).
      */
     public HttpHeaders removeAll(final String name) {
-        this.checkMutable();
         this.entries.removeIf(entry -> eq(entry.name, name));
         return this;
     }
@@ -211,11 +201,6 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
 
     @Override
     public String toString() { return "HttpHeaders" + this.entries; }
-
-    // MUTATORS SHARE ONE GUARD SO A FROZEN BAG FAILS LOUDLY INSTEAD OF RACING ITS READERS
-    private void checkMutable() {
-        if (this.frozen) throw new IllegalStateException("Headers are frozen; copy them to change them");
-    }
 
     // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
     private static boolean eq(final String a, final String b) {

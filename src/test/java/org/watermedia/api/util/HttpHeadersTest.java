@@ -96,6 +96,22 @@ public class HttpHeadersTest {
             assertEquals(List.of("1", "2"), h.values("X"));
             assertEquals(3, h.count());
         }
+
+        @Test
+        @DisplayName("a frozen bag refuses every mutator, still reads, and copies into a mutable bag")
+        void frozenBagRefusesMutators() {
+            final HttpHeaders frozen = new HttpHeaders().set("X", "1").freeze();
+            assertThrows(UnsupportedOperationException.class, () -> frozen.set("X", "2"));
+            assertThrows(UnsupportedOperationException.class, () -> frozen.add("Y", "2"));
+            assertThrows(UnsupportedOperationException.class, () -> frozen.removeAll("X"));
+            assertThrows(UnsupportedOperationException.class, () -> frozen.merge(new HttpHeaders().set("Z", "3")));
+            assertEquals("1", frozen.value("X"));
+            assertEquals(1, frozen.count());
+            assertEquals("X: 1\r\n", frozen.toRawString());
+            final HttpHeaders copy = new HttpHeaders(frozen).set("X", "2");
+            assertEquals("2", copy.value("X"));
+            assertEquals("1", frozen.value("X"));
+        }
     }
 
     @Nested

@@ -199,7 +199,7 @@ public final class MRL {
             // NO HANDLER CLAIMS A DIRECT LINK; THE PROBE BELOW RESOLVES IT FROM ITS CONTENT TYPE
             Platform.Resolution data = PlatformAPI.fetch(this.uri);
             if (data == null) {
-                try (final NetRequest req = NetRequest.create(this.uri).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
+                try (final NetRequest req = new NetRequest(this.uri).accept(NetRequest.ACCEPT_MEDIA).send()) {
                     LOGGER.debug(IT, "Connected to {} with content type {}", this.uri, req.contentType());
 
                     // FAIL FAST ON NON-2xx
@@ -270,7 +270,7 @@ public final class MRL {
                 // MULTI-SOURCE DATA (IPTV LISTS) IS EXEMPT — PROBING EVERY CHANNEL IS A REQUEST STORM.
                 final Platform.Source entry = data.sources().get(0);
                 final URI target = entry.qualities().get(0).uri();
-                try (final NetRequest req = NetRequest.create(target).headers(entry.headers()).method("GET").accept(NetRequest.ACCEPT_MEDIA).send()) {
+                try (final NetRequest req = new NetRequest(target).headers(entry.headers()).accept(NetRequest.ACCEPT_MEDIA).send()) {
                     final MediaType type = req.statusCode() >= 400 ? MediaType.UNKNOWN : sniffType(req, target);
                     if (type != MediaType.UNKNOWN) {
                         data = new Platform.Resolution(data.expires(), new Platform.Source(type, entry.thumbnail(), entry.metadata(),
@@ -534,8 +534,8 @@ public final class MRL {
             qualities = Collections.unmodifiableMap(new EnumMap<>(qualities));
             audioTracks = audioTracks == null ? List.of() : List.copyOf(audioTracks);
             subtitleTracks = subtitleTracks == null ? List.of() : List.copyOf(subtitleTracks);
-            // SHARED ACROSS PLAYER THREADS: NEVER MUTABLE, AND A BAG A PLATFORM ALREADY FROZE IS REUSED AS IS
-            headers = headers != null && headers.frozen() ? headers : new HttpHeaders(headers).freeze();
+            // SHARED ACROSS PLAYER THREADS: NEVER MUTABLE
+            headers = new HttpHeaders(headers).freeze();
         }
 
         /**

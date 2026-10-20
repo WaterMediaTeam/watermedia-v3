@@ -218,11 +218,12 @@ final class NetworkCache {
     // bounded REFUSES ENDLESS SOURCES (NO Content-Length, ICY RADIO) BEFORE READING A SINGLE BODY BYTE
     private static CachedBytes fetch(final URI uri, final HttpHeaders headers, final String accept, final long maxBytes,
                                      final boolean bounded) throws IOException {
-        final NetRequest.Builder builder = NetRequest.create(uri).method("GET").headers(headers);
-        if (accept != null && (headers == null || !headers.has("Accept"))) builder.accept(accept);
+        final NetRequest req = new NetRequest(uri).headers(headers);
+        if (accept != null && (headers == null || !headers.has("Accept"))) req.accept(accept);
         // A FULL RANGE REQUEST AVOIDS REAL-TIME THROTTLING ON SOME MEDIA CDNS.
-        if (headers == null || !headers.has("Range")) builder.header("Range", "bytes=0-");
-        try (final NetRequest req = builder.send()) {
+        if (headers == null || !headers.has("Range")) req.header("Range", "bytes=0-");
+        req.send();
+        try (req) {
             final int status = req.statusCode();
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL)
                 throw new IOException("HTTP " + status + " for " + uri);
