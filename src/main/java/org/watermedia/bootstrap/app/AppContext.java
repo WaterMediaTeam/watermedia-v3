@@ -56,8 +56,8 @@ public final class AppContext implements Executor {
     public final Assets assets = new Assets();
     public boolean backendsLoading = true;
 
-    // UPLOAD LOGS DIALOG STATE
-    public final UploadState upload = new UploadState();
+    // UPLOAD LOGS DIALOG
+    public final LogUploader upload = new LogUploader(this::requestRender);
 
     // CLEANUP CACHE DIALOG STATE
     public final CleanupState cleanup = new CleanupState();

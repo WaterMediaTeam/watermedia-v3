@@ -1,6 +1,5 @@
 package org.watermedia.bootstrap.app;
 
-import com.google.gson.JsonObject;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Marker;
 import org.apache.logging.log4j.MarkerManager;
@@ -17,7 +16,6 @@ import org.lwjgl.system.MemoryStack;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
-import org.watermedia.api.util.NetRequest;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppTheme;
@@ -27,31 +25,18 @@ import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
-import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
-import java.awt.*;
-import java.awt.datatransfer.Clipboard;
-import java.awt.datatransfer.StringSelection;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.URI;
-import java.net.URLEncoder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -64,9 +49,6 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  */
 public class WaterMediaApp {
     private static final Marker IT = MarkerManager.getMarker(WaterMediaApp.class.getSimpleName());
-    // LOG FILES PAST EITHER LIMIT ARE NOT UPLOADED TO MCLOGS
-    private static final long UPLOAD_LIMIT_BYTES = 10L * 1_024 * 1_024;
-    private static final int UPLOAD_LIMIT_LINES = 25_000;
     private static final List<Keybind> KEYS_ERROR = List.of(new Keybind("ENTER/ESC", "Close"));
     private static final List<Keybind> KEYS_EXIT = List.of(new Keybind("ENTER", "Exit"), new Keybind("ESC", "Cancel"));
     private static final AppContext ctx = new AppContext();
@@ -463,35 +445,7 @@ public class WaterMediaApp {
                 screens.navigate("player");
             }
 
-            case UPLOAD_LOGS -> {
-                if (!UploadState.IN_MODS) {
-                    ctx.upload.visible = false;
-                    return;
-                }
-                if (!ctx.upload.visible) {
-                    // SCANNED ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES
-                    ctx.upload.reset();
-                    ctx.upload.visible = true;
-                    ctx.upload.working = true;
-                    ThreadTool.thread("WaterMediaApp-UploadScan", WaterMediaApp::scanUploadLogFiles);
-                    return;
-                }
-                if (ctx.upload.working) {
-                    ctx.upload.visible = true;
-                    return;
-                }
-                if (ctx.upload.stage <= 1) {
-                    if (!hasUploadCandidate()) return;
-                    ctx.upload.working = true;
-                    ThreadTool.thread("WaterMediaApp-UploadLogs", WaterMediaApp::uploadLogs);
-                } else if (ctx.upload.stage == 2) {
-                    if (!hasUploadedLog()) return;
-                    ThreadTool.thread("WaterMediaApp-UploadIssueReport", WaterMediaApp::uploadIssueReport);
-                } else {
-                    if (ctx.upload.repoUrl == null || ctx.upload.repoUrl.isBlank()) return;
-                    ThreadTool.thread("WaterMediaApp-OpenRepoPage", WaterMediaApp::openRepoPage);
-                }
-            }
+            case UPLOAD_LOGS -> ctx.upload.step();
 
             case CLEANUP -> {
                 if (!ctx.cleanup.visible) {
@@ -742,278 +696,6 @@ public class WaterMediaApp {
     }
 
     // BACKGROUND OPERATIONS
-    // RUNS ON A WORKER THREAD (SEE navigateAction) — HEAVY FILE READS MUST NOT BLOCK THE RENDER LOOP
-    private static void scanUploadLogFiles() {
-        try {
-            ctx.upload.stage = 1;
-            ctx.upload.status = "SCAN";
-            ctx.upload.error = false;
-            ctx.upload.done = false;
-            ctx.upload.files.clear();
-
-            final Path baseDir = uploadBaseDir();
-            final Path logsDir = baseDir.resolve("logs");
-            final Path crashDir = baseDir.resolve("crash-reports");
-            final Path crashReport = findLatestCrashReport(crashDir);
-            // JVM FATAL ERROR LOGS (hs_err_pid<pid>.log) LAND IN THE PROCESS WORKING DIR BY DEFAULT
-            final Path hsErr = findLatestHsErr(baseDir);
-
-            addScannedUploadFile("latest.log", logsDir.resolve("latest.log"));
-            addScannedUploadFile(crashReport != null ? crashReport.getFileName().toString() : "crash-reports", crashReport != null ? crashReport : crashDir);
-            addScannedUploadFile("watermedia-app.log", logsDir.resolve("watermedia-app.log"));
-            addScannedUploadFile(hsErr != null ? hsErr.getFileName().toString() : "hs_err_pid.log", hsErr != null ? hsErr : baseDir.resolve("hs_err_pid.log"));
-            scanSuspectMods();
-        } finally {
-            ctx.upload.working = false;
-            ctx.requestRender();
-        }
-    }
-
-    private static void scanSuspectMods() {
-        ctx.upload.suspectModIds.clear();
-        if (!UploadState.IN_MODS) return;
-        // IN_MODS MEANS THE WORKING DIR IS THE MODS FOLDER — A CANDIDATE COUNTS ONLY IF A JAR WHOSE
-        // FILENAME CONTAINS ITS ID IS PRESENT (id "fancymenu" MATCHES "FancyMenu-Forge-1.20.1-x.y.z.jar").
-        final Path modsDir = Path.of("").toAbsolutePath();
-        try (final var stream = Files.list(modsDir)) {
-            final List<String> jars = stream
-                    .filter(Files::isRegularFile)
-                    .map(p -> p.getFileName().toString().toLowerCase(Locale.ROOT))
-                    .filter(n -> n.endsWith(".jar"))
-                    .toList();
-            for (final UploadState.SuspectMod mod: UploadState.SUSPECT_MODS) {
-                for (final String jar: jars) {
-                    if (jar.contains(mod.id())) {
-                        ctx.upload.suspectModIds.add(mod.id());
-                        break;
-                    }
-                }
-            }
-        } catch (final IOException ignored) {
-        }
-    }
-
-    private static void addScannedUploadFile(final String name, final Path path) {
-        final UploadState.FileEntry entry = new UploadState.FileEntry(name, path);
-        if (path != null && Files.isRegularFile(path)) {
-            try {
-                entry.present = true;
-                entry.valid = true;
-                final long size = Files.size(path);
-                entry.sizeLabel = MathUtil.displayBytes(size);
-                if (size > UPLOAD_LIMIT_BYTES || exceedsLineLimit(path)) {
-                    entry.valid = false;
-                    entry.state = "INVALID";
-                    ctx.upload.error = true;
-                } else {
-                    entry.state = "READ OK";
-                }
-            } catch (final IOException e) {
-                entry.present = false;
-                entry.valid = false;
-                entry.state = "READ ERROR";
-                entry.sizeLabel = "-";
-                ctx.upload.error = true;
-            }
-        } else {
-            entry.present = false;
-            entry.valid = false;
-            entry.state = "NOT FOUND";
-            entry.sizeLabel = "-";
-        }
-        ctx.upload.files.add(entry);
-    }
-
-    private static boolean exceedsLineLimit(final Path path) throws IOException {
-        try (final BufferedReader reader = lenientReader(path)) {
-            int lines = 0;
-            while (reader.readLine() != null) {
-                if (++lines > UPLOAD_LIMIT_LINES) return true;
-            }
-            return false;
-        }
-    }
-
-    // hs_err DUMPS AND SOME LOGS CARRY NON-UTF-8 BYTES; REPLACE THEM INSTEAD OF FAILING THE WHOLE READ.
-    private static BufferedReader lenientReader(final Path path) throws IOException {
-        final CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPLACE)
-                .onUnmappableCharacter(CodingErrorAction.REPLACE);
-        return new BufferedReader(new InputStreamReader(Files.newInputStream(path), decoder));
-    }
-
-    private static void uploadLogs() {
-        try {
-            ctx.upload.stage = 2;
-            setUploadStatus("UPLOAD");
-            ctx.upload.error = false;
-            ctx.upload.done = false;
-            ctx.upload.uploadsDone = false;
-
-            boolean anyUploaded = false;
-            for (final UploadState.FileEntry entry: ctx.upload.files) {
-                if (!isUploadable(entry)) continue;
-                entry.state = "UPLOADING";
-                entry.progress = 18;
-                final String content = readUploadContent(entry);
-                if (content == null) continue;
-                entry.progress = 64;
-                final String url = uploadToMclogs(content, entry);
-                anyUploaded |= url != null;
-            }
-
-            if (anyUploaded) {
-                setUploadStatus("REPORT READY");
-                ctx.upload.uploadsDone = !ctx.upload.error && uploadsComplete();
-            } else {
-                setUploadStatus("ERROR");
-                ctx.upload.error = true;
-            }
-        } catch (final Exception e) {
-            setUploadStatus("ERROR");
-            ctx.upload.error = true;
-        } finally {
-            ctx.upload.working = false;
-            ctx.upload.done = false;
-            ctx.requestRender();
-        }
-    }
-
-    private static void uploadIssueReport() {
-        try {
-            ctx.upload.working = true;
-            ctx.upload.stage = 3;
-            ctx.upload.status = "SUCCESS";
-            ctx.upload.error = false;
-
-            final String issueText = generateIssueTemplate(
-                    uploadedUrl("latest.log"),
-                    uploadedUrl("watermedia-app.log"),
-                    firstUploadedCrashUrl(),
-                    uploadedHsErrUrl()
-            );
-            ctx.upload.issueUrl = buildGithubIssueUrl(issueText);
-            // DEFAULT SUBMIT TARGET IS WATERMEDIA; THE STAGE-3 SCREEN LETS THE USER PICK A SUSPECTED MOD INSTEAD.
-            ctx.upload.repoUrl = ctx.upload.issueUrl;
-
-            try {
-                final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-                clipboard.setContents(new StringSelection(issueText), null);
-                ctx.upload.issueCopied = true;
-            } catch (final Exception e) {
-                ctx.upload.error = true;
-                ctx.upload.status = "ERROR";
-            }
-
-            // DO NOT OPEN THE BROWSER AUTOMATICALLY — THE USER CHOOSES WHICH ISSUE TRACKER TO SUBMIT TO.
-            ctx.upload.done = !ctx.upload.error;
-        } finally {
-            ctx.upload.working = false;
-            ctx.requestRender();
-        }
-    }
-
-    private static void openRepoPage() {
-        try {
-            final String target = ctx.upload.repoUrl;
-            final String url = target != null && target.startsWith("http") ? target : buildGithubIssueUrl("");
-            Desktop.getDesktop().browse(URI.create(url));
-            ctx.upload.issueOpened = true;
-        } catch (final Exception e) {
-            ctx.upload.error = true;
-            ctx.upload.status = "ERROR";
-        }
-        ctx.requestRender();
-    }
-
-    private static String buildGithubIssueUrl(final String body) {
-        return "https://github.com/" + UploadState.REPO + "/issues/new"
-                + "?title=" + URLEncoder.encode("WATERMeDIA Generated Issue", StandardCharsets.UTF_8)
-                + "&body=" + URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
-    }
-
-    private static Path uploadBaseDir() {
-        final Path cwd = Path.of("").toAbsolutePath();
-        return UploadState.IN_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
-    }
-
-    private static void setUploadStatus(final String status) {
-        ctx.upload.status = status;
-        ctx.requestRender();
-    }
-
-    private static boolean hasUploadCandidate() {
-        for (final UploadState.FileEntry entry: ctx.upload.files) {
-            if (isUploadable(entry)) return true;
-        }
-        return false;
-    }
-
-    private static boolean hasUploadedLog() {
-        for (final UploadState.FileEntry entry: ctx.upload.files) {
-            if (entry.uploaded) return true;
-        }
-        return false;
-    }
-
-    private static boolean uploadsComplete() {
-        boolean hadUploadable = false;
-        for (final UploadState.FileEntry entry: ctx.upload.files) {
-            if (!entry.present || !entry.valid) continue;
-            hadUploadable = true;
-            if (!entry.uploaded) return false;
-        }
-        return hadUploadable;
-    }
-
-    private static boolean isUploadable(final UploadState.FileEntry entry) {
-        return entry.present && entry.valid && !entry.uploaded && !"FAILED".equals(entry.state) && !"READ ERROR".equals(entry.state);
-    }
-
-    private static String readUploadContent(final UploadState.FileEntry entry) {
-        try {
-            // REDACT SESSION/ACCESS TOKENS AND OTHER SECRETS BEFORE THEY EVER LEAVE THE MACHINE.
-            // hs_err DUMPS AND LAUNCH LOGS OFTEN CARRY THE FULL --accessToken IN THE JVM COMMAND LINE.
-            final StringBuilder sb = new StringBuilder();
-            try (final BufferedReader reader = lenientReader(entry.path)) {
-                final char[] buf = new char[8192];
-                int n;
-                while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
-            }
-            return DataTool.redact(sb.toString());
-        } catch (final Exception e) {
-            entry.state = "READ ERROR";
-            entry.progress = 0;
-            ctx.upload.error = true;
-            return null;
-        }
-    }
-
-
-    private static String uploadedUrl(final String name) {
-        for (final UploadState.FileEntry entry: ctx.upload.files) {
-            if (entry.name.equalsIgnoreCase(name) && entry.uploaded) return entry.url;
-        }
-        return null;
-    }
-
-    private static String firstUploadedCrashUrl() {
-        for (final UploadState.FileEntry entry: ctx.upload.files) {
-            if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log")
-                    && !entry.name.startsWith("hs_err_pid") && entry.uploaded) {
-                return entry.url;
-            }
-        }
-        return null;
-    }
-
-    private static String uploadedHsErrUrl() {
-        for (final UploadState.FileEntry entry: ctx.upload.files) {
-            if (entry.name.startsWith("hs_err_pid") && entry.uploaded) return entry.url;
-        }
-        return null;
-    }
-
     // RUNS ON A WORKER THREAD (SEE navigateAction) — THE FULL-CACHE WALK MUST NOT BLOCK THE RENDER LOOP
     private static void scanCleanupCache() {
         try {
@@ -1061,77 +743,6 @@ public class WaterMediaApp {
             ctx.cleanup.working = false;
             ctx.requestRender();
         }
-    }
-
-    private static Path findLatestCrashReport(final Path crashDir) {
-        if (!Files.exists(crashDir)) return null;
-        try (final var stream = Files.list(crashDir)) {
-            return stream.filter(p -> p.toString().endsWith(".txt"))
-                    .max(Comparator.comparingLong(p -> {
-                        try {
-                            return Files.getLastModifiedTime(p).toMillis();
-                        } catch (final Exception e) {
-                            return 0L;
-                        }
-                    })).orElse(null);
-        } catch (final Exception e) {
-            return null;
-        }
-    }
-
-    private static Path findLatestHsErr(final Path baseDir) {
-        if (!Files.isDirectory(baseDir)) return null;
-        try (final var stream = Files.list(baseDir)) {
-            return stream.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().startsWith("hs_err_pid"))
-                    .max(Comparator.comparingLong(p -> {
-                        try {
-                            return Files.getLastModifiedTime(p).toMillis();
-                        } catch (final Exception e) {
-                            return 0L;
-                        }
-                    })).orElse(null);
-        } catch (final Exception e) {
-            return null;
-        }
-    }
-
-    private static String uploadToMclogs(final String content, final UploadState.FileEntry entry) {
-        // NetRequest BOUNDS THE REQUEST WITH THE NETWORK TIMEOUTS AND ITS REPLY WITH THE TEXT BUDGET, AND KEEPS EVERY HOP ON HTTPS
-        try (final NetRequest req = new NetRequest(URI.create("https://api.mclo.gs/1/log")).method("POST").httpsOnly()
-                .contentType(NetRequest.MIMETYPE_FORM).body("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)).send()) {
-            if (req.statusCode() == 200) {
-                final JsonObject json = req.json(JsonObject.class);
-                if (json != null && json.get("success").getAsBoolean()) {
-                    final String url = json.get("url").getAsString();
-                    entry.url = url;
-                    entry.uploaded = true;
-                    entry.progress = 100;
-                    entry.state = "UPLOADED";
-                    return url;
-                }
-            }
-            entry.progress = 0;
-            entry.state = "FAILED";
-            ctx.upload.error = true;
-        } catch (final Exception e) {
-            entry.progress = 0;
-            entry.state = "FAILED";
-            ctx.upload.error = true;
-        }
-        return null;
-    }
-
-    private static String generateIssueTemplate(final String latestUrl, final String wmUrl, final String crashUrl, final String hsErrUrl) {
-        return "This is an automated issue report generated by WATERMeDIA: Multimedia API.\n\n" +
-                "## Alerts\n" +
-                SystemInfo.alerts() + "\n" +
-                "## Files\n" +
-                "- Logs: " + (latestUrl != null ? latestUrl : "N/A") + "\n" +
-                "- Crash-report: " + (crashUrl != null ? crashUrl : "N/A") + "\n" +
-                "- JVM crash (hs_err): " + (hsErrUrl != null ? hsErrUrl : "N/A") + "\n" +
-                "- WM Logs: " + (wmUrl != null ? wmUrl : "N/A") + "\n\n" +
-                SystemInfo.summary();
     }
 
     // CLEANUP
