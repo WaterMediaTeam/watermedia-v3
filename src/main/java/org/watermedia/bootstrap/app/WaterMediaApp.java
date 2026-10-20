@@ -13,13 +13,8 @@ import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFact
 import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.glfw.GLFWVidMode;
-import org.lwjgl.openal.AL;
-import org.lwjgl.openal.ALC;
-import org.lwjgl.openal.ALC10;
-import org.lwjgl.stb.STBVorbis;
 import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.MemoryUtil;
 import org.bytedeco.ffmpeg.avcodec.AVCodec;
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avformat;
@@ -43,7 +38,6 @@ import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
 import org.watermedia.tools.DataTool;
 import org.watermedia.tools.IOTool;
-import org.watermedia.tools.JSONTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.awt.*;
@@ -56,10 +50,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
-import java.nio.ShortBuffer;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -68,7 +60,6 @@ import java.nio.file.Path;
 import java.lang.management.ManagementFactory;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
@@ -80,7 +71,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.openal.AL10.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
@@ -145,36 +135,15 @@ public class WaterMediaApp {
         loadingScreen.onEnter();
         root.mount(loadingScreen);
         renderLoadingFrame();
-        initAudio();
+        ctx.sound.open();
         runLoadingPhase();
 
         // PHASE 3: EVERYTHING THAT NEEDS WATERMEDIA LOADED
-        try { ctx.uriGroups = JSONTool.parse(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class); }
-        catch (final IOException e) { throw new IllegalStateException("Cannot read the bundled uris.json", e); }
-        loadIptvCatalog();
-        if (!WaterMedia.LOGGER.isDebugEnabled()) {
-            for (int i = 0; i < ctx.uriGroups.length; i++) {
-                final AppContext.URIGroup group = ctx.uriGroups[i];
-                final AppContext.TestURI[] filtered = Arrays.stream(group.uris()).filter(u -> !u.debug()).toArray(AppContext.TestURI[]::new);
-                if (filtered.length != group.uris().length) {
-                    ctx.uriGroups[i] = new AppContext.URIGroup(group.name(), filtered);
-                }
-            }
-        }
+        ctx.catalog.load();
         initScreens();
         task.run();
         mainLoop();
         cleanup();
-    }
-
-    private static void loadIptvCatalog() {
-        try {
-            final AppContext.IptvCatalog catalog = JSONTool.parse(IOTool.jarRead("iptv.json"), AppContext.IptvCatalog.class);
-            ctx.iptvChannels = catalog == null || catalog.channels() == null ? new AppContext.IptvChannel[0] : catalog.channels();
-        } catch (final IOException | RuntimeException e) {
-            ctx.iptvChannels = new AppContext.IptvChannel[0];
-            WaterMedia.LOGGER.warn("Failed to load IPTV catalog", e);
-        }
     }
 
     private static void runLoadingPhase() {
@@ -380,19 +349,6 @@ public class WaterMediaApp {
         return AppConfig.scaleFactor(Math.max(contentScale, heuristic));
     }
 
-    private static void initAudio() {
-        try {
-            final long device = ALC10.alcOpenDevice((ByteBuffer) null);
-            if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
-            final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
-            ALC10.alcMakeContextCurrent(context);
-            AL.createCapabilities(ALC.createCapabilities(device));
-            loadSoundClick();
-        } catch (final RuntimeException e) {
-            WaterMedia.LOGGER.warn(IT, "App-side OpenAL audio unavailable; continuing without the click sound", e);
-        }
-    }
-
     // WINDOW SHELL — ROOT TREE, GLOBAL DIALOGS AND THE NAVIGATION BINDINGS THE SHELL NEEDS
     private static void initShell() {
         root = new RootScreen(ctx, ctx.text, WaterMediaApp::footerKeybinds);
@@ -525,7 +481,7 @@ public class WaterMediaApp {
             }
 
             case UPLOAD_LOGS -> {
-                if (!AppContext.IN_MODS) {
+                if (!UploadState.IN_MODS) {
                     ctx.upload.visible = false;
                     return;
                 }
@@ -624,7 +580,7 @@ public class WaterMediaApp {
             RenderSystem.present();
         }
 
-        ctx.releasePlayer();
+        ctx.media.releasePlayer();
     }
 
     /** Queues a live render engine hot swap for the next main-loop iteration; safe to call from callbacks. */
@@ -669,7 +625,7 @@ public class WaterMediaApp {
             // 1) DRAIN ALL MEDIA — SAME ORDER AS cleanup(): RELEASE PLAYERS/THUMBNAILS, THEN JOIN THE
             //    BACKGROUND RELEASE QUEUE SO NOTHING TOUCHES THE DEVICE AFTER IT IS DESTROYED
             screens.releaseMediaAll();
-            ctx.releasePlayer();
+            ctx.media.releasePlayer();
             ctx.awaitPlayerRelease();
 
             // 2) DROP GPU CACHES BOUND TO THE OUTGOING CONTEXT — THEY REBUILD LAZILY (TEXT) OR ARE RECREATED BELOW
@@ -798,42 +754,6 @@ public class WaterMediaApp {
         root.character(codepoint);
     }
 
-    // RESOURCE LOADING
-    private static void loadSoundClick() {
-        try (final InputStream in = IOTool.jarOpenFile("assets/duck.ogg")) {
-            final byte[] soundBytes = in.readAllBytes();
-
-            final ByteBuffer oggBuffer = MemoryUtil.memAlloc(soundBytes.length);
-            oggBuffer.put(soundBytes).flip();
-
-            final IntBuffer channelsBuffer = MemoryUtil.memAllocInt(1);
-            final IntBuffer sampleRateBuffer = MemoryUtil.memAllocInt(1);
-            final ShortBuffer pcmBuffer = STBVorbis.stb_vorbis_decode_memory(oggBuffer, channelsBuffer, sampleRateBuffer);
-
-            MemoryUtil.memFree(oggBuffer);
-            if (pcmBuffer == null) {
-                MemoryUtil.memFree(channelsBuffer);
-                MemoryUtil.memFree(sampleRateBuffer);
-                return;
-            }
-
-            final int channels = channelsBuffer.get(0);
-            final int sampleRate = sampleRateBuffer.get(0);
-            MemoryUtil.memFree(channelsBuffer);
-            MemoryUtil.memFree(sampleRateBuffer);
-
-            ctx.soundBuffer = alGenBuffers();
-            alBufferData(ctx.soundBuffer, channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, pcmBuffer, sampleRate);
-            MemoryUtil.memFree(pcmBuffer);
-
-            ctx.soundSource = alGenSources();
-            alSourcei(ctx.soundSource, AL_BUFFER, ctx.soundBuffer);
-            alSourcef(ctx.soundSource, AL_GAIN, 0.2f);
-        } catch (final Exception e) {
-            WaterMedia.LOGGER.warn(IT, "Failed to load sound effect", e);
-        }
-    }
-
     // BACKGROUND OPERATIONS
     // RUNS ON A WORKER THREAD (SEE navigateAction) — HEAVY FILE READS MUST NOT BLOCK THE RENDER LOOP
     private static void scanUploadLogFiles() {
@@ -864,7 +784,7 @@ public class WaterMediaApp {
 
     private static void scanSuspectMods() {
         ctx.upload.suspectModIds.clear();
-        if (!AppContext.IN_MODS) return;
+        if (!UploadState.IN_MODS) return;
         // IN_MODS MEANS THE WORKING DIR IS THE MODS FOLDER — A CANDIDATE COUNTS ONLY IF A JAR WHOSE
         // FILENAME CONTAINS ITS ID IS PRESENT (id "fancymenu" MATCHES "FancyMenu-Forge-1.20.1-x.y.z.jar").
         final Path modsDir = Path.of("").toAbsolutePath();
@@ -874,7 +794,7 @@ public class WaterMediaApp {
                     .map(p -> p.getFileName().toString().toLowerCase(Locale.ROOT))
                     .filter(n -> n.endsWith(".jar"))
                     .toList();
-            for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
+            for (final UploadState.SuspectMod mod: UploadState.SUSPECT_MODS) {
                 for (final String jar: jars) {
                     if (jar.contains(mod.id())) {
                         ctx.upload.suspectModIds.add(mod.id());
@@ -887,7 +807,7 @@ public class WaterMediaApp {
     }
 
     private static void addScannedUploadFile(final String name, final Path path) {
-        final AppContext.UploadFileEntry entry = new AppContext.UploadFileEntry(name, path);
+        final UploadState.FileEntry entry = new UploadState.FileEntry(name, path);
         if (path != null && Files.isRegularFile(path)) {
             try {
                 entry.present = true;
@@ -944,7 +864,7 @@ public class WaterMediaApp {
             ctx.upload.uploadsDone = false;
 
             boolean anyUploaded = false;
-            for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+            for (final UploadState.FileEntry entry: ctx.upload.files) {
                 if (!isUploadable(entry)) continue;
                 entry.state = "UPLOADING";
                 entry.progress = 18;
@@ -1020,14 +940,14 @@ public class WaterMediaApp {
     }
 
     private static String buildGithubIssueUrl(final String body) {
-        return "https://github.com/" + AppContext.REPO + "/issues/new"
+        return "https://github.com/" + UploadState.REPO + "/issues/new"
                 + "?title=" + URLEncoder.encode("WATERMeDIA Generated Issue", StandardCharsets.UTF_8)
                 + "&body=" + URLEncoder.encode(body == null ? "" : body, StandardCharsets.UTF_8);
     }
 
     private static Path uploadBaseDir() {
         final Path cwd = Path.of("").toAbsolutePath();
-        return AppContext.IN_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
+        return UploadState.IN_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
     }
 
     private static void setUploadStatus(final String status) {
@@ -1036,14 +956,14 @@ public class WaterMediaApp {
     }
 
     private static boolean hasUploadCandidate() {
-        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+        for (final UploadState.FileEntry entry: ctx.upload.files) {
             if (isUploadable(entry)) return true;
         }
         return false;
     }
 
     private static boolean hasUploadedLog() {
-        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+        for (final UploadState.FileEntry entry: ctx.upload.files) {
             if (entry.uploaded) return true;
         }
         return false;
@@ -1051,7 +971,7 @@ public class WaterMediaApp {
 
     private static boolean uploadsComplete() {
         boolean hadUploadable = false;
-        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+        for (final UploadState.FileEntry entry: ctx.upload.files) {
             if (!entry.present || !entry.valid) continue;
             hadUploadable = true;
             if (!entry.uploaded) return false;
@@ -1059,11 +979,11 @@ public class WaterMediaApp {
         return hadUploadable;
     }
 
-    private static boolean isUploadable(final AppContext.UploadFileEntry entry) {
+    private static boolean isUploadable(final UploadState.FileEntry entry) {
         return entry.present && entry.valid && !entry.uploaded && !"FAILED".equals(entry.state) && !"READ ERROR".equals(entry.state);
     }
 
-    private static String readUploadContent(final AppContext.UploadFileEntry entry) {
+    private static String readUploadContent(final UploadState.FileEntry entry) {
         try {
             // REDACT SESSION/ACCESS TOKENS AND OTHER SECRETS BEFORE THEY EVER LEAVE THE MACHINE.
             // hs_err DUMPS AND LAUNCH LOGS OFTEN CARRY THE FULL --accessToken IN THE JVM COMMAND LINE.
@@ -1084,14 +1004,14 @@ public class WaterMediaApp {
 
 
     private static String uploadedUrl(final String name) {
-        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+        for (final UploadState.FileEntry entry: ctx.upload.files) {
             if (entry.name.equalsIgnoreCase(name) && entry.uploaded) return entry.url;
         }
         return null;
     }
 
     private static String firstUploadedCrashUrl() {
-        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+        for (final UploadState.FileEntry entry: ctx.upload.files) {
             if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log")
                     && !entry.name.startsWith("hs_err_pid") && entry.uploaded) {
                 return entry.url;
@@ -1101,7 +1021,7 @@ public class WaterMediaApp {
     }
 
     private static String uploadedHsErrUrl() {
-        for (final AppContext.UploadFileEntry entry: ctx.upload.files) {
+        for (final UploadState.FileEntry entry: ctx.upload.files) {
             if (entry.name.startsWith("hs_err_pid") && entry.uploaded) return entry.url;
         }
         return null;
@@ -1189,7 +1109,7 @@ public class WaterMediaApp {
         }
     }
 
-    private static String uploadToMclogs(final String content, final AppContext.UploadFileEntry entry) {
+    private static String uploadToMclogs(final String content, final UploadState.FileEntry entry) {
         // NetRequest BOUNDS THE REQUEST WITH THE NETWORK TIMEOUTS AND ITS REPLY WITH THE TEXT BUDGET, AND KEEPS EVERY HOP ON HTTPS
         try (final NetRequest req = new NetRequest(URI.create("https://api.mclo.gs/1/log")).method("POST").httpsOnly()
                 .contentType(NetRequest.MIMETYPE_FORM).body("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)).send()) {

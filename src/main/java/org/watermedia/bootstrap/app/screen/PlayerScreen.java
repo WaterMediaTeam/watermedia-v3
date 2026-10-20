@@ -9,6 +9,7 @@ import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.MediaSession;
 import org.watermedia.bootstrap.app.element.Box;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -150,18 +151,18 @@ public final class PlayerScreen extends Screen {
     public void onExit() {
         this.hideQualityDialog();
         this.hideVideoDialog();
-        this.ctx.releasePlayer();
+        this.ctx.media.releasePlayer();
     }
 
     @Override
     public void releaseMedia() {
-        this.ctx.releasePlayer();
+        this.ctx.media.releasePlayer();
     }
 
     @Override
     public boolean continuous() {
         if (this.textInputActive()) return true;
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         if (player == null) return false;
         return switch (player.status()) {
             case WAITING, LOADING, BUFFERING -> true;
@@ -183,17 +184,17 @@ public final class PlayerScreen extends Screen {
     public List<Keybind> keybinds() {
         if (this.videoDialog != null) return KEYS_VIDEO;
         if (this.qualityDialog != null) return KEYS_QUALITY;
-        return this.ctx.availableSources != null && this.ctx.availableSources.length > 1 ? KEYS_SOURCES : KEYS_QUALITIES;
+        return this.ctx.media.availableSources != null && this.ctx.media.availableSources.length > 1 ? KEYS_SOURCES : KEYS_QUALITIES;
     }
 
     @Override
     protected void onUpdate() {
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         // CHIME ONCE PER ENDING, ONLY WHILE NO DIALOG IS OPEN
         if (player != null && this.qualityDialog == null && this.videoDialog == null) {
             if (player.ended()) {
                 if (!this.endedSoundPlayed) {
-                    this.ctx.playSelectionSound();
+                    this.ctx.sound.play();
                     this.endedSoundPlayed = true;
                 }
             } else if (!player.stopped() && !player.error()) {
@@ -209,39 +210,39 @@ public final class PlayerScreen extends Screen {
     // ==========================================================================
 
     private void startPlayer() {
-        if (this.ctx.selectedMRL == null || this.ctx.selectedSource == null) return;
+        if (this.ctx.media.selectedMRL == null || this.ctx.media.selectedSource == null) return;
 
-        this.ctx.releasePlayer();
+        this.ctx.media.releasePlayer();
 
-        this.ctx.player = MediaAPI.player(
-                this.ctx.selectedMRL,
-                this.ctx.sourceSelectorIndex,
+        this.ctx.media.player = MediaAPI.player(
+                this.ctx.media.selectedMRL,
+                this.ctx.media.sourceSelectorIndex,
                 // THE ACTIVE RENDER BACKEND PICKS THE ENGINE (GLEngine OR VKEngine)
                 mediaEngineSupplier(Thread.currentThread(), this.ctx),
                 MediaAPI::alEngine
         );
 
-        if (this.ctx.player == null) {
+        if (this.ctx.media.player == null) {
             this.ctx.showError("Player Error",
                     "WaterMedia failed to create media player.\nNo compatible player engine available.",
                     this::returnToMenu);
             return;
         }
 
-        this.ctx.player.quality(this.ctx.selectedQuality);
-        this.ctx.player.repeat(this.loopEnabled);
-        this.ctx.player.speed(this.speed);
+        this.ctx.media.player.quality(this.ctx.media.selectedQuality);
+        this.ctx.media.player.repeat(this.loopEnabled);
+        this.ctx.media.player.speed(this.speed);
         this.applyVideoSettings();
-        this.ctx.player.start();
+        this.ctx.media.player.start();
         this.endedSoundPlayed = false;
     }
 
     private void returnToMenu() {
         this.hideQualityDialog();
         this.hideVideoDialog();
-        this.ctx.releasePlayer();
+        this.ctx.media.releasePlayer();
 
-        if (this.ctx.selectedMRL == null || this.ctx.selectedGroup == null) {
+        if (this.ctx.media.selectedMRL == null || this.ctx.media.selectedGroup == null) {
             this.navigator.accept(HomeScreen.Action.BACK);
         } else {
             this.navigator.accept(HomeScreen.Action.MRL_SELECTOR);
@@ -249,17 +250,17 @@ public final class PlayerScreen extends Screen {
     }
 
     private void navigateSource(final int delta) {
-        if (this.ctx.availableSources == null || this.ctx.availableSources.length <= 1) return;
-        final int newIndex = (this.ctx.sourceSelectorIndex + delta + this.ctx.availableSources.length) % this.ctx.availableSources.length;
-        if (newIndex != this.ctx.sourceSelectorIndex) {
-            this.ctx.sourceSelectorIndex = newIndex;
-            this.ctx.selectedSource = this.ctx.availableSources[this.ctx.sourceSelectorIndex];
+        if (this.ctx.media.availableSources == null || this.ctx.media.availableSources.length <= 1) return;
+        final int newIndex = (this.ctx.media.sourceSelectorIndex + delta + this.ctx.media.availableSources.length) % this.ctx.media.availableSources.length;
+        if (newIndex != this.ctx.media.sourceSelectorIndex) {
+            this.ctx.media.sourceSelectorIndex = newIndex;
+            this.ctx.media.selectedSource = this.ctx.media.availableSources[this.ctx.media.sourceSelectorIndex];
             this.startPlayer();
         }
     }
 
     private void seekToPercent(final int percent) {
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         if (player == null || player.duration() <= 0) return;
         player.seek((player.duration() * percent) / 100);
     }
@@ -283,7 +284,7 @@ public final class PlayerScreen extends Screen {
 
     // BOTH SETTINGS APPLY FROM THE NEXT UPLOADED FRAME; startPlayer RE-APPLIES THEM SO THEY SURVIVE RESTARTS
     private void applyVideoSettings() {
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         if (player == null) return;
         player.scale(this.parseDim(this.resWidthText, player.sourceWidth()), this.parseDim(this.resHeightText, player.sourceHeight()));
         player.lod(MediaPlayer.LodLevel.values()[this.lodSelectedIndex]);
@@ -307,7 +308,7 @@ public final class PlayerScreen extends Screen {
     }
 
     private String scaleLabel() {
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         if (player == null) return "FULL";
         final int mw = player.scaleWidth();
         final int mh = player.scaleHeight();
@@ -320,7 +321,7 @@ public final class PlayerScreen extends Screen {
     }
 
     private MediaType currentMediaType() {
-        return this.ctx.selectedSource == null ? null : this.ctx.selectedSource.type();
+        return this.ctx.media.selectedSource == null ? null : this.ctx.media.selectedSource.type();
     }
 
     private String playerResolution(final MediaPlayer player) {
@@ -353,7 +354,7 @@ public final class PlayerScreen extends Screen {
     private String sourceTitle(final MRL.Source source, final int sourceIndex) {
         final Metadata meta = source != null ? source.metadata() : null;
         if (meta != null && meta.title() != null && !meta.title().isBlank()) return meta.title();
-        if (this.ctx.selectedMRLName != null && !this.ctx.selectedMRLName.isBlank()) return this.ctx.selectedMRLName;
+        if (this.ctx.media.selectedMRLName != null && !this.ctx.media.selectedMRLName.isBlank()) return this.ctx.media.selectedMRLName;
         return "SOURCE " + (sourceIndex + 1);
     }
 
@@ -387,7 +388,7 @@ public final class PlayerScreen extends Screen {
             this.returnToMenu();
             return true;
         }
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         if (player == null) return false;
         switch (key) {
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openQualityDialog();
@@ -448,10 +449,10 @@ public final class PlayerScreen extends Screen {
     // ==========================================================================
 
     private void openQualityDialog() {
-        if (this.ctx.availableSources == null || this.ctx.availableSources.length == 0) return;
-        this.sourceSelectedIndex = MathUtil.clamp(this.ctx.sourceSelectorIndex, 0, this.ctx.availableSources.length - 1);
+        if (this.ctx.media.availableSources == null || this.ctx.media.availableSources.length == 0) return;
+        this.sourceSelectedIndex = MathUtil.clamp(this.ctx.media.sourceSelectorIndex, 0, this.ctx.media.availableSources.length - 1);
         this.loadQualitiesForSource(this.sourceSelectedIndex);
-        if (this.ctx.availableQualities == null || this.ctx.availableQualities.length == 0) return;
+        if (this.ctx.media.availableQualities == null || this.ctx.media.availableQualities.length == 0) return;
 
         this.srcList = new ListView<>();
         this.srcList.rowHeight(50).spacing(8).scrollbarWidth(3)
@@ -463,7 +464,7 @@ public final class PlayerScreen extends Screen {
                         if (this.sourceSelectedIndex != i) {
                             this.srcList.selection(i);
                             this.selectSource(i, false);
-                            this.ctx.playSelectionSound();
+                            this.ctx.sound.play();
                             r.invalidate();
                         }
                     });
@@ -471,9 +472,9 @@ public final class PlayerScreen extends Screen {
                 })
                 .onSelect((src, i) -> {
                     this.selectSource(i, true);
-                    this.ctx.playSelectionSound();
+                    this.ctx.sound.play();
                 })
-                .items(Arrays.asList(this.ctx.availableSources))
+                .items(Arrays.asList(this.ctx.media.availableSources))
                 .selection(this.sourceSelectedIndex)
                 .width(MAX_PARENT);
 
@@ -486,21 +487,21 @@ public final class PlayerScreen extends Screen {
                         if (this.qualList.selectedIndex() != i) {
                             this.qualList.selection(i);
                             this.qualitySelectedIndex = i;
-                            this.ctx.playSelectionSound();
+                            this.ctx.sound.play();
                             r.invalidate();
                         }
                     });
                     return row;
                 })
                 .onSelect((q, i) -> this.applyQuality(i))
-                .items(Arrays.asList(this.ctx.availableQualities))
+                .items(Arrays.asList(this.ctx.media.availableQualities))
                 .selection(this.qualitySelectedIndex)
                 .width(MAX_PARENT);
 
         final SectionHead srcHead = new SectionHead("Sources");
-        srcHead.count(this.ctx.availableSources.length + " ITEMS");
+        srcHead.count(this.ctx.media.availableSources.length + " ITEMS");
         this.qualHead = new SectionHead("Quality");
-        this.qualHead.count(this.ctx.availableQualities.length + " AVAILABLE");
+        this.qualHead.count(this.ctx.media.availableQualities.length + " AVAILABLE");
 
         this.qualLeftCol = Parent.column().spacing(12).add(srcHead).add(this.srcList);
         this.qualLeftCol.margin(new Spacing(0, 24, 0, 4));
@@ -540,8 +541,8 @@ public final class PlayerScreen extends Screen {
     private void syncQualityDialog() {
         final int winW = this.ctx.logicalWidth();
         final int winH = this.ctx.logicalHeight();
-        final int srcCount = this.ctx.availableSources != null ? this.ctx.availableSources.length : 1;
-        final int qualCount = this.ctx.availableQualities != null ? this.ctx.availableQualities.length : 1;
+        final int srcCount = this.ctx.media.availableSources != null ? this.ctx.media.availableSources.length : 1;
+        final int qualCount = this.ctx.media.availableQualities != null ? this.ctx.media.availableQualities.length : 1;
         final int dialogW = MathUtil.clamp((int) (winW * 0.60f), 620, winW - 72);
         final int dialogH = MathUtil.clamp(98 + Math.max(Math.min(srcCount, 5) * 58, Math.max(1, qualCount) * 40), 320, winH - 96);
         final int split = MathUtil.clamp((int) (dialogW * 0.72f), 360, dialogW - 250);
@@ -566,15 +567,15 @@ public final class PlayerScreen extends Screen {
                 if (this.srcList.selectedIndex() > 0) {
                     this.srcList.moveSelection(-1);
                     this.selectSource(this.srcList.selectedIndex(), true);
-                    this.ctx.playSelectionSound();
+                    this.ctx.sound.play();
                 }
                 return true;
             }
             case GLFW_KEY_RIGHT -> {
-                if (this.ctx.availableSources != null && this.srcList.selectedIndex() < this.ctx.availableSources.length - 1) {
+                if (this.ctx.media.availableSources != null && this.srcList.selectedIndex() < this.ctx.media.availableSources.length - 1) {
                     this.srcList.moveSelection(1);
                     this.selectSource(this.srcList.selectedIndex(), true);
-                    this.ctx.playSelectionSound();
+                    this.ctx.sound.play();
                 }
                 return true;
             }
@@ -597,21 +598,21 @@ public final class PlayerScreen extends Screen {
         this.qualList.moveSelection(delta);
         if (this.qualList.selectedIndex() != before) {
             this.qualitySelectedIndex = this.qualList.selectedIndex();
-            this.ctx.playSelectionSound();
+            this.ctx.sound.play();
         }
     }
 
     private void loadQualitiesForSource(final int sourceIndex) {
-        if (this.ctx.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.availableSources.length) return;
-        final var qualities = this.ctx.availableSources[sourceIndex].qualities().keySet();
+        if (this.ctx.media.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.media.availableSources.length) return;
+        final var qualities = this.ctx.media.availableSources[sourceIndex].qualities().keySet();
         if (qualities.isEmpty()) return;
 
-        this.ctx.availableQualities = qualities.toArray(new MediaQuality[0]);
-        Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(MediaQuality::height));
+        this.ctx.media.availableQualities = qualities.toArray(new MediaQuality[0]);
+        Arrays.sort(this.ctx.media.availableQualities, Comparator.comparingInt(MediaQuality::height));
 
         this.qualitySelectedIndex = 0;
-        for (int i = 0; i < this.ctx.availableQualities.length; i++) {
-            if (this.ctx.availableQualities[i] == this.ctx.selectedQuality) {
+        for (int i = 0; i < this.ctx.media.availableQualities.length; i++) {
+            if (this.ctx.media.availableQualities[i] == this.ctx.media.selectedQuality) {
                 this.qualitySelectedIndex = i;
                 break;
             }
@@ -619,35 +620,35 @@ public final class PlayerScreen extends Screen {
     }
 
     private void selectSource(final int sourceIndex, final boolean apply) {
-        if (this.ctx.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.availableSources.length) return;
+        if (this.ctx.media.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.media.availableSources.length) return;
         this.sourceSelectedIndex = sourceIndex;
         this.loadQualitiesForSource(sourceIndex);
         this.refreshQualityList();
-        if (!apply || sourceIndex == this.ctx.sourceSelectorIndex) return;
-        if (this.ctx.availableQualities != null && this.ctx.availableQualities.length > 0) {
-            this.ctx.selectedQuality = this.ctx.availableQualities[this.qualitySelectedIndex];
+        if (!apply || sourceIndex == this.ctx.media.sourceSelectorIndex) return;
+        if (this.ctx.media.availableQualities != null && this.ctx.media.availableQualities.length > 0) {
+            this.ctx.media.selectedQuality = this.ctx.media.availableQualities[this.qualitySelectedIndex];
         }
-        this.ctx.sourceSelectorIndex = sourceIndex;
-        this.ctx.selectedSource = this.ctx.availableSources[sourceIndex];
+        this.ctx.media.sourceSelectorIndex = sourceIndex;
+        this.ctx.media.selectedSource = this.ctx.media.availableSources[sourceIndex];
         this.startPlayer();
     }
 
     private void refreshQualityList() {
-        if (this.qualList == null || this.ctx.availableQualities == null) return;
-        this.qualList.items(Arrays.asList(this.ctx.availableQualities)).selection(this.qualitySelectedIndex);
-        if (this.qualHead != null) this.qualHead.count(this.ctx.availableQualities.length + " AVAILABLE");
+        if (this.qualList == null || this.ctx.media.availableQualities == null) return;
+        this.qualList.items(Arrays.asList(this.ctx.media.availableQualities)).selection(this.qualitySelectedIndex);
+        if (this.qualHead != null) this.qualHead.count(this.ctx.media.availableQualities.length + " AVAILABLE");
     }
 
     private void applyQuality(final int index) {
-        if (this.ctx.availableQualities == null || index < 0 || index >= this.ctx.availableQualities.length) return;
+        if (this.ctx.media.availableQualities == null || index < 0 || index >= this.ctx.media.availableQualities.length) return;
         this.qualitySelectedIndex = index;
-        this.ctx.selectedQuality = this.ctx.availableQualities[index];
-        if (this.ctx.availableSources != null && this.sourceSelectedIndex != this.ctx.sourceSelectorIndex) {
-            this.ctx.sourceSelectorIndex = this.sourceSelectedIndex;
-            this.ctx.selectedSource = this.ctx.availableSources[this.sourceSelectedIndex];
+        this.ctx.media.selectedQuality = this.ctx.media.availableQualities[index];
+        if (this.ctx.media.availableSources != null && this.sourceSelectedIndex != this.ctx.media.sourceSelectorIndex) {
+            this.ctx.media.sourceSelectorIndex = this.sourceSelectedIndex;
+            this.ctx.media.selectedSource = this.ctx.media.availableSources[this.sourceSelectedIndex];
             this.startPlayer();
-        } else if (this.ctx.player != null) {
-            this.ctx.player.quality(this.ctx.selectedQuality);
+        } else if (this.ctx.media.player != null) {
+            this.ctx.media.player.quality(this.ctx.media.selectedQuality);
         }
         this.hideQualityDialog();
     }
@@ -657,7 +658,7 @@ public final class PlayerScreen extends Screen {
     // ==========================================================================
 
     private void openVideoDialog() {
-        if (this.ctx.player == null || this.ctx.player.error()) return;
+        if (this.ctx.media.player == null || this.ctx.media.player.error()) return;
 
         this.resWidthField = new TextField();
         this.resWidthField.placeholder("AUTO").maxLength(RES_FIELD_MAX_DIGITS).accent(AppTheme.NEON_LIGHT)
@@ -738,7 +739,7 @@ public final class PlayerScreen extends Screen {
         final int rightH = 30 + 10 + MediaPlayer.LodLevel.values().length * 40 - 6;
         this.videoDivider.size(1, Math.max(leftH, rightH));
 
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         final int srcW = player == null ? 0 : player.sourceWidth();
         final int srcH = player == null ? 0 : player.sourceHeight();
         this.activeMaxText.text("ACTIVE MAX  " + (srcW > 0 && srcH > 0 ? srcW + " x " + srcH : "PENDING"));
@@ -798,7 +799,7 @@ public final class PlayerScreen extends Screen {
 
     // KEEPS DIGITS ONLY, CAPS THE VALUE AT THE NATIVE SOURCE SIZE AND PUSHES IT TO THE LIVE PLAYER
     private void resEdit(final TextField field, final boolean width, final String raw) {
-        final MediaPlayer player = this.ctx.player;
+        final MediaPlayer player = this.ctx.media.player;
         final int nativeMax = player == null ? 0 : (width ? player.sourceWidth() : player.sourceHeight());
         final StringBuilder digits = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length() && digits.length() < RES_FIELD_MAX_DIGITS; i++) {
@@ -821,7 +822,7 @@ public final class PlayerScreen extends Screen {
         if (next == this.lodSelectedIndex) return;
         this.lodSelectedIndex = next;
         this.applyVideoSettings();
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
         this.ctx.requestRender();
     }
 
@@ -862,7 +863,7 @@ public final class PlayerScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final boolean active = this.index == PlayerScreen.this.ctx.sourceSelectorIndex;
+            final boolean active = this.index == PlayerScreen.this.ctx.media.sourceSelectorIndex;
             this.icon.icon(active ? "play" : "folder").color(active ? AppTheme.GREEN : AppTheme.NEON_LIGHT);
         }
 
@@ -894,7 +895,7 @@ public final class PlayerScreen extends Screen {
                     w - tagW - 68, AppTheme.TEXT_BODY, Font.BOLD);
             canvas.text(title, this.left + 34, this.top + 10,
                     this.selected ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
-            final int count = PlayerScreen.this.ctx.availableSources != null ? PlayerScreen.this.ctx.availableSources.length : 1;
+            final int count = PlayerScreen.this.ctx.media.availableSources != null ? PlayerScreen.this.ctx.media.availableSources.length : 1;
             canvas.text("SOURCE " + (this.index + 1) + "/" + count + " - " + this.source.qualities().size() + " QUALITIES",
                     this.left + 34, this.top + 32, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
             super.onDraw(canvas);
@@ -957,7 +958,7 @@ public final class PlayerScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            final MediaPlayer player = PlayerScreen.this.ctx.player;
+            final MediaPlayer player = PlayerScreen.this.ctx.media.player;
             if (player == null) return;
             final double fps = player.fps();
             final long fpsKey = Math.round(fps * 100.0);
@@ -986,7 +987,7 @@ public final class PlayerScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final MediaPlayer player = PlayerScreen.this.ctx.player;
+            final MediaPlayer player = PlayerScreen.this.ctx.media.player;
             if (player == null) return;
             final int px = this.left;
             final int py = this.top;
@@ -1002,25 +1003,25 @@ public final class PlayerScreen extends Screen {
             canvas.pushClip(px, py, pw, ph);
 
             final AppContext ctx = PlayerScreen.this.ctx;
-            final Metadata meta = ctx.selectedSource != null ? ctx.selectedSource.metadata() : null;
+            final Metadata meta = ctx.media.selectedSource != null ? ctx.media.selectedSource.metadata() : null;
             final int x = px + 14;
             final int top0 = py + 14 - this.scroll;
             int y = top0;
 
             y = this.head(canvas, "ENGINE", x, y);
             y = this.metric(canvas, "Engine", player.getClass().getSimpleName(), x, y, AppTheme.NEON_LIGHT);
-            if (ctx.selectedMRL != null) {
-                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.selectedMRL.uri().toString(), x, y);
+            if (ctx.media.selectedMRL != null) {
+                y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.media.selectedMRL.uri().toString(), x, y);
             }
-            y = this.metric(canvas, "Source", (ctx.sourceSelectorIndex + 1) + "/" +
-                    (ctx.availableSources != null ? ctx.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
+            y = this.metric(canvas, "Source", (ctx.media.sourceSelectorIndex + 1) + "/" +
+                    (ctx.media.availableSources != null ? ctx.media.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "FPS", this.fpsStr, x, y, AppTheme.GREEN);
             y = this.metric(canvas, "Status", player.status().name(), x, y, AppTheme.TEXT_SOFT);
 
             final long duration = player.duration();
             final String timeValue = duration <= 0
-                    ? ctx.formatTime(player.time())
-                    : ctx.formatTime(player.time()) + " / " + ctx.formatTime(duration);
+                    ? MediaSession.formatTime(player.time())
+                    : MediaSession.formatTime(player.time()) + " / " + MediaSession.formatTime(duration);
             y = this.metric(canvas, "Time", timeValue, x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Volume", player.volume() + "%", x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "Quality", player.quality().name() + " - " + PlayerScreen.this.scaleLabel(), x, y, AppTheme.CYAN);
@@ -1254,18 +1255,18 @@ public final class PlayerScreen extends Screen {
                     .accent(AppTheme.NEON_LIGHT).textColor(AppTheme.NEON_LIGHT).size(112, 30)
                     .onClick(b -> {
                         PlayerScreen.this.debugOpen = !PlayerScreen.this.debugOpen;
-                        PlayerScreen.this.ctx.playSelectionSound();
+                        PlayerScreen.this.ctx.sound.play();
                     });
             // WRAP_CONTENT: THE QUALITY AND LOD LABELS AND THEIR RESOLUTION CHIPS VARY IN WIDTH
             this.qual = new Button().icon("folder").accent(AppTheme.CYAN).textColor(AppTheme.CYAN).subTextColor(AppTheme.CYAN);
             this.qual.width(WRAP_CONTENT).height(30).onClick(v -> {
                 PlayerScreen.this.openQualityDialog();
-                PlayerScreen.this.ctx.playSelectionSound();
+                PlayerScreen.this.ctx.sound.play();
             });
             this.lod = new Button().icon("tv").accent(AppTheme.AMBER).textColor(AppTheme.AMBER).subTextColor(AppTheme.CYAN);
             this.lod.width(WRAP_CONTENT).height(30).onClick(v -> {
                 PlayerScreen.this.openVideoDialog();
-                PlayerScreen.this.ctx.playSelectionSound();
+                PlayerScreen.this.ctx.sound.play();
             });
             this.prev = this.key("prev", AppTheme.TEXT_SOFT, 42, p -> PlayerScreen.this.navigateSource(-1));
             this.rew = this.key("rewind", AppTheme.TEXT_SOFT, 46, MediaPlayer::rewind);
@@ -1275,20 +1276,20 @@ public final class PlayerScreen extends Screen {
             this.next = this.key("next", AppTheme.TEXT_SOFT, 42, p -> PlayerScreen.this.navigateSource(1));
             this.spk = new Icon("speaker").iconSize(14).color(AppTheme.TEXT_SOFT);
             this.seek = new SeekBar().trackHeight(6).onChange(v -> {
-                final MediaPlayer p = PlayerScreen.this.ctx.player;
+                final MediaPlayer p = PlayerScreen.this.ctx.media.player;
                 if (p != null && !p.error() && p.duration() > 0) p.seek((long) (p.duration() * v));
             });
             this.vol = new SeekBar().trackHeight(5);
             this.vol.size(130, 20).onChange(v -> {
-                final MediaPlayer p = PlayerScreen.this.ctx.player;
+                final MediaPlayer p = PlayerScreen.this.ctx.media.player;
                 if (p != null && !p.error()) p.volume(Math.round(v * 100f));
             });
             this.loop = new Button("ON").icon("repeat").size(78, 30)
                     .onClick(b -> {
-                        final MediaPlayer p = PlayerScreen.this.ctx.player;
+                        final MediaPlayer p = PlayerScreen.this.ctx.media.player;
                         if (p == null || p.error()) return;
                         PlayerScreen.this.toggleLoop(p);
-                        PlayerScreen.this.ctx.playSelectionSound();
+                        PlayerScreen.this.ctx.sound.play();
                     });
             // THE MENU MOUNTS ON THE SCREEN OVERLAY SO IT PAINTS OVER THE HUD; Dropdown FLIPS IT ABOVE
             // THE CONTROL NEAR THE BOTTOM EDGE
@@ -1296,10 +1297,10 @@ public final class PlayerScreen extends Screen {
                     .items(Arrays.asList(SPEED_LABELS)).selected(3)
                     .overlayHost(PlayerScreen.this.overlay())
                     .onSelect(i -> {
-                        final MediaPlayer p = PlayerScreen.this.ctx.player;
+                        final MediaPlayer p = PlayerScreen.this.ctx.media.player;
                         if (p != null && !p.error() && p.speed(SPEED_VALUES[i])) {
                             PlayerScreen.this.speed = SPEED_VALUES[i];
-                            PlayerScreen.this.ctx.playSelectionSound();
+                            PlayerScreen.this.ctx.sound.play();
                         }
                     });
             this.speedDrop.size(90, 30);
@@ -1315,19 +1316,19 @@ public final class PlayerScreen extends Screen {
         private IconButton key(final String icon, final Color color, final int w, final Consumer<MediaPlayer> action) {
             final IconButton button = new IconButton(icon).accent(color).iconColor(color);
             button.size(w, 30).onClick(b -> {
-                final MediaPlayer p = PlayerScreen.this.ctx.player;
+                final MediaPlayer p = PlayerScreen.this.ctx.media.player;
                 if (p == null || p.error()) return;
                 action.accept(p);
-                PlayerScreen.this.ctx.playSelectionSound();
+                PlayerScreen.this.ctx.sound.play();
             });
             return button;
         }
 
         @Override
         protected void onUpdate() {
-            final MediaPlayer p = PlayerScreen.this.ctx.player;
+            final MediaPlayer p = PlayerScreen.this.ctx.media.player;
             this.errorMode = p == null || p.error();
-            this.multiSource = PlayerScreen.this.ctx.availableSources != null && PlayerScreen.this.ctx.availableSources.length > 1;
+            this.multiSource = PlayerScreen.this.ctx.media.availableSources != null && PlayerScreen.this.ctx.media.availableSources.length > 1;
             final boolean alive = !this.errorMode;
             this.metrics.visible(alive && PlayerScreen.this.debugOpen);
             this.srcIcon.visible(alive);
@@ -1374,10 +1375,10 @@ public final class PlayerScreen extends Screen {
             this.transportYL = Math.max(120, innerAvailHeight - 92);
             this.metrics.size(MathUtil.clamp(innerAvailWidth / 4, 240, 405), Math.max(220, this.transportYL - 80 - 14));
 
-            final MediaPlayer p = PlayerScreen.this.ctx.player;
+            final MediaPlayer p = PlayerScreen.this.ctx.media.player;
             final long duration = p == null ? 0 : Math.max(0, p.duration());
-            this.leftTime = p == null ? "" : PlayerScreen.this.ctx.formatTime(p.time());
-            this.rightTime = duration > 0 ? PlayerScreen.this.ctx.formatTime(duration) : "--:--";
+            this.leftTime = p == null ? "" : MediaSession.formatTime(p.time());
+            this.rightTime = duration > 0 ? MediaSession.formatTime(duration) : "--:--";
             final int rightTimeW = PlayerScreen.this.text.width(this.rightTime, AppTheme.TEXT_BODY);
             this.barW = Math.max(120, innerAvailWidth - 112 - rightTimeW - 44);
             this.seek.size(this.barW, 20);
@@ -1446,13 +1447,13 @@ public final class PlayerScreen extends Screen {
             // TOP INFO ROW TEXTS AND TAGS, BUILT HERE BECAUSE TRUNCATION DEPENDS ON THE WIDTH
             final TextRenderer text = PlayerScreen.this.text;
             final AppContext ctx = PlayerScreen.this.ctx;
-            final MediaPlayer p = ctx.player;
-            final Metadata meta = ctx.selectedSource != null ? ctx.selectedSource.metadata() : null;
-            final String title = meta != null && meta.title() != null ? meta.title() : ctx.selectedMRLName;
+            final MediaPlayer p = ctx.media.player;
+            final Metadata meta = ctx.media.selectedSource != null ? ctx.media.selectedSource.metadata() : null;
+            final String title = meta != null && meta.title() != null ? meta.title() : ctx.media.selectedMRLName;
             final String author = meta != null && meta.author() != null ? meta.author() : p.getClass().getSimpleName();
-            final String host = ctx.selectedMRL != null && ctx.selectedMRL.uri().getHost() != null ? ctx.selectedMRL.uri().getHost() : "local";
+            final String host = ctx.media.selectedMRL != null && ctx.media.selectedMRL.uri().getHost() != null ? ctx.media.selectedMRL.uri().getHost() : "local";
             final String posted = meta != null && meta.postedAt() != null ? PlayerScreen.this.formatDate(meta) : "unknown date";
-            final int sources = ctx.availableSources != null ? ctx.availableSources.length : 1;
+            final int sources = ctx.media.availableSources != null ? ctx.media.availableSources.length : 1;
             this.titleStr = text.truncateToWidth(title, Math.max(180, w - 520), AppTheme.TEXT_SECTION, Font.BOLD);
             int tagX = x0 + 108 + text.widthBold(this.titleStr, AppTheme.TEXT_SECTION) + 12;
             this.tagType = PlayerScreen.this.currentMediaType();
@@ -1461,7 +1462,7 @@ public final class PlayerScreen extends Screen {
                 this.typeTagXA = tagX;
                 tagX += PlayerScreen.this.typeTagWidth(this.tagType) + 8;
             }
-            this.srcLabel = (ctx.sourceSelectorIndex + 1) + "/" + sources;
+            this.srcLabel = (ctx.media.sourceSelectorIndex + 1) + "/" + sources;
             this.srcTagW = text.width(this.srcLabel, AppTheme.TEXT_BODY) + 46;
             final boolean showSrc = tagX + this.srcTagW < x0 + w - 20;
             this.srcIcon.visible(showSrc);
@@ -1513,7 +1514,7 @@ public final class PlayerScreen extends Screen {
                 canvas.text(this.rightTime, x0 + 112 + this.barW + 18, timeY, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
                 canvas.fill(this.dividerXA, this.controlsYA - 6, 1, 32, AppTheme.STROKE_BRIGHT);
                 canvas.fill(this.volDividerXA, this.controlsYA - 6, 1, 32, AppTheme.STROKE_BRIGHT);
-                final MediaPlayer p = PlayerScreen.this.ctx.player;
+                final MediaPlayer p = PlayerScreen.this.ctx.media.player;
                 if (p != null) {
                     final int volume = MathUtil.clamp(p.volume(), 0, 100);
                     canvas.text(volume + "%", this.volPctXA,
@@ -1528,7 +1529,7 @@ public final class PlayerScreen extends Screen {
         public Element<?> dispatchPress(final double mx, final double my) {
             final Element<?> hit = super.dispatchPress(mx, my);
             // ONLY THE PRESS THAT GRABS A BAR CHIMES; DRAG MOVES STAY SILENT
-            if (hit == this.seek || hit == this.vol) PlayerScreen.this.ctx.playSelectionSound();
+            if (hit == this.seek || hit == this.vol) PlayerScreen.this.ctx.sound.play();
             return hit;
         }
     }

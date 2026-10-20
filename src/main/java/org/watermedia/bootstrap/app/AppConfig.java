@@ -108,7 +108,7 @@ public class AppConfig {
     /** Applies the current values to the running app; the settings screen calls it after every edit of this spec. */
     public static void apply(final AppContext ctx) {
         ctx.crt = crt;
-        ctx.selectionSoundEnabled = sound;
+        ctx.sound.enabled = sound;
         WaterMediaApp.reapplyUiScale();
         if (engine == applied) return;
         applied = engine;

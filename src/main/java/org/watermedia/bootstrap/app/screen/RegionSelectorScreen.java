@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.screen;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.MediaCatalog;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
@@ -93,11 +94,11 @@ public final class RegionSelectorScreen extends Screen {
         switch (key) {
             case GLFW_KEY_UP -> {
                 this.list.moveSelection(-1);
-                this.ctx.playSelectionSound();
+                this.ctx.sound.play();
             }
             case GLFW_KEY_DOWN -> {
                 this.list.moveSelection(1);
-                this.ctx.playSelectionSound();
+                this.ctx.sound.play();
             }
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.openSelected();
             case GLFW_KEY_ESCAPE -> this.navigator.accept(HomeScreen.Action.BACK);
@@ -119,7 +120,7 @@ public final class RegionSelectorScreen extends Screen {
         this.counts.clear();
         this.totalChannels = 0;
         final TreeSet<String> available = new TreeSet<>();
-        for (final AppContext.IptvChannel channel: this.ctx.iptvChannels) {
+        for (final MediaCatalog.IptvChannel channel: this.ctx.catalog.iptvChannels) {
             if (channel == null || blank(channel.url())) continue;
             this.totalChannels++;
             final String region = cleanRegion(channel.region());
@@ -135,8 +136,8 @@ public final class RegionSelectorScreen extends Screen {
 
     private void openSelected() {
         final String region = this.regionFor(this.list.selectedIndex());
-        final List<AppContext.IptvChannel> channels = new ArrayList<>();
-        for (final AppContext.IptvChannel channel: this.ctx.iptvChannels) {
+        final List<MediaCatalog.IptvChannel> channels = new ArrayList<>();
+        for (final MediaCatalog.IptvChannel channel: this.ctx.catalog.iptvChannels) {
             if (channel == null || blank(channel.url())) continue;
             if (region == null || region.equalsIgnoreCase(cleanRegion(channel.region()))) {
                 channels.add(channel);
@@ -148,16 +149,16 @@ public final class RegionSelectorScreen extends Screen {
         }
 
         final Set<String> names = new HashSet<>();
-        final List<AppContext.TestURI> uris = new ArrayList<>(channels.size());
-        this.ctx.groupMRLs.clear();
-        for (final AppContext.IptvChannel channel: channels) {
+        final List<MediaCatalog.TestURI> uris = new ArrayList<>(channels.size());
+        this.ctx.media.groupMRLs.clear();
+        for (final MediaCatalog.IptvChannel channel: channels) {
             final String name = this.channelName(channel, names);
-            uris.add(new AppContext.TestURI(name, channel.url(), false));
+            uris.add(new MediaCatalog.TestURI(name, channel.url(), false));
         }
 
         final String groupName = region == null ? "TELEVISION" : "TELEVISION " + region.toUpperCase(Locale.ROOT);
-        this.ctx.selectedGroup = new AppContext.URIGroup(groupName, uris.toArray(AppContext.TestURI[]::new));
-        this.ctx.playSelectionSound();
+        this.ctx.media.selectedGroup = new MediaCatalog.URIGroup(groupName, uris.toArray(MediaCatalog.TestURI[]::new));
+        this.ctx.sound.play();
         this.navigator.accept(HomeScreen.Action.MRL_SELECTOR);
     }
 
@@ -190,7 +191,7 @@ public final class RegionSelectorScreen extends Screen {
         return null;
     }
 
-    private String channelName(final AppContext.IptvChannel channel, final Set<String> used) {
+    private String channelName(final MediaCatalog.IptvChannel channel, final Set<String> used) {
         String base = blank(channel.name()) ? blank(channel.tvgId()) ? channel.url() : channel.tvgId() : channel.name();
         base = base.trim();
         String name = base;

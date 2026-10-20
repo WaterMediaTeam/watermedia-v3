@@ -146,7 +146,7 @@ public final class SettingsScreen extends Screen {
                 .gravity(Gravity.CENTER)
                 .onClick(v -> {
                     this.resetActiveSection();
-                    this.ctx.playSelectionSound();
+                    this.ctx.sound.play();
                 });
         // SPEC TAB STRIP: THE FOLDER TABS SCROLL HORIZONTALLY, THE RESET BUTTON STAYS PINNED RIGHT AND TabStrip
         // DRAWS THE OPEN-FOLDER BASELINE ACROSS BOTH
@@ -173,7 +173,7 @@ public final class SettingsScreen extends Screen {
                     final RowElement row = new RowElement(setting);
                     // HOVER SELECTS THE ROW AND CHIMES WHEN THE SELECTION MOVES
                     row.onHover(v -> {
-                        if (!v.selected()) this.ctx.playSelectionSound();
+                        if (!v.selected()) this.ctx.sound.play();
                     });
                     return row;
                 })
@@ -333,11 +333,11 @@ public final class SettingsScreen extends Screen {
         switch (key) {
             case GLFW_KEY_UP -> {
                 this.list.moveSelection(-1);
-                this.ctx.playSelectionSound();
+                this.ctx.sound.play();
             }
             case GLFW_KEY_DOWN -> {
                 this.list.moveSelection(1);
-                this.ctx.playSelectionSound();
+                this.ctx.sound.play();
             }
             case GLFW_KEY_PAGE_UP -> this.moveSection(-1);
             case GLFW_KEY_PAGE_DOWN -> this.moveSection(1);
@@ -446,7 +446,7 @@ public final class SettingsScreen extends Screen {
             this.tabs.add(new SpecTab(index, spec.title, spec.subtitle, spec.iconName)
                     .onClick(v -> {
                         this.switchSpec(index);
-                        this.ctx.playSelectionSound();
+                        this.ctx.sound.play();
                     }));
         }
         // KEEP THE ACTIVE TAB IN VIEW AFTER A REBUILD/SWITCH (THE STRIP MAY BE SCROLLED PAST IT)
@@ -459,7 +459,7 @@ public final class SettingsScreen extends Screen {
                 this.sectionColumn.add(new SectionItem(index, active.sections.get(i))
                         .onClick(v -> {
                             this.switchSection(index);
-                            this.ctx.playSelectionSound();
+                            this.ctx.sound.play();
                         }));
             }
         }
@@ -499,7 +499,7 @@ public final class SettingsScreen extends Screen {
         final SettingSpec spec = this.activeSpec();
         if (spec == null || spec.sections.isEmpty()) return;
         this.switchSection(Math.floorMod(this.activeSectionIndex + delta, spec.sections.size()));
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
     }
 
     private void clampSelection() {
@@ -532,7 +532,7 @@ public final class SettingsScreen extends Screen {
         try {
             if (mutation.getAsBoolean()) {
                 this.autosave();
-                this.ctx.playSelectionSound();
+                this.ctx.sound.play();
             }
         } catch (final RuntimeException e) {
             this.invalidate();
@@ -544,7 +544,7 @@ public final class SettingsScreen extends Screen {
     private void seek(final Setting setting, final float pct) {
         try {
             if (setting.percent(pct)) {
-                if (!this.dragSave) this.ctx.playSelectionSound();
+                if (!this.dragSave) this.ctx.sound.play();
                 this.dragSave = true;
                 // PIN THE SPEC OWNING THIS SEEKBAR NOW — activeSpec() COULD CHANGE BEFORE THE RELEASE FLUSH
                 this.dragSaveSpec = this.activeSpec();
@@ -558,7 +558,7 @@ public final class SettingsScreen extends Screen {
 
     // A CLICK ON A ROW BODY OUTSIDE ITS CONTROL OPENS THE TEXT EDIT OR STEPS THE VALUE FORWARD
     private void activateBody(final Setting setting) {
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
         if (setting == null || !setting.mutable) return;
         if (setting.editableText()) {
             this.beginEdit(setting);
@@ -577,7 +577,7 @@ public final class SettingsScreen extends Screen {
         try {
             if (setting.adjust(delta, this.ctx.ctrlDown ? 10 : 1)) {
                 this.autosave();
-                this.ctx.playSelectionSound();
+                this.ctx.sound.play();
             } else if (setting.editableText()) {
                 this.beginEdit(setting);
             }

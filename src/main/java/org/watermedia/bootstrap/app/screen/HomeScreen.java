@@ -7,6 +7,8 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
 import org.watermedia.bootstrap.app.CleanupState;
+import org.watermedia.bootstrap.app.MediaCatalog;
+import org.watermedia.bootstrap.app.UploadState;
 import org.watermedia.bootstrap.app.element.Badge;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -103,7 +105,7 @@ public class HomeScreen extends Screen {
     private HomeBody grid;
     private Dialog uploadDialog;
     private Dialog cleanupDialog;
-    private ListView<AppContext.UploadFileEntry> fileList;
+    private ListView<UploadState.FileEntry> fileList;
     private Parent filesPanel;
     private ReportPane reportPane;
     private ListView<RepoTarget> repoList;
@@ -112,7 +114,7 @@ public class HomeScreen extends Screen {
     private Button uploadPrimary;
     private Button cleanupCancel;
     private Button cleanupPrimary;
-    private List<AppContext.UploadFileEntry> uploadRows = List.of();
+    private List<UploadState.FileEntry> uploadRows = List.of();
     private List<RepoTarget> repoTargets = List.of();
     private int repoSelected;
 
@@ -140,22 +142,22 @@ public class HomeScreen extends Screen {
         this.entertainment.clear();
 
         this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
-        this.actions.add(new MenuEntry("Upload Logs", AppContext.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
+        this.actions.add(new MenuEntry("Upload Logs", UploadState.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
         this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
         if (WaterMedia.LOGGER.isDebugEnabled()) this.actions.add(new MenuEntry("Settings", "S", Action.SETTINGS, -1));
         this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
 
-        if (this.ctx.uriGroups != null) {
-            for (int i = 0; i < this.ctx.uriGroups.length; i++) {
-                final AppContext.URIGroup group = this.ctx.uriGroups[i];
+        if (this.ctx.catalog.uriGroups != null) {
+            for (int i = 0; i < this.ctx.catalog.uriGroups.length; i++) {
+                final MediaCatalog.URIGroup group = this.ctx.catalog.uriGroups[i];
                 this.mediaTests.add(new MenuEntry(group.name(), group.uris().length + " samples", null, i));
             }
         }
-        if (!this.ctx.customTests.isEmpty()) {
-            final String label = "CUSTOM (" + this.ctx.customTests.size() + ")";
+        if (!this.ctx.catalog.customTests.isEmpty()) {
+            final String label = "CUSTOM (" + this.ctx.catalog.customTests.size() + ")";
             this.mediaTests.add(new MenuEntry(label, "custom", null, -2));
         }
-        if (this.ctx.iptvChannels.length > 0) {
+        if (this.ctx.catalog.iptvChannels.length > 0) {
             this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
         }
 
@@ -196,7 +198,7 @@ public class HomeScreen extends Screen {
                 .complete(step -> this.ctx.upload.stage > step || this.ctx.upload.done || (step == 2 && this.ctx.upload.uploadsDone))
                 .active(step -> this.ctx.upload.stage == step && !this.ctx.upload.done);
 
-        this.fileList = new ListView<AppContext.UploadFileEntry>()
+        this.fileList = new ListView<UploadState.FileEntry>()
                 .rowFactory(this::uploadRow)
                 .selectionColor(null)
                 .hoverColor(null);
@@ -320,7 +322,7 @@ public class HomeScreen extends Screen {
         if (up.visible && !report) {
             final int rowH = up.stage >= 2 ? UPLOAD_ROW_DETAIL_H : UPLOAD_ROW_H;
             this.fileList.rowHeight(rowH);
-            final List<AppContext.UploadFileEntry> rows = this.visibleUploadFiles();
+            final List<UploadState.FileEntry> rows = this.visibleUploadFiles();
             // ROWS ARE REBUILT ONLY WHEN MEMBERSHIP CHANGES; ROW CONTENT BINDS ITSELF EVERY FRAME
             if (!rows.equals(this.uploadRows)) {
                 this.uploadRows = rows;
@@ -428,8 +430,8 @@ public class HomeScreen extends Screen {
     // ==========================================================================
 
     private void handleSelect(final MenuEntry entry) {
-        if (entry.groupIndex() >= 0 && entry.groupIndex() < this.ctx.uriGroups.length) {
-            this.openGroup(this.ctx.uriGroups[entry.groupIndex()]);
+        if (entry.groupIndex() >= 0 && entry.groupIndex() < this.ctx.catalog.uriGroups.length) {
+            this.openGroup(this.ctx.catalog.uriGroups[entry.groupIndex()]);
         } else if (entry.groupIndex() == -2) {
             this.openCustomTests();
         } else if (entry.action() != null) {
@@ -438,23 +440,23 @@ public class HomeScreen extends Screen {
         }
     }
 
-    private void openGroup(final AppContext.URIGroup group) {
-        this.ctx.selectedGroup = group;
-        this.ctx.groupMRLs.clear();
-        for (final AppContext.TestURI testUri: group.uris()) {
-            this.ctx.groupMRLs.put(testUri.name(), MediaAPI.mrl(testUri.uri()));
+    private void openGroup(final MediaCatalog.URIGroup group) {
+        this.ctx.media.selectedGroup = group;
+        this.ctx.media.groupMRLs.clear();
+        for (final MediaCatalog.TestURI testUri: group.uris()) {
+            this.ctx.media.groupMRLs.put(testUri.name(), MediaAPI.mrl(testUri.uri()));
         }
         this.navigator.accept(Action.MRL_SELECTOR);
     }
 
     private void openCustomTests() {
-        if (this.ctx.customTests.isEmpty()) return;
-        this.openGroup(new AppContext.URIGroup("CUSTOM",
-                this.ctx.customTests.toArray(new AppContext.TestURI[0])));
+        if (this.ctx.catalog.customTests.isEmpty()) return;
+        this.openGroup(new MediaCatalog.URIGroup("CUSTOM",
+                this.ctx.catalog.customTests.toArray(new MediaCatalog.TestURI[0])));
     }
 
     private boolean actionEnabled(final MenuEntry entry) {
-        if (entry.action() == Action.UPLOAD_LOGS) return AppContext.IN_MODS;
+        if (entry.action() == Action.UPLOAD_LOGS) return UploadState.IN_MODS;
         if (entry.action() == Action.SETTINGS) return WaterMedia.LOGGER.isDebugEnabled();
         return true;
     }
@@ -503,14 +505,14 @@ public class HomeScreen extends Screen {
             this.selectedPanel = 2;
             this.selectedEntertainment = MathUtil.clamp(this.selectedEntertainment + delta, 0, this.entertainment.size() - 1);
         }
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
         this.invalidate();
     }
 
     private void switchPanel(final int panel) {
         if (this.selectedPanel != panel) {
             this.selectedPanel = panel;
-            this.ctx.playSelectionSound();
+            this.ctx.sound.play();
             this.invalidate();
         }
     }
@@ -553,7 +555,7 @@ public class HomeScreen extends Screen {
 
     private void closeUpload() {
         this.ctx.upload.visible = false;
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
         this.invalidate();
     }
 
@@ -564,7 +566,7 @@ public class HomeScreen extends Screen {
         }
         if (!this.uploadPrimaryEnabled()) return;
         this.navigator.accept(Action.UPLOAD_LOGS);
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
     }
 
     private String uploadPrimaryLabel() {
@@ -576,19 +578,19 @@ public class HomeScreen extends Screen {
     private boolean uploadPrimaryEnabled() {
         if (this.ctx.upload.working) return false;
         if (this.ctx.upload.stage <= 1) {
-            for (final AppContext.UploadFileEntry entry: this.ctx.upload.files) if (entry.present) return true;
+            for (final UploadState.FileEntry entry: this.ctx.upload.files) if (entry.present) return true;
             return false;
         }
         if (this.ctx.upload.stage == 2) {
-            for (final AppContext.UploadFileEntry entry: this.ctx.upload.files) if (entry.uploaded) return true;
+            for (final UploadState.FileEntry entry: this.ctx.upload.files) if (entry.uploaded) return true;
             return false;
         }
         return true;
     }
 
-    private List<AppContext.UploadFileEntry> visibleUploadFiles() {
-        final List<AppContext.UploadFileEntry> files = new ArrayList<>();
-        for (final AppContext.UploadFileEntry entry: this.ctx.upload.files) {
+    private List<UploadState.FileEntry> visibleUploadFiles() {
+        final List<UploadState.FileEntry> files = new ArrayList<>();
+        for (final UploadState.FileEntry entry: this.ctx.upload.files) {
             if (this.ctx.upload.stage <= 1) {
                 files.add(entry);
             } else if (this.ctx.upload.stage == 2) {
@@ -602,12 +604,12 @@ public class HomeScreen extends Screen {
     }
 
     private List<RepoTarget> uploadRepoTargets() {
-        final String wmUrl = this.ctx.upload.issueUrl != null ? this.ctx.upload.issueUrl : "https://github.com/" + AppContext.REPO + "/issues/new";
+        final String wmUrl = this.ctx.upload.issueUrl != null ? this.ctx.upload.issueUrl : "https://github.com/" + UploadState.REPO + "/issues/new";
         final List<RepoTarget> repos = new ArrayList<>();
-        repos.add(new RepoTarget("WaterMedia", AppContext.REPO, wmUrl, AppTheme.GREEN));
+        repos.add(new RepoTarget("WaterMedia", UploadState.REPO, wmUrl, AppTheme.GREEN));
         // ONLY LIST SUSPECT MODS WHOSE JAR WAS ACTUALLY FOUND IN THE INSTANCE (SEE WaterMediaApp.scanSuspectMods)
         int idx = 0;
-        for (final AppContext.SuspectMod mod: AppContext.SUSPECT_MODS) {
+        for (final UploadState.SuspectMod mod: UploadState.SUSPECT_MODS) {
             if (this.ctx.upload.suspectModIds.contains(mod.id())) {
                 repos.add(new RepoTarget(mod.name(), mod.slug(), mod.url(), REPO_PALETTE[idx % REPO_PALETTE.length]));
             }
@@ -625,7 +627,7 @@ public class HomeScreen extends Screen {
         this.repoSelected = index;
         this.ctx.upload.repoUrl = repo.url();
         this.navigator.accept(Action.UPLOAD_LOGS);
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
     }
 
     private void moveRepoSelection(final int delta) {
@@ -637,12 +639,12 @@ public class HomeScreen extends Screen {
         } else {
             this.repoList.selection(-1);
         }
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
         this.invalidate();
     }
 
     // ROW FACTORY FOR THE UPLOAD FILE LIST — EACH ROW SELF-BINDS TO ITS LIVE ENTRY EVERY FRAME
-    private Element<?> uploadRow(final AppContext.UploadFileEntry entry, final int index) {
+    private Element<?> uploadRow(final UploadState.FileEntry entry, final int index) {
         final FileRow row = new FileRow();
         row.pip.status(() -> uploadStatus(entry));
         row.binder = r -> {
@@ -666,7 +668,7 @@ public class HomeScreen extends Screen {
         return row;
     }
 
-    private static Color uploadStateColor(final AppContext.UploadFileEntry entry) {
+    private static Color uploadStateColor(final UploadState.FileEntry entry) {
         if (entry.uploaded || "READ OK".equals(entry.state)) return AppTheme.GREEN;
         if ("UPLOADING".equals(entry.state)) return AppTheme.NEON_LIGHT;
         if ("INVALID".equals(entry.state)) return AppTheme.AMBER;
@@ -674,7 +676,7 @@ public class HomeScreen extends Screen {
         return entry.present ? AppTheme.TEXT_FAINT : AppTheme.RED;
     }
 
-    private static StatusSquare.Status uploadStatus(final AppContext.UploadFileEntry entry) {
+    private static StatusSquare.Status uploadStatus(final UploadState.FileEntry entry) {
         if (entry.uploaded || "READ OK".equals(entry.state)) return StatusSquare.Status.OK;
         if ("UPLOADING".equals(entry.state)) return StatusSquare.Status.PENDING;
         if ("INVALID".equals(entry.state)) return StatusSquare.Status.WARN;
@@ -688,7 +690,7 @@ public class HomeScreen extends Screen {
 
     private void dismissCleanup() {
         this.closeCleanupDialog();
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
     }
 
     private void cleanupPrimaryAction() {
@@ -698,7 +700,7 @@ public class HomeScreen extends Screen {
         } else {
             this.navigator.accept(Action.CLEANUP);
         }
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
     }
 
     private String cleanupPrimaryLabel() {
@@ -881,7 +883,7 @@ public class HomeScreen extends Screen {
                 if (HomeScreen.this.selectedPanel != 0 || HomeScreen.this.selectedAction != this.index) {
                     HomeScreen.this.selectedPanel = 0;
                     HomeScreen.this.selectedAction = this.index;
-                    HomeScreen.this.ctx.playSelectionSound();
+                    HomeScreen.this.ctx.sound.play();
                 }
             });
             this.onClick(v -> HomeScreen.this.handleSelect(HomeScreen.this.actions.get(this.index)));
@@ -957,7 +959,7 @@ public class HomeScreen extends Screen {
                 if (HomeScreen.this.selectedPanel != 1 || HomeScreen.this.selectedMedia != this.index) {
                     HomeScreen.this.selectedPanel = 1;
                     HomeScreen.this.selectedMedia = this.index;
-                    HomeScreen.this.ctx.playSelectionSound();
+                    HomeScreen.this.ctx.sound.play();
                 }
             });
             this.onClick(v -> HomeScreen.this.handleSelect(HomeScreen.this.mediaTests.get(this.index)));
@@ -999,7 +1001,7 @@ public class HomeScreen extends Screen {
                 if (HomeScreen.this.selectedPanel != 2 || HomeScreen.this.selectedEntertainment != this.index) {
                     HomeScreen.this.selectedPanel = 2;
                     HomeScreen.this.selectedEntertainment = this.index;
-                    HomeScreen.this.ctx.playSelectionSound();
+                    HomeScreen.this.ctx.sound.play();
                 }
             });
             this.onClick(v -> HomeScreen.this.handleSelect(HomeScreen.this.entertainment.get(this.index)));
@@ -1046,7 +1048,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            final boolean blocked = !AppContext.IN_MODS;
+            final boolean blocked = !UploadState.IN_MODS;
             final TextRenderer text = HomeScreen.this.ctx.text;
             final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
             final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
@@ -1069,7 +1071,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final boolean blocked = !AppContext.IN_MODS;
+            final boolean blocked = !UploadState.IN_MODS;
             final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
             final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
             final String line2 = blocked ? "the Minecraft mods folder." : "then uploads.";
@@ -1239,7 +1241,7 @@ public class HomeScreen extends Screen {
             } else if (HomeScreen.this.repoSelected != 0) {
                 // THE BODY ONLY SELECTS; THE SUBMIT BUTTON OPENS THE ISSUE TRACKER
                 HomeScreen.this.repoSelected = 0;
-                HomeScreen.this.ctx.playSelectionSound();
+                HomeScreen.this.ctx.sound.play();
                 this.invalidate();
             }
             return true;
@@ -1343,7 +1345,7 @@ public class HomeScreen extends Screen {
             } else if (HomeScreen.this.repoSelected != this.targetIdx) {
                 // CARD BODY ONLY SELECTS; THE SUBMIT BUTTON OPENS THE ISSUE TRACKER
                 HomeScreen.this.repoSelected = this.targetIdx;
-                HomeScreen.this.ctx.playSelectionSound();
+                HomeScreen.this.ctx.sound.play();
                 this.invalidate();
             }
             return true;

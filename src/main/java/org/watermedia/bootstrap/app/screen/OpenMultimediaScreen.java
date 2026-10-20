@@ -11,6 +11,8 @@ import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
 import org.watermedia.api.util.Metadata;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.MediaCatalog;
+import org.watermedia.bootstrap.app.MediaSession;
 import org.watermedia.bootstrap.app.element.Box;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -88,6 +90,8 @@ public class OpenMultimediaScreen extends Screen {
     private long loadStartTime;
     private volatile MRL previewMRL;
     private String previewUrl = "";
+    // THE LINK OR QUERY BEING TYPED; THE SCREEN OUTLIVES ITS VISITS, SO IT IS STILL THERE ON THE NEXT ONE
+    private String urlText = "";
 
     // THE PlatformSearch HANDLE FILLS IN OFF-THREAD AND onUpdate POLLS IT EVERY FRAME;
     // searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE IT COMPLETES
@@ -273,7 +277,7 @@ public class OpenMultimediaScreen extends Screen {
         if (this.loading) this.checkLoadingState();
         this.syncLoadDialog();
 
-        final String url = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
+        final String url = this.urlText != null ? this.urlText : "";
         if (this.loading) {
             this.loadDialog.title("Loading" + ".".repeat((int) ((System.currentTimeMillis() / 500) % 4)));
             this.loadUrl.text(url.isEmpty() ? "(empty)" : url);
@@ -322,7 +326,7 @@ public class OpenMultimediaScreen extends Screen {
     private void cancelLoading() {
         this.loading = false;
         this.loadGeneration++;
-        this.ctx.selectedMRL = null;
+        this.ctx.media.selectedMRL = null;
         this.ctx.requestRender();
     }
 
@@ -335,7 +339,7 @@ public class OpenMultimediaScreen extends Screen {
         // TREE FIRST: THE LOADING DIALOG (FULLY MODAL) AND THE FOCUSED FIELD (BACKSPACE/DELETE) CONSUME THEIRS
         if (super.dispatchKey(key, action)) return true;
         if (action == GLFW_RELEASE) {
-            final String url = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
+            final String url = this.urlText != null ? this.urlText : "";
             switch (key) {
                 // ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE IS INPUT, NOT THE SAVE SHORTCUT
                 case GLFW_KEY_SPACE -> {
@@ -374,7 +378,7 @@ public class OpenMultimediaScreen extends Screen {
         try {
             final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
             if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
-                this.ctx.customUrlText = ((String) clipboard.getData(DataFlavor.stringFlavor)).trim().replace("\"", "");
+                this.urlText = ((String) clipboard.getData(DataFlavor.stringFlavor)).trim().replace("\"", "");
                 this.lastEditMs = System.currentTimeMillis();
                 this.ensurePreviewMRL();
             }
@@ -384,7 +388,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void reloadPreviewMRL() {
-        final String url = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
+        final String url = this.urlText == null ? "" : this.urlText.trim();
         if (url.isEmpty()) return;
         if (this.previewMRL == null || !url.equals(this.previewUrl)) {
             this.previewUrl = "";
@@ -400,17 +404,17 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void saveCustomUrl() {
-        if (this.ctx.customUrlText == null || this.ctx.customUrlText.isEmpty()) return;
-        final String name = this.ctx.customUrlText.length() > 40
-                ? this.ctx.customUrlText.substring(0, 37) + "..."
-                : this.ctx.customUrlText;
-        this.ctx.customTests.add(new AppContext.TestURI(name, this.ctx.customUrlText, false));
-        this.ctx.customUrlText = "";
+        if (this.urlText == null || this.urlText.isEmpty()) return;
+        final String name = this.urlText.length() > 40
+                ? this.urlText.substring(0, 37) + "..."
+                : this.urlText;
+        this.ctx.catalog.customTests.add(new MediaCatalog.TestURI(name, this.urlText, false));
+        this.urlText = "";
         this.navigator.accept(HomeScreen.Action.BACK);
     }
 
     private void playCustomUrl() {
-        if (this.ctx.customUrlText == null || this.ctx.customUrlText.isEmpty()) return;
+        if (this.urlText == null || this.urlText.isEmpty()) return;
 
         this.ensurePreviewMRL();
         if (this.previewMRL == null) return;
@@ -437,10 +441,10 @@ public class OpenMultimediaScreen extends Screen {
             }
         }
 
-        this.ctx.selectedMRL = this.previewMRL;
-        this.ctx.selectedMRLName = this.previewTitle();
-        this.ctx.selectedGroup = null;
-        if (!this.ctx.selectSources()) {
+        this.ctx.media.selectedMRL = this.previewMRL;
+        this.ctx.media.selectedMRLName = this.previewTitle();
+        this.ctx.media.selectedGroup = null;
+        if (!this.ctx.media.selectSources()) {
             this.ctx.showError("No Sources", "No sources available for this URL", null);
             return;
         }
@@ -448,7 +452,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void ensurePreviewMRL() {
-        final String url = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
+        final String url = this.urlText == null ? "" : this.urlText.trim();
         if (url.isEmpty()) {
             this.clearPreview();
             return;
@@ -484,7 +488,7 @@ public class OpenMultimediaScreen extends Screen {
     // TRUE WHEN THE INPUT IS NOT loadable(); MEMOIZED ON THE INPUT TEXT BECAUSE IT RUNS EVERY FRAME
     // AND loadable() BLOCKS ON A FILE SYSTEM STAT
     private boolean searchMode() {
-        final String text = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
+        final String text = this.urlText == null ? "" : this.urlText.trim();
         if (!text.equals(this.searchModeText)) {
             this.searchModeText = text;
             this.searchMode = !text.isEmpty() && !loadable(text);
@@ -519,7 +523,7 @@ public class OpenMultimediaScreen extends Screen {
 
     // PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; onUpdate POLLS THE NEW HANDLE AS RESULTS LAND
     private void doSearch() {
-        final String query = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
+        final String query = this.urlText == null ? "" : this.urlText.trim();
         if (query.isEmpty()) return;
         this.releaseThumbs();
         this.searchRenderedDone = false;
@@ -531,11 +535,11 @@ public class OpenMultimediaScreen extends Screen {
     // THE RESULT'S URL REPLACES THE INPUT, WHICH LEAVES SEARCH MODE SO IT CAN BE PLAYED
     private void selectResult(final PlatformResult result) {
         if (result == null || result.uri() == null) return;
-        this.ctx.customUrlText = result.uri().toString();
+        this.urlText = result.uri().toString();
         this.clearSearch();
         this.field.focused(true);
         this.ensurePreviewMRL();
-        this.ctx.playSelectionSound();
+        this.ctx.sound.play();
         this.ctx.requestRender();
     }
 
@@ -544,7 +548,7 @@ public class OpenMultimediaScreen extends Screen {
         if (row.kind() == ROW_RESULT) {
             this.selectResult(row.result());
         } else if (row.kind() == ROW_HISTORY) {
-            this.ctx.customUrlText = row.text();
+            this.urlText = row.text();
             this.doSearch();
         }
     }
@@ -670,15 +674,15 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void beginLoading(final MRL mrl) {
-        this.ctx.selectedMRL = mrl;
-        this.ctx.selectedMRLName = this.previewTitle();
+        this.ctx.media.selectedMRL = mrl;
+        this.ctx.media.selectedMRLName = this.previewTitle();
         this.loading = true;
         this.loadGeneration++;
         this.loadStartTime = System.currentTimeMillis();
         if (!Previews.loaded(mrl)) {
             final int generation = this.loadGeneration;
             mrl.subscribe(done -> {
-                if (this.loading && this.loadGeneration == generation && this.ctx.selectedMRL == done) {
+                if (this.loading && this.loadGeneration == generation && this.ctx.media.selectedMRL == done) {
                     this.ctx.requestRender();
                 }
             });
@@ -699,29 +703,29 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     private void checkLoadingState() {
-        if (this.ctx.selectedMRL == null) {
+        if (this.ctx.media.selectedMRL == null) {
             this.loading = false;
             this.loadGeneration++;
             return;
         }
 
-        final MRL.Status status = this.ctx.selectedMRL.status();
+        final MRL.Status status = this.ctx.media.selectedMRL.status();
         // ANY FINAL STATE OTHER THAN LOADED (ERROR, BLOCKED, EXPIRED, FORGOTTEN) ENDS THE WAIT
         if (status != MRL.Status.LOADED && status != MRL.Status.FETCHING) {
             this.loading = false;
             this.loadGeneration++;
             this.ctx.showError("Load Error", "Failed to load URL: " + status.name(), null);
-            this.ctx.selectedMRL = null;
+            this.ctx.media.selectedMRL = null;
             return;
         }
 
         if (status == MRL.Status.LOADED) {
             this.loading = false;
             this.loadGeneration++;
-            this.ctx.selectedMRLName = this.previewTitle();
-            if (!this.ctx.selectSources()) {
+            this.ctx.media.selectedMRLName = this.previewTitle();
+            if (!this.ctx.media.selectSources()) {
                 this.ctx.showError("No Sources", "No sources available for this URL", null);
-                this.ctx.selectedMRL = null;
+                this.ctx.media.selectedMRL = null;
                 return;
             }
             // QUEUED BECAUSE THIS RUNS INSIDE THE UPDATE PASS: THE MOUNT SWAP MUST HAPPEN BETWEEN FRAMES
@@ -733,7 +737,7 @@ public class OpenMultimediaScreen extends Screen {
             this.loading = false;
             this.loadGeneration++;
             this.ctx.showError("Load Error", "Failed to load URL: Timeout", null);
-            this.ctx.selectedMRL = null;
+            this.ctx.media.selectedMRL = null;
         }
     }
 
@@ -1038,7 +1042,7 @@ public class OpenMultimediaScreen extends Screen {
                     final Metadata meta = src != null ? src.metadata() : null;
                     final String title = meta != null && meta.title() != null ? meta.title() : OpenMultimediaScreen.this.previewTitle();
                     final String desc = meta != null && meta.description() != null ? meta.description() : OpenMultimediaScreen.this.previewUrl;
-                    final String duration = meta != null && meta.durationMs() > 0 ? OpenMultimediaScreen.this.ctx.formatTime(meta.durationMs()) : "--:--";
+                    final String duration = meta != null && meta.durationMs() > 0 ? MediaSession.formatTime(meta.durationMs()) : "--:--";
                     canvas.gradientV(ix, iy + ih / 2f, iw, ih / 2f, GRADIENT_TOP, AppTheme.alpha(AppTheme.BG_1, 224));
                     canvas.text(canvas.text().truncateToWidth(title.toUpperCase(Locale.ROOT), iw - 44, AppTheme.TEXT_BUTTON, Font.BOLD),
                             ix + 22, iy + ih - 76, AppTheme.NEON_LIGHT, AppTheme.TEXT_BUTTON, true);
@@ -1065,7 +1069,7 @@ public class OpenMultimediaScreen extends Screen {
     // TREE — URL/SEARCH FIELD
     // ==========================================================================
 
-    // EDITS ctx.customUrlText DIRECTLY, FEEDING THE SEARCH DEBOUNCE AND THE PREVIEW ON EVERY EDIT;
+    // EDITS urlText DIRECTLY, FEEDING THE SEARCH DEBOUNCE AND THE PREVIEW ON EVERY EDIT;
     // CTRL+BACKSPACE DELETES A WORD
     private final class InputField extends Element<InputField> {
 
@@ -1081,7 +1085,7 @@ public class OpenMultimediaScreen extends Screen {
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
             final boolean search = OpenMultimediaScreen.this.searchMode();
-            final String value = OpenMultimediaScreen.this.ctx.customUrlText != null ? OpenMultimediaScreen.this.ctx.customUrlText : "";
+            final String value = OpenMultimediaScreen.this.urlText != null ? OpenMultimediaScreen.this.urlText : "";
             if (this.focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.28f);
             canvas.fill(x, y, w, h, AppTheme.BG_2);
             canvas.stroke(x, y, w, h, this.focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 1f);
@@ -1119,7 +1123,7 @@ public class OpenMultimediaScreen extends Screen {
         public boolean dispatchChar(final int codepoint) {
             if (!this.focused || OpenMultimediaScreen.this.loading || OpenMultimediaScreen.this.ctx.ctrlDown) return false;
             if (codepoint < 32 || codepoint == 127) return false;
-            OpenMultimediaScreen.this.ctx.customUrlText = (OpenMultimediaScreen.this.ctx.customUrlText == null ? "" : OpenMultimediaScreen.this.ctx.customUrlText)
+            OpenMultimediaScreen.this.urlText = (OpenMultimediaScreen.this.urlText == null ? "" : OpenMultimediaScreen.this.urlText)
                     + new String(Character.toChars(codepoint));
             OpenMultimediaScreen.this.lastEditMs = System.currentTimeMillis();
             OpenMultimediaScreen.this.ensurePreviewMRL();
@@ -1131,10 +1135,10 @@ public class OpenMultimediaScreen extends Screen {
             // BACKSPACE/DELETE ARE FIELD KEYS ONLY WHILE FOCUSED (EDIT ON PRESS+REPEAT, RELEASE SWALLOWED);
             // EVERYTHING ELSE FALLS THROUGH TO THE SCREEN SHORTCUTS
             if (!this.focused || (key != GLFW_KEY_BACKSPACE && key != GLFW_KEY_DELETE)) return false;
-            if (action != GLFW_RELEASE && OpenMultimediaScreen.this.ctx.customUrlText != null && !OpenMultimediaScreen.this.ctx.customUrlText.isEmpty()) {
-                OpenMultimediaScreen.this.ctx.customUrlText = OpenMultimediaScreen.this.ctx.ctrlDown
-                        ? OpenMultimediaScreen.this.deleteLastWord(OpenMultimediaScreen.this.ctx.customUrlText)
-                        : OpenMultimediaScreen.this.ctx.customUrlText.substring(0, OpenMultimediaScreen.this.ctx.customUrlText.length() - 1);
+            if (action != GLFW_RELEASE && OpenMultimediaScreen.this.urlText != null && !OpenMultimediaScreen.this.urlText.isEmpty()) {
+                OpenMultimediaScreen.this.urlText = OpenMultimediaScreen.this.ctx.ctrlDown
+                        ? OpenMultimediaScreen.this.deleteLastWord(OpenMultimediaScreen.this.urlText)
+                        : OpenMultimediaScreen.this.urlText.substring(0, OpenMultimediaScreen.this.urlText.length() - 1);
                 OpenMultimediaScreen.this.lastEditMs = System.currentTimeMillis();
                 OpenMultimediaScreen.this.ensurePreviewMRL();
             }
