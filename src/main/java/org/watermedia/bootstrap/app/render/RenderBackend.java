@@ -62,6 +62,30 @@ public interface RenderBackend {
         this.bindTexture((int) handle);
     }
 
+    /** Redirects drawing into offscreen layer {@code index} (0 or 1), cleared to the color; false when nothing draws this frame. */
+    default boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
+        return false;
+    }
+
+    /** Ends the open layer, so the next clear or draw targets the window again. */
+    default void endLayer() {
+    }
+
+    /** Binds layer {@code index} for the next textured draw, sampled as premultiplied color; false when it holds nothing. */
+    default boolean bindLayer(final int index) {
+        return false;
+    }
+
+    /** Returns whether layer rows run bottom-up, as OpenGL textures do. */
+    default boolean layerFlipped() {
+        return false;
+    }
+
+    /** Returns a counter that moves whenever the layers lose their contents, such as on a resize. */
+    default int layerEpoch() {
+        return 0;
+    }
+
     /** Returns the GPU or renderer name, captured at init so any thread can read it. */
     default String deviceName() {
         return "Unknown";

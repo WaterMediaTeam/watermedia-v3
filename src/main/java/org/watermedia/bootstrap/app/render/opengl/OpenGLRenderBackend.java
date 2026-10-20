@@ -1,15 +1,20 @@
 package org.watermedia.bootstrap.app.render.opengl;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.ARBDebugOutput;
 import org.lwjgl.opengl.GLDebugMessageARBCallback;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
+import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.GFXEngine;
 import org.watermedia.bootstrap.app.render.DrawMode;
@@ -19,6 +24,7 @@ import org.watermedia.bootstrap.app.render.TextureHandle;
 
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
@@ -26,6 +32,7 @@ import static org.lwjgl.glfw.GLFW.*;
 
 /** OpenGL 3.2 core render backend of the app UI. */
 public final class OpenGLRenderBackend implements RenderBackend {
+    private static final Marker IT = MarkerManager.getMarker(OpenGLRenderBackend.class.getSimpleName());
 
     private static final String VERT_SRC = """
             #version 150 core
@@ -50,7 +57,13 @@ public final class OpenGLRenderBackend implements RenderBackend {
             uniform float useTexture;
             out vec4 fragColor;
             void main() {
-                fragColor = useTexture > 0.5 ? texture(tex, vTexCoord) * vColor : vColor;
+                // 2 SAMPLES A CACHED LAYER, WHOSE COLOR IS PREMULTIPLIED: DIVIDING IT BACK LETS THE NORMAL BLEND APPLY ALPHA ONCE
+                if (useTexture > 1.5) {
+                    vec4 layer = texture(tex, vTexCoord);
+                    fragColor = layer.a > 0.0 ? vec4(layer.rgb / layer.a, layer.a) : vec4(0.0);
+                } else {
+                    fragColor = useTexture > 0.5 ? texture(tex, vTexCoord) * vColor : vColor;
+                }
             }
             """;
 
@@ -119,6 +132,19 @@ public final class OpenGLRenderBackend implements RenderBackend {
     private int glVerMajor;
     private int glVerMinor;
     private GLDebugMessageARBCallback debugCallback; // RETAINED SO THE NATIVE CLOSURE OUTLIVES THE CALL AND IS FREED IN cleanup()
+    // TREE CACHE LAYERS: A FRAMEBUFFER AND COLOR TEXTURE EACH, SIZED TO THE VIEWPORT AND BUILT ON FIRST USE
+    private final int[] layerFbo = new int[2];
+    private final int[] layerTex = new int[2];
+    private int layerW;
+    private int layerH;
+    private int viewW;
+    private int viewH;
+    private int layerEpoch;
+    private int activeLayer = -1;
+    private boolean layerFailed;
+    // THE BOUND TEXTURE IS A LAYER, SAMPLED AS PREMULTIPLIED COLOR
+    private boolean layerBound;
+    private boolean scissorOn;
 
     public OpenGLRenderBackend(final long window) {
         this.window = window;
@@ -205,6 +231,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
     @Override
     public void present() {
+        if (this.activeLayer >= 0) this.endLayer();
         if (this.frameActive) {
             GL30.glBindVertexArray(0);
             GL20.glUseProgram(0);
@@ -299,6 +326,14 @@ public final class OpenGLRenderBackend implements RenderBackend {
 
         this.uploadBuffer = MemoryUtil.memAllocFloat(MAX_VERTICES * FLOATS_PER_VERTEX);
         this.projectionBuffer = MemoryUtil.memAllocFloat(16);
+        // THE FIRST glViewport IS THE FRAMEBUFFER SIZE THE CONTEXT STARTED WITH, UNTIL viewport() REPLACES IT
+        try (final MemoryStack stack = MemoryStack.stackPush()) {
+            final IntBuffer w = stack.mallocInt(1);
+            final IntBuffer h = stack.mallocInt(1);
+            glfwGetFramebufferSize(this.window, w, h);
+            this.viewW = w.get(0);
+            this.viewH = h.get(0);
+        }
         this.initialized = true;
     }
 
@@ -311,6 +346,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
             this.debugCallback = null;
         }
         if (!this.initialized) return;
+        this.deleteLayers();
         GL20.glDeleteProgram(this.program);
         GL20.glDeleteProgram(this.sdfProgram);
         GL30.glDeleteVertexArrays(this.vao);
@@ -323,7 +359,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
     @Override
     public void configureFrameState() {
         GL11.glEnable(GL11.GL_BLEND);
-        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        // ALPHA ACCUMULATES AS COVERAGE, SO A TRANSPARENT LAYER ENDS PREMULTIPLIED AND THE OPAQUE ONES STAY AT 1
+        GL14.glBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
     }
 
     @Override
@@ -335,6 +372,89 @@ public final class OpenGLRenderBackend implements RenderBackend {
     @Override
     public void viewport(final int width, final int height) {
         GL11.glViewport(0, 0, width, height);
+        if (width == this.viewW && height == this.viewH) return;
+        this.viewW = width;
+        this.viewH = height;
+        this.layerEpoch++;
+    }
+
+    // ==========================================================================
+    // TREE CACHE LAYERS
+    // ==========================================================================
+    @Override
+    public boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
+        if (this.layerFailed || this.viewW <= 0 || this.viewH <= 0) return false;
+        if (this.layerW != this.viewW || this.layerH != this.viewH) this.deleteLayers();
+        if (this.layerFbo[index] == 0 && !this.createLayer(index)) return false;
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, this.layerFbo[index]);
+        this.activeLayer = index;
+        // glClear HONORS THE SCISSOR, AND A LAYER OPENED INSIDE A CLIP MUST STILL CLEAR WHOLE
+        if (this.scissorOn) GL11.glDisable(GL11.GL_SCISSOR_TEST);
+        this.clear(r, g, b, a);
+        if (this.scissorOn) GL11.glEnable(GL11.GL_SCISSOR_TEST);
+        return true;
+    }
+
+    @Override
+    public void endLayer() {
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        this.activeLayer = -1;
+    }
+
+    @Override
+    public boolean bindLayer(final int index) {
+        if (this.layerTex[index] == 0) return false;
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, this.layerTex[index]);
+        this.layerBound = true;
+        return true;
+    }
+
+    @Override
+    public boolean layerFlipped() {
+        return true;
+    }
+
+    @Override
+    public int layerEpoch() {
+        return this.layerEpoch;
+    }
+
+    private boolean createLayer(final int index) {
+        final int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, this.viewW, this.viewH, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        final int fbo = GL30.glGenFramebuffers();
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo);
+        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, texture, 0);
+        final int status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER);
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        this.layerBound = false;
+        if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
+            GL30.glDeleteFramebuffers(fbo);
+            GL11.glDeleteTextures(texture);
+            this.layerFailed = true;
+            WaterMedia.LOGGER.warn(IT, "The tree cache framebuffer is incomplete (0x{}); the UI repaints whole while the CRT bands move",
+                    Integer.toHexString(status));
+            return false;
+        }
+        this.layerFbo[index] = fbo;
+        this.layerTex[index] = texture;
+        this.layerW = this.viewW;
+        this.layerH = this.viewH;
+        return true;
+    }
+
+    private void deleteLayers() {
+        for (int i = 0; i < 2; i++) {
+            if (this.layerFbo[i] != 0) GL30.glDeleteFramebuffers(this.layerFbo[i]);
+            if (this.layerTex[i] != 0) GL11.glDeleteTextures(this.layerTex[i]);
+            this.layerFbo[i] = 0;
+            this.layerTex[i] = 0;
+        }
     }
 
     // ==========================================================================
@@ -371,6 +491,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     @Override
     public void bindTexture(final int textureId) {
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
+        this.layerBound = false;
     }
 
     @Override
@@ -409,7 +530,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
             GL20.glUniformMatrix4fv(this.projectionUniform, false, this.projectionBuffer);
             this.projectionDirty = false;
         }
-        final float useTexture = textured ? 1f : 0f;
+        final float useTexture = !textured ? 0f : this.layerBound ? 2f : 1f;
         if (useTexture != this.boundUseTexture) {
             GL20.glUniform1f(this.useTextureUniform, useTexture);
             this.boundUseTexture = useTexture;
@@ -503,11 +624,13 @@ public final class OpenGLRenderBackend implements RenderBackend {
     public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
         GL11.glEnable(GL11.GL_SCISSOR_TEST);
         GL11.glScissor(x, canvasHeight - y - height, width, height);
+        this.scissorOn = true;
     }
 
     @Override
     public void clearClip() {
         GL11.glDisable(GL11.GL_SCISSOR_TEST);
+        this.scissorOn = false;
     }
 
     private static int compileShader(final int type, final String source) {

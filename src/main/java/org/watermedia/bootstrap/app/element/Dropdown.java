@@ -308,6 +308,7 @@ public final class Dropdown extends Element<Dropdown> {
 
         @Override
         protected void onDraw(final Canvas canvas) {
+            canvas.raise();
             final PanelBox b = this.box();
             final int x = b.x();
             final int y = b.y();

@@ -24,6 +24,8 @@ public final class RenderEngine {
     private static final float SHADOW_DX = 2f;
     private static final float SHADOW_DY = 6f;
     private static final float GLOW_STRENGTH = 0.9f; // OVERALL GLOW FORCE
+    private static final int LAYER_BASE = 0; // TREE CACHE UNDER THE LIVE PAINTERS
+    private static final int LAYER_TOP = 1; // TREE CACHE OVER THE LIVE PAINTERS, TRANSPARENT WHERE NOTHING WAS DRAWN
     private static final float[] IDENTITY = {
             1f, 0f, 0f, 0f,
             0f, 1f, 0f, 0f,
@@ -51,6 +53,12 @@ public final class RenderEngine {
     private float physicalLineWidth = 1f;
     // GLOW HEARTBEAT SAMPLED ONCE PER FRAME; IT DRIFTS FAR TOO SLOWLY TO DIFFER BETWEEN GLOWS OF ONE FRAME
     private float pulse = glowPulse();
+    // TREE CACHE: caching WHILE A PASS FILLS THE LAYERS, cacheReady ONCE ONE FINISHED AT cacheEpoch, topUsed WHEN IT
+    // RAISED INTO THE TOP LAYER
+    private boolean caching;
+    private boolean cacheReady;
+    private int cacheEpoch;
+    private boolean topUsed;
 
     public RenderEngine(final RenderBackend backend) {
         this.backend = backend;
@@ -148,6 +156,65 @@ public final class RenderEngine {
     public void present() {
         this.flush();
         this.backend.present();
+    }
+
+    // ==========================================================================
+    // TREE CACHE: THE TREE PAINTS INTO OFFSCREEN LAYERS ONLY WHEN IT CHANGES, AND EVERY OTHER FRAME DRAWS THE LAYERS
+    // BACK WITH THE LIVE PAINTERS (THE CRT BAND) BETWEEN THEM
+    // ==========================================================================
+
+    /** Returns whether the layers still hold the last cached tree pass. */
+    public boolean cacheValid() {
+        return this.cacheReady && this.cacheEpoch == this.backend.layerEpoch();
+    }
+
+    /** Starts a cached tree pass in the base layer; false when this frame cannot cache, so the tree draws to the window. */
+    public boolean beginCache(final float r, final float g, final float b, final float a) {
+        this.flush();
+        this.cacheReady = false;
+        this.topUsed = false;
+        this.caching = this.backend.beginLayer(LAYER_BASE, r, g, b, a);
+        // BUILDING A LAYER MAY BIND ITS OWN TEXTURE, SO THE NEXT bindTexture() MUST REACH THE BACKEND
+        this.boundTextureId = -1;
+        return this.caching;
+    }
+
+    /** Sends the rest of the cached pass to the top layer, which composites over the live painters. */
+    public void raiseCache() {
+        if (!this.caching || this.topUsed) return;
+        this.flush();
+        // A TOP LAYER THAT CANNOT OPEN LEAVES THE REST IN THE BASE ONE, UNDER THE PAINTERS BUT STILL VISIBLE
+        this.topUsed = this.backend.beginLayer(LAYER_TOP, 0f, 0f, 0f, 0f);
+        this.boundTextureId = -1;
+    }
+
+    /** Ends the cached pass; the layers stand in for the tree until it changes or the backend drops them. */
+    public void endCache() {
+        if (!this.caching) return;
+        this.flush();
+        this.backend.endLayer();
+        this.caching = false;
+        this.cacheReady = true;
+        this.cacheEpoch = this.backend.layerEpoch();
+    }
+
+    /** Forgets the layers after a pass that drew the tree straight into the window. */
+    public void dropCache() {
+        this.cacheReady = false;
+    }
+
+    /** Draws the base or the top layer over the whole window; the top one only when the last pass raised it. */
+    public void drawCache(final boolean top) {
+        if (top && !this.topUsed) return;
+        this.clearClip();
+        if (!this.backend.bindLayer(top ? LAYER_TOP : LAYER_BASE)) return;
+        // THE SAME SENTINEL AS A MEDIA FRAME: blit() EMITS TEXTURED VERTICES AND THE NEXT bindTexture() REBINDS
+        this.boundTextureId = Integer.MAX_VALUE;
+        final boolean flipped = this.backend.layerFlipped();
+        this.color.set(1f, 1f, 1f, 1f);
+        this.blit(0f, 0f, this.orthoW, this.orthoH, 0f, flipped ? 1f : 0f, 1f, flipped ? 0f : 1f);
+        this.flush();
+        this.boundTextureId = -1;
     }
 
     public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) {

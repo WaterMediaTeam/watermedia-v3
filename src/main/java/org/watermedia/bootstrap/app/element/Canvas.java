@@ -7,10 +7,14 @@ import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
 import java.awt.Color;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Drawing surface for {@link Element#onDraw}: a facade over {@link RenderSystem} and {@link TextRenderer} in top-left
- * window pixels. {@link #pushAlpha} scales the opacity of every following draw, so a container fades its whole subtree.
+ * window pixels. {@link #pushAlpha} scales the opacity of every following draw, so a container fades its whole subtree,
+ * and {@link #live} draws what changes every frame over a tree cached by the render engine.
  */
 public final class Canvas {
     private static final int CLIP_LEVELS = 16;
@@ -25,9 +29,61 @@ public final class Canvas {
     private float alpha = 1f;
     private int windowWidth;
     private int windowHeight;
+    // LIVE PAINTERS OF THE LAST TREE PASS, IN DRAW ORDER; A CACHED PASS DEFERS THEM AND raisedAt SPLITS THOSE UNDER
+    // THE TOP LAYER FROM THOSE OVER IT (-1 = NOTHING RAISED)
+    private final List<Live> live = new ArrayList<>();
+    private boolean deferring;
+    private int raisedAt = -1;
+
+    // A PAINTER WITH THE CLIP AND FADE ACTIVE WHERE THE TREE REACHED IT
+    private record Live(Consumer<Canvas> painter, boolean clipped, int left, int top, int right, int bottom, float alpha) {
+    }
 
     public Canvas(final TextRenderer text) {
         this.text = text;
+    }
+
+    /** Starts a tree pass; a cached one defers the live painters to {@link #paintLive} instead of drawing them. */
+    public void beginTree(final boolean cached) {
+        this.live.clear();
+        this.deferring = cached;
+        this.raisedAt = -1;
+    }
+
+    /** Returns whether the last tree pass met a live painter, which needs a repaint every frame. */
+    public boolean hasLive() {
+        return !this.live.isEmpty();
+    }
+
+    /** Draws something that changes every frame: inline in a direct pass, over the cached tree in every composite. */
+    public void live(final Consumer<Canvas> painter) {
+        final boolean clipped = this.clipDepth > 0;
+        final int at = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;
+        this.live.add(new Live(painter, clipped, clipped ? this.clipStack[at] : 0, clipped ? this.clipStack[at + 1] : 0,
+                clipped ? this.clipStack[at + 2] : 0, clipped ? this.clipStack[at + 3] : 0, this.alpha));
+        if (!this.deferring) painter.accept(this);
+    }
+
+    /** Marks the rest of the pass as drawn over the live painters met so far, such as a dialog or a HUD. */
+    public void raise() {
+        if (!this.deferring || this.raisedAt >= 0 || this.live.isEmpty()) return;
+        this.raisedAt = this.live.size();
+        RenderSystem.raiseCache();
+    }
+
+    /** Repaints the deferred live painters met before the raise, or after it, with their clip and fade. */
+    public void paintLive(final boolean raised) {
+        final int split = this.raisedAt < 0 ? this.live.size() : this.raisedAt;
+        final int from = raised ? split : 0;
+        final int to = raised ? this.live.size() : split;
+        for (int i = from; i < to; i++) {
+            final Live entry = this.live.get(i);
+            this.pushAlpha(entry.alpha());
+            if (entry.clipped()) this.pushClip(entry.left(), entry.top(), entry.right() - entry.left(), entry.bottom() - entry.top());
+            entry.painter().accept(this);
+            if (entry.clipped()) this.popClip();
+            this.popAlpha();
+        }
     }
 
     /** Pushes an alpha multiplier for following draws; nested factors multiply and each needs a {@link #popAlpha()}. */

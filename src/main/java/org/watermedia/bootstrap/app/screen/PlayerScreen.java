@@ -1475,6 +1475,8 @@ public final class PlayerScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
+            // THE HUD SITS OVER THE FULL-SCREEN CRT, WHOSE BAND KEEPS MOVING UNDER IT WHILE THE PLAYER IS PAUSED
+            canvas.raise();
             if (!this.errorMode) {
                 // CHROME USES this.left AND measuredWidth, NEVER canvas.windowWidth(), SO A SLOT INSET
                 // CANNOT SPLIT IT FROM THE CHILDREN PLACED BY onLayout

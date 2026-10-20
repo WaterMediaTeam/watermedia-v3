@@ -16,6 +16,9 @@ import java.util.function.Supplier;
  * {@link KeybindsBar} column and a top layer for global dialogs, with pointer capture over all input.
  */
 public final class RootScreen {
+    private static final float CLEAR_R = 0.04f;
+    private static final float CLEAR_G = 0.06f;
+    private static final float CLEAR_B = 0.12f;
 
     private final AppContext ctx;
     private final Canvas canvas;
@@ -49,15 +52,44 @@ public final class RootScreen {
         this.tree.attach(ctx);
     }
 
-    /** Runs update, measure, layout and draw for one frame in logical pixels ({@code physical / uiScale}). */
-    public void render(final int logicalW, final int logicalH) {
+    /**
+     * Runs update, measure, layout and draw for one frame in logical pixels ({@code physical / uiScale}); with
+     * {@code cache} the tree goes to the render engine's layers, then composites like {@link #composite}.
+     */
+    public void render(final int logicalW, final int logicalH, final boolean cache) {
         // BINDINGS FIRST — onUpdate HOOKS PULL LIVE STATE INTO THE TREE BEFORE IT IS MEASURED
         this.tree.update();
         RenderSystem.setupOrtho(logicalW, logicalH);
         this.tree.measure(logicalW, logicalH);
         this.tree.layout(0, 0);
         this.canvas.viewport(logicalW, logicalH);
+        // A FRAME THAT CANNOT CACHE (MINIMIZED, NO LAYER SUPPORT) DRAWS STRAIGHT INTO THE WINDOW INSTEAD
+        final boolean cached = cache && RenderSystem.beginCache(CLEAR_R, CLEAR_G, CLEAR_B, 1f);
+        if (!cached) {
+            RenderSystem.dropCache();
+            RenderSystem.clear(CLEAR_R, CLEAR_G, CLEAR_B, 1f);
+        }
+        this.canvas.beginTree(cached);
         this.tree.draw(this.canvas);
+        if (!cached) return;
+        RenderSystem.endCache();
+        this.composite(logicalW, logicalH);
+    }
+
+    /** Draws the cached tree back with the live painters between its layers, without touching the tree. */
+    public void composite(final int logicalW, final int logicalH) {
+        RenderSystem.setupOrtho(logicalW, logicalH);
+        RenderSystem.clear(CLEAR_R, CLEAR_G, CLEAR_B, 1f);
+        this.canvas.viewport(logicalW, logicalH);
+        RenderSystem.drawCache(false);
+        this.canvas.paintLive(false);
+        RenderSystem.drawCache(true);
+        this.canvas.paintLive(true);
+    }
+
+    /** Whether the last tree pass met a live painter, such as a CRT band, that moves every frame. */
+    public boolean live() {
+        return this.canvas.hasLive();
     }
 
     /** Mounts a screen element into the center slot, replacing whatever was there. */
@@ -92,7 +124,7 @@ public final class RootScreen {
         return this.tree.textInputActive();
     }
 
-    /** Whether a mounted screen animates every frame (video, CRT previews, thumbnail loads). */
+    /** Whether a mounted screen repaints its whole tree every frame (video, animated thumbnails, a caret). */
     public boolean continuous() {
         for (final Element<?> child: this.centerSlot.children()) {
             if (!child.visible()) continue;

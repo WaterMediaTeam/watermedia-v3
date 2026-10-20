@@ -140,6 +140,17 @@ public final class RenderSystem {
         if (current != null) current.cleanup();
     }
 
+    /** Returns whether the active engine's tree cache still holds the last cached pass. */
+    public static boolean cacheValid() {
+        final RenderEngine current = engine;
+        return current != null && current.cacheValid();
+    }
+
+    public static boolean beginCache(final float r, final float g, final float b, final float a) { return engine.beginCache(r, g, b, a); }
+    public static void raiseCache() { engine.raiseCache(); }
+    public static void endCache() { engine.endCache(); }
+    public static void dropCache() { engine.dropCache(); }
+    public static void drawCache(final boolean top) { engine.drawCache(top); }
     public static void configureFrameState() { engine.configureFrameState(); }
     public static void clear(final float r, final float g, final float b, final float a) { engine.clear(r, g, b, a); }
 

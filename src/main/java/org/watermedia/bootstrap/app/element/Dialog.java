@@ -200,6 +200,8 @@ public final class Dialog extends Group<Dialog> {
 
     @Override
     protected void onDraw(final Canvas canvas) {
+        // A MODAL COVERS THE SCREEN, SO IT STAYS OVER EVERY LIVE PAINTER MET BEFORE IT, EVEN WHEN THE TREE IS CACHED
+        canvas.raise();
         if (this.fadeStart == 0L) {
             super.onDraw(canvas);
             return;

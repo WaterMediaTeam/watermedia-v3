@@ -27,7 +27,7 @@ public final class AppContext implements Executor {
     // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX)
     public volatile float uiScale = 1f;
 
-    // CRT OVERLAY (SCANLINES AND NEON BANDS), TOGGLED BY THE C SHORTCUT AND THE SETTINGS ROW
+    // CRT OVERLAY (SCANLINES AND A MOVING NEON BAND), TOGGLED BY THE C SHORTCUT AND THE SETTINGS ROW
     public volatile boolean crt = true;
 
     // MOUSE, IN LOGICAL PX

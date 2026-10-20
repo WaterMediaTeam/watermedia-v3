@@ -186,11 +186,10 @@ public class WaterMediaApp {
 
     private static void renderLoadingFrame() {
         RenderSystem.beginFrame();
-        RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
         syncShell();
         // PASS LOGICAL DIMS: THE UI TREE LIVES IN LOGICAL PX AND SCALES TO PHYSICAL THROUGH THE ORTHO;
         // THE PHYSICAL VIEWPORT/SWAPCHAIN STAYS FULL-SIZE (OWNED BY THE BACKEND)
-        root.render(ctx.logicalWidth(), ctx.logicalHeight());
+        root.render(ctx.logicalWidth(), ctx.logicalHeight(), false);
         RenderSystem.present();
         glfwPollEvents();
         // INPUT RUNS DURING BOOT TOO, SO THE TITLEBAR AND THE EXIT DIALOG WORK WHILE LOADING
@@ -551,10 +550,10 @@ public class WaterMediaApp {
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
             // ENGINE HOT-SWAP RUNS AT THE TOP OF THE LOOP ON THE RENDER THREAD — NEVER MID-FRAME
             if (swapTarget != null) performEngineSwap();
-            // CONTINUOUS SCREENS (VIDEO/CRT) AND POINTER DRAGS PACE TO THE REFRESH RATE, THEN POLL INPUT AFTER THE
-            // PACE SLEEP SO A SLIDER SHOWS THE CURSOR AS OF RENDER TIME, NOT A FRAME EARLIER
+            // CONTINUOUS SCREENS (VIDEO), A VISIBLE MOVING CRT BAND AND POINTER DRAGS PACE TO THE REFRESH RATE, THEN
+            // POLL INPUT AFTER THE PACE SLEEP SO A SLIDER SHOWS THE CURSOR AS OF RENDER TIME, NOT A FRAME EARLIER
             final boolean continuous = root.continuous();
-            final boolean paced = continuous || root.dragging();
+            final boolean paced = continuous || (ctx.crt && root.live() && !iconified) || root.dragging();
             if (paced) {
                 frameLimiter.syncBeforeFrame();
                 glfwPollEvents();
@@ -568,15 +567,19 @@ public class WaterMediaApp {
             ctx.processExecutor();
             AppConfig.poll(ctx);
 
-            // ON-DEMAND FRAMES RENDER ONLY WHEN SOMETHING ASKED FOR ONE; A STILL DRAG-HOLD FALLS THROUGH
+            // ON-DEMAND FRAMES REPAINT THE TREE ONLY WHEN SOMETHING ASKED FOR ONE; A STILL DRAG-HOLD FALLS THROUGH
             // HERE TOO AND SKIPS THE REDUNDANT REPAINT UNTIL THE POINTER MOVES AGAIN
-            if (!continuous && !ctx.consumeRenderRequest()) continue;
+            final FramePlan plan = FramePlan.of(continuous, ctx.consumeRenderRequest(), ctx.crt, root.live(), !iconified,
+                    RenderSystem.cacheValid());
+            if (plan == FramePlan.IDLE) continue;
 
             RenderSystem.beginFrame();
-            RenderSystem.clear(0.04f, 0.06f, 0.12f, 1f);
-            syncShell();
-            // LOGICAL DIMS — THE TREE LIVES IN LOGICAL PX AND SCALES TO PHYSICAL THROUGH THE ORTHO
-            root.render(ctx.logicalWidth(), ctx.logicalHeight());
+            // LOGICAL DIMS — THE TREE LIVES IN LOGICAL PX AND SCALES TO PHYSICAL THROUGH THE ORTHO; A SWAPCHAIN THAT
+            // beginFrame() REBUILT TOOK THE LAYERS WITH IT, SO THAT COMPOSITE REPAINTS THE TREE INSTEAD
+            final boolean composite = plan == FramePlan.COMPOSITE && RenderSystem.cacheValid();
+            if (!composite) syncShell();
+            if (composite) root.composite(ctx.logicalWidth(), ctx.logicalHeight());
+            else root.render(ctx.logicalWidth(), ctx.logicalHeight(), plan != FramePlan.DIRECT);
             RenderSystem.present();
         }
 

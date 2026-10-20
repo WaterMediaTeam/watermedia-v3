@@ -46,7 +46,7 @@ public class AppConfig {
     public static float scale = 0f;
 
     @Spec.Field
-    @Comment("CRT overlay with scanlines and neon bands. Keyboard shortcut: C")
+    @Comment("CRT overlay with scanlines and a moving neon band. Keyboard shortcut: C")
     public static boolean crt = true;
 
     @Spec.Field

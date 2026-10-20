@@ -84,7 +84,13 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             layout(push_constant) uniform PC { mat4 proj; int useTexture; } pc;
             layout(location = 0) out vec4 fragColor;
             void main() {
-                fragColor = pc.useTexture != 0 ? texture(samp, vUV) * vCol : vCol;
+                // 2 SAMPLES A CACHED LAYER, WHOSE COLOR IS PREMULTIPLIED: DIVIDING IT BACK LETS THE NORMAL BLEND APPLY ALPHA ONCE
+                if (pc.useTexture == 2) {
+                    vec4 layer = texture(samp, vUV);
+                    fragColor = layer.a > 0.0 ? vec4(layer.rgb / layer.a, layer.a) : vec4(0.0);
+                } else {
+                    fragColor = pc.useTexture != 0 ? texture(samp, vUV) * vCol : vCol;
+                }
             }
             """;
 
@@ -166,6 +172,19 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private long[] framebuffers = new long[0];
     private long[] renderFinished = new long[0]; // PER SWAPCHAIN IMAGE (AVOIDS PRESENT-WAIT SEMAPHORE REUSE HAZARDS)
     private long[] imagesInFlight = new long[0];  // FENCE OF THE FRAME LAST RENDERING TO EACH IMAGE (0 = NONE)
+
+    // TREE CACHE LAYERS: SWAPCHAIN-SIZED IMAGES OF THE SURFACE FORMAT, SO THE UI PIPELINES DRAW INTO THEM UNCHANGED;
+    // BUILT ON FIRST USE AND DROPPED WITH THE SWAPCHAIN
+    private long layerPass;
+    private boolean layerSupport;
+    private final long[] layerImage = new long[2];
+    private final long[] layerMemory = new long[2];
+    private final long[] layerView = new long[2];
+    private final long[] layerFramebuffer = new long[2];
+    private int layerEpoch;
+    private int activeLayer = -1;
+    // THE BOUND VIEW IS A LAYER, SAMPLED AS PREMULTIPLIED COLOR
+    private boolean layerBound;
 
     // TEXTURE REGISTRY (APP TEXTURES KEYED BY INT ID)
     private final Map<Integer, TextureRecord> textures = new HashMap<>();
@@ -425,6 +444,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     break;
                 }
             }
+            // A LAYER IS DRAWN INTO AND SAMPLED BACK IN THE SURFACE FORMAT; WITHOUT BOTH FEATURES THE TREE DRAWS UNCACHED
+            final VkFormatProperties formatProps = VkFormatProperties.malloc(stack);
+            vkGetPhysicalDeviceFormatProperties(this.physicalDevice, this.surfaceFormat, formatProps);
+            final int layerFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            this.layerSupport = (formatProps.optimalTilingFeatures() & layerFeatures) == layerFeatures;
+            if (!this.layerSupport) WaterMedia.LOGGER.warn(IT, "Surface format {} cannot back the tree cache; the UI repaints whole while the CRT bands move", this.surfaceFormat);
 
             // COMMAND POOLS (RESETTABLE BUFFERS). FRAME POOL FOR PER-FRAME RECORDING, UPLOAD POOL FOR
             // ONE-TIME TEXTURE STAGING — DISTINCT SO A MID-FRAME createTexture() NEVER RACES THE FRAME POOL.
@@ -485,7 +510,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             this.sdfPipeLayout = sppl.get(0);
         }
 
-        this.createRenderPass();
+        this.renderPass = this.createRenderPass(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        this.layerPass = this.createRenderPass(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         this.createPipelines();
         this.createFrames();
 
@@ -513,14 +539,16 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.coreReady = true;
     }
 
-    private void createRenderPass() {
+    // THE WINDOW PASS ENDS IN PRESENT_SRC AND THE LAYER PASS IN SHADER_READ_ONLY; EVERYTHING ELSE MATCHES, SO THE TWO
+    // STAY COMPATIBLE AND THE PIPELINES BUILT ON THE WINDOW PASS ALSO DRAW INTO LAYERS
+    private long createRenderPass(final int finalLayout) {
         try (final MemoryStack stack = stackPush()) {
             final VkAttachmentDescription.Buffer color = VkAttachmentDescription.calloc(1, stack);
             color.get(0).format(this.surfaceFormat).samples(VK_SAMPLE_COUNT_1_BIT)
-                    .loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR) // clear() DRIVES THE FRAME'S RENDER-PASS BEGIN
+                    .loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR) // clear() AND beginLayer() DRIVE THE PASS BEGIN
                     .storeOp(VK_ATTACHMENT_STORE_OP_STORE)
                     .stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE).stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
-                    .initialLayout(VK_IMAGE_LAYOUT_UNDEFINED).finalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                    .initialLayout(VK_IMAGE_LAYOUT_UNDEFINED).finalLayout(finalLayout);
 
             final VkAttachmentReference.Buffer ref = VkAttachmentReference.calloc(1, stack);
             ref.get(0).attachment(0).layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -528,18 +556,22 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final VkSubpassDescription.Buffer subpass = VkSubpassDescription.calloc(1, stack);
             subpass.get(0).pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS).colorAttachmentCount(1).pColorAttachments(ref);
 
-            // EXTERNAL -> 0 DEPENDENCY AT COLOR_ATTACHMENT_OUTPUT PAIRS WITH THE imageAvailable WAIT SO THE
-            // LAYOUT TRANSITION HAPPENS ONLY ONCE THE IMAGE IS ACQUIRED.
-            final VkSubpassDependency.Buffer dep = VkSubpassDependency.calloc(1, stack);
+            // EXTERNAL -> 0 WAITS FOR THE imageAvailable SEMAPHORE STAGE AND FOR EARLIER WRITES AND SAMPLES OF A LAYER
+            // BEFORE ITS LAYOUT TRANSITION; 0 -> EXTERNAL MAKES A LAYER'S WRITES VISIBLE TO THE SAMPLING THAT FOLLOWS
+            final VkSubpassDependency.Buffer dep = VkSubpassDependency.calloc(2, stack);
             dep.get(0).srcSubpass(VK_SUBPASS_EXTERNAL).dstSubpass(0)
-                    .srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT).srcAccessMask(0)
+                    .srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                    .srcAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
                     .dstStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT).dstAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            dep.get(1).srcSubpass(0).dstSubpass(VK_SUBPASS_EXTERNAL)
+                    .srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT).srcAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
+                    .dstStageMask(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
 
             final VkRenderPassCreateInfo rpci = VkRenderPassCreateInfo.calloc(stack).sType$Default()
                     .pAttachments(color).pSubpasses(subpass).pDependencies(dep);
             final LongBuffer prp = stack.mallocLong(1);
             check(vkCreateRenderPass(this.device, rpci, null, prp), "create render pass");
-            this.renderPass = prp.get(0);
+            return prp.get(0);
         }
     }
 
@@ -592,11 +624,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final VkPipelineMultisampleStateCreateInfo ms = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
                     .rasterizationSamples(VK_SAMPLE_COUNT_1_BIT).sampleShadingEnable(false);
 
-            // BLEND: SRC_ALPHA / ONE_MINUS_SRC_ALPHA ON BOTH COLOR AND ALPHA (MATCHES glBlendFunc).
+            // BLEND: SRC_ALPHA / ONE_MINUS_SRC_ALPHA ON COLOR AND ONE / ONE_MINUS_SRC_ALPHA ON ALPHA (MATCHES
+            // glBlendFuncSeparate): ALPHA ACCUMULATES AS COVERAGE, SO A TRANSPARENT LAYER ENDS PREMULTIPLIED
             final VkPipelineColorBlendAttachmentState.Buffer blend = VkPipelineColorBlendAttachmentState.calloc(1, stack);
             blend.get(0).blendEnable(true)
                     .srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA).dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA).colorBlendOp(VK_BLEND_OP_ADD)
-                    .srcAlphaBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA).alphaBlendOp(VK_BLEND_OP_ADD)
+                    .srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA).alphaBlendOp(VK_BLEND_OP_ADD)
                     .colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
             final VkPipelineColorBlendStateCreateInfo cb = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default()
                     .logicOpEnable(false).pAttachments(blend);
@@ -722,6 +755,9 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     }
 
     private void destroySwapchainObjects() {
+        // THE LAYERS SHARE THE SWAPCHAIN SIZE, SO THEY GO WITH IT AND THE ENGINE REPAINTS ITS TREE CACHE
+        for (int i = 0; i < 2; i++) this.destroyLayer(i);
+        this.layerEpoch++;
         for (final long fb: this.framebuffers) if (fb != 0L) vkDestroyFramebuffer(this.device, fb, null);
         for (final long v: this.swapViews) if (v != 0L) vkDestroyImageView(this.device, v, null);
         for (final long s: this.renderFinished) if (s != 0L) vkDestroySemaphore(this.device, s, null);
@@ -826,6 +862,107 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.vpDirty = true;
     }
 
+    // ==========================================================================
+    // TREE CACHE LAYERS
+    // ==========================================================================
+    @Override
+    public boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
+        if (!this.frameValid || !this.layerSupport) return false;
+        if (this.layerImage[index] == 0L && !this.createLayer(index)) return false;
+        final VkCommandBuffer cmd = this.frames[this.currentFrame].cmd;
+        if (this.renderPassActive) vkCmdEndRenderPass(cmd);
+        try (final MemoryStack stack = stackPush()) {
+            final VkClearValue.Buffer clear = VkClearValue.calloc(1, stack);
+            clear.get(0).color(c -> c.float32(0, r).float32(1, g).float32(2, b).float32(3, a));
+            final VkRenderPassBeginInfo rp = VkRenderPassBeginInfo.calloc(stack).sType$Default()
+                    .renderPass(this.layerPass).framebuffer(this.layerFramebuffer[index]).pClearValues(clear);
+            rp.renderArea(area -> area.offset(o -> o.x(0).y(0)).extent(e -> e.width(this.extentW).height(this.extentH)));
+            vkCmdBeginRenderPass(cmd, rp, VK_SUBPASS_CONTENTS_INLINE);
+        }
+        this.renderPassActive = true;
+        this.activeLayer = index;
+        this.vpDirty = true;
+        this.scDirty = true;
+        this.lwDirty = true;
+        return true;
+    }
+
+    @Override
+    public void endLayer() {
+        if (this.activeLayer < 0) return;
+        if (this.renderPassActive) vkCmdEndRenderPass(this.frames[this.currentFrame].cmd);
+        this.renderPassActive = false;
+        this.activeLayer = -1;
+        this.vpDirty = true;
+        this.scDirty = true;
+        this.lwDirty = true;
+    }
+
+    @Override
+    public boolean bindLayer(final int index) {
+        if (this.layerView[index] == 0L) return false;
+        this.currentView = this.layerView[index];
+        this.layerBound = true;
+        return true;
+    }
+
+    @Override
+    public int layerEpoch() {
+        return this.layerEpoch;
+    }
+
+    // A DEVICE-LOCAL IMAGE THE LAYER PASS RENDERS INTO AND THE WINDOW PASS SAMPLES; A FAILURE DISABLES THE CACHE
+    private boolean createLayer(final int index) {
+        try (final MemoryStack stack = stackPush()) {
+            final VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
+                    .imageType(VK_IMAGE_TYPE_2D).format(this.surfaceFormat).mipLevels(1).arrayLayers(1)
+                    .samples(VK_SAMPLE_COUNT_1_BIT).tiling(VK_IMAGE_TILING_OPTIMAL)
+                    .usage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)
+                    .sharingMode(VK_SHARING_MODE_EXCLUSIVE).initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+            ici.extent().width(this.extentW).height(this.extentH).depth(1);
+            final LongBuffer pImg = stack.mallocLong(1);
+            check(vkCreateImage(this.device, ici, null, pImg), "create layer image");
+            this.layerImage[index] = pImg.get(0);
+
+            final VkMemoryRequirements req = VkMemoryRequirements.malloc(stack);
+            vkGetImageMemoryRequirements(this.device, this.layerImage[index], req);
+            final int type = this.memType(req.memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (type < 0) throw new IllegalStateException("VulkanRenderBackend: no device-local memory for a layer");
+            final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack).sType$Default()
+                    .allocationSize(req.size()).memoryTypeIndex(type);
+            final LongBuffer pMem = stack.mallocLong(1);
+            check(vkAllocateMemory(this.device, mai, null, pMem), "alloc layer memory");
+            this.layerMemory[index] = pMem.get(0);
+            check(vkBindImageMemory(this.device, this.layerImage[index], this.layerMemory[index], 0), "bind layer memory");
+            this.layerView[index] = this.createView(this.layerImage[index], this.surfaceFormat);
+
+            final VkFramebufferCreateInfo fbci = VkFramebufferCreateInfo.calloc(stack).sType$Default()
+                    .renderPass(this.layerPass).pAttachments(stack.longs(this.layerView[index]))
+                    .width(this.extentW).height(this.extentH).layers(1);
+            final LongBuffer pFb = stack.mallocLong(1);
+            check(vkCreateFramebuffer(this.device, fbci, null, pFb), "create layer framebuffer");
+            this.layerFramebuffer[index] = pFb.get(0);
+            return true;
+        } catch (final RuntimeException e) {
+            this.destroyLayer(index);
+            this.layerSupport = false;
+            WaterMedia.LOGGER.warn(IT, "Cannot build a tree cache layer; the UI repaints whole while the CRT bands move", e);
+            return false;
+        }
+    }
+
+    // NULL-SAFE: ALSO UNDOES A HALF-BUILT LAYER
+    private void destroyLayer(final int index) {
+        if (this.layerFramebuffer[index] != 0L) vkDestroyFramebuffer(this.device, this.layerFramebuffer[index], null);
+        if (this.layerView[index] != 0L) vkDestroyImageView(this.device, this.layerView[index], null);
+        if (this.layerImage[index] != 0L) vkDestroyImage(this.device, this.layerImage[index], null);
+        if (this.layerMemory[index] != 0L) vkFreeMemory(this.device, this.layerMemory[index], null);
+        this.layerFramebuffer[index] = 0L;
+        this.layerView[index] = 0L;
+        this.layerImage[index] = 0L;
+        this.layerMemory[index] = 0L;
+    }
+
     @Override
     public void useProjection(final Matrix4f projection) {
         projection.get(this.proj);
@@ -835,12 +972,14 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     public void bindTexture(final int textureId) {
         final TextureRecord rec = this.textures.get(textureId);
         this.currentView = rec != null ? rec.view() : 0L;
+        this.layerBound = false;
     }
 
     /** Samples an engine-owned {@code VkImageView} already in {@code SHADER_READ_ONLY_OPTIMAL}, never transitioning or destroying it. */
     @Override
     public void bindMediaTexture(final long handle) {
         this.currentView = handle;
+        this.layerBound = false;
     }
 
     @Override
@@ -949,7 +1088,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
             final ByteBuffer push = stack.malloc(PUSH_BYTES);
             for (int i = 0; i < 16; i++) push.putFloat(i * 4, this.proj[i]);
-            push.putInt(64, useTex ? 1 : 0);
+            push.putInt(64, !useTex ? 0 : this.layerBound ? 2 : 1);
             vkCmdPushConstants(cmd, this.pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, push);
 
             vkCmdDraw(cmd, drawVerts, 1, firstVertex, 0);
@@ -1053,6 +1192,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public void present() {
         if (!this.frameValid) return;
+        this.endLayer();
         final Frame f = this.frames[this.currentFrame];
         if (!this.renderPassActive) this.beginRenderPass(); // ENSURE THE IMAGE REACHES PRESENT_SRC EVEN WITH NO DRAWS
         vkCmdEndRenderPass(f.cmd);
@@ -1460,6 +1600,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             if (this.sdfPipeLayout != 0L) vkDestroyPipelineLayout(this.device, this.sdfPipeLayout, null);
             if (this.descLayout != 0L) vkDestroyDescriptorSetLayout(this.device, this.descLayout, null);
             if (this.renderPass != 0L) vkDestroyRenderPass(this.device, this.renderPass, null);
+            if (this.layerPass != 0L) vkDestroyRenderPass(this.device, this.layerPass, null);
             if (this.sampler != 0L) vkDestroySampler(this.device, this.sampler, null);
             if (this.uploadFence != 0L) vkDestroyFence(this.device, this.uploadFence, null);
             if (this.uploadPool != 0L) vkDestroyCommandPool(this.device, this.uploadPool, null); // FREES uploadCmd
