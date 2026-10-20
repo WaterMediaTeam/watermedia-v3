@@ -7,14 +7,17 @@ import java.awt.Color;
 import java.util.function.Consumer;
 
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_BACKSPACE;
+import static org.lwjgl.glfw.GLFW.GLFW_KEY_DELETE;
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER;
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE;
 import static org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER;
+import static org.lwjgl.glfw.GLFW.GLFW_PRESS;
 import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 
 /**
  * An inline numeric stepper laid out as {@code [-] value [+]}; the side boxes step the value on press and a click on the
- * value edits it in place. ENTER or a click elsewhere commits through the clamp and {@code onChange}; ESC cancels.
+ * value edits it in place. ENTER or a click elsewhere commits through the clamp and {@code onChange}; ESC cancels, and
+ * BACKSPACE or DELETE erase the last typed character.
  */
 public final class Spinner extends Element<Spinner> {
 
@@ -33,6 +36,8 @@ public final class Spinner extends Element<Spinner> {
     private String editText = "";
     // 0 = NONE, 1 = MINUS HELD, 2 = PLUS HELD — DRIVES THE AMBER PRESS HIGHLIGHT
     private int pressZone;
+    // KEY WHOSE PRESS THE EDIT HANDLED, UNTIL ITS RELEASE (-1 = NONE)
+    private int heldKey = -1;
 
     public Spinner() {
         this.height = Theme.CONTROL;
@@ -189,11 +194,19 @@ public final class Spinner extends Element<Spinner> {
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
-        if (!this.editing || action == GLFW_RELEASE) return false;
+        // THE RELEASE OF A KEY THE EDIT TOOK STAYS HERE, SO A COMMIT OR CANCEL NEVER ALSO FIRES A SCREEN SHORTCUT
+        if (action == GLFW_RELEASE) {
+            if (key != this.heldKey) return false;
+            this.heldKey = -1;
+            return true;
+        }
+        // A NEW PRESS OF THE HELD KEY MEANS ITS RELEASE WAS LOST (FOCUS LEFT THE WINDOW)
+        if (action == GLFW_PRESS && key == this.heldKey) this.heldKey = -1;
+        if (!this.editing) return false;
         switch (key) {
             case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> this.commit();
             case GLFW_KEY_ESCAPE -> this.cancel();
-            case GLFW_KEY_BACKSPACE -> {
+            case GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE -> {
                 if (!this.editText.isEmpty()) {
                     this.editText = this.editText.substring(0, this.editText.length() - 1);
                     this.invalidate();
@@ -203,6 +216,7 @@ public final class Spinner extends Element<Spinner> {
                 return false;
             }
         }
+        this.heldKey = key;
         return true;
     }
 

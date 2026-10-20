@@ -294,7 +294,7 @@ public final class SettingsScreen extends Screen {
 
     @Override
     public List<Keybind> keybinds() {
-        return this.editField != null ? KEYS_EDIT : KEYS_BROWSE;
+        return this.editField != null || this.textInputActive() ? KEYS_EDIT : KEYS_BROWSE;
     }
 
     // ==========================================================================
@@ -332,6 +332,8 @@ public final class SettingsScreen extends Screen {
             }
             return true;
         }
+        // A SPINNER'S TYPED EDIT KEEPS THE KEYBOARD TOO; IT HANDLES ITS OWN ENTER, ESC AND ERASE KEYS
+        if (this.textInputActive()) return true;
         if (action != GLFW_RELEASE) return false;
         switch (key) {
             case GLFW_KEY_UP -> {
