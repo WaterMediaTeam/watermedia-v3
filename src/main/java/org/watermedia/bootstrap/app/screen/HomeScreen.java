@@ -6,7 +6,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
-import org.watermedia.bootstrap.app.CleanupState;
+import org.watermedia.bootstrap.app.CacheCleaner;
 import org.watermedia.bootstrap.app.LogUploader;
 import org.watermedia.bootstrap.app.MediaCatalog;
 import org.watermedia.bootstrap.app.element.Badge;
@@ -43,7 +43,7 @@ import static org.lwjgl.glfw.GLFW.*;
 
 /**
  * Home screen: menu tiles grouped by section and the upload-logs and cleanup {@link Dialog}s, bound every frame
- * to {@code ctx.upload} and {@code ctx.cleanup}. Flow logic stays out of this screen; it only fires actions.
+ * to {@code ctx.upload} and {@code ctx.cleanup}, which own their flow; this screen only fires actions.
  */
 public class HomeScreen extends Screen {
     private static final Marker IT = MarkerManager.getMarker(HomeScreen.class.getSimpleName());
@@ -535,7 +535,7 @@ public class HomeScreen extends Screen {
         ThreadTool.thread("WaterMedia-CacheSize", () -> {
             long bytes = 0L;
             try {
-                bytes = CleanupState.scan()[1];
+                bytes = CacheCleaner.scan()[1];
             } catch (final IOException | RuntimeException e) {
                 // THE WALK REPEATS ON EVERY HOME ENTRY AND THE CLEANUP DIALOG REPORTS THE ERROR AGAIN WHEN OPENED
                 if (!this.cacheWarned) WaterMedia.LOGGER.warn(IT, "Cannot measure the media cache; showing it as empty", e);
@@ -686,7 +686,7 @@ public class HomeScreen extends Screen {
     }
 
     // ==========================================================================
-    // CLEANUP DIALOG BEHAVIOR — STATE LIVES IN ctx.cleanup, FLOW IN navigateAction
+    // CLEANUP DIALOG BEHAVIOR — STATE AND FLOW LIVE IN ctx.cleanup, REACHED THROUGH navigateAction
     // ==========================================================================
 
     private void dismissCleanup() {

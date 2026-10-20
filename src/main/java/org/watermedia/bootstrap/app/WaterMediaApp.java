@@ -15,7 +15,6 @@ import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
-import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.AppBootstrap;
 import org.watermedia.bootstrap.app.screen.*;
 import org.watermedia.bootstrap.app.ui.AppTheme;
@@ -25,14 +24,11 @@ import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Dialog;
 import org.watermedia.bootstrap.app.element.Parent;
 import org.watermedia.bootstrap.app.element.Text;
-import org.watermedia.tools.IOTool;
 import org.watermedia.tools.ThreadTool;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -44,8 +40,8 @@ import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * Entry point of the standalone app: window, render loop, engine hot swap, screens and the log upload and cache
- * cleanup actions.
+ * Entry point of the standalone app: window, render loop, engine hot swap, screens and the home actions, which hand
+ * the log upload and cache cleanup to their dialogs.
  */
 public class WaterMediaApp {
     private static final Marker IT = MarkerManager.getMarker(WaterMediaApp.class.getSimpleName());
@@ -447,29 +443,7 @@ public class WaterMediaApp {
 
             case UPLOAD_LOGS -> ctx.upload.step();
 
-            case CLEANUP -> {
-                if (!ctx.cleanup.visible) {
-                    // SCANNED ON A WORKER: CleanupState.scan() WALKS THE WHOLE MEDIA CACHE, POSSIBLY THOUSANDS OF FILES
-                    ctx.cleanup.reset();
-                    ctx.cleanup.visible = true;
-                    ctx.cleanup.working = true;
-                    ThreadTool.thread("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
-                    return;
-                }
-                if (ctx.cleanup.working) {
-                    ctx.cleanup.visible = true;
-                    return;
-                }
-                if (ctx.cleanup.stage <= 1) {
-                    if (ctx.cleanup.fileCount <= 0) return;
-                    ctx.cleanup.working = true;
-                    ThreadTool.thread("WaterMediaApp-CacheCleanup", WaterMediaApp::cleanupCache);
-                } else {
-                    // DIALOG ALREADY HIDDEN — REFRESH THE COUNTS FOR THE NEXT OPEN OFF THE RENDER THREAD
-                    ctx.cleanup.visible = false;
-                    ThreadTool.thread("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
-                }
-            }
+            case CLEANUP -> ctx.cleanup.step();
         }
     }
 
@@ -693,56 +667,6 @@ public class WaterMediaApp {
     private static void handleCharInput(final long window, final int codepoint) {
         ctx.requestRender();
         root.character(codepoint);
-    }
-
-    // BACKGROUND OPERATIONS
-    // RUNS ON A WORKER THREAD (SEE navigateAction) — THE FULL-CACHE WALK MUST NOT BLOCK THE RENDER LOOP
-    private static void scanCleanupCache() {
-        try {
-            ctx.cleanup.stage = 1;
-            ctx.cleanup.done = false;
-            ctx.cleanup.error = false;
-            ctx.cleanup.progress = 0;
-
-            final long[] stats = CleanupState.scan();
-            ctx.cleanup.fileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
-            ctx.cleanup.sizeLabel = MathUtil.displayBytes(stats[1]);
-            ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
-        } catch (final IOException e) {
-            ctx.cleanup.error = true;
-            ctx.cleanup.state = "ERROR";
-        } finally {
-            ctx.cleanup.working = false;
-            ctx.requestRender();
-        }
-    }
-
-    private static void cleanupCache() {
-        try {
-            ctx.cleanup.stage = 2;
-            ctx.cleanup.state = "CLEANING";
-            ctx.cleanup.error = false;
-            ctx.cleanup.done = false;
-            ctx.cleanup.progress = 12;
-            ctx.requestRender();
-
-            final Path cache = CleanupState.dir();
-            if (Files.exists(cache)) {
-                IOTool.deleteTree(cache);
-            }
-            Files.createDirectories(cache);
-
-            ctx.cleanup.progress = 100;
-            ctx.cleanup.state = "CLEANED";
-            ctx.cleanup.done = true;
-        } catch (final Exception e) {
-            ctx.cleanup.progress = 0;
-            ctx.cleanup.state = "ERROR";
-            ctx.cleanup.error = true;
-        } finally {
-            ctx.cleanup.working = false;
-            ctx.requestRender();
-        }
     }
 
     // CLEANUP

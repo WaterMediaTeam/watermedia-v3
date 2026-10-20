@@ -59,8 +59,8 @@ public final class AppContext implements Executor {
     // UPLOAD LOGS DIALOG
     public final LogUploader upload = new LogUploader(this::requestRender);
 
-    // CLEANUP CACHE DIALOG STATE
-    public final CleanupState cleanup = new CleanupState();
+    // CLEANUP CACHE DIALOG
+    public final CacheCleaner cleanup = new CacheCleaner(this::requestRender);
 
     // GLOBAL ERROR DIALOG
     final ErrorState error = new ErrorState();
