@@ -21,7 +21,8 @@ public final class MediaSession {
     public MRL.Source selectedSource;
     public MediaQuality[] availableQualities;
     public MediaQuality selectedQuality = MediaQuality.HIGHER;
-    public int sourceSelectorIndex;
+    // INDEX OF selectedSource IN availableSources
+    public int selectedSourceIndex;
     public MediaPlayer player;
 
     MediaSession(final AppContext ctx) {
@@ -32,7 +33,7 @@ public final class MediaSession {
     public boolean selectSources() {
         this.availableSources = this.selectedMRL.sources().toArray(MRL.Source[]::new);
         if (this.availableSources.length == 0) return false;
-        this.sourceSelectorIndex = 0;
+        this.selectedSourceIndex = 0;
         this.selectedSource = this.availableSources[0];
         return true;
     }

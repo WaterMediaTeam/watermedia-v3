@@ -34,7 +34,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 public final class LogUploader {
     public static final String REPO = "SrRapero720/watermedia"; // MIRRORS github IN gradle.properties
-    public static final boolean IN_MODS = new File("").getAbsoluteFile().getName().equalsIgnoreCase("mods");
+    // THE APP RUNS FROM A MINECRAFT mods FOLDER, THE ONLY PLACE WITH LOGS AND CRASH REPORTS TO UPLOAD
+    public static final boolean WORKDIR_IS_MODS = new File("").getAbsoluteFile().getName().equalsIgnoreCase("mods");
     // MODS BUILT ON WATERMEDIA, OFFERED AS ISSUE TARGETS IN THE THIRD UPLOAD STAGE WHEN A JAR NAME IN THE
     // MODS FOLDER CONTAINS THEIR id
     public static final List<SuspectMod> SUSPECT_MODS = List.of(
@@ -108,7 +109,7 @@ public final class LogUploader {
     // RUNS THE DIALOG'S NEXT ACTION ON A WORKER: OPEN AND SCAN, UPLOAD THE LOGS, BUILD THE REPORT OR OPEN THE PICKED
     // REPOSITORY; A STAGE STILL WORKING JUST KEEPS THE DIALOG OPEN
     void step() {
-        if (!IN_MODS) {
+        if (!WORKDIR_IS_MODS) {
             this.visible = false;
             return;
         }
@@ -169,9 +170,9 @@ public final class LogUploader {
 
     private void scanSuspectMods() {
         this.suspectModIds.clear();
-        if (!IN_MODS) return;
-        // IN_MODS MEANS THE WORKING DIR IS THE MODS FOLDER — A CANDIDATE COUNTS ONLY IF A JAR WHOSE
-        // FILENAME CONTAINS ITS ID IS PRESENT (id "fancymenu" MATCHES "FancyMenu-Forge-1.20.1-x.y.z.jar").
+        if (!WORKDIR_IS_MODS) return;
+        // A CANDIDATE COUNTS ONLY IF A JAR IN THE WORKING DIR WHOSE FILENAME CONTAINS ITS ID IS PRESENT
+        // (id "fancymenu" MATCHES "FancyMenu-Forge-1.20.1-x.y.z.jar").
         final Path modsDir = Path.of("").toAbsolutePath();
         try (final var stream = Files.list(modsDir)) {
             final List<String> jars = stream
@@ -434,7 +435,7 @@ public final class LogUploader {
 
     private static Path uploadBaseDir() {
         final Path cwd = Path.of("").toAbsolutePath();
-        return IN_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
+        return WORKDIR_IS_MODS && cwd.getParent() != null ? cwd.getParent() : cwd;
     }
 
     private static boolean exceedsLineLimit(final Path path) throws IOException {

@@ -100,7 +100,8 @@ public final class PlayerScreen extends Screen {
     private String resWidthText = "";
     private String resHeightText = "";
     private int lodSelectedIndex;
-    private int sourceSelectedIndex;
+    // SOURCE WHOSE QUALITIES THE QUALITY DIALOG LISTS; HOVER MOVES IT WITHOUT SWITCHING PLAYBACK
+    private int sourcePreviewIndex;
     private int qualitySelectedIndex;
     // SCROLLS THE SELECTED SOURCE INTO VIEW ONCE THE LIST HAS A VIEWPORT, THEN NEVER AGAIN SO WHEEL
     // AND SCROLLBAR SCROLLING ARE NOT STOLEN BACK
@@ -217,7 +218,7 @@ public final class PlayerScreen extends Screen {
 
         this.ctx.media.player = MediaAPI.player(
                 this.ctx.media.selectedMRL,
-                this.ctx.media.sourceSelectorIndex,
+                this.ctx.media.selectedSourceIndex,
                 // THE ACTIVE RENDER BACKEND PICKS THE ENGINE (GLEngine OR VKEngine)
                 mediaEngineSupplier(Thread.currentThread(), this.ctx),
                 MediaAPI::alEngine
@@ -252,10 +253,10 @@ public final class PlayerScreen extends Screen {
 
     private void navigateSource(final int delta) {
         if (this.ctx.media.availableSources == null || this.ctx.media.availableSources.length <= 1) return;
-        final int newIndex = (this.ctx.media.sourceSelectorIndex + delta + this.ctx.media.availableSources.length) % this.ctx.media.availableSources.length;
-        if (newIndex != this.ctx.media.sourceSelectorIndex) {
-            this.ctx.media.sourceSelectorIndex = newIndex;
-            this.ctx.media.selectedSource = this.ctx.media.availableSources[this.ctx.media.sourceSelectorIndex];
+        final int newIndex = (this.ctx.media.selectedSourceIndex + delta + this.ctx.media.availableSources.length) % this.ctx.media.availableSources.length;
+        if (newIndex != this.ctx.media.selectedSourceIndex) {
+            this.ctx.media.selectedSourceIndex = newIndex;
+            this.ctx.media.selectedSource = this.ctx.media.availableSources[this.ctx.media.selectedSourceIndex];
             this.startPlayer();
         }
     }
@@ -451,8 +452,8 @@ public final class PlayerScreen extends Screen {
 
     private void openQualityDialog() {
         if (this.ctx.media.availableSources == null || this.ctx.media.availableSources.length == 0) return;
-        this.sourceSelectedIndex = MathUtil.clamp(this.ctx.media.sourceSelectorIndex, 0, this.ctx.media.availableSources.length - 1);
-        this.loadQualitiesForSource(this.sourceSelectedIndex);
+        this.sourcePreviewIndex = MathUtil.clamp(this.ctx.media.selectedSourceIndex, 0, this.ctx.media.availableSources.length - 1);
+        this.loadQualitiesForSource(this.sourcePreviewIndex);
         if (this.ctx.media.availableQualities == null || this.ctx.media.availableQualities.length == 0) return;
 
         this.srcList = new ListView<>();
@@ -462,7 +463,7 @@ public final class PlayerScreen extends Screen {
                     final ListRow row = this.sourceRow(src, i);
                     // HOVER LISTS THE SOURCE'S QUALITIES WITHOUT SWITCHING PLAYBACK
                     row.onHover(r -> {
-                        if (this.sourceSelectedIndex != i) {
+                        if (this.sourcePreviewIndex != i) {
                             this.srcList.selection(i);
                             this.selectSource(i, false);
                             this.ctx.sound.play();
@@ -476,7 +477,7 @@ public final class PlayerScreen extends Screen {
                     this.ctx.sound.play();
                 })
                 .items(Arrays.asList(this.ctx.media.availableSources))
-                .selection(this.sourceSelectedIndex)
+                .selection(this.sourcePreviewIndex)
                 .width(MAX_PARENT);
 
         this.qualList = new ListView<>();
@@ -622,14 +623,14 @@ public final class PlayerScreen extends Screen {
 
     private void selectSource(final int sourceIndex, final boolean apply) {
         if (this.ctx.media.availableSources == null || sourceIndex < 0 || sourceIndex >= this.ctx.media.availableSources.length) return;
-        this.sourceSelectedIndex = sourceIndex;
+        this.sourcePreviewIndex = sourceIndex;
         this.loadQualitiesForSource(sourceIndex);
         this.refreshQualityList();
-        if (!apply || sourceIndex == this.ctx.media.sourceSelectorIndex) return;
+        if (!apply || sourceIndex == this.ctx.media.selectedSourceIndex) return;
         if (this.ctx.media.availableQualities != null && this.ctx.media.availableQualities.length > 0) {
             this.ctx.media.selectedQuality = this.ctx.media.availableQualities[this.qualitySelectedIndex];
         }
-        this.ctx.media.sourceSelectorIndex = sourceIndex;
+        this.ctx.media.selectedSourceIndex = sourceIndex;
         this.ctx.media.selectedSource = this.ctx.media.availableSources[sourceIndex];
         this.startPlayer();
     }
@@ -644,9 +645,9 @@ public final class PlayerScreen extends Screen {
         if (this.ctx.media.availableQualities == null || index < 0 || index >= this.ctx.media.availableQualities.length) return;
         this.qualitySelectedIndex = index;
         this.ctx.media.selectedQuality = this.ctx.media.availableQualities[index];
-        if (this.ctx.media.availableSources != null && this.sourceSelectedIndex != this.ctx.media.sourceSelectorIndex) {
-            this.ctx.media.sourceSelectorIndex = this.sourceSelectedIndex;
-            this.ctx.media.selectedSource = this.ctx.media.availableSources[this.sourceSelectedIndex];
+        if (this.ctx.media.availableSources != null && this.sourcePreviewIndex != this.ctx.media.selectedSourceIndex) {
+            this.ctx.media.selectedSourceIndex = this.sourcePreviewIndex;
+            this.ctx.media.selectedSource = this.ctx.media.availableSources[this.sourcePreviewIndex];
             this.startPlayer();
         } else if (this.ctx.media.player != null) {
             this.ctx.media.player.quality(this.ctx.media.selectedQuality);
@@ -841,7 +842,7 @@ public final class PlayerScreen extends Screen {
                 .outline(AppTheme.STROKE_BRIGHT, AppTheme.NEON_LIGHT, 1f, 2f)
                 .selectedGlow(AppTheme.NEON, 0.20f, false)
                 .binder(row -> {
-                    final boolean active = index == this.ctx.media.sourceSelectorIndex;
+                    final boolean active = index == this.ctx.media.selectedSourceIndex;
                     row.icon(active ? "play" : "folder", 14, 12, 15, active ? AppTheme.GREEN : AppTheme.NEON_LIGHT, null);
                 })
                 .title(() -> this.sourceTitle(source, index).toUpperCase(Locale.ROOT))
@@ -943,7 +944,7 @@ public final class PlayerScreen extends Screen {
             if (ctx.media.selectedMRL != null) {
                 y = this.wrappedMetric(canvas, this.mrlWrap, "MRL", ctx.media.selectedMRL.uri().toString(), x, y);
             }
-            y = this.metric(canvas, "Source", (ctx.media.sourceSelectorIndex + 1) + "/" +
+            y = this.metric(canvas, "Source", (ctx.media.selectedSourceIndex + 1) + "/" +
                     (ctx.media.availableSources != null ? ctx.media.availableSources.length : 1), x, y, AppTheme.TEXT_SOFT);
             y = this.metric(canvas, "FPS", this.fpsStr, x, y, AppTheme.GREEN);
             y = this.metric(canvas, "Status", player.status().name(), x, y, AppTheme.TEXT_SOFT);
@@ -1392,7 +1393,7 @@ public final class PlayerScreen extends Screen {
                 this.typeTagXA = tagX;
                 tagX += PlayerScreen.this.typeTagWidth(this.tagType) + 8;
             }
-            this.srcLabel = (ctx.media.sourceSelectorIndex + 1) + "/" + sources;
+            this.srcLabel = (ctx.media.selectedSourceIndex + 1) + "/" + sources;
             this.srcTagW = text.width(this.srcLabel, AppTheme.TEXT_BODY) + 46;
             final boolean showSrc = tagX + this.srcTagW < x0 + w - 20;
             this.srcIcon.visible(showSrc);

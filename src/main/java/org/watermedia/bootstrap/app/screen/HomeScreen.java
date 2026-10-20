@@ -143,7 +143,7 @@ public class HomeScreen extends Screen {
         this.entertainment.clear();
 
         this.actions.add(new MenuEntry("Play media", "ENTER", Action.OPEN_MULTIMEDIA, -1));
-        this.actions.add(new MenuEntry("Upload Logs", LogUploader.IN_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
+        this.actions.add(new MenuEntry("Upload Logs", LogUploader.WORKDIR_IS_MODS ? "U" : "LOCKED", Action.UPLOAD_LOGS, -1));
         this.actions.add(new MenuEntry("Cleanup cache", this.cacheLabel, Action.CLEANUP, -1));
         if (WaterMedia.LOGGER.isDebugEnabled()) this.actions.add(new MenuEntry("Settings", "S", Action.SETTINGS, -1));
         this.actions.add(new MenuEntry("Exit", "ESC", Action.EXIT, -1));
@@ -457,7 +457,7 @@ public class HomeScreen extends Screen {
     }
 
     private boolean actionEnabled(final MenuEntry entry) {
-        if (entry.action() == Action.UPLOAD_LOGS) return LogUploader.IN_MODS;
+        if (entry.action() == Action.UPLOAD_LOGS) return LogUploader.WORKDIR_IS_MODS;
         if (entry.action() == Action.SETTINGS) return WaterMedia.LOGGER.isDebugEnabled();
         return true;
     }
@@ -1049,7 +1049,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            final boolean blocked = !LogUploader.IN_MODS;
+            final boolean blocked = !LogUploader.WORKDIR_IS_MODS;
             final TextRenderer text = HomeScreen.this.ctx.text;
             final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
             final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
@@ -1072,7 +1072,7 @@ public class HomeScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final boolean blocked = !LogUploader.IN_MODS;
+            final boolean blocked = !LogUploader.WORKDIR_IS_MODS;
             final String title = blocked ? "NO MC CONTEXT" : "SENDS LOGS TO MCLO.GS";
             final String line1 = blocked ? "Upload logs is blocked outside" : "Reads logs/latest.log and crash reports,";
             final String line2 = blocked ? "the Minecraft mods folder." : "then uploads.";
