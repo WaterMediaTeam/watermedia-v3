@@ -1290,7 +1290,7 @@ public class WaterMediaApp {
 
     private static String uploadToMclogs(final String content, final AppContext.UploadFileEntry entry) {
         // NetRequest BOUNDS THE REQUEST WITH THE NETWORK TIMEOUTS AND ITS REPLY WITH THE TEXT BUDGET, AND KEEPS EVERY HOP ON HTTPS
-        try (final NetRequest req = NetRequest.create(URI.create("https://api.mclo.gs/1/log")).method("POST").httpsOnly()
+        try (final NetRequest req = new NetRequest(URI.create("https://api.mclo.gs/1/log")).method("POST").httpsOnly()
                 .contentType(NetRequest.MIMETYPE_FORM).body("content=" + URLEncoder.encode(content, StandardCharsets.UTF_8)).send()) {
             if (req.statusCode() == 200) {
                 final JsonObject json = req.json(JsonObject.class);
