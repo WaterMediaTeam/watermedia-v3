@@ -5,12 +5,7 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
 import java.awt.Color;
 import java.util.function.Consumer;
 
-/**
- * A box with an optional trailing label that toggles its checked state on click. The box outlines in the
- * accent color (dimmed while disabled); when checked it gains a translucent accent fill and a tick drawn
- * as two strokes. A click flips the state, repaints, and notifies the {@code onChange} listener with the
- * new value.
- */
+/** A box with an optional trailing label whose click toggles the checked state and reports it through {@code onChange}. */
 public final class CheckBox extends Element<CheckBox> {
 
     private static final int BOX = 18;
@@ -73,7 +68,7 @@ public final class CheckBox extends Element<CheckBox> {
         }
         canvas.stroke(boxX, boxY, BOX, BOX, edge, 1.4f);
         if (this.checked) {
-            // TICK — TWO STROKES FROM THE LOWER-LEFT DOWN TO THE ELBOW THEN UP TO THE UPPER-RIGHT
+            // TICK: FROM THE LOWER-LEFT DOWN TO THE ELBOW, THEN UP TO THE UPPER-RIGHT
             final Color mark = this.enabled ? AppTheme.TEXT : AppTheme.TEXT_FAINT;
             canvas.line(boxX + 4.5f, boxY + 9f, boxX + 7.5f, boxY + 13f, mark, 2f);
             canvas.line(boxX + 7.5f, boxY + 13f, boxX + 13.5f, boxY + 5f, mark, 2f);

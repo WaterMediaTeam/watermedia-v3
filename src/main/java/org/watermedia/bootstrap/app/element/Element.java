@@ -8,18 +8,8 @@ import java.awt.Color;
 import java.util.function.Consumer;
 
 /**
- * Base of the retained view tree. A view carries its own layout parameters (size, margin, padding,
- * gravity, weight), decorator style (background, border, glow, shadow, corner radius) and interaction
- * state, and moves through a three-phase pipeline each time the tree is dirty:
- * {@link #measure} resolves the view's size from its params and content, {@link #layout} places it, and
- * {@link #draw} paints it. Screens compose trees instead of issuing raw draw calls, so hit-testing,
- * focus, scrolling and batching are handled once here rather than re-implemented per screen.
- *
- * <p>The class is self-typed ({@code T}) so the fluent setters return the concrete view type and trees
- * can be built without casts. Sizes use {@link #MAX_PARENT} / {@link #WRAP_CONTENT} or an exact pixel
- * value, mirroring the Android layout model.
- *
- * @param <T> the concrete view type, for fluent chaining
+ * Base view of the retained tree; every rendered frame it runs {@link #update}, {@link #measure}, {@link #layout} and
+ * {@link #draw}. Self-typed so the fluent setters return the concrete view.
  */
 public abstract class Element<T extends Element<T>> {
 
@@ -78,18 +68,12 @@ public abstract class Element<T extends Element<T>> {
     // MEASURE / LAYOUT / DRAW PIPELINE
     // ==========================================================================
 
-    /**
-     * Pre-measure binding pass: refreshes this view from live state before the tree measures and draws.
-     * Containers propagate it to every child (visible or not); leaves get their {@link #onUpdate} hook.
-     */
+    /** Refreshes this view from live state before measure; containers forward it to every child, visible or not. */
     public void update() {
         this.onUpdate();
     }
 
-    /**
-     * Binding hook called by {@link #update} once per frame before measure. Subclasses read live state
-     * (labels, progress, visibility) from their context here. Default: nothing.
-     */
+    /** Pulls live state such as labels, progress or visibility into this view before measure. */
     protected void onUpdate() {
     }
 
@@ -110,11 +94,7 @@ public abstract class Element<T extends Element<T>> {
         };
     }
 
-    /**
-     * Computes the intrinsic content size into {@link #contentWidth}/{@link #contentHeight} given the
-     * space available inside this view's padding. Leaves report their content; containers measure their
-     * children. The default reports nothing (an empty leaf).
-     */
+    /** Sets {@link #contentWidth}/{@link #contentHeight} from the space inside the padding; the default is empty. */
     protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
         this.contentWidth = 0;
         this.contentHeight = 0;
@@ -174,10 +154,7 @@ public abstract class Element<T extends Element<T>> {
         return inside;
     }
 
-    /**
-     * Force-clears the hover state without a pointer position — used when a topmost sibling consumed
-     * the hover, so layers underneath stop reacting. Invalidates only when the state actually changed.
-     */
+    /** Clears the hover state when a layer above consumed the hover; repaints only on a change. */
     public void clearHover() {
         if (this.hovered) {
             this.hovered = false;
@@ -185,11 +162,7 @@ public abstract class Element<T extends Element<T>> {
         }
     }
 
-    /**
-     * Pointer-press hit test for drag interactions. A view that returns itself captures the pointer
-     * until release and then receives {@link #onDrag}/{@link #onRelease}; returning {@code null} lets
-     * the press fall through. Most views only need clicks (release); override {@link #onPress} to drag.
-     */
+    /** Returns this view when {@link #onPress} accepts the press, capturing the pointer for drags until release. */
     public Element<?> dispatchPress(final double mx, final double my) {
         return this.visible && this.enabled && this.contains(mx, my) && this.onPress(mx, my) ? this : null;
     }
@@ -216,22 +189,16 @@ public abstract class Element<T extends Element<T>> {
         return false;
     }
 
-    /**
-     * Whether this view or a descendant is a focused text input — drives caret blink and global-shortcut
-     * suppression. {@link TextField} overrides it; {@link Group} aggregates over its children.
-     */
+    /** Returns whether this view or a descendant is a focused text input, which mutes global shortcuts. */
     public boolean textInputActive() {
         return false;
     }
 
-    /**
-     * Force-clears any text-input focus/edit in this subtree — called on the layers a consumed click did
-     * not land in, so a focused field blurs even when a sibling swallowed the click. Text editors override.
-     */
+    /** Blurs any focused text input in this subtree; called on the layers a consumed click missed. */
     public void clearFocus() {
     }
 
-    /** Half-open hit test — shared borders belong to exactly one view and a zero-size view never matches. */
+    /** Returns whether the point hits this view; the half-open test gives a shared border to one view only. */
     public boolean contains(final double mx, final double my) {
         return mx >= this.left && mx < this.left + this.measuredWidth
                 && my >= this.top && my < this.top + this.measuredHeight;
@@ -247,10 +214,7 @@ public abstract class Element<T extends Element<T>> {
         return this.self();
     }
 
-    /**
-     * Attaches the shared context to this view (and, in {@link Group}, its subtree). Public so the window
-     * host ({@code RootScreen}) can bind the root tree from outside this package.
-     */
+    /** Attaches the shared context to this view and, in a {@link Group}, to its subtree. */
     public void attach(final AppContext context) {
         this.ctx = context;
     }

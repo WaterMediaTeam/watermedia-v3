@@ -27,15 +27,14 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Region selector for IPTV channels as a fully-retained screen: a {@link Header} band, a panel frame
- * container that ports the imperative panel chrome (gradient plate, section head, amber anchor cubes),
- * and a {@link ListView} of selectable region rows that owns scrolling, hit-testing and selection.
+ * Region selector for IPTV channels: a {@link Header} over a panel holding a {@link ListView} of region rows,
+ * which owns scrolling, hit-testing and selection.
  */
 public final class RegionSelectorScreen extends Screen {
 
     private static final int ROW_H = 54;
     private static final int ROW_GAP = 8;
-    // CACHED, REFERENCE-STABLE KEYBIND LIST — LETS KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    // CONSTANT SO THE PER-FRAME keybinds() POLL OF KeybindsBar ALLOCATES NOTHING
     private static final List<Keybind> KEYS = List.of(
             new Keybind("UP/DOWN", "Region"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
 
@@ -211,8 +210,7 @@ public final class RegionSelectorScreen extends Screen {
         return value == null || value.isBlank();
     }
 
-    // PANEL FRAME AROUND THE REGION LIST — PORTS THE IMPERATIVE PANEL CHROME (GRADIENT PLATE, HAIRLINE
-    // BORDER, AMBER ANCHOR CUBES, SECTION HEAD) AND SIZES/CENTERS THE LIST WITH THE LEGACY RECT MATH.
+    // CENTERED PANEL FRAMING THE REGION LIST UNDER ITS SECTION HEAD
     private final class PanelPane extends Group<PanelPane> {
 
         private int panelX;
@@ -222,7 +220,7 @@ public final class RegionSelectorScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // LEGACY INSETS: 10px CONTENT GAP + 18px STACK MARGIN → 28px ON EACH VERTICAL SIDE OF THIS PANE
+            // 28px VERTICAL INSET ON EACH SIDE: A 10px CONTENT GAP PLUS THE 18px STACK MARGIN
             this.panelW = Math.min(760, innerAvailWidth - 64);
             this.panelH = Math.max(260, innerAvailHeight - 56);
             final int rowsW = this.panelW - 48;
@@ -253,9 +251,8 @@ public final class RegionSelectorScreen extends Screen {
         }
     }
 
-    // ONE SELECTABLE REGION ROW — PORTS THE ORIGINAL drawRegionRow ONTO ITS OWN left/top/measured BOX AND
-    // READS THE ListView-DRIVEN selected/hovered STATE. index 0 = GLOBAL, THEN THE DETECTED/SYSTEM ROW
-    // (ONLY WHEN A REGION WAS DETECTED), THEN THE REMAINING REGIONS.
+    // ONE REGION ROW, SELECTED BY THE ListView: INDEX 0 IS GLOBAL, THEN THE SYSTEM ROW WHEN A REGION WAS
+    // DETECTED, THEN THE REMAINING REGIONS
     private static final class RegionRow extends Element<RegionRow> {
 
         private final RegionSelectorScreen screen;

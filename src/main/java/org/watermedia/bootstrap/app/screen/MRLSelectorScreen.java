@@ -45,18 +45,15 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Media (MRL) selector as a fully-retained screen: a {@link Header} band, a left column with the filter
- * field, a section head row and the selectable media rows in a {@link ListView}, and a live preview stack
- * on the right — the TV frame with the playing thumbnail under a localized {@link CrtOverlay}, the
- * metadata panel (title, media-type tag, URI, status pip) and real COPY/PLAY {@link Button}s. The
- * loading wait is a modal {@link Dialog} on the screen overlay.
+ * Lists the media of the selected group with a filter field and a live preview of the selected entry,
+ * opening it in the player once its MRL loads.
  */
 public final class MRLSelectorScreen extends Screen {
 
     private static final long LOAD_TIMEOUT_MS = 30000L;
     private static final int CORNER = 10; // AMBER CORNER TRIANGLE SIDE
 
-    // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    // CONSTANT LISTS SO keybinds() ALLOCATES NOTHING PER FRAME
     private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
     private static final List<Keybind> KEYS_DEFAULT = List.of(
             new Keybind("ARROWS", "Navigate"), new Keybind("ENTER", "Select"), new Keybind("ESC", "Back"));
@@ -71,16 +68,16 @@ public final class MRLSelectorScreen extends Screen {
     private SearchField search;
     private ListView<AppContext.TestURI> list;
     private PreviewPane preview;
-    // HEADER ROW ELEMENTS — TEXT REFRESHED EACH FRAME FROM THE LIVE GROUP NAME / ITEM COUNT / FAILED COUNT
+    // HEADER ROW, REFRESHED EACH FRAME WITH THE GROUP NAME, ITEM COUNT AND FAILED COUNT
     private SectionHead headerHead;
     private Badge headerFailed;
-    // LOADING MODAL — BUILT LAZILY, SHOWN ON THE SCREEN OVERLAY WHILE AN MRL FETCH IS IN FLIGHT
+    // LOADING MODAL, BUILT LAZILY AND SHOWN WHILE AN MRL FETCH IS IN FLIGHT
     private Dialog loadDialog;
     private Text loadName;
-    // CURRENTLY VISIBLE (SEARCH-FILTERED) ITEMS — THE ListView'S BACKING DATA
+    // FILTERED ITEMS BACKING THE ListView
     private List<AppContext.TestURI> filtered = new ArrayList<>();
 
-    // THUMBNAIL PLAYERS KEYED BY MRL NAME
+    // THUMBNAIL PLAYERS KEYED BY ENTRY NAME
     private final Map<String, MediaPlayer> thumbPlayers = new LinkedHashMap<>();
     private final Set<String> thumbAttempted = new HashSet<>();
     private final Set<String> thumbSubscribed = new HashSet<>();
@@ -112,7 +109,7 @@ public final class MRLSelectorScreen extends Screen {
                 .spacing(6)
                 .rowFactory((uri, index) -> {
                     final MediaRow row = new MediaRow(uri);
-                    // HOVER SELECTS THE ROW (selectOnHover) AND, LIKE THE LEGACY MOUSE-MOVE PATH, CHIMES ON CHANGE
+                    // selectOnHover MOVES THE SELECTION; CHIME WHEN IT LANDS ON A NEW ROW
                     row.onHover(v -> { if (!v.selected()) this.ctx.playSelectionSound(); });
                     return row;
                 })
@@ -121,11 +118,9 @@ public final class MRLSelectorScreen extends Screen {
                 // ROWS SELF-DRAW THEIR SELECTION FILL/GLOW, SO SUPPRESS THE LIST'S OWN HIGHLIGHTS
                 .selectionColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
                 .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
-                // WEIGHT 1 → THE LIST FILLS THE LEFTOVER VERTICAL SPACE AND SCISSORS ROWS WITHIN ITS OWN BOX
                 .width(Element.MAX_PARENT)
                 .weight(1f);
 
-        // LEFT COLUMN: SEARCH, SECTION HEAD, LIST — EACH CONFINED TO ITS BOX BY THE LAYOUT (PADDING/SPACING)
         final Parent leftCol = Parent.column()
                 .spacing(8)
                 .padding(new Spacing(8, 4, 8, 10))
@@ -162,7 +157,7 @@ public final class MRLSelectorScreen extends Screen {
 
     @Override
     public void releaseMedia() {
-        // HOT-SWAP HOOK — DROP EVERY THUMBNAIL PLAYER (OFF-THREAD) SO THE NEXT FRAME REBUILDS ON THE NEW ENGINE
+        // RENDER BACKEND HOT-SWAP: THE NEXT FRAME REBUILDS THE THUMBNAIL PLAYERS ON THE NEW ENGINE
         this.releaseThumbs();
     }
 
@@ -173,7 +168,7 @@ public final class MRLSelectorScreen extends Screen {
 
     @Override
     public boolean continuous() {
-        // CARET BLINK, LOADING DOTS AND LIVE THUMBNAILS — THE GLOBAL CRT ANIMATION IS THE SHELL'S CONCERN
+        // CARET BLINK, LOADING DOTS AND ANIMATED THUMBNAILS
         return this.loading || this.textInputActive() || Previews.animating(this.thumbPlayers.values());
     }
 
@@ -182,10 +177,8 @@ public final class MRLSelectorScreen extends Screen {
         if (this.search == null || this.ctx == null || this.ctx.selectedGroup == null) return;
         if (this.loading) {
             this.checkLoadingState();
-            // THE WAIT ENDED THIS FRAME (NAVIGATED OR ERRORED) — SKIP THE REBUILDS SO A NAVIGATION'S
-            // onExit RELEASE IS NOT UNDONE BY RE-CREATING THUMBNAIL PLAYERS ON AN ALREADY-EXITED SCREEN
+            // THE WAIT ENDED THIS FRAME: SKIP THE REBUILDS SO NEW THUMBNAIL PLAYERS DO NOT UNDO onExit'S RELEASE
             if (!this.loading) return;
-            // ANIMATED DOTS ON THE MODAL TITLE (LEGACY 500ms CADENCE)
             if (this.loadDialog != null) {
                 this.loadDialog.title("Loading" + ".".repeat((int) ((System.currentTimeMillis() / 500L) % 4L)));
             }
@@ -203,7 +196,7 @@ public final class MRLSelectorScreen extends Screen {
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
-        // THE TREE FIRST: A FOCUSED FILTER FIELD OR THE LOADING MODAL CONSUMES ITS OWN KEYS (ESC CANCELS)
+        // THE TREE FIRST: A FOCUSED FILTER FIELD OR THE LOADING MODAL CONSUMES ITS OWN KEYS
         if (super.dispatchKey(key, action)) return true;
         if (action != GLFW_RELEASE) return false;
         switch (key) {
@@ -235,7 +228,7 @@ public final class MRLSelectorScreen extends Screen {
         return true;
     }
 
-    // RECOMPUTES THE SEARCH-FILTERED ITEM LIST, KEEPING THE SAME ITEM SELECTED WHEN IT SURVIVES THE FILTER
+    // KEEPS THE SAME ITEM SELECTED WHEN IT SURVIVES THE FILTER
     private void applyFilter() {
         final AppContext.TestURI prev = this.selectedUri();
         final List<AppContext.TestURI> next = new ArrayList<>();
@@ -253,7 +246,7 @@ public final class MRLSelectorScreen extends Screen {
         this.list.selection(Math.max(0, idx));
     }
 
-    // THE ITEM DRIVING THE PREVIEW/ACTIONS: THE SELECTED ROW, OR THE FIRST ITEM WHEN THE FILTER HIDES EVERYTHING
+    // THE SELECTED ROW, OR THE GROUP'S FIRST ITEM WHEN THE FILTER HIDES EVERYTHING
     private AppContext.TestURI selectedUri() {
         if (this.ctx.selectedGroup == null) return null;
         final AppContext.TestURI[] uris = this.ctx.selectedGroup.uris();
@@ -265,7 +258,7 @@ public final class MRLSelectorScreen extends Screen {
     }
 
     private void openRow(final AppContext.TestURI uri) {
-        this.search.focused(false); // A ROW ACTIVATION BLURS THE FILTER FIELD (LEGACY BEHAVIOR)
+        this.search.focused(false);
         this.handleSelect(uri);
     }
 
@@ -286,7 +279,7 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // RESOLVE-OR-CREATE, WITH SUBSCRIBE + REQUEST-RENDER. ONLY CALL FROM onUpdate / INPUT PATHS — NEVER FROM onDraw
+    // CREATES AND SUBSCRIBES A MISSING MRL; CALL IT FROM onUpdate OR INPUT, NEVER FROM onDraw
     private MRL mrlFor(final AppContext.TestURI uri) {
         if (uri == null) return null;
         MRL mrl = this.ctx.groupMRLs.get(uri.name());
@@ -300,7 +293,7 @@ public final class MRLSelectorScreen extends Screen {
         return mrl;
     }
 
-    // READ-ONLY LOOKUP FOR THE DRAW PATH — RETURNS null ON A MISS (RESOLUTION HAPPENS IN onUpdate VIA mrlFor)
+    // READ-ONLY LOOKUP FOR onDraw; mrlFor CREATES MISSING MRLS DURING onUpdate
     private MRL mrlOf(final AppContext.TestURI uri) {
         return uri == null ? null : this.ctx.groupMRLs.get(uri.name());
     }
@@ -322,7 +315,7 @@ public final class MRLSelectorScreen extends Screen {
         while (it.hasNext()) {
             final Map.Entry<String, MediaPlayer> entry = it.next();
             if (activeNames.contains(entry.getKey())) continue;
-            // REMOVE FROM THE ACTIVE MAP FIRST, THEN HAND OFF FOR BACKGROUND RELEASE (SEE releaseAsync)
+            // Previews.release NEEDS THE PLAYERS OUT OF THE MAP BEFORE IT FREES THEM OFF-THREAD
             if (evicted == null) evicted = new ArrayList<>();
             evicted.add(entry.getValue());
             it.remove();
@@ -331,7 +324,7 @@ public final class MRLSelectorScreen extends Screen {
         if (evicted != null) Previews.release(this.ctx, evicted);
     }
 
-    // KEEPS THUMBNAIL PLAYERS SCOPED TO ENTRIES THE SELECTOR IS CURRENTLY SHOWING.
+    // KEEPS THUMBNAIL PLAYERS ONLY FOR THE ENTRIES ON SCREEN
     private void updateThumbs(final Set<String> activeNames) {
         if (this.ctx.selectedGroup == null) return;
 
@@ -345,7 +338,7 @@ public final class MRLSelectorScreen extends Screen {
 
             final MRL mrl = this.mrlFor(uri);
             if (mrl == null) continue;
-            if (!Previews.loaded(mrl)) continue; // ONLY BUILD THUMBNAILS FOR FULLY LOADED MRLS
+            if (!Previews.loaded(mrl)) continue;
 
             final var sources = mrl.sources();
             if (sources.isEmpty()) {
@@ -356,7 +349,7 @@ public final class MRLSelectorScreen extends Screen {
             MediaPlayer player = null;
             boolean pendingThumbnail = false;
 
-            // TRY THUMBNAIL URI FIRST
+            // TRY THE THUMBNAIL URI FIRST
             for (final MRL.Source src: sources) {
                 final URI thumbnailUri = src.thumbnail();
                 if (thumbnailUri == null) continue;
@@ -367,14 +360,14 @@ public final class MRLSelectorScreen extends Screen {
                     this.subscribeThumbMRL(thumbnailUri, thumbnailMrl);
                     break;
                 }
-                if (thumbStatus != MRL.Status.LOADED) continue; // ERROR/EXPIRED/BLOCKED/FORGOTTEN — TRY NEXT SOURCE
+                if (thumbStatus != MRL.Status.LOADED) continue;
                 player = MediaAPI.player(thumbnailMrl, RenderSystem.mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) break;
             }
 
             if (pendingThumbnail) continue; // RETRY NEXT FRAME
 
-            // FALLBACK: USE FIRST IMAGE SOURCE DIRECTLY
+            // FALLBACK: THE FIRST IMAGE SOURCE ITSELF
             if (player == null) {
                 for (int i = 0; i < sources.size(); i++) {
                     if (sources.get(i).type() == MediaType.IMAGE) {
@@ -430,8 +423,7 @@ public final class MRLSelectorScreen extends Screen {
             }
             case ERROR -> this.ctx.showError("Error", "Unable to open media, exception occurred on opening", null);
             case BLOCKED -> this.ctx.showError("Blocked", "This media was blocked by the platform", null);
-            // EXPIRED SOURCES AND FORGOTTEN (CACHE-EVICTED) MRLS ARE NO LONGER USABLE —
-            // DROP THE CACHED INSTANCE SO THE NEXT ACCESS REGENERATES A FRESH ONE.
+            // EXPIRED OR CACHE-EVICTED MRLS ARE UNUSABLE: DROP THE CACHED ONE SO THE NEXT ACCESS REGENERATES IT
             case EXPIRED, FORGOTTEN -> this.ctx.showError("MRL expired", "Re-freshing MRL", () -> {
                 this.ctx.selectedMRL = null;
                 this.ctx.groupMRLs.remove(uri.name());
@@ -462,7 +454,7 @@ public final class MRLSelectorScreen extends Screen {
         if (this.ctx.selectSources()) this.navigator.accept(HomeScreen.Action.PLAYER);
     }
 
-    // ENDS THE LOADING WAIT: INVALIDATES THE TIMEOUT GENERATION AND HIDES THE MODAL
+    // THE GENERATION BUMP DISARMS THE PENDING TIMEOUT THREAD
     private void stopLoad() {
         this.loading = false;
         this.loadGeneration++;
@@ -472,13 +464,12 @@ public final class MRLSelectorScreen extends Screen {
 
     private void showLoadDialog() {
         if (this.loadDialog == null) {
-            // LEGACY BLUE ACCENT / GRAY BODY → NEAREST THEME HUES (NEON / TEXT_SOFT)
             this.loadName = new Text().scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT).width(Element.MAX_PARENT);
             this.loadDialog = new Dialog()
                     .accent(AppTheme.NEON)
                     .title("Loading")
                     .panelWidth(400)
-                    .onDismiss(this::stopLoad); // ESC CANCELS THE WAIT (LEGACY BEHAVIOR)
+                    .onDismiss(this::stopLoad); // ESC CANCELS THE WAIT
             this.loadDialog.content(this.loadName);
             this.loadDialog.content(new Text("ESC to cancel").scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT).width(Element.MAX_PARENT));
         }
@@ -500,7 +491,7 @@ public final class MRLSelectorScreen extends Screen {
             return;
         }
 
-        // ANY TERMINAL NON-LOADED STATE (ERROR/BLOCKED/EXPIRED/FORGOTTEN) ENDS THE WAIT.
+        // ANY OTHER FINAL STATE (ERROR, BLOCKED, EXPIRED, FORGOTTEN) ENDS THE WAIT
         if (status != MRL.Status.FETCHING) {
             this.stopLoad();
             this.ctx.showError("Error", "Unable to open media: " + status.name(), null);
@@ -513,8 +504,7 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // THE SELECTED ITEM PLUS EVERY ROW CURRENTLY ON SCREEN (FROM THE PREVIOUS FRAME'S LAYOUT). THIS SCOPES
-    // THUMBNAIL PLAYERS TO WHAT THE SELECTOR IS SHOWING, EXACTLY LIKE THE LEGACY VISIBLE-WINDOW COMPUTATION.
+    // THE SELECTED ITEM PLUS EVERY ROW ON SCREEN IN THE PREVIOUS FRAME'S LAYOUT
     private Set<String> activeThumbNames() {
         final Set<String> active = new LinkedHashSet<>();
         final AppContext.TestURI selected = this.selectedUri();
@@ -529,9 +519,9 @@ public final class MRLSelectorScreen extends Screen {
         return active;
     }
 
-    // ===== SHARED CANVAS PORTS OF THE LEGACY CHROME PRIMITIVES (SAME PIXELS, NO CHROME HELPERS) =====
+    // ===== SHARED CANVAS PRIMITIVES =====
 
-    // PORT OF THE TV FRAME — OUTER PLATE, FOCUS BORDER/GLOW, INNER SCREEN WELL, AMBER FOOT CUBES
+    // TV FRAME: OUTER PLATE, FOCUS BORDER AND GLOW, INNER SCREEN WELL AND AMBER FOOT CUBES
     private static void tvFrame(final Canvas canvas, final int x, final int y, final int w, final int h, final boolean focused) {
         canvas.fill(x, y, w, h, AppTheme.BG_2);
         canvas.stroke(x, y, w, h, focused ? AppTheme.NEON : AppTheme.STROKE_BRIGHT, 2f);
@@ -542,7 +532,7 @@ public final class MRLSelectorScreen extends Screen {
         canvas.cube(x + w - 12, y + h - 12, 10);
     }
 
-    // PORT OF THE AMBER CORNER TRIANGLE — ROW-STRIP RASTER (THE CANVAS HAS NO TRIANGLE PRIMITIVE)
+    // AMBER CORNER TRIANGLE, RASTERIZED AS 1 PX ROWS BECAUSE Canvas HAS NO TRIANGLE PRIMITIVE
     private static void triangle(final Canvas canvas, final int x, final int y, final boolean left) {
         canvas.glow(x, y, CORNER, CORNER, 0f, AppTheme.AMBER, 0.32f);
         for (int i = 0; i < CORNER; i++) {
@@ -554,7 +544,7 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // PORT OF THE STATUS PIP — CIRCLE AS A HORIZONTAL-STRIP RASTER (THE CANVAS HAS NO CIRCLE PRIMITIVE)
+    // STATUS PIP; THE CIRCLE IS RASTERIZED AS 1 PX ROWS BECAUSE Canvas HAS NO CIRCLE PRIMITIVE
     private static void pip(final Canvas canvas, final int x, final int y, final int size, final Color color, final boolean circle) {
         if (circle) {
             final float r = size / 2f;
@@ -569,8 +559,7 @@ public final class MRLSelectorScreen extends Screen {
         canvas.glow(x, y, size, size, 0f, color, 0.5f);
     }
 
-    // SHARED THUMBNAIL CONTENT — LIVE FRAME (COVER-FIT + CLIP) OR THE STATUS FALLBACK. THE CRT EFFECT ON
-    // TOP IS A CrtOverlay CHILD OF THE CALLING CONTAINER, DRAWN AFTER THIS (LEGACY DRAW ORDER).
+    // LIVE FRAME (COVER-FIT AND CLIPPED) OR A STATUS FALLBACK; THE CALLER'S CrtOverlay CHILD PAINTS OVER IT
     private void drawThumb(final Canvas canvas, final AppContext.TestURI uri, final int x, final int y,
                            final int w, final int h, final boolean mini) {
         final MediaPlayer player = this.thumbPlayers.get(uri.name());
@@ -596,7 +585,7 @@ public final class MRLSelectorScreen extends Screen {
         final MRL mrl = this.mrlOf(uri);
         final MRL.Status status = mrl == null ? null : mrl.status();
         final boolean ready = status == MRL.Status.LOADED;
-        // ERROR/BLOCKED/EXPIRED/FORGOTTEN — A FINAL STATE THAT NEEDS REGENERATION.
+        // ERROR, BLOCKED, EXPIRED OR FORGOTTEN: A FINAL STATE THAT NEEDS REGENERATION
         final boolean failed = status != null && status != MRL.Status.LOADED && status != MRL.Status.FETCHING;
         canvas.fill(x, y, w, h, AppTheme.BG_0);
         if (mini && !failed) {
@@ -621,9 +610,7 @@ public final class MRLSelectorScreen extends Screen {
     }
 
     // ===== MRL STATUS HELPERS =====
-    // STATES ARE MUTUALLY EXCLUSIVE: LOADED (usable), FETCHING (in flight), ERROR/BLOCKED
-    // (load failed), EXPIRED (sources no longer valid), FORGOTTEN (evicted from the cache).
-    // THE BOOLEAN PREDICATES LIVE ON MRL.Status; THESE WRAP THEM NULL-SAFELY FOR THE UI.
+    // NULL-SAFE UI WRAPPERS OVER THE MRL.Status PREDICATES
 
     private static boolean regenerable(final MRL mrl) {
         return mrl != null && mrl.status().regenerable();
@@ -638,7 +625,7 @@ public final class MRLSelectorScreen extends Screen {
         return mrl.sources().get(0).type();
     }
 
-    // PLAIN NESTED LOOP (NO STREAM/Optional) — THIS RUNS PER FRAME IN THE PREVIEW DRAW PATH
+    // RUNS EVERY FRAME IN THE PREVIEW DRAW, SO IT AVOIDS STREAMS
     private static String bestQuality(final MRL mrl) {
         if (!Previews.loaded(mrl)) return "UNKNOWN";
         MediaQuality best = MediaQuality.UNKNOWN;
@@ -650,8 +637,8 @@ public final class MRLSelectorScreen extends Screen {
         return best.name();
     }
 
-    // SPLITS THE CONTENT BAND INTO THE LEFT (SEARCH + LIST) COLUMN AND THE RIGHT PREVIEW STACK USING THE
-    // LEGACY GEOMETRY: 10px GAP UNDER THE HEADER RULE AND OVER THE FOOTER, LEFT WIDTH = CLAMPED WINDOW THIRD.
+    // SPLITS THE CONTENT BAND INTO THE FILTER AND LIST COLUMN AND THE PREVIEW STACK, WITH 10 PX GAPS ABOVE
+    // AND BELOW AND A LEFT COLUMN A THIRD OF THE WIDTH, CLAMPED TO 320-380 PX
     private final class SelectorPane extends Group<SelectorPane> {
 
         private final Parent leftCol;
@@ -684,7 +671,7 @@ public final class MRLSelectorScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            // LEFT COLUMN PLATE + DIVIDER — ONLY WHEN THE GROUP HAS ITEMS (LEGACY CHROME ORDER)
+            // LEFT COLUMN PLATE AND DIVIDER, ONLY WHEN THE GROUP HAS ITEMS
             if (MRLSelectorScreen.this.ctx.selectedGroup != null && MRLSelectorScreen.this.ctx.selectedGroup.uris().length > 0) {
                 final int y = this.top + 10;
                 canvas.fill(this.left, y, this.leftW, this.listH, AppTheme.alpha(AppTheme.BG_1, 150));
@@ -694,8 +681,8 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // THE RIGHT PREVIEW STACK — TV FRAME WITH THE LIVE THUMBNAIL AND A LOCALIZED CRT OVERLAY ON TOP,
-    // THEN THE METADATA PANEL (TITLE, TYPE TAG, URI, STATUS PIP) WITH REAL COPY/PLAY BUTTONS.
+    // PREVIEW STACK: TV FRAME WITH THE LIVE THUMBNAIL UNDER A CRT OVERLAY, THEN THE METADATA PANEL
+    // WITH THE COPY AND PLAY BUTTONS
     private final class PreviewPane extends Group<PreviewPane> {
 
         private final CrtOverlay crt = new CrtOverlay();
@@ -755,7 +742,7 @@ public final class MRLSelectorScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // LEGACY STACK GEOMETRY: 16px GAP BETWEEN TV AND PANEL, 18px STACK MARGINS TOP+BOTTOM
+            // 16 PX GAP BETWEEN TV AND PANEL, 18 PX STACK MARGINS ABOVE AND BELOW
             this.panelH = MathUtil.clamp(innerAvailHeight / 5, 96, 112);
             this.tvH = Math.max(220, innerAvailHeight - this.panelH - 16 - 36);
             this.crt.measure(Math.max(0, innerAvailWidth - 16), Math.max(0, this.tvH - 16));
@@ -785,7 +772,7 @@ public final class MRLSelectorScreen extends Screen {
             tvFrame(canvas, x, this.tvY, w, this.tvH, true);
             MRLSelectorScreen.this.drawThumb(canvas, sel, x + 8, this.tvY + 8, w - 16, this.tvH - 16, false);
 
-            // METADATA PANEL PLATE + AMBER CORNER TRIANGLES (PORT OF THE LEGACY PANEL CHROME)
+            // METADATA PANEL PLATE AND AMBER CORNER TRIANGLES
             canvas.gradientV(x, this.panelY, w, this.panelH,
                     AppTheme.alpha(AppTheme.BG_2, 217), AppTheme.alpha(AppTheme.BG_1, 217));
             canvas.stroke(x, this.panelY, w, this.panelH, AppTheme.STROKE_BRIGHT, 1f);
@@ -797,7 +784,7 @@ public final class MRLSelectorScreen extends Screen {
             canvas.text(title, x + 16, this.panelY + 14, AppTheme.NEON_LIGHT, AppTheme.TEXT_SECTION, true);
             final MediaType type = firstMediaType(mrl);
             if (type != null) {
-                // MEDIA-TYPE TAG — OUTLINED GLOWING CHIP IN THE TYPE HUE (IMAGE/VIDEO/AUDIO/OTHER)
+                // MEDIA-TYPE TAG IN THE TYPE HUE
                 final Color tc = type == MediaType.IMAGE ? AppTheme.GREEN
                         : type == MediaType.VIDEO ? AppTheme.AMBER
                         : type == MediaType.AUDIO ? AppTheme.CYAN
@@ -824,9 +811,8 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // ONE SELECTABLE MEDIA ROW — PORTS THE LEGACY renderMediaRow ONTO ITS OWN BOX AND READS ITS
-    // ListView-DRIVEN selected STATE (THUMBNAIL / LABEL / URI / STATUS PIP, EXACT COLORS AND OFFSETS).
-    // THE MINI CRT EFFECT IS A CrtOverlay CHILD SITTING ON THE THUMB WELL.
+    // ONE MEDIA ROW (THUMBNAIL, NAME, URI AND STATUS PIP) STYLED BY ITS ListView selected STATE;
+    // A CrtOverlay CHILD SITS ON THE THUMB WELL
     private final class MediaRow extends Group<MediaRow> {
 
         private final AppContext.TestURI uri;
@@ -876,9 +862,7 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    // THE FILTER FIELD — A DELIBERATE PORT OF THE LEGACY SEARCH BOX (BG_2 FILL, NEON/STROKE BORDER + GLOW ON
-    // FOCUS, SEARCH GLYPH, 2px NEON_LIGHT CARET AT 480ms, HOVER-FOCUS AND ESC-CLEAR SEMANTICS). THE BUILT-IN
-    // TextField DIFFERS ON ALL OF THOSE, SO IT IS NOT USED.
+    // FILTER FIELD WITH A SEARCH GLYPH, FOCUS ON HOVER AND CLEAR ON ESC, WHICH TextField DOES NOT OFFER
     private static final class SearchField extends Element<SearchField> {
 
         private String value = "";
@@ -928,7 +912,7 @@ public final class MRLSelectorScreen extends Screen {
 
         @Override
         public boolean dispatchHover(final double mx, final double my) {
-            // THE LEGACY MOUSE-MOVE PATH FOCUSED THE FILTER ON HOVER (STICKY — NEVER BLURS ON LEAVE)
+            // HOVER FOCUSES THE FIELD; LEAVING DOES NOT BLUR IT
             final boolean inside = this.contains(mx, my);
             this.hovered = inside;
             if (inside && !this.focused) {

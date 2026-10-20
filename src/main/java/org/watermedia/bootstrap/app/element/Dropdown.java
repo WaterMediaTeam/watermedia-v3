@@ -15,23 +15,8 @@ import static org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER;
 import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 
 /**
- * A value-plus-arrow dropdown control (the retained port of the legacy dropdown chrome) with two ways to
- * present its options, chosen by {@link Mode}:
- *
- * <ul>
- *   <li>{@link Mode#ATTACH} — clicking opens a floating menu anchored to the control (below it, or above
- *       when there is no room), unfolding from the anchored edge with a short ease-out (input is live from
- *       the first frame; closing is instant). The menu is a lightweight modal: it mounts into a top overlay
- *       layer so it always paints on top, wins pointer/scroll/key input while open, wheel-scrolls when the
- *       list overflows, and closes on an option click, a click outside, or {@code ESC}.</li>
- *   <li>{@link Mode#DIALOG} — clicking opens a centered picker {@link Dialog} with the options as a
- *       scrollable list of buttons, for long lists or a heavier presentation.</li>
- * </ul>
- *
- * <p><b>Overlay host:</b> the menu/dialog is mounted into {@link #overlayHost(Group)} when set; otherwise
- * it walks up to the highest {@link ParentFrame} ancestor (the window root layer) so it still stacks on
- * top without wiring. Screens should pass their own overlay so the popup is scoped to the screen and torn
- * down on exit.
+ * A value-and-arrow control that opens its options as an anchored modal menu or a centered picker {@link Dialog},
+ * chosen by {@link Mode}. The popup mounts into {@link #overlayHost(Group)}, else the highest {@link ParentFrame} ancestor.
  */
 public final class Dropdown extends Element<Dropdown> {
 
@@ -93,7 +78,7 @@ public final class Dropdown extends Element<Dropdown> {
         return this;
     }
 
-    /** Title shown by the {@link Mode#DIALOG} picker. */
+    /** Sets the title of the {@link Mode#DIALOG} picker. */
     public Dropdown title(final String value) {
         this.title = value == null ? "" : value;
         return this;
@@ -104,7 +89,7 @@ public final class Dropdown extends Element<Dropdown> {
         return this;
     }
 
-    /** The layer the open menu/dialog mounts into; {@code null} falls back to the window root layer. */
+    /** Sets the layer the open menu or dialog mounts into, scoping it to a screen; {@code null} uses the root layer. */
     public Dropdown overlayHost(final Group<?> host) {
         this.overlayHost = host;
         return this;
@@ -139,8 +124,7 @@ public final class Dropdown extends Element<Dropdown> {
         final int h = this.measuredHeight;
         final boolean open = this.isOpen();
         final boolean hot = this.enabled && (this.hovered || open);
-        // BOX — BRIGHTER FILL + GLOW WHILE OPEN, A VERTICAL DIVIDER BEFORE THE ARROW ZONE;
-        // DISABLED DRAWS FLAT: NO GLOW, FAINT TEXT AND A DIM BORDER (MIRRORS THE BUTTON TREATMENT)
+        // A DISABLED CONTROL DRAWS FLAT LIKE A DISABLED BUTTON: NO GLOW, FAINT TEXT AND A DIM BORDER
         if (hot) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, open ? 0.20f : 0.12f);
         canvas.fill(x, y, w, h, AppTheme.alpha(open ? AppTheme.BG_3 : AppTheme.BG_1, open ? 230 : 210));
         canvas.fill(x + w - ARROW_ZONE, y, 1, h, AppTheme.STROKE);
@@ -332,9 +316,8 @@ public final class Dropdown extends Element<Dropdown> {
             final int rows = this.visibleRows(h);
             this.scroll = MathUtil.clamp(this.scroll, 0, this.maxScroll(h));
 
-            // UNFOLD: THE PANEL GROWS FROM ITS ANCHORED EDGE (DOWNWARD, OR UPWARD WHEN FLIPPED ABOVE) WITH
-            // A CUBIC EASE-OUT; ROWS KEEP THEIR FINAL POSITIONS AND THE CLIP REVEALS THEM. ONLY THE DRAW
-            // SHRINKS — THE HIT-TESTS BELOW USE THE FULL BOX, SO INPUT WORKS FROM THE FIRST FRAME.
+            // THE PANEL UNFOLDS FROM ITS ANCHORED EDGE WITH A CUBIC EASE-OUT AND THE CLIP REVEALS THE ROWS; ONLY
+            // THE DRAW SHRINKS, HIT-TESTS USE THE FULL BOX SO INPUT WORKS FROM THE FIRST FRAME
             final float t = Math.min(1f, (System.currentTimeMillis() - this.openedAt) / (float) OPEN_MS);
             final float inv = 1f - t;
             final int drawH = t >= 1f ? h : Math.max(1, Math.round(h * (1f - inv * inv * inv)));
@@ -365,10 +348,9 @@ public final class Dropdown extends Element<Dropdown> {
                 canvas.text(Dropdown.this.items.get(idx), rx + 18, ry + (rh - th) / 2, color, Dropdown.this.scale, false);
             }
             canvas.popClip();
-            // BORDER OVER THE CLIPPED ROWS, THEN A SCROLL THUMB WHEN THE LIST OVERFLOWS; THE THUMB WAITS
-            // FOR THE UNFOLD TO FINISH SO IT NEVER PAINTS OUTSIDE THE GROWING PANEL
             canvas.stroke(x, drawY, w, drawH, AppTheme.STROKE_BRIGHT, Theme.BORDER_ACTIVE);
             final int max = this.maxScroll(h);
+            // THE SCROLL THUMB WAITS FOR THE UNFOLD TO FINISH SO IT NEVER PAINTS OUTSIDE THE GROWING PANEL
             if (max > 0 && drawH == h) {
                 final int total = Dropdown.this.items.size();
                 final int trackH = h - PAD * 2;
@@ -408,8 +390,7 @@ public final class Dropdown extends Element<Dropdown> {
         public boolean dispatchScroll(final double mx, final double my, final double amount) {
             final int max = this.maxScroll(this.box().h());
             if (max > 0 && amount != 0) {
-                // ONE ROW PER NOTCH MINIMUM SO PRECISION-TOUCHPAD DELTAS < 1 STILL SCROLL (LIKE THE OTHER SURFACES);
-                // A BARE (int) CAST TRUNCATED THEM TO ZERO SO THE MENU NEVER MOVED
+                // AT LEAST ONE ROW PER EVENT, SO PRECISION-TOUCHPAD DELTAS BELOW 1 STILL SCROLL
                 final int rows = amount > 0 ? Math.max(1, (int) amount) : Math.min(-1, (int) amount);
                 final int next = MathUtil.clamp(this.scroll - rows, 0, max);
                 if (next != this.scroll) {

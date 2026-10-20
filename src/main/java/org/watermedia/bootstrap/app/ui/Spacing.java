@@ -1,8 +1,6 @@
 package org.watermedia.bootstrap.app.ui;
 
-/**
- * Insets used as padding or margin.
- */
+/** Insets used as padding or margin. */
 public record Spacing(int top, int right, int bottom, int left) {
     public static final Spacing ZERO = new Spacing(0, 0, 0, 0);
 

@@ -11,11 +11,8 @@ import static org.lwjgl.glfw.GLFW.GLFW_KEY_BACKSPACE;
 import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 
 /**
- * A single-line editable text box with focus and a blinking caret. It fills the parent's width, paints a
- * translucent background and a hairline border that lights up in the accent (amber by default) with a
- * soft glow while focused, and shows a faint placeholder when empty. A click grabs focus, printable
- * characters append (up to {@code maxLength}) and backspace drops the last character; every edit reports
- * the new text through {@code onChange}. The {@code focused} state is inherited from {@link Element}.
+ * A full-width single-line text box that takes focus on click, appends printable ASCII up to {@code maxLength} and
+ * reports every edit through {@code onChange}.
  */
 public final class TextField extends Element<TextField> {
 
@@ -87,7 +84,6 @@ public final class TextField extends Element<TextField> {
 
     @Override
     protected void onDraw(final Canvas canvas) {
-        // FOCUSED: A SOFT ACCENT GLOW BEHIND THE BOX PLUS AN ACCENT BORDER; IDLE: A PLAIN HAIRLINE
         if (this.focused) {
             canvas.glow(this.left, this.top, this.measuredWidth, this.measuredHeight, 0f, this.accent, Theme.GLOW_WEAK);
         }
@@ -107,7 +103,7 @@ public final class TextField extends Element<TextField> {
         if (!draw.isEmpty()) {
             canvas.text(draw, this.innerLeft(), ty, color, this.scale, false);
         }
-        // BLINKING 1px CARET AFTER THE VISIBLE VALUE — HIDDEN FOR HALF OF EACH SECOND
+        // THE CARET BLINKS IN 500 MS HALVES
         if (this.focused && (System.currentTimeMillis() / 500) % 2 == 0) {
             final int caretX = this.innerLeft() + (empty ? 0 : canvas.textWidth(draw, this.scale, false));
             canvas.fill(caretX, ty, 1, th, this.accent);
@@ -116,7 +112,6 @@ public final class TextField extends Element<TextField> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
-        // A HIDDEN OR DISABLED FIELD NEITHER CONSUMES CLICKS NOR GRABS FOCUS; THE FOCUS/BLUR BRANCHES STAY BELOW
         if (!this.visible || !this.enabled) return false;
         if (this.contains(mx, my)) {
             this.focused = true;
@@ -144,7 +139,6 @@ public final class TextField extends Element<TextField> {
     @Override
     public boolean dispatchChar(final int codepoint) {
         if (!this.focused) return false;
-        // PRINTABLE ASCII ONLY, BOUNDED BY maxLength
         if (codepoint >= 32 && codepoint < 127 && this.value.length() < this.maxLength) {
             this.value += new String(Character.toChars(codepoint));
             this.invalidate();

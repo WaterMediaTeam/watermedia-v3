@@ -10,10 +10,8 @@ import org.watermedia.bootstrap.app.ui.TextRenderer;
 import java.util.List;
 
 /**
- * Base class for fully-retained screens. A screen is itself a view with two stacked slots that both
- * fill its rect: the {@code body} (the content tree built once, lazily, by {@link #build()}) and the
- * {@code overlay} (a {@link ParentFrame} hosting the screen's own dialogs on top). All input arrives
- * through the regular {@link Element} dispatch — subclasses never hand-roll rendering or hit-testing.
+ * Base class for retained screens: a view stacking the {@code body} built lazily by {@link #build()} and an
+ * {@code overlay} {@link ParentFrame} for its dialogs. Input arrives only through the {@link Element} dispatch.
  */
 public abstract class Screen extends Group<Screen> {
 
@@ -90,7 +88,7 @@ public abstract class Screen extends Group<Screen> {
         if (this.built) return;
         this.built = true;
         this.body = this.build();
-        // BOTH SLOTS FILL THE SCREEN RECT — FRAME SEMANTICS, THE OVERLAY ALWAYS PAINTS ON TOP
+        // THE OVERLAY IS ADDED LAST SO ITS DIALOGS PAINT ABOVE THE BODY
         if (this.body != null) {
             this.body.size(MAX_PARENT, MAX_PARENT);
             this.add(this.body);

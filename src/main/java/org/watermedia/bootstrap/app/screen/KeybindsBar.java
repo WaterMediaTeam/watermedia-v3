@@ -18,11 +18,8 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * The footer bar as a retained view — the replacement for the imperative chrome footer: the gradient
- * band with its top hairline, the active screen's keybind chips (icon key-caps plus labels) on the
- * left, and the backend status strip (FFMPEG / OPENGL / VULKAN) on the right. The bar pulls the
- * keybinds from the supplier given at construction on every {@code update()} pass and appends the
- * global {@code C: CRT ON/OFF} chip itself; an empty list (boot) renders just the chrome.
+ * The footer bar: the active screen's keybind chips on the left and the FFMPEG / OPENGL / VULKAN status strip
+ * on the right. It pulls the keybinds from its supplier every update and appends the global CRT chip itself.
  */
 final class KeybindsBar extends Group<KeybindsBar> {
 
@@ -43,8 +40,6 @@ final class KeybindsBar extends Group<KeybindsBar> {
         this.width = MAX_PARENT;
         this.height = H;
 
-        // LEFT CHIP BAND SITS AT footerY+9 (THE IMPERATIVE bandTop = y+10-1); THE STATUS STRIP AT
-        // footerY+10 — HENCE THE ROW PADDING TOP 9 PLUS A 1px TOP MARGIN ON THE STATUS GROUP
         this.binds = Parent.row().spacing(0);
         final StatusText ffmpeg = new StatusText("FFMPEG")
                 .status(() -> {
@@ -62,6 +57,7 @@ final class KeybindsBar extends Group<KeybindsBar> {
                     return RenderSystem.vulkanActive() ? StatusSquare.Status.OK : StatusSquare.Status.OFF;
                 })
                 .strike(() -> !RenderSystem.vulkanAvailable());
+        // THE CHIPS SIT 9px BELOW THE BAR TOP AND THE STATUS STRIP 10px: ROW PADDING 9 PLUS A 1px STATUS MARGIN
         final Parent status = Parent.row().spacing(0)
                 .margin(new Spacing(1, 0, 0, 0))
                 .add(ffmpeg)
@@ -132,7 +128,6 @@ final class KeybindsBar extends Group<KeybindsBar> {
         final int x = this.left;
         final int y = this.top;
         final int w = this.measuredWidth;
-        // GRADIENT BAND WITH ITS TOP HAIRLINE — THE PLAYER OWNS ITS OWN SEEKBAR, SO NO PROGRESS TRACK HERE
         canvas.gradientV(x, y, w, H,
                 AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 1f,
                 AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 1f);

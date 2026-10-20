@@ -14,10 +14,8 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.glfw.GLFWVulkan.glfwVulkanSupported;
 
 /**
- * Static facade for the active UI render engine. It also owns the engine lifecycle tied to the
- * window — choosing OpenGL vs Vulkan, applying the matching GLFW hints, attaching to the created
- * window and supplying the media graphics engine — so the rest of the app never branches on the
- * backend.
+ * Static facade of the active UI render engine; it also picks OpenGL or Vulkan, applies the window hints, attaches
+ * to the window and supplies the media engine, so the rest of the app never branches on the backend.
  */
 public final class RenderSystem {
 
@@ -27,8 +25,7 @@ public final class RenderSystem {
     // A GL DEBUG CONTEXT ADDS PER-CALL DRIVER VALIDATION OVERHEAD — OFF BY DEFAULT, OPT IN WITH -Dwatermedia.gldebug=true
     public static final boolean GL_DEBUG = Boolean.getBoolean("watermedia.gldebug");
 
-    // VOLATILE: deviceName()/engineKind() AND FRIENDS ARE READ OFF THE RENDER THREAD, AND THE ENGINE IS
-    // SWAPPED ON A GL<->VK HOTSWAP — READERS MUST SEE THE PUBLISHED VALUE, NOT A STALE/NULL CACHE.
+    // READ OFF THE RENDER THREAD (deviceName(), engineKind()) AND REPLACED ON EVERY HOT SWAP
     private static volatile Engine kind = Engine.OPENGL;
     private static volatile RenderEngine engine;
     // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX) — REMEMBERED HERE SO ENGINES ATTACHED LATER INHERIT IT
@@ -55,11 +52,7 @@ public final class RenderSystem {
         }
     }
 
-    /**
-     * Creates the backend for the chosen engine, binds it to the window and initializes it. Returns
-     * false when Vulkan was requested but failed — the engine is already switched to OpenGL, so the
-     * caller should rebuild the window with OpenGL hints and call this again.
-     */
+    /** Builds the chosen engine on the window; returns false when Vulkan failed and the window must be rebuilt for OpenGL. */
     public static boolean attach(final long window) {
         if (kind == Engine.VULKAN) {
             VulkanRenderBackend vk = null;
@@ -73,9 +66,8 @@ public final class RenderSystem {
                 return true;
             } catch (final Throwable t) {
                 WaterMedia.LOGGER.error("Vulkan engine init failed; falling back to OpenGL", t);
-                // DESTROY THE PARTIALLY BUILT BACKEND: THE CALLER REBUILDS THE GLFW WINDOW NEXT, AND
-                // ITS VkSurfaceKHR MUST DIE BEFORE THE WINDOW — OTHERWISE THE FALLBACK CAN CRASH IN
-                // THE DRIVER AND THE DEVICE/INSTANCE LEAK FOR THE PROCESS LIFETIME.
+                // THE VkSurfaceKHR MUST DIE BEFORE THE CALLER REBUILDS THE WINDOW, OR THE DRIVER CAN CRASH AND
+                // THE DEVICE AND INSTANCE LEAK
                 if (vk != null) {
                     try {
                         vk.cleanup();
@@ -124,13 +116,7 @@ public final class RenderSystem {
         return engine.mediaEngineSupplier(renderThread, renderExecutor);
     }
 
-    /**
-     * Sets the global UI scale (physical pixels per logical pixel) on the active render engine and
-     * remembers it for engines attached later. The engine applies it to scissor rectangles and
-     * rasterized line widths only; geometry scales through the ortho projection and the viewport
-     * stays physical. NOTE: this facade does not reach the app-owned text renderer — the caller
-     * must also push the same value into {@code TextRenderer#setUiScale(float)}.
-     */
+    /** Sets the UI scale on the active engine and remembers it for later ones; the text renderer needs its own call. */
     public static void uiScale(final float scale) {
         uiScale = scale > 0f ? scale : 1f;
         if (engine != null) engine.uiScale(uiScale);
@@ -142,7 +128,7 @@ public final class RenderSystem {
     }
 
     // NULLS THE ENGINE SO WINDOW-CREATION MESSAGES BETWEEN A TEARDOWN AND THE NEXT attach() (ENGINE
-    // HOT-SWAP) CANNOT REACH A DEAD BACKEND WHOSE CONTEXT DIED WITH THE OLD WINDOW
+    // HOT-SWAP) CANNOT REACH A DEAD BACKEND WHOSE CONTEXT DIED WITH THE PREVIOUS WINDOW
     public static void cleanup() {
         final RenderEngine current = engine;
         engine = null;
@@ -152,9 +138,8 @@ public final class RenderSystem {
     public static void configureFrameState() { engine.configureFrameState(); }
     public static void clear(final float r, final float g, final float b, final float a) { engine.clear(r, g, b, a); }
 
-    // NULL-SAFE: THE GLFW SIZE CALLBACK FIRES SYNCHRONOUSLY DURING WINDOW CREATION (WinFrame'S
-    // SWP_FRAMECHANGED TRIGGERS WM_SIZE) BEFORE attach() BUILT THE ENGINE; GL SETS ITS INITIAL VIEWPORT
-    // FROM THE FRAMEBUFFER AT CONTEXT CREATION AND THE SWAP PATH RE-CALLS viewport() AFTER attach()
+    // NULL-SAFE: WinFrame'S SWP_FRAMECHANGED FIRES THE SIZE CALLBACK DURING WINDOW CREATION, BEFORE attach();
+    // GL TAKES ITS FIRST VIEWPORT FROM THE FRAMEBUFFER AND THE SWAP PATH CALLS viewport() AGAIN
     public static void viewport(final int width, final int height) {
         final RenderEngine current = engine;
         if (current != null) current.viewport(width, height);

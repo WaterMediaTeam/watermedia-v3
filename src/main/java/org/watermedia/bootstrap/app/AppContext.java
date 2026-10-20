@@ -19,19 +19,17 @@ import static org.lwjgl.openal.AL10.alSourcePlay;
 import static org.lwjgl.openal.AL10.alSourceStop;
 
 /**
- * Shared application context and state.
+ * Window, input, selection, dialog and audio state shared by the screens, plus the render-thread task queue.
  */
 public final class AppContext implements Executor {
 
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
     public static final String REPO = "SrRapero720/watermedia"; // MIRRORS github IN gradle.properties
-    // IMMUTABLE, THREAD-SAFE FORMATTER FOR ELAPSED MEDIA TIME (HH:MM:SS). REPLACES A PUBLIC, MUTABLE
-    // SimpleDateFormat THAT ALLOCATED A Date PLUS INTERNAL BUFFERS ON EVERY PER-FRAME formatTime() CALL.
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
     public static final boolean IN_MODS = new File("").getAbsoluteFile().getName().equalsIgnoreCase("mods");
 
-    // KNOWN MODS THAT BUILD ON WATERMEDIA — CANDIDATES FOR THE STAGE-3 "SUSPECTED MODS" LIST. THE SIMPLE
-    // NAME IS THE MOD ID; A CANDIDATE IS ONLY SHOWN WHEN A JAR WHOSE FILENAME CONTAINS THAT ID IS PRESENT.
+    // MODS BUILT ON WATERMEDIA, OFFERED AS ISSUE TARGETS IN THE THIRD UPLOAD STAGE WHEN A JAR NAME IN THE
+    // MODS FOLDER CONTAINS THEIR id
     public static final List<SuspectMod> SUSPECT_MODS = List.of(
             new SuspectMod("fancymenu", "FancyMenu", "Keksuccino/FancyMenu", "https://github.com/Keksuccino/FancyMenu/issues/new"),
             new SuspectMod("waterframes", "WaterFrames", "SrRapero720/waterframes", "https://github.com/SrRapero720/waterframes/issues/new"),
@@ -48,23 +46,23 @@ public final class AppContext implements Executor {
     // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX)
     public volatile float uiScale = 1f;
 
-    /** Window width in LOGICAL pixels — the coordinate space the whole element tree lives in. */
+    /** Returns the window width in logical pixels, the coordinate space of the element tree. */
     public int logicalWidth() {
         return Math.round(this.windowWidth / this.uiScale);
     }
 
-    /** Window height in LOGICAL pixels — the coordinate space the whole element tree lives in. */
+    /** Returns the window height in logical pixels, the coordinate space of the element tree. */
     public int logicalHeight() {
         return Math.round(this.windowHeight / this.uiScale);
     }
 
-    // GLOBAL CRT OVERLAY TOGGLE (SCANLINES + NEON BANDS) — DRIVEN BY THE 'C' SHORTCUT AND THE SETTINGS ROW
+    // CRT OVERLAY (SCANLINES AND NEON BANDS), TOGGLED BY THE C SHORTCUT AND THE SETTINGS ROW
     public volatile boolean crt = true;
 
-    // MOUSE
+    // MOUSE, IN LOGICAL PX
     public double mouseX;
     public double mouseY;
-    // RAW PHYSICAL CURSOR COORDS (TITLEBAR DRAG USES THESE); mouseX/mouseY BECOME LOGICAL IN A FUTURE WAVE
+    // PHYSICAL CURSOR COORDS FOR THE TITLEBAR DRAG
     public volatile double mouseRawX;
     public volatile double mouseRawY;
     public boolean mouseDown;
@@ -76,8 +74,8 @@ public final class AppContext implements Executor {
     // TEXT RENDERER
     public TextRenderer text;
 
-    // GL-THREAD TASK QUEUE — DRAINED BY processExecutor(); ENQUEUE VIA execute() SO THE LOOP IS WOKEN.
-    // PRIVATE ON PURPOSE: A DIRECT add() WOULD SKIP THE requestRender() WAKE-UP execute() PERFORMS.
+    // RENDER-THREAD TASKS DRAINED BY processExecutor(); PRIVATE SO EVERY ENQUEUE GOES THROUGH execute(), WHICH
+    // WAKES THE LOOP
     private final Queue<Runnable> tasks = new ConcurrentLinkedQueue<>();
 
     // MRL DATA
@@ -119,7 +117,7 @@ public final class AppContext implements Executor {
     // GLOBAL ERROR DIALOG
     final ErrorState error = new ErrorState();
 
-    // GLOBAL EXIT-CONFIRM DIALOG (TITLEBAR CLOSE / EXIT ACTION) — RENDERED BY THE WINDOW SHELL
+    // GLOBAL EXIT-CONFIRM DIALOG, RAISED BY THE TITLEBAR CLOSE AND THE EXIT ACTION
     public volatile boolean exitConfirm;
 
     // RECORDS
@@ -176,8 +174,8 @@ public final class AppContext implements Executor {
     }
 
     public boolean consumeRenderRequest() {
-        // SINGLE-CONSUMER CLEAR ON THE MAIN/GL THREAD; WRITERS ONLY EVER SET TRUE,
-        // SO A RACING REQUEST IS HARMLESSLY RE-DELIVERED VIA glfwPostEmptyEvent().
+        // ONLY THE RENDER THREAD CLEARS THE FLAG AND WRITERS ONLY SET IT, SO A RACING REQUEST IS
+        // RE-DELIVERED BY glfwPostEmptyEvent()
         final boolean requested = this.renderRequested;
         this.renderRequested = false;
         return requested;
@@ -197,7 +195,7 @@ public final class AppContext implements Executor {
     }
 
     public String formatTime(final long ms) {
-        // ms IS ELAPSED MEDIA TIME, NOT WALL CLOCK — RENDER AS HH:MM:SS, WRAPPING AT 24H LIKE THE OLD FORMATTER
+        // ms IS ELAPSED MEDIA TIME, NOT WALL CLOCK; IT WRAPS AT 24H
         return LocalTime.ofSecondOfDay(Math.max(0L, ms) / 1000L % 86_400L).format(TIME_FORMAT);
     }
 
@@ -220,37 +218,27 @@ public final class AppContext implements Executor {
         if (p == null) return;
         this.player = null; // RENDER-THREAD-ONLY FIELD; SAFE TO CLEAR BEFORE THE BACKGROUND TEARDOWN
         p.stop();
-        // release() JOINS THE DECODER LIFECYCLE — FFMPEG CONTEXT CLOSE + DECODE-THREAD JOINS + GPU
-        // DRAIN — WHICH BLOCKS ~HUNDREDS OF MS. RUN IT OFF THE RENDER THREAD SO LEAVING THE PLAYER
-        // SCREEN DOES NOT FREEZE THE UI.
+        // release() CLOSES FFMPEG, JOINS THE DECODE THREADS AND DRAINS THE GPU FOR HUNDREDS OF MS, SO IT
+        // RUNS OFF THE RENDER THREAD TO KEEP THE UI RESPONSIVE WHEN LEAVING THE PLAYER
         this.releaseAsync("WaterMedia-PlayerRelease", p::release);
     }
 
-    /**
-     * Runs a blocking media teardown off the render thread, chained behind any prior release. Since
-     * {@link #awaitPlayerRelease()} joins only the latest thread, this chain guarantees no earlier
-     * release — the main player or a batch of thumbnails — outlives the render-device teardown. The
-     * engine release is thread-safe (OpenGL defers its texture deletes to the render executor; Vulkan
-     * submits under the shared queue lock). Call on the render thread; {@code release} runs off it.
-     */
+    /** Runs a blocking media teardown off the render thread, after any previous one; call it on the render thread. */
     public void releaseAsync(final String name, final Runnable release) {
         final Thread prev = this.releaseThread;
+        // CHAINED BECAUSE awaitPlayerRelease() JOINS ONLY THE LATEST THREAD, WHICH THEN OUTLASTS EVERY EARLIER RELEASE
         this.releaseThread = ThreadTool.thread(name, () -> {
             if (prev != null) ThreadTool.join(prev);
             release.run();
         });
     }
 
-    /**
-     * Blocks until the latest asynchronous {@link #releaseAsync} finishes (the main player or the last
-     * thumbnail batch). Call this on the render thread before tearing down the render device on shutdown,
-     * so a background Vulkan release never touches a destroyed device. The executor is pumped meanwhile
-     * because a background OpenGL engine release dispatches its texture deletions onto this thread, which
-     * is no longer running the loop.
-     */
+    /** Blocks until every {@link #releaseAsync} finishes; call it on the render thread before destroying the render device. */
     public void awaitPlayerRelease() {
         final Thread t = this.releaseThread;
         if (t == null) return;
+        // PUMPS THE EXECUTOR: A BACKGROUND OPENGL RELEASE QUEUES ITS TEXTURE DELETES ON THIS THREAD, WHICH HAS
+        // LEFT THE LOOP
         while (t.isAlive()) {
             this.processExecutor();
             ThreadTool.sleep(2);
@@ -265,23 +253,17 @@ public final class AppContext implements Executor {
         }
     }
 
-    /**
-     * Shows a global error dialog.
-     */
+    /** Shows the global error dialog. */
     public void showError(final String title, final String message, final Runnable onClose) {
         this.error.show(title, message, onClose);
     }
 
-    /**
-     * Checks if there's an active error dialog.
-     */
+    /** Returns whether the error dialog is active. */
     public boolean hasError() {
         return this.error.has();
     }
 
-    /**
-     * Clears the error dialog.
-     */
+    /** Clears the error dialog and runs its close callback. */
     public void clearError() {
         this.error.clear();
     }

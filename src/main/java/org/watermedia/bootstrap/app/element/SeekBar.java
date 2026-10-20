@@ -7,11 +7,8 @@ import java.awt.Color;
 import java.util.function.Consumer;
 
 /**
- * A draggable horizontal slider with an optional buffered fill, like a media scrubber. It fills the
- * parent's width, paints a centered track, a translucent buffered range and the solid value range in the
- * accent, and carries a small amber square thumb at the current position that brightens while hovered or
- * dragged. Pressing or dragging anywhere on the bar snaps the value to the pointer, clamps it to
- * {@code 0..1} and reports it through {@code onChange}.
+ * A full-width slider with a buffered range and an amber thumb; pressing or dragging snaps the value (0..1) to the
+ * pointer and reports it through {@code onChange}.
  */
 public final class SeekBar extends Element<SeekBar> {
 
@@ -67,11 +64,9 @@ public final class SeekBar extends Element<SeekBar> {
         final int x = this.innerLeft();
         final int w = this.innerWidth();
         final int trackY = this.innerTop() + (this.innerHeight() - this.trackHeight) / 2;
-        // TRACK, THEN THE BUFFERED RANGE, THEN THE SOLID VALUE RANGE ON TOP
         canvas.fill(x, trackY, w, this.trackHeight, AppTheme.alpha(AppTheme.NEON_DARK, 90));
         canvas.fill(x, trackY, Math.round(w * this.buffered), this.trackHeight, AppTheme.alpha(this.accent, 120));
         canvas.fill(x, trackY, Math.round(w * this.value), this.trackHeight, this.accent);
-        // AMBER THUMB — A SQUARE GRAB HANDLE CENTERED ON THE VALUE, GLOWING BRIGHTER WHILE HOVERED/DRAGGED
         final boolean active = this.hovered || this.dragging;
         final int thumb = active ? 14 : 12;
         final int thumbX = x + Math.round(w * this.value) - thumb / 2;
@@ -82,7 +77,7 @@ public final class SeekBar extends Element<SeekBar> {
 
     @Override
     protected boolean onPress(final double mx, final double my) {
-        // CAPTURE THE POINTER: SNAP TO THE PRESS POSITION AND KEEP RECEIVING DRAG UNTIL RELEASE
+        // ACCEPTING THE PRESS CAPTURES THE POINTER, SO DRAGS KEEP ARRIVING UNTIL RELEASE
         this.dragging = true;
         this.apply(mx);
         return true;

@@ -5,11 +5,7 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
 
-/**
- * A horizontal determinate progress bar. It stretches to the parent's width, keeps a fixed track height,
- * and paints a dark neon track with an accent-colored fill whose width is the track width scaled by
- * {@link #progress} (clamped to {@code 0..1}).
- */
+/** A full-width determinate progress bar whose accent fill covers {@link #progress} (0..1) of the track. */
 public final class ProgressBar extends Element<ProgressBar> {
 
     private float progress;
@@ -32,7 +28,7 @@ public final class ProgressBar extends Element<ProgressBar> {
     }
 
     public ProgressBar trackHeight(final int value) {
-        // CLAMP LIKE SeekBar.trackHeight — A 0/NEGATIVE TRACK WOULD PAINT NOTHING (SILENT MISUSE)
+        // A ZERO OR NEGATIVE TRACK WOULD SILENTLY PAINT NOTHING
         this.trackHeight = Math.max(1, value);
         this.height = this.trackHeight;
         return this;

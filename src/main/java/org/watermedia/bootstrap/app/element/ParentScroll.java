@@ -4,10 +4,7 @@ import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 /**
- * Clips its content to its own bounds and scrolls it vertically, like Android's {@code ParentScroll}. It
- * wraps a single content view (typically a {@link Parent} column) measured at its natural height;
- * the wheel adjusts the offset with momentum (consecutive notches accumulate and the motion decays
- * smoothly after the last one) and a thin scrollbar shows the position when the content overflows.
+ * Clips its first visible child to its bounds and scrolls it vertically with wheel momentum and a thin scrollbar.
  * Programmatic scrolls ({@link #scrollTo}, {@link #ensureVisible}) are instant.
  */
 public final class ParentScroll extends Group<ParentScroll> {
@@ -37,8 +34,7 @@ public final class ParentScroll extends Group<ParentScroll> {
         }
         content.measure(innerAvailWidth, ScrollState.UNBOUNDED);
         this.contentWidth = content.measuredWidth;
-        // THE VIEWPORT HEIGHT COMES FROM THIS VIEW'S OWN SIZE PARAM, NOT THE CONTENT — REPORT THE OFFERED
-        // HEIGHT SO A WRAP_CONTENT PARENTSCROLL STILL BOUNDS ITSELF RATHER THAN GROWING TO THE FULL CONTENT
+        // CAPPED AT THE OFFERED HEIGHT SO A WRAP_CONTENT SCROLLER BOUNDS ITSELF INSTEAD OF GROWING TO THE CONTENT
         this.contentHeight = Math.min(content.measuredHeight, innerAvailHeight);
     }
 
@@ -61,7 +57,6 @@ public final class ParentScroll extends Group<ParentScroll> {
 
     @Override
     protected void onDraw(final Canvas canvas) {
-        // CLIP TO THE VIEWPORT SO SCROLLED-OUT CONTENT IS NOT PAINTED, THEN DRAW THE (OFFSET) CONTENT
         canvas.pushClip(this.left, this.top, this.measuredWidth, this.measuredHeight);
         super.onDraw(canvas);
         canvas.popClip();
@@ -106,11 +101,7 @@ public final class ParentScroll extends Group<ParentScroll> {
         return this;
     }
 
-    /**
-     * Scrolls the minimum amount needed to bring {@code child} (a direct or deep descendant of the
-     * content) fully into the viewport. Uses the post-layout geometry, so it must be called after the
-     * tree has been laid out; a child taller than the viewport aligns to the top.
-     */
+    /** Scrolls the least amount that shows a laid-out descendant; one taller than the viewport aligns to the top. */
     public ParentScroll ensureVisible(final Element<?> child) {
         if (child == null) return this;
         // CHILD TOP IN CONTENT SPACE — layout PLACED IT AT ABSOLUTE COORDS SHIFTED BY THE CURRENT OFFSET

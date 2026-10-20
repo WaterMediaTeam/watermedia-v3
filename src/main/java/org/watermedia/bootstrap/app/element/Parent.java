@@ -2,12 +2,8 @@ package org.watermedia.bootstrap.app.element;
 
 
 /**
- * Stacks its children in a single direction, like Android's {@code LinearLayout}. Non-weighted children
- * take their measured size; children with a positive {@link Element#weight} share the leftover main-axis
- * space in proportion (which only applies when this layout's main axis is bounded). A child sized
- * {@code MAX_PARENT} on the main axis without an explicit weight behaves as weight 1 — it shares the
- * leftover instead of greedily taking the whole axis. A child's own {@link Element#gravity} aligns it on
- * the cross axis; {@code MAX_PARENT} on the cross axis fills it.
+ * Stacks its children along one axis; weighted children, and main-axis {@code MAX_PARENT} ones as weight 1, share the
+ * leftover space in proportion. Each child's {@link Element#gravity} aligns it on the cross axis.
  */
 public class Parent extends Group<Parent> {
 

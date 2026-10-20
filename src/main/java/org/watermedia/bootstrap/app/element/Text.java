@@ -6,14 +6,12 @@ import java.awt.Color;
 import java.awt.Font;
 
 /**
- * A single line of text, like Android's {@code Text}. It measures to the text's intrinsic size at
- * its scale/weight, truncates with an ellipsis when its box is narrower, aligns horizontally by the
- * view {@link Element#gravity} and centers vertically within a taller box. Text is measured through the
- * shared {@code TextRenderer} reached via the attached context.
+ * A single line of text that truncates with an ellipsis when its box is narrower, aligns by {@link Element#gravity}
+ * and centers vertically.
  */
 public final class Text extends Element<Text> {
 
-    // TRAILING CHIP GAP; THE CHIP PAD/HEIGHT ARE THE Theme CONSTANTS SHARED WITH Button (SAME GEOMETRY)
+    // GAP BEFORE THE TRAILING CHIP, WHOSE PAD AND HEIGHT COME FROM Theme LIKE THE Button CHIP
     private static final int CHIP_GAP = 12;
 
     private String text = "";
@@ -35,10 +33,7 @@ public final class Text extends Element<Text> {
         return this;
     }
 
-    /**
-     * Sets a trailing chip rendered after the main text (e.g. an inline keybind or count), using the
-     * same chip geometry as {@code Button}'s subtext chip. A blank value hides the chip entirely.
-     */
+    /** Sets a trailing chip after the text, such as a keybind, drawn like the {@link Button} chip; blank hides it. */
     public Text subText(final String value) {
         this.subText = value == null ? "" : value;
         return this;
@@ -59,12 +54,7 @@ public final class Text extends Element<Text> {
         return this;
     }
 
-    /**
-     * Sets extra pixel spacing inserted between consecutive characters. A spaced run is measured and
-     * drawn glyph by glyph, with every character metered as its own single-char run plus the spacing
-     * between neighbors, and it never truncates with an ellipsis. The default {@code 0} keeps the
-     * regular whole-run path untouched.
-     */
+    /** Sets extra pixels between characters; a spaced run is drawn glyph by glyph and never truncates. */
     public Text letterSpacing(final int value) {
         this.letterSpacing = Math.max(0, value);
         return this;
@@ -86,7 +76,6 @@ public final class Text extends Element<Text> {
                     : this.bold ? this.ctx.text.widthBold(this.text, this.scale) : this.ctx.text.width(this.text, this.scale);
             this.contentHeight = this.textHeight();
         }
-        // TRAILING SUBTEXT CHIP — ONLY WHEN NON-BLANK, SAME GEOMETRY AS THE BUTTON CHIP
         if (this.ctx != null && this.ctx.text != null && !this.subText.isBlank()) {
             this.contentWidth += CHIP_GAP + this.ctx.text.width(this.subText, AppTheme.TEXT_SUBTITLE) + Theme.CHIP_PAD * 2;
             this.contentHeight = Math.max(this.contentHeight, Theme.CHIP_H);
@@ -124,8 +113,7 @@ public final class Text extends Element<Text> {
             canvas.text(draw, tx, ty, this.color, this.scale, this.bold);
         }
         if (chip) {
-            // CHIP BOX CENTERED ON THE LABEL LINE; CHIP TEXT SHARES THE LABEL'S BASELINE (SAME RULE AS
-            // Button.render — CELL-CENTERING DRIFTS BECAUSE THE TWO SIZES HAVE DIFFERENT DESCENDER SPACE)
+            // CHIP TEXT SHARES THE LABEL BASELINE LIKE Button.render, SINCE CELL-CENTERING DRIFTS WITH DESCENDER SPACE
             final int chipX = tx + tw + CHIP_GAP;
             final float cy = ty + th / 2f;
             canvas.stroke(chipX, cy - Theme.CHIP_H / 2f, chipW, Theme.CHIP_H, AppTheme.STROKE, 1f);

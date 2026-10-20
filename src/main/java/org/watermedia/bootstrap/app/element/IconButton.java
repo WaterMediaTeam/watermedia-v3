@@ -4,12 +4,7 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
 
-/**
- * An icon-only clickable control — the square sibling of {@link Button}. It reuses the exact button box
- * (background, border, hover glow via {@link Button#box}) but centers a single icon with no label or
- * chip: dialog closes, media transport keys, and other compact controls. A single accent drives the
- * whole look (border, glow, hover tint) so callers only pick a hue.
- */
+/** An icon-only button that centers one icon inside the {@link Button} box, with one accent driving the whole look. */
 public final class IconButton extends Element<IconButton> {
 
     private static final int DEFAULT_ICON = 14;
@@ -61,7 +56,7 @@ public final class IconButton extends Element<IconButton> {
         return this;
     }
 
-    // WHEN false, DROPS THE BOX ENTIRELY (border=0, NO FILL/GLOW) — A BARE CENTERED ICON, E.G. TITLEBAR CONTROLS
+    /** Sets whether the button box is drawn; {@code false} leaves a bare centered icon. */
     public IconButton bordered(final boolean value) {
         this.bordered = value;
         return this;
@@ -82,20 +77,14 @@ public final class IconButton extends Element<IconButton> {
                 this.filled, this.hovered, this.enabled, this.bordered);
     }
 
-    /**
-     * Paints an icon-only button (with the shared button box) into ({@code x,y,w,h}) — a single centered
-     * icon, the one source of the icon-button look for both the view and the screens.
-     */
+    /** Paints a bordered icon button into ({@code x,y,w,h}). */
     public static void render(final Canvas canvas, final int x, final int y, final int w, final int h, final String icon,
                               final int iconSize, final Color accent, final Color iconColor,
                               final boolean filled, final boolean hover, final boolean enabled) {
         render(canvas, x, y, w, h, icon, iconSize, accent, iconColor, filled, hover, enabled, true);
     }
 
-    /**
-     * As {@link #render}, but {@code bordered=false} draws only the centered icon (no box/border/glow) for
-     * bare controls like the window titlebar.
-     */
+    /** Paints an icon button into ({@code x,y,w,h}); {@code bordered=false} draws only the centered icon. */
     public static void render(final Canvas canvas, final int x, final int y, final int w, final int h, final String icon,
                               final int iconSize, final Color accent, final Color iconColor,
                               final boolean filled, final boolean hover, final boolean enabled, final boolean bordered) {

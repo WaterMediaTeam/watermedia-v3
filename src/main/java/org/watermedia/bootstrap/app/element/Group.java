@@ -6,12 +6,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Base container: holds child views, draws them, and fans events out to them topmost-first (later
- * children paint on top, so they claim a hit before earlier ones). Concrete layouts
- * ({@link Parent}, {@link ParentFrame}, {@link ParentScroll}) decide how children are measured and
- * positioned by overriding {@link #onMeasure} and {@link #onLayout}.
- *
- * @param <T> the concrete container type, for fluent chaining
+ * Base container that draws its children in order and dispatches input topmost-first, so later children win hits.
+ * Subclasses measure and place the children in {@link #onMeasure} and {@link #onLayout}.
  */
 public abstract class Group<T extends Group<T>> extends Element<T> {
 
@@ -27,7 +23,6 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     }
 
     public T remove(final Element<?> child) {
-        // NULL THE BACK-POINTER SO A REMOVED CHILD NO LONGER CLAIMS THIS GROUP AS ITS PARENT
         if (this.children.remove(child)) child.parent = null;
         return this.self();
     }
@@ -51,8 +46,8 @@ public abstract class Group<T extends Group<T>> extends Element<T> {
     @Override
     public void update() {
         super.update();
-        // EVERY CHILD UPDATES, VISIBLE OR NOT — A HIDDEN DIALOG NEEDS ITS onUpdate TO BECOME VISIBLE.
-        // INDEXED LOOP SO AN onUpdate THAT APPENDS CHILDREN CANNOT THROW A ConcurrentModificationException
+        // HIDDEN CHILDREN UPDATE TOO, SO A HIDDEN VIEW CAN BIND ITS OWN VISIBILITY; THE INDEXED LOOP LETS AN
+        // onUpdate APPEND CHILDREN WITHOUT A ConcurrentModificationException
         for (int i = 0; i < this.children.size(); i++) this.children.get(i).update();
     }
 

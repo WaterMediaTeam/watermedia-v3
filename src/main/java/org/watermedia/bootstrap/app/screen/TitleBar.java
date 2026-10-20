@@ -29,11 +29,8 @@ import static org.lwjgl.glfw.GLFW.glfwSetWindowPos;
 import static org.lwjgl.system.MemoryStack.stackPush;
 
 /**
- * The window titlebar as a retained view: a gradient band with the app icon, the window title and the
- * three borderless window buttons (minimize / maximize-restore / close). On Windows the empty band is
- * native caption space ({@link WinFrame} maps it to {@code HTCAPTION}); elsewhere it drives an OS window
- * move through GLFW with restore-on-drag and top-edge snap-assist (see the input handlers below). Button
- * actions are configurable {@link Runnable}s; minimize and maximize fall back to GLFW when unset.
+ * The window titlebar: app icon, title and the minimize / maximize / close buttons. On Windows the empty band is
+ * native caption space ({@link WinFrame}); elsewhere it moves the window through GLFW with top-edge snap-assist.
  */
 public final class TitleBar extends Element<TitleBar> {
 
@@ -90,12 +87,11 @@ public final class TitleBar extends Element<TitleBar> {
         final int x = this.left;
         final int y = this.top;
         final int w = this.measuredWidth;
-        // GRADIENT BAND + BOTTOM HAIRLINE + ICON + TITLE + WINDOW BUTTONS
         canvas.gradientV(x, y, w, H,
                 AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 1f,
                 AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 1f);
         canvas.lineH(x, y + H - 1, w, AppTheme.STROKE_BRIGHT, 1f);
-        // APP ICON — READ FROM ctx.assets EVERY DRAW, THE TEXTURE ID CAN CHANGE ACROSS RELOADS
+        // THE ICON TEXTURE ID IS READ EVERY DRAW BECAUSE IT CHANGES ACROSS RELOADS
         if (this.ctx.assets.iconId > 0) {
             canvas.image(this.ctx.assets.iconId, x + 8, y + 6, 16, 16, null);
         }
@@ -110,7 +106,7 @@ public final class TitleBar extends Element<TitleBar> {
                     ? (hover ? AppTheme.RED : AppTheme.alpha(AppTheme.RED, 190))
                     : (hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_FAINT);
             final String icon = i == 0 ? "minimize" : i == 1 ? (this.ctx.windowMaximized ? "restore" : "maximize") : "x";
-            // BORDERLESS ICON BUTTON: BARE GLYPH WITH COLOR-ON-HOVER FEEDBACK, NO BOX (WINDOW-CHROME LOOK)
+            // BARE GLYPH WITHOUT A BOX: ONLY ITS COLOR REACTS TO HOVER
             IconButton.render(canvas, bx, y, BUTTON_W, H, icon, 12, color, color, false, hover, true, false);
         }
     }
@@ -133,11 +129,10 @@ public final class TitleBar extends Element<TitleBar> {
 
     @Override
     protected boolean onPress(final double mx, final double my) {
-        // ON WINDOWS THE EMPTY BAND IS NATIVE HTCAPTION (WinFrame): THE OS OWNS DRAG/SNAP/RESTORE AND
-        // GLFW NEVER DELIVERS PRESSES THERE — NEVER START A MANUAL WINDOW DRAG (ONLY EDGE-PIXEL ROUNDING
-        // COULD SLIP A PRESS THROUGH). onDrag/onRelease/restoreForDrag STAY UNREACHABLE WITHOUT CAPTURE.
+        // ON WINDOWS THE EMPTY BAND IS NATIVE HTCAPTION (WinFrame) AND THE OS OWNS DRAG, SNAP AND RESTORE;
+        // A PRESS THAT SLIPS THROUGH BY EDGE ROUNDING MUST NOT START A MANUAL DRAG
         if (WinFrame.ACTIVE) return false;
-        // THE BUTTON ZONE KEEPS CLICK SEMANTICS (LOGICAL HIT-TEST); ONLY THE EMPTY BAND STARTS A WINDOW DRAG
+        // ONLY THE EMPTY BAND STARTS A WINDOW DRAG; THE BUTTON ZONE KEEPS PLAIN CLICKS
         if (mx >= this.left + this.measuredWidth - BUTTON_W * 3) return false;
         // REMEMBER THE GLOBAL GRAB POINT (PHYSICAL SCREEN COORDS) BEFORE ANY RESTORE MOVES THE WINDOW,
         // SO onDrag CAN TELL A REAL WINDOW DRAG FROM PRESS JITTER (SNAP-ASSIST GUARD)
@@ -162,15 +157,15 @@ public final class TitleBar extends Element<TitleBar> {
 
     @Override
     public void onDrag(final double mx, final double my) {
-        // MOVE THE OS WINDOW: CURRENT WINDOW POS PLUS THE PHYSICAL CURSOR DELTA FROM THE GRAB POINT.
-        // WINDOW MOVEMENT IS PHYSICAL, SO IGNORE THE LOGICAL mx/my AND READ THE RAW CURSOR.
+        // WINDOW POSITIONS ARE PHYSICAL, SO THE MOVE USES THE RAW CURSOR DELTA FROM THE GRAB POINT
+        // INSTEAD OF THE LOGICAL mx/my
         if (this.ctx == null || this.ctx.windowHandle == 0L) return;
         try (final MemoryStack stack = stackPush()) {
             final IntBuffer wx = stack.mallocInt(1);
             final IntBuffer wy = stack.mallocInt(1);
             glfwGetWindowPos(this.ctx.windowHandle, wx, wy);
-            // SNAP-ASSIST ARM: THE GESTURE COUNTS AS A REAL DRAG ONCE THE GLOBAL CURSOR TRAVELS PAST THE
-            // SLOP — A RESTORE-FROM-MAXIMIZED PRESS THAT NEVER TRULY MOVED STAYS UNARMED
+            // SNAP-ASSIST ARMS ONLY AFTER THE GLOBAL CURSOR TRAVELS PAST THE SLOP, SO A RESTORE-FROM-MAXIMIZED
+            // PRESS THAT NEVER MOVED STAYS UNARMED
             if (Math.abs(wx.get(0) + this.ctx.mouseRawX - this.pressGX)
                     + Math.abs(wy.get(0) + this.ctx.mouseRawY - this.pressGY) > DRAG_SLOP) {
                 this.dragMoved = true;
@@ -183,9 +178,8 @@ public final class TitleBar extends Element<TitleBar> {
 
     @Override
     public void onRelease(final double mx, final double my) {
-        // SNAP-ASSIST: RELEASING A REAL DRAG WITH THE GLOBAL CURSOR ON THE TOP EDGE OF THE MONITOR WORK
-        // AREA MAXIMIZES THE WINDOW. THE dragMoved GUARD KEEPS THE RESTORE-FROM-MAXIMIZED GESTURE (WHICH
-        // STARTS ALREADY GLUED TO THE TOP) FROM RE-MAXIMIZING ON A PRESS THAT NEVER REALLY MOVED.
+        // SNAP-ASSIST: RELEASING A REAL DRAG ON THE TOP EDGE OF THE WORK AREA MAXIMIZES THE WINDOW; dragMoved
+        // KEEPS A RESTORE PRESS, WHICH STARTS AT THE TOP, FROM RE-MAXIMIZING WHEN IT NEVER MOVED
         if (!this.dragMoved) return;
         this.dragMoved = false;
         if (this.ctx == null || this.ctx.windowHandle == 0L || this.ctx.windowMaximized) return;
@@ -242,8 +236,8 @@ public final class TitleBar extends Element<TitleBar> {
         }
     }
 
-    // PORT OF WaterMediaApp.restoreForTitlebarDrag — DRAGGING A MAXIMIZED WINDOW FIRST RESTORES IT AND
-    // RE-ANCHORS THE GRAB POINT SO THE CURSOR KEEPS ITS RELATIVE POSITION OVER THE SMALLER TITLEBAR
+    // DRAGGING A MAXIMIZED WINDOW FIRST RESTORES IT AND RE-ANCHORS THE GRAB POINT SO THE CURSOR KEEPS
+    // ITS RELATIVE POSITION OVER THE SMALLER TITLEBAR
     private boolean restoreForDrag() {
         if (this.ctx == null || !this.ctx.windowMaximized || this.ctx.windowHandle == 0L) return false;
         try (final MemoryStack stack = stackPush()) {

@@ -10,10 +10,8 @@ import java.awt.Font;
 import java.util.Locale;
 
 /**
- * The screen header as a retained view — the pixel-exact port of the imperative chrome header: a
- * gradient band closed by the neon rule and its glow, the app banner, the amber separator, the bold
- * uppercase screen name (truncated), an optional subtitle and an optional right-aligned tag. An extra
- * right-slot element can be attached for screen-specific controls (e.g. a reset button).
+ * The screen header: the app banner, an amber separator, the uppercase screen name with an optional subtitle
+ * and right tag, over a gradient band closed by a neon rule. A right slot hosts screen-specific controls.
  */
 public final class Header extends Group<Header> {
 
@@ -69,7 +67,7 @@ public final class Header extends Group<Header> {
 
     @Override
     protected void onLayout() {
-        // RIGHT SLOT SITS WHERE THE IMPERATIVE HEADER PLACED ITS RIGHT TAG (32px INSET, y+25)
+        // THE RIGHT SLOT SHARES THE RIGHT TAG'S ANCHOR (32px INSET, y+25)
         for (final Element<?> child: this.children) {
             if (!child.visible()) continue;
             child.layout(this.left + this.measuredWidth - child.measuredWidth() - 32, this.top + 25);
@@ -85,7 +83,6 @@ public final class Header extends Group<Header> {
         final int x = this.left;
         final int y = this.top;
         final int w = this.measuredWidth;
-        // GRADIENT BAND, NEON RULE + GLOW, BANNER, AMBER SEPARATOR, TITLES
         canvas.gradientV(x, y, w, H,
                 AppTheme.BG_2.getRed() / 255f, AppTheme.BG_2.getGreen() / 255f, AppTheme.BG_2.getBlue() / 255f, 0.86f,
                 AppTheme.BG_1.getRed() / 255f, AppTheme.BG_1.getGreen() / 255f, AppTheme.BG_1.getBlue() / 255f, 0.55f);
@@ -126,7 +123,6 @@ public final class Header extends Group<Header> {
                     AppTheme.TEXT_FAINT, subScale);
         }
         if (this.right != null && !this.right.isEmpty()) {
-            // FILLED OUTLINED CHIP WITH THE UPPERCASE LABEL
             final int tagW = this.tagWidth(this.right);
             final int tagX = x + w - tagW - 32;
             final int tagY = y + 25;

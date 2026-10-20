@@ -24,9 +24,7 @@ import java.util.function.Supplier;
 
 import static org.lwjgl.glfw.GLFW.*;
 
-/**
- * OpenGL 3.2 core implementation for the app render backend.
- */
+/** OpenGL 3.2 core render backend of the app UI. */
 public final class OpenGLRenderBackend implements RenderBackend {
 
     private static final String VERT_SRC = """
@@ -56,8 +54,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
             }
             """;
 
-    // SDF SOFT-RECT SHADER — DRAWS A ROUNDED RECT WHOSE ALPHA IS SOLID INSIDE AND FADES OVER uSoftness
-    // OUTSIDE THE EDGE, REPLACING THE MULTI-PASS GLOW/SHADOW STACK WITH ONE QUAD. READS ONLY position.
+    // SDF SOFT RECT: ONE QUAD WHOSE ALPHA IS SOLID INSIDE AND FADES OVER uSoftness OUTSIDE THE EDGE, FOR GLOWS
+    // AND SHADOWS; READS ONLY position
     private static final String VERT_SDF = """
             #version 150 core
             in vec2 position;
@@ -84,8 +82,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
             }
             void main() {
                 float d = sdRoundBox(vPos - uCenter, uHalf, uRadius);
-                // CONCENTRATE THE INTENSITY NEAR THE EDGE (LIKE THE OLD STACKED-FILL GLOW) — A HIGH POWER
-                // FALLS OFF FAST WITH A FAINT TAIL, NOT THE FLAT/LINEAR RAMP A smoothstep GIVES
+                // A HIGH POWER CONCENTRATES THE INTENSITY NEAR THE EDGE WITH A FAINT TAIL, UNLIKE THE FLAT
+                // RAMP OF A smoothstep
                 float t = clamp(d / uSoftness, 0.0, 1.0);
                 float falloff = pow(1.0 - t, 2.2);
                 fragColor = vec4(uColor.rgb, uColor.a * falloff);
@@ -129,7 +127,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     // ==========================================================================
     // CONTEXT / CAPABILITIES
     // ==========================================================================
-    // MAKES THE GL CONTEXT CURRENT AND LOADS CAPABILITIES; RUN AS THE FIRST STEP OF init() (BEFORE SHADERS).
+    // MAKES THE GL CONTEXT CURRENT AND LOADS ITS CAPABILITIES BEFORE init() COMPILES THE SHADERS
     private void attachContext() {
         // THE REAL CONTEXT IS PINNED TO 3.2 CORE, WHICH SOME DRIVERS (e.g. NVIDIA) REPORT VERBATIM RATHER
         // THAN THE GPU MAX. PROBE THE DRIVER'S HIGHEST VERSION VIA A THROWAWAY DEFAULT-HINTS CONTEXT FIRST.
@@ -195,8 +193,8 @@ public final class OpenGLRenderBackend implements RenderBackend {
     @Override
     public void beginFrame() {
         this.init();
-        // BIND THE UI PROGRAM/VAO/VBO ONCE FOR THE WHOLE FRAME INSTEAD OF PER DRAW CALL. present() UNBINDS
-        // THEM SO THE MEDIA GLEngine (WHICH SHARES THIS CONTEXT) STILL SEES THE CLEAN STATE IT DID BEFORE.
+        // THE UI PROGRAM, VAO AND VBO STAY BOUND FOR THE WHOLE FRAME; present() UNBINDS THEM FOR THE MEDIA
+        // GLEngine, WHICH SHARES THIS CONTEXT
         GL20.glUseProgram(this.program);
         GL30.glBindVertexArray(this.vao);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vbo);
@@ -231,7 +229,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
     @Override
     public void init() {
         if (this.initialized) return;
-        this.attachContext(); // MAKE THE GL CONTEXT CURRENT + LOAD CAPABILITIES BEFORE COMPILING SHADERS
+        this.attachContext();
 
         final int vertexShader = compileShader(GL20.GL_VERTEX_SHADER, VERT_SRC);
         final int fragmentShader = compileShader(GL20.GL_FRAGMENT_SHADER, FRAG_SRC);
@@ -358,7 +356,7 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height,
                 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, rgba);
-        // RESTORE THE DEFAULT ROW LENGTH SO THE SHARED GL STATE DOES NOT MIS-FEED A LATER CONSUMER (M-04/L-04)
+        // RESTORE THE DEFAULT ROW LENGTH SO THE SHARED GL STATE DOES NOT MIS-FEED A LATER UPLOAD
         GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, 0);
         return new TextureHandle(id, width, height);
     }

@@ -1,10 +1,8 @@
 package org.watermedia.bootstrap.app.element;
 
 /**
- * Formalized non-color design tokens for the view system — the bounded set of spacings, radii, border
- * widths and decorator intensities that the immediate-mode screens used to scatter as magic numbers.
- * Colors and the type ramp stay in {@code AppTheme} (already the single source for those); this holder
- * covers the dimensions and decorator tiers a {@link Element}'s decor consumes.
+ * Non-color design tokens of the view system: spacings, radii, border widths, decorator tiers and control heights.
+ * Colors and the type ramp live in {@code AppTheme}.
  */
 public final class Theme {
 
@@ -19,8 +17,7 @@ public final class Theme {
     public static final int SPACE_XL = 20;
     public static final int SPACE_XXL = 28;
 
-    // CORNER RADIUS — THE UI IS SQUARE-CORNERED TODAY, SO NONE IS THE DEFAULT; THE OTHERS EXIST FOR A
-    // LATER, DELIBERATE ROUNDED PASS AND ARE NOT USED WHILE THE PIXEL-EXACT SQUARE LOOK IS KEPT
+    // CORNER RADIUS: THE UI DRAWS SQUARE CORNERS, SO NO VIEW APPLIES THESE RADII
     public static final float RADIUS_NONE = 0f;
     public static final float RADIUS_SM = 4f;
     public static final float RADIUS_MD = 8f;
@@ -49,8 +46,7 @@ public final class Theme {
     public static final int BUTTON = 34;
     public static final int BUTTON_LG = 48;
 
-    // TRAILING SUBTEXT/KEYBIND CHIP GEOMETRY — SHARED BY Button AND Text SO A LABEL CHIP AND A BUTTON CHIP
-    // KEEP THE SAME LOOK (CHANGING ONE USED TO SILENTLY DESYNC THE OTHER)
+    // TRAILING CHIP GEOMETRY SHARED BY Button AND Text, SO BOTH CHIPS KEEP THE SAME LOOK
     public static final int CHIP_PAD = 6;
     public static final int CHIP_H = 20;
 }

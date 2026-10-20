@@ -65,7 +65,7 @@ public final class Stepper extends Element<Stepper> {
             }
             canvas.text(this.labels[i], x + LABEL_X, y + 8, color, AppTheme.TEXT_BODY, false);
             final int end = x + LABEL_X + canvas.textWidth(this.labels[i], AppTheme.TEXT_BODY, false);
-            // THE RULE TO THE NEXT STEP STARTS 10px AFTER THIS LABEL AND STOPS 12px BEFORE THE NEXT CELL
+            // THE RULE TO THE NEXT STEP STARTS 10 PX AFTER THIS LABEL AND STOPS 12 PX BEFORE THE NEXT CELL
             if (i < this.labels.length - 1) canvas.fill(end + 10, y + 15, STEP_GAP - 22, 1, AppTheme.STROKE_BRIGHT);
             x = end + STEP_GAP;
         }

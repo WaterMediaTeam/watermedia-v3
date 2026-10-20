@@ -37,10 +37,8 @@ import java.util.function.Consumer;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Main home screen with grid-based menu options grouped by sections, fully on the retained view tree:
- * the menu grid is an element tree and the upload-logs / cleanup dialogs are {@link Dialog}s living on
- * the screen overlay, bound every frame to {@code ctx.upload} / {@code ctx.cleanup}. All flow logic
- * stays in the app ({@code navigateAction}); this screen only reflects state and fires actions.
+ * Home screen: menu tiles grouped by section and the upload-logs and cleanup {@link Dialog}s, bound every frame
+ * to {@code ctx.upload} and {@code ctx.cleanup}. Flow logic stays in the app; this screen only fires actions.
  */
 public class HomeScreen extends Screen {
 
@@ -57,20 +55,20 @@ public class HomeScreen extends Screen {
     private static final int UPLOAD_PANEL_PAD = 14;
     private static final int CLEANUP_ROW_H = 58;
     private static final int REPO_ROW_H = Theme.ROW_MD;
-    // THREE MOD CARDS PLUS THE TWO GAPS — THE SAME VIEWPORT THE FIXED-HEIGHT LEGACY DIALOG SHOWED
+    // VIEWPORT OF THREE MOD CARDS AND THEIR TWO 8px GAPS
     private static final int REPO_LIST_H = REPO_ROW_H * 3 + 8 * 2;
 
-    // ACTION TILE FILLS (PRE-BAKED FROM THE LEGACY FLOAT FILLS)
+    // ACTION TILE FILLS
     private static final Color TILE_BG_DISABLED = new Color(15, 20, 36, 148);
     private static final Color TILE_BG_EXIT = new Color(51, 10, 20, 235);
     private static final Color TILE_BG_EXIT_SEL = new Color(66, 18, 28, 235);
     private static final Color TILE_BG_SEL = new Color(AppTheme.BG_2.getRed(), 34, 66, 235);
 
-    // ACCENT PALETTES — HOISTED SO THE PER-TILE/PER-CARD DRAW PATHS NEVER REALLOCATE THE ARRAY
+    // ACCENT PALETTES, STATIC SO THE PER-TILE AND PER-CARD DRAWS NEVER ALLOCATE
     private static final Color[] CATEGORY_PALETTE = {AppTheme.NEON, AppTheme.CYAN, AppTheme.AMBER, AppTheme.GREEN, AppTheme.NEON_LIGHT};
     private static final Color[] REPO_PALETTE = {AppTheme.AMBER, AppTheme.CYAN, AppTheme.NEON_LIGHT, AppTheme.NEON};
 
-    // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    // FOOTER KEYBINDS: CONSTANTS SO THE PER-FRAME keybinds() POLL OF KeybindsBar ALLOCATES NOTHING
     private static final List<Keybind> KEYS_UPLOAD_REPORT = List.of(
             new Keybind("UP/DOWN", "Repository"), new Keybind("ENTER", "Submit"), new Keybind("ESC", "Close"));
     private static final List<Keybind> KEYS_UPLOAD = List.of(
@@ -93,8 +91,8 @@ public class HomeScreen extends Screen {
     private int selectedPanel;
     private int selectedAction;
     private int selectedMedia;
-    // NUMBER OF MEDIA TILES THAT ACTUALLY FIT/ARE LAID OUT THIS FRAME; KEYBOARD SELECTION IS CLAMPED TO IT
-    // SO ARROWS/ENTER CANNOT LAND ON AN OVERFLOWING TILE THAT IS NEITHER HIGHLIGHTED NOR CLICKABLE
+    // MEDIA TILES LAID OUT THIS FRAME; THE KEYBOARD SELECTION IS CLAMPED TO IT SO ARROWS AND ENTER NEVER
+    // LAND ON AN OVERFLOWING TILE THAT IS NEITHER DRAWN NOR CLICKABLE
     private int visibleMediaCount;
     private int selectedEntertainment;
 
@@ -157,7 +155,7 @@ public class HomeScreen extends Screen {
             this.entertainment.add(new MenuEntry("Television", "", Action.REGION_SELECTOR, -1));
         }
 
-        // CLAMP THE KEYBOARD SELECTION TO THE FRESH LISTS (M-10 COMPANION: NEVER POINT AT A GONE TILE)
+        // THE KEYBOARD SELECTION MUST NEVER POINT AT A TILE THE FRESH LISTS DROPPED
         this.selectedAction = MathUtil.clamp(this.selectedAction, 0, this.actions.size() - 1);
         this.selectedMedia = MathUtil.clamp(this.selectedMedia, 0, Math.max(0, this.mediaTests.size() - 1));
         this.selectedEntertainment = MathUtil.clamp(this.selectedEntertainment, 0, Math.max(0, this.entertainment.size() - 1));
@@ -179,7 +177,6 @@ public class HomeScreen extends Screen {
         final Parent column = Parent.column()
                 .size(MAX_PARENT, MAX_PARENT)
                 .add(new Header().name("Multimedia API").sub("main menu").right("v" + WaterMedia.VERSION))
-                // SAME CONTENT RECT AS THE LEGACY SCREEN: 22px SIDES, 20px BELOW THE HEADER, 10px ABOVE THE FOOTER
                 .add(this.grid.size(MAX_PARENT, MAX_PARENT).padding(new Spacing(20, 22, 10, 22)));
 
         // BOTH DIALOGS STAY MOUNTED ON THE OVERLAY; onUpdate ONLY TOGGLES THEIR VISIBILITY
@@ -240,7 +237,6 @@ public class HomeScreen extends Screen {
 
         return new Dialog()
                 .title("UPLOAD LOG FILES")
-                // STEPPER LIVES IN THE DIALOG HEADER BAND, BELOW THE TITLE BAND — SEPARATED BY ITS OWN HAIRLINE
                 .header(strip)
                 .content(this.filesPanel)
                 .content(this.reportPane)
@@ -289,7 +285,6 @@ public class HomeScreen extends Screen {
 
         return new Dialog()
                 .title("CLEAN CACHE")
-                // STEPPER LIVES IN THE DIALOG HEADER BAND, BELOW THE TITLE BAND — SEPARATED BY ITS OWN HAIRLINE
                 .header(strip)
                 .content(panel)
                 .onDismiss(this::dismissCleanup)
@@ -327,7 +322,7 @@ public class HomeScreen extends Screen {
                 this.uploadRows = rows;
                 this.fileList.items(rows);
             }
-            // AN EMPTY SCAN KEEPS ONE BLANK ROW OF PANEL HEIGHT, LIKE THE LEGACY PANEL DID
+            // AN EMPTY SCAN KEEPS ONE BLANK ROW OF PANEL HEIGHT
             this.fileList.height(rows.isEmpty() ? rowH : WRAP_CONTENT);
         }
 
@@ -373,7 +368,7 @@ public class HomeScreen extends Screen {
     }
 
     // ==========================================================================
-    // INPUT / SHELL HOOKS
+    // INPUT / SCREEN HOOKS
     // ==========================================================================
 
     @Override
@@ -732,11 +727,11 @@ public class HomeScreen extends Screen {
     }
 
     // ==========================================================================
-    // MENU GRID — FIXED TWO-PANEL LAYOUT PORTED ONTO THE RETAINED ELEMENT TREE
+    // MENU GRID
     // ==========================================================================
 
-    // FIXED TWO-PANEL GRID (ACTIONS LEFT, MEDIA TILES + ENTERTAINMENT RIGHT) WITH THE SECTION HEADS AND
-    // UPLOAD TOOLTIP. OVERFLOWING TILES ARE HIDDEN (visibleMediaCount), SO THEY ARE NEITHER DRAWN NOR HIT-TESTED.
+    // TWO-PANEL GRID: ACTIONS ON THE LEFT, MEDIA AND ENTERTAINMENT TILES ON THE RIGHT, WITH THE SECTION HEADS
+    // AND THE UPLOAD TOOLTIP
     private final class HomeBody extends Group<HomeBody> {
 
         private static final int TILE_H = 94;
@@ -868,9 +863,8 @@ public class HomeScreen extends Screen {
 
     }
 
-    // ONE ACTION ROW — DECOR (BACKGROUND/BORDER/GLOW) IS BOUND FROM LIVE STATE IN onUpdate, CONTENT IS
-    // PAINTED THROUGH THE CANVAS. HOVER SELF-SELECTS (CHIMING ON CHANGE); CLICK ROUTES THROUGH handleSelect
-    // (WHICH NO-OPS FOR DISABLED ACTIONS). DISABLED ACTIONS STAY HOVERABLE/CLICKABLE, LIKE THE LEGACY MENU.
+    // ONE ACTION ROW: HOVER SELECTS IT AND CHIMES WHEN THE SELECTION MOVES. DISABLED ACTIONS STAY HOVERABLE
+    // AND CLICKABLE; handleSelect IGNORES THEM
     private final class ActionTile extends Element<ActionTile> {
 
         private final int index;
@@ -931,7 +925,7 @@ public class HomeScreen extends Screen {
             final int y = this.top;
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
-            // EXTRA SELECTION FLARE ON TOP OF THE DECOR GLOW (LEGACY STACKED BOTH)
+            // A SELECTED TILE STACKS THIS FLARE ON TOP OF ITS DECOR GLOW
             if (selected && enabled) canvas.glow(x, y, w, h, 0f, accent, 0.35f);
             PixelIcon.draw(HomeScreen.this.actionIcon(entry.action()), x + 14, y + 17, 18, accent);
             canvas.text(entry.label().toUpperCase(Locale.ROOT), x + 48,
@@ -1031,9 +1025,8 @@ public class HomeScreen extends Screen {
         }
     }
 
-    // UPLOAD-LOGS TOOLTIP — VISIBLE WHILE ITS ACTION TILE IS SELECTED AND THE DIALOG IS CLOSED. IT IS
-    // INPUT-TRANSPARENT SO THE TILES UNDERNEATH KEEP THEIR HOVER/CLICK BEHAVIOR, EXACTLY LIKE THE LEGACY
-    // PAINTED-ON-TOP VERSION.
+    // UPLOAD-LOGS TOOLTIP, SHOWN WHILE ITS TILE IS SELECTED AND THE DIALOG IS CLOSED; IT IGNORES INPUT SO
+    // THE TILES UNDER IT KEEP THEIR HOVER AND CLICKS
     private final class UploadTip extends Element<UploadTip> {
 
         private static final int BOX_H = 82;
@@ -1081,7 +1074,7 @@ public class HomeScreen extends Screen {
             canvas.fill(x, y, w, BOX_H, AppTheme.alpha(AppTheme.BG_1, 242));
             canvas.stroke(x, y, w, BOX_H, color, 1f);
             canvas.glow(x, y, w, BOX_H, 0f, color, 0.24f);
-            // POINTER NOTCH AS STACKED 2px STEPS (PIXEL-ART STAND-IN FOR THE LEGACY TRIANGLE)
+            // POINTER NOTCH DRAWN AS STACKED 2px STEPS
             for (int k = 0; k < NOTCH_H / 2; k++) {
                 final int half = Math.round(7f * (NOTCH_H - (2 * k + 1)) / NOTCH_H);
                 if (half <= 0) continue;
@@ -1098,7 +1091,7 @@ public class HomeScreen extends Screen {
     // ==========================================================================
 
     // ONE FILE/SUMMARY ROW: STATUS PIP + NAME (+ URL OR PROGRESS BAR UNDERNEATH) + SIZE + STATE BADGE.
-    // A binder CONSUMER RE-READS LIVE STATE EVERY FRAME; LAYOUT MIRRORS THE LEGACY ROW METRICS.
+    // A binder CONSUMER RE-READS LIVE STATE EVERY FRAME
     private static final class FileRow extends Group<FileRow> {
 
         private final StatusSquare pip = new StatusSquare();
@@ -1161,7 +1154,7 @@ public class HomeScreen extends Screen {
         protected void onDraw(final Canvas canvas) {
             super.onDraw(canvas);
             if (this.separator) {
-                // DOTTED HAIRLINE BETWEEN ROWS, SAME CADENCE AS THE LEGACY PANEL
+                // DOTTED HAIRLINE BETWEEN ROWS
                 final int endX = this.innerLeft() + this.innerWidth();
                 final int sy = this.top + this.measuredHeight - 1;
                 for (int dx = this.innerLeft() + 28; dx < endX; dx += 8) {
@@ -1376,7 +1369,7 @@ public class HomeScreen extends Screen {
             canvas.stroke(x, y, w, h, sel ? accent : AppTheme.STROKE_BRIGHT, sel ? 2f : 1f);
             if (sel) canvas.glow(x, y, w, h, 0f, accent, 0.18f);
             canvas.fill(x, y, 4, h, accent);
-            // STATUS PIP IN THE CARD ACCENT (SQUARE — THE RETAINED DESIGN LANGUAGE)
+            // SQUARE STATUS PIP IN THE CARD ACCENT
             canvas.fill(x + 16, y + (h - 10) / 2, 10, 10, accent);
             canvas.glow(x + 16, y + (h - 10) / 2, 10, 10, 0f, accent, 0.5f);
             canvas.text(this.repo.name().toUpperCase(Locale.ROOT), x + 36, y + 12,

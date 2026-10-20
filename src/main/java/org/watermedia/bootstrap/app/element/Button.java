@@ -8,17 +8,12 @@ import java.awt.Color;
 import java.awt.Font;
 
 /**
- * A clickable control, like Android's {@code Button}. It shows an optional leading {@code icon}, a main
- * {@code label}, and an optional trailing {@code subText} chip (e.g. a keybind). Layout is consistent
- * everywhere: icon + label sit left, the subtext chip is pinned right, separated by at least
- * {@link #subtextSpacing} pixels; the label truncates before the chip rather than colliding with it.
- *
- * <p>The drawing lives in the static {@link #render} / {@link #width} so the imperative screens can paint
- * the SAME button (and the same spacing) without instantiating a view — one implementation, one look.
+ * A clickable control with an optional leading icon, a label that truncates before an optional subtext chip pinned
+ * right. The static {@link #render} and {@link #width} paint and size the same button for screens that lay out by hand.
  */
 public final class Button extends Element<Button> {
 
-    // FIXED LAYOUT METRICS SHARED BY EVERY BUTTON (WIDGET OR IMPERATIVE) — THIS IS WHAT MAKES THEM CONSISTENT
+    // INTERNAL METRICS SHARED BY THE VIEW AND THE STATIC render(), SO BOTH DRAW THE SAME BUTTON
     private static final int LEFT_PAD = 12;
     private static final int RIGHT_PAD = 8;
     private static final int ICON_SIZE = 14;
@@ -102,7 +97,7 @@ public final class Button extends Element<Button> {
                 this.accent, this.textColor, this.subTextColor, this.filled, this.hovered, this.enabled);
     }
 
-    /** Intrinsic (wrap) width of a button: internal padding + icon + label + spacing + subtext chip. */
+    /** Returns the wrap width of a button: internal padding, icon, label, spacing and subtext chip. */
     public static int width(final TextRenderer text, final String label, final String subText,
                             final String icon, final int subtextSpacing) {
         final int iconW = icon == null || icon.isEmpty() ? 0 : ICON_SIZE + ICON_GAP;
@@ -111,8 +106,7 @@ public final class Button extends Element<Button> {
         return LEFT_PAD + iconW + labelW + (chipW == 0 ? 0 : subtextSpacing + chipW) + RIGHT_PAD;
     }
 
-    // THE SHARED BUTTON BOX (BACKGROUND + BORDER + HOVER GLOW) FOR BOTH Button AND IconButton — EVERY STATE
-    // DERIVES FROM THE SINGLE accent SO A RED/GREEN/AMBER BUTTON HOVERS IN ITS OWN HUE, NOT A FIXED BLUE.
+    // BUTTON BOX SHARED WITH IconButton: EVERY STATE DERIVES FROM accent, SO EACH BUTTON HOVERS IN ITS OWN HUE
     static void box(final Canvas canvas, final int x, final int y, final int w, final int h,
                     final Color accent, final boolean filled, final boolean hover, final boolean enabled) {
         if (filled) {
@@ -124,11 +118,7 @@ public final class Button extends Element<Button> {
         if (enabled) canvas.glow(x, y, w, h, 0f, accent, hover ? 0.26f : 0.16f);
     }
 
-    /**
-     * Paints a button into ({@code x,y,w,h}): a filled or outlined box with a hover glow, an optional
-     * leading icon, the bold label (left, truncated before the chip), and an optional subtext chip pinned
-     * right — the single source of the button look for both the {@link Button} view and the screens.
-     */
+    /** Paints a button into ({@code x,y,w,h}) with the default faint subtext chip color. */
     public static void render(final Canvas canvas, final int x, final int y, final int w, final int h,
                               final String label, final String subText, final String icon, final int subtextSpacing,
                               final Color accent, final Color textColor, final boolean filled,
@@ -136,7 +126,7 @@ public final class Button extends Element<Button> {
         render(canvas, x, y, w, h, label, subText, icon, subtextSpacing, accent, textColor, AppTheme.TEXT_FAINT, filled, hover, enabled);
     }
 
-    /** As {@link #render}, with an explicit {@code subTextColor} for the chip text (e.g. a colored value). */
+    /** Paints a button into ({@code x,y,w,h}) with an explicit subtext chip color. */
     public static void render(final Canvas canvas, final int x, final int y, final int w, final int h,
                               final String label, final String subText, final String icon, final int subtextSpacing,
                               final Color accent, final Color textColor, final Color subTextColor, final boolean filled,
@@ -156,8 +146,7 @@ public final class Button extends Element<Button> {
         final int chipX = x + w - RIGHT_PAD - chipW;
         if (chipW > 0) {
             canvas.stroke(chipX, cy - Theme.CHIP_H / 2, chipW, Theme.CHIP_H, AppTheme.STROKE, 1f);
-            // SIT THE CHIP TEXT ON THE SAME BASELINE AS THE LABEL SO texto + subtexto ALIGN (NOT CELL-CENTERED,
-            // WHICH DRIFTS BECAUSE THE TWO FONT SIZES HAVE DIFFERENT DESCENDER SPACE IN THEIR CELLS)
+            // CHIP TEXT SHARES THE LABEL BASELINE, SINCE CELL-CENTERING DRIFTS WITH EACH SIZE'S DESCENDER SPACE
             final float baseline = cy - text.glyphHeightBold(AppTheme.TEXT_BUTTON) / 2f + text.baselineOffsetBold(AppTheme.TEXT_BUTTON);
             canvas.text(subText, chipX + Theme.CHIP_PAD, baseline - text.baselineOffset(AppTheme.TEXT_SUBTITLE),
                     subTextColor, AppTheme.TEXT_SUBTITLE, false);

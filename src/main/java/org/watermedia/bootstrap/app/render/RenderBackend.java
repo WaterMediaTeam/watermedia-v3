@@ -7,10 +7,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
-/**
- * Low-level renderer contract. OpenGL is just one implementation; a Vulkan
- * backend can satisfy this contract without changing UI widgets.
- */
+/** Low-level renderer contract implemented by the OpenGL and Vulkan backends. */
 public interface RenderBackend {
 
     void init();
@@ -33,75 +30,44 @@ public interface RenderBackend {
 
     void draw(DrawMode mode, float[] vertices, int vertexCount, boolean textured);
 
-    /**
-     * Whether this backend can draw a soft-edged rectangle in a single pass (an SDF shader). When false,
-     * the engine falls back to stacking translucent fills for glow/shadow.
-     */
+    /** Returns whether {@link #softRect} draws in one pass; otherwise the engine stacks translucent fills. */
     default boolean supportsSoftRect() {
         return false;
     }
 
-    /**
-     * Paints a filled rounded rectangle whose alpha is solid inside and fades to zero over {@code
-     * softness} pixels outside its edge — one draw call instead of the multi-pass glow/shadow stack.
-     * Only called when {@link #supportsSoftRect()} is true.
-     */
+    /** Fills a rounded rectangle whose alpha fades to zero over {@code softness} pixels outside its edge. */
     default void softRect(final float x, final float y, final float w, final float h, final float radius,
                           final float r, final float g, final float b, final float a, final float softness) {
     }
 
     void lineWidth(float width);
 
-    // NAMED clip/clearClip TO MATCH THE RenderEngine SEAM — SAME CONCEPT, SAME NAME ACROSS LAYERS
     void clip(int x, int y, int width, int height, int canvasHeight);
 
     void clearClip();
 
-    /**
-     * Builds the media graphics engine that matches this backend, for a {@code MediaPlayer} to upload
-     * decoded frames into. OpenGL yields a {@code GLEngine}; Vulkan a {@code VKEngine} bound to this
-     * backend's own device. Keeping this here is what lets callers stay engine-agnostic.
-     * @param renderThread   the thread that reads the player's texture (OpenGL needs it; Vulkan ignores it)
-     * @param renderExecutor dispatches work onto the render thread (OpenGL needs it; Vulkan ignores it)
-     */
+    /** Builds the media engine of this backend ({@code GLEngine} or {@code VKEngine}); only OpenGL uses the thread and executor. */
     Supplier<GFXEngine> mediaEngineSupplier(Thread renderThread, Executor renderExecutor);
 
-    /**
-     * Begins a frame. OpenGL renders straight to the default framebuffer, so this is a no-op; a
-     * Vulkan backend acquires the next swapchain image and begins its frame command buffer here.
-     */
+    /** Begins a frame; Vulkan acquires the next swapchain image here. */
     default void beginFrame() {
     }
 
-    /**
-     * Ends and presents the frame. OpenGL swaps buffers in the app loop, so this is a no-op; a
-     * Vulkan backend ends its render pass, submits and presents the swapchain image here.
-     */
+    /** Ends and presents the frame. */
     default void present() {
     }
 
-    /**
-     * Binds a media player's texture handle for the next blit. The handle is 64-bit because a
-     * Vulkan {@code VkImageView} does not fit the int texture-id path; OpenGL truncates it back to
-     * its {@code GLuint} name. The image is engine-owned and already sampleable.
-     * @param handle the player's {@code texture()} handle, or 0 when no frame is ready
-     */
+    /** Binds a player's {@code texture()} handle for the next blit; 64-bit to fit a {@code VkImageView}, 0 without a frame. */
     default void bindMediaTexture(final long handle) {
         this.bindTexture((int) handle);
     }
 
-    /**
-     * Human-readable name of the GPU/renderer this backend runs on ({@code GL_RENDERER} for OpenGL,
-     * the physical device name for Vulkan). Captured at init so it is safe to read from any thread.
-     */
+    /** Returns the GPU or renderer name, captured at init so any thread can read it. */
     default String deviceName() {
         return "Unknown";
     }
 
-    /**
-     * Highest API version this backend runs at as {@code "major.minor"} (the GL context version for
-     * OpenGL, the physical device's supported Vulkan API version). Captured at init; empty if unknown.
-     */
+    /** Returns the highest API version as {@code "major.minor"}, captured at init; empty when unknown. */
     default String deviceVersion() {
         return "";
     }

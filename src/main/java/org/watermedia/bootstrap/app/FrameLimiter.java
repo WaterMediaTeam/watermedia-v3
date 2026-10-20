@@ -9,9 +9,7 @@ import static org.lwjgl.glfw.GLFW.glfwGetPrimaryMonitor;
 import static org.lwjgl.glfw.GLFW.glfwGetVideoMode;
 import static org.lwjgl.glfw.GLFW.glfwGetWindowMonitor;
 
-/**
- * Explicit frame pacing fallback for drivers where swap interval is ignored.
- */
+/** Paces frames to the monitor refresh rate for drivers that ignore the swap interval. */
 final class FrameLimiter {
 
     private static final int DEFAULT_REFRESH_HZ = 60;

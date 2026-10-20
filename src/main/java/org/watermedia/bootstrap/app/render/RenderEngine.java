@@ -10,22 +10,20 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 
-/**
- * Backend-agnostic 2D render engine for the bootstrap app UI.
- */
+/** Backend-agnostic 2D render engine of the app UI, batching vertices for the active backend. */
 public final class RenderEngine {
 
     private static final int FLOATS_PER_VERTEX = 8;
     // SHARED UI VERTEX CAPACITY — THE GL BACKEND SIZES ITS STREAM VBO TO THE SAME VALUE; KEEP THEM IN SYNC.
     private static final int MAX_VERTICES = 8192;
     private static final int ARC_SEGMENTS = 10; // PER ROUNDED CORNER
-    // SDF SOFT-RECT FALLOFF DISTANCES (PIXELS) — GLOW MATCHES THE OLD 10-FILL SPREAD (10 * 2.2); SHADOW IS
-    // A SMALLER OFFSET HALO. TUNE THESE IF THE GLOW/SHADOW READS TOO TIGHT OR TOO SOFT.
+    // SDF SOFT-RECT FALLOFF IN PIXELS; THE GLOW MATCHES THE 10 * 2.2 SPREAD OF THE STACKED-FILL FALLBACK IN
+    // glowRect() AND THE SHADOW IS A SMALLER OFFSET HALO
     private static final float GLOW_SOFTNESS = 22f;
     private static final float SHADOW_SOFTNESS = 12f;
     private static final float SHADOW_DX = 2f;
     private static final float SHADOW_DY = 6f;
-    private static final float GLOW_STRENGTH = 0.9f; // OVERALL GLOW FORCE, REDUCED 10%
+    private static final float GLOW_STRENGTH = 0.9f; // OVERALL GLOW FORCE
     private static final float[] IDENTITY = {
             1f, 0f, 0f, 0f,
             0f, 1f, 0f, 0f,
@@ -46,9 +44,8 @@ public final class RenderEngine {
     // setupOrtho()/restoreProjection() CALLS WITH THE SAME VALUE SKIP THE FLUSH + RE-UPLOAD (BATCH COALESCING).
     private int orthoW = Integer.MIN_VALUE;
     private int orthoH = Integer.MIN_VALUE;
-    // GLOBAL UI SCALE (PHYSICAL PX PER LOGICAL PX). APPLIED AT THE TWO LOGICAL->PHYSICAL SEAMS ONLY:
-    // SCISSOR RECTS AND RASTERIZED LINE WIDTHS. GEOMETRY AND THE VIEWPORT ARE NOT TOUCHED — QUADS
-    // ALREADY SCALE THROUGH THE ORTHO PROJECTION AND THE VIEWPORT STAYS PHYSICAL. DORMANT AT 1f.
+    // PHYSICAL PX PER LOGICAL PX, APPLIED ONLY TO SCISSOR RECTS AND RASTERIZED LINE WIDTHS; GEOMETRY SCALES
+    // THROUGH THE ORTHO AND THE VIEWPORT STAYS PHYSICAL
     private float uiScale = 1f;
     // BOTH BACKENDS START AT A 1px RASTERIZER LINE WIDTH
     private float physicalLineWidth = 1f;
@@ -165,16 +162,12 @@ public final class RenderEngine {
         return this.backend.deviceVersion();
     }
 
-    /**
-     * Sets the UI scale (physical pixels per logical pixel) this engine converts with. Scissor
-     * rectangles and rasterized line widths arrive in logical pixels and are mapped to physical
-     * pixels using this factor; quad geometry and the viewport are unaffected.
-     */
+    /** Sets the UI scale that maps logical scissor rects and line widths to physical pixels. */
     public void uiScale(final float scale) {
         this.uiScale = scale > 0f ? scale : 1f;
     }
 
-    /** The UI scale (physical pixels per logical pixel) this engine converts with. */
+    /** Returns the UI scale (physical pixels per logical pixel). */
     public float uiScale() {
         return this.uiScale;
     }
@@ -299,9 +292,8 @@ public final class RenderEngine {
         this.strokeQuads(x, y, w, h, lineWidth);
     }
 
-    // A BOX OUTLINE AS FOUR EDGE QUADS CENTERED ON THE PATH (LIKE A LINE_LOOP OF THAT WIDTH), CORNERS
-    // COVERED ONCE BY THE VERTICAL EDGES SO A TRANSLUCENT BORDER IS NOT DOUBLED. UNLIKE LINE_LOOP THESE
-    // FILLS JOIN THE TRIANGLE BATCH — NO PER-BORDER FLUSH OR LINE-WIDTH STATE CHANGE.
+    // BOX OUTLINE AS FOUR EDGE QUADS CENTERED ON THE PATH, CORNERS COVERED ONCE SO A TRANSLUCENT BORDER IS NOT
+    // DOUBLED; UNLIKE A LINE_LOOP THEY JOIN THE TRIANGLE BATCH WITHOUT A FLUSH OR LINE-WIDTH CHANGE
     private void strokeQuads(final float x, final float y, final float w, final float h, final float lineWidth) {
         final float lw = Math.max(1f, lineWidth);
         final float half = lw / 2f;
@@ -390,7 +382,7 @@ public final class RenderEngine {
         final float r = glow.getRed() / 255f;
         final float g = glow.getGreen() / 255f;
         final float b = glow.getBlue() / 255f;
-        final float a = alpha * this.pulse; // -10% FORCE, MODULATED BY A SLOW RANDOM HEARTBEAT
+        final float a = alpha * this.pulse; // MODULATED BY A SLOW RANDOM HEARTBEAT
         if (this.backend.supportsSoftRect()) {
             // ONE SDF QUAD INSTEAD OF 10 STACKED FILLS — SAME HALO, A FRACTION OF THE OVERDRAW
             this.flush();

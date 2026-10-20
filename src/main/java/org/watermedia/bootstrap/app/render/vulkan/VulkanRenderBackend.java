@@ -44,21 +44,8 @@ import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
 
 /**
- * Vulkan implementation of the bootstrap app's 2D UI {@link RenderBackend}, doubling as the
- * {@link VKContext} bridge the media {@code VKEngine} borrows its device through.
- * <p>
- * This backend owns the {@code VkInstance}/{@code VkDevice}/swapchain and rasterizes the app's
- * batched 2D geometry (UI primitives and video blits). It mirrors the OpenGL sibling's semantics:
- * a {@code useTexture}-branching shader, {@code SRC_ALPHA / ONE_MINUS_SRC_ALPHA} blending,
- * linear/clamp textures, and OpenGL-equivalent clip space achieved through a negative-height
- * viewport so the existing {@code ortho2D(0,w,h,0)} and NDC blit math render identically.
- * <p>
- * <b>Threading.</b> Every {@link RenderBackend} method runs on the app's render/main thread. The
- * {@link VKContext} accessors ({@link #vkDevice()}, {@link #queue()}, {@link #queueLock()} and the
- * rest) are the only surface the {@code VKEngine}'s producer thread touches; the engine produces the
- * media texture this backend samples. Because both threads submit to the same queue, every
- * {@code vkQueueSubmit}/{@code vkQueuePresentKHR} on either side runs inside {@code synchronized
- * (queueLock())} — Vulkan requires queue submission to be externally synchronized.
+ * Vulkan render backend of the app UI that owns the instance, device and swapchain, and doubles as the {@link VKContext}
+ * the media {@code VKEngine} borrows; both submit to one queue, always under {@link #queueLock()}.
  */
 public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private static final Marker IT = MarkerManager.getMarker(VulkanRenderBackend.class.getSimpleName());
@@ -69,8 +56,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     private static final int MAX_FRAMES_IN_FLIGHT = 2;
     private static final int SETS_PER_POOL = 256;            // TEXTURED-DRAW DESCRIPTOR SETS PER PER-FRAME POOL CHUNK
     private static final int PUSH_BYTES = 68;               // mat4 proj (64) + int useTexture (4)
-    // SDF SOFT-RECT PUSH: mat4 proj (64) + vec4 color (@64) + vec2 center (@80) + vec2 halfExt (@88) +
-    // float radius (@96) + float softness (@100) — REORDERED SO vec4/vec2 STAY std430-ALIGNED, TOTAL 104
+    // SDF PUSH: mat4 proj (64) + vec4 color (@64) + vec2 center (@80) + vec2 halfExt (@88) + float radius (@96)
+    // + float softness (@100); vec4 BEFORE vec2 KEEPS THEM std430-ALIGNED
     private static final int PUSH_SDF_BYTES = 104;
     private static final long BLOCK = 0xFFFFFFFFFFFFFFFFL;   // UINT64_MAX: BLOCKING WAIT/ACQUIRE
 
@@ -206,15 +193,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // SAME VIEW (ATLAS FLUSHES, REPEATED BLITS) REUSE THE SET INSTEAD OF ALLOCATING/WRITING A NEW ONE.
     private long boundView, boundTexSet;
 
-    /**
-     * Creates the Vulkan device for the given GLFW window. The window must have been created with the
-     * {@code GLFW_NO_API} client-API hint (no OpenGL context). This sets up everything the
-     * {@link VKContext} exposes (instance, surface, physical/logical device, queue, memory
-     * properties, host-import capability); the swapchain and pipelines are built lazily on
-     * {@link #init()}.
-     *
-     * @param glfwWindow the {@code GLFWwindow} handle to present to
-     */
+    /** Creates the instance, surface and device for a GLFW window built with {@code GLFW_NO_API}; {@link #init()} builds the rest. */
     public VulkanRenderBackend(final long glfwWindow) {
         if (!glfwVulkanSupported()) throw new IllegalStateException("VulkanRenderBackend: GLFW reports Vulkan is unavailable");
         this.window = glfwWindow;
@@ -223,8 +202,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             this.pickPhysicalDevice();
             this.createDeviceAndQueue();
         } catch (final Throwable t) {
-            // DESTROY WHATEVER PARTIAL STATE EXISTS (cleanup() IS NULL-SAFE) SO A FAILED
-            // CONSTRUCTION NEVER LEAKS THE INSTANCE/SURFACE/DEVICE INTO THE OPENGL FALLBACK.
+            // cleanup() IS NULL-SAFE, SO A FAILED CONSTRUCTION NEVER LEAKS THE INSTANCE, SURFACE OR DEVICE INTO THE
+            // OPENGL FALLBACK
             this.cleanup();
             throw t;
         }
@@ -237,8 +216,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     // ==========================================================================
     private void createInstanceAndSurface() {
         try (final MemoryStack stack = stackPush()) {
-            // OPPORTUNISTIC API BUMP TO min(LOADER, 1.4) BUT NEVER BELOW 1.1: A HIGHER apiVersion ONLY WIDENS
-            // WHAT MAY BE USED (WE STAY 1.1-CORE), AND getInstanceVersionSupported IS NULL-SAFE ON OLD LOADERS.
+            // API VERSION IS min(LOADER, 1.4) BUT NEVER BELOW 1.1: A HIGHER apiVersion ONLY WIDENS WHAT MAY BE USED
+            // (THE CODE STAYS 1.1-CORE), AND getInstanceVersionSupported IS NULL-SAFE ON 1.0 LOADERS
             final int loaderVer = VK.getInstanceVersionSupported();
             final int apiVersion = MathUtil.clamp(loaderVer, VK_API_VERSION_1_1, VK14.VK_API_VERSION_1_4);
             final VkApplicationInfo app = VkApplicationInfo.calloc(stack).sType$Default()
@@ -252,9 +231,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final PointerBuffer glfwExts = glfwGetRequiredInstanceExtensions();
             if (glfwExts == null) throw new IllegalStateException("VulkanRenderBackend: glfwGetRequiredInstanceExtensions returned null");
 
-            // MOLTENVK: NEWER LOADERS HIDE PORTABILITY (NON-CONFORMANT) IMPLEMENTATIONS UNLESS THE
-            // INSTANCE OPTS IN WITH VK_KHR_portability_enumeration + THE ENUMERATE FLAG — WITHOUT IT
-            // vkEnumeratePhysicalDevices RETURNS NOTHING ON MACOS.
+            // MOLTENVK: LOADERS HIDE PORTABILITY DEVICES UNLESS THE INSTANCE ENABLES VK_KHR_portability_enumeration
+            // AND ITS FLAG; WITHOUT IT vkEnumeratePhysicalDevices FINDS NOTHING ON MACOS
             boolean portEnum = false;
             final IntBuffer instExtCount = stack.mallocInt(1);
             vkEnumerateInstanceExtensionProperties((ByteBuffer) null, instExtCount, null);
@@ -334,9 +312,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final VkDeviceQueueCreateInfo.Buffer q = VkDeviceQueueCreateInfo.calloc(1, stack);
             q.get(0).sType$Default().queueFamilyIndex(this.queueFamily).pQueuePriorities(stack.floats(1.0f));
 
-            // ONE QUEUE FAMILY FOR GRAPHICS + PRESENT + THE ENGINE'S TRANSFER/COMPUTE: NO OWNERSHIP TRANSFERS.
-            // THE SPEC REQUIRES VK_KHR_portability_subset TO BE ENABLED WHENEVER THE DEVICE ADVERTISES
-            // IT (PORTABILITY IMPLEMENTATIONS LIKE MoltenVK) — OMITTING IT FAILS vkCreateDevice.
+            // ONE QUEUE FAMILY FOR GRAPHICS, PRESENT AND THE ENGINE'S TRANSFER/COMPUTE, SO NO OWNERSHIP TRANSFERS;
+            // A DEVICE ADVERTISING VK_KHR_portability_subset (MoltenVK) MUST ENABLE IT OR vkCreateDevice FAILS
             final boolean portability = hasDeviceExtension(this.physicalDevice, stack, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
             final PointerBuffer exts = stack.mallocPointer(1 + (this.hostImport ? 1 : 0) + (portability ? 1 : 0));
             exts.put(stack.UTF8(VK_KHR_SWAPCHAIN_EXTENSION_NAME));
@@ -347,9 +324,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             final VkPhysicalDeviceFeatures feats = VkPhysicalDeviceFeatures.calloc(stack);
             if (this.wideLines) feats.wideLines(true); // ENABLE wideLines IFF SUPPORTED (FOR lineWidth)
 
-            // SAMPLER-YCBCR CONVERSION (OPTIONAL 1.1 CORE FEATURE): QUERY VIA vkGetPhysicalDeviceFeatures2,
-            // WHICH IS ONLY VALID ON A 1.1+ PHYSICAL DEVICE, AND ENABLE IT WHEN SUPPORTED SO THE VKEngine
-            // CAN CONVERT MULTIPLANAR YUV IN SAMPLER HARDWARE INSTEAD OF ITS ARITHMETIC COMPUTE SHADER.
+            // SAMPLER YCBCR CONVERSION (OPTIONAL 1.1 FEATURE, QUERIED ONLY ON 1.1+ DEVICES) LETS THE VKEngine
+            // CONVERT MULTIPLANAR YUV IN SAMPLER HARDWARE INSTEAD OF ITS COMPUTE SHADER
             final VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.malloc(stack);
             vkGetPhysicalDeviceProperties(this.physicalDevice, props);
             // CAPTURE THE GPU NAME + MAX API VERSION ONCE FOR DIAGNOSTICS (SAFE TO READ OFF-THREAD AFTERWARDS)
@@ -513,9 +489,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.createPipelines();
         this.createFrames();
 
-        // DUMMY 1x1 WHITE + ITS PERSISTENT DESCRIPTOR SET: BOUND FOR NON-TEXTURED DRAWS BECAUSE THE
-        // FRAGMENT SHADER STATICALLY REFERENCES THE SAMPLER (DYNAMIC useTexture BRANCH), SO A VALID
-        // DESCRIPTOR MUST ALWAYS BE BOUND EVEN WHEN THE TEXEL IS NEVER READ.
+        // 1x1 WHITE DUMMY AND ITS SET, BOUND FOR NON-TEXTURED DRAWS: THE FRAGMENT SHADER STATICALLY REFERENCES
+        // THE SAMPLER, SO A VALID DESCRIPTOR MUST ALWAYS BE BOUND
         try (final MemoryStack stack = stackPush()) {
             final ByteBuffer white = stack.malloc(4);
             white.put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).flip();
@@ -862,13 +837,7 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         this.currentView = rec != null ? rec.view() : 0L;
     }
 
-    /**
-     * {@inheritDoc}
-     * <p>The handle is an engine-owned {@code VkImageView} already in
-     * {@code VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}. This backend only samples it: it never
-     * transitions or destroys the view, and the engine keeps it valid on the same device and under
-     * the same {@link #queueLock()}.
-     */
+    /** Samples an engine-owned {@code VkImageView} already in {@code SHADER_READ_ONLY_OPTIMAL}, never transitioning or destroying it. */
     @Override
     public void bindMediaTexture(final long handle) {
         this.currentView = handle;
@@ -876,8 +845,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
 
     @Override
     public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {
-        // WITH THE NEGATIVE-HEIGHT VIEWPORT, APP-TOP MAPS TO FRAMEBUFFER-TOP, AND THE VULKAN SCISSOR ORIGIN
-        // IS ALSO TOP-LEFT — SO THE CLIP Y IS USED DIRECTLY (NO GL BOTTOM-LEFT FLIP). SEE Y-FLIP NOTE.
+        // THE NEGATIVE-HEIGHT VIEWPORT MAPS APP-TOP TO FRAMEBUFFER-TOP AND THE SCISSOR ORIGIN IS TOP-LEFT TOO,
+        // SO THE CLIP Y NEEDS NO GL BOTTOM-LEFT FLIP
         this.clipEnabled = true;
         this.clipX = x;
         this.clipY = y;
@@ -911,8 +880,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         final int drawVerts = fan ? (vertexCount - 2) * 3 : (loop ? vertexCount + 1 : vertexCount);
         if (drawVerts <= 0) return;
 
-        // GROW THE PER-FRAME VERTEX BUFFER WHEN A FRAME'S TOTAL EXCEEDS CAPACITY. THE OLD BUFFER IS
-        // RETIRED (NOT FREED) BECAUSE EARLIER DRAWS THIS FRAME STILL REFERENCE IT UNTIL THE FENCE SIGNALS.
+        // THE OUTGROWN VERTEX BUFFER IS RETIRED, NOT FREED, BECAUSE EARLIER DRAWS OF THIS FRAME READ IT UNTIL
+        // THE FENCE SIGNALS
         if (f.vertexOffset + drawVerts > f.vboCapVerts) this.growVbo(f, f.vertexOffset + drawVerts);
 
         // APPEND THE VERTICES AT THE RUNNING OFFSET INTO THE PERSISTENTLY-MAPPED HOST-VISIBLE BUFFER.
@@ -944,8 +913,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
             }
             // DYNAMIC STATE: SET ON CHANGE; PERSISTS FOR SUBSEQUENT DRAWS IN THIS COMMAND BUFFER.
             if (this.vpDirty) {
-                // NEGATIVE-HEIGHT VIEWPORT FROM THE SWAPCHAIN EXTENT (NOT viewport()): EMULATES OPENGL Y-DOWN
-                // CLIP SPACE AND ALWAYS MATCHES THE FRAMEBUFFER/SCISSOR. VERIFY-ON-HARDWARE.
+                // NEGATIVE-HEIGHT VIEWPORT FROM THE SWAPCHAIN EXTENT, NOT viewport(): IT GIVES OPENGL'S CLIP SPACE
+                // SO THE ortho2D(0, w, h, 0) MATH RENDERS THE SAME, AND ALWAYS MATCHES THE FRAMEBUFFER AND SCISSOR
                 final VkViewport.Buffer v = VkViewport.calloc(1, stack);
                 v.get(0).x(0f).y(this.extentH).width(this.extentW).height(-(float) this.extentH).minDepth(0f).maxDepth(1f);
                 vkCmdSetViewport(cmd, 0, v);
@@ -1281,9 +1250,8 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         if (texture == null || texture.id() <= 0) return;
         final TextureRecord rec = this.textures.remove(texture.id());
         if (rec == null) return;
-        // DELETION IS RARE (ATLAS/ICON TEARDOWN); DRAIN SO NO IN-FLIGHT FRAME STILL SAMPLES THE VIEW.
-        // UNDER THE QUEUE LOCK: vkDeviceWaitIdle WAITS EVERY QUEUE AND NEEDS EXCLUSIVE QUEUE ACCESS,
-        // WHILE THE DECODE THREAD SUBMITS UPLOADS TO THE SAME QUEUE (SEE recreateSwapchain).
+        // RARE (ATLAS/ICON TEARDOWN): DRAIN SO NO IN-FLIGHT FRAME STILL SAMPLES THE VIEW, UNDER THE QUEUE LOCK
+        // BECAUSE vkDeviceWaitIdle NEEDS EXCLUSIVE QUEUE ACCESS WHILE THE DECODE THREAD SUBMITS
         synchronized (this.queueLock) {
             vkDeviceWaitIdle(this.device);
         }

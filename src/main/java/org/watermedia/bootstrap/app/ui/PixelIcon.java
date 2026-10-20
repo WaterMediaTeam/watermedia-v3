@@ -5,9 +5,7 @@ import org.watermedia.bootstrap.app.render.RenderSystem;
 import java.awt.Color;
 import java.util.Map;
 
-/**
- * Tiny raster-style icon renderer. Icons are built from fixed pixel masks, not SVG.
- */
+/** Draws small icons from fixed pixel masks. */
 public final class PixelIcon {
 
     private static final Map<String, String[]> ICONS = Map.ofEntries(

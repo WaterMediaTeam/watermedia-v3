@@ -9,14 +9,8 @@ import org.watermedia.bootstrap.app.ui.TextRenderer;
 import java.awt.Color;
 
 /**
- * Drawing surface handed to every {@link Element#onDraw}. It is a thin, retained-tree-friendly facade over
- * {@link RenderSystem} plus the shared {@link TextRenderer}: views never touch the render backend
- * directly, so batching, clipping and the glyph atlas stay in one place. Coordinates are screen pixels
- * with the origin at the top-left; the active projection is expected to be the window ortho.
- *
- * <p>A global alpha multiplier ({@link #pushAlpha}/{@link #popAlpha}) scales the opacity of every draw
- * call — fills, strokes, gradients, glows, shadows, images, icons and text — so a container can fade its
- * whole subtree in one place (dialog fade-in).
+ * Drawing surface for {@link Element#onDraw}: a facade over {@link RenderSystem} and {@link TextRenderer} in top-left
+ * window pixels. {@link #pushAlpha} scales the opacity of every following draw, so a container fades its whole subtree.
  */
 public final class Canvas {
     private static final int CLIP_LEVELS = 16;
@@ -36,13 +30,9 @@ public final class Canvas {
         this.text = text;
     }
 
-    /**
-     * Pushes a global alpha multiplier applied to every subsequent draw call. Factors compose
-     * multiplicatively when nested; each call must be balanced with {@link #popAlpha()}.
-     */
+    /** Pushes an alpha multiplier for following draws; nested factors multiply and each needs a {@link #popAlpha()}. */
     public void pushAlpha(final float factor) {
-        // SATURATE AT CAPACITY — 16 NESTED FADES IS BEYOND ANY REAL TREE; PAST IT WE KEEP MULTIPLYING BUT
-        // STOP RECORDING SO A RUNAWAY OR UNBALANCED PUSH CAN NEVER WRITE OUT OF BOUNDS (POP GUARDS UNDERFLOW)
+        // PAST CAPACITY THE FACTOR STILL MULTIPLIES BUT IS NOT RECORDED, SO AN UNBALANCED PUSH NEVER WRITES OUT OF BOUNDS
         if (this.alphaDepth < this.alphaStack.length) this.alphaStack[this.alphaDepth] = this.alpha;
         this.alphaDepth++;
         this.alpha *= MathUtil.clamp(factor, 0f, 1f);
@@ -84,13 +74,13 @@ public final class Canvas {
         return this.windowHeight;
     }
 
-    /** Solid fill; radius 0 stays a crisp rectangle (the UI is square-cornered by design). */
+    /** Fills a square-cornered rectangle. */
     public void fill(final float x, final float y, final float w, final float h, final Color color) {
         if (color == null) return;
         RenderSystem.fillRounded(x, y, w, h, 0f, this.mul(color));
     }
 
-    /** Solid fill from raw RGBA components — for hairlines and overlays whose alpha is not a theme color. */
+    /** Fills a rectangle from raw RGBA components, for overlays whose alpha is not a theme color. */
     public void fill(final float x, final float y, final float w, final float h,
                      final float r, final float g, final float b, final float a) {
         RenderSystem.fill(x, y, w, h, r, g, b, a * this.alpha);
@@ -129,7 +119,7 @@ public final class Canvas {
                 bottom.getRed() / 255f, bottom.getGreen() / 255f, bottom.getBlue() / 255f, bottom.getAlpha() / 255f * this.alpha);
     }
 
-    /** Vertical gradient from raw RGBA stops — for bands whose per-stop alpha is not a theme color's alpha. */
+    /** Paints a vertical gradient from raw RGBA stops. */
     public void gradientV(final float x, final float y, final float w, final float h,
                           final float r1, final float g1, final float b1, final float a1,
                           final float r2, final float g2, final float b2, final float a2) {
@@ -142,7 +132,7 @@ public final class Canvas {
                 right.getRed() / 255f, right.getGreen() / 255f, right.getBlue() / 255f, right.getAlpha() / 255f * this.alpha);
     }
 
-    /** Horizontal gradient from raw RGBA stops — see {@link #gradientV}. */
+    /** Paints a horizontal gradient from raw RGBA stops. */
     public void gradientH(final float x, final float y, final float w, final float h,
                           final float r1, final float g1, final float b1, final float a1,
                           final float r2, final float g2, final float b2, final float a2) {
@@ -156,13 +146,13 @@ public final class Canvas {
         RenderSystem.line(x1, y1, x2, y2);
     }
 
-    /** Axis-aligned horizontal rule — a hairline/underline of the given length and weight. */
+    /** Draws a horizontal rule of the given length and weight. */
     public void lineH(final float x, final float y, final float length, final Color color, final float lineWidth) {
         if (color == null || lineWidth <= 0f) return;
         RenderSystem.lineH(x, y, length, this.mul(color), lineWidth);
     }
 
-    /** Textured blit with an optional tint — a null tint draws the image at full white. */
+    /** Blits a texture with an optional tint; a null tint draws it untinted. */
     public void image(final int textureId, final float x, final float y, final float w, final float h, final Color tint) {
         if (textureId <= 0) return;
         RenderSystem.bindTexture(textureId);
@@ -174,7 +164,7 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h);
     }
 
-    /** Textured blit sampling a sub-region (UV rect) — used for cover-fit cropping without distortion. */
+    /** Blits a UV sub-region of a texture, for cover-fit cropping without distortion. */
     public void image(final int textureId, final float x, final float y, final float w, final float h,
                       final float u0, final float v0, final float u1, final float v1, final Color tint) {
         if (textureId <= 0) return;
@@ -187,10 +177,7 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h, u0, v0, u1, v1);
     }
 
-    /**
-     * Media-player frame blit — the handle is the player's 64-bit media texture (a GL texture name or a
-     * Vulkan {@code VkImageView}), bound through the backend's media path instead of the plain 2D path.
-     */
+    /** Blits a player frame by its 64-bit handle (GL texture name or Vulkan {@code VkImageView}) through the media path. */
     public void mediaImage(final long handle, final float x, final float y, final float w, final float h) {
         if (handle == 0L) return;
         RenderSystem.bindMediaTexture(handle);
@@ -198,7 +185,7 @@ public final class Canvas {
         RenderSystem.blit(x, y, w, h);
     }
 
-    /** Media blit sampling a sub-region (UV rect) — used for cover-fit cropping without distortion. */
+    /** Blits a UV sub-region of a player frame, for cover-fit cropping without distortion. */
     public void mediaImage(final long handle, final float x, final float y, final float w, final float h,
                            final float u0, final float v0, final float u1, final float v1) {
         if (handle == 0L) return;
@@ -213,7 +200,7 @@ public final class Canvas {
         this.fill(x, y, size, size, AppTheme.AMBER);
     }
 
-    /** Pixel-icon draw routed through the canvas so the global alpha multiplier applies (dialog fades). */
+    /** Draws a pixel icon with the alpha multiplier applied. */
     public void icon(final String name, final int x, final int y, final int size, final Color color) {
         PixelIcon.draw(name, x, y, size, this.mul(color));
     }
@@ -237,14 +224,14 @@ public final class Canvas {
         return bold ? this.text.glyphHeightBold(scale) : this.text.glyphHeight(scale);
     }
 
-    /** Draws a letter-spaced run — glyph by glyph with extra logical-px spacing, the global alpha applied once. */
+    /** Draws a letter-spaced run glyph by glyph with extra logical pixels between characters. */
     public void textSpaced(final String value, final float x, final float y, final Color color,
                            final float scale, final boolean bold, final int letterSpacing) {
         if (value == null || value.isEmpty()) return;
         this.text.renderSpaced(value, x, y, this.mul(color), scale, bold, letterSpacing);
     }
 
-    /** Width of a letter-spaced run — matches {@link #textSpaced} without allocating per-character strings. */
+    /** Returns the width of a letter-spaced run as {@link #textSpaced} draws it. */
     public int textSpacedWidth(final String value, final float scale, final boolean bold, final int letterSpacing) {
         return this.text.spacedWidth(value, scale, bold, letterSpacing);
     }

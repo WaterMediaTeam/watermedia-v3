@@ -48,9 +48,8 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.watermedia.bootstrap.app.render.RenderSystem.mediaEngineSupplier;
 
 /**
- * Screen for media playback: a fully retained tree stacking the {@link VideoSurface} under a HUD layer
- * (top info row, metrics panel, transport bar), with the source/quality and video-settings dialogs
- * hosted as modal {@link Dialog}s on the screen overlay.
+ * Plays the selected media under a HUD with the info row, metrics panel and transport bar, plus modal
+ * source/quality and video-settings dialogs.
  */
 public final class PlayerScreen extends Screen {
 
@@ -59,18 +58,17 @@ public final class PlayerScreen extends Screen {
     private static final float META_DESC_LABEL_SCALE = AppTheme.TEXT_BUTTON;
     private static final float META_DESC_SCALE = AppTheme.TEXT_SECTION;
     private static final int RES_FIELD_MAX_DIGITS = 5;
-    // PLAYBACK-SPEED PRESETS FOR THE SPEED DROPDOWN — VALUE + DISPLAY LABEL, INDEX 3 (1.0x) IS THE DEFAULT
+    // SPEED DROPDOWN PRESETS; INDEX 3 (1.0x) IS THE DEFAULT
     private static final float[] SPEED_VALUES = {0.25f, 0.50f, 0.75f, 1.0f, 1.25f, 1.50f, 1.75f, 2.0f, 2.5f, 3.0f, 4.0f};
     private static final String[] SPEED_LABELS = {"0.25x", "0.50x", "0.75x", "1.0x", "1.25x", "1.50x", "1.75x", "2.0x", "2.5x", "3.0x", "4.0x"};
-    // EVERY METRIC ROW LABEL (WITHOUT THE COLON) — SIZES THE FIXED LABEL COLUMN SO VALUES ALIGN WITHOUT OVERLAP
+    // MUST LIST EVERY METRICS PANEL LABEL: THE WIDEST ONE SIZES THE VALUE COLUMN SO NO LABEL OVERLAPS ITS VALUE
     private static final String[] METRIC_LABELS = {"Engine", "MRL", "Source", "FPS", "Status", "Time",
             "Volume", "Quality", "Dimensions", "Speed", "Live", "Title", "Author", "Published"};
-    // WHEEL STEP (LOGICAL PX PER NOTCH) FOR THE METRICS PANEL — MATCHES ParentScroll SO SCROLLING FEELS THE SAME
+    // LOGICAL PX PER WHEEL NOTCH, THE SAME STEP AS ScrollState
     private static final int METRIC_SCROLL_STEP = 48;
-    // HOISTED FORMATTER: REBUILDING IT PER FRAME (UP TO TWICE) WAS PURE OVERHEAD
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(ZoneId.systemDefault());
-    // A PAUSED PLAYER KEEPS PAINTING THIS LONG AFTER INPUT, SO A PAUSED SEEK SHOWS ITS FRAME ON VULKAN, WHOSE
-    // ENGINE DOES NOT WAKE THE RENDER LOOP WHEN A FRAME LANDS
+    // A PAUSED PLAYER KEEPS PAINTING THIS LONG AFTER INPUT SO A PAUSED SEEK SHOWS ITS FRAME ON VULKAN,
+    // WHOSE ENGINE DOES NOT WAKE THE RENDER LOOP WHEN A FRAME LANDS
     private static final long SETTLE_NS = 1_000_000_000L;
     private static final List<Keybind> KEYS_VIDEO = List.of(new Keybind("TYPE", "Resolution"), new Keybind("TAB", "Field"),
             new Keybind("UP/DOWN", "LOD"), new Keybind("ENTER/ESC", "Close"));
@@ -80,7 +78,7 @@ public final class PlayerScreen extends Screen {
             new Keybind("V", "Video"), new Keybind("ESC", "Menu"), new Keybind("ENTER", "Sources"));
     private static final List<Keybind> KEYS_QUALITIES = List.of(new Keybind("SPACE", "Play/Pause"), new Keybind("L", "Loop"),
             new Keybind("V", "Video"), new Keybind("ESC", "Menu"), new Keybind("ENTER", "Quality"));
-    // HUD FADE / TOP-BAND GRADIENT STOPS (PORTED FROM THE LEGACY fadeLeft/fadeBottom/fillGradientV CALLS)
+    // HUD EDGE FADE AND TOP-BAND GRADIENT STOPS
     private static final Color FADE_DARK = new Color(0, 0, 0, 230);
     private static final Color FADE_CLEAR = new Color(0, 0, 0, 0);
     private static final Color BAND_DARK = new Color(6, 9, 26, 235);
@@ -94,17 +92,16 @@ public final class PlayerScreen extends Screen {
     private long settleUntil;
     private boolean loopEnabled = true;
     private float speed = 1f;
-    // REMEMBERS THE KEY WHOSE PRESS JUST CLOSED THE SPEED DROPDOWN MENU SO ONLY ITS MATCHING RELEASE IS
-    // SWALLOWED (ONE TAP MUST NOT ALSO LEAVE THE SCREEN); -1 = NOTHING PENDING. SAME MECHANISM AS
-    // SettingsScreen.popupKey — A FRESH PRESS CANCELS A STALE PENDING SWALLOW
+    // KEY WHOSE PRESS CLOSED THE SPEED MENU: ONLY ITS RELEASE IS SWALLOWED SO ONE TAP DOES NOT ALSO
+    // LEAVE THE SCREEN (-1 = NONE)
     private int swallowKey = -1;
     private String resWidthText = "";
     private String resHeightText = "";
     private int lodSelectedIndex;
     private int sourceSelectedIndex;
     private int qualitySelectedIndex;
-    // DEFERS THE SCROLL-SELECTION-INTO-VIEW UNTIL THE SOURCE LIST HAS A REAL VIEWPORT (FIRST LAYOUT),
-    // THEN NEVER AGAIN — FREE WHEEL/SCROLLBAR SCROLLING IS NOT STOLEN BACK (SAME RULE AS LEGACY)
+    // SCROLLS THE SELECTED SOURCE INTO VIEW ONCE THE LIST HAS A VIEWPORT, THEN NEVER AGAIN SO WHEEL
+    // AND SCROLLBAR SCROLLING ARE NOT STOLEN BACK
     private boolean sourceFollowPending;
 
     // TREE
@@ -130,8 +127,6 @@ public final class PlayerScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        // VIDEO AREA STACK: THE FRAME BLIT AT THE BOTTOM, THE LOCALIZED CRT EFFECT OVER IT (GATED BY ctx.crt,
-        // NEVER HIT-TESTABLE), AND THE HUD ON TOP. THE GLOBAL SHELL CRT IS GONE — THIS IS THE PLAYER'S OWN
         return new ParentFrame().add(new VideoSurface()).add(new CrtOverlay()).add(new Hud());
     }
 
@@ -194,7 +189,7 @@ public final class PlayerScreen extends Screen {
     @Override
     protected void onUpdate() {
         final MediaPlayer player = this.ctx.player;
-        // ENDED CHIME — ONCE PER ENDING, ONLY WHILE NO DIALOG IS ACTIVE (SAME RULE AS LEGACY)
+        // CHIME ONCE PER ENDING, ONLY WHILE NO DIALOG IS OPEN
         if (player != null && this.qualityDialog == null && this.videoDialog == null) {
             if (player.ended()) {
                 if (!this.endedSoundPlayed) {
@@ -221,7 +216,7 @@ public final class PlayerScreen extends Screen {
         this.ctx.player = MediaAPI.player(
                 this.ctx.selectedMRL,
                 this.ctx.sourceSelectorIndex,
-                // THE ACTIVE RENDER BACKEND DECIDES THE ENGINE (GLEngine / VKEngine) — THE SCREEN STAYS AGNOSTIC
+                // THE ACTIVE RENDER BACKEND PICKS THE ENGINE (GLEngine OR VKEngine)
                 mediaEngineSupplier(Thread.currentThread(), this.ctx),
                 MediaAPI::alEngine
         );
@@ -286,8 +281,7 @@ public final class PlayerScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // PUSHES THE CUSTOM MAX RESOLUTION AND LOD TO THE LIVE PLAYER. BOTH APPLY ON THE FLY
-    // TO THE NEXT UPLOADED FRAME; RE-APPLIED FROM startPlayer SO THEY SURVIVE PLAYER RESTARTS.
+    // BOTH SETTINGS APPLY FROM THE NEXT UPLOADED FRAME; startPlayer RE-APPLIES THEM SO THEY SURVIVE RESTARTS
     private void applyVideoSettings() {
         final MediaPlayer player = this.ctx.player;
         if (player == null) return;
@@ -295,8 +289,7 @@ public final class PlayerScreen extends Screen {
         player.lod(MediaPlayer.LodLevel.values()[this.lodSelectedIndex]);
     }
 
-    // PARSES A RESOLUTION FIELD: EMPTY OR NON-POSITIVE MEANS UNLIMITED (NO_SIZE); A POSITIVE
-    // VALUE IS CLAMPED TO THE NATIVE SOURCE SIZE SO THE CAP NEVER EXCEEDS THE ACTIVE MAXIMUM.
+    // EMPTY, INVALID OR NON-POSITIVE MEANS UNLIMITED (NO_SIZE); A POSITIVE VALUE IS CAPPED AT THE SOURCE SIZE
     private int parseDim(final String text, final int nativeMax) {
         if (text.isEmpty()) return 0;
         final int value;
@@ -350,7 +343,6 @@ public final class PlayerScreen extends Screen {
     private void drawTypeTag(final Canvas canvas, final int x, final int y, final MediaType type) {
         final String label = type == null ? "MEDIA" : type.name();
         final Color color = mediaTypeColor(type);
-        // ONE WIDTH FORMULA — REUSE typeTagWidth SO LAYOUT HIT BOXES AND PAINTED PIXELS NEVER DESYNC
         final int w = this.typeTagWidth(type);
         canvas.fill(x, y, w, 22, AppTheme.alpha(AppTheme.BG_1, 188));
         canvas.stroke(x, y, w, 22, color, 1f);
@@ -372,27 +364,25 @@ public final class PlayerScreen extends Screen {
     @Override
     public boolean dispatchKey(final int key, final int action) {
         this.settleUntil = System.nanoTime() + SETTLE_NS;
-        // THE SPEED DROPDOWN MENU LIVES ON OUR OVERLAY AND SWALLOWS ITS OWN ESC/ENTER ON PRESS. IF THIS PRESS
-        // CLOSED IT, EAT THE MATCHING RELEASE SO ONE TAP IS NOT ALSO A SCREEN SHORTCUT (E.G. LEAVE THE SCREEN)
+        // THE SPEED MENU CLOSES ON THE ESC/ENTER PRESS; IF THIS PRESS CLOSED IT, ITS RELEASE IS SWALLOWED
+        // SO ONE TAP DOES NOT ALSO FIRE A SCREEN SHORTCUT
         final boolean menuOpen = this.speedMenuOpen();
         if (super.dispatchKey(key, action)) {
             if (menuOpen && action != GLFW_RELEASE && !this.speedMenuOpen()) this.swallowKey = key;
             return true;
         }
         if (action != GLFW_RELEASE) {
-            // A FRESH PRESS CANCELS A PENDING SWALLOW (ITS PAIRED RELEASE NEVER CAME — E.G. MOUSE-CLOSED
-            // MENU); PRESSES NEVER TRIGGER SCREEN SHORTCUTS, THOSE ACT ON RELEASE
+            // A FRESH PRESS DROPS A STALE SWALLOW (E.G. THE MOUSE CLOSED THE MENU); SHORTCUTS ACT ON RELEASE
             this.swallowKey = -1;
             return false;
         }
-        // EAT ONLY THE RELEASE PAIRED WITH THE PRESS THAT CLOSED THE MENU, NOT A LATER UNRELATED KEYSTROKE
         if (key == this.swallowKey) {
             this.swallowKey = -1;
             return true;
         }
-        // A KEY THAT DID NOT CLOSE A STILL-OPEN MENU: KEEP THE SCREEN SHORTCUTS SUPPRESSED WHILE IT SHOWS
+        // NO SCREEN SHORTCUT FIRES WHILE THE SPEED MENU IS OPEN
         if (menuOpen) return false;
-        // ESC MUST LEAVE THE SCREEN EVEN WHEN PLAYER CREATION FAILED (ctx.player == null)
+        // ESC GOES BEFORE THE PLAYER CHECK SO IT LEAVES EVEN WHEN PLAYER CREATION FAILED
         if (key == GLFW_KEY_ESCAPE) {
             this.returnToMenu();
             return true;
@@ -432,8 +422,7 @@ public final class PlayerScreen extends Screen {
         return true;
     }
 
-    // TRUE WHILE THE SPEED DROPDOWN'S FLOATING MENU IS MOUNTED ON OUR OVERLAY. THE OVERLAY ONLY EVER HOSTS
-    // OUR TWO DIALOGS PLUS THAT MENU, SO ANY OTHER CHILD IS THE MENU (THE DIALOGS ARE MUTUALLY EXCLUSIVE WITH IT).
+    // THE OVERLAY ONLY HOSTS THE TWO DIALOGS AND THE SPEED MENU, SO ANY OTHER CHILD IS THE MENU
     private boolean speedMenuOpen() {
         for (final Element<?> child: this.overlay().children()) {
             if (child != this.qualityDialog && child != this.videoDialog) return true;
@@ -441,7 +430,6 @@ public final class PlayerScreen extends Screen {
         return false;
     }
 
-    // NEAREST SPEED PRESET INDEX FOR A LIVE PLAYER SPEED — KEEPS THE DROPDOWN SELECTION IN SYNC WITH THE PLAYER
     private int nearestSpeedIndex(final float value) {
         int nearest = 0;
         float best = Float.MAX_VALUE;
@@ -470,7 +458,7 @@ public final class PlayerScreen extends Screen {
                 .selectionColor(null).hoverColor(null)
                 .rowFactory((src, i) -> {
                     final SourceRow row = new SourceRow(src, i);
-                    // HOVER PREVIEWS THE SOURCE (LOADS ITS QUALITIES) WITHOUT APPLYING — SAME AS LEGACY
+                    // HOVER LISTS THE SOURCE'S QUALITIES WITHOUT SWITCHING PLAYBACK
                     row.onHover(r -> {
                         if (this.sourceSelectedIndex != i) {
                             this.srcList.selection(i);
@@ -528,7 +516,7 @@ public final class PlayerScreen extends Screen {
                 .content(content)
                 .onDismiss(this::hideQualityDialog)
                 .onPrimary(() -> this.applyQuality(this.qualList.selectedIndex()));
-        // CLICKS INSIDE THE PANEL MUST NOT FALL THROUGH TO THE SCRIM — LEGACY IGNORED THEM
+        // CLICKS ON EMPTY PANEL AREA MUST NOT FALL THROUGH TO THE SCRIM
         this.qualityDialog.panel().consumeTouch(true);
 
         this.syncQualityDialog();
@@ -550,7 +538,6 @@ public final class PlayerScreen extends Screen {
     }
 
     private void syncQualityDialog() {
-        // LOGICAL PX — THE TREE (AND THE DIALOG PANEL) IS MEASURED IN LOGICAL COORDINATES
         final int winW = this.ctx.logicalWidth();
         final int winH = this.ctx.logicalHeight();
         final int srcCount = this.ctx.availableSources != null ? this.ctx.availableSources.length : 1;
@@ -565,7 +552,6 @@ public final class PlayerScreen extends Screen {
         this.qualDivider.size(1, listH + 42);
         this.srcList.height(listH);
         this.qualList.height(listH);
-        // FOLLOW THE INITIAL SELECTION INTO VIEW ONCE THE LIST HAS A MEASURED VIEWPORT, THEN NEVER AGAIN
         if (this.sourceFollowPending && this.srcList.innerHeight() > 0) {
             final int idx = Math.max(0, this.srcList.selectedIndex());
             this.srcList.selection(-1);
@@ -623,7 +609,6 @@ public final class PlayerScreen extends Screen {
         this.ctx.availableQualities = qualities.toArray(new MediaQuality[0]);
         Arrays.sort(this.ctx.availableQualities, Comparator.comparingInt(MediaQuality::height));
 
-        // FIND CURRENT QUALITY INDEX
         this.qualitySelectedIndex = 0;
         for (int i = 0; i < this.ctx.availableQualities.length; i++) {
             if (this.ctx.availableQualities[i] == this.ctx.selectedQuality) {
@@ -720,7 +705,7 @@ public final class PlayerScreen extends Screen {
                 .onDismiss(this::hideVideoDialog)
                 .onPrimary(this::hideVideoDialog)
                 .dismissOnScrim(this::hideVideoDialog);
-        // A CLICK INSIDE THE PANEL (OUTSIDE THE FIELDS/ROWS) DROPS FIELD FOCUS — SAME AS LEGACY
+        // A CLICK ON THE PANEL OUTSIDE THE FIELDS AND ROWS DROPS FIELD FOCUS
         this.videoDialog.panel().onClick(p -> this.clearResFocus());
 
         this.syncVideoDialog();
@@ -746,7 +731,7 @@ public final class PlayerScreen extends Screen {
         this.videoDialog.panelWidth(dialogW);
         this.videoLeftCol.width(colW);
         this.videoRightCol.width(colW);
-        // DIVIDER SPANS THE TALLER COLUMN — BOTH HEIGHTS ARE CONTENT-DRIVEN
+        // THE DIVIDER SPANS THE TALLER COLUMN; THE SUMS FOLLOW EACH COLUMN'S MARGINS AND ROW HEIGHTS
         final int subH = this.text.glyphHeight(AppTheme.TEXT_SUBTITLE);
         final int bodyH = this.text.glyphHeight(AppTheme.TEXT_BODY);
         final int leftH = 30 + 12 + subH + 6 + 34 + 20 + subH + 6 + 34 + 14 + bodyH + 10 + subH;
@@ -769,7 +754,7 @@ public final class PlayerScreen extends Screen {
                 return true;
             }
             case GLFW_KEY_DELETE -> {
-                // BACKSPACE IS HANDLED BY THE FIELD ITSELF; LEGACY TREATED DELETE THE SAME WAY
+                // THE FIELD HANDLES BACKSPACE; DELETE ALSO REMOVES THE LAST DIGIT
                 final TextField field = this.focusedResField();
                 if (field != null && !field.value().isEmpty()) {
                     final String next = field.value().substring(0, field.value().length() - 1);
@@ -811,8 +796,7 @@ public final class PlayerScreen extends Screen {
         if (this.resHeightField != null) this.resHeightField.focused(false).invalidate();
     }
 
-    // SANITIZES A RESOLUTION FIELD EDIT (DIGITS ONLY, CLAMPED TO THE NATIVE SOURCE SIZE) AND
-    // PUSHES THE NEW CAP TO THE LIVE PLAYER.
+    // KEEPS DIGITS ONLY, CAPS THE VALUE AT THE NATIVE SOURCE SIZE AND PUSHES IT TO THE LIVE PLAYER
     private void resEdit(final TextField field, final boolean width, final String raw) {
         final MediaPlayer player = this.ctx.player;
         final int nativeMax = player == null ? 0 : (width ? player.sourceWidth() : player.sourceHeight());
@@ -845,9 +829,8 @@ public final class PlayerScreen extends Screen {
     // INNER ELEMENTS
     // ==========================================================================
 
-    // HORIZONTAL DIALOG CONTENT ROW WITH A KEY FALLBACK: THE CHILDREN (TEXT FIELDS) GET THE KEY FIRST,
-    // THEN THE HANDLER RUNS ON RELEASE (LEGACY DIALOG KEYS ACTED ON RELEASE) — THE HOSTING Dialog STILL
-    // SWALLOWS WHATEVER IS LEFT, KEEPING THE MODAL CONTRACT
+    // DIALOG CONTENT ROW: CHILDREN GET EACH KEY FIRST, THEN THE HANDLER RUNS ON RELEASE;
+    // THE HOSTING Dialog SWALLOWS WHATEVER IS LEFT
     private static final class DialogKeys extends Parent {
 
         private final IntPredicate keys;
@@ -952,21 +935,19 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // METRICS/METADATA PANEL (DEBUG) — DRAW-ONLY LEAF PORTING THE LEGACY renderMetric/renderWrappedMetric/
-    // renderPanelHead/renderDescriptionBox STACK ONTO THE CANVAS, READING THE LIVE PLAYER EVERY FRAME
+    // DEBUG METRICS AND METADATA PANEL: A DRAW-ONLY LEAF THAT READS THE LIVE PLAYER EVERY FRAME
     private final class MetricsPanel extends Element<MetricsPanel> {
 
-        // WHEEL OFFSET (LOGICAL PX) AND THE PREVIOUS FRAME'S MEASURED OVERFLOW THAT CLAMPS IT; labelColW IS THE
-        // FIXED LABEL-COLUMN WIDTH (WIDEST LABEL + GAP), COMPUTED ONCE SO EVERY VALUE COLUMN LINES UP
+        // maxScroll IS THE PREVIOUS FRAME'S OVERFLOW, WHICH CLAMPS THE WHEEL OFFSET
         private int scroll;
         private int maxScroll;
         private int labelColW;
-        // CACHED DECIMAL METRICS — REFORMATTED ONLY WHEN THEIR 2-DP DISPLAY VALUE MOVES (SEE onUpdate)
+        // REFORMATTED ONLY WHEN THE 2-DECIMAL VALUE CHANGES: A String.format PER FRAME IS THE PANEL'S
+        // HEAVIEST ALLOCATION DURING PLAYBACK
         private String fpsStr = "0.00";
         private String speedStr = "1.00";
         private long fpsKey = Long.MIN_VALUE;
         private long speedKey = Long.MIN_VALUE;
-        // RENDER-THREAD-ONLY WRAP MEMOS (ONE PER WRAPPED ROW) — wrap() REBUILDS ONLY WHEN TEXT/WIDTH/MAXLINES MOVE
         private final WrapCache mrlWrap = new WrapCache();
         private final WrapCache titleWrap = new WrapCache();
         private final WrapCache descWrap = new WrapCache();
@@ -975,8 +956,6 @@ public final class PlayerScreen extends Screen {
         protected void onUpdate() {
             final MediaPlayer player = PlayerScreen.this.ctx.player;
             if (player == null) return;
-            // String.format PER FRAME WAS THIS PANEL'S HEAVIEST STEADY ALLOCATION (DEBUG PANEL IS OPEN AND
-            // CONTINUOUS DURING PLAYBACK); REFORMAT ONLY WHEN THE ROUNDED 2-DECIMAL VALUE ACTUALLY CHANGES
             final double fps = player.fps();
             final long fpsKey = Math.round(fps * 100.0);
             if (fpsKey != this.fpsKey) {
@@ -1010,13 +989,12 @@ public final class PlayerScreen extends Screen {
             final int py = this.top;
             final int pw = this.measuredWidth;
             final int ph = this.measuredHeight;
-            // PANEL FRAME — DRAWN UNCLIPPED SO THE BORDER/GLOW STAY CRISP
+            // THE FRAME GOES BEFORE THE CLIP SO ITS BORDER AND GLOW ARE NOT CUT
             canvas.stroke(px, py, pw, ph, AppTheme.NEON, 2f);
             canvas.glow(px, py, pw, ph, 0f, AppTheme.NEON, 0.20f);
             canvas.fill(px, py, pw, ph, AppTheme.alpha(AppTheme.BG_1, 209));
 
-            // CLAMP THE WHEEL OFFSET TO LAST FRAME'S OVERFLOW, THEN CLIP EVERY METRIC TO THE PANEL RECT SO A
-            // LONG METADATA BLOCK CANNOT SPILL OVER THE SEEK BAR; CONTENT IS DRAWN SHIFTED UP BY scroll
+            // THE CLIP KEEPS LONG METADATA OFF THE SEEK BAR; CONTENT IS SHIFTED UP BY scroll
             this.scroll = MathUtil.clamp(this.scroll, 0, this.maxScroll);
             canvas.pushClip(px, py, pw, ph);
 
@@ -1063,7 +1041,7 @@ public final class PlayerScreen extends Screen {
             }
             canvas.popClip();
 
-            // DEFERRED OVERFLOW MEASURE FOR THE NEXT FRAME'S CLAMP, PLUS A LIVE SCROLL THUMB WHEN CONTENT OVERFLOWS
+            // THE OVERFLOW CLAMPS THE NEXT FRAME'S OFFSET; A SCROLL THUMB SHOWS WHILE CONTENT OVERFLOWS
             final int contentH = y - top0;
             final int viewH = ph - 28;
             this.maxScroll = Math.max(0, contentH - viewH);
@@ -1121,7 +1099,7 @@ public final class PlayerScreen extends Screen {
             final int lineH = text.lineHeight(META_DESC_SCALE) + 2;
             final int h = 22 + labelH + lines.size() * lineH + 14;
             canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.BG_2, 188));
-            // DRAWS THE DOTTED BORDER WITHOUT EXTRA GEOMETRY STATE.
+            // DOTTED BORDER
             for (int dx = x; dx < x + w; dx += 8) {
                 canvas.fill(dx, y, Math.min(4, x + w - dx), 1, AppTheme.STROKE_BRIGHT);
                 canvas.fill(dx, y + h - 1, Math.min(4, x + w - dx), 1, AppTheme.STROKE_BRIGHT);
@@ -1137,8 +1115,6 @@ public final class PlayerScreen extends Screen {
             return y + h + 10;
         }
 
-        // VALUE COLUMN X: A FIXED OFFSET SIZED TO THE WIDEST METRIC LABEL (+ GAP), COMPUTED ONCE. THIS KEEPS
-        // EVERY VALUE ALIGNED (THE MONOSPACED LOOK) WHILE GUARANTEEING NO LABEL EVER OVERLAPS ITS VALUE
         private int valueX(final int x) {
             if (this.labelColW == 0) {
                 final TextRenderer text = PlayerScreen.this.text;
@@ -1167,9 +1143,8 @@ public final class PlayerScreen extends Screen {
         }
 
         private int fitPrefix(final String value, final int maxPixelWidth, final float scale) {
-            // width() IS MONOTONIC NON-DECREASING IN PREFIX LENGTH (PER-GLYPH ADVANCE >= 1, TRACKING >= 0), SO
-            // BINARY-SEARCH THE LONGEST FITTING PREFIX INSTEAD OF RE-MEASURING EVERY GROWING SUBSTRING (WAS
-            // O(n^2) EACH FRAME). RESULT IS PIXEL-IDENTICAL TO THE LINEAR SCAN; ALWAYS CONSUME >= 1 CHAR SO wrap() CANNOT STALL.
+            // width() NEVER SHRINKS AS THE PREFIX GROWS, SO A BINARY SEARCH FINDS THE LONGEST FITTING PREFIX;
+            // IT KEEPS AT LEAST ONE CHAR SO wrap() CANNOT STALL
             final TextRenderer text = PlayerScreen.this.text;
             int lo = 1, hi = value.length(), lastFit = 1;
             while (lo <= hi) {
@@ -1187,7 +1162,7 @@ public final class PlayerScreen extends Screen {
         private int wrapBreak(final String value, final int fit) {
             final int limit = MathUtil.clamp(fit, 1, value.length());
             int best = -1;
-            // PREFER VISUALLY STABLE BREAKS FOR LONG URLS AND TITLES.
+            // PREFER WORD AND URL-SEPARATOR BREAKS NEAR THE FIT POINT
             for (int i = limit - 1; i > Math.max(0, limit - 18); i--) {
                 final char c = value.charAt(i);
                 if (Character.isWhitespace(c) || c == '/' || c == '?' || c == '&' || c == '-' || c == '_') {
@@ -1198,9 +1173,8 @@ public final class PlayerScreen extends Screen {
             return best > 4 ? best : limit;
         }
 
-        // RENDER-THREAD-ONLY MEMO FOR ONE WRAPPED ROW: KEYS THE CACHED LINE LIST ON (TEXT, WIDTH, MAXLINES) SO
-        // wrap() ONLY REBUILDS WHEN AN INPUT MOVES (MRL/METADATA CHANGE OR PANEL RESIZE), NOT EVERY FRAME.
-        // TOUCHED ONLY DURING onDraw ON THE RENDER THREAD, SO NO VOLATILE/SYNC IS NEEDED
+        // WRAPPED LINES OF ONE ROW, REBUILT ONLY WHEN ITS TEXT, WIDTH OR LINE CAP CHANGES; ONLY onDraw
+        // TOUCHES IT, ON THE RENDER THREAD, SO IT NEEDS NO SYNCHRONIZATION
         private final class WrapCache {
 
             private String text;
@@ -1221,9 +1195,8 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // THE HUD LAYER: TOP INFO ROW, METRICS PANEL AND TRANSPORT BAR AT THE LEGACY PIXEL POSITIONS.
-    // CHROME (FADES, BAR PANELS, DIVIDERS, STATIC TEXTS) IS PAINTED IN onDraw; EVERY INTERACTIVE PIECE
-    // IS A REAL CHILD ELEMENT PLACED BY AN ABSOLUTE onLayout PORTED FROM THE LEGACY MATH.
+    // HUD LAYER: onDraw PAINTS THE CHROME (FADES, BAR PANELS, DIVIDERS, TEXTS) AND EVERY INTERACTIVE
+    // PIECE IS A CHILD PLACED AT ABSOLUTE POSITIONS BY onLayout
     private final class Hud extends Group<Hud> {
 
         private final Button back;
@@ -1269,7 +1242,7 @@ public final class PlayerScreen extends Screen {
 
         Hud() {
             this.size(MAX_PARENT, MAX_PARENT);
-            // WRAP THE WIDTH SO "BACK" (WITH ITS ARROW) IS NEVER TRUNCATED TO DOTS
+            // WRAP_CONTENT SO "BACK" AND ITS ARROW ARE NEVER TRUNCATED
             this.back = new Button("BACK").icon("arrow-left")
                     .accent(AppTheme.TEXT_SOFT).textColor(AppTheme.TEXT_SOFT).width(WRAP_CONTENT).height(34)
                     .onClick(b -> PlayerScreen.this.returnToMenu());
@@ -1280,7 +1253,7 @@ public final class PlayerScreen extends Screen {
                         PlayerScreen.this.debugOpen = !PlayerScreen.this.debugOpen;
                         PlayerScreen.this.ctx.playSelectionSound();
                     });
-            // WRAP TO CONTENT: THE QUALITY/LOD LABELS AND THEIR RESOLUTION CHIPS VARY, SO A FIXED WIDTH CLIPPED THEM
+            // WRAP_CONTENT: THE QUALITY AND LOD LABELS AND THEIR RESOLUTION CHIPS VARY IN WIDTH
             this.qual = new Button().icon("folder").accent(AppTheme.CYAN).textColor(AppTheme.CYAN).subTextColor(AppTheme.CYAN);
             this.qual.width(WRAP_CONTENT).height(30).onClick(v -> {
                 PlayerScreen.this.openQualityDialog();
@@ -1314,8 +1287,8 @@ public final class PlayerScreen extends Screen {
                         PlayerScreen.this.toggleLoop(p);
                         PlayerScreen.this.ctx.playSelectionSound();
                     });
-            // SPEED PRESETS AS A FLOATING MENU ANCHORED TO THE CONTROL (FLIPS ABOVE WHEN PINNED TO THE BOTTOM
-            // EDGE — THE FRAMEWORK HANDLES THAT). SCOPED TO THE SCREEN OVERLAY SO IT PAINTS ON TOP OF THE HUD
+            // THE MENU MOUNTS ON THE SCREEN OVERLAY SO IT PAINTS OVER THE HUD; Dropdown FLIPS IT ABOVE
+            // THE CONTROL NEAR THE BOTTOM EDGE
             this.speedDrop = new Dropdown().mode(Dropdown.Mode.ATTACH).accent(AppTheme.NEON)
                     .items(Arrays.asList(SPEED_LABELS)).selected(3)
                     .overlayHost(PlayerScreen.this.overlay())
@@ -1387,16 +1360,14 @@ public final class PlayerScreen extends Screen {
             final String scale = PlayerScreen.this.scaleLabel();
             this.qual.label(p.quality().name()).subText(scale);
             this.lod.label(PlayerScreen.this.lodLabel()).subText(scale);
-            // KEEP THE DROPDOWN SELECTION MIRRORING THE LIVE PLAYER SPEED (SNAPPED TO THE NEAREST PRESET);
-            // LOCK IT WHEN THE PLAYER CANNOT CHANGE SPEED (LIVE STREAM, OR AN ENGINE STUCK AT 1.0×)
+            // THE SELECTION SNAPS TO THE PRESET NEAREST THE LIVE SPEED; LOCKED WHEN THE PLAYER CANNOT
+            // CHANGE SPEED (LIVE STREAM OR AN ENGINE FIXED AT 1.0x)
             this.speedDrop.enabled(p.canSpeed());
             this.speedDrop.selected(PlayerScreen.this.nearestSpeedIndex(p.speed()));
         }
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // LOCAL GEOMETRY (WINDOW X == LOCAL X; Y IS OFFSET BY this.top AT LAYOUT). LEGACY:
-            // transportY = max(TITLEBAR_H + 120, windowH - FOOTER_H - 92) → LOCAL max(120, H - 92)
             this.transportYL = Math.max(120, innerAvailHeight - 92);
             this.metrics.size(MathUtil.clamp(innerAvailWidth / 4, 240, 405), Math.max(220, this.transportYL - 80 - 14));
 
@@ -1421,7 +1392,7 @@ public final class PlayerScreen extends Screen {
             final int y0 = this.innerTop();
             final int w = this.innerWidth();
             this.topYA = y0 + 24;
-            // BACK KEEPS ITS CONSTANT SPOT IN EVERY STATE — ON AN IMMEDIATE ERROR IT IS STILL CLICKABLE (M-13)
+            // BACK IS PLACED BEFORE THE ERROR EXIT SO IT STAYS CLICKABLE WHEN THE PLAYER FAILS
             this.back.layout(x0 + 16, this.topYA);
             if (this.errorMode) return;
 
@@ -1430,8 +1401,7 @@ public final class PlayerScreen extends Screen {
             this.metrics.layout(x0 + 14, y0 + 80);
             this.seek.layout(x0 + 112, this.transportYA + 4);
 
-            // LEFT CLUSTER: DEBUG / QUALITY / LOD + DIVIDER — ADVANCE BY EACH CONTROL'S MEASURED WIDTH (8PX GAP)
-            // SO THE WRAP-TO-CONTENT QUALITY/LOD BUTTONS PACK TIGHTLY WITHOUT GAPS OR CLIPPING
+            // LEFT CLUSTER: DEBUG, QUALITY, LOD AND DIVIDER, PACKED BY MEASURED WIDTH AS QUALITY AND LOD VARY
             final int rowY = this.controlsYA - 5;
             int lx = x0 + 28;
             this.dbg.layout(lx, rowY);
@@ -1441,7 +1411,7 @@ public final class PlayerScreen extends Screen {
             this.lod.layout(lx, rowY);
             this.dividerXA = lx + this.lod.measuredWidth() + 14;
 
-            // CENTER CLUSTER: WINDOW-CENTERED TRANSPORT KEYS, PUSHED RIGHT OF THE DIVIDER WHEN CRAMPED
+            // CENTER CLUSTER: CENTERED TRANSPORT KEYS, PUSHED RIGHT OF THE DIVIDER WHEN CRAMPED
             final int controlsW = 244 + (this.multiSource ? 100 : 0);
             int cx = Math.max(this.dividerXA + 20, x0 + (w - controlsW) / 2);
             if (this.multiSource) {
@@ -1470,7 +1440,7 @@ public final class PlayerScreen extends Screen {
             rx += 86;
             this.speedDrop.layout(rx, rowY);
 
-            // TOP INFO ROW STRINGS AND TAG POSITIONS (TRUNCATION IS WINDOW-WIDTH DEPENDENT)
+            // TOP INFO ROW TEXTS AND TAGS, BUILT HERE BECAUSE TRUNCATION DEPENDS ON THE WIDTH
             final TextRenderer text = PlayerScreen.this.text;
             final AppContext ctx = PlayerScreen.this.ctx;
             final MediaPlayer p = ctx.player;
@@ -1502,9 +1472,8 @@ public final class PlayerScreen extends Screen {
         @Override
         protected void onDraw(final Canvas canvas) {
             if (!this.errorMode) {
-                // ALL CHROME IS SLOT-RELATIVE: X FROM this.left, WIDTH FROM this.measuredWidth. NEVER
-                // canvas.windowWidth() — THAT ONLY ALIGNS WHILE THE CENTER SLOT STARTS AT x=0; ANY
-                // HORIZONTAL INSET WOULD DESYNC THE CHROME FROM THE SLOT-RELATIVE onLayout CHILDREN
+                // CHROME USES this.left AND measuredWidth, NEVER canvas.windowWidth(), SO A SLOT INSET
+                // CANNOT SPLIT IT FROM THE CHILDREN PLACED BY onLayout
                 final int x0 = this.left;
                 final int w = this.measuredWidth;
                 final int hudY = this.top;
@@ -1555,7 +1524,7 @@ public final class PlayerScreen extends Screen {
         @Override
         public Element<?> dispatchPress(final double mx, final double my) {
             final Element<?> hit = super.dispatchPress(mx, my);
-            // THE PRESS THAT CAPTURES A BAR CHIMES ONCE (MATCHING THE LEGACY CLICK); DRAG MOVES STAY SILENT
+            // ONLY THE PRESS THAT GRABS A BAR CHIMES; DRAG MOVES STAY SILENT
             if (hit == this.seek || hit == this.vol) PlayerScreen.this.ctx.playSelectionSound();
             return hit;
         }

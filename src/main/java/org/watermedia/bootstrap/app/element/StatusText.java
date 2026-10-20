@@ -8,10 +8,8 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
- * A bordered status chip: a glowing status pip on the left plus an uppercase label, both tinted by the
- * live {@link StatusSquare.Status} — the retained port of the imperative backend tag (fixed 22px band,
- * {@code textWidth + 44} wide). An optional strike-through crosses the label for unsupported features.
- * Status and strike are resolved on every draw so live backend state never goes stale.
+ * A bordered 22px status chip: a glowing pip and an uppercase label tinted by a {@link StatusSquare.Status}, with an
+ * optional strike-through for unsupported features. Status and strike are re-read on every draw.
  */
 public final class StatusText extends Element<StatusText> {
 
@@ -66,7 +64,7 @@ public final class StatusText extends Element<StatusText> {
             this.contentHeight = H;
             return;
         }
-        // UPPERCASE LABEL WIDTH PLUS THE PIP/PADDING BAND
+        // 24 PX PIP BAND BEFORE THE LABEL PLUS 20 PX AFTER IT
         this.contentWidth = this.ctx.text.width(this.label, AppTheme.TEXT_BODY) + 44;
         this.contentHeight = H;
     }
@@ -74,7 +72,6 @@ public final class StatusText extends Element<StatusText> {
     @Override
     protected void onDraw(final Canvas canvas) {
         if (this.ctx == null || this.ctx.text == null) return;
-        // FILL, OUTLINE, PIP AT (+8,+7), UPPERCASE LABEL, OPTIONAL STRIKE
         final Color c = StatusSquare.tint(this.status.get());
         final int x = this.left;
         final int y = this.top;

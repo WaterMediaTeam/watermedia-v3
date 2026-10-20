@@ -6,13 +6,8 @@ import org.watermedia.bootstrap.app.ui.Spacing;
 import java.util.Locale;
 
 /**
- * A keyboard key-cap that renders a single shortcut key such as {@code "C"} or {@code "ESC"}. It sizes to
- * the key text plus a tight padding and draws a dark neon-tinted cap with a hairline neon outline and a
- * centered bold label, matching the look of an inline keyboard hint.
- *
- * <p>With an {@link #icon} set it instead renders the footer key-cap: a fixed 22px band with a 12px pixel
- * icon on the left and the uppercase key beside it — the exact look of the imperative bindings bar.
- * {@link #keyIcon} maps a key name to its footer icon.
+ * A key-cap that shows one shortcut key as a bold label in a neon-outlined cap. With an {@link #icon} it draws the
+ * footer style instead: a 22px band with a pixel icon beside the uppercase key.
  */
 public final class KeyChip extends Element<KeyChip> {
 
@@ -38,20 +33,14 @@ public final class KeyChip extends Element<KeyChip> {
         return this;
     }
 
-    /**
-     * Sets the optional pixel icon; non-empty switches the chip to the footer key-cap style. The footer
-     * cap is self-padded (fixed 22px band), so the text-only padding is dropped in icon mode.
-     */
+    /** Sets the pixel icon; a non-empty one switches to the self-padded footer style. */
     public KeyChip icon(final String name) {
         this.icon = name == null ? "" : name;
         if (!this.icon.isEmpty()) this.padding = Spacing.ZERO;
         return this;
     }
 
-    /**
-     * Maps a key name to its footer icon: arrows for directional keys, play for ENTER, x for ESC,
-     * pause for SPACE, info otherwise — the exact mapping of the imperative bindings bar.
-     */
+    /** Returns the footer icon for a key name: arrows, play for ENTER, x for ESC, pause for SPACE, info otherwise. */
     public static String keyIcon(final String key) {
         final String k = key == null ? "" : key.toUpperCase(Locale.ROOT);
         if (k.contains("ARROW") || k.contains("UP") || k.contains("DOWN") || k.contains("LEFT") || k.contains("RIGHT")) return "arrows";
@@ -69,7 +58,6 @@ public final class KeyChip extends Element<KeyChip> {
             return;
         }
         if (!this.icon.isEmpty()) {
-            // FOOTER KEY-CAP — max(36, textWidth + 36) x 22
             this.contentWidth = Math.max(36, this.ctx.text.width(this.upper, AppTheme.TEXT_BODY) + 36);
             this.contentHeight = 22;
             return;
@@ -81,7 +69,6 @@ public final class KeyChip extends Element<KeyChip> {
     @Override
     protected void onDraw(final Canvas canvas) {
         if (!this.icon.isEmpty()) {
-            // KEY CHIP — FILL, OUTLINE, 12px ICON AT +7, KEY AT +24
             canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.alpha(AppTheme.BG_2, 220));
             canvas.stroke(this.left, this.top, this.measuredWidth, this.measuredHeight, AppTheme.STROKE_BRIGHT, 1f);
             canvas.icon(this.icon, this.left + 7, this.top + (this.measuredHeight - 12) / 2, 12, AppTheme.TEXT_FAINT);

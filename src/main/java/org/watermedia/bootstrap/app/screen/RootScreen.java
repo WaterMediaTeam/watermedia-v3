@@ -12,11 +12,8 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * Hosts the whole window as one retained tree: a frame stacking the {@link Background}, a column of
- * {@link TitleBar} / center slot / {@link KeybindsBar}, and an overlay for global dialogs. Screens mount
- * into the center slot; every frame runs {@code update → measure → layout → draw} under the logical-pixel
- * ortho, and all input enters through the entry points below with pointer-capture and click-after-drag
- * reconciliation. The CRT effect is scoped to media previews, not global here.
+ * Hosts the window as one retained tree: the {@link Background}, a {@link TitleBar} / screen slot /
+ * {@link KeybindsBar} column and a top layer for global dialogs, with pointer capture over all input.
  */
 public final class RootScreen {
 
@@ -52,11 +49,7 @@ public final class RootScreen {
         this.tree.attach(ctx);
     }
 
-    /**
-     * Runs the frame pipeline (update, measure, layout, draw) under the logical-pixel ortho. The caller
-     * passes LOGICAL dimensions ({@code physical / uiScale}); geometry scales to physical through the
-     * ortho projection while the viewport stays physical, so the whole tree lives in logical pixels.
-     */
+    /** Runs update, measure, layout and draw for one frame in logical pixels ({@code physical / uiScale}). */
     public void render(final int logicalW, final int logicalH) {
         // BINDINGS FIRST — onUpdate HOOKS PULL LIVE STATE INTO THE TREE BEFORE IT IS MEASURED
         this.tree.update();
@@ -84,7 +77,7 @@ public final class RootScreen {
         this.ctx.requestRender();
     }
 
-    /** The layer hosting global dialogs (below the CRT overlay). */
+    /** The topmost layer hosting global dialogs. */
     public ParentFrame overlay() {
         return this.dialogs;
     }
@@ -99,10 +92,7 @@ public final class RootScreen {
         return this.tree.textInputActive();
     }
 
-    /**
-     * Whether the window needs continuous repaints: an active screen that animates every frame (video,
-     * a running local CRT preview, thumbnail loads).
-     */
+    /** Whether a mounted screen animates every frame (video, CRT previews, thumbnail loads). */
     public boolean continuous() {
         for (final Element<?> child: this.centerSlot.children()) {
             if (!child.visible()) continue;
@@ -112,16 +102,15 @@ public final class RootScreen {
     }
 
     /**
-     * Whether a pointer capture (a slider drag, the titlebar window move, a modal hold) is in progress.
-     * The main loop paces such a frame like a continuous screen so the pointer is sampled right before
-     * the frame it drives, keeping drags tight instead of trailing the cursor by a whole frame.
+     * Whether a pointer capture (slider drag, window move, modal hold) is in progress. The main loop then
+     * paces frames like a continuous screen so drags do not trail the cursor by a frame.
      */
     public boolean dragging() {
         return this.captured != null;
     }
 
     // ==========================================================================
-    // INPUT ENTRY POINTS — SAME CAPTURE/CLICK-AFTER-DRAG RECONCILIATION THE TREE NEEDS
+    // INPUT ENTRY POINTS: A PRESS CAPTURES THE POINTER AND A REAL DRAG SUPPRESSES THE NEXT CLICK
     // ==========================================================================
 
     public boolean press(final double mx, final double my) {
@@ -134,8 +123,8 @@ public final class RootScreen {
 
     public void drag(final double mx, final double my) {
         if (this.captured != null) {
-            // A CAPTURE ONLY COUNTS AS A DRAG ONCE THE POINTER TRAVELS A FEW PIXELS — SUB-PIXEL JITTER
-            // BETWEEN PRESS AND RELEASE MUST NOT SUPPRESS THE CLICK (MODAL SCRIMS CAPTURE EVERY PRESS)
+            // A CAPTURE COUNTS AS A DRAG ONLY AFTER A FEW PIXELS OF TRAVEL, SO JITTER BETWEEN PRESS AND
+            // RELEASE DOES NOT SUPPRESS THE CLICK (MODAL SCRIMS CAPTURE EVERY PRESS)
             if (Math.abs(mx - this.pressX) + Math.abs(my - this.pressY) > 3) this.dragMoved = true;
             this.captured.onDrag(mx, my);
         }
@@ -151,7 +140,7 @@ public final class RootScreen {
     }
 
     public boolean click(final double mx, final double my) {
-        // THE PRESS-CAPTURE SUPPRESSES THE CLICK WHEN IT ENDED A REAL DRAG (TITLEBAR MOVE, SLIDER, ...)
+        // A CLICK THAT ENDS A REAL DRAG (WINDOW MOVE, SLIDER) IS DROPPED
         final boolean handled = !this.wasDragging && this.tree.dispatchClick(mx, my);
         this.wasDragging = false;
         return handled;
@@ -174,7 +163,7 @@ public final class RootScreen {
     }
 
     private void releaseCapture() {
-        // A SLOT SWAP MUST NOT LEAVE A DEAD ELEMENT HOLDING THE POINTER — END THE CAPTURE IN PLACE
+        // A SLOT SWAP MUST NOT LEAVE A DETACHED ELEMENT HOLDING THE POINTER
         if (this.captured != null) {
             this.captured.onRelease(this.ctx.mouseX, this.ctx.mouseY);
             this.captured = null;

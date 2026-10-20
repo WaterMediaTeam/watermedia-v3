@@ -6,11 +6,8 @@ import java.awt.Color;
 import java.util.function.Consumer;
 
 /**
- * A track with a sliding knob that toggles an on/off state on click. The track fills with the accent
- * color when on and a dark neutral when off, framed by a hairline stroke; the square knob slides with a
- * short ease-out between the left edge (off) and the right edge (on). A click flips the state
- * immediately, repaints, and notifies the {@code onChange} listener with the new value — the animation
- * is purely visual and never delays the state change.
+ * An on/off toggle whose square knob slides with a short ease-out; a click flips the state at once and reports it
+ * through {@code onChange}.
  */
 public final class Switch extends Element<Switch> {
 
@@ -51,9 +48,8 @@ public final class Switch extends Element<Switch> {
         return this.on;
     }
 
-    // CAPTURES THE CURRENT VISUAL KNOB POSITION AND RESTARTS THE EASE TOWARD THE (ABOUT TO CHANGE) STATE;
-    // ONLY AFTER THE FIRST DRAW — A FRESHLY (RE)BUILT ROW BINDING ITS INITIAL VALUE MUST SNAP, NEVER
-    // PLAY AN OFF→ON SLIDE THE USER NEVER TRIGGERED
+    // RESTARTS THE EASE FROM THE CURRENT KNOB POSITION; BEFORE THE FIRST DRAW IT SNAPS, SO A FRESHLY BUILT ROW
+    // BINDING ITS INITIAL VALUE NEVER PLAYS A SLIDE THE USER DID NOT TRIGGER
     private void slide() {
         if (this.ctx == null || !this.drawn) return;
         final long now = System.currentTimeMillis();

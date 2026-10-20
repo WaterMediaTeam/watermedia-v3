@@ -7,10 +7,8 @@ import java.awt.Color;
 import java.util.function.Supplier;
 
 /**
- * An 8x8 status pip with a soft glow — the retained port of the imperative chrome pip. The color is
- * derived from a {@link Status} that is resolved on every draw (via a {@link Supplier} or a fixed
- * value), so live state such as a loading backend is always current without rebuilding the tree.
- * {@code PENDING} pulses its alpha with the same sine wave the imperative footer used.
+ * An 8x8 glowing status pip whose color follows a {@link Status} resolved on every draw, fixed or from a
+ * {@link Supplier}, so live state never needs a tree rebuild; {@code PENDING} pulses.
  */
 public final class StatusSquare extends Element<StatusSquare> {
 
@@ -47,17 +45,13 @@ public final class StatusSquare extends Element<StatusSquare> {
         return this;
     }
 
-    /** The status resolved right now. */
+    /** Returns the current status. */
     public Status status() {
         final Status value = this.status.get();
         return value == null ? Status.OFF : value;
     }
 
-    /**
-     * Resolves the pip color for a status: {@code ERROR} red, {@code WARN} amber, {@code OK} green,
-     * {@code PENDING}/{@code OFF} faint — with {@code PENDING} pulsing its alpha over time exactly like
-     * the imperative backend strip did.
-     */
+    /** Returns the pip color for a status: red, amber, green or faint, with {@code PENDING} pulsing its alpha. */
     public static Color tint(final Status status) {
         final Status s = status == null ? Status.OFF : status;
         final Color base = switch (s) {
@@ -67,7 +61,7 @@ public final class StatusSquare extends Element<StatusSquare> {
             default -> AppTheme.TEXT_FAINT; // PENDING / OFF
         };
         if (s != Status.PENDING) return base;
-        // SINE ALPHA PULSE — FIXED PHASE AND RANGE
+        // SINE PULSE BETWEEN 42% AND 77% ALPHA WITH A PERIOD OF ABOUT 1.1 S
         final float pulse = 0.42f + 0.35f * (float) ((Math.sin(System.currentTimeMillis() / 180.0) + 1.0) * 0.5);
         return AppTheme.alpha(base, MathUtil.clamp((int) (255 * pulse), 70, 255));
     }
@@ -80,7 +74,6 @@ public final class StatusSquare extends Element<StatusSquare> {
 
     @Override
     protected void onDraw(final Canvas canvas) {
-        // SOLID SQUARE PLUS GLOW IN THE STATUS HUE
         final Color c = tint(this.status.get());
         canvas.fill(this.left, this.top, this.measuredWidth, this.measuredHeight, c);
         canvas.glow(this.left, this.top, this.measuredWidth, this.measuredHeight, 0f, c, 0.42f);

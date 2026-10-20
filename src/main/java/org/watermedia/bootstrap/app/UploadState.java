@@ -5,9 +5,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * State for the upload logs dialog.
- */
+/** State of the log upload dialog. */
 public final class UploadState {
     public volatile boolean visible;
     public volatile boolean working;

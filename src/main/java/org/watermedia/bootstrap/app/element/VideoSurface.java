@@ -5,12 +5,8 @@ import org.watermedia.api.media.MediaPlayer;
 import java.awt.Color;
 
 /**
- * A leaf view that presents the shared media player's current frame. Every draw it reads the player
- * from the attached context (handles are never captured at build time), paints its box black and, when
- * a frame is available, blits it aspect-fitted and centered through the backend's media path. When both
- * resolution caps are set the sampled UV region is center-cropped to the cap aspect, so the frame shows
- * at the cap aspect with trimmed edges instead of distortion. Without a usable frame (no player, ended,
- * stopped, error or no texture yet) the surface stays black.
+ * Draws the context player's current frame aspect-fitted and centered on black, re-reading the player on every draw.
+ * With both {@link MediaPlayer#scale} caps set, the frame is center-cropped to the cap aspect.
  */
 public final class VideoSurface extends Element<VideoSurface> {
 
@@ -41,9 +37,7 @@ public final class VideoSurface extends Element<VideoSurface> {
         if (videoW > 0 && videoH > 0) {
             final float srcAspect = (float) videoW / videoH;
 
-            // CENTER-CROP THE UPLOADED FRAME TO THE CUSTOM RESOLUTION ASPECT WHEN BOTH CAPS ARE
-            // SET. maxSize KEEPS THE TEXTURE AT THE SOURCE ASPECT, SO WE ONLY NARROW THE SAMPLED
-            // UV REGION — NO DISTORTION, JUST TRIMMED EDGES — AND DISPLAY IT AT THE CAP ASPECT.
+            // WITH BOTH CAPS SET THE FRAME SHOWS AT THE CAP ASPECT: THE SAMPLED UV REGION IS CENTER-CROPPED TO IT
             float dispAspect = srcAspect;
             final int capW = player.scaleWidth();
             final int capH = player.scaleHeight();

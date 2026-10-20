@@ -54,11 +54,8 @@ import java.util.function.Supplier;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Settings screen reflecting WaterConfig specs as a fully retained view tree: a spec tab strip over a
- * sections column and a {@link ListView} of setting rows backed by real widgets (switch, checkbox,
- * segmented control, spinner, seek bar, text field, dropdown). One reflective path builds every tab from
- * its {@link ConfigSpec}; each tab carries a status pip fed by that spec's own autosave machine. The
- * tab set and the reverse-spec'd mod files are described at their code below.
+ * Settings screen for the WaterConfig specs: a spec tab strip over a sections column and a {@link ListView} of
+ * setting widgets. Each tab is built reflectively from its {@link ConfigSpec} and shows its autosave state.
  */
 public final class SettingsScreen extends Screen {
 
@@ -66,21 +63,18 @@ public final class SettingsScreen extends Screen {
     private static final int ROW_H = Theme.ROW_MD;
     private static final int CONTROL_W = 320;
     private static final int CONTROL_H = Theme.CONTROL;
-    // TALL ENOUGH FOR THE TITLE+SUBTITLE BLOCK (~35px) PLUS REAL BREATHING ROOM ABOVE AND BELOW —
-    // AT 48 THE TITLE SAT FLUSH AGAINST THE FOLDER'S TOP EDGE
-    private static final int TAB_H = 64;
+    private static final int TAB_H = 64; // FITS THE ~35px TITLE AND SUBTITLE BLOCK WITH ROOM ABOVE AND BELOW
     private static final int SECTION_H = 36;
     private static final List<Keybind> KEYS_EDIT = List.of(new Keybind("ENTER", "Commit"), new Keybind("BACKSPACE", "Delete"),
             new Keybind("ESC", "Cancel"));
     private static final List<Keybind> KEYS_BROWSE = List.of(new Keybind("UP/DOWN", "Field"), new Keybind("LEFT/RIGHT", "Change"),
             new Keybind("TAB", "Spec"), new Keybind("PGUP/PGDN", "Section"), new Keybind("R", "Reset"), new Keybind("ESC", "Back"));
 
-    // EXTERNAL MOD CONFIG FILES THE SCREEN TRIES TO REVERSE-ENGINEER FROM THE CONFIG DIR INTO EDITABLE
-    // TABS — SKIPPED SILENTLY WHEN THE FILE IS ABSENT OR CANNOT BE PARSED (SEE buildReverseSpec)
+    // EXTERNAL MOD CONFIG FILES REVERSE-ENGINEERED INTO EDITABLE TABS WHEN PRESENT AND PARSABLE
     private static final String[] REVERSE_FILES = {"chloride-client.json", "waterframes-client.toml"};
 
-    // ConfigSpec.save() IS PACKAGE-PRIVATE IN WATERCONFIG, SO IT IS REFLECTED ONCE HERE INSTEAD OF PER
-    // SAVE; A null (METHOD RENAMED/HIDDEN UPSTREAM) SURFACES LATER AS A FAILED SAVE STATE
+    // ConfigSpec.save() IS PACKAGE-PRIVATE IN WATERCONFIG, SO IT IS REFLECTED ONCE; A null (RENAMED OR
+    // HIDDEN UPSTREAM) SURFACES AS A FAILED SAVE STATE
     private static final Method CONFIG_SAVE;
     static {
         Method save;
@@ -93,7 +87,7 @@ public final class SettingsScreen extends Screen {
         CONFIG_SAVE = save;
     }
 
-    // PER-TAB ACCENTS, CYCLED BY TAB INDEX — TAB 0 (SHELL) CYAN, TAB 1 (INSTANCE) AMBER, THEN THE REST
+    // PER-TAB ACCENTS CYCLED BY TAB INDEX: TAB 0 (APP) CYAN, TAB 1 (INSTANCE) AMBER, THEN THE REST
     private static final Color[] TAB_ACCENTS = {AppTheme.CYAN, AppTheme.AMBER, AppTheme.GREEN, AppTheme.NEON_LIGHT, AppTheme.NEON};
 
     private final Consumer<HomeScreen.Action> navigator;
@@ -119,15 +113,13 @@ public final class SettingsScreen extends Screen {
     // ON PRESS SO THE MATCHING RELEASE IS SWALLOWED INSTEAD OF FIRING A SCREEN SHORTCUT (BACK/ACTIVATE)
     private int popupKey = -1;
 
-    // SEEKBAR GESTURES COALESCE INTO ONE SAVE, FLUSHED WHEN THE POINTER RELEASES (SEE onUpdate).
-    // dragSaveSpec PINS THE SPEC BEING MUTATED AT ARM TIME SO A MID-GESTURE SPEC SWITCH (TAB/PGUP/PGDN
-    // STILL DISPATCH DURING A SEEKBAR CAPTURE) FLUSHES THE MUTATED SPEC, NOT WHATEVER IS ACTIVE AT RELEASE
+    // SEEKBAR GESTURES COALESCE INTO ONE SAVE FLUSHED ON POINTER RELEASE; dragSaveSpec PINS THE MUTATED SPEC
+    // BECAUSE TAB AND PGUP/PGDN CAN SWITCH SPECS DURING A SEEKBAR CAPTURE
     private boolean dragSave;
     private SettingSpec dragSaveSpec;
 
-    // ONE AUTOSAVE MACHINE PER SPEC (KEYED BY THE SPEC'S STABLE IDENTITY) FEEDING THAT SPEC'S TAB PIP.
-    // THE MACHINES OUTLIVE rebuildSpecs SO AN IN-FLIGHT SAVE KEEPS ITS COALESCING GATE ACROSS SCREEN
-    // RE-ENTRIES AND ACROSS THE VARIABLE SPEC SET (WATERCONFIG-EXPOSED + REVERSE-SPEC'D FILES).
+    // ONE AUTOSAVE MACHINE PER SPEC IDENTITY, FEEDING ITS TAB PIP; THE MACHINES OUTLIVE rebuildSpecs SO AN
+    // IN-FLIGHT SAVE KEEPS ITS COALESCING GATE ACROSS RE-ENTRIES AND SPEC SET CHANGES
     private final Map<String, SaveMachine> saves = new HashMap<>();
 
     // REVERSE-SPEC PARSE CACHE KEYED BY FILE — REUSED WHILE THE FILE'S mtime IS UNCHANGED SO A SCREEN
@@ -145,11 +137,8 @@ public final class SettingsScreen extends Screen {
 
     @Override
     protected Element<?> build() {
-        // HEADER — VERSION TAG ONLY; THE RESET ACTION LIVES IN THE SPEC TAB STRIP BELOW
         this.header = new Header().name("Settings").right("v" + WaterMedia.VERSION);
 
-        // SPEC TAB STRIP — HORIZONTALLY SCROLLABLE FOLDER TABS UNDER THE HEADER WITH RESET PINNED RIGHT:
-        // [ APP ][ INSTANCE ][ … more specs, scroll → ] ................. [ RESET TO DEFAULT ]
         final Button reset = new Button("RESET TO DEFAULT").icon("reset")
                 .accent(AppTheme.AMBER).textColor(AppTheme.TEXT_SOFT)
                 .size(Math.max(190, Button.width(this.text, "RESET TO DEFAULT", "", "reset", 12) + 24), Theme.BUTTON)
@@ -158,8 +147,8 @@ public final class SettingsScreen extends Screen {
                     this.resetActiveSection();
                     this.ctx.playSelectionSound();
                 });
-        // THE TABS SCROLL HORIZONTALLY (WEIGHT 1 VIEWPORT); THE RESET ACTION IS A PINNED, NON-SCROLLING
-        // SIBLING. TabStrip HOSTS BOTH AND DRAWS THE OPEN-FOLDER BASELINE ACROSS THE WHOLE STRIP.
+        // SPEC TAB STRIP: THE FOLDER TABS SCROLL HORIZONTALLY, THE RESET BUTTON STAYS PINNED RIGHT AND TabStrip
+        // DRAWS THE OPEN-FOLDER BASELINE ACROSS BOTH
         this.tabs = new TabScroll().height(MAX_PARENT).weight(1f);
         final TabStrip strip = new TabStrip();
         strip.spacing(12).width(MAX_PARENT).height(TAB_H).padding(new Spacing(12, 22, 0, 22));
@@ -181,7 +170,7 @@ public final class SettingsScreen extends Screen {
                 .spacing(8)
                 .rowFactory((setting, index) -> {
                     final RowElement row = new RowElement(setting);
-                    // HOVER SELECTS THE ROW (selectOnHover) AND CHIMES ON CHANGE, LIKE THE LEGACY SCREEN
+                    // HOVER SELECTS THE ROW AND CHIMES WHEN THE SELECTION MOVES
                     row.onHover(v -> {
                         if (!v.selected()) this.ctx.playSelectionSound();
                     });
@@ -200,7 +189,7 @@ public final class SettingsScreen extends Screen {
                 .add(this.paneHead)
                 .add(this.list);
 
-        // CONTENT — SECTIONS PLATE | HAIRLINE RULE | OPEN ROWS, ALL DIRECTLY OVER THE SHELL BACKGROUND
+        // CONTENT: SECTIONS PLATE | HAIRLINE RULE | OPEN ROWS, DIRECTLY OVER THE APP BACKGROUND
         return Parent.column().size(MAX_PARENT, MAX_PARENT)
                 .add(this.header)
                 .add(strip)
@@ -225,8 +214,8 @@ public final class SettingsScreen extends Screen {
         // THE HEADER SUBTITLE SHOWS THE ACTIVE TREE PATH ("media" OR "group1 / group2")
         this.header.sub(section == null ? "" : section.path.toLowerCase(Locale.ROOT));
         this.paneHead.label(section == null ? "" : section.name).count(section == null ? "" : section.detail);
-        // FLUSH THE PER-GESTURE SEEKBAR SAVE ONCE THE POINTER RELEASED (LEGACY saveAfterDrag SEMANTICS),
-        // PERSISTING THE SPEC THAT WAS ACTUALLY MUTATED — NOT activeSpec(), WHICH MAY HAVE SWITCHED MID-GESTURE
+        // FLUSH THE SEEKBAR SAVE ON POINTER RELEASE FOR THE SPEC THE GESTURE MUTATED, NOT activeSpec(),
+        // WHICH MAY HAVE SWITCHED MID-GESTURE
         if (this.dragSave && !this.ctx.mouseDown) {
             this.dragSave = false;
             final SettingSpec spec = this.dragSaveSpec;
@@ -247,9 +236,8 @@ public final class SettingsScreen extends Screen {
 
     @Override
     protected void onDraw(final Canvas canvas) {
-        // THE HOVERED ROW REPUBLISHES ITS DESCRIPTION WHILE THE TREE DRAWS; THE TOOLTIP THEN PAINTS
-        // LAST SO IT FLOATS ABOVE EVERYTHING (ROWS, SECTION COLUMN AND DROPDOWN POPUPS) WITHOUT EVER
-        // ENTERING INPUT DISPATCH — IT IS PURE PAINT, HENCE INPUT-TRANSPARENT BY CONSTRUCTION
+        // THE HOVERED ROW REPUBLISHES ITS DESCRIPTION WHILE THE TREE DRAWS; THE TOOLTIP PAINTS LAST, ABOVE
+        // ROWS AND DROPDOWN POPUPS, AND IS NOT AN ELEMENT, SO IT NEVER TAKES INPUT
         this.hoverNote = null;
         super.onDraw(canvas);
         final String note = this.hoverNote;
@@ -306,24 +294,21 @@ public final class SettingsScreen extends Screen {
     }
 
     // ==========================================================================
-    // INPUT — TREE DISPATCH FIRST, THEN THE SCREEN SHORTCUTS (GLFW_RELEASE, LEGACY SEMANTICS)
+    // INPUT: TREE DISPATCH FIRST, THEN THE SCREEN SHORTCUTS ON GLFW_RELEASE
     // ==========================================================================
 
     @Override
     public boolean dispatchKey(final int key, final int action) {
-        // AN OPEN ENUM DROPDOWN MENU IS MODAL FOR THE KEYBOARD (LEGACY PARITY): IT OWNS ITS DISMISS KEYS
-        // AND THE SCREEN SWALLOWS EVERYTHING ELSE SO NO SHORTCUT FIRES UNDER THE MENU. BECAUSE THE MENU
-        // CLOSES ON THE ESC/ENTER *PRESS*, popupKey CARRIES THAT KEY TO ITS RELEASE SO THE SCREEN'S BACK /
-        // ACTIVATE NEVER DOUBLE-FIRES ON THE FOLLOW-UP RELEASE.
+        // AN OPEN DROPDOWN IS KEYBOARD-MODAL AND CLOSES ON THE ESC/ENTER PRESS; popupKey CARRIES THAT KEY TO
+        // ITS RELEASE SO BACK OR ACTIVATE DO NOT FIRE TOO
         final boolean popupOpen = !this.overlay().children().isEmpty();
         if (super.dispatchKey(key, action)) { // POPUP DISMISS / FOCUSED FIELD BACKSPACE
             if (popupOpen && action != GLFW_RELEASE) this.popupKey = key;
             return true;
         }
         if (popupOpen) return true;
-        // SWALLOW ONLY THE RELEASE PAIRED WITH THE POPUP-DISMISS PRESS. A FRESH PRESS CANCELS A STALE
-        // PENDING SWALLOW (E.G. THE MENU WAS CLOSED BY MOUSE, SO THE PAIRED RELEASE NEVER ARRIVED) —
-        // OTHERWISE THAT NEXT KEYSTROKE WOULD BE SILENTLY EATEN
+        // SWALLOW ONLY THE RELEASE PAIRED WITH THE DISMISS PRESS; A FRESH PRESS CLEARS A STALE popupKey (MENU
+        // CLOSED BY MOUSE) SO THE NEXT KEYSTROKE IS NOT EATEN
         if (action == GLFW_RELEASE) {
             if (key == this.popupKey) {
                 this.popupKey = -1;
@@ -333,7 +318,7 @@ public final class SettingsScreen extends Screen {
             this.popupKey = -1;
         }
         if (this.editField != null) {
-            // EDIT MODE SWALLOWS THE KEYBOARD; COMMIT/CANCEL ON RELEASE LIKE THE LEGACY SCREEN
+            // EDIT MODE SWALLOWS THE KEYBOARD; ENTER COMMITS AND ESC CANCELS ON RELEASE
             if (action == GLFW_RELEASE) {
                 if (key == GLFW_KEY_ESCAPE) {
                     this.closeEdit();
@@ -396,14 +381,14 @@ public final class SettingsScreen extends Screen {
 
     @Override
     public boolean dispatchHover(final double mx, final double my) {
-        // LEGACY PARITY — POINTER HOVER IS FROZEN WHILE A TEXT EDIT IS ACTIVE
+        // HOVER FREEZES DURING A TEXT EDIT SO selectOnHover CANNOT MOVE THE SELECTION OFF THE EDITED ROW
         if (this.editField != null) return false;
         return super.dispatchHover(mx, my);
     }
 
     @Override
     public Element<?> dispatchPress(final double mx, final double my) {
-        // LEGACY PARITY — NO DRAG CAPTURE (SEEKBARS) WHILE A TEXT EDIT IS ACTIVE
+        // NO SEEKBAR DRAG CAPTURE WHILE A TEXT EDIT IS ACTIVE
         return this.editField != null ? null : super.dispatchPress(mx, my);
     }
 
@@ -417,9 +402,8 @@ public final class SettingsScreen extends Screen {
         this.specs.add(this.buildOwnSpec("App", AppConfig.ID, AppConfig.spec(), () -> AppConfig.apply(this.ctx)));
         this.specs.add(this.buildOwnSpec("Instance config", WaterMedia.ID, WaterConfig.spec(WaterMedia.ID), null));
 
-        // EVERY OTHER SPEC WATERCONFIG NOW EXPOSES — TABS 0/1 ALREADY COVER THE SHELL AND INSTANCE, SO
-        // SKIP THOSE TWO. SORTED BY NAME FOR A STABLE TAB ORDER ACROSS RE-ENTRIES (specs() IS BACKED BY
-        // A HASH MAP AND HAS NO INHERENT ORDER).
+        // EVERY OTHER REGISTERED SPEC, SORTED BY NAME BECAUSE WaterConfig.specs() IS HASH-BACKED AND
+        // HAS NO STABLE ORDER
         final List<ConfigSpec> registered = new ArrayList<>(WaterConfig.specs());
         registered.sort(Comparator.comparing(ConfigSpec::name));
         for (final ConfigSpec cs: registered) {
@@ -428,8 +412,7 @@ public final class SettingsScreen extends Screen {
             this.specs.add(this.buildGenericSpec(titleCase(name), cs, "settings", name, null));
         }
 
-        // REVERSE-ENGINEER EXTERNAL MOD CONFIG FILES INTO EDITABLE TABS — ATTEMPTED, SKIPPED WHEN ABSENT
-        // OR UNPARSEABLE (WaterConfig.reverseSpec RETURNS null)
+        // ABSENT OR UNPARSABLE MOD CONFIG FILES ARE SKIPPED (WaterConfig.reverseSpec RETURNS null)
         for (final String file: REVERSE_FILES) {
             final SettingSpec reverse = this.buildReverseSpec(file);
             if (reverse != null) this.specs.add(reverse);
@@ -439,9 +422,8 @@ public final class SettingsScreen extends Screen {
         this.clampSelection();
     }
 
-    // ONE SAVE MACHINE PER SPEC IDENTITY, REUSED ACROSS REBUILDS SO AN IN-FLIGHT SAVE KEEPS ITS
-    // COALESCING GATE. KEYS ARE STABLE PER LOGICAL SPEC: THE SHELL/INSTANCE IDS, EACH REGISTERED SPEC'S
-    // NAME, AND EACH REVERSE-SPEC'D FILE NAME.
+    // KEYS ARE STABLE PER LOGICAL SPEC: THE APP AND INSTANCE IDS, EACH REGISTERED SPEC NAME AND EACH
+    // REVERSE-SPEC'D FILE NAME
     private SaveMachine saveFor(final String key) {
         return this.saves.computeIfAbsent(key, k -> new SaveMachine());
     }
@@ -553,8 +535,8 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    // SEEKBAR TICK — APPLY THE PERCENT IMMEDIATELY BUT DEFER THE SAVE TO THE END OF THE GESTURE,
-    // CHIMING ONLY ON THE FIRST TICK (THE LEGACY PRESS CHIME)
+    // SEEKBAR TICK: APPLY THE PERCENT IMMEDIATELY BUT DEFER THE SAVE TO THE END OF THE GESTURE,
+    // CHIMING ONLY ON THE FIRST TICK
     private void seek(final Setting setting, final float pct) {
         try {
             if (setting.percent(pct)) {
@@ -570,7 +552,7 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    // MOUSE CLICK ON A ROW BODY (OUTSIDE ITS CONTROL) — ACTIVATES THE ROW LIKE THE LEGACY SCREEN
+    // A CLICK ON A ROW BODY OUTSIDE ITS CONTROL OPENS THE TEXT EDIT OR STEPS THE VALUE FORWARD
     private void activateBody(final Setting setting) {
         this.ctx.playSelectionSound();
         if (setting == null || !setting.mutable) return;
@@ -649,7 +631,7 @@ public final class SettingsScreen extends Screen {
             this.closeEdit();
             this.autosave();
         } catch (final RuntimeException e) {
-            // INVALID INPUT — STAY IN EDIT MODE SO THE USER CAN FIX THE VALUE (LEGACY BEHAVIOR)
+            // INVALID INPUT STAYS IN EDIT MODE SO THE USER CAN FIX THE VALUE
             this.invalidate();
         }
     }
@@ -711,9 +693,8 @@ public final class SettingsScreen extends Screen {
         return spec;
     }
 
-    // ATTEMPTS TO REVERSE-ENGINEER AN EXTERNAL MOD CONFIG FILE FROM THE CONFIG DIR INTO AN EDITABLE SPEC.
-    // RETURNS null WHEN THE FILE IS ABSENT/UNPARSEABLE (reverseSpec) OR EXPOSES NO EDITABLE SECTIONS, SO
-    // THE TAB SIMPLY DOES NOT APPEAR. THE FILE NAME KEYS BOTH THE TAB SUBTITLE AND ITS SAVE MACHINE.
+    // RETURNS null WHEN THE FILE IS ABSENT, UNPARSABLE OR HAS NO EDITABLE SECTIONS, SO THE TAB DOES NOT
+    // APPEAR; THE FILE NAME KEYS BOTH THE TAB SUBTITLE AND ITS SAVE MACHINE
     private SettingSpec buildReverseSpec(final String file) {
         final Path path = WaterConfig.getPath().resolve(file);
         // REUSE THE LAST PARSE WHILE THE FILE'S mtime IS UNCHANGED (ABSENT/UNREADABLE = -1, WHICH ALSO
@@ -739,10 +720,8 @@ public final class SettingsScreen extends Screen {
         return spec.sections.isEmpty() ? null : spec;
     }
 
-    // BUILDS THE SECTION TREE OF A WATERCONFIG SPEC: THE SPEC ROOT IS A "HOME" NODE NAMED AFTER THE SPEC
-    // (LISTED FIRST, HIDDEN WHEN THE ROOT HAS NO DIRECT SETTINGS), THEN EVERY GROUP BECOMES A DFS-ORDERED
-    // NODE — ONE INDENT LEVEL PER NESTING LEVEL. EACH NODE LISTS ONLY ITS DIRECT FIELDS; DESCENDANTS ARE
-    // REACHED THROUGH THEIR OWN NODES.
+    // A ROOT NODE NAMED AFTER THE SPEC (HIDDEN WITHOUT DIRECT FIELDS), THEN EVERY GROUP IN DFS ORDER WITH ONE
+    // INDENT PER LEVEL; EACH NODE LISTS ONLY ITS DIRECT FIELDS
     private void collectSections(final ConfigSpec configSpec, final SettingSpec spec) {
         final String specName = titleCase(configSpec.name());
         final SettingSection home = new SettingSection(specName, groupDetail(configSpec, "root settings"), specName, 0);
@@ -780,8 +759,7 @@ public final class SettingsScreen extends Screen {
     }
 
     // ==========================================================================
-    // AUTOSAVE — LIVE-APPLIES THE SHELL SPEC, THEN PERSISTS OFF-THREAD; EACH SPEC'S SaveMachine
-    // SURFACES ITS STATE THROUGH THAT SPEC'S TAB PIP (SEE SpecTab)
+    // AUTOSAVE: LIVE-APPLIES THE APP SPEC, PERSISTS OFF-THREAD AND SHOWS THE STATE IN THE TAB PIP
     // ==========================================================================
 
     private void autosave() {
@@ -792,7 +770,7 @@ public final class SettingsScreen extends Screen {
     // SEEKBAR-ARM TIME FOR THE DEFERRED DRAG FLUSH (SEE onUpdate)
     private void saveSpec(final SettingSpec spec) {
         if (spec == null) return;
-        // PUSH THE FRESH VALUES INTO THE LIVE APP STATE (SHELL SPEC) BEFORE PERSISTING THEM
+        // THE APP SPEC PUSHES ITS FRESH VALUES INTO THE LIVE APP STATE BEFORE PERSISTING THEM
         if (spec.applier != null) spec.applier.run();
         final SaveMachine save = spec.save;
         if (spec.configSpec == null) {
@@ -800,9 +778,8 @@ public final class SettingsScreen extends Screen {
             save.state = SaveState.READY;
             return;
         }
-        // A SAVE OF THIS SPEC IS ALREADY IN FLIGHT — COALESCE THIS CHANGE INTO ONE FOLLOW-UP SAVE
-        // RATHER THAN SPAWNING A SECOND WRITER AGAINST THE SAME CONFIG FILE. THE MACHINES ARE PER-SPEC,
-        // SO A SAVE OF THE OTHER SPEC (ANOTHER FILE) NEVER BLOCKS OR SWALLOWS THIS ONE.
+        // A SAVE OF THIS SPEC IS IN FLIGHT: COALESCE INTO ONE FOLLOW-UP SAVE INSTEAD OF A SECOND WRITER ON
+        // THE SAME FILE; OTHER SPECS HAVE THEIR OWN MACHINES AND NEVER BLOCK THIS ONE
         if (save.saving) {
             save.resavePending = true;
             return;
@@ -866,9 +843,8 @@ public final class SettingsScreen extends Screen {
         return AppTheme.TEXT_FAINT;
     }
 
-    // TURNS A FIELD/GROUP IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase BOUNDARIES
-    // SPLIT INTO WORDS ("crtOverlay" -> "Crt Overlay", "pngUseBKGDChunk" -> "Png Use BKGD Chunk") AND
-    // EVERY WORD IS CAPITALIZED — ROW NAMES RENDER VERBATIM NOW, SO THEY MUST READ AS WORDS
+    // TURNS AN IDENTIFIER INTO A DISPLAY NAME: _ AND - BECOME SPACES, camelCase SPLITS INTO CAPITALIZED
+    // WORDS ("pngUseBKGDChunk" -> "Png Use BKGD Chunk")
     private static String titleCase(final String value) {
         if (value == null || value.isBlank()) return "Settings";
         final String spaced = value.replace('_', ' ').replace('-', ' ');
@@ -1021,9 +997,8 @@ public final class SettingsScreen extends Screen {
         @Override
         protected void onDraw(final Canvas canvas) {
             super.onDraw(canvas);
-            // BASELINE DRAWN AFTER THE CHILDREN SO IT SEALS THE INACTIVE TAB BOTTOMS. THE ACTIVE TAB LIVES
-            // INSIDE THE SCROLLER, SO ITS GAP IS CLAMPED TO THE SCROLLER VIEWPORT — A SCROLLED-OUT TAB
-            // NEVER BREAKS THE RULE OUTSIDE THE VISIBLE AREA.
+            // THE BASELINE PAINTS AFTER THE CHILDREN TO SEAL THE INACTIVE TAB BOTTOMS; THE ACTIVE TAB'S GAP IS
+            // CLAMPED TO THE SCROLLER VIEWPORT SO A SCROLLED-OUT TAB NEVER BREAKS THE RULE
             final int y = this.top + this.measuredHeight - 1;
             final TabScroll scroll = SettingsScreen.this.tabs;
             final int viewL = scroll.left();
@@ -1047,9 +1022,8 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    // ONE SPEC FOLDER TAB — OPEN-BOTTOM FRAME WITH THE SPEC ICON, TITLE + SUBTITLE AND THE SPEC'S SAVE
-    // PIP; THE ACTIVE TAB LIGHTS ITS ACCENT AND BREAKS THE STRIP BASELINE (SEE TabStrip) SO IT CONNECTS
-    // TO THE SETTINGS BELOW
+    // ONE SPEC FOLDER TAB WITH ITS ICON, TITLES AND SAVE PIP; THE ACTIVE TAB LIGHTS ITS ACCENT AND BREAKS
+    // THE STRIP BASELINE (SEE TabStrip) SO IT OPENS INTO THE SETTINGS BELOW
     private final class SpecTab extends Element<SpecTab> {
 
         private static final int ICON = 16; // ICON EDGE IN LOGICAL PX, SAME AS THE TITLEBAR
@@ -1102,9 +1076,8 @@ public final class SettingsScreen extends Screen {
             final int subH = canvas.textHeight(AppTheme.TEXT_SUBTITLE, false);
             final int blockH = titleH + 2 + subH;
             final int textY = y + Math.max(0, (h - blockH) / 2);
-            // TAB ICON — WATERMEDIA'S OWN SPECS (SHELL + INSTANCE) SHOW THE APP TEXTURE (READ PER DRAW AS
-            // IT CHANGES ACROSS ENGINE SWAPS/ASSET RELOADS); OTHER SPECS SHOW A GLYPH TINTED LIKE THE
-            // TITLE. THE ICON IS CENTERED VERTICALLY ON THE TITLE+SUBTITLE BLOCK; THE TEXT KEEPS ITS SLOT
+            // WATERMEDIA'S OWN SPECS SHOW THE APP TEXTURE, READ PER DRAW BECAUSE IT CHANGES ACROSS ENGINE SWAPS;
+            // OTHER SPECS SHOW A GLYPH TINTED LIKE THE TITLE
             final int iconY = textY + (blockH - ICON) / 2;
             if (this.iconName == null) {
                 final int iconId = SettingsScreen.this.ctx.assets.iconId;
@@ -1117,9 +1090,7 @@ public final class SettingsScreen extends Screen {
             canvas.text(this.title, textX, textY,
                     active ? accent : this.hovered ? AppTheme.TEXT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BUTTON, true);
             canvas.text(this.subtitle, textX, textY + titleH + 2, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
-            // SAVE PIP — THE SAME 8x8 SQUARE StatusSquare DRAWS, FED BY THIS SPEC'S OWN SaveMachine
-            // WITH THE OLD CONFIG CHIP'S STATE MAP (SAVING PULSES, RESAVE/FIRST FAILURE WARNS,
-            // SECOND FAILURE ERRORS, IDLE/SAVED IS OK)
+            // SAVE PIP: THE SAME 8x8 SQUARE StatusSquare DRAWS, FED BY THIS SPEC'S SaveMachine
             final StatusSquare.Status status = switch (SettingsScreen.this.specs.get(this.index).save.state) {
                 case FAILED_TWICE -> StatusSquare.Status.ERROR;
                 case FAILED_ONCE, RESAVING -> StatusSquare.Status.WARN;
@@ -1134,8 +1105,8 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    // SECTION ENTRY — CLEAN MRL-STYLE TREE ROW: NESTED GROUPS INDENT 14px PER LEVEL AND THE ACTIVE NODE
-    // LIGHTS THE AMBER BAR + FILL (COHERENT WITH THE AMBER CONTROL THUMBS); FLAT TEXT OTHERWISE
+    // SECTION TREE ROW: NESTED GROUPS INDENT 14px PER LEVEL; THE ACTIVE NODE LIGHTS AN AMBER BAR AND FILL,
+    // MATCHING THE AMBER CONTROL THUMBS
     private final class SectionItem extends Element<SectionItem> {
 
         private static final int INDENT = 14;
@@ -1173,8 +1144,8 @@ public final class SettingsScreen extends Screen {
         }
     }
 
-    // ONE SETTING ROW — LABEL/NOTE/SELECTION SELF-DRAWN (PIXEL PORT OF THE LEGACY ROW), THE CONTROL IS A
-    // REAL WIDGET RIGHT-ALIGNED AND VERTICALLY CENTERED. THE binder PULLS LIVE VALUES EVERY UPDATE PASS.
+    // ONE SETTING ROW: SELF-DRAWN LABEL AND SELECTION, WITH A REAL WIDGET RIGHT-ALIGNED AND VERTICALLY
+    // CENTERED; THE binder PULLS LIVE VALUES EVERY UPDATE PASS
     private final class RowElement extends Group<RowElement> {
 
         private final Setting setting;
@@ -1231,8 +1202,8 @@ public final class SettingsScreen extends Screen {
                 prefW = segW;
                 ctl = control;
             } else if (enumKind) {
-                // WIDE ENUM — DROPDOWN THAT OPENS A FLOATING MENU ANCHORED TO THE CONTROL (LEGACY UX). ITS
-                // POPUP MOUNTS INTO THE SCREEN OVERLAY SO IT STACKS ON TOP AND IS TORN DOWN ON SECTION SWITCH
+                // WIDE ENUM: DROPDOWN WITH A FLOATING MENU ANCHORED TO THE CONTROL; THE POPUP MOUNTS INTO THE
+                // SCREEN OVERLAY SO IT STACKS ON TOP AND IS TORN DOWN ON SECTION SWITCH
                 final List<String> options = setting.optionLabels();
                 final List<String> labels = new ArrayList<>(options.size());
                 for (final String option: options) labels.add(option.toUpperCase(Locale.ROOT));
@@ -1260,9 +1231,8 @@ public final class SettingsScreen extends Screen {
                 ctl = Parent.row().spacing(14).height(CONTROL_H).add(bar).add(value);
             } else if (kind == Control.NUMBER_SPINNER || kind == Control.SEEKBAR
                     || kind == Control.RANGE_SLIDER || kind == Control.KNOB || setting.isSpinnerControl()) {
-                // UNRANGED OR SPINNER NUMBER — [-] VALUE [+] WITH AN EDITABLE CENTER. THE SPINNER COMMITS THE
-                // STEPPED OR TYPED VALUE THROUGH onChange; SET IT STRAIGHT ONTO THE SETTING (number() CLAMPS
-                // BY THE SAME PATH AS commit/adjust) INSTEAD OF INFERRING A DIRECTION FROM THE PREVIOUS VALUE
+                // UNRANGED OR SPINNER NUMBER: [-] VALUE [+] WITH AN EDITABLE CENTER; onChange SETS THE VALUE
+                // STRAIGHT THROUGH number(), WHICH CLAMPS LIKE commit AND adjust
                 final String suffix = setting.suffix();
                 final Spinner control = new Spinner().range(-1e18, 1e18).step(1).height(CONTROL_H)
                         .suffix(suffix.isBlank() ? "" : " " + suffix.toUpperCase(Locale.ROOT))
@@ -1305,7 +1275,7 @@ public final class SettingsScreen extends Screen {
 
         @Override
         protected void onMeasure(final int innerAvailWidth, final int innerAvailHeight) {
-            // CLAMP FIXED-WIDTH CONTROLS TO THE LEGACY BUDGET SO THE LABEL ALWAYS KEEPS ITS MINIMUM SPACE
+            // FIXED-WIDTH CONTROLS SHRINK SO THE LABEL ALWAYS KEEPS 160px
             if (this.ctlW > 0) this.control.width(MathUtil.clamp(innerAvailWidth - 160, 120, this.ctlW));
             this.control.measure(innerAvailWidth, innerAvailHeight);
             this.contentWidth = innerAvailWidth;
@@ -1328,12 +1298,12 @@ public final class SettingsScreen extends Screen {
                 canvas.fill(this.left, this.top + 6, 3, h - 12, accent);
                 canvas.glow(this.left, this.top + 4, w, h - 8, 0f, accent, 0.14f);
             }
-            // DOTTED BOTTOM DIVIDER — 4px DASHES EVERY 8px, SAME AS THE LEGACY ROW
+            // DOTTED BOTTOM DIVIDER
             for (int dx = this.left; dx < this.left + w; dx += 8) {
                 canvas.fill(dx, this.top + h - 1, 4, 1, AppTheme.alpha(AppTheme.STROKE_BRIGHT, 76));
             }
-            // OPTION NAME — VERBATIM (NO UPPERCASING) AT SECTION SCALE FOR CLEAR HIERARCHY, ALWAYS
-            // VERTICALLY CENTERED NOW THAT THE DESCRIPTION LIVES IN THE CURSOR TOOLTIP INSTEAD
+            // OPTION NAME VERBATIM AT SECTION SCALE, VERTICALLY CENTERED; THE DESCRIPTION LIVES IN THE
+            // CURSOR TOOLTIP
             final int labelMaxW = Math.max(80, this.control.left() - this.left - 30);
             final int labelY = this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_SECTION, true)) / 2);
             canvas.text(canvas.text().truncateToWidth(this.setting.label, labelMaxW, AppTheme.TEXT_SECTION, Font.BOLD),
@@ -1351,17 +1321,15 @@ public final class SettingsScreen extends Screen {
     }
 
     // ==========================================================================
-    // SETTINGS MODEL (UNCHANGED LOGIC — percent()/number() ARE THE ONLY SKIN ADAPTERS)
+    // SETTINGS MODEL
     // ==========================================================================
 
     private enum SaveState {
         READY, SAVING, SAVED, FAILED_ONCE, RESAVING, FAILED_TWICE
     }
 
-    // ONE SPEC'S AUTOSAVE STATE — saving GATES CONCURRENT WRITERS AGAINST THE SAME FILE; resavePending
-    // COALESCES A CHANGE THAT ARRIVES MID-SAVE INTO ONE FOLLOW-UP SAVE. ALL FIELDS ARE RENDER-THREAD
-    // CONFINED: THE WORKER ONLY WRITES THE DISK, ITS COMPLETION IS PUBLISHED BACK VIA ctx.execute
-    // (SEE startSave/finishSave), SO NO volatile IS NEEDED.
+    // saving GATES CONCURRENT WRITERS AND resavePending COALESCES MID-SAVE CHANGES; RENDER-THREAD CONFINED
+    // (THE WORKER PUBLISHES ITS OUTCOME THROUGH ctx.execute), SO NO volatile IS NEEDED
     private static final class SaveMachine {
         private SaveState state = SaveState.READY;
         private int failures;
@@ -1384,8 +1352,7 @@ public final class SettingsScreen extends Screen {
         private final Runnable applier;
         // THE SCREEN-OWNED SAVE MACHINE OF THIS SPEC SLOT — SHARED ACROSS REBUILDS (SEE saves)
         private final SaveMachine save;
-        // PIXEL-ICON NAME FOR THE TAB, OR null TO DRAW THE APP TEXTURE ICON (SHELL + INSTANCE ARE
-        // WATERMEDIA'S OWN, SO THEY KEEP THE APP LOGO; OTHER SPECS CARRY A GLYPH)
+        // PIXEL-ICON NAME FOR THE TAB, OR null FOR THE APP TEXTURE ICON OF WATERMEDIA'S OWN SPECS
         private final String iconName;
         // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
         private final List<SettingSection> sections = new ArrayList<>();
@@ -1706,8 +1673,7 @@ public final class SettingsScreen extends Screen {
         @Override
         boolean number(final double value) {
             if (!this.isNumber()) return false;
-            // CLAMP THROUGH clampNumber (THE SAME [MIN, MAX] PATH THE H-04/M-05 CLAMPS USE) AND ONLY WRITE
-            // WHEN THE STORED VALUE ACTUALLY MOVES, SO A NO-OP EDIT NEITHER SAVES NOR CHIMES
+            // WRITE ONLY WHEN THE CLAMPED VALUE ACTUALLY MOVES, SO A NO-OP EDIT NEITHER SAVES NOR CHIMES
             final Object next = this.clampNumber(value);
             if (((Number) next).doubleValue() == ((Number) this.field.get()).doubleValue()) return false;
             this.setValue(next);
@@ -1748,7 +1714,6 @@ public final class SettingsScreen extends Screen {
                 final double delta = this.hasUsableRange()
                         ? (this.maxValue - this.minValue) / 100d * direction * step
                         : direction * step;
-                // CLAMP TO [MIN, MAX] LIKE THE INTEGER BRANCH DOES
                 this.setValue(this.clampNumber(current.doubleValue() + delta));
                 return true;
             }

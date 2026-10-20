@@ -1,12 +1,6 @@
 package org.watermedia.bootstrap.app.element;
 
-/**
- * Stacks its children on top of one another in the same box, like Android's {@code ParentFrame} — the
- * natural container for overlays: a dimmed scrim with a centered dialog on top. Each child is aligned by
- * its own {@link Element#gravity} (interpreted in two dimensions: {@code CENTER} centers on both axes,
- * {@code LEFT}/{@code RIGHT} pin horizontally and center vertically, {@code TOP}/{@code BOTTOM} the
- * reverse); {@code MAX_PARENT} on an axis fills it.
- */
+/** Stacks its children in the same box, each placed on both axes by its own {@link Element#gravity}; used for overlays. */
 public final class ParentFrame extends Group<ParentFrame> {
 
     @Override

@@ -19,9 +19,8 @@ import java.util.ArrayList;
 import static org.lwjgl.glfw.GLFW.glfwSetWindowIcon;
 
 /**
- * GPU texture handles for the banner, icon and duck assets. The textures are created against the active
- * render context through {@link RenderSystem}; on an engine hot-swap they are dropped with {@link #dispose()}
- * (the old context owns them) and recreated with {@link #load(AppContext)} against the fresh context.
+ * GPU textures of the banner, icon and duck assets; an engine hot swap drops them with {@link #dispose()} and
+ * recreates them with {@link #load(AppContext)} on the new render context.
  */
 public final class Assets {
     private static final Marker IT = MarkerManager.getMarker(Assets.class.getSimpleName());
@@ -41,22 +40,15 @@ public final class Assets {
     public int duckFrameWidth;
     public int duckFrameHeight;
 
-    /**
-     * Decodes the icon, duck frames and banner into GPU textures against the active render engine and
-     * installs the window icon on the current window handle. Icon and banner are decoded with ImageIO so
-     * they are available before the codecs API loads.
-     */
+    /** Creates the icon, duck and banner textures on the active render engine and sets the window icon. */
     public void load(final AppContext ctx) {
+        // ImageIO DECODES THEM BECAUSE THE LOADING SCREEN SHOWS THEM BEFORE THE CODECS API LOADS
         this.loadIcon(ctx.windowHandle);
         this.loadDuckFrames();
         this.loadBanner();
     }
 
-    /**
-     * Drops every GPU texture handle. The backing textures die with the render context they were created
-     * against, so no {@code glDelete} is issued — this only zeroes the handles so nothing draws a stale id
-     * before {@link #load(AppContext)} recreates them.
-     */
+    /** Forgets every texture handle; the textures die with their render context, so nothing is deleted. */
     public void dispose() {
         this.bannerId = -1;
         this.bannerGlowId = -1;
@@ -65,8 +57,6 @@ public final class Assets {
         this.duckFrameIds = new int[0];
     }
 
-    // Icon and banner are decoded with ImageIO so they're available before
-    // CodecsAPI loads — this lets the loading splash render the banner.
     private void loadIcon(final long window) {
         // WINDOW/TASKBAR ICON — THE OS SCALES IT DOWN SMALL, SO USE THE DEDICATED icon.png
         try (final InputStream in = IOTool.jarOpenFile("icon.png")) {
@@ -143,7 +133,7 @@ public final class Assets {
 
     private void loadBanner() {
         try (final InputStream in = IOTool.jarOpenFile("banner.png")) {
-            // GUARD THE MISSING-RESOURCE CASE LIKE loadIcon: ImageIO.read(null) THROWS "input == null!"
+            // ImageIO.read(null) THROWS, SO A MISSING RESOURCE RETURNS FIRST
             if (in == null) return;
             final BufferedImage img = ImageIO.read(in);
             if (img == null) return;

@@ -6,17 +6,15 @@ import org.watermedia.bootstrap.app.element.Element;
 import org.watermedia.bootstrap.app.ui.AppTheme;
 
 /**
- * The CRT effect as a retained view: scanlines every 3px plus two time-animated neon bands travelling
- * down the box, clipped to it. It never consumes input. The on/off state is the global
- * {@link AppContext#crt} flag driven by the {@code C} shortcut and the
- * Settings row.
+ * Paints the CRT effect: scanlines every 3px and two neon bands travelling down the box. It draws only
+ * while {@link AppContext#crt} is on, which the {@code C} shortcut and the Settings row toggle.
  */
 final class CrtOverlay extends Element<CrtOverlay> {
 
     public CrtOverlay() {
         this.width = MAX_PARENT;
         this.height = MAX_PARENT;
-        this.enabled = false; // NEVER HIT-TESTABLE — THE OVERLAY IS PURELY DECORATIVE
+        this.enabled = false; // DISABLED SO HOVER AND CLICKS REACH THE ELEMENTS UNDER THE OVERLAY
     }
 
     @Override
@@ -26,7 +24,6 @@ final class CrtOverlay extends Element<CrtOverlay> {
         final int y = this.top;
         final int w = this.measuredWidth;
         final int h = this.measuredHeight;
-        // SCANLINES + TWO TRAVELLING NEON BANDS, CLIPPED TO THE BOX
         canvas.pushClip(x, y, w, h);
         for (int sy = y; sy < y + h; sy += 3) {
             canvas.fill(x, sy + 2, w, 1, 0f, 0f, 0f, 0.22f);

@@ -15,28 +15,8 @@ import static org.lwjgl.glfw.GLFW.GLFW_PRESS;
 import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 
 /**
- * A modal overlay: a dimmed, click-swallowing scrim with a centered panel on top. The panel is a skinned
- * stack of edge-to-edge bands that reproduces the legacy dialog chrome:
- *
- * <ol>
- *   <li><b>Title band</b> — a strip slightly darker than the panel with the title in the accent on the
- *       left and a red close (X) button on the right, closed off by a full-width hairline. Present
- *       whenever a {@link #title} is set; the X appears when an {@link #onDismiss} action exists and
- *       {@link #closable(boolean)} is not turned off.</li>
- *   <li><b>Header band</b> — an optional {@link #header(Element)} slot (e.g. a stage stepper), also
- *       separated by a full-width hairline. Absent when no header is set.</li>
- *   <li><b>Content</b> — the padded body that {@link #content(Element)} adds to.</li>
- *   <li><b>Footer band</b> — an optional right-aligned row of action {@link Button}s from
- *       {@link #actions(Button...)}, separated from the content by a full-width hairline above it.</li>
- * </ol>
- *
- * <p>Amber corner cubes sit in the panel's bottom corners. The whole dialog fills its parent so it can be
- * dropped into a screen's overlay layer. While visible it is truly modal: keys, characters and scroll are
- * always consumed after the panel content had its chance, ESC runs {@link #onDismiss} and ENTER runs
- * {@link #onPrimary}. An {@link #accent} tints the panel border, glow and title (default neon).
- *
- * <p>Becoming visible fades the whole dialog (scrim, panel and children) in with a short ease-in;
- * closing is instant.
+ * A modal overlay: a click-swallowing scrim under a centered panel of title, header, content and footer bands.
+ * While visible it consumes all input; ESC runs {@link #onDismiss} and ENTER runs {@link #onPrimary}.
  */
 public final class Dialog extends Group<Dialog> {
 
@@ -92,10 +72,7 @@ public final class Dialog extends Group<Dialog> {
         return this;
     }
 
-    /**
-     * Sets the optional header band shown under the title (e.g. a stage stepper), separated by a
-     * full-width hairline. Passing {@code null} removes the band.
-     */
+    /** Sets the optional header band under the title, such as a stage stepper; {@code null} removes it. */
     public Dialog header(final Element<?> view) {
         if (view == null) {
             if (this.headerBand != null) {
@@ -123,7 +100,7 @@ public final class Dialog extends Group<Dialog> {
         return this;
     }
 
-    /** The dialog panel (the skinned band stack) — screens may make it swallow or handle its own clicks. */
+    /** Returns the panel band stack, so screens can make it swallow or handle its own clicks. */
     public Group<?> panel() {
         return this.panel;
     }
@@ -135,41 +112,34 @@ public final class Dialog extends Group<Dialog> {
         return this;
     }
 
-    /** Action run when ESC is released or the close (X) button is clicked (typically hides the dialog). */
+    /** Sets the action run when ESC is released or the close button is clicked. */
     public Dialog onDismiss(final Runnable action) {
         this.onDismiss = action;
         this.refreshClose();
         return this;
     }
 
-    /** Primary action run when ENTER is released while the dialog is visible (optional). */
+    /** Sets the action run when ENTER is released while the dialog is visible. */
     public Dialog onPrimary(final Runnable action) {
         this.onPrimary = action;
         return this;
     }
 
-    /** Whether the title band shows a close (X) button; the X still needs an {@link #onDismiss}. Default true. */
+    /** Sets whether the title band shows a close button, which also needs an {@link #onDismiss} action. */
     public Dialog closable(final boolean value) {
         this.closable = value;
         this.refreshClose();
         return this;
     }
 
-    /**
-     * Tints the panel border, glow and title with the given accent color. {@code null} restores the
-     * default look (bright stroke border, neon glow, plain title). The global error dialog uses red.
-     */
+    /** Tints the panel border, glow and title; {@code null} restores the default neon look. */
     public Dialog accent(final Color color) {
         this.accent = color;
         this.applyAccent();
         return this;
     }
 
-    /**
-     * Sets the footer row of action buttons, right-aligned at the bottom of the panel. Calling it again
-     * replaces the previous row. Buttons keep their own accents and handlers; a button without an
-     * explicit height gets the standard button height.
-     */
+    /** Replaces the right-aligned footer row of action buttons; a button without a height gets the standard one. */
     public Dialog actions(final Button... buttons) {
         if (this.actionsRow == null) {
             this.actionsRow = Parent.row().spacing(Theme.SPACE_SM).gravity(Gravity.RIGHT);
@@ -211,8 +181,8 @@ public final class Dialog extends Group<Dialog> {
 
     @Override
     protected void onUpdate() {
-        // FADE-IN ARMS ON THE HIDDEN→VISIBLE TRANSITION — COVERS visible(true) FROM syncShell/SCREENS AND
-        // FRESHLY MOUNTED DIALOGS ALIKE (update RUNS FOR HIDDEN CHILDREN TOO); CLOSE IS INSTANT, NO FADE-OUT
+        // THE FADE-IN ARMS ON THE HIDDEN-TO-VISIBLE EDGE, WHICH update SEES BECAUSE IT RUNS FOR HIDDEN CHILDREN
+        // TOO; CLOSING IS INSTANT
         if (this.visible && !this.wasVisible) {
             this.fadeStart = System.currentTimeMillis();
         } else if (!this.visible) {

@@ -8,20 +8,12 @@ import java.awt.Color;
 import java.util.function.Consumer;
 
 /**
- * A row of equal-width, tab-like segments where exactly one is selected. Each segment measures to its
- * label plus padding (with a minimum width) and the row paints them at equal widths across its content
- * box: an amber thumb (inset from the outline, with a soft glow) slides with a short ease-out to the
- * selected segment, whose label darkens as the thumb passes under it; the rest carry a faint accent wash
- * inside a translucent accent frame. Clicking a segment selects it and reports the new index through
- * {@code onSelect}.
- *
- * <p>The selected index is exposed as {@link #selectedIndex()} rather than {@code selected()} because the
- * base {@link Element} already defines a boolean {@code selected()} state accessor.
+ * A row of equal-width segments with one selected under a sliding amber thumb; a click reports the index through
+ * {@code onSelect}. The index reads as {@link #selectedIndex()} because {@link Element} owns a boolean {@code selected()}.
  */
 public final class SegmentedControl extends Element<SegmentedControl> {
 
-    // GAP BETWEEN THE SLIDING THUMB AND THE OUTLINE — BREATHING ROOM LIKE THE SWITCH KNOB
-    private static final int INSET = 4;
+    private static final int INSET = 4; // GAP BETWEEN THE SLIDING THUMB AND THE OUTLINE
     private static final int ANIM_MS = 140;
 
     private String[] segments = new String[0];
@@ -79,12 +71,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         return this.selectedIndex;
     }
 
-    /**
-     * Intrinsic width of one segment for a label at a text scale: the label plus horizontal breathing
-     * room so the text never touches the sliding thumb (which insets {@code 4px} per side), with a
-     * minimum cell width. Shared with the callers that pre-compute row widths so measurement never
-     * drifts from the control's own {@link #onMeasure}.
-     */
+    /** Returns one segment's width for a label, clear of the thumb inset; callers that pre-compute row widths share it. */
     public static int segmentWidth(final TextRenderer text, final String label, final float scale) {
         return Math.max(72, text.width(label, scale) + 40);
     }
@@ -140,8 +127,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
         final int h = this.innerHeight();
         final int y = this.innerTop();
 
-        // TRACK — EDGE-TO-EDGE FAINT ACCENT WASH PER CELL (NO SEPARATOR LINES), EQUAL WIDTHS VIA LONG
-        // MATH SO ROUNDING NEVER LEAVES A SEAM
+        // CELL EDGES COME FROM LONG MATH ON THE FULL WIDTH, SO ROUNDING NEVER LEAVES A SEAM BETWEEN WASHES
         for (int i = 0; i < n; i++) {
             final int x0 = base + (int) ((long) w * i / n);
             final int x1 = base + (int) ((long) w * (i + 1) / n);
@@ -149,8 +135,7 @@ public final class SegmentedControl extends Element<SegmentedControl> {
             canvas.fill(x0, y, x1 - x0, h, AppTheme.alpha(this.accent, off ? 8 : 22));
         }
 
-        // SLIDING AMBER THUMB — INSET FROM THE OUTLINE, EASED BETWEEN CELLS; HIDDEN WHEN THE TARGET
-        // SEGMENT IS DISABLED
+        // THE SLIDING THUMB HIDES WHILE THE SELECTED SEGMENT IS DISABLED
         final boolean targetOff = this.disabled != null && this.selectedIndex >= 0
                 && this.selectedIndex < this.disabled.length && this.disabled[this.selectedIndex];
         float center = -1f;
@@ -181,14 +166,12 @@ public final class SegmentedControl extends Element<SegmentedControl> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
-        // A HIDDEN OR DISABLED CONTROL SWALLOWS NOTHING AND NEVER CHANGES THE SELECTION
         if (!this.visible || !this.enabled) return false;
         final int n = this.segments.length;
         if (n == 0 || !this.contains(mx, my)) return false;
         final int segW = this.innerWidth() / n;
         int idx = segW > 0 ? (int) ((mx - this.innerLeft()) / segW) : 0;
         idx = MathUtil.clamp(idx, 0, n - 1);
-        // A DISABLED SEGMENT SWALLOWS THE CLICK WITHOUT CHANGING THE SELECTION
         if (this.disabled != null && idx < this.disabled.length && this.disabled[idx]) return true;
         if (idx != this.selectedIndex) {
             // THE LOGICAL SELECTION FLIPS IMMEDIATELY; ONLY THE THUMB DRAW TRAILS BEHIND WITH THE EASE

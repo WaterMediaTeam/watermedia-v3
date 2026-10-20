@@ -8,9 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.stream.Stream;
 
-/**
- * State for the cleanup cache dialog, plus the scan of the media cache it cleans.
- */
+/** State of the cache cleanup dialog, plus the scan of the media cache it cleans. */
 public final class CleanupState {
     public volatile boolean visible;
     public volatile boolean working;

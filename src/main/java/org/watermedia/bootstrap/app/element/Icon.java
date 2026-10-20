@@ -5,11 +5,7 @@ import org.watermedia.bootstrap.app.ui.AppTheme;
 
 import java.awt.Color;
 
-/**
- * Draws a bitmap {@link PixelIcon} by key at a fixed pixel size, tinted by a color. It measures to the
- * icon size and vertically centers within a taller box — a reusable leaf for the icon+label chips that
- * the screens draw everywhere.
- */
+/** Draws a tinted {@link PixelIcon} by key at a fixed size, vertically centered in its box. */
 public final class Icon extends Element<Icon> {
 
     private String icon = "";

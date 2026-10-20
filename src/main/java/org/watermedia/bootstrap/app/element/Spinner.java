@@ -13,12 +13,8 @@ import static org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER;
 import static org.lwjgl.glfw.GLFW.GLFW_RELEASE;
 
 /**
- * An inline numeric stepper laid out as {@code [-] value [+]}. The {@code [-]}/{@code [+]} boxes step the
- * value by {@code step} (clamped to {@code [min, max]}) and light up amber on hover and while pressed; the
- * center is an editable field — a click focuses it, digits, one dot and a leading minus type with a
- * blinking caret, and {@code ENTER} or a click elsewhere commits through the same clamp/{@code onChange}
- * path while {@code ESCAPE} cancels. Integer values render without a trailing {@code .0} and an optional
- * suffix is appended to the displayed value.
+ * An inline numeric stepper laid out as {@code [-] value [+]}; the side boxes step the value on press and a click on the
+ * value edits it in place. ENTER or a click elsewhere commits through the clamp and {@code onChange}; ESC cancels.
  */
 public final class Spinner extends Element<Spinner> {
 
@@ -107,22 +103,18 @@ public final class Spinner extends Element<Spinner> {
         final int th = canvas.textHeight(this.scale, false);
         final int ty = y + (h - th) / 2;
 
-        // OUTER BOX — A SOFT AMBER GLOW BEHIND IT WHILE EDITING
         if (this.editing) canvas.glow(leftX, y, w, h, 0f, AppTheme.AMBER, Theme.GLOW_WEAK);
         canvas.fill(leftX, y, w, h, AppTheme.alpha(AppTheme.BG_1, 210));
 
-        // MINUS / PLUS ZONES — AMBER WASH + GLYPH ON HOVER, BRIGHTER WHILE PRESSED
         final double mxp = this.ctx != null ? this.ctx.mouseX : -1d;
         final double myp = this.ctx != null ? this.ctx.mouseY : -1d;
         final boolean inRow = this.enabled && myp >= y && myp < y + h;
         this.stepZone(canvas, leftX, y, h, "-", inRow && mxp >= leftX && mxp < leftX + BUTTON, this.pressZone == 1);
         this.stepZone(canvas, rightX, y, h, "+", inRow && mxp >= rightX && mxp < rightX + BUTTON, this.pressZone == 2);
 
-        // VERTICAL DIVIDERS FRAMING THE CENTER FIELD
         canvas.fill(leftX + BUTTON, y, 1, h, AppTheme.STROKE);
         canvas.fill(rightX, y, 1, h, AppTheme.STROKE);
 
-        // CENTER — THE UNCOMMITTED BUFFER WITH A CARET WHILE EDITING, ELSE THE CLAMPED VALUE
         final int midX = leftX + BUTTON;
         final int midW = w - BUTTON * 2;
         final String shown = this.editing ? this.editText : this.label();
@@ -133,12 +125,10 @@ public final class Spinner extends Element<Spinner> {
             canvas.fill(textX + tw + 1, ty, 1, th, AppTheme.AMBER);
         }
 
-        // OUTER BORDER LAST — AMBER WHILE EDITING
         canvas.stroke(leftX, y, w, h, this.editing ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT,
                 this.editing ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
     }
 
-    // ONE +/- ZONE: THE HOVER/PRESS AMBER WASH AND THE CENTERED GLYPH IN ITS STATE COLOR
     private void stepZone(final Canvas canvas, final int x, final int y, final int h, final String glyph,
                           final boolean hover, final boolean press) {
         if (press) {
@@ -185,7 +175,6 @@ public final class Spinner extends Element<Spinner> {
 
     @Override
     public boolean dispatchClick(final double mx, final double my) {
-        // A HIDDEN OR DISABLED SPINNER NEITHER CONSUMES CLICKS NOR EDITS; THE COMMIT-ON-MISS BRANCH STAYS BELOW
         if (!this.visible || !this.enabled) return false;
         if (!this.contains(mx, my)) {
             if (this.editing) this.commit(); // A CLICK ANYWHERE ELSE BLURS AND COMMITS
@@ -220,7 +209,6 @@ public final class Spinner extends Element<Spinner> {
     @Override
     public boolean dispatchChar(final int codepoint) {
         if (!this.editing) return false;
-        // NUMERIC ENTRY ONLY: DIGITS, A SINGLE DOT, AND A LEADING MINUS
         final boolean accept = (codepoint >= '0' && codepoint <= '9')
                 || (codepoint == '.' && this.editText.indexOf('.') < 0)
                 || (codepoint == '-' && this.editText.isEmpty());
@@ -254,7 +242,6 @@ public final class Spinner extends Element<Spinner> {
         this.invalidate();
     }
 
-    // CLAMP TO THE RANGE, REPORT ONLY REAL CHANGES, AND ALWAYS REPAINT
     private void apply(final double v) {
         final double next = MathUtil.clamp(v, this.min, this.max);
         if (next != this.value) {
@@ -264,7 +251,6 @@ public final class Spinner extends Element<Spinner> {
         this.invalidate();
     }
 
-    // THE VALUE AS A STRING WITHOUT THE SUFFIX — DROPS THE TRAILING ".0" FOR INTEGER-VALUED NUMBERS
     private String numberString() {
         return this.value == Math.rint(this.value) ? Long.toString((long) this.value) : Double.toString(this.value);
     }

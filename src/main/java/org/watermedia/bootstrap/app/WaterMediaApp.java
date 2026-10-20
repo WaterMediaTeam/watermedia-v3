@@ -85,7 +85,8 @@ import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
- * WATERMeDIA Test Application.
+ * Entry point of the standalone app: window, render loop, engine hot swap, screens and the log upload and cache
+ * cleanup actions.
  */
 public class WaterMediaApp {
     private static final Marker IT = MarkerManager.getMarker(WaterMediaApp.class.getSimpleName());
@@ -97,16 +98,14 @@ public class WaterMediaApp {
     private static final AppContext ctx = new AppContext();
     private static final ScreenManager screens = new ScreenManager();
 
-    // READ BY THE GLOW-PULSE BACKGROUND THREAD, WRITTEN BY THE RENDER THREAD (EXIT/SWAP-FAILURE) — VOLATILE
-    // SO THE FALSE IS ALWAYS OBSERVED.
+    // CLEARED BY THE RENDER THREAD ON EXIT OR A FAILED SWAP, READ BY THE GLOW-PULSE THREAD
     private static volatile boolean running = true;
     // WRITTEN BY THE GLFW ICONIFY CALLBACK, READ BY THE GLOW-PULSE THREAD
     private static volatile boolean iconified;
     private static boolean maximized;
-    // PENDING RENDER-ENGINE HOT-SWAP TARGET (null = NONE). SET FROM THE SETTINGS SCREEN, CONSUMED AT THE TOP
-    // OF THE MAIN LOOP — NEVER MID-FRAME OR INSIDE A CALLBACK. THE MAIN LOOP OWNS THE FrameLimiter, WHICH THE
-    // SWAP REBUILDS FOR THE NEW WINDOW, SO IT LIVES AS A FIELD RATHER THAN A LOOP LOCAL.
+    // PENDING HOT-SWAP TARGET (null = NONE), CONSUMED AT THE TOP OF THE MAIN LOOP, NEVER MID-FRAME OR IN A CALLBACK
     private static volatile RenderSystem.Engine swapTarget;
+    // A FIELD BECAUSE THE SWAP REBUILDS IT FOR THE NEW WINDOW
     private static FrameLimiter frameLimiter;
     // LAST CURSOR POSITION A HOVER DISPATCH WAS ISSUED FOR — NaN SO THE FIRST FRAME ALWAYS DISPATCHES
     private static double lastMoveX = Double.NaN;
@@ -120,34 +119,28 @@ public class WaterMediaApp {
     private static Dialog exitDialog;
 
     static {
-        // LWJGL'S DEFAULT 64KB PER-THREAD MemoryStack OVERFLOWS WHEN VULKAN ENUMERATES A GPU'S
-        // (HUNDREDS OF) DEVICE EXTENSIONS DURING VkInstance INIT. RAISE IT BEFORE ANY MemoryStack
-        // IS CREATED (THE FIRST stackPush HAPPENS LATER, IN initWindow → centerWindow).
+        // LWJGL'S DEFAULT 64KB MemoryStack OVERFLOWS WHILE VULKAN ENUMERATES HUNDREDS OF DEVICE EXTENSIONS;
+        // IT MUST GROW BEFORE THE FIRST stackPush
         Configuration.STACK_SIZE.set(1024);
         initLogging();
     }
 
     public static void start(final Runnable task) {
-        // PHASE 1 — get the window on screen ASAP. Window creation, GL setup,
-        // text renderer, and icon/banner decoding (via ImageIO so they don't
-        // need CodecsAPI yet). Audio is deferred to phase 3 so AppBootstrap's
-        // countdown end → visible window has the shortest possible gap.
-        // THE SHELL CONFIG SPEC REGISTERS FIRST: ITS FILE LOAD RUNS ON THE WATERCONFIG IO POOL AND
-        // OVERLAPS THE (MUCH SLOWER) WINDOW/ENGINE BOOT. THIS RUNS ONLY IN THE APP JVM — THE
-        // AppBootstrap LAUNCHER NEVER TOUCHES WATERCONFIG IN ITS EARLY PHASE.
+        // PHASE 1: SHOW THE WINDOW ASAP; THE APP SPEC REGISTERS FIRST SO ITS LOAD ON THE WATERCONFIG IO POOL
+        // OVERLAPS THE SLOWER WINDOW AND ENGINE BOOT
         AppConfig.register();
         initWindow();
         ctx.text = new TextRenderer();
         ctx.text.margin(6);
-        // THE UI SCALE NEEDS THE WINDOW'S MONITOR AND THE TEXT RENDERER, SO THE PREFERENCES APPLY ONLY NOW; THE
-        // WINDOW IS STILL HIDDEN AND THE LOADING SCREEN'S FIRST FRAME ALREADY RESPECTS THEM
+        // THE UI SCALE NEEDS THE WINDOW'S MONITOR AND THE TEXT RENDERER; THE WINDOW IS STILL HIDDEN, SO THE
+        // FIRST LOADING FRAME ALREADY USES THE PREFERENCES
         AppConfig.applyBoot(ctx);
         ctx.assets.load(ctx);
         initShell();
         glfwShowWindow(ctx.windowHandle);
 
-        // PHASE 2 — THE LOADING SPLASH INSIDE THE SHELL (LIVE TITLEBAR + PULSING BACKEND STRIP), THE APP-SIDE AUDIO
-        // OUTPUT, THEN WaterMedia.start() IN THE BACKGROUND; THE SPLASH POLLS THE LOAD STATE EACH FRAME FOR ITS BOOT BAR
+        // PHASE 2: LOADING SCREEN, APP AUDIO, THEN WaterMedia.start() IN THE BACKGROUND; THE SCREEN POLLS THE
+        // LOAD STATE EACH FRAME FOR ITS BOOT BAR
         final LoadingScreen loadingScreen = new LoadingScreen(ctx.text, ctx);
         loadingScreen.onEnter();
         root.mount(loadingScreen);
@@ -155,8 +148,7 @@ public class WaterMediaApp {
         initAudio();
         runLoadingPhase();
 
-        // PHASE 3 — final init that depends on WaterMedia (or that we delayed
-        // to keep phase 1 fast).
+        // PHASE 3: EVERYTHING THAT NEEDS WATERMEDIA LOADED
         try { ctx.uriGroups = JSONTool.parse(IOTool.jarRead("uris.json"), AppContext.URIGroup[].class); }
         catch (final IOException e) { throw new IllegalStateException("Cannot read the bundled uris.json", e); }
         loadIptvCatalog();
@@ -186,15 +178,12 @@ public class WaterMediaApp {
     }
 
     private static void runLoadingPhase() {
-        // SINGLE-SLOT HOLDER FOR THE LOADER THREAD'S FAILURE — loader.join() BELOW ESTABLISHES THE
-        // HAPPENS-BEFORE THAT MAKES THE WRITE VISIBLE HERE, SO NO Atomic*/volatile IS NEEDED.
+        // THE LOADER'S FAILURE; loader.join() PUBLISHES THE WRITE, SO IT NEEDS NO VOLATILE
         final Throwable[] failure = new Throwable[1];
         final Thread loader = ThreadTool.thread("WaterMediaApp-Init", () -> {
             try {
-                // ROOT ALL PERSISTENT DATA AT THE PROCESS WORKING DIRECTORY (THE DEV `run/` FOLDER). PASSING
-                // THE CWD EXPLICITLY MAKES WaterMedia.cwd() — AND THUS THE FILE SERVER STORAGE — LAND NEXT TO
-                // config/ AND logs/ (WHICH ALREADY RESOLVE AGAINST THE CWD) INSTEAD OF IN A `run/` SUBFOLDER
-                // OF IT. TEMP STAYS null SO THE REBUILDABLE MEDIA CACHE KEEPS LIVING IN THE SYSTEM TEMP DIR.
+                // PERSISTENT DATA GOES IN THE WORKING DIRECTORY NEXT TO config/ AND logs/; A null TEMP KEEPS THE
+                // MEDIA CACHE IN THE SYSTEM TEMP DIR
                 WaterMedia.start("WaterMediaApp", null, Path.of("").toAbsolutePath(), true);
             } catch (final Throwable t) {
                 failure[0] = t;
@@ -235,7 +224,7 @@ public class WaterMediaApp {
         root.render(ctx.logicalWidth(), ctx.logicalHeight());
         RenderSystem.present();
         glfwPollEvents();
-        // THE SHELL IS LIVE DURING BOOT — TITLEBAR DRAG/BUTTONS AND THE EXIT DIALOG ALREADY WORK
+        // INPUT RUNS DURING BOOT TOO, SO THE TITLEBAR AND THE EXIT DIALOG WORK WHILE LOADING
         handleFrameInput();
     }
 
@@ -295,7 +284,6 @@ public class WaterMediaApp {
     }
 
     private static void installCallbacks() {
-        // CALLBACKS
         glfwSetKeyCallback(ctx.windowHandle, WaterMediaApp::handleKeyInput);
         glfwSetCharCallback(ctx.windowHandle, WaterMediaApp::handleCharInput);
         glfwSetCursorPosCallback(ctx.windowHandle, (w, x, y) -> {
@@ -337,15 +325,14 @@ public class WaterMediaApp {
         glfwSetWindowMaximizeCallback(ctx.windowHandle, (w, isMaximized) -> {
             maximized = isMaximized;
             ctx.windowMaximized = maximized;
-            // WINDOWS: A RESTORE RECLAMPS AN OVERSIZED FLOATING WINDOW INTO THE MONITOR WORK AREA (THE
-            // RDP-MONITOR-SHRINK BUG). DEFERRED — THIS CALLBACK FIRES INSIDE THE WIN32 MESSAGE DISPATCH.
+            // WINDOWS: A RESTORE RECLAMPS A FLOATING WINDOW LARGER THAN THE WORK AREA (E.G. AFTER AN RDP MONITOR
+            // SHRINK); DEFERRED BECAUSE THIS CALLBACK RUNS INSIDE THE WIN32 MESSAGE DISPATCH
             if (!isMaximized && WinFrame.ACTIVE) ctx.execute(() -> WinFrame.reclamp(ctx));
             ctx.requestRender();
         });
     }
 
     private static void centerWindow() {
-        // CENTER WINDOW
         try (final MemoryStack stack = stackPush()) {
             final IntBuffer pWidth = stack.mallocInt(1);
             final IntBuffer pHeight = stack.mallocInt(1);
@@ -468,7 +455,7 @@ public class WaterMediaApp {
         ctx.requestRender();
     }
 
-    // FOOTER SHORTCUTS — A VISIBLE GLOBAL DIALOG OVERRIDES THE ACTIVE SCREEN'S HINTS, AS THE OLD BOTTOM BAR DID
+    // FOOTER SHORTCUTS: A VISIBLE GLOBAL DIALOG OVERRIDES THE ACTIVE SCREEN'S HINTS
     private static List<Keybind> footerKeybinds() {
         if (ctx.hasError()) return KEYS_ERROR;
         if (ctx.exitConfirm) return KEYS_EXIT;
@@ -519,7 +506,6 @@ public class WaterMediaApp {
             case BACK -> screens.backToHome();
 
             case OPEN_MULTIMEDIA -> {
-                // CHECK FFMPEG AVAILABILITY FIRST
                 if (!MediaAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
@@ -540,7 +526,6 @@ public class WaterMediaApp {
             }
 
             case PLAYER -> {
-                // CHECK FFMPEG AVAILABILITY FIRST
                 if (!MediaAPI.ffmpegLoaded()) {
                     ctx.showError("Feature Unavailable",
                             "FFmpeg is not loaded.\nMedia playback is not available.\n\nCheck the alerts for more information.",
@@ -556,8 +541,7 @@ public class WaterMediaApp {
                     return;
                 }
                 if (!ctx.upload.visible) {
-                    // SCAN RUNS ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES, WHICH WOULD
-                    // FREEZE THE RENDER THREAD FOR THE WHOLE SCAN IF DONE INLINE.
+                    // SCANNED ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES
                     ctx.upload.reset();
                     ctx.upload.visible = true;
                     ctx.upload.working = true;
@@ -583,8 +567,7 @@ public class WaterMediaApp {
 
             case CLEANUP -> {
                 if (!ctx.cleanup.visible) {
-                    // SCAN RUNS ON A WORKER: CleanupState.scan() WALKS THE ENTIRE MEDIA CACHE (POTENTIALLY
-                    // THOUSANDS OF FILES), WHICH WOULD FREEZE THE RENDER THREAD IF DONE INLINE.
+                    // SCANNED ON A WORKER: CleanupState.scan() WALKS THE WHOLE MEDIA CACHE, POSSIBLY THOUSANDS OF FILES
                     ctx.cleanup.reset();
                     ctx.cleanup.visible = true;
                     ctx.cleanup.working = true;
@@ -608,7 +591,7 @@ public class WaterMediaApp {
         }
     }
 
-    // MAIN LOOP — GL state was already configured during the loading phase.
+    // MAIN LOOP; THE LOADING PHASE ALREADY CONFIGURED THE FRAME STATE
     private static void mainLoop() {
         frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         ctx.requestRender();
@@ -623,11 +606,8 @@ public class WaterMediaApp {
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
             // ENGINE HOT-SWAP RUNS AT THE TOP OF THE LOOP ON THE RENDER THREAD — NEVER MID-FRAME
             if (swapTarget != null) performEngineSwap();
-            // A CONTINUOUS SCREEN (VIDEO/CRT) OR AN ACTIVE POINTER DRAG IS PACED TO THE REFRESH RATE AND
-            // THEN POLLS THE FRESHEST INPUT *AFTER* THE PACE SLEEP, SO A SLIDER REFLECTS THE CURSOR AT
-            // RENDER TIME. THE OLD NON-CONTINUOUS PATH SAMPLED INPUT, THEN SLEPT A WHOLE FRAME, THEN
-            // RENDERED THAT STALE INPUT (PLUS ANY MOTION THAT ARRIVED DURING THE SLEEP, WHICH RUNS NO
-            // CALLBACKS) — THAT ORDER WAS THE DRAG LATENCY THE USER REPORTED ON SEEKBARS.
+            // CONTINUOUS SCREENS (VIDEO/CRT) AND POINTER DRAGS PACE TO THE REFRESH RATE, THEN POLL INPUT AFTER THE
+            // PACE SLEEP SO A SLIDER SHOWS THE CURSOR AS OF RENDER TIME, NOT A FRAME EARLIER
             final boolean continuous = root.continuous();
             final boolean paced = continuous || root.dragging();
             if (paced) {
@@ -659,21 +639,14 @@ public class WaterMediaApp {
         ctx.releasePlayer();
     }
 
-    /**
-     * Requests a live render-engine hot-swap (OpenGL &harr; Vulkan). The swap itself runs at the top of the
-     * next main-loop iteration on the render thread; this only records the target and wakes the loop, so it is
-     * safe to call from an input callback or a Settings widget. A no-op when the target already runs.
-     */
+    /** Queues a live render engine hot swap for the next main-loop iteration; safe to call from callbacks. */
     public static void requestEngineSwap(final RenderSystem.Engine target) {
         swapTarget = target;
         ctx.requestRender();
     }
 
-    // LIVE RENDER-ENGINE SWAP — REBUILDS THE WINDOW AND ENGINE IN PLACE WITHOUT RESTARTING THE JVM OR THE
-    // MEDIA API. RUNS ONLY FROM THE TOP OF mainLoop() (RENDER THREAD). THE SEQUENCE MIRRORS initWindow() +
-    // cleanup(): DRAIN MEDIA, DROP GPU CACHES, TEAR DOWN THE OLD ENGINE/WINDOW, THEN CHOOSE + BUILD + ATTACH
-    // THE TARGET (KEEPING THE VK->GL FALLBACK) AND RECREATE THE ASSETS. THE ctx EXECUTOR AND THE GLOW-PULSE
-    // THREAD SURVIVE; ONLY ctx.windowHandle AND THE GPU RESOURCES ARE REPLACED.
+    // REBUILDS THE WINDOW AND ENGINE IN PLACE, KEEPING THE JVM, THE MEDIA API, THE ctx EXECUTOR AND THE GLOW
+    // PULSE; RUNS ONLY FROM THE TOP OF mainLoop()
     private static void performEngineSwap() {
         final RenderSystem.Engine target = swapTarget;
         swapTarget = null;
@@ -705,11 +678,11 @@ public class WaterMediaApp {
             ctx.releasePlayer();
             ctx.awaitPlayerRelease();
 
-            // 2) DROP GPU CACHES BOUND TO THE OLD CONTEXT — THEY REBUILD LAZILY (TEXT) OR ARE RECREATED BELOW
+            // 2) DROP GPU CACHES BOUND TO THE OUTGOING CONTEXT — THEY REBUILD LAZILY (TEXT) OR ARE RECREATED BELOW
             ctx.text.reset();
             ctx.assets.dispose();
 
-            // 3) TEAR DOWN THE OLD ENGINE AND ITS WINDOW (MIRRORS cleanup() MINUS glfwTerminate)
+            // 3) TEAR DOWN THE OUTGOING ENGINE AND ITS WINDOW (MIRRORS cleanup() MINUS glfwTerminate)
             RenderSystem.cleanup();
             destroyWindow();
 
@@ -744,9 +717,8 @@ public class WaterMediaApp {
         }
     }
 
-    // RE-APPLIES THE PRE-SWAP WINDOW PLACEMENT: createWindow() ALWAYS BUILDS MAXIMIZED, SO A PREVIOUSLY
-    // WINDOWED STATE IS RESTORED HERE. THE FRAMEBUFFER SIZE IS FORCE-SYNCED BECAUSE THE RESIZE CALLBACK MAY
-    // NOT HAVE FIRED FOR THE PROGRAMMATIC PLACEMENT YET, THEN PUSHED INTO THE ENGINE VIEWPORT.
+    // createWindow() ALWAYS BUILDS MAXIMIZED, SO A WINDOWED PLACEMENT IS RESTORED HERE; THE SIZE IS READ BACK
+    // BECAUSE THE RESIZE CALLBACK MAY NOT HAVE FIRED YET
     private static void restoreWindowPlacement(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
         if (!wasMaximized) {
             glfwRestoreWindow(ctx.windowHandle);
@@ -769,7 +741,7 @@ public class WaterMediaApp {
     // WHATEVER STATE THE SWAP LEFT BEHIND. RETURNS true WHEN THE APP IS RENDERABLE AGAIN, false WHEN IT MUST EXIT.
     private static boolean recoverToOpenGL(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
         try {
-            // THE OLD WINDOW MAY OR MAY NOT STILL EXIST; A ZEROED HANDLE MEANS IT WAS ALREADY DESTROYED
+            // A ZEROED HANDLE MEANS THE SWAP ALREADY DESTROYED THE WINDOW
             if (ctx.windowHandle != NULL) destroyWindow();
             RenderSystem.chooseEngine(RenderSystem.Engine.OPENGL);
             openWindow();
@@ -796,8 +768,7 @@ public class WaterMediaApp {
                 root.press(ctx.mouseX, ctx.mouseY);
             }
         }
-        // ONLY DISPATCH HOVER ON REAL CURSOR MOVEMENT — A STATIONARY CURSOR PARKED OVER A HIT BOX MUST
-        // NOT RE-ASSERT HOVER SELECTION EVERY FRAME AND SILENTLY OVERRIDE KEYBOARD NAVIGATION (H-01).
+        // HOVER DISPATCHES ONLY ON REAL CURSOR MOVEMENT, SO A PARKED CURSOR NEVER OVERRIDES KEYBOARD NAVIGATION
         if (ctx.mouseX != lastMoveX || ctx.mouseY != lastMoveY) {
             lastMoveX = ctx.mouseX;
             lastMoveY = ctx.mouseY;
@@ -819,11 +790,9 @@ public class WaterMediaApp {
                 || glfwGetKey(ctx.windowHandle, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
                 || glfwGetKey(ctx.windowHandle, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
 
-        // GLOBAL CRT TOGGLE — BUT NOT WHILE A TEXT FIELD IS FOCUSED, OR TYPING A 'c' WOULD BOTH INSERT THE
-        // CHARACTER (VIA THE CHAR CALLBACK) AND FLIP THE CRT OVERLAY (M-02).
+        // CRT TOGGLE, EXCEPT IN A FOCUSED TEXT FIELD WHERE THE C IS TYPED TEXT
         if (action == GLFW_RELEASE && key == GLFW_KEY_C && !root.textInputFocused()) {
             ctx.crt = !ctx.crt;
-            // KEEP THE SHELL SPEC FIELD IN SYNC AND LET THE WATERCONFIG WORKER PERSIST THE TOGGLE
             AppConfig.crt(ctx.crt);
             ctx.requestRender();
             return;
@@ -1332,9 +1301,8 @@ public class WaterMediaApp {
     }
 
     private static String ffmpegSoftwareCodecs() {
-        // SOFTWARE (NON-HW) DECODERS COMPILED INTO THIS BUILD. UNLIKE WATERMEDIA'S PURE-JAVA IMAGE CODECS,
-        // THIS SET CAN DIFFER BY OS/ARCH (e.g. AN EXTERNAL-LIB DECODER PRESENT ON x64 BUT NOT ARM), SO IT IS
-        // WORTH CAPTURING TO VALIDATE WHETHER A CODEC IS SIMPLY MISSING FROM THE PLATFORM BUILD.
+        // SOFTWARE DECODERS OF THIS BUILD; THE SET VARIES BY OS/ARCH, SO IT SHOWS WHETHER A CODEC IS MISSING FROM
+        // THE PLATFORM BUILD
         if (!MediaAPI.ffmpegLoaded()) return "not loaded";
         try {
             final TreeSet<String> names = new TreeSet<>();
@@ -1372,9 +1340,8 @@ public class WaterMediaApp {
     }
 
     private static String nvidiaThreadedOptimizationAlert() {
-        // "Threaded Optimization" IS AN OPENGL DRIVER SETTING KNOWN TO CRASH/STUTTER LWJGL APPS. THERE IS NO
-        // PURE-JAVA API TO READ IT (NVAPI IS NATIVE), SO WE INFER THE RUNTIME STATE FROM THE DEDICATED GL WORKER
-        // THREAD THE DRIVER SPAWNS INSIDE nvoglv64.dll WHEN IT IS ACTIVE. WINDOWS + OPENGL + NVIDIA ONLY.
+        // NVIDIA "Threaded Optimization" CRASHES OR STUTTERS LWJGL APPS AND HAS NO JAVA API; THE GL WORKER THREADS
+        // IT SPAWNS INSIDE nvoglv64.dll GIVE IT AWAY. WINDOWS + OPENGL + NVIDIA ONLY
         try {
             if (RenderSystem.engineKind() != RenderSystem.Engine.OPENGL) return null;
             if (!"windows".equals(IOTool.os())) return null;
@@ -1545,8 +1512,7 @@ public class WaterMediaApp {
     private static void initLogging() {
         final String filename = "logs/watermedia-app.log";
         final File logfile = new File(filename);
-        // FILESYSTEM-SAFE STAMP — new Date().toString() EMITS ':' AND SPACES, ILLEGAL IN WINDOWS FILENAMES,
-        // SO renameTo() SILENTLY FAILED EVERY LAUNCH AND THE LOG NEVER ROTATED (GREW UNBOUNDED) (M-01).
+        // NO ':' OR SPACES IN THE STAMP: WINDOWS REJECTS THEM IN FILENAMES AND THE ROTATION WOULD FAIL
         final String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
         final boolean rotationFailed = logfile.exists() && !logfile.renameTo(new File("logs/watermedia-app-" + stamp + ".log"));
 

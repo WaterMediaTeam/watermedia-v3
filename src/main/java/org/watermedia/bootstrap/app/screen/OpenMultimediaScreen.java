@@ -47,12 +47,8 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.watermedia.bootstrap.app.render.RenderSystem.mediaEngineSupplier;
 
 /**
- * Screen with a dialog for opening custom multimedia URLs, fully retained: a scrim over the live
- * {@link HomeScreen} (mounted underneath via {@link #under()}), a centered dialog panel composed of a
- * title row, the live preview (with a localized {@link CrtOverlay}), the URL/search field with its
- * inline buttons, the results/history dropdown as a real {@link ListView}, and the footer actions —
- * all laid out and hit-tested by the view tree. The loading modal is a {@link Dialog} on the screen
- * overlay, and thumbnail players are torn down off the render thread.
+ * Dialog over the home screen that previews and plays a custom URL or path, or searches the platforms
+ * when the input is neither.
  */
 public class OpenMultimediaScreen extends Screen {
 
@@ -61,12 +57,12 @@ public class OpenMultimediaScreen extends Screen {
     private static final long PREVIEW_ANIM_MS = 220L;     // PREVIEW GROW/SHRINK EASE DURATION
     private static final long SEARCH_DEBOUNCE_MS = 320L;  // QUIET PERIOD AFTER TYPING BEFORE AUTO-SEARCHING
 
-    // LEGACY SCRIM 0.02/0.03/0.10 @ 0.65 — HOME STAYS VISIBLE (AND ANIMATING) BEHIND IT
+    // TRANSLUCENT SO THE HOME SCREEN STAYS VISIBLE BEHIND THE DIALOG
     private static final Color SCRIM_COLOR = AppTheme.rgba(5, 8, 26, 166);
     private static final Color CLOSE_HOVER = AppTheme.rgba(255, 132, 160, 255);
     private static final Color GRADIENT_TOP = AppTheme.rgba(0, 0, 0, 0);
 
-    // DROPDOWN ROW KINDS — ONE FLAT Row LIST DRIVES THE ListView (HEADERS, PLACEHOLDER, RESULTS, HISTORY)
+    // DROPDOWN ROW KINDS: ONE FLAT Row LIST FEEDS THE ListView
     private static final int ROW_HEAD = 0;
     private static final int ROW_WAIT = 1;
     private static final int ROW_RESULT = 2;
@@ -76,7 +72,7 @@ public class OpenMultimediaScreen extends Screen {
     private record Row(int kind, PlatformResult result, String text) {
     }
 
-    // CACHED, REFERENCE-STABLE KEYBIND LISTS — LET KeybindsBar SKIP ITS REBUILD ON THE STEADY PER-FRAME PATH
+    // CONSTANT LISTS SO keybinds() ALLOCATES NOTHING PER FRAME
     private static final List<Keybind> KEYS_LOADING = List.of(new Keybind("ESC", "Cancel"));
     private static final List<Keybind> KEYS_SEARCH = List.of(
             new Keybind("TYPE", "Search"), new Keybind("CLICK", "Pick result"),
@@ -93,20 +89,19 @@ public class OpenMultimediaScreen extends Screen {
     private volatile MRL previewMRL;
     private String previewUrl = "";
 
-    // SEARCH MODE: WHEN THE INPUT IS NOT A VALID URI THE PLAY BUTTON BECOMES SEARCH AND A RESULTS
-    // DROPDOWN OPENS BELOW THE INPUT. THE PlatformSearch HANDLE FILLS IN OFF-THREAD; onUpdate POLLS IT
-    // EVERY FRAME. searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE THE SEARCH COMPLETES.
+    // THE PlatformSearch HANDLE FILLS IN OFF-THREAD AND onUpdate POLLS IT EVERY FRAME;
+    // searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE IT COMPLETES
     private PlatformSearch search;
     private boolean searchRenderedDone = true;
-    private long lastEditMs;                // TIMESTAMP OF THE LAST INPUT EDIT (DRIVES THE AUTO-SEARCH DEBOUNCE)
-    private boolean searchMode;             // CACHED searchMode() RESULT (AVOIDS A PER-FRAME FILE STAT + URI PARSE)
-    private String searchModeText;          // TRIMMED INPUT THE CACHED searchMode WAS COMPUTED FOR (null = NOT YET COMPUTED)
-    private float animPreviewH;             // CURRENT ANIMATED PREVIEW HEIGHT
-    private float animPreviewFrom;          // PREVIEW HEIGHT WHEN THE CURRENT ANIMATION BEGAN
-    private int animPreviewTarget = -1;     // HEIGHT THE ANIMATION IS EASING TOWARD (-1 = UNINITIALIZED)
-    private long animPreviewStart;          // START TIMESTAMP OF THE CURRENT PREVIEW ANIMATION
+    private long lastEditMs;                // DRIVES THE AUTO-SEARCH DEBOUNCE
+    private boolean searchMode;             // CACHED searchMode() RESULT
+    private String searchModeText;          // TRIMMED INPUT BEHIND THE CACHED RESULT (null = NOT COMPUTED YET)
+    private float animPreviewH;
+    private float animPreviewFrom;
+    private int animPreviewTarget = -1;     // -1 = UNINITIALIZED
+    private long animPreviewStart;
 
-    // DROPDOWN ROW CACHE — REBUILD THE ListView ITEMS ONLY WHEN THE POLLED SEARCH DATA ACTUALLY CHANGED
+    // STATE BEHIND THE CURRENT DROPDOWN ROWS; syncDropdown REBUILDS THEM ONLY WHEN IT CHANGES
     private PlatformSearch rowsSearch;
     private int rowsResults;
     private int rowsHistory;
@@ -125,8 +120,7 @@ public class OpenMultimediaScreen extends Screen {
     private Text loadUrl;
     private boolean loadShown;
 
-    // RESULT THUMBNAILS RENDER THROUGH SHORT-LIVED IMAGE PLAYERS, KEYED BY THUMBNAIL URI (MIRRORS
-    // MRLSelectorScreen). THE ACTIVE RENDER BACKEND SUPPLIES THE ENGINE; RELEASED ON A NEW SEARCH/EXIT.
+    // RESULT THUMBNAIL PLAYERS, RELEASED ON EACH NEW SEARCH AND ON EXIT
     private final Map<URI, MediaPlayer> thumbPlayers = new LinkedHashMap<>();
     private final Set<URI> thumbAttempted = new HashSet<>();
     private final Set<URI> thumbSubscribed = new HashSet<>();
@@ -137,7 +131,7 @@ public class OpenMultimediaScreen extends Screen {
         this.navigator = navigator;
     }
 
-    // THE HOME SCREEN STAYS MOUNTED (AND ANIMATING) UNDERNEATH — THE SHELL STACKS BOTH IN THE CENTER SLOT
+    // THE SHELL KEEPS THE HOME SCREEN MOUNTED UNDER THIS ONE IN THE CENTER SLOT
     @Override
     public String under() {
         return "home";
@@ -154,14 +148,14 @@ public class OpenMultimediaScreen extends Screen {
         this.dropdown = new ListView<Row>()
                 .rowFactory((row, index) -> this.rowFor(row))
                 .onSelect((row, index) -> this.pickRow(row))
-                // ROWS SELF-DRAW THEIR HOVER FILL (TWO DIFFERENT ALPHAS), SO SUPPRESS THE LIST HIGHLIGHTS
+                // ROWS DRAW THEIR OWN HOVER FILL, SO THE LIST HIGHLIGHTS ARE TRANSPARENT
                 .selectionColor(AppTheme.alpha(AppTheme.NEON, 0))
                 .hoverColor(AppTheme.alpha(AppTheme.NEON_DARK, 0))
                 .padding(new Spacing(6, 2, 6, 2))
                 .background(AppTheme.BG_2_ALPHA)
                 .border(AppTheme.NEON, 1f)
                 .shadow(0.45f)
-                // A CLICK INSIDE THE BOX BUT NOT ON A ROW IS SWALLOWED (LEGACY BEHAVIOR)
+                // A CLICK INSIDE THE BOX BUT NOT ON A ROW IS SWALLOWED
                 .consumeTouch(true)
                 .visible(false)
                 .width(Element.MAX_PARENT);
@@ -202,7 +196,7 @@ public class OpenMultimediaScreen extends Screen {
                 .glow(AppTheme.NEON, 0.35f)
                 .shadow(0.55f);
 
-        // LOADING MODAL — A REAL Dialog ON THE SCREEN OVERLAY (TITLE DOTS AND URL REFRESHED IN onUpdate)
+        // LOADING MODAL; onUpdate REFRESHES ITS TITLE DOTS AND URL
         this.loadUrl = new Text().scale(AppTheme.TEXT_BODY).color(AppTheme.TEXT_SOFT).width(Element.MAX_PARENT);
         this.loadDialog = new Dialog()
                 .title("Loading")
@@ -215,7 +209,7 @@ public class OpenMultimediaScreen extends Screen {
         final Box scrim = new Box().size(Element.MAX_PARENT, Element.MAX_PARENT)
                 .background(SCRIM_COLOR)
                 .consumeTouch(true)
-                // A CLICK OUTSIDE THE PANEL BLURS THE FIELD (LEGACY OUTSIDE-CLICK BEHAVIOR), NEVER REACHES HOME
+                // A CLICK OUTSIDE THE PANEL BLURS THE FIELD AND NEVER REACHES THE HOME SCREEN
                 .onClick(b -> this.field.focused(false).invalidate());
         return new Body(scrim, panel);
     }
@@ -228,7 +222,7 @@ public class OpenMultimediaScreen extends Screen {
         this.previewGeneration++;
         this.previewMRL = null;
         this.previewUrl = "";
-        this.animPreviewTarget = -1; // SNAP THE PREVIEW TO ITS CORRECT SIZE ON ENTRY (NO STRAY ANIMATION)
+        this.animPreviewTarget = -1; // SNAP THE PREVIEW SIZE ON ENTRY INSTEAD OF EASING
         this.clearSearch();
         this.field.focused(true);
         this.syncLoadDialog();
@@ -245,7 +239,7 @@ public class OpenMultimediaScreen extends Screen {
         this.syncLoadDialog();
     }
 
-    // HOT-SWAP HOOK: DROP EVERY THUMBNAIL PLAYER (RELEASED OFF-THREAD, SEE releaseAsync)
+    // RENDER BACKEND HOT-SWAP: THE ROWS REBUILD THEIR THUMBNAIL PLAYERS ON THE NEW ENGINE AS THEY DRAW
     @Override
     public void releaseMedia() {
         this.releaseThumbs();
@@ -259,7 +253,7 @@ public class OpenMultimediaScreen extends Screen {
 
     @Override
     public boolean continuous() {
-        // FIELD CARET BLINK + LOADING DOTS + SEARCH POLLING + PREVIEW EASE + ANIMATED THUMBNAILS (GIF/WEBP)
+        // CARET BLINK, LOADING DOTS, SEARCH POLLING, PREVIEW EASE AND ANIMATED THUMBNAILS
         return this.textInputActive() || this.loading
                 || (this.search != null && !this.searchRenderedDone)
                 || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS
@@ -284,7 +278,7 @@ public class OpenMultimediaScreen extends Screen {
 
         final boolean search = this.searchMode();
 
-        // AUTO-SEARCH: ONCE TYPING SETTLES (DEBOUNCE), SEARCH THE CURRENT QUERY — NO ENTER NEEDED
+        // AUTO-SEARCH THE QUERY ONCE TYPING SETTLES
         if (search) {
             final String query = url.trim();
             final boolean stale = this.search == null || !this.search.query().equals(query);
@@ -293,8 +287,7 @@ public class OpenMultimediaScreen extends Screen {
             }
         }
 
-        // BUTTON BINDINGS — SAME ENABLE/ACCENT RULES AS THE LEGACY DRAW: RELOAD/SAVE ONLY FOR A URL/PATH,
-        // THE PRIMARY ACTION TOGGLES PLAY (GREEN) <-> SEARCH (CYAN) WITH THE INPUT
+        // RELOAD AND SAVE ONLY TAKE A URL OR PATH; THE PRIMARY BUTTON SWITCHES BETWEEN PLAY AND SEARCH
         final boolean empty = url.isEmpty();
         this.reload.enabled(!search && !empty);
         this.save.accent(search || empty ? AppTheme.TEXT_FAINT : AppTheme.NEON_LIGHT).enabled(!search && !empty);
@@ -302,7 +295,7 @@ public class OpenMultimediaScreen extends Screen {
         this.play.label(search ? "SEARCH" : "PLAY").icon(search ? "search" : "play")
                 .accent(playColor).textColor(playColor).enabled(!empty);
 
-        // DETECTED-STATUS CHIP: RESULT COUNT/WORKING STATE IN SEARCH MODE, OTHERWISE THE PREVIEW MRL STATE
+        // STATUS CHIP: SEARCH PROGRESS IN SEARCH MODE, OTHERWISE THE PREVIEW MRL STATE
         if (search) {
             final boolean done = this.search != null && this.search.done();
             this.chip.set(done ? this.search.results().size() + " RESULTS" : "SEARCHING",
@@ -312,11 +305,10 @@ public class OpenMultimediaScreen extends Screen {
         }
 
         this.syncDropdown(search);
-        // POLLED SEARCH: GUARANTEES ONE FINAL FRAME AFTER COMPLETION (SEE continuous)
         this.searchRenderedDone = this.search == null || this.search.done();
     }
 
-    // SHOWS/HIDES THE LOADING Dialog WHEN THE loading FLAG FLIPS (THE FLAG ALSO CHANGES OFF-EVENT PATHS)
+    // FOLLOWS THE loading FLAG, WHICH ALSO FLIPS OUTSIDE INPUT EVENTS
     private void syncLoadDialog() {
         if (this.loading == this.loadShown || this.loadDialog == null) return;
         this.loadShown = this.loading;
@@ -342,7 +334,7 @@ public class OpenMultimediaScreen extends Screen {
         if (action == GLFW_RELEASE) {
             final String url = this.ctx.customUrlText != null ? this.ctx.customUrlText : "";
             switch (key) {
-                // FIRE ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE (PATH OR SEARCH QUERY) IS INPUT, NOT THE SAVE SHORTCUT
+                // ONLY WHILE THE FIELD IS BLURRED: A TYPED SPACE IS INPUT, NOT THE SAVE SHORTCUT
                 case GLFW_KEY_SPACE -> {
                     if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.saveCustomUrl();
                 }
@@ -356,23 +348,23 @@ public class OpenMultimediaScreen extends Screen {
                 case GLFW_KEY_V -> {
                     if (this.ctx.ctrlDown) this.pasteFromClipboard();
                 }
-                // FIRE ONLY WHILE THE FIELD IS BLURRED: AN 'r' TYPED INTO A URL MUST NOT TRIGGER A NETWORK RELOAD
+                // ONLY WHILE THE FIELD IS BLURRED: AN R TYPED INTO A URL MUST NOT TRIGGER A NETWORK RELOAD
                 case GLFW_KEY_R -> {
                     if (!this.field.textInputActive() && !this.searchMode() && !url.isEmpty()) this.reloadPreviewMRL();
                 }
             }
         }
-        return true; // MODAL OVER HOME — THE LIVE UNDERLAY MUST NEVER SEE KEYS
+        return true; // MODAL: THE HOME SCREEN UNDERNEATH MUST NEVER SEE KEYS
     }
 
     @Override
     public boolean dispatchScroll(final double mx, final double my, final double amount) {
         if (super.dispatchScroll(mx, my, amount)) return true; // DROPDOWN / LOADING DIALOG
-        return this.contains(mx, my); // SWALLOW INSIDE THE SLOT — HOME UNDERNEATH MUST NOT SCROLL
+        return this.contains(mx, my); // SWALLOWED INSIDE THE SLOT SO THE HOME SCREEN DOES NOT SCROLL
     }
 
     // ==========================================================================
-    // ACTIONS (STATE LAYER — UNCHANGED SEMANTICS FROM THE LEGACY SCREEN)
+    // ACTIONS
     // ==========================================================================
 
     private void pasteFromClipboard() {
@@ -384,7 +376,7 @@ public class OpenMultimediaScreen extends Screen {
                 this.ensurePreviewMRL();
             }
         } catch (final Exception ignored) {
-            // A TRANSIENT CLIPBOARD FAILURE (BUSY ON WINDOWS / FLAVOR ERROR) MUST NOT WIPE THE URL THE USER ALREADY TYPED
+            // A BUSY CLIPBOARD OR A FLAVOR ERROR KEEPS THE URL ALREADY TYPED
         }
     }
 
@@ -433,8 +425,7 @@ public class OpenMultimediaScreen extends Screen {
                 this.ctx.showError("Blocked", "This media was blocked by the platform.", null);
                 return;
             }
-            // EXPIRED/FORGOTTEN SOURCES ARE NO LONGER USABLE — DISPOSE THE PREVIEW AND
-            // REGENERATE A FRESH MRL BEFORE PLAYING.
+            // EXPIRED OR FORGOTTEN MRLS ARE UNUSABLE: REGENERATE A FRESH ONE BEFORE PLAYING
             case EXPIRED, FORGOTTEN -> {
                 this.previewUrl = "";
                 this.ensurePreviewMRL();
@@ -487,10 +478,8 @@ public class OpenMultimediaScreen extends Screen {
     // SEARCH MODE
     // ==========================================================================
 
-    // TRUE WHEN THE INPUT IS NOT A LOADABLE URI/FILE, SO THE DIALOG SEARCHES INSTEAD OF PLAYING. SHARES
-    // loadable() WITH ensurePreviewMRL SO THE "URL/PATH VS QUERY" RULE CAN NEVER DRIFT. THIS RUNS EVERY
-    // FRAME ON A CONTINUOUSLY-REDRAWN SCREEN, SO THE RESULT IS MEMOIZED AGAINST THE INPUT TEXT: THE
-    // BLOCKING file.exists() STAT AND URI PARSE ONLY RE-RUN WHEN THE TEXT ACTUALLY CHANGES.
+    // TRUE WHEN THE INPUT IS NOT loadable(); MEMOIZED ON THE INPUT TEXT BECAUSE IT RUNS EVERY FRAME
+    // AND loadable() BLOCKS ON A FILE SYSTEM STAT
     private boolean searchMode() {
         final String text = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
         if (!text.equals(this.searchModeText)) {
@@ -500,20 +489,19 @@ public class OpenMultimediaScreen extends Screen {
         return this.searchMode;
     }
 
-    // TRUE WHEN text NAMES A PLAYABLE TARGET: AN EXISTING FILE, OR A URI THAT CARRIES A SCHEME. THE SINGLE
-    // "URL/PATH VS SEARCH QUERY" RULE SHARED BY searchMode() AND ensurePreviewMRL(). CALLERS PASS A TRIMMED,
-    // NON-EMPTY STRING.
+    // THE ONE "URL/PATH VS SEARCH QUERY" RULE, SHARED BY searchMode() AND ensurePreviewMRL();
+    // text MUST BE TRIMMED AND NON-EMPTY
     private static boolean loadable(final String text) {
         if (new File(text).exists()) return true;
         try {
             return URI.create(text).getScheme() != null;
         } catch (final IllegalArgumentException e) {
-            return false; // NOT EVEN A PARSEABLE URI (E.G. CONTAINS SPACES) — TREAT AS A SEARCH QUERY
+            return false; // UNPARSEABLE (E.G. HAS SPACES), SO IT IS A SEARCH QUERY
         }
     }
 
-    // EASES THE PREVIEW HEIGHT TOWARD target (EASE-OUT QUAD) AND RETURNS THE CURRENT HEIGHT. A NEW target
-    // RESTARTS THE EASE FROM WHEREVER IT IS NOW, SO RAPID MODE FLIPS STAY SMOOTH RATHER THAN SNAPPING.
+    // EASE-OUT QUAD TOWARD target; A NEW target RESTARTS FROM THE CURRENT HEIGHT SO RAPID MODE FLIPS
+    // STAY SMOOTH
     private int animatePreviewH(final int target) {
         if (this.animPreviewTarget != target) {
             this.animPreviewFrom = this.animPreviewTarget < 0 ? target : this.animPreviewH; // FIRST FRAME SNAPS
@@ -526,8 +514,7 @@ public class OpenMultimediaScreen extends Screen {
         return Math.round(this.animPreviewH);
     }
 
-    // LAUNCHES AN ASYNC SEARCH FOR THE CURRENT QUERY. PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; WE DROP
-    // THE OLD THUMBNAILS AND LET onUpdate POLL THE FRESH HANDLE AS RESULTS LAND OFF-THREAD.
+    // PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; onUpdate POLLS THE NEW HANDLE AS RESULTS LAND
     private void doSearch() {
         final String query = this.ctx.customUrlText == null ? "" : this.ctx.customUrlText.trim();
         if (query.isEmpty()) return;
@@ -538,7 +525,7 @@ public class OpenMultimediaScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // REPLACES THE INPUT WITH THE RESULT'S RAW URL AND LEAVES SEARCH MODE SO IT CAN BE PLAYED.
+    // THE RESULT'S URL REPLACES THE INPUT, WHICH LEAVES SEARCH MODE SO IT CAN BE PLAYED
     private void selectResult(final PlatformResult result) {
         if (result == null || result.uri() == null) return;
         this.ctx.customUrlText = result.uri().toString();
@@ -549,8 +536,6 @@ public class OpenMultimediaScreen extends Screen {
         this.ctx.requestRender();
     }
 
-    // DROPDOWN ROW ACTIVATION: A RESULT REPLACES THE INPUT WITH ITS RAW URL AND KEEPS THE FIELD FOCUSED;
-    // A HISTORY ENTRY REFILLS THE QUERY AND RE-SEARCHES IMMEDIATELY.
     private void pickRow(final Row row) {
         if (row == null) return;
         if (row.kind() == ROW_RESULT) {
@@ -572,9 +557,7 @@ public class OpenMultimediaScreen extends Screen {
         this.releaseThumbs();
     }
 
-    // REBUILDS THE DROPDOWN'S FLAT ROW LIST FROM THE POLLED SEARCH STATE. OUTSIDE SEARCH MODE ANY STALE
-    // SEARCH/THUMBNAILS ARE DROPPED; INSIDE IT THE ROWS ONLY REBUILD WHEN THE BACKING DATA CHANGED, SO THE
-    // PER-FRAME POLL NEVER CHURNS ELEMENTS.
+    // OUTSIDE SEARCH MODE IT DROPS ANY STALE SEARCH; INSIDE, ROWS REBUILD ONLY WHEN THE POLLED DATA CHANGES
     private void syncDropdown(final boolean searchMode) {
         if (!searchMode) {
             if (this.search != null) this.clearSearch();
@@ -638,8 +621,7 @@ public class OpenMultimediaScreen extends Screen {
         this.thumbSubscribed.clear();
     }
 
-    // LAZILY BUILDS AN IMAGE PLAYER FOR A RESULT THUMBNAIL (KEYED BY URI). RETURNS null WHILE THE THUMBNAIL
-    // MRL IS STILL FETCHING (SUBSCRIBED TO RE-RENDER ON READY) OR WHEN IT EXPOSES NO USABLE IMAGE SOURCE.
+    // LAZY IMAGE PLAYER FOR A RESULT THUMBNAIL; null WHILE ITS MRL FETCHES OR WHEN IT HAS NO IMAGE SOURCE
     private MediaPlayer thumbPlayer(final URI thumbnail) {
         if (thumbnail == null) return null;
         final MediaPlayer existing = this.thumbPlayers.get(thumbnail);
@@ -661,7 +643,7 @@ public class OpenMultimediaScreen extends Screen {
                 final MediaPlayer player = MediaAPI.player(mrl, i,
                         mediaEngineSupplier(Thread.currentThread(), this.ctx), () -> null);
                 if (player != null) {
-                    player.repeat(true); // LOOP ANIMATED THUMBNAILS (GIF/WEBP) INSTEAD OF FREEZING ON THE LAST FRAME
+                    player.repeat(true); // LOOP ANIMATED THUMBNAILS (GIF, WEBP)
                     player.start();
                     this.thumbPlayers.put(thumbnail, player);
                 }
@@ -671,7 +653,6 @@ public class OpenMultimediaScreen extends Screen {
         return null;
     }
 
-    // TRUE WHILE ANY DROPDOWN THUMBNAIL IS ACTIVELY ANIMATING — DRIVES continuous()
     // ==========================================================================
     // PREVIEW / LOADING STATE
     // ==========================================================================
@@ -722,7 +703,7 @@ public class OpenMultimediaScreen extends Screen {
         }
 
         final MRL.Status status = this.ctx.selectedMRL.status();
-        // ANY TERMINAL NON-LOADED STATE (ERROR/BLOCKED/EXPIRED/FORGOTTEN) ENDS THE WAIT.
+        // ANY FINAL STATE OTHER THAN LOADED (ERROR, BLOCKED, EXPIRED, FORGOTTEN) ENDS THE WAIT
         if (status != MRL.Status.LOADED && status != MRL.Status.FETCHING) {
             this.loading = false;
             this.loadGeneration++;
@@ -740,8 +721,7 @@ public class OpenMultimediaScreen extends Screen {
                 this.ctx.selectedMRL = null;
                 return;
             }
-            // THIS RUNS INSIDE THE FRAME'S UPDATE PASS — QUEUE THE NAVIGATION SO THE MOUNT SWAP
-            // HAPPENS BETWEEN FRAMES (AppContext.execute DRAINS BEFORE THE NEXT RENDER), NEVER MID-TREE
+            // QUEUED BECAUSE THIS RUNS INSIDE THE UPDATE PASS: THE MOUNT SWAP MUST HAPPEN BETWEEN FRAMES
             this.ctx.execute(() -> this.navigator.accept(HomeScreen.Action.PLAYER));
             return;
         }
@@ -770,7 +750,7 @@ public class OpenMultimediaScreen extends Screen {
         return "Custom URL";
     }
 
-    // PLAIN LOOP (NO STREAM/Optional) — THIS RUNS PER FRAME IN THE PREVIEW DRAW PATH
+    // RUNS EVERY FRAME IN THE PREVIEW DRAW, SO IT AVOIDS STREAMS
     private String bestQuality() {
         final MRL.Source src = this.firstSource();
         if (src == null) return null;
@@ -790,11 +770,10 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     // ==========================================================================
-    // TREE — BODY (SCRIM + CENTERED DIALOG PANEL WITH THE LEGACY GEOMETRY)
+    // TREE — BODY (SCRIM + CENTERED DIALOG PANEL)
     // ==========================================================================
 
-    // FULL-SLOT ROOT: THE SCRIM COVERS THE WHOLE SLOT (HOME LIVES BEHIND IT) AND THE PANEL IS CENTERED
-    // WITH THE LEGACY DIALOG MATH, SLOT-RELATIVE: 8px TOP MARGIN AND A 36px BOTTOM GAP.
+    // THE SCRIM COVERS THE WHOLE SLOT AND THE PANEL IS CENTERED WITH AN 8 PX TOP MARGIN AND A 36 PX BOTTOM GAP
     private final class Body extends Group<Body> {
 
         private final Box scrim;
@@ -818,9 +797,7 @@ public class OpenMultimediaScreen extends Screen {
             final int targetPreviewH = Math.max(80, dialogH - reserved);
             final int maxDialogW = Math.max(360, innerAvailWidth - 100);
             final int dialogW = MathUtil.clamp(Math.round(targetPreviewH * 16f / 9f) + 40, 660, maxDialogW);
-            // SEARCH MODE HAS NOTHING TO PREVIEW ("NO MEDIA"), SO SHRINK THE PREVIEW AND HAND THE FREED
-            // VERTICAL SPACE TO THE RESULTS DROPDOWN. animatePreviewH EASES BETWEEN THE TWO HEIGHTS SO THE
-            // PREVIEW GROWS/SHRINKS SMOOTHLY INSTEAD OF SNAPPING WHEN THE MODE FLIPS.
+            // SEARCH MODE HAS NOTHING TO PREVIEW, SO THE PREVIEW SHRINKS AND THE RESULTS DROPDOWN GETS THE SPACE
             final int fullPreviewH = Math.round((dialogW - 40) * 9f / 16f);
             OpenMultimediaScreen.this.preview.height(OpenMultimediaScreen.this.animatePreviewH(search ? Math.min(fullPreviewH, SEARCH_PREVIEW_H) : fullPreviewH));
             this.panel.measure(dialogW, dialogH);
@@ -836,8 +813,7 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    // THE DIALOG PANEL BOX — DECOR (SHADOW/GLOW/FILL/BORDER) VIA THE ELEMENT DECORATORS, PLUS THE FOUR
-    // AMBER CORNER CUBES DRAWN UNDER THE CHILDREN, EXACTLY LIKE THE LEGACY DRAW ORDER.
+    // DIALOG PANEL: THE ELEMENT DECORATORS PAINT ITS FRAME AND THE FOUR AMBER CORNER CUBES GO UNDER THE CHILDREN
     private static final class PanelBox extends Group<PanelBox> {
 
         @Override
@@ -895,8 +871,7 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    // LABEL + INPUT ROW — THE "URL OR PATH"/"SEARCH" LABEL SITS 20px ABOVE THE FIELD, WITH THE PASTE(104)
-    // AND RELOAD(112) BUTTONS TRAILING AT 8px GAPS, EXACTLY LIKE THE LEGACY ROW.
+    // INPUT ROW: THE MODE LABEL SITS 20 PX ABOVE THE FIELD AND PASTE AND RELOAD TRAIL IT AT 8 PX GAPS
     private final class InputBlock extends Group<InputBlock> {
 
         private final Button paste = new Button("PASTE").icon("copy")
@@ -920,7 +895,7 @@ public class OpenMultimediaScreen extends Screen {
 
         @Override
         protected void onLayout() {
-            final int y = this.top + 28; // LABEL ZONE ABOVE (LEGACY LABEL AT INPUT TOP - 20)
+            final int y = this.top + 28; // LABEL ZONE ABOVE THE FIELD
             OpenMultimediaScreen.this.field.layout(this.left, y);
             this.paste.layout(this.left + OpenMultimediaScreen.this.field.measuredWidth() + 8, y);
             OpenMultimediaScreen.this.reload.layout(this.paste.left() + 104 + 8, y);
@@ -935,13 +910,12 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    // ZONE BETWEEN THE INPUT ROW AND THE FOOTER: THE STATUS CHIP AT +12 AND THE RESULTS DROPDOWN AT +2
-    // OVERLAYING IT (LEGACY STACKING), WITH THE DROPDOWN CAPPED 10px ABOVE THE FOOTER AND ALIGNED TO THE
-    // INPUT FIELD'S COLUMN.
+    // ZONE BETWEEN THE INPUT ROW AND THE FOOTER: THE RESULTS DROPDOWN COVERS THE STATUS CHIP, MATCHES
+    // THE INPUT FIELD'S WIDTH AND STOPS 10 PX ABOVE THE FOOTER
     private final class MiddleZone extends Group<MiddleZone> {
 
         private MiddleZone() {
-            this.add(OpenMultimediaScreen.this.chip);     // UNDER THE DROPDOWN, SAME PAINT ORDER AS THE LEGACY DRAW
+            this.add(OpenMultimediaScreen.this.chip); // ADDED FIRST SO IT PAINTS UNDER THE DROPDOWN
             this.add(OpenMultimediaScreen.this.dropdown);
         }
 
@@ -960,7 +934,7 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    // DETECTED-STATUS CHIP — TINTED FILL + OUTLINE + SQUARE STATUS PIP + LABEL (LEGACY GEOMETRY)
+    // DETECTED-STATUS CHIP: TINTED FILL, OUTLINE, SQUARE PIP AND LABEL
     private static final class StatusChip extends Element<StatusChip> {
 
         private String label = "";
@@ -1023,7 +997,7 @@ public class OpenMultimediaScreen extends Screen {
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
 
-            // TV FRAME (LEGACY LOOK, ALWAYS FOCUSED) WITH THE INNER SCREEN WELL
+            // TV FRAME, ALWAYS FOCUSED, WITH THE INNER SCREEN WELL
             canvas.fill(x, y, w, h, AppTheme.BG_2);
             canvas.stroke(x, y, w, h, AppTheme.NEON, 2f);
             canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.48f);
@@ -1032,7 +1006,7 @@ public class OpenMultimediaScreen extends Screen {
             canvas.cube(x + 2, y + h - 12, 10);
             canvas.cube(x + w - 12, y + h - 12, 10);
 
-            super.onDraw(canvas); // LOCALIZED CRT SCANLINES/BANDS, UNDER THE STATE TEXT
+            super.onDraw(canvas); // CRT UNDER THE STATE TEXT
 
             final int ix = x + 6;
             final int iy = y + 6;
@@ -1050,7 +1024,7 @@ public class OpenMultimediaScreen extends Screen {
                     canvas.text(canvas.text().truncateToWidth(OpenMultimediaScreen.this.previewUrl, iw - 44, AppTheme.TEXT_SUBTITLE),
                             ix + 22, iy + ih - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
                 } else if (status != MRL.Status.LOADED) {
-                    // ERROR/BLOCKED/EXPIRED/FORGOTTEN — SHOW THE EXACT STATE.
+                    // ERROR, BLOCKED, EXPIRED OR FORGOTTEN: SHOW THE EXACT STATE
                     final Color color = Previews.color(OpenMultimediaScreen.this.previewMRL);
                     final String label = OpenMultimediaScreen.this.statusLabel();
                     PixelIcon.draw("warn", ix + iw / 2 - 16, iy + ih / 2 - 36, 32, color);
@@ -1085,11 +1059,11 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     // ==========================================================================
-    // TREE — URL/SEARCH FIELD (CUSTOM: SHARED ctx.customUrlText STATE, CTRL-AWARE EDITING)
+    // TREE — URL/SEARCH FIELD
     // ==========================================================================
 
-    // CUSTOM INPUT BOX (NOT THE FRAMEWORK TextField): BINDS THE SHARED ctx.customUrlText, FEEDS THE AUTO-SEARCH
-    // DEBOUNCE + LIVE PREVIEW ON EVERY EDIT, AND SUPPORTS DELETE / CTRL+BACKSPACE WORD-DELETE OVER FULL UNICODE.
+    // EDITS ctx.customUrlText DIRECTLY, FEEDING THE SEARCH DEBOUNCE AND THE PREVIEW ON EVERY EDIT;
+    // CTRL+BACKSPACE DELETES A WORD
     private final class InputField extends Element<InputField> {
 
         @Override
@@ -1166,7 +1140,7 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     // ==========================================================================
-    // TREE — DROPDOWN ROWS (CANVAS-ONLY, SAME LOOK AS THE LEGACY DROPDOWN)
+    // TREE — DROPDOWN ROWS
     // ==========================================================================
 
     // SECTION HEADER ("RESULTS (n)"/"SEARCHING..."/"RECENT"); THE RECENT VARIANT DRAWS THE SEPARATOR LINE

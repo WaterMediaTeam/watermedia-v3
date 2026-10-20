@@ -10,16 +10,8 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
 /**
- * A scrollable, selectable list of data items rendered through a row factory, like Android's
- * {@code ListView}. Each item becomes a row view {@code (item, index) -> Element}; the list owns scrolling
- * (wheel with momentum — notches accumulate and the motion decays smoothly after the last one), clipping,
- * the scrollbar, and the selection/hover highlight so row views only render content. Keyboard navigation
- * is available via {@link #moveSelection}, which auto-scrolls instantly to the selection only when it
- * actually changes (free wheel scrolling is never stolen back). Hover and keyboard navigation update
- * the selection without activating a row; only a row click fires {@link #onSelect}. With a fixed
- * {@link #rowHeight} only the rows near the viewport are children, so long lists cost what they show.
- *
- * @param <D> the item data type
+ * A scrollable, selectable list that builds one row per item through a row factory and owns scrolling and highlights.
+ * Only a row click fires {@link #onSelect}; with a fixed {@link #rowHeight} only the rows near the viewport are children.
  */
 public final class ListView<D> extends Group<ListView<D>> {
 
@@ -106,6 +98,7 @@ public final class ListView<D> extends Group<ListView<D>> {
         return this.selectedIndex >= 0 && this.selectedIndex < this.items.size() ? this.items.get(this.selectedIndex) : null;
     }
 
+    /** Moves the selection by {@code delta} without activating it, scrolling it into view only when it changes. */
     public ListView<D> moveSelection(final int delta) {
         if (this.items.isEmpty()) return this;
         final int base = Math.max(0, this.selectedIndex);

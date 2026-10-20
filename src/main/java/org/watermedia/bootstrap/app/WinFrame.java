@@ -31,14 +31,8 @@ import static org.lwjgl.system.MemoryUtil.memPutInt;
 import static org.lwjgl.system.windows.User32.*;
 
 /**
- * Windows-only native frame integration for the borderless GLFW window. Subclasses the Win32 window
- * procedure to restore everything {@code GLFW_DECORATED=FALSE} loses: Aero Snap (edge drag, snap
- * layouts, Win+arrows), edge/corner resizing, the caption double-click and right-click system menu,
- * and the DWM minimize/maximize animations. {@code WM_NCCALCSIZE} keeps the client area covering the
- * whole window so the app still draws its own titlebar, while {@code WM_NCHITTEST} maps the titlebar
- * band to {@code HTCAPTION} (the OS owns the drag) and the window edges to the native resize handles;
- * the three window buttons stay {@code HTCLIENT} and keep their in-app click handling. On any other
- * platform {@link #ACTIVE} is {@code false} and every entry point is a no-op.
+ * Native Windows frame for the borderless GLFW window: subclasses its window procedure to restore Aero Snap, edge
+ * resizing, the caption menu and the DWM animations while the app draws its own titlebar; a no-op elsewhere.
  */
 public final class WinFrame {
 
@@ -56,12 +50,7 @@ public final class WinFrame {
     private WinFrame() {
     }
 
-    /**
-     * Subclasses the Win32 window behind the given GLFW window and extends its styles with the standard
-     * frame bits (caption, thick frame, min/max boxes, system menu) so the OS window behaviors apply.
-     * Call right after window creation, and again after every window rebuild (engine hot-swap) — the
-     * HWND changes. A previous installation is released first. No-op outside Windows.
-     */
+    /** Subclasses the Win32 window of a GLFW window, replacing any previous install; call it after every window rebuild. */
     public static void install(final long window, final AppContext context) {
         if (!ACTIVE || window == 0L) return;
         uninstall();
@@ -81,10 +70,7 @@ public final class WinFrame {
         SetWindowPos(null, hwnd, 0L, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     }
 
-    /**
-     * Restores the original window procedure and frees the native callback. Call before destroying the
-     * subclassed window; {@link #install} also runs it implicitly. No-op when nothing is installed.
-     */
+    /** Restores the original window procedure; call it before destroying the subclassed window. */
     public static void uninstall() {
         if (proc == null) return;
         if (hwnd != 0L) SetWindowLongPtr(null, hwnd, GWL_WNDPROC, prevProc);
@@ -95,14 +81,7 @@ public final class WinFrame {
         ctx = null;
     }
 
-    /**
-     * Clamps the floating window back into the work area of the monitor hosting it. Windows leaves a
-     * restored window oversized when the desktop shrank while it was away (typical after a remote
-     * desktop session on a larger virtual screen), so this runs on every un-maximize and whenever the
-     * display layout or DPI changes. Must run on the GLFW main thread (the callers defer through the
-     * context executor, which the main loop drains). No-op outside Windows, when maximized/iconified,
-     * or when the window already fits.
-     */
+    /** Clamps a floating window that outgrew its monitor's work area, as after an RDP session; call it on the main thread. */
     public static void reclamp(final AppContext ctx) {
         if (!ACTIVE || ctx == null || ctx.windowHandle == 0L) return;
         final long window = ctx.windowHandle;
@@ -138,9 +117,8 @@ public final class WinFrame {
         }
     }
 
-    // CLAMPS THE PROPOSED WM_NCCALCSIZE RECT (FIRST RECT AT lParam IN BOTH wParam FORMS) TO THE WORK
-    // AREA OF THE MONITOR HOSTING ITS CENTER — KILLS THE MAXIMIZED FRAME OVERHANG WITHOUT EVER
-    // SHRINKING A RECT THAT ALREADY FITS
+    // CLAMPS THE PROPOSED WM_NCCALCSIZE RECT (FIRST RECT AT lParam) TO ITS MONITOR'S WORK AREA, REMOVING THE
+    // MAXIMIZED FRAME OVERHANG WITHOUT SHRINKING A RECT THAT FITS
     private static void clampZoomed(final long rectPtr) {
         final int l = memGetInt(rectPtr);
         final int t = memGetInt(rectPtr + 4);
@@ -195,13 +173,8 @@ public final class WinFrame {
     private static long wndProc(final long hwnd, final int msg, final long wParam, final long lParam) {
         switch (msg) {
             case WM_NCCALCSIZE -> {
-                // RETURN 0 WITHOUT CHAINING FOR BOTH wParam FORMS: THE CLIENT AREA ALWAYS FILLS THE
-                // WHOLE WINDOW, SO THE OS DRAWS NO FRAME OR CAPTION AND THE CLIENT RECT NEVER JUMPS.
-                // MAXIMIZED: WINDOWS EXTENDS A WS_THICKFRAME WINDOW PAST THE MONITOR BY THE FRAME
-                // THICKNESS (THE CLASSIC BORDERLESS OVERHANG — IT CLIPPED THE TITLEBAR OFF-SCREEN), SO
-                // THE PROPOSED RECT IS CLAMPED TO THE HOSTING MONITOR'S WORK AREA. THE CLAMP IS AN
-                // INTERSECTION: IDENTITY WHEN THE RECT ALREADY MATCHES THE WORK AREA, A PURE CLIP WHEN
-                // IT OVERHANGS — SO IT CAN NEVER SHRINK CONTENT INSIDE THE VISIBLE AREA.
+                // THE CLIENT AREA FILLS THE WINDOW, SO THE OS DRAWS NO FRAME; MAXIMIZED, WINDOWS OVERHANGS THE
+                // MONITOR BY THE FRAME THICKNESS, SO THE RECT IS INTERSECTED WITH THE WORK AREA
                 if (IsZoomed(hwnd)) clampZoomed(lParam);
                 return 0L;
             }
@@ -209,8 +182,8 @@ public final class WinFrame {
                 return hitTest(hwnd, lParam);
             }
             case WM_DISPLAYCHANGE, WM_DPICHANGED -> {
-                // MONITOR LAYOUT OR DPI CHANGED (RDP RECONNECT, DISPLAY SWITCH) — RECLAMP THE FLOATING
-                // WINDOW. DEFERRED TO THE MAIN-LOOP EXECUTOR: NO RE-ENTRANT GLFW CALLS MID-DISPATCH.
+                // MONITOR LAYOUT OR DPI CHANGED (RDP RECONNECT, DISPLAY SWITCH); DEFERRED TO THE MAIN-LOOP
+                // EXECUTOR BECAUSE GLFW CALLS CANNOT RE-ENTER MID-DISPATCH
                 final AppContext c = ctx;
                 if (c != null) c.execute(() -> reclamp(c));
             }
@@ -218,9 +191,8 @@ public final class WinFrame {
         return nCallWindowProc(prevProc, hwnd, msg, wParam, lParam);
     }
 
-    // FULL WM_NCHITTEST — lParam CARRIES SIGNED 16-BIT SCREEN COORDS (NEGATIVE ON MULTI-MONITOR).
-    // WM_NCCALCSIZE MAKES CLIENT == WINDOW RECT IN EVERY STATE, SO CONVERTING AGAINST GetWindowRect
-    // LANDS THE POINT DIRECTLY IN CLIENT SPACE. ALL MATH IN PHYSICAL PX.
+    // lParam HOLDS SIGNED 16-BIT SCREEN COORDS; CLIENT == WINDOW RECT, SO SUBTRACTING GetWindowRect GIVES CLIENT
+    // COORDS, ALL IN PHYSICAL PX
     private static long hitTest(final long hwnd, final long lParam) {
         try (final MemoryStack stack = stackPush()) {
             final RECT r = RECT.malloc(stack);
@@ -243,9 +215,8 @@ public final class WinFrame {
                 if (cx >= cw - fx) return cy < fy * 2 ? HTTOPRIGHT : cy >= ch - fy * 2 ? HTBOTTOMRIGHT : HTRIGHT;
             }
 
-            // TITLEBAR BAND (LOGICAL 28PX AND THE 3x38PX BUTTON ZONE, SCALED TO PHYSICAL) — THE EMPTY
-            // BAND IS THE NATIVE CAPTION (OS DRAG/SNAP/DOUBLE-CLICK/SYSTEM MENU); THE BUTTONS STAY
-            // CLIENT SO THE IN-APP MIN/MAX/CLOSE HANDLERS KEEP WORKING.
+            // THE TITLEBAR BAND MINUS ITS THREE BUTTONS IS THE NATIVE CAPTION (DRAG, SNAP, SYSTEM MENU); THE
+            // BUTTONS STAY CLIENT SO THEIR IN-APP HANDLERS KEEP WORKING
             final AppContext c = ctx;
             final float scale = c == null ? 1f : c.uiScale;
             if (cx >= 0 && cy >= 0 && cy < Math.round(TitleBar.H * scale)

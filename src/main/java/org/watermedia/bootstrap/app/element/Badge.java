@@ -6,10 +6,8 @@ import org.watermedia.bootstrap.app.ui.Spacing;
 import java.awt.Color;
 
 /**
- * A small pill/tag that labels a status or category. It sizes to its text plus a tight padding and comes
- * in two looks driven by a single accent hue: {@code filled} paints a solid accent chip with a dark
- * label, while the default is a translucent accent wash behind a hairline accent outline with the label
- * in the accent color.
+ * A small status or category tag sized to its label; {@code filled} paints a solid accent chip, otherwise an
+ * accent wash with an accent outline.
  */
 public final class Badge extends Element<Badge> {
 

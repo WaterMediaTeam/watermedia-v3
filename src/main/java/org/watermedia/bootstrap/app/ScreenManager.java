@@ -10,9 +10,8 @@ import java.util.Map;
 import java.util.function.BiConsumer;
 
 /**
- * Manages screen navigation. Every screen is a fully-retained {@link Screen} mounted directly into the
- * window shell's center slot; navigation runs the exit/enter lifecycle and mounts the target (optionally
- * stacked over the underlay a screen declares through {@link Screen#under()}).
+ * Navigates between the registered screens: runs their exit/enter hooks and mounts the target in the root's
+ * center slot, over the underlay it declares through {@link Screen#under()}.
  */
 final class ScreenManager {
 
@@ -26,15 +25,12 @@ final class ScreenManager {
         this.screens.put(name, screen);
     }
 
-    /** Hands the window shell over; every navigation mounts the target screen into its center slot. */
+    /** Sets the root screen whose center slot receives every navigated screen. */
     public void root(final RootScreen root) {
         this.root = root;
     }
 
-    /**
-     * Registers a listener fired after every effective navigation with (previousName, nextName). The
-     * window shell uses it to react to screen switches without owning the navigation itself.
-     */
+    /** Sets the listener fired after every effective navigation with the previous and next screen names. */
     public void onNavigate(final BiConsumer<String, String> listener) {
         this.onNavigate = listener;
     }
@@ -61,8 +57,7 @@ final class ScreenManager {
     }
 
     public void backToHome() {
-        // DELEGATE SO THE SAME-SCREEN GUARD IN navigate() APPLIES: A BACK/null WHILE ALREADY ON HOME MUST
-        // NOT RE-RUN onExit/onEnter AND RESET THE HOME SCREEN'S STATE.
+        // THROUGH navigate() SO A BACK WHILE ON HOME HITS THE SAME-SCREEN GUARD AND KEEPS ITS STATE
         this.navigate("home");
     }
 
@@ -82,12 +77,12 @@ final class ScreenManager {
         return this.currentName;
     }
 
-    /** The footer shortcuts of the active screen; empty when no screen is active. */
+    /** Returns the footer shortcuts of the active screen, or an empty list without one. */
     public List<Keybind> currentKeybinds() {
         return this.current != null ? this.current.keybinds() : List.of();
     }
 
-    /** Runs the media-release hook on every registered screen (engine hot-swap support). */
+    /** Releases the media of every registered screen before an engine hot swap. */
     public void releaseMediaAll() {
         for (final Screen screen: this.screens.values()) screen.releaseMedia();
     }

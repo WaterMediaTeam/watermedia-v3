@@ -16,9 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Handles text rendering with per-size and per-weight glyph texture caching.
- */
+/** Renders text from glyph atlases cached per weight and physical size. */
 public final class TextRenderer {
 
     private static final int DEFAULT_FONT_SIZE = 20;
@@ -63,23 +61,13 @@ public final class TextRenderer {
         this.margin = Math.max(0, margin);
     }
 
-    /**
-     * Drops every cached glyph atlas so they rebuild lazily against a freshly attached render context.
-     * Used by the engine hot-swap: the old atlas (and any lazily-added non-ASCII standalone glyph, which
-     * lives inside its {@code FontAtlas}) belongs to a destroyed context, so clearing the map is enough —
-     * no {@code glDelete} is issued (the context is already gone).
-     */
+    /** Drops every glyph atlas, whose textures died with their render context, so they rebuild lazily. */
     public void reset() {
         this.atlases.clear();
         this.last = null;
     }
 
-    /**
-     * Sets the UI scale (physical pixels per logical pixel) used to pick the glyph atlas resolution.
-     * Glyph quads and every metric (width, heights, baseline) stay in logical pixels; only the
-     * backing atlas is rasterized at physical size. Old atlases from another scale simply stay
-     * cached under their physical-pixel key.
-     */
+    /** Sets the UI scale that picks the atlas resolution; quads and metrics stay in logical pixels. */
     public void setUiScale(final float scale) {
         this.uiScale = scale > 0f ? scale : 1f;
     }
@@ -98,9 +86,8 @@ public final class TextRenderer {
         return Math.max(1, Math.round(run.atlas.glyphHeight * run.drawScale));
     }
 
-    // DISTANCE FROM A render() y (THE GLYPH-CELL TOP) DOWN TO THE TEXT BASELINE. ALIGNING TWO RUNS BY THEIR
-    // BASELINE (NOT THEIR CELL CENTER) IS WHAT KEEPS DIFFERENT-SIZED TEXT — E.G. A LABEL AND ITS KEYBIND
-    // CHIP — ON THE SAME LINE; CELL-CENTERING DRIFTS BECAUSE THE CELL INCLUDES UNEVEN DESCENDER SPACE.
+    // DISTANCE FROM A render() y (THE GLYPH-CELL TOP) DOWN TO THE BASELINE; ALIGNING BY BASELINE KEEPS MIXED-SIZE
+    // TEXT ON ONE LINE, WHILE CELL CENTERING DRIFTS WITH THE UNEVEN DESCENDER SPACE
     public int baselineOffset(final float scale, final int style) {
         final FontRun run = this.fontRun(scale, style);
         return Math.round((run.atlas.baseline - run.atlas.fontTop) * run.drawScale);
@@ -152,10 +139,7 @@ public final class TextRenderer {
         }
     }
 
-    /**
-     * Renders {@code text} with extra logical-px spacing inserted between glyphs (letter-spacing). One
-     * resolved run, no per-character string allocation — for the spaced splash/title runs.
-     */
+    /** Renders {@code text} with {@code letterSpacing} logical pixels between glyphs. */
     public void renderSpaced(final String text, final float x, final float y, final Color color,
                              final float scale, final boolean bold, final int letterSpacing) {
         if (text == null || text.isEmpty()) return;
@@ -199,11 +183,7 @@ public final class TextRenderer {
         return (int) Math.ceil(width);
     }
 
-    /**
-     * Width of {@code text} with extra logical-px spacing between glyphs — the measuring companion of
-     * {@link #renderSpaced}. Each glyph's advance is ceiled independently, then the spacing is added
-     * between neighbors, so measure and draw agree to the pixel.
-     */
+    /** Returns the width {@link #renderSpaced} draws, ceiling each advance the same way so both agree to the pixel. */
     public int spacedWidth(final String text, final float scale, final boolean bold, final int letterSpacing) {
         if (text == null || text.isEmpty()) return 0;
         final FontRun run = this.fontRun(scale, bold ? Font.BOLD : Font.PLAIN);
@@ -232,7 +212,7 @@ public final class TextRenderer {
         final int ellipsisW = this.width(ellipsis, scale, style);
         if (maxWidth <= ellipsisW) return "";
 
-        // RESOLVE THE RUN ONCE AND METER PER CHAR OFF IT — NO per-char String.valueOf + FontRun ALLOCATION
+        // RESOLVE THE RUN ONCE AND MEASURE EACH CHAR FROM IT, WITHOUT A String OR FontRun PER CHAR
         final FontRun run = this.fontRun(scale, style);
         final StringBuilder sb = new StringBuilder();
         float currentW = 0f;

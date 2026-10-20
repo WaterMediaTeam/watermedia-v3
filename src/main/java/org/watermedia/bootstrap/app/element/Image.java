@@ -3,10 +3,8 @@ package org.watermedia.bootstrap.app.element;
 import java.awt.Color;
 
 /**
- * Displays a GPU texture (banner, icon, thumbnail, video frame), like Android's {@code Image}. It
- * fits the source into its box by {@link Fit}: {@code CONTAIN} letterboxes preserving aspect,
- * {@code COVER} fills and center-crops via UV, {@code STRETCH} distorts to fill. An optional tint
- * multiplies the sampled color.
+ * Displays a GPU texture fitted by {@link Fit}: {@code CONTAIN} letterboxes, {@code COVER} center-crops through UV and
+ * {@code STRETCH} distorts to fill. An optional tint multiplies the sampled color.
  */
 public final class Image extends Element<Image> {
 

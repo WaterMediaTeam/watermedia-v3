@@ -1,7 +1,5 @@
 /**
- * This package is entirely made by Claude, this is a gimmick that was intended to be a debug utility but ended up being in the
- * most overdone test app.
- * <br>
- * Also helps me to retrieve logs way simple.
+ * Standalone desktop app: its window and render loop, the retained element tree, OpenGL and Vulkan rendering, the
+ * screens and the app preferences.
  */
 package org.watermedia.bootstrap.app;

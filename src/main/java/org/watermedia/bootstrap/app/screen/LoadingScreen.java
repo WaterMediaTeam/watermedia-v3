@@ -16,10 +16,8 @@ import org.watermedia.bootstrap.app.ui.Spacing;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
 /**
- * Boot splash as a fully retained tree: a centered column with the glowing banner, the animated duck
- * (or the glowing pack icon as fallback), the spaced title and one captioned progress bar naming the
- * module WaterMedia is loading. Live boot state is pulled from {@link WaterMedia#loading()}, {@link WaterMedia#step()}
- * and {@link WaterMedia#steps()} in the elements' {@code onUpdate} hooks every frame.
+ * Boot splash: the glowing banner, the animated duck (or the pack icon), the title and a progress bar naming the
+ * module being loaded. Its elements pull {@link WaterMedia#loading()} and {@link WaterMedia#step()} every frame.
  */
 public final class LoadingScreen extends Screen {
     private static final int BANNER_MAX_W = 1000;
@@ -36,12 +34,7 @@ public final class LoadingScreen extends Screen {
     private static final float TITLE_SCALE = AppTheme.TEXT_DISPLAY;
     private static final float CAPTION_SCALE = AppTheme.TEXT_SECTION;
 
-    /**
-     * Creates the boot splash.
-     *
-     * @param text the shared text renderer
-     * @param ctx  the application context
-     */
+    /** Creates the boot splash. */
     public LoadingScreen(final TextRenderer text, final AppContext ctx) {
         super(text, ctx);
     }
@@ -62,8 +55,7 @@ public final class LoadingScreen extends Screen {
         return true;
     }
 
-    // NO keybinds() OVERRIDE: THE BOOT SPLASH HAS NO CANCEL PATH (BOOT IS ALREADY IN FLIGHT AND THE
-    // SCREEN HOLDS NO NAVIGATOR), SO IT ADVERTISES NONE — THE BASE RETURNS AN EMPTY LIST
+    // NO keybinds() OVERRIDE: BOOT HAS NO CANCEL PATH, SO THE SPLASH ADVERTISES NO SHORTCUTS
 
     // ASPECT-FIT INTO A BOX — ZERO WHEN THE SOURCE OR THE BOX IS INVALID (MISSING/LATE-LOADED TEXTURE)
     private static Fit fit(final int srcW, final int srcH, final int maxW, final int maxH) {
@@ -83,12 +75,10 @@ public final class LoadingScreen extends Screen {
                 glowW * sx, glowH * sy, null);
     }
 
-    // FITTED PIXEL SIZE — NAMED Fit (NOT Box) SO IT NEVER SHADOWS THE element.Box DRAWABLE THE SIBLING SCREENS USE
     private record Fit(int w, int h) {
     }
 
-    // FULL-SLOT FRAME CENTERING THE CONTENT COLUMN — HORIZONTALLY EXACT, VERTICALLY CENTERED BUT NEVER
-    // CLOSER THAN 32PX TO THE SLOT TOP, MATCHING THE LEGACY max(32, (bodyH - contentH) / 2) CLAMP
+    // CENTERS THE CONTENT COLUMN IN THE SLOT, KEEPING IT AT LEAST 32px BELOW THE SLOT TOP
     private static final class CenterFrame extends Group<CenterFrame> {
 
         @Override
@@ -110,8 +100,8 @@ public final class LoadingScreen extends Screen {
         }
     }
 
-    // BANNER ZONE — MEASURES THE FITTED BANNER PLUS THE UP-SHIFT SLACK BELOW IT AND PAINTS GLOW + BANNER
-    // AT ITS TOP, SO THE BANNER SITS BANNER_UP_SHIFT ABOVE ITS FLOW SLOT EXACTLY LIKE THE LEGACY SPLASH
+    // THE BANNER MEASURES BANNER_UP_SHIFT TALLER THAN ITS IMAGE AND PAINTS AT ITS TOP, LEAVING THE SLACK
+    // BELOW IT AS EXTRA SPACE BEFORE THE DUCK
     private static final class Banner extends Element<Banner> {
 
         private int imgW;
@@ -119,7 +109,7 @@ public final class LoadingScreen extends Screen {
 
         @Override
         protected void onUpdate() {
-            // NO BANNER SOURCE, NO BLOCK — THE COLUMN SKIPS THE ELEMENT AND ITS MARGIN ENTIRELY
+            // WITHOUT A BANNER THE COLUMN SKIPS THE ELEMENT AND ITS MARGIN
             this.visible = this.ctx.assets.bannerWidth > 0 && this.ctx.assets.bannerHeight > 0;
         }
 
@@ -144,8 +134,8 @@ public final class LoadingScreen extends Screen {
         }
     }
 
-    // ANIMATED DUCK (FALLBACK: GLOWING PACK ICON) — THE SLOT ALWAYS SPANS THE FULL DUCK/ICON BOX HEIGHT
-    // AS THE LEGACY CENTERING DID; THE FRAME IS PICKED BY WALL TIME IN onUpdate AND PAINTED IN onDraw
+    // ANIMATED DUCK, OR THE GLOWING PACK ICON WITHOUT DUCK FRAMES; THE SLOT ALWAYS SPANS THE FULL DUCK OR
+    // ICON BOX HEIGHT EVEN WHEN THE IMAGE FITS SMALLER
     private static final class Duck extends Element<Duck> {
 
         private boolean duck;
@@ -187,8 +177,8 @@ public final class LoadingScreen extends Screen {
         }
     }
 
-    // THE BOOT BAR — NEON TRACK + GRADIENT FILL WITH A CAPTION NAMING THE MODULE LOADING AND MODULES DONE OUT OF
-    // THE TOTAL (THE APP'S OWN PIECES OUTSIDE THE MODULE WALK); THE SHOWN VALUE CHASES THE GOAL WITH THE EASE RAMP
+    // BOOT PROGRESS BAR CAPTIONED WITH THE MODULE BEING LOADED AND THE DONE/TOTAL COUNT; THE SHOWN VALUE
+    // EASES TOWARD THE GOAL OVER PROGRESS_ANIM_MS
     private final class ModuleBar extends Element<ModuleBar> {
 
         private String caption = "";
@@ -243,7 +233,6 @@ public final class LoadingScreen extends Screen {
                 canvas.gradientH(x + 1, y + 1, fillW, BAR_H - 2, AppTheme.NEON_DARK, AppTheme.NEON_LIGHT);
                 canvas.glow(x + 1, y + 1, fillW, BAR_H - 2, 0f, AppTheme.NEON, 0.36f);
             }
-            // CAPTION CENTERED UNDER THE TRACK
             final int captionW = canvas.textWidth(this.caption, CAPTION_SCALE, false);
             final float tx = x + (w - captionW) * 0.5f;
             final int ty = y + BAR_H + CAPTION_GAP;

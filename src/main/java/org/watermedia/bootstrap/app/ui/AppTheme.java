@@ -4,9 +4,7 @@ import java.awt.Color;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Hi-fi handoff theme tokens.
- */
+/** Colors and text scales of the app UI. */
 public final class AppTheme {
 
     private static final float FONT_BASE_PX = 20f;
@@ -39,8 +37,8 @@ public final class AppTheme {
     public static final Color AMBER = hex(0xFFC266);
     public static final Color RED = hex(0xFF6C8E);
 
-    // SEMANTIC TYPE TOKENS. TINY/SUBTITLE/BODY DELIBERATELY RESOLVE TO THE SAME SCALE FOR NOW SO A LATER
-    // RETUNE CAN DIFFERENTIATE THEM WITHOUT TOUCHING ANY CALL SITE — CALLERS STILL ENCODE THEIR INTENT.
+    // TEXT SCALES BY ROLE; TINY, SUBTITLE AND BODY SHARE A SIZE ON PURPOSE SO EACH CAN BE RETUNED WITHOUT
+    // TOUCHING ITS CALLERS
     public static final float TEXT_TINY = textScale(12);
     public static final float TEXT_SUBTITLE = textScale(12);
     public static final float TEXT_BODY = textScale(12);
