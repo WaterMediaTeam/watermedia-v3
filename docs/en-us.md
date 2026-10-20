@@ -186,7 +186,7 @@ four read timeouts in total. Neither the builder nor the response is thread-safe
 
 ## Choosing engines
 
-Vulkan development takes priority; OpenGL remains supported as the secondary backend. Backend decisions belong in the rendering layer. This development preference does not change the standalone launcher's current initial OpenGL default or the user's saved engine selection, which the app keeps in `config/app.properties` under its working directory.
+Vulkan development takes priority; OpenGL remains supported as the secondary backend. Backend decisions belong in the rendering layer. The standalone app renders with Vulkan unless the user picks OpenGL; when Vulkan is unavailable it runs that launch on OpenGL and keeps the saved choice. `-Dwatermedia.engine=opengl` or `-Dwatermedia.engine=vulkan` overrides the engine for one launch without saving it. The app keeps its engine, interface scale (`0` follows the monitor, otherwise a factor from 1 to 3 in 0.25 steps, shown in Settings as `Auto`, `x1.0`, `x1.25` and so on), CRT effect and click sound in `config/app.properties` under its working directory.
 
 | Factory | Host obligation |
 | --- | --- |

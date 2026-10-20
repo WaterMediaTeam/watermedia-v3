@@ -62,7 +62,6 @@ public final class AppBootstrap {
     public static void main(final String... args) {
         final AppBootstrap bootstrap = new AppBootstrap();
         final boolean application = System.getProperty(APP_FLAG) != null;
-        boolean firstLaunch = true;
         while (true) {
             try {
                 if (application) {
@@ -75,29 +74,13 @@ public final class AppBootstrap {
                     });
                     return;
                 }
-                final Properties preferences = new Properties();
-                try (final InputStream input = Files.newInputStream(PREFERENCES)) { preferences.load(input); }
-                catch (final NoSuchFileException absent) {} // NO SAVED CHOICE YET
-                catch (final IOException failure) { bootstrap.log("Cannot read the app preferences: " + failure.getMessage()); }
-                String engine = engine(System.getProperty(ENGINE_PROP));
-                if (engine == null) engine = engine(preferences.getProperty(AppConfig.ENGINE));
-                final boolean choose = firstLaunch && (engine == null || Arrays.stream(args)
-                        .anyMatch(arg -> arg.equalsIgnoreCase("--engine") || arg.equalsIgnoreCase("--select-engine")));
-                if (choose && !GraphicsEnvironment.isHeadless()) {
-                    final String preferred = "vulkan".equals(engine) ? "Vulkan" : "OpenGL";
-                    engine = bootstrap.window().prompt("Starting with " + preferred + " in 5 seconds...", 5,
-                            preferred, preferred.equals("OpenGL") ? "Vulkan" : "OpenGL").toLowerCase(Locale.ROOT);
-                    try { save(preferences, engine); }
-                    catch (final IOException failure) { bootstrap.log("Cannot save the render engine: " + failure.getMessage()); }
-                }
                 final Set<Path> jars = bootstrap.prepare();
                 if (bootstrap.window != null) {
                     EventQueue.invokeAndWait(bootstrap.window::dispose);
                     bootstrap.window = null;
                 }
-                final int code = relaunch(jars, args, engine == null ? "opengl" : engine);
+                final int code = relaunch(jars, args, bootstrap.engine());
                 if (code != RELAUNCH_EXIT) System.exit(code);
-                firstLaunch = false;
             } catch (final Throwable failure) {
                 failure.printStackTrace();
                 if (GraphicsEnvironment.isHeadless()) System.exit(1);
@@ -113,17 +96,22 @@ public final class AppBootstrap {
         }
     }
 
+    // THE -D OVERRIDE WINS FOR ONE LAUNCH, THEN THE SAVED ENGINE, THEN VULKAN; THE FILE IS ONLY READ, THE APP OWNS IT
+    private String engine() {
+        final String override = engine(System.getProperty(ENGINE_PROP));
+        if (override != null) return override;
+        final Properties preferences = new Properties();
+        try (final InputStream input = Files.newInputStream(PREFERENCES)) { preferences.load(input); }
+        catch (final NoSuchFileException absent) {} // FIRST LAUNCH
+        catch (final IOException | IllegalArgumentException failure) { this.log("Cannot read the app preferences: " + failure.getMessage()); }
+        final String saved = engine(preferences.getProperty(AppConfig.ENGINE));
+        return saved != null ? saved : "vulkan";
+    }
+
     private static String engine(final String value) {
         if (value == null) return null;
         final String name = value.trim().toLowerCase(Locale.ROOT);
         return name.equals("opengl") || name.equals("vulkan") ? name : null;
-    }
-
-    // WATERCONFIG DECODES THE ENGINE BY ITS ENUM NAME, SO IT IS STORED UPPERCASE
-    private static void save(final Properties preferences, final String engine) throws IOException {
-        preferences.setProperty(AppConfig.ENGINE, engine.toUpperCase(Locale.ROOT));
-        Files.createDirectories(PREFERENCES.getParent());
-        try (final OutputStream output = Files.newOutputStream(PREFERENCES)) { preferences.store(output, null); }
     }
 
     private static Properties versions() throws IOException {
@@ -399,37 +387,11 @@ public final class AppBootstrap {
             });
         }
 
-        private String prompt(final String message, final int seconds, final String... choices) throws Exception {
-            final CompletableFuture<String> result = new CompletableFuture<>();
-            final Timer timer = new Timer(seconds * 1000, event -> result.complete(choices[0]));
-            timer.setRepeats(false);
-            EventQueue.invokeAndWait(() -> {
-                this.progress.setIndeterminate(false);
-                this.progress.setValue(0);
-                this.progress.setString(message);
-                for (final String choice: choices) {
-                    final JButton button = new JButton(choice);
-                    button.addActionListener(event -> result.complete(choice));
-                    this.actions.add(button);
-                }
-                this.actions.revalidate();
-                if (seconds > 0) timer.start();
-            });
-            try {
-                return result.get();
-            } finally {
-                EventQueue.invokeAndWait(() -> {
-                    timer.stop();
-                    this.actions.removeAll();
-                    this.actions.revalidate();
-                    this.actions.repaint();
-                });
-            }
-        }
-
+        // SHOWS THE TRACE AND BLOCKS UNTIL RELAUNCH IS CLICKED; CLOSE EXITS WITH CODE 1 INSTEAD
         private void error(final Throwable failure) throws Exception {
             final StringWriter trace = new StringWriter();
             failure.printStackTrace(new PrintWriter(trace));
+            final CompletableFuture<Void> relaunch = new CompletableFuture<>();
             EventQueue.invokeAndWait(() -> {
                 this.exitCode = 1;
                 this.setTitle("WATERMeDIA: Startup failed");
@@ -437,10 +399,20 @@ public final class AppBootstrap {
                 final int start = this.details.getDocument().getLength();
                 this.details.append("\n" + trace);
                 this.details.setCaretPosition(start);
+                this.progress.setIndeterminate(false);
+                this.progress.setValue(0);
+                this.progress.setString("Startup failed. Copy the details or relaunch to try again.");
+                final JButton button = new JButton("Relaunch");
+                button.addActionListener(event -> relaunch.complete(null));
+                this.actions.add(button);
+                this.actions.revalidate();
                 this.toFront();
             });
-            this.prompt("Startup failed. Copy the details or relaunch to try again.", 0, "Relaunch");
+            relaunch.get();
             EventQueue.invokeAndWait(() -> {
+                this.actions.removeAll();
+                this.actions.revalidate();
+                this.actions.repaint();
                 this.exitCode = 0;
                 this.setTitle("WATERMeDIA: App Bootstrap");
                 this.details.setForeground(AppTheme.TEXT);

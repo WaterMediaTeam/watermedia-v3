@@ -49,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.DoubleFunction;
 import java.util.function.Supplier;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -399,8 +400,9 @@ public final class SettingsScreen extends Screen {
     private void rebuildSpecs() {
         this.specs.clear();
         // TABS 0/1 — THE APP PREFERENCES (APPLIED LIVE ON EVERY EDIT) AND THE INSTANCE CONFIG
-        this.specs.add(this.buildOwnSpec("App", AppConfig.ID, AppConfig.spec(), () -> AppConfig.apply(this.ctx)));
-        this.specs.add(this.buildOwnSpec("Instance config", WaterMedia.ID, WaterConfig.spec(WaterMedia.ID), null));
+        this.specs.add(this.buildOwnSpec("App", AppConfig.ID, AppConfig.spec(), () -> AppConfig.apply(this.ctx),
+                Map.of(AppConfig.SCALE, new Stops(AppConfig.scales(), AppConfig::scaleLabel))));
+        this.specs.add(this.buildOwnSpec("Instance config", WaterMedia.ID, WaterConfig.spec(WaterMedia.ID), null, Map.of()));
 
         // EVERY OTHER REGISTERED SPEC, SORTED BY NAME BECAUSE WaterConfig.specs() IS HASH-BACKED AND
         // HAS NO STABLE ORDER
@@ -409,7 +411,7 @@ public final class SettingsScreen extends Screen {
         for (final ConfigSpec cs: registered) {
             final String name = cs.name();
             if (AppConfig.ID.equals(name) || WaterMedia.ID.equals(name)) continue;
-            this.specs.add(this.buildGenericSpec(titleCase(name), cs, "settings", name, null));
+            this.specs.add(this.buildGenericSpec(titleCase(name), cs, "settings", name, null, Map.of()));
         }
 
         // ABSENT OR UNPARSABLE MOD CONFIG FILES ARE SKIPPED (WaterConfig.reverseSpec RETURNS null)
@@ -666,9 +668,10 @@ public final class SettingsScreen extends Screen {
 
     // WATERMEDIA'S OWN SPECS (APP AND INSTANCE) KEEP THE APP ICON; A SPEC WATERCONFIG DID NOT EXPOSE SHOWS A
     // READ-ONLY PLACEHOLDER INSTEAD OF AN EMPTY TAB
-    private SettingSpec buildOwnSpec(final String title, final String id, final ConfigSpec configSpec, final Runnable applier) {
-        if (configSpec != null) return this.buildGenericSpec(title, configSpec, null, id, applier);
-        final SettingSpec spec = new SettingSpec(title, id, null, applier, this.saveFor(id), null);
+    private SettingSpec buildOwnSpec(final String title, final String id, final ConfigSpec configSpec, final Runnable applier,
+                                     final Map<String, Stops> stops) {
+        if (configSpec != null) return this.buildGenericSpec(title, configSpec, null, id, applier, stops);
+        final SettingSpec spec = new SettingSpec(title, id, null, applier, this.saveFor(id), null, Map.of());
         final SettingSection unavailable = new SettingSection("Unavailable",
                 "WaterConfig did not expose the active spec", "unavailable", 0);
         unavailable.settings.add(new ReadOnlySetting(title, id, "STATE",
@@ -681,8 +684,8 @@ public final class SettingsScreen extends Screen {
     // BUILDS A PLAIN WATERCONFIG SPEC TAB (OWN, WATERCONFIG-EXPOSED OR REVERSE-SPEC'D): ITS SECTION
     // TREE COMES FROM collectSections, WITH A READ-ONLY PLACEHOLDER WHEN THE SPEC EXPOSES NO FIELDS
     private SettingSpec buildGenericSpec(final String title, final ConfigSpec configSpec, final String icon,
-                                         final String saveKey, final Runnable applier) {
-        final SettingSpec spec = new SettingSpec(title, fileName(configSpec), configSpec, applier, this.saveFor(saveKey), icon);
+                                         final String saveKey, final Runnable applier, final Map<String, Stops> stops) {
+        final SettingSpec spec = new SettingSpec(title, fileName(configSpec), configSpec, applier, this.saveFor(saveKey), icon, stops);
         this.collectSections(configSpec, spec);
         if (spec.sections.isEmpty()) {
             final SettingSection empty = new SettingSection("Empty", "No fields were discovered", "empty", 0);
@@ -715,7 +718,7 @@ public final class SettingsScreen extends Screen {
         }
         if (configSpec == null) return null;
         final SettingSpec spec = new SettingSpec(titleCase(configSpec.name()), file, configSpec, null,
-                this.saveFor(file), "folder");
+                this.saveFor(file), "folder", Map.of());
         this.collectSections(configSpec, spec);
         return spec.sections.isEmpty() ? null : spec;
     }
@@ -727,7 +730,7 @@ public final class SettingsScreen extends Screen {
         final SettingSection home = new SettingSection(specName, groupDetail(configSpec, "root settings"), specName, 0);
         final Collection<IConfigField<?, ?>> fields = configSpec.getFields();
         for (final IConfigField<?, ?> field: fields) {
-            if (!(field instanceof ConfigGroup)) home.settings.add(new ConfigSetting(field, field.name()));
+            if (!(field instanceof ConfigGroup)) home.settings.add(new ConfigSetting(field, field.name(), spec.stops.get(field.name())));
         }
         if (!home.settings.isEmpty()) spec.sections.add(home);
         for (final IConfigField<?, ?> field: fields) {
@@ -742,7 +745,9 @@ public final class SettingsScreen extends Screen {
         final SettingSection section = new SettingSection(titleCase(group.name()), groupDetail(group, key), path, depth);
         final Collection<IConfigField<?, ?>> fields = group.getFields();
         for (final IConfigField<?, ?> field: fields) {
-            if (!(field instanceof ConfigGroup)) section.settings.add(new ConfigSetting(field, key + "." + field.name()));
+            if (field instanceof ConfigGroup) continue;
+            final String fieldKey = key + "." + field.name();
+            section.settings.add(new ConfigSetting(field, fieldKey, spec.stops.get(fieldKey)));
         }
         // THE NODE STAYS EVEN WITH NO DIRECT FIELDS — IT IS THE TREE PATH TO ITS CHILD GROUPS
         spec.sections.add(section);
@@ -1356,16 +1361,23 @@ public final class SettingsScreen extends Screen {
         private final String iconName;
         // FLAT DFS-ORDERED SECTION TREE — depth EXPRESSES NESTING, PGUP/PGDN WALKS THIS LIST IN ORDER
         private final List<SettingSection> sections = new ArrayList<>();
+        // DISCRETE VALUES OF NUMBER FIELDS, BY DOTTED FIELD KEY; WATERCONFIG ONLY KNOWS THEIR BOUNDS
+        private final Map<String, Stops> stops;
 
         private SettingSpec(final String title, final String subtitle, final ConfigSpec configSpec,
-                            final Runnable applier, final SaveMachine save, final String iconName) {
+                            final Runnable applier, final SaveMachine save, final String iconName, final Map<String, Stops> stops) {
             this.title = title;
             this.subtitle = subtitle;
             this.configSpec = configSpec;
             this.applier = applier;
             this.save = save;
             this.iconName = iconName;
+            this.stops = stops;
         }
+    }
+
+    // THE ONLY VALUES A NUMBER FIELD MAY TAKE, IN ORDER, AND HOW EACH ONE READS; ITS SEEK BAR SPACES THEM EVENLY
+    private record Stops(double[] values, DoubleFunction<String> label) {
     }
 
     private static final class SettingSection {
@@ -1513,8 +1525,9 @@ public final class SettingsScreen extends Screen {
         private final String suffix;
         private final Double minValue;
         private final Double maxValue;
+        private final Stops stops; // null FOR A CONTINUOUS NUMBER
 
-        private ConfigSetting(final IConfigField<?, ?> field, final String key) {
+        private ConfigSetting(final IConfigField<?, ?> field, final String key, final Stops stops) {
             super(titleCase(field.name()), key, typeName(field), joinedComments(field), fieldMutable(field));
             this.field = field;
             this.valueType = field.type();
@@ -1523,12 +1536,14 @@ public final class SettingsScreen extends Screen {
             this.suffix = rawSuffix == null || rawSuffix.isBlank() ? "" : rawSuffix.trim();
             this.minValue = numberLimit(field, "minValueString");
             this.maxValue = numberLimit(field, "maxValueString");
+            this.stops = stops;
         }
 
         @Override
         String valueLabel() {
             final Object value = this.field.get();
             if (value == null) return "EMPTY";
+            if (this.stops != null) return this.stops.label().apply(this.number());
             if (value instanceof final Boolean bool) return bool ? "ON" : "OFF";
             if (value instanceof final Path path) {
                 final String raw = path.toString();
@@ -1586,6 +1601,10 @@ public final class SettingsScreen extends Screen {
         @Override
         String widestValueLabel() {
             String widest = this.valueLabel();
+            if (this.stops != null) {
+                for (final double value: this.stops.values()) widest = wider(widest, this.stops.label().apply(value));
+                return widest;
+            }
             if (this.valueType.isEnum()) {
                 final Object[] constants = this.valueType.getEnumConstants();
                 if (constants != null) {
@@ -1646,6 +1665,7 @@ public final class SettingsScreen extends Screen {
 
         @Override
         float rangePercent() {
+            if (this.stops != null) return (float) this.stop() / Math.max(1, this.stops.values().length - 1);
             if (!this.hasUsableRange()) return 0f;
             final double value = ((Number) this.field.get()).doubleValue();
             final double min = this.minValue;
@@ -1657,6 +1677,10 @@ public final class SettingsScreen extends Screen {
         @Override
         boolean percent(final double pct) {
             if (!this.isSeekbarControl()) return false;
+            if (this.stops != null) {
+                final double[] values = this.stops.values();
+                return this.number(values[(int) Math.round(MathUtil.clamp(pct, 0d, 1d) * (values.length - 1))]);
+            }
             // ONLY REPORT A CHANGE (AND ARM THE DRAG-SAVE / CHIME) WHEN THE STORED VALUE ACTUALLY MOVES,
             // MIRRORING number() — A SEEK TICK LANDING ON THE SAME VALUE MUST NOT TRIGGER A POINTLESS SAVE
             final Object next = this.valueForPercent(pct);
@@ -1700,6 +1724,10 @@ public final class SettingsScreen extends Screen {
                 final int next = Math.floorMod(currentIndex + direction, constants.length);
                 this.setValue(constants[next]);
                 return true;
+            }
+            if (this.stops != null) {
+                final double[] values = this.stops.values();
+                return this.number(values[MathUtil.clamp(this.stop() + direction * step, 0, values.length - 1)]);
             }
             if (this.isInteger()) {
                 final Number current = (Number) this.field.get();
@@ -1762,6 +1790,19 @@ public final class SettingsScreen extends Screen {
                 return value.charAt(0);
             }
             return raw == null ? "" : raw;
+        }
+
+        // THE STOP THAT READS LIKE THE STORED VALUE, SO A HAND-EDITED FILE SITS WHERE ITS LABEL SAYS; ELSE THE NEAREST
+        private int stop() {
+            final double[] values = this.stops.values();
+            final double current = this.number();
+            final String label = this.stops.label().apply(current);
+            int nearest = 0;
+            for (int i = 0; i < values.length; i++) {
+                if (this.stops.label().apply(values[i]).equals(label)) return i;
+                if (Math.abs(values[i] - current) < Math.abs(values[nearest] - current)) nearest = i;
+            }
+            return nearest;
         }
 
         private boolean hasUsableRange() {

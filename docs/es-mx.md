@@ -195,7 +195,7 @@ El escalado y el nivel de detalle afectan los formatos de píxeles compatibles. 
 
 ## Selección de motores
 
-El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundario. Las decisiones sobre motores pertenecen a la capa de renderizado. Esta preferencia de desarrollo no cambia el valor inicial OpenGL del launcher ni la selección que haya guardado el usuario, que la aplicación guarda en `config/app.properties` dentro de su directorio de trabajo.
+El desarrollo da prioridad a Vulkan; OpenGL sigue disponible como motor secundario. Las decisiones sobre motores pertenecen a la capa de renderizado. La aplicación independiente dibuja con Vulkan salvo que el usuario elija OpenGL; cuando Vulkan no está disponible usa OpenGL durante esa ejecución y conserva la elección guardada. `-Dwatermedia.engine=opengl` o `-Dwatermedia.engine=vulkan` cambia el motor de una sola ejecución sin guardarlo. La aplicación guarda su motor, la escala de la interfaz (`0` sigue al monitor; si no, un factor de 1 a 3 en pasos de 0.25, que Settings muestra como `Auto`, `x1.0`, `x1.25`, etc.), el efecto CRT y el sonido de clic en `config/app.properties` dentro de su directorio de trabajo.
 
 | Fábrica | Responsabilidad de la aplicación anfitriona |
 | --- | --- |

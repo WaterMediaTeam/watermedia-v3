@@ -1,5 +1,7 @@
 package org.watermedia.bootstrap.app.render;
 
+import org.apache.logging.log4j.Marker;
+import org.apache.logging.log4j.MarkerManager;
 import org.watermedia.WaterMedia;
 import org.watermedia.api.media.GFXEngine;
 import org.watermedia.bootstrap.app.render.opengl.OpenGLRenderBackend;
@@ -18,6 +20,7 @@ import static org.lwjgl.glfw.GLFWVulkan.glfwVulkanSupported;
  * to the window and supplies the media engine, so the rest of the app never branches on the backend.
  */
 public final class RenderSystem {
+    private static final Marker IT = MarkerManager.getMarker(RenderSystem.class.getSimpleName());
 
     /** The render backends the app can run on. */
     public enum Engine { OPENGL, VULKAN }
@@ -36,7 +39,9 @@ public final class RenderSystem {
 
     /** Selects the engine for the next window, downgrading Vulkan to OpenGL when no Vulkan loader is present. */
     public static void chooseEngine(final Engine requested) {
-        kind = requested == Engine.VULKAN && glfwVulkanSupported() ? Engine.VULKAN : Engine.OPENGL;
+        final boolean missing = requested == Engine.VULKAN && !glfwVulkanSupported();
+        if (missing) WaterMedia.LOGGER.warn(IT, "Vulkan is unavailable on this system; running on OpenGL");
+        kind = requested == Engine.VULKAN && !missing ? Engine.VULKAN : Engine.OPENGL;
     }
 
     /** Applies the GLFW window hints the chosen engine needs. Call right after {@code glfwDefaultWindowHints()}. */
@@ -62,17 +67,17 @@ public final class RenderSystem {
                 engine.uiScale(uiScale);
                 engine.init();
                 engine.configureFrameState();
-                WaterMedia.LOGGER.info("Render engine: Vulkan");
+                WaterMedia.LOGGER.info(IT, "Render engine: Vulkan");
                 return true;
             } catch (final Throwable t) {
-                WaterMedia.LOGGER.error("Vulkan engine init failed; falling back to OpenGL", t);
+                WaterMedia.LOGGER.warn(IT, "Vulkan engine init failed; running on OpenGL", t);
                 // THE VkSurfaceKHR MUST DIE BEFORE THE CALLER REBUILDS THE WINDOW, OR THE DRIVER CAN CRASH AND
                 // THE DEVICE AND INSTANCE LEAK
                 if (vk != null) {
                     try {
                         vk.cleanup();
                     } catch (final Throwable ct) {
-                        WaterMedia.LOGGER.error("Vulkan backend cleanup after failed init also failed", ct);
+                        WaterMedia.LOGGER.error(IT, "Vulkan backend cleanup after failed init also failed", ct);
                     }
                 }
                 engine = null;
@@ -85,7 +90,7 @@ public final class RenderSystem {
         // init() MAKES THE GL CONTEXT CURRENT ITSELF, SO RenderBackend.init() SUFFICES FOR BOTH BACKENDS.
         engine.init();
         engine.configureFrameState();
-        WaterMedia.LOGGER.info("Render engine: OpenGL");
+        WaterMedia.LOGGER.info(IT, "Render engine: OpenGL");
         return true;
     }
 

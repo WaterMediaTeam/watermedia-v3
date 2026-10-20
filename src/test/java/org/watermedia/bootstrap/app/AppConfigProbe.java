@@ -16,36 +16,63 @@ import java.util.Set;
 /** Runs the launcher and the app spec against one {@code config/app.properties} in a fresh working directory. */
 public final class AppConfigProbe {
     public static void main(final String[] arguments) throws Exception {
-        // FIRST LAUNCH: THE LAUNCHER SAVES THE PROMPTED ENGINE BEFORE WATERCONFIG EVER RAN
-        final Method save = AppBootstrap.class.getDeclaredMethod("save", Properties.class, String.class);
-        save.setAccessible(true);
-        save.invoke(null, new Properties(), "vulkan");
-
-        WaterConfig.init();
-        final ConfigSpec spec = WaterConfig.registerBlocking(AppConfig.class);
+        final String scenario = arguments[0];
         final Field preferences = AppBootstrap.class.getDeclaredField("PREFERENCES");
         preferences.setAccessible(true);
         final Path file = ((Path) preferences.get(null)).toAbsolutePath();
-        if (!spec.path().equals(file)) throw new AssertionError("The launcher reads " + file + " but WaterConfig writes " + spec.path());
-        if (AppConfig.engine != RenderSystem.Engine.VULKAN || AppConfig.scale != UiScale.AUTO || !AppConfig.crt || !AppConfig.sound)
-            throw new AssertionError("The spec did not load the launcher's engine over its defaults");
-
-        // THE SETTINGS SCREEN SAVES THROUGH THE SAME PACKAGE-PRIVATE METHOD
-        AppConfig.engine = RenderSystem.Engine.OPENGL;
-        AppConfig.scale = UiScale.LARGE;
-        final Method write = ConfigSpec.class.getDeclaredMethod("save");
-        write.setAccessible(true);
-        write.invoke(spec);
-        final Properties written = new Properties();
-        try (final InputStream input = Files.newInputStream(file)) { written.load(input); }
-        if (!written.stringPropertyNames().equals(Set.of(AppConfig.ENGINE, "scale", "crt", "sound")))
-            throw new AssertionError("Unexpected keys: " + written.stringPropertyNames());
-        if (!"LARGE".equals(written.getProperty("scale"))) throw new AssertionError("Scale not saved: " + written.getProperty("scale"));
-        final Method engine = AppBootstrap.class.getDeclaredMethod("engine", String.class);
-        engine.setAccessible(true);
-        if (!"opengl".equals(engine.invoke(null, written.getProperty(AppConfig.ENGINE))))
-            throw new AssertionError("The launcher cannot read the saved engine: " + written.getProperty(AppConfig.ENGINE));
-        System.out.println("PROBE_OK " + arguments[0]);
+        switch (scenario) {
+            case "defaults" -> {
+                expect("vulkan", launcherEngine(), "launcher engine without a file");
+                final ConfigSpec spec = register();
+                if (!spec.path().equals(file)) throw new AssertionError("The launcher reads " + file + " but WaterConfig writes " + spec.path());
+                if (AppConfig.engine != RenderSystem.Engine.VULKAN || AppConfig.scale != 0f || !AppConfig.crt || !AppConfig.sound)
+                    throw new AssertionError("Unexpected defaults: " + AppConfig.engine + ", " + AppConfig.scale + ", " + AppConfig.crt + ", " + AppConfig.sound);
+            }
+            case "shared" -> {
+                // THE SETTINGS SCREEN SAVES THROUGH THE SAME PACKAGE-PRIVATE METHOD
+                final ConfigSpec spec = register();
+                AppConfig.engine = RenderSystem.Engine.OPENGL;
+                AppConfig.scale = 1.25f;
+                final Method save = ConfigSpec.class.getDeclaredMethod("save");
+                save.setAccessible(true);
+                save.invoke(spec);
+                final Properties written = new Properties();
+                try (final InputStream input = Files.newInputStream(file)) { written.load(input); }
+                if (!written.stringPropertyNames().equals(Set.of(AppConfig.ENGINE, AppConfig.SCALE, "crt", "sound")))
+                    throw new AssertionError("Unexpected keys: " + written.stringPropertyNames());
+                expect("1.25", written.getProperty(AppConfig.SCALE), "saved scale");
+                expect("opengl", launcherEngine(), "launcher engine after the spec saved OPENGL");
+            }
+            case "malformed" -> {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, AppConfig.ENGINE + "=OPENGL\\u12\n");
+                expect("vulkan", launcherEngine(), "launcher engine with a malformed file");
+            }
+            case "override" -> {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, AppConfig.ENGINE + "=OPENGL\n");
+                System.setProperty(AppBootstrap.ENGINE_PROP, "vulkan");
+                expect("vulkan", launcherEngine(), "launcher engine with an override");
+                expect(AppConfig.ENGINE + "=OPENGL\n", Files.readString(file), "file after the launcher read it");
+            }
+            default -> throw new AssertionError("Unknown scenario " + scenario);
+        }
+        System.out.println("PROBE_OK " + scenario);
         System.exit(0);
+    }
+
+    private static ConfigSpec register() {
+        WaterConfig.init();
+        return WaterConfig.registerBlocking(AppConfig.class);
+    }
+
+    private static String launcherEngine() throws Exception {
+        final Method engine = AppBootstrap.class.getDeclaredMethod("engine");
+        engine.setAccessible(true);
+        return (String) engine.invoke(new AppBootstrap());
+    }
+
+    private static void expect(final String expected, final String actual, final String what) {
+        if (!expected.equals(actual)) throw new AssertionError(what + ": expected " + expected + " but was " + actual);
     }
 }

@@ -354,24 +354,19 @@ public class WaterMediaApp {
     // GLOBAL UI SCALE — RESOLUTION AND LIVE APPLICATION
     // ==========================================================================
 
-    /** Applies {@link AppConfig#scale}; {@link UiScale#AUTO} recomputes the factor from the window's monitor. */
+    /** Applies {@link AppConfig#scale}; 0 recomputes the factor from the window's monitor. */
     public static void reapplyUiScale() {
-        final UiScale scale = AppConfig.scale;
-        applyUiScale(scale == UiScale.AUTO ? computeAutoUiScale() : scale.factor);
-    }
-
-    // APPLIES A SCALE EVERYWHERE IT MATTERS: THE APP STATE, THE RENDER ENGINE (SCISSOR/LINE WIDTH) AND THE
-    // TEXT ATLAS (WHICH REGENERATES LAZILY AT THE NEW PHYSICAL PX). NEXT FRAME'S RELAYOUT PICKS UP THE REST.
-    private static void applyUiScale(final float scale) {
-        final float s = clampScale(scale);
+        final float factor = AppConfig.scaleFactor(AppConfig.scale);
+        final float s = factor == 0f ? computeAutoUiScale() : factor;
+        // THE TEXT ATLAS REGENERATES LAZILY AT THE NEW PHYSICAL SIZE AND THE NEXT FRAME RELAYOUTS THE TREE
         ctx.uiScale = s;
         RenderSystem.uiScale(s);
         if (ctx.text != null) ctx.text.setUiScale(s);
         ctx.requestRender();
     }
 
-    // AUTO FACTOR — max(WINDOW-MONITOR CONTENT SCALE, RESOLUTION HEURISTIC height/1080), SNAPPED TO 0.25
-    // STEPS AND CLAMPED TO [1.0, 3.0]. THE RESOLUTION TERM CATCHES HIGH-RES PANELS THE OS REPORTS AT 100%.
+    // AUTO FACTOR: THE LARGER OF THE MONITOR CONTENT SCALE AND height/1080, SNAPPED LIKE A SAVED FACTOR; THE
+    // RESOLUTION TERM CATCHES HIGH-RES PANELS THE OS REPORTS AT 100%
     private static float computeAutoUiScale() {
         final float contentScale;
         try (final MemoryStack stack = stackPush()) {
@@ -380,15 +375,9 @@ public class WaterMediaApp {
             glfwGetWindowContentScale(ctx.windowHandle, sx, sy);
             contentScale = Math.max(sx.get(0), sy.get(0));
         }
-        float heuristic = 1f;
         final GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-        if (vidmode != null) heuristic = vidmode.height() / 1080f;
-        final float factor = Math.round(Math.max(contentScale, heuristic) * 4f) / 4f;
-        return clampScale(factor);
-    }
-
-    private static float clampScale(final float scale) {
-        return MathUtil.clamp(scale, 1.0f, 3.0f);
+        final float heuristic = vidmode != null ? vidmode.height() / 1080f : 1f;
+        return AppConfig.scaleFactor(Math.max(contentScale, heuristic));
     }
 
     private static void initAudio() {
@@ -621,6 +610,7 @@ public class WaterMediaApp {
 
             handleFrameInput();
             ctx.processExecutor();
+            AppConfig.poll(ctx);
 
             // ON-DEMAND FRAMES RENDER ONLY WHEN SOMETHING ASKED FOR ONE; A STILL DRAG-HOLD FALLS THROUGH
             // HERE TOO AND SKIPS THE REDUNDANT REPAINT UNTIL THE POINTER MOVES AGAIN
@@ -641,6 +631,12 @@ public class WaterMediaApp {
 
     /** Queues a live render engine hot swap for the next main-loop iteration; safe to call from callbacks. */
     public static void requestEngineSwap(final RenderSystem.Engine target) {
+        // WITHOUT A VULKAN LOADER THE SWAP WOULD TEAR THE WINDOW DOWN ONLY TO REBUILD IT ON OPENGL
+        if (target == RenderSystem.Engine.VULKAN && !RenderSystem.vulkanAvailable()) {
+            WaterMedia.LOGGER.warn(IT, "Vulkan is unavailable on this system; staying on OpenGL");
+            ctx.showError("Vulkan unavailable", "Vulkan is not available on this system.\nThe app keeps running on OpenGL.", null);
+            return;
+        }
         swapTarget = target;
         ctx.requestRender();
     }
@@ -670,7 +666,7 @@ public class WaterMediaApp {
             }
         }
 
-        WaterMedia.LOGGER.info("Hot-swapping render engine {} -> {}", RenderSystem.engineName(), target);
+        WaterMedia.LOGGER.info(IT, "Hot-swapping render engine {} -> {}", RenderSystem.engineName(), target);
         try {
             // 1) DRAIN ALL MEDIA — SAME ORDER AS cleanup(): RELEASE PLAYERS/THUMBNAILS, THEN JOIN THE
             //    BACKGROUND RELEASE QUEUE SO NOTHING TOUCHES THE DEVICE AFTER IT IS DESTROYED
@@ -698,18 +694,16 @@ public class WaterMediaApp {
             glfwShowWindow(ctx.windowHandle);
             frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
 
-            // IF VULKAN WAS REQUESTED BUT ATTACH FELL BACK TO OPENGL, REVERT THE PERSISTED PREFERENCE TO WHAT
-            // ACTUALLY RUNS SO THE NEXT BOOT IS CONSISTENT, AND TELL THE USER
+            // A FAILED VULKAN ATTACH RUNS THIS LAUNCH ON OPENGL; THE SAVED PREFERENCE KEEPS WHAT THE USER PICKED
             if (target == RenderSystem.Engine.VULKAN && RenderSystem.engineKind() != RenderSystem.Engine.VULKAN) {
-                AppConfig.engine(RenderSystem.Engine.OPENGL);
                 ctx.showError("Vulkan unavailable",
                         "Vulkan could not be initialized on this system.\nThe app is running on OpenGL.", null);
             }
-            WaterMedia.LOGGER.info("Render engine hot-swap complete: {}", RenderSystem.engineName());
+            WaterMedia.LOGGER.info(IT, "Render engine hot-swap complete: {}", RenderSystem.engineName());
         } catch (final Throwable t) {
-            WaterMedia.LOGGER.error("Render engine hot-swap failed; attempting OpenGL recovery", t);
+            WaterMedia.LOGGER.error(IT, "Render engine hot-swap failed; attempting OpenGL recovery", t);
             if (!recoverToOpenGL(wasMaximized, px, py, pw, ph)) {
-                WaterMedia.LOGGER.error("OpenGL recovery after a failed hot-swap also failed; shutting down");
+                WaterMedia.LOGGER.error(IT, "OpenGL recovery after a failed hot-swap also failed; shutting down");
                 running = false; // LET THE MAIN LOOP EXIT SO cleanup() TEARS DOWN CLEANLY
             }
         } finally {
@@ -745,7 +739,6 @@ public class WaterMediaApp {
             if (ctx.windowHandle != NULL) destroyWindow();
             RenderSystem.chooseEngine(RenderSystem.Engine.OPENGL);
             openWindow();
-            AppConfig.engine(RenderSystem.Engine.OPENGL);
             restoreWindowPlacement(wasMaximized, px, py, pw, ph);
             reapplyUiScale();
             ctx.assets.load(ctx);
@@ -755,7 +748,7 @@ public class WaterMediaApp {
                     "The render engine could not be switched.\nThe app recovered on OpenGL.", null);
             return true;
         } catch (final Throwable t) {
-            WaterMedia.LOGGER.error("OpenGL recovery failed", t);
+            WaterMedia.LOGGER.error(IT, "OpenGL recovery failed", t);
             return false;
         }
     }
