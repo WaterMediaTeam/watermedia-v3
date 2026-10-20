@@ -4,7 +4,6 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MediaPlayer;
-import org.watermedia.api.media.TxMediaPlayer;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
@@ -175,7 +174,7 @@ public final class MRLSelectorScreen extends Screen {
     @Override
     public boolean continuous() {
         // CARET BLINK, LOADING DOTS AND LIVE THUMBNAILS — THE GLOBAL CRT ANIMATION IS THE SHELL'S CONCERN
-        return this.loading || this.textInputActive() || this.thumbsAnimating();
+        return this.loading || this.textInputActive() || Previews.animating(this.thumbPlayers.values());
     }
 
     @Override
@@ -197,7 +196,7 @@ public final class MRLSelectorScreen extends Screen {
         this.headerHead.label(this.ctx.selectedGroup.name()).count(this.filtered.size() + " ITEMS");
         int failed = 0;
         for (final MRL mrl: this.ctx.groupMRLs.values()) {
-            if (failed(mrl)) failed++;
+            if (Previews.failed(mrl)) failed++;
         }
         this.headerFailed.label(failed + " FAILED").color(failed > 0 ? AppTheme.RED : AppTheme.TEXT_FAINT);
     }
@@ -274,14 +273,14 @@ public final class MRLSelectorScreen extends Screen {
         if (this.ctx.selectedGroup == null) return;
         for (final AppContext.TestURI uri: this.ctx.selectedGroup.uris()) {
             final MRL mrl = this.ctx.groupMRLs.get(uri.name());
-            if (mrl != null && !loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
+            if (mrl != null && !Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
                 mrl.subscribe(done -> this.ctx.requestRender());
             }
         }
     }
 
     private void subscribeThumbMRL(final URI uri, final MRL mrl) {
-        if (uri == null || mrl == null || loaded(mrl)) return;
+        if (uri == null || mrl == null || Previews.loaded(mrl)) return;
         if (this.thumbSubscribed.add(uri.toString())) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
@@ -294,7 +293,7 @@ public final class MRLSelectorScreen extends Screen {
         if (mrl != null) return mrl;
         mrl = MediaAPI.mrl(uri.uri());
         this.ctx.groupMRLs.put(uri.name(), mrl);
-        if (!loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
+        if (!Previews.loaded(mrl) && this.groupSubscriptions.add(uri.name())) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
         this.ctx.requestRender();
@@ -329,19 +328,7 @@ public final class MRLSelectorScreen extends Screen {
             it.remove();
             this.thumbAttempted.remove(entry.getKey());
         }
-        if (evicted != null) this.releaseAsync(evicted);
-    }
-
-    // BACKGROUND RELEASE OF EVICTED THUMBNAIL PLAYERS (ALREADY REMOVED FROM thumbPlayers): stop() IS NON-BLOCKING,
-    // THE BLOCKING release() RUNS ON THE SHUTDOWN-AWAITED CHAIN SO A TEARDOWN CANNOT OUTLIVE THE RENDER-DEVICE DESTROY.
-    private void releaseAsync(final List<MediaPlayer> players) {
-        if (players.isEmpty()) return;
-        for (final MediaPlayer player: players) player.stop();
-        // HAND THE BLOCKING release() TO THE SHARED, SHUTDOWN-AWAITED RELEASE CHAIN SO A THUMBNAIL TEARDOWN
-        // IN FLIGHT CANNOT OUTLIVE THE RENDER-DEVICE DESTROY ON EXIT (VULKAN SAFETY).
-        this.ctx.releaseAsync("WaterMedia-ThumbnailRelease", () -> {
-            for (final MediaPlayer player: players) player.release();
-        });
+        if (evicted != null) Previews.release(this.ctx, evicted);
     }
 
     // KEEPS THUMBNAIL PLAYERS SCOPED TO ENTRIES THE SELECTOR IS CURRENTLY SHOWING.
@@ -358,7 +345,7 @@ public final class MRLSelectorScreen extends Screen {
 
             final MRL mrl = this.mrlFor(uri);
             if (mrl == null) continue;
-            if (!loaded(mrl)) continue; // ONLY BUILD THUMBNAILS FOR FULLY LOADED MRLS
+            if (!Previews.loaded(mrl)) continue; // ONLY BUILD THUMBNAILS FOR FULLY LOADED MRLS
 
             final var sources = mrl.sources();
             if (sources.isEmpty()) {
@@ -412,7 +399,7 @@ public final class MRLSelectorScreen extends Screen {
             // SNAPSHOT AND CLEAR FIRST SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER
             final List<MediaPlayer> players = new ArrayList<>(this.thumbPlayers.values());
             this.thumbPlayers.clear();
-            this.releaseAsync(players);
+            Previews.release(this.ctx, players);
         }
         this.thumbAttempted.clear();
         this.thumbSubscribed.clear();
@@ -460,10 +447,10 @@ public final class MRLSelectorScreen extends Screen {
         this.ctx.groupMRLs.put(name, mrl);
 
         final MediaPlayer thumbnail = this.thumbPlayers.remove(name);
-        if (thumbnail != null) this.releaseAsync(List.of(thumbnail));
+        if (thumbnail != null) Previews.release(this.ctx, List.of(thumbnail));
         this.thumbAttempted.remove(name);
         this.groupSubscriptions.remove(name);
-        if (!loaded(mrl) && this.groupSubscriptions.add(name)) {
+        if (!Previews.loaded(mrl) && this.groupSubscriptions.add(name)) {
             mrl.subscribe(done -> this.ctx.requestRender());
         }
         this.ctx.selectedMRLName = name;
@@ -472,13 +459,7 @@ public final class MRLSelectorScreen extends Screen {
     }
 
     private void proceedWithMRL() {
-        final var sourcesList = this.ctx.selectedMRL.sources();
-        this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
-        if (this.ctx.availableSources.length == 0) return;
-
-        this.ctx.sourceSelectorIndex = 0;
-        this.ctx.selectedSource = this.ctx.availableSources[0];
-        this.navigator.accept(HomeScreen.Action.PLAYER);
+        if (this.ctx.selectSources()) this.navigator.accept(HomeScreen.Action.PLAYER);
     }
 
     // ENDS THE LOADING WAIT: INVALIDATES THE TIMEOUT GENERATION AND HIDES THE MODAL
@@ -532,18 +513,6 @@ public final class MRLSelectorScreen extends Screen {
         }
     }
 
-    private boolean thumbsAnimating() {
-        for (final MediaPlayer player: this.thumbPlayers.values()) {
-            if (player == null || player.error() || player.stopped() || player.ended()) continue;
-            if (player instanceof TxMediaPlayer) {
-                if (player.duration() > 0L && !player.paused()) return true;
-            } else if (!player.paused()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     // THE SELECTED ITEM PLUS EVERY ROW CURRENTLY ON SCREEN (FROM THE PREVIOUS FRAME'S LAYOUT). THIS SCOPES
     // THUMBNAIL PLAYERS TO WHAT THE SELECTOR IS SHOWING, EXACTLY LIKE THE LEGACY VISIBLE-WINDOW COMPUTATION.
     private Set<String> activeThumbNames() {
@@ -569,13 +538,8 @@ public final class MRLSelectorScreen extends Screen {
         if (focused) canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.48f);
         canvas.fill(x + 6, y + 6, w - 12, h - 12, AppTheme.BG_0);
         canvas.stroke(x + 6, y + 6, w - 12, h - 12, AppTheme.STROKE, 1f);
-        cube(canvas, x + 2, y + h - 12);
-        cube(canvas, x + w - 12, y + h - 12);
-    }
-
-    private static void cube(final Canvas canvas, final int x, final int y) {
-        canvas.glow(x, y, 10, 10, 0f, AppTheme.AMBER, 0.32f);
-        canvas.fill(x, y, 10, 10, AppTheme.AMBER);
+        canvas.cube(x + 2, y + h - 12, 10);
+        canvas.cube(x + w - 12, y + h - 12, 10);
     }
 
     // PORT OF THE AMBER CORNER TRIANGLE — ROW-STRIP RASTER (THE CANVAS HAS NO TRIANGLE PRIMITIVE)
@@ -645,9 +609,9 @@ public final class MRLSelectorScreen extends Screen {
         }
         final String label = failed ? (mini ? "[" + statusLabel(mrl) + "]" : statusLabel(mrl))
                 : ready ? "[ media thumbnail ]" : "LOADING...";
-        final Color color = failed ? statusColor(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
+        final Color color = failed ? Previews.color(mrl) : ready ? AppTheme.TEXT_SOFT : AppTheme.NEON;
         if (!mini && failed) {
-            PixelIcon.draw("warn", x + w / 2 - 14, y + h / 2 - 36, 28, statusColor(mrl));
+            PixelIcon.draw("warn", x + w / 2 - 14, y + h / 2 - 36, 28, Previews.color(mrl));
         }
         final float scale = mini ? AppTheme.TEXT_TINY : AppTheme.TEXT_BUTTON;
         final float textY = mini
@@ -661,48 +625,22 @@ public final class MRLSelectorScreen extends Screen {
     // (load failed), EXPIRED (sources no longer valid), FORGOTTEN (evicted from the cache).
     // THE BOOLEAN PREDICATES LIVE ON MRL.Status; THESE WRAP THEM NULL-SAFELY FOR THE UI.
 
-    private static boolean loaded(final MRL mrl) {
-        return mrl != null && mrl.status().loaded();
-    }
-
-    private static boolean failed(final MRL mrl) {
-        return mrl != null && mrl.status().failed();
-    }
-
     private static boolean regenerable(final MRL mrl) {
         return mrl != null && mrl.status().regenerable();
     }
 
     private static String statusLabel(final MRL mrl) {
-        if (mrl == null) return "NULL";
-        return switch (mrl.status()) {
-            case LOADED -> "READY";
-            case FETCHING -> "LOADING";
-            case ERROR -> "ERROR";
-            case BLOCKED -> "BLOCKED";
-            case EXPIRED -> "EXPIRED";
-            case FORGOTTEN -> "FORGOTTEN";
-        };
-    }
-
-    private static Color statusColor(final MRL mrl) {
-        if (mrl == null) return AppTheme.TEXT_FAINT;
-        return switch (mrl.status()) {
-            case LOADED -> AppTheme.GREEN;
-            case FETCHING -> AppTheme.NEON;
-            case ERROR, BLOCKED -> AppTheme.RED;
-            case EXPIRED, FORGOTTEN -> AppTheme.AMBER;
-        };
+        return mrl == null ? "NULL" : Previews.label(mrl);
     }
 
     private static MediaType firstMediaType(final MRL mrl) {
-        if (!loaded(mrl) || mrl.sources().isEmpty()) return null;
+        if (!Previews.loaded(mrl) || mrl.sources().isEmpty()) return null;
         return mrl.sources().get(0).type();
     }
 
     // PLAIN NESTED LOOP (NO STREAM/Optional) — THIS RUNS PER FRAME IN THE PREVIEW DRAW PATH
     private static String bestQuality(final MRL mrl) {
-        if (!loaded(mrl)) return "UNKNOWN";
+        if (!Previews.loaded(mrl)) return "UNKNOWN";
         MediaQuality best = MediaQuality.UNKNOWN;
         for (final MRL.Source source: mrl.sources()) {
             for (final MediaQuality q: source.qualities().keySet()) {
@@ -811,7 +749,7 @@ public final class MRLSelectorScreen extends Screen {
             this.copyBtn.enabled(mrl != null);
             this.playBtn.label(playLabel).icon(playIcon)
                     .accent(playColor).textColor(playColor)
-                    .enabled(regen || loaded(mrl))
+                    .enabled(regen || Previews.loaded(mrl))
                     .width(Math.max(130, Button.width(MRLSelectorScreen.this.text, playLabel, "ENTER", playIcon, 12)));
         }
 
@@ -877,7 +815,7 @@ public final class MRLSelectorScreen extends Screen {
             canvas.text(MRLSelectorScreen.this.text.truncateToWidth(sel.uri(), w - 270, AppTheme.TEXT_BODY),
                     x + 16, this.panelY + 42, AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, false);
 
-            final Color sc = statusColor(mrl);
+            final Color sc = Previews.color(mrl);
             final int pipY = this.panelY + 72;
             pip(canvas, x + 18, pipY, 10, sc, true);
             canvas.text(bestQuality(mrl) + " - " + statusLabel(mrl), x + 36,
@@ -918,7 +856,7 @@ public final class MRLSelectorScreen extends Screen {
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
             final MRL mrl = MRLSelectorScreen.this.mrlOf(this.uri);
-            final Color stateColor = statusColor(mrl);
+            final Color stateColor = Previews.color(mrl);
             if (this.selected) {
                 canvas.fill(x, y, w, h, AppTheme.alpha(AppTheme.NEON, 26));
                 canvas.stroke(x, y, w, h, AppTheme.NEON, 1f);

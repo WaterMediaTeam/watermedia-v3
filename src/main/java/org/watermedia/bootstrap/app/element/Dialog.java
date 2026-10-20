@@ -363,8 +363,8 @@ public final class Dialog extends Group<Dialog> {
             super.onDraw(canvas);
             // AMBER CORNER CUBES IN THE PANEL'S BOTTOM CORNERS
             final int by = this.top + this.measuredHeight - CUBE - 4;
-            amberCube(canvas, this.left + 4, by);
-            amberCube(canvas, this.left + this.measuredWidth - CUBE - 4, by);
+            canvas.cube(this.left + 4, by, CUBE);
+            canvas.cube(this.left + this.measuredWidth - CUBE - 4, by, CUBE);
         }
     }
 
@@ -372,11 +372,6 @@ public final class Dialog extends Group<Dialog> {
         if (band == null || !band.visible) return 0;
         band.measure(availW, availH);
         return band.measuredWidth;
-    }
-
-    private static void amberCube(final Canvas canvas, final int x, final int y) {
-        canvas.glow(x, y, CUBE, CUBE, 0f, AppTheme.AMBER, 0.32f);
-        canvas.fill(x, y, CUBE, CUBE, AppTheme.AMBER);
     }
 
     // ==========================================================================

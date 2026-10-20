@@ -244,17 +244,12 @@ public final class RegionSelectorScreen extends Screen {
             canvas.gradientV(this.panelX, this.panelY, this.panelW, this.panelH,
                     AppTheme.alpha(AppTheme.BG_2, 217), AppTheme.alpha(AppTheme.BG_1, 217));
             canvas.stroke(this.panelX, this.panelY, this.panelW, this.panelH, AppTheme.STROKE_BRIGHT, 1f);
-            this.cube(canvas, this.panelX - 1, this.panelY - 1);
-            this.cube(canvas, this.panelX + this.panelW - 9, this.panelY + this.panelH - 9);
+            canvas.cube(this.panelX - 1, this.panelY - 1, 10);
+            canvas.cube(this.panelX + this.panelW - 9, this.panelY + this.panelH - 9, 10);
 
             SectionHead.draw(canvas, "REGIONS", RegionSelectorScreen.this.optionCount() + " AVAILABLE",
                     this.panelX + 18, this.panelY + 18, this.panelW - 36);
             super.onDraw(canvas);
-        }
-
-        private void cube(final Canvas canvas, final int x, final int y) {
-            canvas.glow(x, y, 10, 10, 0f, AppTheme.AMBER, 0.32f);
-            canvas.fill(x, y, 10, 10, AppTheme.AMBER);
         }
     }
 

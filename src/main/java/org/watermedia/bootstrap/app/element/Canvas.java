@@ -2,6 +2,7 @@ package org.watermedia.bootstrap.app.element;
 
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.render.RenderSystem;
+import org.watermedia.bootstrap.app.ui.AppTheme;
 import org.watermedia.bootstrap.app.ui.PixelIcon;
 import org.watermedia.bootstrap.app.ui.TextRenderer;
 
@@ -204,6 +205,12 @@ public final class Canvas {
         RenderSystem.bindMediaTexture(handle);
         RenderSystem.color(1f, 1f, 1f, this.alpha);
         RenderSystem.blit(x, y, w, h, u0, v0, u1, v1);
+    }
+
+    /** Draws the glowing amber cube that accents the corners of panels, frames and dialogs. */
+    public void cube(final int x, final int y, final int size) {
+        this.glow(x, y, size, size, 0f, AppTheme.AMBER, 0.32f);
+        this.fill(x, y, size, size, AppTheme.AMBER);
     }
 
     /** Pixel-icon draw routed through the canvas so the global alpha multiplier applies (dialog fades). */

@@ -4,6 +4,7 @@ import org.watermedia.WaterMedia;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.bootstrap.app.AppContext;
+import org.watermedia.bootstrap.app.CleanupState;
 import org.watermedia.bootstrap.app.element.Badge;
 import org.watermedia.bootstrap.app.element.Button;
 import org.watermedia.bootstrap.app.element.Canvas;
@@ -28,8 +29,6 @@ import org.watermedia.tools.ThreadTool;
 import java.awt.Color;
 import java.awt.Font;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -118,7 +117,7 @@ public class HomeScreen extends Screen {
 
     // CACHE-SIZE LABEL FOR THE CLEANUP ENTRY, COMPUTED OFF THE RENDER THREAD (Files.walk BLOCKS ON LARGE
     // CACHES). rebuildMenu() READS THE LAST PUBLISHED VALUE; cacheWalking COALESCES OVERLAPPING WALKS.
-    private volatile String cacheLabel = "-- MB";
+    private volatile String cacheLabel = "--";
     private volatile boolean cacheWalking;
 
     public HomeScreen(final TextRenderer text, final AppContext ctx, final Consumer<Action> navigator) {
@@ -532,25 +531,14 @@ public class HomeScreen extends Screen {
         if (this.cacheWalking) return;
         this.cacheWalking = true;
         ThreadTool.thread("WaterMedia-CacheSize", () -> {
-            final Path cache = WaterMedia.tmp().resolve("cache");
             long bytes = 0L;
             try {
-                if (Files.exists(cache)) {
-                    try (final var stream = Files.walk(cache)) {
-                        bytes = stream.filter(Files::isRegularFile).mapToLong(path -> {
-                            try {
-                                return Files.size(path);
-                            } catch (final IOException ignored) {
-                                return 0L;
-                            }
-                        }).sum();
-                    }
-                }
-            } catch (final Exception ignored) {
-                // Files.walk WRAPS TRAVERSAL FAILURES IN UncheckedIOException — CATCH BROADLY SO THE finally ALWAYS RUNS
+                bytes = CleanupState.scan()[1];
+            } catch (final IOException | RuntimeException ignored) {
+                // AN UNREADABLE CACHE SHOWS AS EMPTY; THE CLEANUP DIALOG REPORTS THE ERROR WHEN OPENED
             } finally {
                 // RESET IN finally: A THROWN WALK MUST NOT LEAVE cacheWalking LATCHED (WHICH WOULD FREEZE THE LABEL FOREVER)
-                this.cacheLabel = Math.max(0, Math.round(bytes / 1024f / 1024f)) + " MB";
+                this.cacheLabel = MathUtil.displayBytes(bytes);
                 this.cacheWalking = false;
                 // REBUILD ON THE RENDER THREAD SO THE CLEANUP ENTRY PICKS UP THE NEW LABEL
                 this.ctx.execute(this::rebuildMenu);

@@ -24,4 +24,19 @@ public final class UploadState {
     public final List<AppContext.UploadFileEntry> files = new CopyOnWriteArrayList<>();
     // IDS OF SUSPECT_MODS WHOSE JAR WAS FOUND IN THE MODS FOLDER (POPULATED DURING THE UPLOAD SCAN)
     public final Set<String> suspectModIds = ConcurrentHashMap.newKeySet();
+
+    /** Returns the dialog to its first stage, before a new scan. */
+    public void reset() {
+        this.working = false;
+        this.done = false;
+        this.error = false;
+        this.uploadsDone = false;
+        this.issueCopied = false;
+        this.issueOpened = false;
+        this.stage = 1;
+        this.status = "SCAN";
+        this.issueUrl = null;
+        this.repoUrl = null;
+        this.files.clear();
+    }
 }

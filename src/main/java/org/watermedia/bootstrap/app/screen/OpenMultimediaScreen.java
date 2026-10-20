@@ -3,7 +3,6 @@ package org.watermedia.bootstrap.app.screen;
 import org.watermedia.api.media.MRL;
 import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MediaPlayer;
-import org.watermedia.api.media.TxMediaPlayer;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
 import org.watermedia.api.platform.PlatformSearch;
@@ -264,7 +263,7 @@ public class OpenMultimediaScreen extends Screen {
         return this.textInputActive() || this.loading
                 || (this.search != null && !this.searchRenderedDone)
                 || System.currentTimeMillis() - this.animPreviewStart < PREVIEW_ANIM_MS
-                || this.thumbsAnimating();
+                || Previews.animating(this.thumbPlayers.values());
     }
 
     // ==========================================================================
@@ -309,7 +308,7 @@ public class OpenMultimediaScreen extends Screen {
             this.chip.set(done ? this.search.results().size() + " RESULTS" : "SEARCHING",
                     done ? AppTheme.CYAN : AppTheme.NEON);
         } else {
-            this.chip.set(this.statusLabel(), this.statusColor());
+            this.chip.set(this.statusLabel(), Previews.color(this.previewMRL));
         }
 
         this.syncDropdown(search);
@@ -447,15 +446,10 @@ public class OpenMultimediaScreen extends Screen {
         this.ctx.selectedMRL = this.previewMRL;
         this.ctx.selectedMRLName = this.previewTitle();
         this.ctx.selectedGroup = null;
-        final var sourcesList = this.ctx.selectedMRL.sources();
-        this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
-        if (this.ctx.availableSources.length == 0) {
+        if (!this.ctx.selectSources()) {
             this.ctx.showError("No Sources", "No sources available for this URL", null);
             return;
         }
-
-        this.ctx.sourceSelectorIndex = 0;
-        this.ctx.selectedSource = this.ctx.availableSources[0];
         this.navigator.accept(HomeScreen.Action.PLAYER);
     }
 
@@ -638,24 +632,10 @@ public class OpenMultimediaScreen extends Screen {
             // SNAPSHOT AND CLEAR FIRST SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING PLAYER
             final List<MediaPlayer> players = new ArrayList<>(this.thumbPlayers.values());
             this.thumbPlayers.clear();
-            this.releaseAsync(players);
+            Previews.release(this.ctx, players);
         }
         this.thumbAttempted.clear();
         this.thumbSubscribed.clear();
-    }
-
-    // HANDS RESULT-THUMBNAIL PLAYERS OFF FOR BACKGROUND RELEASE (M-08) — MIRRORS AppContext.releasePlayer.
-    // THE PLAYERS MUST ALREADY BE REMOVED FROM thumbPlayers SO THE RENDER THREAD CAN NEVER TOUCH A RELEASING
-    // PLAYER. stop() IS NON-BLOCKING; release() JOINS THE DECODE THREADS AND SO RUNS OFF THE RENDER THREAD.
-    // THE ENGINE TEARDOWN IS THREAD-SAFE (GL DEFERS ITS TEXTURE DELETES TO THE RENDER EXECUTOR).
-    private void releaseAsync(final List<MediaPlayer> players) {
-        if (players.isEmpty()) return;
-        for (final MediaPlayer player: players) player.stop();
-        // HAND THE BLOCKING release() TO THE SHARED, SHUTDOWN-AWAITED RELEASE CHAIN SO A THUMBNAIL TEARDOWN
-        // IN FLIGHT CANNOT OUTLIVE THE RENDER-DEVICE DESTROY ON EXIT (VULKAN SAFETY).
-        this.ctx.releaseAsync("WaterMedia-ThumbnailRelease", () -> {
-            for (final MediaPlayer player: players) player.release();
-        });
     }
 
     // LAZILY BUILDS AN IMAGE PLAYER FOR A RESULT THUMBNAIL (KEYED BY URI). RETURNS null WHILE THE THUMBNAIL
@@ -692,24 +672,12 @@ public class OpenMultimediaScreen extends Screen {
     }
 
     // TRUE WHILE ANY DROPDOWN THUMBNAIL IS ACTIVELY ANIMATING — DRIVES continuous()
-    private boolean thumbsAnimating() {
-        for (final MediaPlayer player: this.thumbPlayers.values()) {
-            if (player == null || player.error() || player.stopped() || player.ended()) continue;
-            if (player instanceof TxMediaPlayer) {
-                if (player.duration() > 0L && !player.paused()) return true;
-            } else if (!player.paused()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     // ==========================================================================
     // PREVIEW / LOADING STATE
     // ==========================================================================
 
     private void subscribePreviewMRL(final MRL mrl, final int generation) {
-        if (mrl == null || loaded(mrl)) return;
+        if (mrl == null || Previews.loaded(mrl)) return;
         mrl.subscribe(done -> {
             if (this.previewGeneration == generation && this.previewMRL == done) {
                 this.ctx.requestRender();
@@ -723,7 +691,7 @@ public class OpenMultimediaScreen extends Screen {
         this.loading = true;
         this.loadGeneration++;
         this.loadStartTime = System.currentTimeMillis();
-        if (!loaded(mrl)) {
+        if (!Previews.loaded(mrl)) {
             final int generation = this.loadGeneration;
             mrl.subscribe(done -> {
                 if (this.loading && this.loadGeneration == generation && this.ctx.selectedMRL == done) {
@@ -767,17 +735,12 @@ public class OpenMultimediaScreen extends Screen {
             this.loading = false;
             this.loadGeneration++;
             this.ctx.selectedMRLName = this.previewTitle();
-            final var sourcesList = this.ctx.selectedMRL.sources();
-            this.ctx.availableSources = sourcesList.toArray(MRL.Source[]::new);
-            if (this.ctx.availableSources.length == 0) {
+            if (!this.ctx.selectSources()) {
                 this.ctx.showError("No Sources", "No sources available for this URL", null);
                 this.ctx.selectedMRL = null;
                 return;
             }
-
-            this.ctx.sourceSelectorIndex = 0;
-            this.ctx.selectedSource = this.ctx.availableSources[0];
-            // M-07: THIS RUNS INSIDE THE FRAME'S UPDATE PASS — QUEUE THE NAVIGATION SO THE MOUNT SWAP
+            // THIS RUNS INSIDE THE FRAME'S UPDATE PASS — QUEUE THE NAVIGATION SO THE MOUNT SWAP
             // HAPPENS BETWEEN FRAMES (AppContext.execute DRAINS BEFORE THE NEXT RENDER), NEVER MID-TREE
             this.ctx.execute(() -> this.navigator.accept(HomeScreen.Action.PLAYER));
             return;
@@ -791,34 +754,12 @@ public class OpenMultimediaScreen extends Screen {
         }
     }
 
-    private static boolean loaded(final MRL mrl) {
-        return mrl != null && mrl.status().loaded();
-    }
-
     private String statusLabel() {
-        if (this.previewMRL == null) return "AWAITING URL";
-        return switch (this.previewMRL.status()) {
-            case LOADED -> "READY";
-            case FETCHING -> "LOADING";
-            case ERROR -> "ERROR";
-            case BLOCKED -> "BLOCKED";
-            case EXPIRED -> "EXPIRED";
-            case FORGOTTEN -> "FORGOTTEN";
-        };
-    }
-
-    private Color statusColor() {
-        if (this.previewMRL == null) return AppTheme.TEXT_FAINT;
-        return switch (this.previewMRL.status()) {
-            case LOADED -> AppTheme.GREEN;
-            case FETCHING -> AppTheme.NEON;
-            case ERROR, BLOCKED -> AppTheme.RED;
-            case EXPIRED, FORGOTTEN -> AppTheme.AMBER;
-        };
+        return this.previewMRL == null ? "AWAITING URL" : Previews.label(this.previewMRL);
     }
 
     private MRL.Source firstSource() {
-        if (!loaded(this.previewMRL) || this.previewMRL.sources().isEmpty()) return null;
+        if (!Previews.loaded(this.previewMRL) || this.previewMRL.sources().isEmpty()) return null;
         return this.previewMRL.sources().get(0);
     }
 
@@ -846,12 +787,6 @@ public class OpenMultimediaScreen extends Screen {
         while (i > 0 && !Character.isWhitespace(value.charAt(i - 1)) && "/\\?&=#.:_-".indexOf(value.charAt(i - 1)) < 0) i--;
         if (i > 0 && "/\\?&=#.:_-".indexOf(value.charAt(i - 1)) >= 0) i--;
         return value.substring(0, Math.max(0, i));
-    }
-
-    // LEGACY amberCube — GLOWING AMBER ACCENT SQUARE (PANEL AND TV-FRAME CORNERS)
-    private static void amberCube(final Canvas canvas, final int x, final int y) {
-        canvas.glow(x, y, 10, 10, 0f, AppTheme.AMBER, 0.32f);
-        canvas.fill(x, y, 10, 10, AppTheme.AMBER);
     }
 
     // ==========================================================================
@@ -919,10 +854,10 @@ public class OpenMultimediaScreen extends Screen {
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            amberCube(canvas, this.left - 1, this.top - 1);
-            amberCube(canvas, this.left + this.measuredWidth - 9, this.top - 1);
-            amberCube(canvas, this.left - 1, this.top + this.measuredHeight - 9);
-            amberCube(canvas, this.left + this.measuredWidth - 9, this.top + this.measuredHeight - 9);
+            canvas.cube(this.left - 1, this.top - 1, 10);
+            canvas.cube(this.left + this.measuredWidth - 9, this.top - 1, 10);
+            canvas.cube(this.left - 1, this.top + this.measuredHeight - 9, 10);
+            canvas.cube(this.left + this.measuredWidth - 9, this.top + this.measuredHeight - 9, 10);
             super.onDraw(canvas);
         }
     }
@@ -1094,8 +1029,8 @@ public class OpenMultimediaScreen extends Screen {
             canvas.glow(x, y, w, h, 0f, AppTheme.NEON, 0.48f);
             canvas.fill(x + 6, y + 6, w - 12, h - 12, AppTheme.BG_0);
             canvas.stroke(x + 6, y + 6, w - 12, h - 12, AppTheme.STROKE, 1f);
-            amberCube(canvas, x + 2, y + h - 12);
-            amberCube(canvas, x + w - 12, y + h - 12);
+            canvas.cube(x + 2, y + h - 12, 10);
+            canvas.cube(x + w - 12, y + h - 12, 10);
 
             super.onDraw(canvas); // LOCALIZED CRT SCANLINES/BANDS, UNDER THE STATE TEXT
 
@@ -1116,7 +1051,7 @@ public class OpenMultimediaScreen extends Screen {
                             ix + 22, iy + ih - 24, AppTheme.TEXT_FAINT, AppTheme.TEXT_SUBTITLE, false);
                 } else if (status != MRL.Status.LOADED) {
                     // ERROR/BLOCKED/EXPIRED/FORGOTTEN — SHOW THE EXACT STATE.
-                    final Color color = OpenMultimediaScreen.this.statusColor();
+                    final Color color = Previews.color(OpenMultimediaScreen.this.previewMRL);
                     final String label = OpenMultimediaScreen.this.statusLabel();
                     PixelIcon.draw("warn", ix + iw / 2 - 16, iy + ih / 2 - 36, 32, color);
                     canvas.text(label, ix + iw / 2 - canvas.textWidth(label, AppTheme.TEXT_BUTTON, true) / 2,

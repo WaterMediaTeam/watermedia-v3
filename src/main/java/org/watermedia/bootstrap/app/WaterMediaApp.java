@@ -254,14 +254,24 @@ public class WaterMediaApp {
         if (forwarded == null) AppConfig.await();
         RenderSystem.chooseEngine(forwarded == null ? AppConfig.engine
                 : forwarded.equalsIgnoreCase("vulkan") ? RenderSystem.Engine.VULKAN : RenderSystem.Engine.OPENGL);
+        openWindow();
+    }
+
+    // A FAILED VULKAN ATTACH LEAVES THE ENGINE ON OPENGL, WHICH NEEDS A WINDOW WITH A GL CONTEXT, SO THE WINDOW IS
+    // REBUILT ONCE FOR IT
+    private static void openWindow() {
         createWindow();
-        if (!RenderSystem.attach(ctx.windowHandle)) {
-            WinFrame.uninstall();
-            glfwFreeCallbacks(ctx.windowHandle);
-            glfwDestroyWindow(ctx.windowHandle);
-            createWindow(); // ENGINE IS NOW OPENGL; REBUILD WITH A GL CONTEXT AND ATTACH AGAIN
-            RenderSystem.attach(ctx.windowHandle);
-        }
+        if (RenderSystem.attach(ctx.windowHandle)) return;
+        destroyWindow();
+        createWindow();
+        RenderSystem.attach(ctx.windowHandle);
+    }
+
+    private static void destroyWindow() {
+        WinFrame.uninstall();
+        glfwFreeCallbacks(ctx.windowHandle);
+        glfwDestroyWindow(ctx.windowHandle);
+        ctx.windowHandle = NULL;
     }
 
     private static void createWindow() {
@@ -548,7 +558,8 @@ public class WaterMediaApp {
                 if (!ctx.upload.visible) {
                     // SCAN RUNS ON A WORKER: exceedsLineLimit() READS UP TO FOUR MULTI-MB FILES, WHICH WOULD
                     // FREEZE THE RENDER THREAD FOR THE WHOLE SCAN IF DONE INLINE.
-                    openUploadLogsDialog();
+                    ctx.upload.reset();
+                    ctx.upload.visible = true;
                     ctx.upload.working = true;
                     ThreadTool.thread("WaterMediaApp-UploadScan", WaterMediaApp::scanUploadLogFiles);
                     return;
@@ -572,9 +583,10 @@ public class WaterMediaApp {
 
             case CLEANUP -> {
                 if (!ctx.cleanup.visible) {
-                    // SCAN RUNS ON A WORKER: cleanupCacheStats() WALKS THE ENTIRE MEDIA CACHE (POTENTIALLY
+                    // SCAN RUNS ON A WORKER: CleanupState.scan() WALKS THE ENTIRE MEDIA CACHE (POTENTIALLY
                     // THOUSANDS OF FILES), WHICH WOULD FREEZE THE RENDER THREAD IF DONE INLINE.
-                    openCleanupDialog();
+                    ctx.cleanup.reset();
+                    ctx.cleanup.visible = true;
                     ctx.cleanup.working = true;
                     ThreadTool.thread("WaterMediaApp-CacheScan", WaterMediaApp::scanCleanupCache);
                     return;
@@ -699,22 +711,11 @@ public class WaterMediaApp {
 
             // 3) TEAR DOWN THE OLD ENGINE AND ITS WINDOW (MIRRORS cleanup() MINUS glfwTerminate)
             RenderSystem.cleanup();
-            WinFrame.uninstall();
-            glfwFreeCallbacks(ctx.windowHandle);
-            glfwDestroyWindow(ctx.windowHandle);
-            ctx.windowHandle = NULL;
+            destroyWindow();
 
             // 4) SELECT THE TARGET ENGINE AND REBUILD THE WINDOW WITH ITS HINTS (MIRRORS initWindow())
             RenderSystem.chooseEngine(target);
-            createWindow();
-            if (!RenderSystem.attach(ctx.windowHandle)) {
-                // VK->GL FALLBACK: THE ENGINE IS ALREADY OPENGL; REBUILD THE WINDOW WITH GL HINTS AND RE-ATTACH
-                WinFrame.uninstall();
-                glfwFreeCallbacks(ctx.windowHandle);
-                glfwDestroyWindow(ctx.windowHandle);
-                createWindow();
-                RenderSystem.attach(ctx.windowHandle);
-            }
+            openWindow();
 
             restoreWindowPlacement(wasMaximized, px, py, pw, ph);
 
@@ -769,15 +770,9 @@ public class WaterMediaApp {
     private static boolean recoverToOpenGL(final boolean wasMaximized, final int px, final int py, final int pw, final int ph) {
         try {
             // THE OLD WINDOW MAY OR MAY NOT STILL EXIST; A ZEROED HANDLE MEANS IT WAS ALREADY DESTROYED
-            if (ctx.windowHandle != NULL) {
-                WinFrame.uninstall();
-                glfwFreeCallbacks(ctx.windowHandle);
-                glfwDestroyWindow(ctx.windowHandle);
-                ctx.windowHandle = NULL;
-            }
+            if (ctx.windowHandle != NULL) destroyWindow();
             RenderSystem.chooseEngine(RenderSystem.Engine.OPENGL);
-            createWindow();
-            RenderSystem.attach(ctx.windowHandle);
+            openWindow();
             AppConfig.engine(RenderSystem.Engine.OPENGL);
             restoreWindowPlacement(wasMaximized, px, py, pw, ph);
             reapplyUiScale();
@@ -815,33 +810,6 @@ public class WaterMediaApp {
             root.release(ctx.mouseX, ctx.mouseY);
             root.click(ctx.mouseX, ctx.mouseY);
         }
-    }
-
-    private static void openUploadLogsDialog() {
-        ctx.upload.visible = true;
-        ctx.upload.working = false;
-        ctx.upload.done = false;
-        ctx.upload.error = false;
-        ctx.upload.uploadsDone = false;
-        ctx.upload.issueCopied = false;
-        ctx.upload.issueOpened = false;
-        ctx.upload.stage = 1;
-        ctx.upload.status = "SCAN";
-        ctx.upload.issueUrl = null;
-        ctx.upload.repoUrl = null;
-        ctx.upload.files.clear();
-    }
-
-    private static void openCleanupDialog() {
-        ctx.cleanup.visible = true;
-        ctx.cleanup.working = false;
-        ctx.cleanup.done = false;
-        ctx.cleanup.error = false;
-        ctx.cleanup.stage = 1;
-        ctx.cleanup.state = "SCAN";
-        ctx.cleanup.fileCount = 0;
-        ctx.cleanup.sizeLabel = "0 B";
-        ctx.cleanup.progress = 0;
     }
 
     // INPUT HANDLING
@@ -1187,39 +1155,17 @@ public class WaterMediaApp {
             ctx.cleanup.error = false;
             ctx.cleanup.progress = 0;
 
-            final long[] stats = cleanupCacheStats();
+            final long[] stats = CleanupState.scan();
             ctx.cleanup.fileCount = (int) Math.min(Integer.MAX_VALUE, stats[0]);
             ctx.cleanup.sizeLabel = MathUtil.displayBytes(stats[1]);
-            if (!ctx.cleanup.error) {
-                ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
-            }
+            ctx.cleanup.state = stats[0] > 0 ? "FOUND" : "EMPTY";
+        } catch (final IOException e) {
+            ctx.cleanup.error = true;
+            ctx.cleanup.state = "ERROR";
         } finally {
             ctx.cleanup.working = false;
             ctx.requestRender();
         }
-    }
-
-    private static long[] cleanupCacheStats() {
-        final Path cache = cleanupCacheDir();
-        final long[] stats = new long[2];
-        if (!Files.exists(cache)) return stats;
-        try (final var stream = Files.walk(cache)) {
-            stream.filter(Files::isRegularFile).forEach(path -> {
-                stats[0]++;
-                try {
-                    stats[1] += Files.size(path);
-                } catch (final IOException ignored) {
-                }
-            });
-        } catch (final IOException e) {
-            ctx.cleanup.error = true;
-            ctx.cleanup.state = "ERROR";
-        }
-        return stats;
-    }
-
-    private static Path cleanupCacheDir() {
-        return WaterMedia.tmp().resolve("cache");
     }
 
     private static void cleanupCache() {
@@ -1231,7 +1177,7 @@ public class WaterMediaApp {
             ctx.cleanup.progress = 12;
             ctx.requestRender();
 
-            final Path cache = cleanupCacheDir();
+            final Path cache = CleanupState.dir();
             if (Files.exists(cache)) {
                 IOTool.deleteTree(cache);
             }
@@ -1588,9 +1534,7 @@ public class WaterMediaApp {
         // RELEASE COULD DESTROY IMAGES ON AN ALREADY-DESTROYED DEVICE.
         ctx.awaitPlayerRelease();
         RenderSystem.cleanup();
-        WinFrame.uninstall();
-        glfwFreeCallbacks(ctx.windowHandle);
-        glfwDestroyWindow(ctx.windowHandle);
+        destroyWindow();
         glfwTerminate();
         final GLFWErrorCallback errorCallback = glfwSetErrorCallback(null);
         if (errorCallback != null) errorCallback.close();

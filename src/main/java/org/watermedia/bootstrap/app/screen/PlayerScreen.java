@@ -38,7 +38,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 
@@ -491,7 +493,7 @@ public final class PlayerScreen extends Screen {
         this.qualList.rowHeight(34).spacing(6).scrollbarWidth(3)
                 .selectionColor(null).hoverColor(null)
                 .rowFactory((q, i) -> {
-                    final QualityRow row = new QualityRow(q);
+                    final PickRow row = new PickRow(q.name(), q.height() + "p", null);
                     row.onHover(r -> {
                         if (this.qualList.selectedIndex() != i) {
                             this.qualList.selection(i);
@@ -696,7 +698,7 @@ public final class PlayerScreen extends Screen {
         final Parent lodCol = Parent.column().spacing(6).margin(new Spacing(10, 0, 0, 0)).width(MAX_PARENT);
         for (int i = 0; i < lods.length; i++) {
             final int idx = i;
-            lodCol.add(new LodRow(idx, lods[idx].name(), lods[idx].percent() + "%")
+            lodCol.add(new PickRow(lods[idx].name(), lods[idx].percent() + "%", () -> this.lodSelectedIndex == idx)
                     .size(MAX_PARENT, 34)
                     .onClick(r -> {
                         this.clearResFocus();
@@ -916,50 +918,23 @@ public final class PlayerScreen extends Screen {
         }
     }
 
-    // QUALITY ROW: SELECTION PIP + BOLD NAME + THRESHOLD VALUE
-    private static final class QualityRow extends Element<QualityRow> {
+    // A PICKABLE DIALOG ROW (QUALITY OR LOD): PIP, BOLD LABEL AND A RIGHT-ALIGNED DETAIL THAT LIGHT UP WHILE PICKED
+    private static final class PickRow extends Element<PickRow> {
 
-        private final MediaQuality quality;
-
-        QualityRow(final MediaQuality quality) {
-            this.quality = quality;
-        }
-
-        @Override
-        protected void onDraw(final Canvas canvas) {
-            final int w = this.measuredWidth;
-            final int h = this.measuredHeight;
-            canvas.fill(this.left, this.top, w, h,
-                    this.selected ? AppTheme.alpha(AppTheme.NEON_DARK, 88) : AppTheme.alpha(AppTheme.BG_1, 148));
-            canvas.stroke(this.left, this.top, w, h,
-                    this.selected ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, 1f);
-            canvas.fill(this.left + 8, this.top + Math.max(0, (h - 8) / 2), 8, 8,
-                    this.selected ? AppTheme.AMBER : AppTheme.TEXT_FAINT);
-            canvas.text(this.quality.name().toUpperCase(), this.left + 28,
-                    this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, true)) / 2),
-                    this.selected ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT, AppTheme.TEXT_BODY, true);
-            canvas.text(this.quality.height() + "p", this.left + w - 62,
-                    this.top + Math.max(0, (h - canvas.textHeight(AppTheme.TEXT_BODY, false)) / 2),
-                    this.selected ? AppTheme.CYAN : AppTheme.TEXT_FAINT, AppTheme.TEXT_BODY, false);
-        }
-    }
-
-    // LOD ROW FOR THE VIDEO DIALOG: SAME SKIN AS QUALITY ROWS PLUS A HOVER TINT AND RIGHT-ALIGNED DETAIL
-    private final class LodRow extends Element<LodRow> {
-
-        private final int index;
         private final String label;
         private final String detail;
+        // null FOR A ROW INSIDE A ListView, WHICH STAMPS selected ITSELF
+        private final BooleanSupplier picked;
 
-        LodRow(final int index, final String label, final String detail) {
-            this.index = index;
-            this.label = label;
+        PickRow(final String label, final String detail, final BooleanSupplier picked) {
+            this.label = label.toUpperCase(Locale.ROOT);
             this.detail = detail;
+            this.picked = picked;
         }
 
         @Override
         protected void onDraw(final Canvas canvas) {
-            final boolean sel = this.index == PlayerScreen.this.lodSelectedIndex;
+            final boolean sel = this.picked == null ? this.selected : this.picked.getAsBoolean();
             final int w = this.measuredWidth;
             final int h = this.measuredHeight;
             canvas.fill(this.left, this.top, w, h,

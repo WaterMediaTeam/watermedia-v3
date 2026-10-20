@@ -201,6 +201,15 @@ public final class AppContext implements Executor {
         return LocalTime.ofSecondOfDay(Math.max(0L, ms) / 1000L % 86_400L).format(TIME_FORMAT);
     }
 
+    /** Takes the sources of {@link #selectedMRL} and selects the first; returns {@code false} when it has none. */
+    public boolean selectSources() {
+        this.availableSources = this.selectedMRL.sources().toArray(MRL.Source[]::new);
+        if (this.availableSources.length == 0) return false;
+        this.sourceSelectorIndex = 0;
+        this.selectedSource = this.availableSources[0];
+        return true;
+    }
+
     public void clearGroupState() {
         this.selectedGroup = null;
         this.groupMRLs.clear();
