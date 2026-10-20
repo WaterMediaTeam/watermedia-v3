@@ -23,7 +23,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -137,27 +136,27 @@ public final class ServiceLifecycleProbe {
                 }
             };
             PlatformAPI.register(controlled);
-            final var old = PlatformAPI.search("old");
+            final List<PlatformResult> old = PlatformAPI.search("old");
             if (!entered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Old probe did not enter");
-            final var fresh = PlatformAPI.search("fresh");
-            if (!PlayerWait.awaitCondition(fresh::done, 3000)) throw new AssertionError("New search was blocked behind a cancelled probe");
-            if (!callbackGuard.get() || fresh.results().size() != 1 || !fresh.results().get(0).title().equals("fresh"))
+            final List<PlatformResult> fresh = PlatformAPI.search("fresh");
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000)) throw new AssertionError("New search was blocked behind a cancelled probe");
+            if (!callbackGuard.get() || fresh.size() != 1 || !fresh.get(0).title().equals("fresh"))
                 throw new AssertionError("Fresh search has incorrect results");
             if (!PlatformAPI.searchHistory().equals(List.of("fresh", "old")))
                 throw new AssertionError("Search history did not record the queries newest first");
             // A HELD RESOLUTION NEVER GATES THE SEARCH SERVICE: THERE IS NO SESSION TO CLOSE AROUND IT
             final MRL held = MediaAPI.mrl(URI.create("fixture:held"));
             if (!resolveEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Resolver did not enter");
-            final var during = PlatformAPI.search("during-resolve");
-            if (!PlayerWait.awaitCondition(during::done, 3000) || during.results().size() != 1)
+            final List<PlatformResult> during = PlatformAPI.search("during-resolve");
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000) || during.size() != 1)
                 throw new AssertionError("A held resolution blocked the search service");
             resolveResume.countDown();
             if (!held.await(3000) || held.status() != MRL.Status.LOADED) throw new AssertionError("Held resolution did not finish");
-            // THE SUPERSEDED SEARCH ENDED AT ONCE AND NEVER PUBLISHES, EVEN ONCE ITS PROBE FINALLY RETURNS
-            if (!old.done() || !old.superseded() || !old.results().isEmpty()) throw new AssertionError("The superseded search did not end empty");
+            // THE DISCARDED SEARCH NEVER PUBLISHES, EVEN ONCE ITS PROBE FINALLY RETURNS
+            if (!old.isEmpty()) throw new AssertionError("The discarded search gained results");
             resume.countDown();
             if (!returned.await(3, TimeUnit.SECONDS)) throw new AssertionError("Old probe did not return");
-            if (PlayerWait.awaitCondition(() -> !old.results().isEmpty(), 250))
+            if (PlayerWait.awaitCondition(() -> !old.isEmpty(), 250))
                 throw new AssertionError("Late old results escaped their generation");
             // A REGISTRY CHANGE DROPS THE CACHED SEARCHES; THE HISTORY KEEPS EVERY QUERY, NEWEST FIRST
             for (final Platform platform: PlatformAPI.platforms()) PlatformAPI.unregister(platform);
@@ -168,9 +167,9 @@ public final class ServiceLifecycleProbe {
                     return List.of(new PlatformResult(this, "replacement", null, URI.create("https://fixture.invalid/new")));
                 }
             });
-            final var again = PlatformAPI.search("fresh");
-            if (!PlayerWait.awaitCondition(again::done, 3000) || again.results().size() != 1
-                    || !again.results().get(0).title().equals("replacement") || !PlatformAPI.searchHistory().equals(List.of("fresh", "during-resolve", "old")))
+            final List<PlatformResult> again = PlatformAPI.search("fresh");
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000) || again.size() != 1
+                    || !again.get(0).title().equals("replacement") || !PlatformAPI.searchHistory().equals(List.of("fresh", "during-resolve", "old")))
                 throw new AssertionError("Search cache survived the registry change or the history lost a query");
         } finally {
             resolveResume.countDown();
@@ -212,27 +211,17 @@ public final class ServiceLifecycleProbe {
             }
         });
         try {
-            final var search = PlatformAPI.search("failure contract");
-            // THE WORKERS EXIST FROM THE FIRST SEARCH ON
-            final var field = PlatformAPI.class.getDeclaredField("searchPool");
-            field.setAccessible(true);
-            final ThreadPoolExecutor pool = (ThreadPoolExecutor) field.get(null);
-            final var coordinatorField = PlatformAPI.class.getDeclaredField("coordinator");
-            coordinatorField.setAccessible(true);
-            final ThreadPoolExecutor coordinator = (ThreadPoolExecutor) coordinatorField.get(null);
+            final List<PlatformResult> search = PlatformAPI.search("failure contract");
             if (!slowEntered.await(3, TimeUnit.SECONDS)) throw new AssertionError("Second probe did not start");
-            if (!PlayerWait.awaitCondition(() -> pool.getCompletedTaskCount() >= 1, 3000))
-                throw new AssertionError("Failing probe did not complete exceptionally");
-            if (PlayerWait.awaitCondition(search::done, 250))
+            // THE FAILING PROBE ANSWERED AT ONCE, BUT THE SEARCH STAYS OPEN UNTIL THE SLOW ONE RETURNS
+            if (PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 250))
                 throw new AssertionError("Search completed while another probe was still running");
             releaseSlow.countDown();
-            if (!PlayerWait.awaitCondition(search::done, 3000) || search.results().size() != 1
-                    || !search.results().get(0).title().equals("late success"))
+            if (!PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3000) || search.size() != 1
+                    || !search.get(0).title().equals("late success"))
                 throw new AssertionError("Successful late probe was lost");
-            if (!PlayerWait.awaitCondition(() -> coordinator.getCompletedTaskCount() >= 1, 3000))
-                throw new AssertionError("Search coordinator did not finish publishing its cache");
-            final var cached = PlatformAPI.search("failure contract");
-            if (!cached.done() || cached.results().size() != 1 || !cached.results().get(0).title().equals("late success")
+            final List<PlatformResult> cached = PlatformAPI.search("failure contract");
+            if (PlatformAPI.searching() || cached.size() != 1 || !cached.get(0).title().equals("late success")
                     || successfulProbes.get() != 1)
                 throw new AssertionError("Completed search did not cache its full result set");
         } finally {

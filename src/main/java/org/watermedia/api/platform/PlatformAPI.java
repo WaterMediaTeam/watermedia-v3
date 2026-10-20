@@ -12,16 +12,15 @@ import org.watermedia.tools.ThreadTool;
 import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.Supplier;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -40,9 +39,10 @@ import static org.watermedia.WaterMedia.LOGGER;
 public final class PlatformAPI {
     private static final Marker IT = MarkerManager.getMarker(PlatformAPI.class.getSimpleName());
     private static final int HISTORY_LIMIT = 10;
-    private static final int DEFAULT_LIMIT = 2; // RESULTS PER PLATFORM WHEN THE CALLER DOES NOT SPECIFY
+    private static final int SEARCH_LIMIT = 2; // RESULTS PER PLATFORM
     private static final int SEARCH_CACHE_LIMIT = 32;
-    private static final int SEARCH_THREADS = 4;
+    private static final int SEARCH_WORKERS = 2;
+    private static final long SEARCH_TYPING_DELAY_MS = 300L;
     private static final Object SEARCH_LOCK = new Object();
     // COPY-ON-WRITE: REGISTRATION IS RARE WHILE THE MRL LOADER THREADS ITERATE HOT AND MUST NEVER SEE A CME.
     // APPLICATION HANDLERS ARE PROBED FIRST; THE BUILT-IN ONES ARE ENLISTED ONCE AT CLASS LOAD
@@ -50,8 +50,8 @@ public final class PlatformAPI {
     static final CopyOnWriteArrayList<Platform> BUILTIN = new CopyOnWriteArrayList<>();
     // RECENT QUERIES, MOST RECENT FIRST, CAPPED AT HISTORY_LIMIT — GUARDED BY SEARCH_LOCK
     private static final ArrayDeque<String> HISTORY = new ArrayDeque<>();
-    // ACCESS-ORDER LRU OF (limit, query) RESULTS, FLUSHED EVERY platforms.searchCleanupInterval MINUTES AND WHENEVER
-    // THE REGISTRY CHANGES; TYPING ISSUES ONE SEARCH PER PARTIAL QUERY, HENCE THE CAP. GUARDED BY SEARCH_LOCK
+    // QUERY -> THE LIST ITS SEARCH FILLS, SERVED AS THE SAME INSTANCE WHILE IT FILLS AND AFTER. ACCESS-ORDER LRU, FLUSHED
+    // EVERY platforms.searchCleanupInterval MINUTES AND WHENEVER THE REGISTRY CHANGES — GUARDED BY SEARCH_LOCK
     private static final Map<String, List<PlatformResult>> SEARCH_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<String, List<PlatformResult>> eldest) {
@@ -60,14 +60,14 @@ public final class PlatformAPI {
     };
     private static long nextCacheClean;
 
-    // THE SEARCH WORKERS LIVE FOR THE WHOLE PROCESS ONCE THE FIRST SEARCH CREATES THEM; THE COORDINATOR HAS ITS OWN
-    // THREAD SO WAITING FOR BOUNDED PROBES CANNOT DEADLOCK THE POOL. GUARDED BY SEARCH_LOCK
-    private static ThreadPoolExecutor searchPool;
-    private static ThreadPoolExecutor coordinator;
-    private static long searchGeneration;
-    private static long registryVersion; // BUMPED UNDER SEARCH_LOCK ON EVERY REGISTRY CHANGE SO A STALE SEARCH NEVER CACHES
-    private static Future<?> searchTask; // CURRENT SEARCH — GUARDED BY SEARCH_LOCK, CANCELLED WHEN A NEW ONE STARTS
-    private static PlatformSearch searchActive; // ITS HANDLE, ENDED AS SUPERSEDED AT THAT MOMENT — GUARDED BY SEARCH_LOCK
+    // ==== SEARCH IN FLIGHT — GUARDED BY SEARCH_LOCK ====
+    // THE TWO WORKERS LIVE FOR THE WHOLE PROCESS ONCE THE FIRST SEARCH CREATES THEM; EVERY PLATFORM PROBE IS ONE TASK ON THEM
+    private static ScheduledExecutorService searchers;
+    private static final List<Future<?>> searchProbes = new ArrayList<>();
+    private static String searchQuery; // THE LAST QUERY SEARCHED; TYPING IS DETECTED AGAINST IT
+    private static int searchRemaining; // PROBES STILL TO ANSWER; ZERO WHEN NO SEARCH IS IN FLIGHT
+    private static long searchGeneration; // BUMPED PER SEARCH, SO A PROBE OF A DISCARDED SEARCH NEVER WRITES
+    private static long registryVersion; // BUMPED ON EVERY REGISTRY CHANGE, SO A SEARCH OVERLAPPED BY ONE IS NOT KEPT
 
     static {
         // ONE HANDLER THAT CANNOT BE BUILT MUST NOT TAKE THE REGISTRY DOWN WITH IT: THE OTHERS STILL ENLIST
@@ -96,172 +96,91 @@ public final class PlatformAPI {
 
     private PlatformAPI() {}
 
-
-    /**
-     * Searches every registered {@link Platform} for {@code query}, with up to
-     * {@value #DEFAULT_LIMIT} results per platform. Shorthand for {@link #search(String, int)}.
-     *
-     * @param query the user's search text
-     * @return a live {@link PlatformSearch} handle whose result list fills in off-thread
-     */
-    public static PlatformSearch search(final String query) {
-        return search(query, DEFAULT_LIMIT);
+    /** Searches every registered platform for {@code query}; shorthand for {@link #search(String, boolean)} without a re-search. */
+    public static List<PlatformResult> search(final String query) {
+        return search(query, false);
     }
 
     /**
-     * Starts an asynchronous search across every registered {@link Platform} and returns a live
-     * {@link PlatformSearch} immediately. The handle's {@link PlatformSearch#results() result list}
-     * grows off-thread as each platform answers — platforms are probed concurrently, so hits land in
-     * completion order (fast HTTP handlers appear before slow process-spawning ones like yt-dlp), with
-     * at most {@code limit} hits per platform.
-     * <p>
-     * There is one search slot per process: this call cancels (interrupts) any still-running previous
-     * search, whoever issued it, whose handle ends at once as {@link PlatformSearch#superseded()
-     * superseded} with the hits it gathered, so only the latest handle keeps updating. The {@code query} is recorded
-     * in the {@value #HISTORY_LIMIT}-entry {@link #searchHistory() history}; a {@code null} or blank
-     * query is a no-op that returns an already-{@link PlatformSearch#done() done}, empty handle and leaves
-     * a running search alone.
+     * Starts a search across every registered {@link Platform} and returns at once the list its results land in,
+     * up to {@value #SEARCH_LIMIT} per platform in answer order; {@link #searching()} tells when every platform
+     * answered. One search runs at a time: a new query discards the one in flight, its probes interrupted and its
+     * partial list dropped, so only the latest list keeps filling. A query that extends the previous one, or that
+     * the previous one extends, is typing and waits {@value #SEARCH_TYPING_DELAY_MS} ms for the next keystroke before
+     * touching the network; any other query probes at once. A query already searched is served the same list from
+     * the cache, finished or still filling, unless {@code reSearch} is set; a blank query returns an empty list and
+     * leaves a running search alone.
      *
      * @param query the user's search text
-     * @param limit   the maximum number of results to take from each platform (clamped to at least 1)
-     * @return a live handle to poll for results
+     * @param reSearch whether to drop the cached results of this query and probe the platforms again
+     * @return an unmodifiable view of the list the search fills; empty and final for a blank query
      */
-    public static PlatformSearch search(final String query, final int limit) {
+    public static List<PlatformResult> search(final String query, final boolean reSearch) {
+        if (query == null || query.isBlank()) return List.of();
+        final String text = query.strip();
         synchronized (SEARCH_LOCK) {
-            if (coordinator == null) {
-                searchPool = new ThreadPoolExecutor(SEARCH_THREADS, SEARCH_THREADS, 0, TimeUnit.MILLISECONDS,
-                        new LinkedBlockingQueue<>(), ThreadTool.workerFactory("PlatformAPI-Search", Thread.NORM_PRIORITY));
-                coordinator = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
-                        new LinkedBlockingQueue<>(1), ThreadTool.workerFactory("PlatformAPI-Coordinator", Thread.NORM_PRIORITY));
-            }
-
-            // BLANK QUERY: NOTHING TO SEARCH, NOTHING WORTH REMEMBERING AND NOTHING TO SUPERSEDE
-            if (query == null || query.isBlank()) {
-                final PlatformSearch empty = new PlatformSearch(query);
-                empty.complete();
-                return empty;
-            }
-
-            final long generation = ++searchGeneration;
-            final ExecutorService pool = searchPool;
-            // SUPERSEDE THE PREVIOUS SEARCH — ONLY ONE IS EVER ACTIVE; ITS HANDLE ENDS WITH WHATEVER IT GATHERED
-            if (searchTask != null) searchTask.cancel(true);
-            if (searchActive != null) searchActive.supersede();
-            searchTask = null;
-            searchActive = null;
-
-            // RECORD IN HISTORY: DEDUP TO MOST-RECENT-FIRST, CAPPED AT HISTORY_LIMIT
-            HISTORY.remove(query);
-            HISTORY.addFirst(query);
+            // RECENT QUERIES, NEWEST FIRST, WITHOUT DUPLICATES
+            HISTORY.remove(text);
+            HISTORY.addFirst(text);
             while (HISTORY.size() > HISTORY_LIMIT) HISTORY.removeLast();
 
-            // GENERAL CACHE SWEEP: ONCE THE INTERVAL ELAPSES, DROP EVERYTHING SO RESULTS NEVER GO TOO STALE
+            // THE WHOLE CACHE EXPIRES ON THE CONFIGURED INTERVAL, SO RESULTS NEVER GROW TOO STALE
             final long now = System.currentTimeMillis();
             if (now >= nextCacheClean) {
                 SEARCH_CACHE.clear();
                 nextCacheClean = now + MathUtil.minutesToMs(WaterMediaConfig.platforms.searchCleanupInterval);
             }
 
-            final int perPlatform = Math.max(1, limit);
-            final String cacheKey = perPlatform + " " + query;
-
-            // CACHE HIT: SERVE A PRE-COMPLETED HANDLE WITHOUT TOUCHING THE PLATFORMS
-            final List<PlatformResult> cached = SEARCH_CACHE.get(cacheKey);
+            final List<PlatformResult> cached = reSearch ? null : SEARCH_CACHE.get(text);
             if (cached != null) {
-                LOGGER.debug(IT, "Search '{}' served from cache ({} result(s))", query, cached.size());
-                final PlatformSearch hit = new PlatformSearch(query);
-                hit.add(cached);
-                hit.complete();
-                return hit;
+                // AN ANSWERED QUERY STILL WINS OVER A DIFFERENT SEARCH IN FLIGHT, WHICH NOBODY WAITS FOR ANY MORE
+                if (!text.equals(searchQuery)) discardSearch();
+                LOGGER.debug(IT, "Search '{}' served from cache ({} result(s))", text, cached.size());
+                return Collections.unmodifiableList(cached);
             }
 
-            final PlatformSearch search = new PlatformSearch(query);
+            // THE NEWEST QUERY WINS: WHATEVER IS IN FLIGHT IS DISCARDED BEFORE THIS SEARCH STARTS
+            discardSearch();
+            if (searchers == null) {
+                final ScheduledThreadPoolExecutor pool = new ScheduledThreadPoolExecutor(SEARCH_WORKERS, ThreadTool.workerFactory("PlatformAPI-Search", Thread.NORM_PRIORITY));
+                pool.setRemoveOnCancelPolicy(true);
+                searchers = pool;
+            }
+
+            // SHARED FIRST LETTERS MEAN THE USER IS STILL TYPING: THE PROBES WAIT FOR THE NEXT KEYSTROKE
+            final boolean typing = searchQuery != null && (text.startsWith(searchQuery) || searchQuery.startsWith(text));
+            final long delay = typing ? SEARCH_TYPING_DELAY_MS : 0L;
+            final List<PlatformResult> results = new CopyOnWriteArrayList<>(); // TWO WORKERS APPEND WHILE THE CALLER READS EVERY FRAME
+            final Platform[] platforms = probeOrder();
+            final long generation = ++searchGeneration;
             final long registry = registryVersion;
-            coordinator.purge();
-            searchPool.purge();
-            searchTask = coordinator.submit(() -> runSearch(search, query, perPlatform, cacheKey, pool, generation, registry));
-            searchActive = search;
-            return search;
+            searchQuery = text;
+            searchRemaining = platforms.length;
+            // WITH NOTHING TO ASK THERE IS NOTHING WORTH KEEPING
+            if (platforms.length > 0) SEARCH_CACHE.put(text, results);
+            for (final Platform platform: platforms)
+                searchProbes.add(searchers.schedule(() -> probe(platform, text, results, generation, registry), delay, TimeUnit.MILLISECONDS));
+            LOGGER.debug(IT, "Search '{}' started on {} platform(s){}", text, platforms.length, typing ? " after the typing delay" : "");
+            return Collections.unmodifiableList(results);
+        }
+    }
+
+    /** Whether the latest search still waits on platforms; the list {@link #search} returned keeps filling until then. */
+    public static boolean searching() {
+        synchronized (SEARCH_LOCK) {
+            return searchRemaining > 0;
         }
     }
 
     /**
      * Snapshot of the recent-query history (most recent first, at most {@value #HISTORY_LIMIT}
-     * entries), the single list every {@link #search(String, int) search} records its query in.
+     * entries), the single list every {@link #search(String) search} records its query in.
      *
      * @return an immutable snapshot of the recent queries, newest first
      */
     public static List<String> searchHistory() {
         synchronized (SEARCH_LOCK) {
             return List.copyOf(HISTORY);
-        }
-    }
-
-    // FANS EVERY PLATFORM PROBE OUT ONTO THE POOL, APPENDS HITS TO THE LIVE HANDLE AS EACH ANSWERS AND WAITS FOR ALL;
-    // A NEWER SEARCH INTERRUPTS IT, CANCELLING THE PROBES AND LEAVING THE HANDLE FROZEN. ONE FAILING PLATFORM NEVER ABORTS IT
-    private static void runSearch(final PlatformSearch search, final String query, final int limit, final String cacheKey,
-                                  final ExecutorService pool, final long generation, final long registry) {
-        LOGGER.debug(IT, "Search '{}' started ({} per platform)", query, limit);
-        final Platform[] platforms = probeOrder();
-        final List<Future<?>> probes = new ArrayList<>(platforms.length);
-        try {
-            for (final Platform platform: platforms) {
-                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
-                probes.add(pool.submit(() -> probePlatform(platform, search, limit, generation)));
-            }
-            for (final Future<?> probe: probes) {
-                try {
-                    probe.get();
-                } catch (final ExecutionException e) {
-                    // AN ESCAPED PROBE FAILURE DOES NOT END THE OTHER PROBES OR COMPLETE THEIR HANDLE.
-                    LOGGER.warn(IT, "Search probe failed unexpectedly", e.getCause());
-                }
-            }
-        } catch (final InterruptedException e) { // SUPERSEDED — CANCEL THE OUTSTANDING PROBES; search() ALREADY ENDED THE HANDLE
-            for (final Future<?> probe: probes) probe.cancel(true);
-            Thread.currentThread().interrupt();
-            LOGGER.debug(IT, "Search '{}' superseded before completing", query);
-            return;
-        }
-
-        synchronized (SEARCH_LOCK) {
-            if (generation != searchGeneration) return;
-            search.complete();
-        }
-        // CACHE ONLY FULLY-COMPLETED, NON-EMPTY SEARCHES AGAINST AN UNCHANGED REGISTRY (THE INTERRUPTED RETURN ABOVE
-        // NEVER REACHES HERE). SKIPPING EMPTY RESULTS LETS A TRANSIENT TOTAL FAILURE RETRY INSTEAD OF SERVING STALE NOTHING
-        final List<PlatformResult> finalResults = search.results();
-        if (!finalResults.isEmpty()) {
-            synchronized (SEARCH_LOCK) {
-                if (generation == searchGeneration && registry == registryVersion) SEARCH_CACHE.put(cacheKey, List.copyOf(finalResults));
-            }
-        }
-        // THE QUERY IS USER TEXT: COUNTS GO TO INFO, THE TEXT ITSELF STAYS AT DEBUG
-        LOGGER.info(IT, "Search complete with {} result(s) from {} platform(s)", finalResults.size(), platforms.length);
-    }
-
-    // ISOLATES PLATFORM FAILURES; THE COORDINATOR ALSO HANDLES ESCAPED FAILURES.
-    // CANCELLATION RESTORES THE INTERRUPT FLAG AND RETURNS WITHOUT PUBLISHING RESULTS.
-    private static void probePlatform(final Platform platform, final PlatformSearch search, final int limit, final long generation) {
-        if (Thread.currentThread().isInterrupted()) return;
-        try {
-            final List<PlatformResult> hits = platform.search(search.query(), limit);
-            if (hits != null && !hits.isEmpty()) {
-                // DEFENSIVE PER-PLATFORM CAP: THE CONTRACT IS <= limit, BUT DON'T TRUST A MISBEHAVING HANDLER
-                final List<PlatformResult> capped = hits.size() > limit ? hits.subList(0, limit) : hits;
-                synchronized (SEARCH_LOCK) {
-                    if (generation != searchGeneration || Thread.currentThread().isInterrupted()) return;
-                    search.add(capped);
-                }
-                LOGGER.debug(IT, "Search matched {} result(s) on {}", capped.size(), platform.name());
-            }
-        } catch (final PlatformException | RuntimeException | LinkageError e) {
-            // yt-dlp AND OTHERS WRAP THE INTERRUPT IN THEIR OWN EXCEPTION: IF THE FLAG IS SET, IT WAS A CANCELLATION
-            if (Thread.currentThread().isInterrupted()) {
-                LOGGER.debug(IT, "Search interrupted on {}", platform.name());
-                return;
-            }
-            LOGGER.warn(IT, "Search failed on {}", platform.name(), e);
         }
     }
 
@@ -337,6 +256,43 @@ public final class PlatformAPI {
      */
     public static List<Platform> platforms() {
         return List.of(probeOrder());
+    }
+
+    // UTILITY
+    // INTERRUPTS THE PROBES IN FLIGHT AND DROPS THEIR PARTIAL LIST FROM THE CACHE; A FINISHED SEARCH ONLY RELEASES ITS TASKS
+    private static void discardSearch() {
+        for (final Future<?> probe: searchProbes) probe.cancel(true);
+        searchProbes.clear();
+        if (searchRemaining == 0) return;
+        SEARCH_CACHE.remove(searchQuery);
+        searchRemaining = 0;
+        LOGGER.debug(IT, "Search '{}' discarded", searchQuery);
+    }
+
+    // ONE PLATFORM OF ONE SEARCH: ITS HITS JOIN THE LIST UNLESS THE SEARCH WAS DISCARDED MEANWHILE, AND THE LAST PROBE TO
+    // ANSWER CLOSES THE SEARCH. A FAILING PLATFORM COSTS ONLY ITS OWN HITS, EVEN WHEN ITS NAME FAILS TOO
+    private static void probe(final Platform platform, final String query, final List<PlatformResult> results, final long generation, final long registry) {
+        List<PlatformResult> hits = List.of();
+        try {
+            final List<PlatformResult> found = platform.search(query, SEARCH_LIMIT);
+            // THE CONTRACT IS AT MOST SEARCH_LIMIT HITS; A MISBEHAVING HANDLER IS CAPPED
+            if (found != null) hits = found.size() > SEARCH_LIMIT ? List.copyOf(found.subList(0, SEARCH_LIMIT)) : found;
+            if (!hits.isEmpty()) LOGGER.debug(IT, "Search matched {} result(s) on {}", hits.size(), platform.name());
+        } catch (final PlatformException | RuntimeException | LinkageError e) {
+            // A DISCARDED SEARCH INTERRUPTS ITS PROBES, WHICH REPORT THE CANCELLED WAIT AS THEIR OWN FAILURE
+            if (!Thread.currentThread().isInterrupted()) LOGGER.warn(IT, "Search failed on {}", platform.name(), e);
+        } finally {
+            synchronized (SEARCH_LOCK) {
+                if (generation == searchGeneration) {
+                    results.addAll(hits);
+                    if (--searchRemaining == 0) {
+                        // A LIST LEFT EMPTY, OR GATHERED AGAINST A CHANGED REGISTRY, IS NOT KEPT, SO THE NEXT CALL ASKS AGAIN
+                        if (results.isEmpty() || registry != registryVersion) SEARCH_CACHE.remove(query);
+                        LOGGER.info(IT, "Search complete with {} result(s)", results.size());
+                    }
+                }
+            }
+        }
     }
 
     // APPLICATION HANDLERS BEFORE THE BUILT-IN ONES, THE MOST RECENTLY REGISTERED OF EACH GROUP FIRST

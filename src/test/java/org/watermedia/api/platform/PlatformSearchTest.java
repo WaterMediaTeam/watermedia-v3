@@ -21,16 +21,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link PlatformAPI#search(String, int)} and its live {@link PlatformSearch} handle
- * offline: history dedup/cap, the result cache and its invalidation, the defensive per-platform cap,
- * and supersede semantics. All pure-JVM logic driven by stub {@link Platform}s.
+ * Verifies {@link PlatformAPI#search(String, boolean)} offline: the live result list and {@link PlatformAPI#searching()},
+ * history dedup and cap, the cache and its invalidation, the per-platform cap, the typing delay, the re-search flag and
+ * the discard of the search in flight. All pure-JVM logic driven by stub {@link Platform}s.
  * <p>
- * The registry is a package-private static and the search state is private, so the latter is
- * reached through reflection: each case snapshots and clears the registry, history and cache
- * before running (hermetic) and restores the registry after.
+ * The registry is a package-private static and the search state is private, so the latter is reached through
+ * reflection: each case snapshots and clears the registry, history and cache before running and restores the registry after.
  */
 @DisplayName("PlatformAPI search")
 public class PlatformSearchTest {
@@ -52,7 +52,6 @@ public class PlatformSearchTest {
 
     @AfterEach
     void restore() throws Exception {
-        cancelSearchTask();
         PlatformAPI.BUILTIN.clear();
         PlatformAPI.CUSTOM.clear();
         PlatformAPI.BUILTIN.addAll(this.savedBuiltin);
@@ -65,11 +64,11 @@ public class PlatformSearchTest {
     class History {
 
         @Test
-        @DisplayName("Blank query is a no-op that returns an already-done, empty handle")
-        void testBlankQueryReturnsDoneEmpty() {
-            final PlatformSearch search = PlatformAPI.search("   ", 2);
-            assertTrue(search.done(), "A blank query must return an already-done handle");
-            assertTrue(search.results().isEmpty(), "A blank query must yield no results");
+        @DisplayName("Blank query returns an empty list, searches nothing and is not remembered")
+        void testBlankQueryIsNoOp() {
+            final List<PlatformResult> results = PlatformAPI.search("   ");
+            assertTrue(results.isEmpty());
+            assertFalse(PlatformAPI.searching());
             assertTrue(PlatformAPI.searchHistory().isEmpty(), "A blank query is not worth remembering");
         }
 
@@ -77,13 +76,13 @@ public class PlatformSearchTest {
         @DisplayName("History dedups to most-recent-first and caps at the limit")
         void testHistoryDedupAndCap() {
             // DEDUP: RE-SEARCHING 'alpha' MOVES IT BACK TO THE FRONT RATHER THAN DUPLICATING
-            PlatformAPI.search("alpha", 2);
-            PlatformAPI.search("beta", 2);
-            PlatformAPI.search("alpha", 2);
+            PlatformAPI.search("alpha");
+            PlatformAPI.search("beta");
+            PlatformAPI.search("alpha");
             assertEquals(List.of("alpha", "beta"), PlatformAPI.searchHistory(), "History must dedup, newest first");
 
             // CAP: 15 DISTINCT QUERIES COLLAPSE TO THE 10 MOST RECENT (q15..q6), NEWEST FIRST
-            for (int i = 1; i <= 15; i++) PlatformAPI.search("q" + i, 2);
+            for (int i = 1; i <= 15; i++) PlatformAPI.search("q" + i);
             final List<String> history = PlatformAPI.searchHistory();
             assertEquals(10, history.size(), "History must be capped at 10 entries");
             assertEquals("q15", history.get(0), "Most recent query must be first");
@@ -96,30 +95,61 @@ public class PlatformSearchTest {
     class Results {
 
         @Test
-        @DisplayName("A platform returning more than the limit is defensively capped")
-        void testPerPlatformCap() {
-            PlatformAPI.register(new StubPlatform(5, null)); // RETURNS 5 HITS; CALLER ASKS FOR 2
-            final PlatformSearch search = PlatformAPI.search("cats", 2);
-            assertTrue(PlayerWait.awaitCondition(search::done, 3_000), "Search must complete");
-            assertEquals(2, search.results().size(), "Hits beyond the per-platform limit must be dropped");
+        @DisplayName("The list fills off-thread, is read-only and a platform over the limit is capped")
+        void testLiveListAndCap() {
+            PlatformAPI.register(new StubPlatform(5, null)); // RETURNS 5 HITS; THE API TAKES 2
+            final List<PlatformResult> results = PlatformAPI.search("cats");
+            assertTrue(awaitDone(), "Search must complete");
+            assertEquals(2, results.size(), "Hits beyond the per-platform limit must be dropped");
+            assertThrows(UnsupportedOperationException.class, results::clear);
         }
 
         @Test
-        @DisplayName("An identical query is served from cache without re-probing the platforms")
-        void testCacheHitDoesNotReprobe() throws Exception {
-            final StubPlatform stub = new StubPlatform(1, null);
+        @DisplayName("An identical query is served the same list without re-probing, finished or still filling")
+        void testCacheHitDoesNotReprobe() {
+            final StubPlatform stub = new StubPlatform(1, 300);
             PlatformAPI.register(stub);
 
-            final PlatformSearch first = PlatformAPI.search("dogs", 2);
-            assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "Search must complete");
-            // CACHING HAPPENS JUST AFTER COMPLETION: WAIT FOR IT TO LAND
-            assertTrue(awaitCacheKey("2 dogs"), "The finished search must land in the cache");
-            final int probesAfterFirst = stub.probes.get();
+            final List<PlatformResult> first = PlatformAPI.search("dogs");
+            assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
+            final List<PlatformResult> during = PlatformAPI.search("dogs");
+            assertTrue(PlatformAPI.searching(), "The query in flight stays in flight");
+            assertTrue(awaitDone(), "Search must complete");
+            assertEquals(1, first.size());
+            assertEquals(first, during, "The query in flight is served its own list");
 
-            final PlatformSearch second = PlatformAPI.search("dogs", 2);
-            assertTrue(second.done(), "A cache hit must return an already-done handle");
-            assertEquals(1, second.results().size(), "The cached results must be replayed");
-            assertEquals(probesAfterFirst, stub.probes.get(), "A cache hit must not re-probe the platform");
+            final List<PlatformResult> again = PlatformAPI.search("dogs");
+            assertFalse(PlatformAPI.searching(), "A cache hit does not search");
+            assertEquals(first, again, "The cached results are the same list");
+            assertEquals(1, stub.probes.get(), "A cache hit must not re-probe the platform");
+        }
+
+        @Test
+        @DisplayName("reSearch drops the cached results and probes the platforms again")
+        void testReSearch() {
+            final StubPlatform stub = new StubPlatform(1, null);
+            PlatformAPI.register(stub);
+            PlatformAPI.search("owls");
+            assertTrue(awaitDone(), "Search must complete");
+            PlatformAPI.search("owls");
+            assertEquals(1, stub.probes.get());
+
+            final List<PlatformResult> fresh = PlatformAPI.search("owls", true);
+            assertTrue(awaitDone(), "The re-search must complete");
+            assertEquals(2, stub.probes.get(), "A re-search asks the platform again");
+            assertEquals(1, fresh.size());
+        }
+
+        @Test
+        @DisplayName("An empty result is not cached, so the next call asks again")
+        void testEmptyResultNotCached() {
+            final StubPlatform stub = new StubPlatform(0, null);
+            PlatformAPI.register(stub);
+            PlatformAPI.search("nothing");
+            assertTrue(awaitDone(), "Search must complete");
+            PlatformAPI.search("nothing");
+            assertTrue(awaitDone(), "Search must complete");
+            assertEquals(2, stub.probes.get(), "A transient total failure must retry instead of serving stale nothing");
         }
 
         @Test
@@ -127,68 +157,93 @@ public class PlatformSearchTest {
         void testRegistrationDuringSearchIsNotCached() {
             final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS SO THE REGISTRY CHANGES WHILE THE SEARCH RUNS
             PlatformAPI.register(stub);
-            final PlatformSearch first = PlatformAPI.search("race", 2);
+            final List<PlatformResult> first = PlatformAPI.search("race");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
             PlatformAPI.register(new StubPlatform(1, null));
-            assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "Search must complete");
-            assertEquals(1, first.results().size(), "The running search keeps its snapshot of the registry");
+            assertTrue(awaitDone(), "Search must complete");
+            assertEquals(1, first.size(), "The running search keeps its snapshot of the registry");
 
-            final PlatformSearch again = PlatformAPI.search("race", 2);
-            assertTrue(PlayerWait.awaitCondition(again::done, 3_000), "Search must complete");
-            assertEquals(2, again.results().size(), "The query is probed again with the new handler instead of served from cache");
+            final List<PlatformResult> again = PlatformAPI.search("race");
+            assertTrue(awaitDone(), "Search must complete");
+            assertEquals(2, again.size(), "The query is probed again with the new handler instead of served from cache");
         }
 
         @Test
         @DisplayName("Registering a handler drops the cached searches")
-        void testRegistrationInvalidatesCache() throws Exception {
+        void testRegistrationInvalidatesCache() {
             final StubPlatform stub = new StubPlatform(1, null);
             PlatformAPI.register(stub);
-            final PlatformSearch first = PlatformAPI.search("birds", 2);
-            assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "Search must complete");
-            assertTrue(awaitCacheKey("2 birds"), "The finished search must land in the cache");
+            PlatformAPI.search("birds");
+            assertTrue(awaitDone(), "Search must complete");
 
             PlatformAPI.register(new StubPlatform(1, null));
-            final PlatformSearch again = PlatformAPI.search("birds", 2);
-            assertTrue(PlayerWait.awaitCondition(again::done, 3_000), "Search must complete");
+            final List<PlatformResult> again = PlatformAPI.search("birds");
+            assertTrue(awaitDone(), "Search must complete");
             assertEquals(2, stub.probes.get(), "A new handler must force the query to be probed again");
-            assertEquals(2, again.results().size(), "Both handlers answer the re-probed query");
+            assertEquals(2, again.size(), "Both handlers answer the re-probed query");
         }
     }
 
     @Nested
-    @DisplayName("Supersede")
-    class Supersede {
+    @DisplayName("Discard and typing")
+    class Discard {
 
         @Test
-        @DisplayName("Superseding a search ends the old handle at once, marked superseded and empty")
-        void testSupersedeEndsOldHandle() {
+        @DisplayName("A new query discards the search in flight, whose list stays empty and leaves the cache")
+        void testNewQueryDiscardsTheOldSearch() {
             final StubPlatform stub = new StubPlatform(1, 2_000); // BLOCKS SO THE FIRST SEARCH STAYS IN-FLIGHT
             PlatformAPI.register(stub);
 
-            final PlatformSearch first = PlatformAPI.search("slow-a", 2);
+            final List<PlatformResult> first = PlatformAPI.search("slow-a");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
-            assertFalse(first.done());
-            assertFalse(first.superseded());
-            PlatformAPI.search("slow-b", 2); // SUPERSEDES: CANCELS THE FIRST COORDINATOR + ITS PROBE
-            assertTrue(first.done(), "A superseded handle ends as soon as the newer search starts");
-            assertTrue(first.superseded());
+            assertTrue(PlatformAPI.searching());
+            final List<PlatformResult> second = PlatformAPI.search("slow-b"); // NEITHER EXTENDS THE OTHER: NO TYPING DELAY
             // THE CANCELLED PROBE UNWINDS ON ITS OWN THREAD; ONLY ONCE IT HAS RETURNED CAN ITS HITS BE RULED OUT
             assertTrue(PlayerWait.awaitCondition(() -> stub.finished.get() == 1, 3_000), "The cancelled probe must unwind");
-            assertTrue(first.results().isEmpty(), "A superseded handle never gains the hits of its cancelled probes");
+            assertTrue(first.isEmpty(), "A discarded search never gains the hits of its cancelled probes");
+            assertTrue(awaitDone(), "The new search must complete");
+            assertEquals(1, second.size());
+            assertEquals(2, stub.probes.get(), "The new query was probed at once");
+        }
+
+        @Test
+        @DisplayName("Typing waits for the next keystroke before asking the platforms, and the extended query is re-asked later")
+        void testTypingDelay() {
+            final StubPlatform stub = new StubPlatform(1, null);
+            PlatformAPI.register(stub);
+            PlatformAPI.search("ca");
+            assertTrue(awaitDone(), "The first query probes at once");
+            assertEquals(1, stub.probes.get());
+
+            final long started = System.nanoTime();
+            final List<PlatformResult> typed = PlatformAPI.search("cat");
+            assertTrue(PlatformAPI.searching(), "The delayed search counts as in flight");
+            assertFalse(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 120), "A typing continuation must wait before probing");
+            assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 2, 3_000), "The delayed probe must run");
+            assertTrue(System.nanoTime() - started >= 250_000_000L, "The probe ran before the typing delay elapsed");
+            assertTrue(awaitDone());
+            assertEquals(1, typed.size());
+
+            // A DISCARDED TYPING STEP LEAVES THE CACHE: ASKING FOR IT AGAIN PROBES AGAIN
+            PlatformAPI.search("cats");
+            final List<PlatformResult> deleted = PlatformAPI.search("cat");
+            assertTrue(awaitDone());
+            assertEquals(1, deleted.size());
+            assertEquals(2, stub.probes.get(), "The finished 'cat' search stays cached while 'cats' was discarded before probing");
         }
 
         @Test
         @DisplayName("A blank query leaves the running search alone")
-        void testBlankQueryDoesNotSupersede() {
+        void testBlankQueryDoesNotDiscard() {
             final StubPlatform stub = new StubPlatform(1, 300); // BLOCKS BRIEFLY SO THE FIRST SEARCH IS STILL IN-FLIGHT
             PlatformAPI.register(stub);
 
-            final PlatformSearch first = PlatformAPI.search("slow-c", 2);
+            final List<PlatformResult> first = PlatformAPI.search("slow-c");
             assertTrue(PlayerWait.awaitCondition(() -> stub.probes.get() == 1, 3_000), "The probe must start");
-            assertTrue(PlatformAPI.search("   ", 2).done(), "The blank query is a no-op handle");
-            assertTrue(PlayerWait.awaitCondition(first::done, 3_000), "The in-flight search must complete instead of being cancelled by a no-op");
-            assertFalse(first.superseded());
-            assertEquals(1, first.results().size());
+            assertTrue(PlatformAPI.search("   ").isEmpty(), "The blank query is a no-op");
+            assertTrue(PlatformAPI.searching(), "A no-op must not discard the search in flight");
+            assertTrue(awaitDone(), "The in-flight search must complete");
+            assertEquals(1, first.size());
         }
     }
 
@@ -225,32 +280,20 @@ public class PlatformSearchTest {
         }
     }
 
-    // WAITS FOR key IN THE RESULT CACHE, READ UNDER THE SEARCH LOCK THAT GUARDS ITS WRITES
+    private static boolean awaitDone() {
+        return PlayerWait.awaitCondition(() -> !PlatformAPI.searching(), 3_000);
+    }
+
+    // DISCARDS THE SEARCH IN FLIGHT AND CLEARS HISTORY, THE RESULT CACHE AND THE CACHE-SWEEP CLOCK, SO EACH CASE STARTS CLEAN
     @SuppressWarnings("unchecked")
-    private static boolean awaitCacheKey(final String key) throws Exception {
-        final Object lock = field("SEARCH_LOCK").get(null);
-        final Map<String, ?> cache = (Map<String, ?>) field("SEARCH_CACHE").get(null);
-        return PlayerWait.awaitCondition(() -> {
-            synchronized (lock) {
-                return cache.containsKey(key);
-            }
-        }, 2_000L);
-    }
-
-    private static void cancelSearchTask() throws Exception {
-        final Object lock = field("SEARCH_LOCK").get(null);
-        final Field taskField = field("searchTask");
-        synchronized (lock) {
-            final Future<?> task = (Future<?>) taskField.get(null);
-            if (task != null) task.cancel(true);
-            taskField.set(null, null);
-        }
-    }
-
-    // CLEARS HISTORY, THE RESULT CACHE AND THE CACHE-SWEEP CLOCK SO EACH CASE STARTS FROM A CLEAN SLATE
     private static void resetSearchState() throws Exception {
         final Object lock = field("SEARCH_LOCK").get(null);
         synchronized (lock) {
+            for (final Future<?> probe: (List<Future<?>>) field("searchProbes").get(null)) probe.cancel(true);
+            ((List<?>) field("searchProbes").get(null)).clear();
+            field("searchRemaining").set(null, 0);
+            field("searchQuery").set(null, null);
+            field("searchGeneration").set(null, (long) field("searchGeneration").get(null) + 1);
             ((ArrayDeque<?>) field("HISTORY").get(null)).clear();
             ((Map<?, ?>) field("SEARCH_CACHE").get(null)).clear();
             field("nextCacheClean").set(null, 0L);

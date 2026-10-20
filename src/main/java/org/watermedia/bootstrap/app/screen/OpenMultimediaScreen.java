@@ -5,7 +5,6 @@ import org.watermedia.api.media.MediaAPI;
 import org.watermedia.api.media.MediaPlayer;
 import org.watermedia.api.platform.PlatformAPI;
 import org.watermedia.api.platform.PlatformResult;
-import org.watermedia.api.platform.PlatformSearch;
 import org.watermedia.api.util.MathUtil;
 import org.watermedia.api.util.MediaQuality;
 import org.watermedia.api.util.MediaType;
@@ -59,7 +58,6 @@ public class OpenMultimediaScreen extends Screen {
     private static final long LOAD_TIMEOUT_MS = 30000L;
     private static final int SEARCH_PREVIEW_H = 130;      // SHRUNK PREVIEW HEIGHT WHILE SEARCHING
     private static final long PREVIEW_ANIM_MS = 220L;     // PREVIEW GROW/SHRINK EASE DURATION
-    private static final long SEARCH_DEBOUNCE_MS = 320L;  // QUIET PERIOD AFTER TYPING BEFORE AUTO-SEARCHING
 
     // TRANSLUCENT SO THE HOME SCREEN STAYS VISIBLE BEHIND THE DIALOG
     private static final Color SCRIM_COLOR = AppTheme.rgba(5, 8, 26, 166);
@@ -96,12 +94,11 @@ public class OpenMultimediaScreen extends Screen {
     private volatile MRL previewMRL;
     private String previewUrl = "";
 
-    // THE PlatformSearch HANDLE FILLS IN OFF-THREAD AND onUpdate POLLS IT EVERY FRAME;
-    // searchRenderedDone GUARANTEES ONE FINAL FRAME ONCE IT COMPLETES
-    private PlatformSearch search;
+    // THE RESULT LIST FILLS OFF-THREAD AND onUpdate POLLS IT EVERY FRAME; searchRenderedDone GUARANTEES ONE FINAL FRAME
+    // ONCE THE SEARCH COMPLETES, AND searchQuery IS THE TEXT IT WAS ISSUED FOR
+    private List<PlatformResult> search;
+    private String searchQuery;
     private boolean searchRenderedDone = true;
-    // TIME OF THE LAST KEYSTROKE, WHICH THE AUTO-SEARCH DEBOUNCE WAITS ON
-    private long lastEditMs;
     // searchMode() CACHED FOR searchModeText, THE TRIMMED INPUT IT WAS COMPUTED FROM (null = NOT COMPUTED YET)
     private boolean searchMode;
     private String searchModeText;
@@ -112,7 +109,7 @@ public class OpenMultimediaScreen extends Screen {
     private long animPreviewStart;
 
     // STATE BEHIND THE CURRENT DROPDOWN ROWS; syncDropdown REBUILDS THEM ONLY WHEN IT CHANGES
-    private PlatformSearch rowsSearch;
+    private List<PlatformResult> rowsSearch;
     private int rowsResults;
     private int rowsHistory;
     private boolean rowsSearching;
@@ -162,10 +159,7 @@ public class OpenMultimediaScreen extends Screen {
                 .frame(AppTheme.BG_2, AppTheme.STROKE_BRIGHT, null, 1f, 1f)
                 .focusGlow(0.28f, true)
                 .caret(AppTheme.NEON_LIGHT, 2, true)
-                .onChange(v -> {
-                    this.lastEditMs = System.currentTimeMillis();
-                    this.ensurePreviewMRL();
-                })
+                .onChange(v -> this.ensurePreviewMRL())
                 .padding(new Spacing(0, 14, 0, 32))
                 .size(Element.MAX_PARENT, 40);
         this.reload = new Button("RELOAD").icon("reload")
@@ -197,7 +191,7 @@ public class OpenMultimediaScreen extends Screen {
         this.play = new Button("PLAY").subText("ENTER").icon("play")
                 .accent(AppTheme.GREEN).textColor(AppTheme.GREEN).height(36)
                 .onClick(b -> {
-                    if (this.searchMode()) this.doSearch();
+                    if (this.searchMode()) this.doSearch(true);
                     else this.playCustomUrl();
                 });
 
@@ -317,13 +311,10 @@ public class OpenMultimediaScreen extends Screen {
         // A LOADING LINK IS READ-ONLY; THE GLYPH SAYS WHETHER THE TEXT IS A SEARCH OR A LINK
         this.field.enabled(!this.loading).icon(search ? "search" : "link", search ? AppTheme.CYAN : AppTheme.TEXT_FAINT, 10);
 
-        // AUTO-SEARCH THE QUERY ONCE TYPING SETTLES
+        // EVERY EDIT OF THE QUERY REACHES THE API, WHICH WAITS OUT THE TYPING ITSELF
         if (search) {
             final String query = url.trim();
-            final boolean stale = this.search == null || !this.search.query().equals(query);
-            if (stale && !query.isEmpty() && System.currentTimeMillis() - this.lastEditMs >= SEARCH_DEBOUNCE_MS) {
-                this.doSearch();
-            }
+            if (!query.isEmpty() && !query.equals(this.searchQuery)) this.doSearch(false);
         }
 
         // RELOAD AND SAVE ONLY TAKE A URL OR PATH; THE PRIMARY BUTTON SWITCHES BETWEEN PLAY AND SEARCH
@@ -336,15 +327,15 @@ public class OpenMultimediaScreen extends Screen {
 
         // STATUS CHIP: SEARCH PROGRESS IN SEARCH MODE, OTHERWISE THE PREVIEW MRL STATE
         if (search) {
-            final boolean done = this.search != null && this.search.done();
-            this.chip.set(done ? this.search.results().size() + " RESULTS" : "SEARCHING",
+            final boolean done = this.search != null && !PlatformAPI.searching();
+            this.chip.set(done ? this.search.size() + " RESULTS" : "SEARCHING",
                     done ? AppTheme.CYAN : AppTheme.NEON);
         } else {
             this.chip.set(this.statusLabel(), Previews.color(this.previewMRL));
         }
 
         this.syncDropdown(search);
-        this.searchRenderedDone = this.search == null || this.search.done();
+        this.searchRenderedDone = this.search == null || !PlatformAPI.searching();
     }
 
     // FOLLOWS THE loading FLAG, WHICH ALSO FLIPS OUTSIDE INPUT EVENTS
@@ -379,7 +370,7 @@ public class OpenMultimediaScreen extends Screen {
                 }
                 case GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> {
                     if (!url.isEmpty()) {
-                        if (this.searchMode()) this.doSearch();
+                        if (this.searchMode()) this.doSearch(true);
                         else this.playCustomUrl();
                     }
                 }
@@ -411,7 +402,6 @@ public class OpenMultimediaScreen extends Screen {
             final Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
             if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
                 this.field.value(((String) clipboard.getData(DataFlavor.stringFlavor)).trim().replace("\"", ""));
-                this.lastEditMs = System.currentTimeMillis();
                 this.ensurePreviewMRL();
             }
         } catch (final Exception ignored) {
@@ -552,14 +542,16 @@ public class OpenMultimediaScreen extends Screen {
         return Math.round(this.animPreviewH);
     }
 
-    // PlatformAPI SUPERSEDES ANY PREVIOUS SEARCH; onUpdate POLLS THE NEW HANDLE AS RESULTS LAND
-    private void doSearch() {
+    // PlatformAPI DISCARDS ANY PREVIOUS SEARCH AND onUpdate POLLS THE NEW LIST AS RESULTS LAND; AN EXPLICIT SEARCH OF THE
+    // SAME TEXT (ENTER, THE SEARCH BUTTON) ASKS THE PLATFORMS AGAIN INSTEAD OF THE CACHE
+    private void doSearch(final boolean again) {
         final String query = this.field.value().trim();
         if (query.isEmpty()) return;
         this.releaseThumbs();
         this.searchRenderedDone = false;
         this.rowsBuilt = false;
-        this.search = PlatformAPI.search(query);
+        this.searchQuery = query;
+        this.search = PlatformAPI.search(query, again);
         this.ctx.requestRender();
     }
 
@@ -580,12 +572,13 @@ public class OpenMultimediaScreen extends Screen {
             this.selectResult(row.result());
         } else if (row.kind() == ROW_HISTORY) {
             this.field.value(row.text());
-            this.doSearch();
+            this.doSearch(false);
         }
     }
 
     private void clearSearch() {
         this.search = null;
+        this.searchQuery = null;
         this.searchRenderedDone = true;
         this.rowsBuilt = false;
         if (this.dropdown != null) {
@@ -604,8 +597,8 @@ public class OpenMultimediaScreen extends Screen {
             return;
         }
 
-        final boolean searching = this.search != null && !this.search.done();
-        final List<PlatformResult> results = this.search != null ? this.search.results() : List.of();
+        final boolean searching = this.search != null && PlatformAPI.searching();
+        final List<PlatformResult> results = this.search != null ? this.search : List.of();
         final List<String> history = PlatformAPI.searchHistory();
         if (this.rowsBuilt && this.search == this.rowsSearch && results.size() == this.rowsResults
                 && history.size() == this.rowsHistory && searching == this.rowsSearching) {
