@@ -17,8 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.time.LocalDate;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 import static org.watermedia.WaterMedia.LOGGER;
@@ -90,20 +88,12 @@ public final class NetRequest implements AutoCloseable {
      */
     public enum UserAgent {
         WATERMEDIA(WaterMedia.USER_AGENT),
-        GENERIC(browser());
+        GENERIC(WaterMedia.BROWSER_AGENT);
 
         private final String value;
         UserAgent(final String value) { this.value = value; }
         /** Returns the {@code User-Agent} header value of this preset. */
         public String value() { return this.value; }
-
-        // CHROME SHIPS A MAJOR EVERY TWO WEEKS SINCE 153 (2026-09-08) AND A FROZEN NUMBER BECOMES A BOT SIGNAL WITHIN
-        // MONTHS, SO THE MAJOR IS PROJECTED FROM THAT RELEASE EACH TIME THE CLASS LOADS, ONE BEHIND TO NEVER RUN AHEAD
-        private static String browser() {
-            final long steps = ChronoUnit.DAYS.between(LocalDate.of(2026, 9, 8), LocalDate.now()) / 14;
-            return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
-                    + (152 + Math.max(0L, steps)) + ".0.0.0 Safari/537.36";
-        }
     }
 
     // ==== REQUEST ====

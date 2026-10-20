@@ -91,7 +91,7 @@ public final class AppContext implements Executor {
     public MRL.Source[] availableSources;
     public MRL.Source selectedSource;
     public MediaQuality[] availableQualities;
-    public MediaQuality selectedQuality = MediaQuality.HIGHEST;
+    public MediaQuality selectedQuality = MediaQuality.HIGHER;
     public int sourceSelectorIndex;
 
     // PLAYER

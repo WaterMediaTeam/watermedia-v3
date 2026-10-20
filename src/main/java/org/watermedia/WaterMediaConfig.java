@@ -98,7 +98,7 @@ public final class WaterMediaConfig {
     public static final class Media {
         @Spec.Field(control = Control.DROPDOWN)
         @Comment("Default quality for streaming media without a specified quality")
-        public MediaQuality defaultQuality = MediaQuality.HIGHEST;
+        public MediaQuality defaultQuality = MediaQuality.HIGHER;
 
         @Spec.Field(suffix = "min")
         @Comment("Cleanup Interval in Minutes for all expired MRL or with errors (memory saver)")

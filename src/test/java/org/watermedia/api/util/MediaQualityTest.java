@@ -23,13 +23,13 @@ public class MediaQualityTest {
         @Test
         @DisplayName("1920x1080 maps to HIGHER")
         void hd1080() {
-            assertSame(MediaQuality.HIGHER, MediaQuality.of(1920, 1080));
+            assertSame(MediaQuality.HIGH, MediaQuality.of(1920, 1080));
         }
 
         @Test
         @DisplayName("3840x2160 maps to ULTRA")
         void uhd2160() {
-            assertSame(MediaQuality.ULTRA, MediaQuality.of(3840, 2160));
+            assertSame(MediaQuality.HIGHEST, MediaQuality.of(3840, 2160));
         }
 
         @Test
@@ -59,20 +59,20 @@ public class MediaQualityTest {
         @DisplayName("negative width is treated as missing dimension")
         void negativeWidthFallsBackToHeight() {
             // WIDTH <= 0 SO HEIGHT IS USED DIRECTLY
-            assertSame(MediaQuality.HIGHER, MediaQuality.of(-5, 1080));
+            assertSame(MediaQuality.HIGH, MediaQuality.of(-5, 1080));
         }
 
         @Test
         @DisplayName("zero height falls back to width")
         void zeroHeightFallsBackToWidth() {
-            assertSame(MediaQuality.HIGH, MediaQuality.of(720, 0));
+            assertSame(MediaQuality.MEDIUM, MediaQuality.of(720, 0));
         }
 
         @Test
         @DisplayName("portrait uses the smaller dimension")
         void portraitUsesSmallerSide() {
             // MATH.MIN(1080, 1920) == 1080 -> HIGHER
-            assertSame(MediaQuality.HIGHER, MediaQuality.of(1080, 1920));
+            assertSame(MediaQuality.HIGH, MediaQuality.of(1080, 1920));
         }
 
         @Test
@@ -89,36 +89,36 @@ public class MediaQualityTest {
         @Test
         @DisplayName("returns preferred when available")
         void exactMatch() {
-            final Set<MediaQuality> available = EnumSet.of(MediaQuality.MEDIUM, MediaQuality.HIGHER, MediaQuality.HIGH);
-            assertSame(MediaQuality.HIGHER, MediaQuality.closest(available, MediaQuality.HIGHER));
+            final Set<MediaQuality> available = EnumSet.of(MediaQuality.LOWISH, MediaQuality.HIGH, MediaQuality.MEDIUM);
+            assertSame(MediaQuality.HIGH, MediaQuality.closest(available, MediaQuality.HIGH));
         }
 
         @Test
         @DisplayName("returns closest available when preferred is missing")
         void picksClosestNeighbour() {
-            final Set<MediaQuality> available = EnumSet.of(MediaQuality.HIGH, MediaQuality.HIGHEST);
+            final Set<MediaQuality> available = EnumSet.of(MediaQuality.MEDIUM, MediaQuality.HIGHER);
             // PREFERRED HIGHER -> NEIGHBOURS HIGH (LOWER) AND HIGHEST, BOTH ARE 1 STEP AWAY.
             // LOWER WINS BECAUSE TIES BREAK TOWARD THE LOWER QUALITY.
-            assertSame(MediaQuality.HIGH, MediaQuality.closest(available, MediaQuality.HIGHER));
+            assertSame(MediaQuality.MEDIUM, MediaQuality.closest(available, MediaQuality.HIGH));
         }
 
         @Test
         @DisplayName("empty set returns null")
         void emptyReturnsNull() {
-            assertNull(MediaQuality.closest(EnumSet.noneOf(MediaQuality.class), MediaQuality.HIGHER));
+            assertNull(MediaQuality.closest(EnumSet.noneOf(MediaQuality.class), MediaQuality.HIGH));
         }
 
         @Test
         @DisplayName("null set returns null")
         void nullReturnsNull() {
-            assertNull(MediaQuality.closest(null, MediaQuality.HIGHER));
+            assertNull(MediaQuality.closest(null, MediaQuality.HIGH));
         }
 
         @Test
         @DisplayName("null preferred quality is rejected")
         void nullPreferredRejected() {
             final IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                    () -> MediaQuality.closest(EnumSet.of(MediaQuality.HIGH), null));
+                    () -> MediaQuality.closest(EnumSet.of(MediaQuality.MEDIUM), null));
             assertEquals("Preferred quality cannot be null", failure.getMessage());
         }
 

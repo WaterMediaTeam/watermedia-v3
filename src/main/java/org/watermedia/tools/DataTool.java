@@ -321,4 +321,11 @@ public final class DataTool {
             }
         }
     }
+
+    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
+    public static boolean equalsIgnoreCase(final String a, final String b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return a.equalsIgnoreCase(b);
+    }
 }

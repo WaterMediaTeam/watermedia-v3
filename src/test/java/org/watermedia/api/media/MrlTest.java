@@ -315,8 +315,8 @@ public class MrlTest {
                     new Quality(slow, 1280, 720, 30f), new Quality(fast, 1280, 720, 60f), new Quality(tall, 1280, 760, 24f),
                     new Quality(first, 640, 360), new Quality(second, 640, 360)), null, null);
             final MRL.Source resolved = resolve(URI.create("watertest://bucket/clip"), source).source(0);
-            assertEquals(wide, resolved.qualities().get(MediaQuality.HIGHER), "the widest rendition owns the bucket");
-            assertEquals(tall, resolved.qualities().get(MediaQuality.HIGH), "at equal width the tallest wins over the frame rate");
+            assertEquals(wide, resolved.qualities().get(MediaQuality.HIGH), "the widest rendition owns the bucket");
+            assertEquals(tall, resolved.qualities().get(MediaQuality.MEDIUM), "at equal width the tallest wins over the frame rate");
             assertEquals(first, resolved.qualities().get(MediaQuality.LOW), "equal renditions keep the first listed");
         }
 
@@ -328,7 +328,7 @@ public class MrlTest {
             // THE SLOWER RENDITION IS LISTED FIRST SO ONLY THE FRAME RATE CAN PICK THE FASTER ONE
             final Source source = new Source(MediaType.VIDEO, null, null, null, List.of(
                     new Quality(slow, 1920, 1080, 30f), new Quality(fast, 1920, 1080, 60f)), null, null);
-            assertEquals(fast, resolve(URI.create("watertest://bucket/fps"), source).source(0).qualities().get(MediaQuality.HIGHER));
+            assertEquals(fast, resolve(URI.create("watertest://bucket/fps"), source).source(0).qualities().get(MediaQuality.HIGH));
         }
 
         @Test
@@ -350,19 +350,19 @@ public class MrlTest {
             final MRL.Source before = mrl.source(0);
             assertEquals(uri, before.qualities().get(MediaQuality.UNKNOWN), "a source without a size starts with an unknown quality");
             assertEquals(MediaQuality.UNKNOWN, before.qualityOf(uri));
-            assertEquals(uri, before.uri(MediaQuality.HIGHEST), "the closest fallback resolves to the only URI");
-            assertFalse(mrl.moveQuality(0, URI.create("https://example.invalid/elsewhere.mp4"), MediaQuality.HIGH), "another URI is never relabeled");
-            assertTrue(mrl.moveQuality(0, uri, MediaQuality.HIGH));
+            assertEquals(uri, before.uri(MediaQuality.HIGHER), "the closest fallback resolves to the only URI");
+            assertFalse(mrl.moveQuality(0, URI.create("https://example.invalid/elsewhere.mp4"), MediaQuality.MEDIUM), "another URI is never relabeled");
+            assertTrue(mrl.moveQuality(0, uri, MediaQuality.MEDIUM));
 
             final MRL.Source after = mrl.source(0);
-            assertEquals(uri, after.qualities().get(MediaQuality.HIGH));
-            assertEquals(MediaQuality.HIGH, after.qualityOf(uri));
+            assertEquals(uri, after.qualities().get(MediaQuality.MEDIUM));
+            assertEquals(MediaQuality.MEDIUM, after.qualityOf(uri));
             assertFalse(after.qualities().containsKey(MediaQuality.UNKNOWN));
             // PLAYERS KEEP THE SOURCE THEY STARTED WITH: THE RELABEL REPLACES THE ARRAY INSTEAD OF EDITING IT
             assertEquals(uri, before.qualities().get(MediaQuality.UNKNOWN));
             // A RESTART OR A SECOND PLAYER STILL HOLDS THE OLD SOURCE AND ASKS AGAIN: THE URI ALREADY SITS THERE
-            assertTrue(mrl.moveQuality(0, uri, MediaQuality.HIGH), "a repeated relabel succeeds");
-            assertFalse(mrl.moveQuality(0, uri, MediaQuality.HIGHER), "a known quality is never relabeled");
+            assertTrue(mrl.moveQuality(0, uri, MediaQuality.MEDIUM), "a repeated relabel succeeds");
+            assertFalse(mrl.moveQuality(0, uri, MediaQuality.HIGH), "a known quality is never relabeled");
         }
     }
 

@@ -6,23 +6,53 @@ import java.util.Set;
  * Quality levels for media streams.
  */
 public enum MediaQuality {
+    /**
+     * Unknown quality
+     */
     UNKNOWN(0),
+    /**
+     * Anything above 1 and below {@link MediaQuality#LOWER} threshold
+     */
     LOWEST(144),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#LOW} threshold
+     */
     LOWER(240),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#LOWISH} threshold
+     */
     LOW(360),
-    MEDIUM(480),
-    HIGH(720),
-    HIGHER(1080),
-    HIGHEST(1440),
-    ULTRA(2160),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#MEDIUM} threshold
+     */
+    LOWISH(480),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#HIGH} threshold
+     */
+    MEDIUM(720),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#HIGHER} threshold
+     */
+    HIGH(1080),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#HIGHEST} threshold
+     */
+    HIGHER(1440),
+    /**
+     * Anything equals or above its threshold and below {@link MediaQuality#ULTRA_8K} threshold
+     */
+    HIGHEST(2160),
+    /**
+     * Anything equals or above its threshold
+     */
     ULTRA_8K(4320);
 
     private static final MediaQuality[] VALUES = values();
 
     private final int height;
 
-    MediaQuality(final int height) {
-        this.height = height;
+    MediaQuality(final int threshold) {
+        this.height = threshold;
     }
 
     /** Returns the vertical resolution this level names, in pixels; zero for {@link #UNKNOWN}. */
@@ -36,7 +66,7 @@ public enum MediaQuality {
     /**
      * Determines quality from video dimensions.
      * It picks the smallest non-zero one — landscape videos (1920x1080)
-     * will use 1080 to determine quality (HIGHER). When a single dimension
+     * will use 1080 to determine quality (HIGH). When a single dimension
      * is reported (HLS rendition tags often give height only), the
      * non-zero value is used directly. Sizes between 1 and 143 pixels
      * map to {@link #LOWEST}.

@@ -2,6 +2,7 @@ package org.watermedia.api.util;
 
 import org.watermedia.WaterMedia;
 import org.watermedia.api.platform.Platform;
+import org.watermedia.tools.DataTool;
 
 import java.net.URI;
 import java.net.URLConnection;
@@ -115,7 +116,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      * Removes every entry whose name matches (case-insensitive).
      */
     public HttpHeaders removeAll(final String name) {
-        this.entries.removeIf(entry -> eq(entry.name, name));
+        this.entries.removeIf(entry -> DataTool.equalsIgnoreCase(entry.name, name));
         return this;
     }
 
@@ -124,7 +125,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      */
     public String value(final String name) {
         for (final Entry e: this.entries) {
-            if (eq(e.name, name)) return e.value;
+            if (DataTool.equalsIgnoreCase(e.name, name)) return e.value;
         }
         return null;
     }
@@ -135,7 +136,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
     public List<String> values(final String name) {
         final List<String> out = new ArrayList<>();
         for (final Entry e: this.entries) {
-            if (eq(e.name, name)) out.add(e.value);
+            if (DataTool.equalsIgnoreCase(e.name, name)) out.add(e.value);
         }
         return out;
     }
@@ -145,7 +146,7 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
      */
     public boolean has(final String name) {
         for (final Entry e: this.entries) {
-            if (eq(e.name, name)) return true;
+            if (DataTool.equalsIgnoreCase(e.name, name)) return true;
         }
         return false;
     }
@@ -202,10 +203,4 @@ public final class HttpHeaders implements Iterable<HttpHeaders.Entry> {
     @Override
     public String toString() { return "HttpHeaders" + this.entries; }
 
-    // CASE-INSENSITIVE HEADER-NAME MATCH; equalsIgnoreCase IS ALLOCATION-FREE UNLIKE toLowerCase().equals(...)
-    private static boolean eq(final String a, final String b) {
-        if (a == b) return true;
-        if (a == null || b == null) return false;
-        return a.equalsIgnoreCase(b);
-    }
 }

@@ -69,8 +69,7 @@ public enum MathEases {
     }),
     // BACK CURVES OVERSHOOT BY PENNER'S 1.70158, SCALED UP BY 1.525 FOR THE IN-OUT SHAPE
     EASE_IN_BACK((start, end, t) -> (end - start) * (2.70158 * t * t * t - 1.70158 * t * t) + start),
-    EASE_OUT_BACK((start, end, t) -> start + (end - start)
-            * (1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2))),
+    EASE_OUT_BACK((start, end, t) -> start + (end - start) * (1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2))),
     EASE_IN_OUT_BACK((start, end, t) -> {
         final double c2 = 1.70158 * 1.525;
         return t < 0.5

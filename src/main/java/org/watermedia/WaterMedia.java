@@ -21,6 +21,8 @@ import org.watermedia.tools.ThreadTool;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -32,6 +34,7 @@ public final class WaterMedia {
     public static final String NAME = "WaterMedia";
     public static final String VERSION = IOTool.jarVersion();
     public static final String USER_AGENT = "WaterMedia/" + VERSION;
+    public static final String BROWSER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + (152 + Math.max(0L, (ChronoUnit.DAYS.between(LocalDate.of(2026, 9, 8), LocalDate.now()) / 14))) + ".0.0.0 Safari/537.36";
     public static final Logger LOGGER = logger(ID);
 
     // ==== DEFAULT PATHS ====

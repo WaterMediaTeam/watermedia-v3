@@ -113,7 +113,7 @@ public class LoggerRedactionTest {
             final HttpHeaders headers = new HttpHeaders().set("Cookie", "session=private-cookie")
                     .set("Authorization", "Bearer private-auth").set("X-Custom", "private-custom");
             final MRL.Source source = new MRL.Source(MediaType.VIDEO, null, null, headers,
-                    Map.of(MediaQuality.HIGHEST, URI.create("https://example.test/private-video")), null, null);
+                    Map.of(MediaQuality.HIGHER, URI.create("https://example.test/private-video")), null, null);
             try (final LogCapture capture = new LogCapture(WaterMedia.ID)) {
                 WaterMedia.LOGGER.debug(IT, "Creating player for {}", source);
                 final String text = capture.events().get(0).getMessage().getFormattedMessage();
