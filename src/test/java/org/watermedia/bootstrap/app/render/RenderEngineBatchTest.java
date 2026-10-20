@@ -85,7 +85,6 @@ public class RenderEngineBatchTest {
         @Override public void configureFrameState() {}
         @Override public void clear(final float r, final float g, final float b, final float a) {}
         @Override public void viewport(final int width, final int height) {}
-        @Override public void disableDepthTest() {}
         @Override public TextureHandle createTexture(final int width, final int height, final ByteBuffer rgba) { return new TextureHandle(1, width, height); }
         @Override public void deleteTexture(final TextureHandle texture) {}
         @Override public void bindTexture(final int textureId) {}

@@ -395,20 +395,15 @@ public class WaterMediaApp {
     }
 
     private static void initAudio() {
-        ctx.audioReady = false;
-        ctx.audioError = false;
         try {
             final long device = ALC10.alcOpenDevice((ByteBuffer) null);
             if (device == 0L) throw new IllegalStateException("Failed to open a new Audio Device");
             final long context = ALC10.alcCreateContext(device, (IntBuffer) null);
             ALC10.alcMakeContextCurrent(context);
             AL.createCapabilities(ALC.createCapabilities(device));
-
             loadSoundClick();
-            ctx.audioReady = true;
         } catch (final RuntimeException e) {
-            ctx.audioError = true;
-            WaterMedia.LOGGER.warn("App-side OpenAL audio unavailable; continuing without the click sound", e);
+            WaterMedia.LOGGER.warn(IT, "App-side OpenAL audio unavailable; continuing without the click sound", e);
         }
     }
 

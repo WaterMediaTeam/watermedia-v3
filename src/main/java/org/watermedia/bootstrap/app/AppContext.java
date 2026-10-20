@@ -39,8 +39,6 @@ public final class AppContext implements Executor {
             new SuspectMod("littleframes", "LittleFrames", "CreativeMD/littleframes", "https://github.com/CreativeMD/littleframes/issues/new")
     );
 
-    public static final int PADDING = 20;
-
     // WINDOW STATE
     public int windowWidth = 1280;
     public int windowHeight = 720;
@@ -87,7 +85,6 @@ public final class AppContext implements Executor {
     public final List<TestURI> customTests = new ArrayList<>();
     public URIGroup[] uriGroups;
     public IptvChannel[] iptvChannels = new IptvChannel[0];
-    public String selectedIptvRegion = "";
 
     // SELECTION STATE
     public URIGroup selectedGroup;
@@ -110,8 +107,6 @@ public final class AppContext implements Executor {
     // AUDIO
     public int soundBuffer = -1;
     public int soundSource = -1;
-    public boolean audioReady;
-    public boolean audioError;
 
     public String customUrlText = "";
 

@@ -23,8 +23,6 @@ public interface RenderBackend {
 
     void viewport(int width, int height);
 
-    void disableDepthTest();
-
     TextureHandle createTexture(int width, int height, ByteBuffer rgba);
 
     void deleteTexture(TextureHandle texture);

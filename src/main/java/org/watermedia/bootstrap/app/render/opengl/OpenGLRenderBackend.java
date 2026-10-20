@@ -339,11 +339,6 @@ public final class OpenGLRenderBackend implements RenderBackend {
         GL11.glViewport(0, 0, width, height);
     }
 
-    @Override
-    public void disableDepthTest() {
-        GL11.glDisable(GL11.GL_DEPTH_TEST);
-    }
-
     // ==========================================================================
     // TEXTURES
     // ==========================================================================

@@ -62,9 +62,9 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class SettingsScreen extends Screen {
 
     private static final int SIDEBAR_W = 220;
-    private static final int ROW_H = 56;
+    private static final int ROW_H = Theme.ROW_MD;
     private static final int CONTROL_W = 320;
-    private static final int CONTROL_H = 26;
+    private static final int CONTROL_H = Theme.CONTROL;
     // TALL ENOUGH FOR THE TITLE+SUBTITLE BLOCK (~35px) PLUS REAL BREATHING ROOM ABOVE AND BELOW —
     // AT 48 THE TITLE SAT FLUSH AGAINST THE FOLDER'S TOP EDGE
     private static final int TAB_H = 64;

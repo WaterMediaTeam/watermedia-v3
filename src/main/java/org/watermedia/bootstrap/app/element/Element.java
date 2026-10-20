@@ -50,7 +50,6 @@ public abstract class Element<T extends Element<T>> {
     protected boolean enabled = true;
     protected boolean hovered;
     protected boolean focused;
-    protected boolean pressed;
     protected boolean selected;
     protected boolean consumeTouch; // WHEN TRUE, A HIT IS SWALLOWED EVEN WITHOUT AN onClick (SCRIMS/MODALS)
 

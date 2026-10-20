@@ -56,7 +56,7 @@ public class HomeScreen extends Screen {
     private static final int UPLOAD_ROW_DETAIL_H = 58;
     private static final int UPLOAD_PANEL_PAD = 14;
     private static final int CLEANUP_ROW_H = 58;
-    private static final int REPO_ROW_H = 56;
+    private static final int REPO_ROW_H = Theme.ROW_MD;
     // THREE MOD CARDS PLUS THE TWO GAPS — THE SAME VIEWPORT THE FIXED-HEIGHT LEGACY DIALOG SHOWED
     private static final int REPO_LIST_H = REPO_ROW_H * 3 + 8 * 2;
 

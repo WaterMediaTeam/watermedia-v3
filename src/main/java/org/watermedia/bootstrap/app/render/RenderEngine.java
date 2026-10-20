@@ -84,11 +84,6 @@ public final class RenderEngine {
         this.backend.viewport(width, height);
     }
 
-    public void disableDepthTest() {
-        this.flush();
-        this.backend.disableDepthTest();
-    }
-
     public int createTexture(final int width, final int height, final ByteBuffer rgba) {
         this.flush();
         final int id = this.backend.createTexture(width, height, rgba).id();
@@ -265,31 +260,6 @@ public final class RenderEngine {
         this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
-    public void fillTriangle(final float x1, final float y1,
-                             final float x2, final float y2,
-                             final float x3, final float y3,
-                             final float r, final float g, final float b, final float a) {
-        this.color(r, g, b, a);
-        this.put(0, x1, y1, 0f, 0f, this.color);
-        this.put(1, x2, y2, 0f, 0f, this.color);
-        this.put(2, x3, y3, 0f, 0f, this.color);
-        this.draw(DrawMode.TRIANGLES, 3, false);
-    }
-
-    public void fillCircle(final float cx, final float cy, final float radius,
-                           final float r, final float g, final float b, final float a) {
-        this.color(r, g, b, a);
-        final int segments = 32;
-        this.put(0, cx, cy, 0f, 0f, this.color);
-        for (int i = 0; i <= segments; i++) {
-            final float angle = (float) (i * 2 * Math.PI / segments);
-            this.put(1 + i, cx + (float) Math.cos(angle) * radius,
-                    cy + (float) Math.sin(angle) * radius,
-                    0f, 0f, this.color);
-        }
-        this.draw(DrawMode.TRIANGLE_FAN, 2 + segments, false);
-    }
-
     public void fillRounded(final float x, final float y, final float w, final float h, float radius) {
         if (radius <= 0f) {
             this.fill(x, y, w, h);
@@ -388,16 +358,6 @@ public final class RenderEngine {
         this.lineH(x, y, length);
     }
 
-    public void lineV(final float x, final float y, final float length, final Color c, final float lineWidth) {
-        this.color(c);
-        this.lineWidth(lineWidth);
-        this.lineV(x, y, length);
-    }
-
-    public void lineV(final float x, final float y, final float length) {
-        this.line(x, y, x, y + length);
-    }
-
     public void line(final float x1, final float y1, final float x2, final float y2) {
         this.put(0, x1, y1, 0f, 0f, this.color);
         this.put(1, x2, y2, 0f, 0f, this.color);
@@ -423,17 +383,6 @@ public final class RenderEngine {
         this.put(4, x + w, y + h, u1, v1, this.color);
         this.put(5, x, y + h, u0, v1, this.color);
         this.draw(DrawMode.TRIANGLES, 6, this.boundTextureId > 0);
-    }
-
-    public void fadeBottom(final float width, final float height, final float fadeHeight, final float alpha) {
-        final float topY = height - fadeHeight;
-        this.put(0, 0, topY, 0f, 0f, 0f, 0f, 0f, 0f);
-        this.put(1, width, topY, 0f, 0f, 0f, 0f, 0f, 0f);
-        this.put(2, width, height, 0f, 0f, 0f, 0f, 0f, alpha);
-        this.put(3, 0, topY, 0f, 0f, 0f, 0f, 0f, 0f);
-        this.put(4, width, height, 0f, 0f, 0f, 0f, 0f, alpha);
-        this.put(5, 0, height, 0f, 0f, 0f, 0f, 0f, alpha);
-        this.draw(DrawMode.TRIANGLES, 6, false);
     }
 
     public void glowRect(final float x, final float y, final float w, final float h,

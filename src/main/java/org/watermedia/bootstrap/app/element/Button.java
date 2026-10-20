@@ -112,7 +112,7 @@ public final class Button extends Element<Button> {
             canvas.fill(x, y, w, h, hover && enabled ? accent : AppTheme.alpha(accent, 210));
         } else {
             canvas.fill(x, y, w, h, hover && enabled ? AppTheme.alpha(accent, 60) : AppTheme.alpha(AppTheme.BG_2, 220));
-            canvas.stroke(x, y, w, h, enabled ? accent : AppTheme.alpha(accent, 90), hover ? 1.7f : 1.5f);
+            canvas.stroke(x, y, w, h, enabled ? accent : AppTheme.alpha(accent, 90), hover ? 1.7f : Theme.BORDER_ACTIVE);
         }
         if (enabled) canvas.glow(x, y, w, h, 0f, accent, hover ? 0.26f : 0.16f);
     }

@@ -67,7 +67,7 @@ public final class Dialog extends Group<Dialog> {
         this.height = MAX_PARENT;
         this.scrim = new Box()
                 .size(MAX_PARENT, MAX_PARENT)
-                .background(AppTheme.alpha(AppTheme.BG_0, 153))
+                .background(AppTheme.alpha(AppTheme.BG_0, Math.round(Theme.SCRIM * 255)))
                 .consumeTouch(true);
         // WRAP WIDTH SO THE PANEL CAN DERIVE ITS SIZE FROM THE CONTENT WHEN NO panelWidth IS PINNED; A
         // panelWidth STRETCHES THIS COLUMN (AND ANY MAX_PARENT CONTENT INSIDE IT) TO FILL THE PANEL

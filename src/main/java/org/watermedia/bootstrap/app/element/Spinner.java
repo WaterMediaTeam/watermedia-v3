@@ -134,7 +134,8 @@ public final class Spinner extends Element<Spinner> {
         }
 
         // OUTER BORDER LAST — AMBER WHILE EDITING
-        canvas.stroke(leftX, y, w, h, this.editing ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT, this.editing ? 1.5f : 1f);
+        canvas.stroke(leftX, y, w, h, this.editing ? AppTheme.AMBER : AppTheme.STROKE_BRIGHT,
+                this.editing ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
     }
 
     // ONE +/- ZONE: THE HOVER/PRESS AMBER WASH AND THE CENTERED GLYPH IN ITS STATE COLOR

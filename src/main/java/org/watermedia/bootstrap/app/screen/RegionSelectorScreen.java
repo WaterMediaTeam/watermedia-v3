@@ -155,7 +155,6 @@ public final class RegionSelectorScreen extends Screen {
             uris.add(new AppContext.TestURI(name, channel.url(), false));
         }
 
-        this.ctx.selectedIptvRegion = region == null ? "GLOBAL" : region;
         final String groupName = region == null ? "TELEVISION" : "TELEVISION " + region.toUpperCase(Locale.ROOT);
         this.ctx.selectedGroup = new AppContext.URIGroup(groupName, uris.toArray(AppContext.TestURI[]::new));
         this.ctx.playSelectionSound();

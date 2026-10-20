@@ -44,7 +44,7 @@ public final class Dropdown extends Element<Dropdown> {
     }
 
     private static final int ROW_H = 26;
-    private static final int PAD = 4;
+    private static final int PAD = Theme.SPACE_XS;
     private static final int ARROW_ZONE = 26;
     private static final int OPEN_MS = 160;
 
@@ -161,7 +161,8 @@ public final class Dropdown extends Element<Dropdown> {
         canvas.line(cx - 4, cy - 2, cx, cy + 2, tc, 1.5f);
         canvas.line(cx, cy + 2, cx + 4, cy - 2, tc, 1.5f);
 
-        canvas.stroke(x, y, w, h, !this.enabled ? AppTheme.STROKE : hot ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT, open ? 1.5f : 1f);
+        canvas.stroke(x, y, w, h, !this.enabled ? AppTheme.STROKE : hot ? AppTheme.NEON_LIGHT : AppTheme.STROKE_BRIGHT,
+                open ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
     }
 
     @Override
@@ -358,7 +359,7 @@ public final class Dropdown extends Element<Dropdown> {
                 final Color color = sel ? AppTheme.GREEN : hover ? AppTheme.NEON_LIGHT : AppTheme.TEXT_SOFT;
                 canvas.fill(rx, ry, rw, rh, sel ? AppTheme.alpha(AppTheme.GREEN, 45)
                         : hover ? AppTheme.alpha(AppTheme.NEON_DARK, 88) : AppTheme.alpha(AppTheme.BG_2, 110));
-                if (sel || hover) canvas.stroke(rx, ry, rw, rh, color, sel ? 1.5f : 1f);
+                if (sel || hover) canvas.stroke(rx, ry, rw, rh, color, sel ? Theme.BORDER_ACTIVE : Theme.BORDER_HAIRLINE);
                 // SELECTED ROW CARRIES THE AMBER MARKER CUBE
                 if (sel) canvas.fill(rx + 7, ry + (rh - 6) / 2, 6, 6, AppTheme.AMBER);
                 canvas.text(Dropdown.this.items.get(idx), rx + 18, ry + (rh - th) / 2, color, Dropdown.this.scale, false);
@@ -366,7 +367,7 @@ public final class Dropdown extends Element<Dropdown> {
             canvas.popClip();
             // BORDER OVER THE CLIPPED ROWS, THEN A SCROLL THUMB WHEN THE LIST OVERFLOWS; THE THUMB WAITS
             // FOR THE UNFOLD TO FINISH SO IT NEVER PAINTS OUTSIDE THE GROWING PANEL
-            canvas.stroke(x, drawY, w, drawH, AppTheme.STROKE_BRIGHT, 1.5f);
+            canvas.stroke(x, drawY, w, drawH, AppTheme.STROKE_BRIGHT, Theme.BORDER_ACTIVE);
             final int max = this.maxScroll(h);
             if (max > 0 && drawH == h) {
                 final int total = Dropdown.this.items.size();

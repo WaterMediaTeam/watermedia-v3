@@ -1119,11 +1119,6 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
         // NO-OP: BLEND IS BAKED INTO THE PIPELINE, AND THERE IS NO DEPTH ATTACHMENT.
     }
 
-    @Override
-    public void disableDepthTest() {
-        // NO-OP: NO DEPTH ATTACHMENT EXISTS.
-    }
-
     private void beginRenderPass() {
         try (final MemoryStack stack = stackPush()) {
             final VkClearValue.Buffer clear = VkClearValue.calloc(1, stack);
