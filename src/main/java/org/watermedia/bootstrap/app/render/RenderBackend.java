@@ -86,6 +86,10 @@ public interface RenderBackend {
         return 0;
     }
 
+    /** Frees the layers between frames, moving {@link #layerEpoch()}; the next {@link #beginLayer} builds them again. */
+    default void releaseLayers() {
+    }
+
     /** Returns the GPU or renderer name, captured at init so any thread can read it. */
     default String deviceName() {
         return "Unknown";

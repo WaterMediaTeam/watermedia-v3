@@ -203,6 +203,12 @@ public final class RenderEngine {
         this.cacheReady = false;
     }
 
+    /** Frees the layers between frames while nothing composites, such as with the CRT off or the window minimized. */
+    public void releaseCache() {
+        this.cacheReady = false;
+        this.backend.releaseLayers();
+    }
+
     /** Draws the base or the top layer over the whole window; the top one only when the last pass raised it. */
     public void drawCache(final boolean top) {
         if (top && !this.topUsed) return;

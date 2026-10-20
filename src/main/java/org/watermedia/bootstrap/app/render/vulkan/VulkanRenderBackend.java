@@ -444,10 +444,12 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
                     break;
                 }
             }
-            // A LAYER IS DRAWN INTO AND SAMPLED BACK IN THE SURFACE FORMAT; WITHOUT BOTH FEATURES THE TREE DRAWS UNCACHED
+            // A LAYER IS DRAWN INTO WITH BLENDING AND SAMPLED BACK IN THE SURFACE FORMAT; WITHOUT ALL THREE FEATURES THE
+            // TREE DRAWS UNCACHED
             final VkFormatProperties formatProps = VkFormatProperties.malloc(stack);
             vkGetPhysicalDeviceFormatProperties(this.physicalDevice, this.surfaceFormat, formatProps);
-            final int layerFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            final int layerFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+                    | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
             this.layerSupport = (formatProps.optimalTilingFeatures() & layerFeatures) == layerFeatures;
             if (!this.layerSupport) WaterMedia.LOGGER.warn(IT, "Surface format {} cannot back the tree cache; the UI repaints whole while the CRT bands move", this.surfaceFormat);
 
@@ -909,6 +911,19 @@ public final class VulkanRenderBackend implements RenderBackend, VKContext {
     @Override
     public int layerEpoch() {
         return this.layerEpoch;
+    }
+
+    @Override
+    public void releaseLayers() {
+        if (this.layerImage[0] == 0L && this.layerImage[1] == 0L) return;
+        // BETWEEN FRAMES ONLY THIS BACKEND'S OWN IN-FLIGHT FRAMES CAN STILL READ THE LAYERS; EVERY FENCE STARTS SIGNALED
+        try (final MemoryStack stack = stackPush()) {
+            final LongBuffer fences = stack.mallocLong(MAX_FRAMES_IN_FLIGHT);
+            for (final Frame f: this.frames) fences.put(f.inFlightFence);
+            vkWaitForFences(this.device, fences.flip(), true, BLOCK);
+        }
+        for (int i = 0; i < 2; i++) this.destroyLayer(i);
+        this.layerEpoch++;
     }
 
     // A DEVICE-LOCAL IMAGE THE LAYER PASS RENDERS INTO AND THE WINDOW PASS SAMPLES; A FAILURE DISABLES THE CACHE

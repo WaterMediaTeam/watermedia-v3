@@ -146,6 +146,12 @@ public final class RenderSystem {
         return current != null && current.cacheValid();
     }
 
+    /** Frees the tree cache layers between frames while nothing composites; the next cached pass builds them again. */
+    public static void releaseCache() {
+        final RenderEngine current = engine;
+        if (current != null) current.releaseCache();
+    }
+
     public static boolean beginCache(final float r, final float g, final float b, final float a) { return engine.beginCache(r, g, b, a); }
     public static void raiseCache() { engine.raiseCache(); }
     public static void endCache() { engine.endCache(); }

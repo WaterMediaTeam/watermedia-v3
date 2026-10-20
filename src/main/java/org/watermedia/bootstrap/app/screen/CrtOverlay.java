@@ -40,7 +40,8 @@ final class CrtOverlay extends Element<CrtOverlay> {
         canvas.popClip();
     }
 
-    // THE BAND MOVES 1 px EVERY 24 ms FROM FULLY ABOVE THE BOX TO FULLY BELOW IT, SO ONE BAND NEVER NEEDS A WRAP COPY
+    // THE BAND MOVES 1 px PER STEP FROM FULLY ABOVE THE BOX TO FULLY BELOW IT, SO ONE BAND NEVER NEEDS A WRAP COPY;
+    // THE MAIN LOOP WAKES ONCE PER STEP TO COMPOSITE IT
     private void bands(final Canvas canvas) {
         final int x = this.left;
         final int y = this.top;
@@ -48,7 +49,7 @@ final class CrtOverlay extends Element<CrtOverlay> {
         final int h = this.measuredHeight;
         final int bandH = Math.max(38, h / 9);
         final int travel = Math.max(1, h + bandH * 2);
-        final int bandY = y - bandH * 2 + (int) ((System.currentTimeMillis() / 24L) % travel);
+        final int bandY = y - bandH * 2 + (int) ((System.currentTimeMillis() / AppContext.CRT_STEP_MS) % travel);
         canvas.gradientV(x, bandY, w, bandH, NEON_R, NEON_G, NEON_B, 0f, NEON_R, NEON_G, NEON_B, 0.14f);
         canvas.gradientV(x, bandY + bandH, w, bandH, NEON_R, NEON_G, NEON_B, 0.14f, NEON_R, NEON_G, NEON_B, 0f);
     }

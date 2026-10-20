@@ -17,6 +17,7 @@ import static org.lwjgl.glfw.GLFW.glfwPostEmptyEvent;
 public final class AppContext implements Executor {
 
     public static final String APP_NAME = "WATERMeDIA: Multimedia API";
+    public static final long CRT_STEP_MS = 24L; // THE CRT BAND MOVES 1 px PER STEP
 
     // WINDOW STATE
     public int windowWidth = 1280;

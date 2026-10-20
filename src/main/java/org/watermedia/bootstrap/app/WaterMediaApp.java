@@ -59,6 +59,8 @@ public class WaterMediaApp {
     private static volatile RenderSystem.Engine swapTarget;
     // A FIELD BECAUSE THE SWAP REBUILDS IT FOR THE NEW WINDOW
     private static FrameLimiter frameLimiter;
+    // CRT BAND STEP THE LAST FRAME SHOWED; A COMPOSITE WAITS UNTIL THE BAND MOVES PAST IT
+    private static long bandStep = -1L;
     // LAST CURSOR POSITION A HOVER DISPATCH WAS ISSUED FOR — NaN SO THE FIRST FRAME ALWAYS DISPATCHES
     private static double lastMoveX = Double.NaN;
     private static double lastMoveY = Double.NaN;
@@ -451,8 +453,8 @@ public class WaterMediaApp {
     private static void mainLoop() {
         frameLimiter = FrameLimiter.forWindow(ctx.windowHandle);
         ctx.requestRender();
-        // THE GLOW HEARTBEAT MOVES ABOUT 1% EVERY 250 ms, SO 4 REDRAWS A SECOND KEEP IT SMOOTH ON ON-DEMAND SCREENS;
-        // A MINIMIZED WINDOW SHOWS NOTHING AND IS LEFT IDLE
+        // THE GLOW HEARTBEAT MOVES ABOUT 1% EVERY 250 ms, SO 4 TREE REPAINTS A SECOND (CACHE REBUILDS UNDER A MOVING CRT
+        // BAND) KEEP IT SMOOTH ON ON-DEMAND SCREENS; A MINIMIZED WINDOW SHOWS NOTHING AND IS LEFT IDLE
         ThreadTool.thread("WaterMedia-GlowPulse", () -> {
             while (running) {
                 if (!iconified) ctx.requestRender();
@@ -462,15 +464,19 @@ public class WaterMediaApp {
         while (running && !glfwWindowShouldClose(ctx.windowHandle)) {
             // ENGINE HOT-SWAP RUNS AT THE TOP OF THE LOOP ON THE RENDER THREAD — NEVER MID-FRAME
             if (swapTarget != null) performEngineSwap();
-            // CONTINUOUS SCREENS (VIDEO), A VISIBLE MOVING CRT BAND AND POINTER DRAGS PACE TO THE REFRESH RATE, THEN
-            // POLL INPUT AFTER THE PACE SLEEP SO A SLIDER SHOWS THE CURSOR AS OF RENDER TIME, NOT A FRAME EARLIER
             final boolean continuous = root.continuous();
-            final boolean paced = continuous || (ctx.crt && root.live() && !iconified) || root.dragging();
-            if (paced) {
+            final boolean band = ctx.crt && root.live() && !iconified;
+            // ONLY A VISIBLE CRT BAND COMPOSITES, SO WITHOUT ONE THE TWO WINDOW-SIZED LAYERS GO BACK TO THE GPU
+            if (!band) RenderSystem.releaseCache();
+            // VIDEO AND POINTER DRAGS PACE TO THE REFRESH RATE AND POLL INPUT AFTER THE SLEEP, SO A SLIDER SHOWS THE CURSOR
+            // AS OF RENDER TIME; A STILL TREE UNDER A MOVING BAND WAKES FOR INPUT OR THE BAND'S NEXT STEP
+            if (continuous || root.dragging()) {
                 frameLimiter.syncBeforeFrame();
                 glfwPollEvents();
             } else if (ctx.renderRequested()) {
                 glfwPollEvents();
+            } else if (band) {
+                glfwWaitEventsTimeout((AppContext.CRT_STEP_MS - System.currentTimeMillis() % AppContext.CRT_STEP_MS) / 1_000d);
             } else {
                 glfwWaitEventsTimeout(frameLimiter.idleTimeoutSeconds());
             }
@@ -481,17 +487,19 @@ public class WaterMediaApp {
 
             // ON-DEMAND FRAMES REPAINT THE TREE ONLY WHEN SOMETHING ASKED FOR ONE; A STILL DRAG-HOLD FALLS THROUGH
             // HERE TOO AND SKIPS THE REDUNDANT REPAINT UNTIL THE POINTER MOVES AGAIN
+            final long step = System.currentTimeMillis() / AppContext.CRT_STEP_MS;
             final FramePlan plan = FramePlan.of(continuous, ctx.consumeRenderRequest(), ctx.crt, root.live(), !iconified,
-                    RenderSystem.cacheValid());
+                    RenderSystem.cacheValid(), step != bandStep);
             if (plan == FramePlan.IDLE) continue;
+            bandStep = step;
 
             RenderSystem.beginFrame();
-            // LOGICAL DIMS — THE TREE LIVES IN LOGICAL PX AND SCALES TO PHYSICAL THROUGH THE ORTHO; A SWAPCHAIN THAT
-            // beginFrame() REBUILT TOOK THE LAYERS WITH IT, SO THAT COMPOSITE REPAINTS THE TREE INSTEAD
-            final boolean composite = plan == FramePlan.COMPOSITE && RenderSystem.cacheValid();
-            if (!composite) syncShell();
-            if (composite) root.composite(ctx.logicalWidth(), ctx.logicalHeight());
-            else root.render(ctx.logicalWidth(), ctx.logicalHeight(), plan != FramePlan.DIRECT);
+            // A COMPOSITE COSTS A CLEAR, THE BASE LAYER QUAD, TWO GRADIENTS PER VISIBLE CRT BAND AND THE TOP LAYER QUAD
+            // WHEN A DIALOG, HUD OR PREVIEW RAISED; LOGICAL DIMS, AS THE TREE SCALES TO PHYSICAL THROUGH THE ORTHO
+            final FramePlan frame = plan.settle(RenderSystem.cacheValid());
+            if (frame != FramePlan.COMPOSITE) syncShell();
+            if (frame == FramePlan.COMPOSITE) root.composite(ctx.logicalWidth(), ctx.logicalHeight());
+            else root.render(ctx.logicalWidth(), ctx.logicalHeight(), frame != FramePlan.DIRECT);
             RenderSystem.present();
         }
 

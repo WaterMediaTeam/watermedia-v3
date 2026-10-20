@@ -55,7 +55,11 @@ public final class Canvas {
         return !this.live.isEmpty();
     }
 
-    /** Draws something that changes every frame: inline in a direct pass, over the cached tree in every composite. */
+    /**
+     * Draws something that changes every frame: inline in a direct pass, over the cached tree in every composite. A
+     * composite paints it over everything its layer holds, so whatever must stay above it, even when drawn later by the
+     * same element, has to come after a {@link #raise()}.
+     */
     public void live(final Consumer<Canvas> painter) {
         final boolean clipped = this.clipDepth > 0;
         final int at = Math.min(this.clipDepth, CLIP_LEVELS) * 4 - 4;

@@ -1,18 +1,13 @@
 package org.watermedia.bootstrap.app.render;
 
-import org.joml.Matrix4f;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.watermedia.api.media.GFXEngine;
+import org.watermedia.test.support.RecordingBackend;
 
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.Executor;
-import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -20,18 +15,19 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies {@link RenderEngine}'s tree cache against a recording {@link RenderBackend} stub: when a cached pass counts
- * as valid, when the top layer opens and composites, and that a composite is one full-window quad per layer. No GPU.
+ * Verifies {@link RenderEngine}'s tree cache against a {@link RecordingBackend}: when a cached pass counts as valid, when
+ * the top layer opens and composites, when the layers go back to the GPU, and that a composite is one full-window quad
+ * per layer. No GPU.
  */
 @DisplayName("RenderEngine tree cache")
 public class RenderEngineCacheTest {
 
-    private LayerBackend backend;
+    private RecordingBackend backend;
     private RenderEngine engine;
 
     @BeforeEach
     void setup() {
-        this.backend = new LayerBackend();
+        this.backend = new RecordingBackend();
         this.engine = new RenderEngine(this.backend);
         this.engine.setupOrtho(100, 50);
     }
@@ -71,6 +67,20 @@ public class RenderEngineCacheTest {
             RenderEngineCacheTest.this.engine.endCache();
             RenderEngineCacheTest.this.engine.dropCache();
             assertFalse(RenderEngineCacheTest.this.engine.cacheValid());
+        }
+
+        @Test
+        @DisplayName("releasing frees the layers and invalidates the cache until a new pass fills them")
+        void release() {
+            final RenderEngine engine = RenderEngineCacheTest.this.engine;
+            engine.beginCache(0f, 0f, 0f, 1f);
+            engine.endCache();
+            engine.releaseCache();
+            assertEquals(1, RenderEngineCacheTest.this.backend.releases);
+            assertFalse(engine.cacheValid());
+            engine.beginCache(0f, 0f, 0f, 1f);
+            engine.endCache();
+            assertTrue(engine.cacheValid(), "a pass after the release caches again");
         }
     }
 
@@ -157,56 +167,5 @@ public class RenderEngineCacheTest {
             engine.bindTexture(7);
             assertEquals(List.of(7, 7), RenderEngineCacheTest.this.backend.textures);
         }
-    }
-
-    // UTILITY
-
-    // RECORDS THE ENGINE'S LAYER AND DRAW CALLS; EVERY OTHER GPU METHOD IS AN INERT NO-OP
-    private static final class LayerBackend implements RenderBackend {
-        final List<Integer> begun = new ArrayList<>();
-        final List<Integer> bound = new ArrayList<>();
-        final List<Integer> textures = new ArrayList<>();
-        boolean accept = true;
-        boolean flipped;
-        int epoch;
-        int ended;
-        int draws;
-        int clipClears;
-        int lastVertexCount;
-        boolean lastTextured;
-        float[] lastVertices = new float[0];
-        float[] lastClear = new float[0];
-
-        @Override public boolean beginLayer(final int index, final float r, final float g, final float b, final float a) {
-            this.begun.add(index);
-            this.lastClear = new float[] {r, g, b, a};
-            return this.accept;
-        }
-        @Override public void endLayer() { this.ended++; }
-        @Override public boolean bindLayer(final int index) {
-            this.bound.add(index);
-            return this.begun.contains(index);
-        }
-        @Override public boolean layerFlipped() { return this.flipped; }
-        @Override public int layerEpoch() { return this.epoch; }
-        @Override public void init() {}
-        @Override public void cleanup() {}
-        @Override public void configureFrameState() {}
-        @Override public void clear(final float r, final float g, final float b, final float a) {}
-        @Override public void viewport(final int width, final int height) {}
-        @Override public TextureHandle createTexture(final int width, final int height, final ByteBuffer rgba) { return new TextureHandle(1, width, height); }
-        @Override public void deleteTexture(final TextureHandle texture) {}
-        @Override public void bindTexture(final int textureId) { this.textures.add(textureId); }
-        @Override public void useProjection(final Matrix4f projection) {}
-        @Override public void draw(final DrawMode mode, final float[] vertices, final int vertexCount, final boolean textured) {
-            this.draws++;
-            this.lastVertexCount = vertexCount;
-            this.lastTextured = textured;
-            this.lastVertices = Arrays.copyOf(vertices, vertexCount * 8);
-        }
-        @Override public void lineWidth(final float width) {}
-        @Override public void clip(final int x, final int y, final int width, final int height, final int canvasHeight) {}
-        @Override public void clearClip() { this.clipClears++; }
-        @Override public Supplier<GFXEngine> mediaEngineSupplier(final Thread renderThread, final Executor renderExecutor) { return () -> null; }
     }
 }

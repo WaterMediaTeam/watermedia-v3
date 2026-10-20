@@ -1053,7 +1053,9 @@ public class OpenMultimediaScreen extends Screen {
             canvas.cube(x + 2, y + h - 12, 10);
             canvas.cube(x + w - 12, y + h - 12, 10);
 
-            super.onDraw(canvas); // CRT UNDER THE STATE TEXT
+            super.onDraw(canvas);
+            // THE STATE TEXT AND THE QUALITY CHIP GO OVER THE CRT BAND IN A COMPOSITE TOO, AS IN A DIRECT FRAME
+            canvas.raise();
 
             final int ix = x + 6;
             final int iy = y + 6;

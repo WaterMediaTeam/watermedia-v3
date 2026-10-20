@@ -419,6 +419,13 @@ public final class OpenGLRenderBackend implements RenderBackend {
         return this.layerEpoch;
     }
 
+    @Override
+    public void releaseLayers() {
+        if (this.layerFbo[0] == 0 && this.layerFbo[1] == 0) return;
+        this.deleteLayers();
+        this.layerEpoch++;
+    }
+
     private boolean createLayer(final int index) {
         final int texture = GL11.glGenTextures();
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
