@@ -137,26 +137,38 @@ public final class ListView<D> extends Group<ListView<D>> {
         final int top = this.scroll.offset - pitch;
         final int bottom = this.scroll.offset + this.viewport + pitch;
         int from = -1;
-        int to = this.rows.size();
+        int to = -1;
         int slot = 0;
         int fromSlot = 0;
+        int focus = -1;
+        int focusSlot = 0;
         for (int i = 0; i < this.rows.size(); i++) {
-            if (!this.rows.get(i).visible) continue;
+            final Element<?> row = this.rows.get(i);
+            if (!row.visible) continue;
             final int y = slot * pitch;
-            if (y >= bottom) {
-                to = i;
-                break;
-            }
+            if (to < 0 && y >= bottom) to = i;
             if (from < 0 && y + this.rowHeight > top) {
                 from = i;
                 fromSlot = slot;
             }
+            if (focus < 0 && row.textInputActive()) {
+                focus = i;
+                focusSlot = slot;
+            }
             slot++;
         }
+        if (to < 0) to = this.rows.size();
         if (from < 0) {
             from = to;
             fromSlot = slot;
         }
+        // A ROW HOLDING A FOCUSED INPUT STRETCHES THE WINDOW TO ITSELF, SO KEYS, BLUR AND HIT TESTS STILL REACH IT
+        // WHERE IT REALLY SITS; THE DRAW CULLS IT WHILE IT IS OUT OF VIEW
+        if (focus >= 0 && focus < from) {
+            from = focus;
+            fromSlot = focusSlot;
+        }
+        if (focus >= to) to = focus + 1;
         if (from == this.windowFrom && to - from == this.children.size()) return false;
         // A ROW LEAVING THE WINDOW KEEPS NO HOVER, OR IT WOULD COME BACK LIT
         for (final Element<?> row: this.children) row.clearHover();
@@ -237,8 +249,13 @@ public final class ListView<D> extends Group<ListView<D>> {
         // CLAMP THE OFFSET + MOMENTUM STATE INTO THE NEW RANGE SO A RESIZE/REBUILD NEVER LEAVES A STALE TARGET
         this.scroll.clamp(this.totalHeight - this.innerHeight());
         this.viewport = this.innerHeight();
+        final int oldFrom = this.windowFrom;
+        final int oldTo = oldFrom + this.children.size();
         if (this.window()) {
-            for (final Element<?> row: this.children) {
+            for (int i = 0; i < this.children.size(); i++) {
+                final Element<?> row = this.children.get(i);
+                // A ROW THAT JOINS HERE (FIRST FRAME, RESIZE) MISSED THIS FRAME'S UPDATE PASS, SO IT BINDS BEFORE IT DRAWS
+                if (this.windowFrom + i < oldFrom || this.windowFrom + i >= oldTo) row.update();
                 if (!row.visible) continue;
                 row.measure(this.innerWidth(), this.rowHeight);
                 row.measuredHeight = this.rowHeight;
@@ -288,18 +305,15 @@ public final class ListView<D> extends Group<ListView<D>> {
     }
 
     @Override
-    public boolean textInputActive() {
-        // A FOCUSED FIELD STAYS FOCUSED WHILE ITS ROW IS SCROLLED OUT OF THE WINDOW
-        for (final Element<?> row: this.rows) {
-            if (row.textInputActive()) return true;
-        }
-        return false;
-    }
-
-    @Override
     public boolean dispatchClick(final double mx, final double my) {
         if (!this.contains(mx, my)) return false;
         return super.dispatchClick(mx, my);
+    }
+
+    @Override
+    public Element<?> dispatchPress(final double mx, final double my) {
+        // THE WINDOW HOLDS ROWS PAST THE VIEWPORT EDGES, WHICH MUST NOT CAPTURE A PRESS ON WHAT LIES THERE
+        return this.contains(mx, my) ? super.dispatchPress(mx, my) : null;
     }
 
     @Override

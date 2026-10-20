@@ -12,6 +12,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -201,7 +203,152 @@ public class ListViewInteractionTest {
         }
     }
 
+    @Nested
+    @DisplayName("Edge cases")
+    class EdgeCases {
+
+        @Test
+        @DisplayName("an empty list takes no input and builds no rows")
+        void emptyList() {
+            final List<String> activations = new ArrayList<>();
+            final ListView<String> list = new ListView<String>().rowHeight(40).rowFactory((item, index) -> new Box())
+                    .onSelect((item, index) -> activations.add(item)).size(200, 80);
+            list.update();
+            list.measure(200, 80);
+            list.layout(0, 0);
+            assertEquals(0, list.children().size());
+            assertFalse(list.dispatchHover(20, 20));
+            assertFalse(list.dispatchClick(20, 20));
+            assertNull(list.dispatchPress(20, 20));
+            list.moveSelection(1);
+            assertEquals(-1, list.selectedIndex());
+            assertEquals(List.of(), activations);
+        }
+
+        @Test
+        @DisplayName("a zero-height viewport keeps only the margin row and takes no clicks")
+        void zeroHeightViewport() {
+            final List<String> activations = new ArrayList<>();
+            final ListView<String> list = list(activations).size(200, 0);
+            list.update();
+            list.measure(200, 0);
+            list.layout(10, 10);
+            assertTrue(list.children().size() <= 1, "children: " + list.children().size());
+            assertFalse(list.dispatchClick(20, 10));
+            assertEquals(List.of(), activations);
+        }
+
+        @Test
+        @DisplayName("rows that join the window during layout are bound before they draw")
+        void joiningRowsAreBound() {
+            final List<Integer> updated = new ArrayList<>();
+            final ListView<String> list = new ListView<String>().rowHeight(40)
+                    .rowFactory((item, index) -> new BoundRow(() -> updated.add(index)))
+                    .items(List.of("a", "b", "c", "d")).size(200, 120);
+            // THE FIRST UPDATE RUNS BEFORE ANY LAYOUT, SO ITS WINDOW STILL HAS A ZERO-HEIGHT VIEWPORT
+            list.update();
+            list.measure(200, 120);
+            list.layout(0, 0);
+            for (int i = 0; i < list.children().size(); i++) assertTrue(updated.contains(i), "row " + i + " never bound: " + updated);
+        }
+    }
+
+    @Nested
+    @DisplayName("Focus")
+    class Focus {
+
+        @Test
+        @DisplayName("a row with a focused input keeps getting keys, characters and blur after scrolling out of view")
+        void focusedRowOutsideTheViewport() {
+            final List<String> items = new ArrayList<>();
+            for (int i = 0; i < 50; i++) items.add("item" + i);
+            final List<FocusRow> built = new ArrayList<>();
+            final ListView<String> list = new ListView<String>().rowHeight(40).rowFactory((item, index) -> {
+                final FocusRow row = new FocusRow();
+                built.add(row);
+                return row;
+            }).items(items).size(200, 80);
+            list.update();
+            list.measure(200, 80);
+            list.layout(0, 0);
+            final FocusRow focused = built.get(0);
+            focused.focused(true);
+
+            list.selection(0).moveSelection(40);
+            list.update();
+            list.measure(200, 80);
+            list.layout(0, 0);
+            assertTrue(list.children().contains(focused), "the focused row left the window");
+            assertTrue(focused.top() + focused.measuredHeight() <= 0, "the focused row is laid out where it really sits");
+            assertTrue(list.textInputActive());
+
+            assertTrue(list.dispatchKey(65, 1));
+            assertTrue(list.dispatchChar('x'));
+            assertEquals(List.of("key", "char"), focused.events);
+            assertFalse(list.dispatchClick(20, -20), "a point above the viewport must not reach the out-of-view row");
+            list.clearFocus();
+            assertFalse(focused.focused());
+            assertFalse(list.textInputActive());
+
+            list.update();
+            list.measure(200, 80);
+            list.layout(0, 0);
+            assertFalse(list.children().contains(focused), "a blurred row leaves the window again");
+        }
+
+        @Test
+        @DisplayName("rows past the viewport edges never capture a press")
+        void pressOutsideTheViewport() {
+            final List<String> activations = new ArrayList<>();
+            final ListView<String> list = new ListView<String>().rowHeight(40)
+                    .rowFactory((item, index) -> new PressRow())
+                    .items(List.of("first", "second", "third", "fourth"))
+                    .onSelect((item, index) -> activations.add(item)).size(200, 80);
+            list.update();
+            list.measure(200, 80);
+            list.layout(10, 10);
+            assertTrue(list.children().size() > 2, "the window holds a margin row below the viewport");
+            assertNull(list.dispatchPress(20, 100));
+            assertNotNull(list.dispatchPress(20, 20));
+        }
+    }
+
     // UTILITY
+
+    private static final class FocusRow extends Element<FocusRow> {
+        private final List<String> events = new ArrayList<>();
+
+        @Override
+        public boolean textInputActive() {
+            return this.focused;
+        }
+
+        @Override
+        public boolean dispatchKey(final int key, final int action) {
+            if (!this.focused) return false;
+            this.events.add("key");
+            return true;
+        }
+
+        @Override
+        public boolean dispatchChar(final int codepoint) {
+            if (!this.focused) return false;
+            this.events.add("char");
+            return true;
+        }
+
+        @Override
+        public void clearFocus() {
+            this.focused = false;
+        }
+    }
+
+    private static final class PressRow extends Element<PressRow> {
+        @Override
+        protected boolean onPress(final double mx, final double my) {
+            return true;
+        }
+    }
 
     private static final class BoundRow extends Element<BoundRow> {
         private final Runnable binder;

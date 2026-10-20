@@ -357,11 +357,13 @@ public final class SettingsScreen extends Screen {
     @Override
     public boolean dispatchClick(final double mx, final double my) {
         final boolean handled = super.dispatchClick(mx, my);
-        // RECONCILE TEXT FOCUS AFTER THE CLICK — AT MOST ONE FIELD STAYS FOCUSED AND BECOMES THE ACTIVE EDIT
+        // RECONCILE TEXT FOCUS AFTER THE CLICK — AT MOST ONE FIELD STAYS FOCUSED AND BECOMES THE ACTIVE EDIT; A FIELD
+        // SCROLLED OUT OF VIEW STILL HAS A PLACE, WHICH ONLY COUNTS INSIDE THE LIST
+        final boolean inList = this.list.contains(mx, my);
         TextField focused = null;
         for (final TextField field: this.textFields) {
             if (!field.focused()) continue;
-            if (focused == null && field.contains(mx, my)) {
+            if (focused == null && inList && field.contains(mx, my)) {
                 focused = field;
             } else {
                 field.focused(false);
