@@ -554,9 +554,7 @@ final class SettingsModel {
 
         private Object valueForPercent(final double pct) {
             final double raw = this.minValue + (this.maxValue - this.minValue) * MathUtil.clamp(pct, 0d, 1d);
-            if (this.isInteger()) {
-                return this.numberOf(Math.round(raw));
-            }
+            if (this.isInteger()) return this.numberOf(Math.round(raw));
             return this.numberOf(raw);
         }
 
@@ -696,9 +694,7 @@ final class SettingsModel {
                 final char prev = spaced.charAt(i - 1);
                 final boolean nextLower = i + 1 < spaced.length() && Character.isLowerCase(spaced.charAt(i + 1));
                 // BREAK ON lower->UPPER AND ON THE LAST CAPITAL OF AN ACRONYM RUN ("BKGDChunk" -> "BKGD Chunk")
-                if (Character.isLowerCase(prev) || Character.isDigit(prev) || (Character.isUpperCase(prev) && nextLower)) {
-                    out.append(' ');
-                }
+                if (Character.isLowerCase(prev) || Character.isDigit(prev) || (Character.isUpperCase(prev) && nextLower)) out.append(' ');
             }
             out.append(upper ? Character.toUpperCase(c) : c);
             upper = false;

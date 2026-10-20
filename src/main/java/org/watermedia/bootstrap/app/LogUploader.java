@@ -407,9 +407,8 @@ public final class LogUploader {
     private String firstUploadedCrashUrl() {
         for (final FileEntry entry: this.files) {
             if (!entry.name.equalsIgnoreCase("latest.log") && !entry.name.equalsIgnoreCase("watermedia-app.log")
-                    && !entry.name.startsWith("hs_err_pid") && entry.uploaded) {
+                    && !entry.name.startsWith("hs_err_pid") && entry.uploaded)
                 return entry.url;
-            }
         }
         return null;
     }

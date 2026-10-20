@@ -119,9 +119,7 @@ public final class CacheCleaner {
             this.repaint.run();
 
             final Path cache = dir();
-            if (Files.exists(cache)) {
-                IOTool.deleteTree(cache);
-            }
+            if (Files.exists(cache)) IOTool.deleteTree(cache);
             Files.createDirectories(cache);
 
             this.progress = 100;

@@ -38,9 +38,8 @@ final class SystemInfo {
         final List<String> alerts = new ArrayList<>();
         final String nvidia = nvidiaThreadedOptimizationAlert();
         if (nvidia != null) alerts.add(nvidia);
-        if (MediaAPI.ffmpegError()) {
+        if (MediaAPI.ffmpegError())
             alerts.add("FFmpeg failed to load — media playback is unavailable. See the attached logs for the native load error.");
-        }
         if (alerts.isEmpty()) return "- None detected\n";
         final StringBuilder sb = new StringBuilder();
         for (final String a: alerts) sb.append("- ").append(a).append('\n');
@@ -187,11 +186,10 @@ final class SystemInfo {
                             + "($p.Threads|?{$a=[int64]$_.StartAddress;$a -ge $b -and $a -lt $e}).Count}else{'nomodule'}");
             if (out == null) return null;
             final int workers = DataTool.parseInt(out, -1);
-            if (workers > 0) {
+            if (workers > 0)
                 return "NVIDIA \"Threaded Optimization\" appears ENABLED (" + workers + " GL worker thread(s) inside nvoglv64.dll). "
                         + "It is a known cause of OpenGL crashes/stutter with LWJGL — turn it Off in "
                         + "NVIDIA Control Panel > Manage 3D Settings > Threaded Optimization.";
-            }
         } catch (final Throwable ignored) {
         }
         return null;
@@ -255,9 +253,7 @@ final class SystemInfo {
         if (out == null) return null;
         for (final String raw: out.split("\\R")) {
             final String[] parts = raw.trim().split("\\|", -1);
-            if (parts.length >= 3 && !parts[0].isBlank()) {
-                return new String[]{parts[0].trim(), parts[1].trim(), parts[2].trim()};
-            }
+            if (parts.length >= 3 && !parts[0].isBlank()) return new String[]{parts[0].trim(), parts[1].trim(), parts[2].trim()};
         }
         return null;
     }
@@ -274,9 +270,7 @@ final class SystemInfo {
     private static String systemRam() {
         try {
             final var bean = ManagementFactory.getOperatingSystemMXBean();
-            if (bean instanceof final OperatingSystemMXBean sun) {
-                return sun.getTotalMemorySize() / 1024 / 1024 + " MB";
-            }
+            if (bean instanceof final OperatingSystemMXBean sun) return sun.getTotalMemorySize() / 1024 / 1024 + " MB";
         } catch (final Throwable ignored) {
         }
         return "unknown";
